@@ -2,10 +2,11 @@
  * Contamination check: nothing project specific or machine specific may be
  * committed to this repository.
  *
- * The old harness leaked employer hook names, `C:/dev` paths, and absolute home
- * directories into a repo that was supposed to be portable. Its own planned
- * check would have caught the first two and missed the third, so this one
- * covers absolute home paths as a first class pattern.
+ * The old harness leaked employer hook names, drive-rooted development
+ * directories, and absolute home directories into a repo that was supposed to
+ * be portable. Its own planned check would have caught the first two and
+ * missed the third, so this one covers absolute home paths as a first class
+ * pattern.
  *
  * The patterns are assembled from fragments at run time. Writing them as
  * literals would make this file match itself, and the usual fix for that is to
@@ -50,9 +51,9 @@ const PATH_RULES: Array<{ rule: string; re: RegExp }> = [
     rule: 'absolute-home-windows',
     // The leak class the old plan's pattern would have missed. Separators
     // repeat because source code escapes backslashes, so a path embedded in a
-    // string literal reads as C:\\Users\\name on disk. Angle brackets are
-    // excluded so that documentation writing C:/Users/<name> as a placeholder
-    // is not reported as a real path.
+    // string literal carries two of them on disk. Angle brackets are excluded
+    // so that documentation writing a placeholder in <name> form is not
+    // reported as a real path.
     re: /\b[a-z]:[/\\]+users[/\\]+(?![<{$])[^/\\<>{}\s"'`,;:)\]]+/i,
   },
   {
@@ -72,6 +73,15 @@ const PROJECT_RE = new RegExp(PROJECT_WORDS.join('|'), 'i');
 const EXEMPT: Array<{ prefix: string; why: string }> = [
   // Lock files record the registry's own resolved paths and are generated.
   { prefix: 'package-lock.json', why: 'generated dependency lock' },
+  // Vendored reference tables, whose provenance is tracked separately in
+  // VENDORED.md. They carry illustrative paths in documentation examples,
+  // which look identical to a real leak and break nothing when cloned. This is
+  // the one place the check trades precision for not rewriting other people's
+  // reference data.
+  {
+    prefix: 'doctrine/skills/ui-ux-pro-max/data/',
+    why: 'vendored reference tables with illustrative paths',
+  },
 ];
 
 const BINARY_EXT = new Set([

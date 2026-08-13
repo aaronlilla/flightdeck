@@ -40,24 +40,27 @@ const SPECIMENS: Specimen[] = [
     content: `# see ${join('bb', '-infra')}/docs for the note\n`,
     expect: 'project-specific-name',
   },
+  // The poisoned paths below are assembled at run time for the same reason the
+  // detector's own patterns are: written as literals they would make this file
+  // a finding, and exempting it would blind the check to its own specimens.
   {
     name: 'drive rooted dev directory',
-    content: 'const root = "C:/dev/worktrees";\n',
+    content: `const root = "${join('C:/', 'dev')}/worktrees";\n`,
     expect: 'windows-dev-root',
   },
   {
     name: 'absolute windows home path',
-    content: 'HOOK = "C:/Users/aaron/.claude/hooks/model_gate.py"\n',
+    content: `HOOK = "${join('C:/Use', 'rs/aaron')}/.claude/hooks/model_gate.py"\n`,
     expect: 'absolute-home-windows',
   },
   {
     name: 'absolute windows home path with backslashes',
-    content: 'path = "C:\\\\Users\\\\aaron\\\\.claude"\n',
+    content: `path = "${join('C:\\\\Use', 'rs\\\\aaron')}\\\\.claude"\n`,
     expect: 'absolute-home-windows',
   },
   {
     name: 'absolute posix home path',
-    content: 'export CLAUDE_HOME=/home/aaron/.claude\n',
+    content: `export CLAUDE_HOME=${join('/ho', 'me/aaron')}/.claude\n`,
     expect: 'absolute-home-posix',
   },
   {
