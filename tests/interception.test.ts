@@ -14,7 +14,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { buildOptions, Engine } from '../src/adapter/engine.ts';
+import { buildOptions } from '../src/adapter/engine.ts';
 import { Kernel } from '../src/kernel/kernel.ts';
 import { authorshipGuard } from '../src/kernel/guards/authorship.ts';
 import type { ToolCall } from '../src/types.ts';
