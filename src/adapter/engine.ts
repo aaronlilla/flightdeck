@@ -7,6 +7,7 @@
  * the control calls that make phase routing possible in the first place.
  */
 import {
+  listSessions,
   query,
   type CanUseTool,
   type Options,
@@ -48,6 +49,34 @@ export interface EngineConfig {
   settingSources?: SettingSource[];
   /** Extra agent definitions merged in from overlays. */
   agents?: Options['agents'];
+}
+
+/** One earlier session, reduced to what a picker needs to show. */
+export interface SessionSummary {
+  sessionId: string;
+  summary: string;
+  lastModified: number;
+}
+
+/**
+ * Earlier sessions for a directory, newest first.
+ *
+ * Wrapped here rather than called from the interface, because this file is the
+ * only one allowed to know the SDK exists. Returns nothing on failure: a
+ * picker that cannot read the store has no sessions to offer, and that is worth
+ * saying rather than throwing into a render.
+ */
+export async function listRecentSessions(cwd: string, limit = 10): Promise<SessionSummary[]> {
+  try {
+    const sessions = await listSessions({ dir: cwd, limit });
+    return sessions.map((session) => ({
+      sessionId: session.sessionId,
+      summary: session.customTitle || session.summary || session.firstPrompt || '(no title)',
+      lastModified: session.lastModified,
+    }));
+  } catch {
+    return [];
+  }
 }
 
 /** What a PreToolUse inspection may answer. */

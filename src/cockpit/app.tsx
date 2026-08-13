@@ -10,7 +10,12 @@
 import { Box, Text, useApp } from 'ink';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
-import { Engine, type EngineConfig } from '../adapter/engine.ts';
+import {
+  Engine,
+  listRecentSessions,
+  type EngineConfig,
+  type SessionSummary,
+} from '../adapter/engine.ts';
 import type { EngineEvent } from '../adapter/events.ts';
 import type { PermissionMode } from '../types.ts';
 import { Kernel, type ApprovalRequest } from '../kernel/kernel.ts';
@@ -50,10 +55,13 @@ export function App({
   cwd,
   resume,
   engine: injected,
+  listSessions,
 }: {
   cwd: string;
   resume?: string;
   engine?: EngineLike;
+  /** Supplied by tests so the picker can be driven without touching the store. */
+  listSessions?: (cwd: string) => Promise<SessionSummary[]>;
 }): React.ReactElement {
   const { exit } = useApp();
   const [entries, setEntries] = useState<Entry[]>([]);
@@ -283,6 +291,24 @@ export function App({
             ? 'every guard is running'
             : `UNCHECKED: ${health.failures.join('; ')}`,
           health.healthy ? 'info' : 'error',
+        );
+        return true;
+      }
+      case '/resume': {
+        const list = await (listSessions ?? listRecentSessions)(cwd);
+        if (list.length === 0) {
+          say('no earlier sessions for this directory');
+          return true;
+        }
+        // Listing rather than switching. Resuming replaces the conversation on
+        // screen, so it happens at launch with an id, where it is deliberate.
+        say(
+          [
+            'earlier sessions here, newest first:',
+            ...list.map((s) => `  ${s.sessionId.slice(0, 8)}  ${s.summary}`),
+            '',
+            'reopen one with: flightdeck --resume <id>',
+          ].join('\n'),
         );
         return true;
       }

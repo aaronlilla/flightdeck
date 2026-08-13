@@ -102,11 +102,16 @@ class StandInEngine implements EngineLike {
 
 const settle = (ms = 60) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function open() {
+const SESSIONS = [
+  { sessionId: '3f2a9c1e-1111-2222-3333-444455556666', summary: 'add a retry to the fetch helper', lastModified: 1 },
+  { sessionId: 'aa11bb22-1111-2222-3333-444455556666', summary: 'split the wallet reducer', lastModified: 2 },
+];
+
+async function open(overrides: { listSessions?: () => Promise<typeof SESSIONS> } = {}) {
   const stdin = fakeStdin();
   const out = fakeStdout();
   const engine = new StandInEngine();
-  const app = render(<App cwd="/repo" engine={engine} />, {
+  const app = render(<App cwd="/repo" engine={engine} listSessions={overrides.listSessions ?? (async () => SESSIONS)} />, {
     stdin: stdin as never,
     stdout: out.stream as never,
     exitOnCtrlC: false,
@@ -203,6 +208,28 @@ describe('slash commands are answered by the app', () => {
     await type('/onboard-codebase');
     await type(KEY.enter);
     expect(engine.sent).toEqual(['/onboard-codebase']);
+    app.unmount();
+  });
+
+  it('answers /resume itself rather than sending it to the model', async () => {
+    // The palette advertises /resume. A command that is offered and then
+    // quietly forwarded as a prompt is worse than one that does not exist.
+    const { engine, out, type, app } = await open();
+    await type('/resume');
+    await type(KEY.enter);
+    await settle(120);
+    expect(engine.sent).toEqual([]);
+    expect(out.last()).toContain('3f2a9c1e');
+    expect(out.last()).toContain('add a retry to the fetch helper');
+    app.unmount();
+  });
+
+  it('says so plainly when there are no sessions to resume', async () => {
+    const { out, type, app } = await open({ listSessions: async () => [] });
+    await type('/resume');
+    await type(KEY.enter);
+    await settle(120);
+    expect(out.last()).toContain('no earlier sessions');
     app.unmount();
   });
 
