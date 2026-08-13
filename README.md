@@ -124,6 +124,14 @@ missed: the approval screen put stdin into raw mode the moment it mounted, so it
 could not render outside a live session, and blank lines inside a plan collapsed,
 which mangled the document a person reads before approving it.
 
+`tests/interactive.test.tsx` drives the real cockpit with real keystrokes. Ink
+takes whatever stdin and stdout you give it, so a pair of streams that report
+themselves as terminals is enough to exercise the keyboard loop, the line
+editor, and the approval keypress with a stand-in engine, spending nothing. It
+covers typing and backspace, history recall, the slash palette, `/plan` setting
+plan mode and the plan model without sending anything to the model, and the
+approval screen resolving on a key.
+
 `tests/smoke-live.ts` is the only test that opens a real session. It is run by
 hand and never in CI, because it spends real usage.
 
@@ -144,5 +152,9 @@ that are never called look exactly like guards that found nothing wrong.
 
 ## Status
 
-Early. The pieces work and are tested, and it has not yet been used for a full
-working day, which is the bar I set for replacing the CLI.
+Early. The pieces work and are tested, including the keyboard loop and a live
+session, but it has not yet been used for a full working day, which is the bar
+I set for replacing the CLI.
+
+I also nearly left the interactive layer unchecked on the belief that it needed
+a real terminal. That belief was never tested, and it was wrong.

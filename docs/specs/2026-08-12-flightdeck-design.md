@@ -287,8 +287,10 @@ The subscription authentication question is a policy reading, not a technical
 one, and it is unresolved in the documentation. Mechanically it works: a live
 session authenticated with no API key present.
 
-Whether Ink is the right choice for an approval interface of this complexity is
-still only lightly tested.
+Whether Ink is the right choice over a long working day is still open, though
+the approval interface itself is now driven by keystroke in the test suite.
+
+Nothing has been used for a full working day, which is the cutover bar.
 
 Whether an SDK hook callback may call `setModel()` is undocumented. Nothing in
 this design depends on the answer.
@@ -306,6 +308,13 @@ that the code calls symlink.
 
 Changing the model mid-session held, which is the claim the whole project rests
 on. It was exercised against a live session and not only against a fake.
+
+The interactive layer can be checked without a terminal, which I had assumed it
+could not. Ink accepts whatever stdin and stdout it is given, so streams that
+report themselves as terminals drive the real keyboard loop. The assumption cost
+nothing in the end, but it had been about to leave the input line, the history
+and the approval keypress as the only untested part of the application, on the
+strength of a belief nobody had checked.
 
 ## What would prove this wrong
 

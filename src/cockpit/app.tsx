@@ -10,8 +10,9 @@
 import { Box, Text, useApp } from 'ink';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
-import { Engine } from '../adapter/engine.ts';
+import { Engine, type EngineConfig } from '../adapter/engine.ts';
 import type { EngineEvent } from '../adapter/events.ts';
+import type { PermissionMode } from '../types.ts';
 import { Kernel, type ApprovalRequest } from '../kernel/kernel.ts';
 import { authorshipGuard } from '../kernel/guards/authorship.ts';
 import { convergenceGuard } from '../kernel/guards/convergence.ts';
@@ -29,7 +30,31 @@ interface Pending {
   resolve: (allow: boolean) => void;
 }
 
-export function App({ cwd, resume }: { cwd: string; resume?: string }): React.ReactElement {
+/**
+ * What the screen needs from the engine.
+ *
+ * Named as an interface so a test can supply a stand-in and drive the real
+ * keyboard loop without opening a session or spending anything. The concrete
+ * Engine satisfies it as written.
+ */
+export interface EngineLike {
+  onEvent(listener: (event: EngineEvent) => void): () => void;
+  start(config: EngineConfig): void;
+  send(text: string): void;
+  setModel(model: string | undefined): Promise<void>;
+  setPermissionMode(mode: PermissionMode): Promise<void>;
+  stop(): Promise<void>;
+}
+
+export function App({
+  cwd,
+  resume,
+  engine: injected,
+}: {
+  cwd: string;
+  resume?: string;
+  engine?: EngineLike;
+}): React.ReactElement {
   const { exit } = useApp();
   const [entries, setEntries] = useState<Entry[]>([]);
   const [pending, setPending] = useState<Pending | null>(null);
@@ -50,7 +75,7 @@ export function App({ cwd, resume }: { cwd: string; resume?: string }): React.Re
   pendingRef.current = pending;
 
   const { engine, kernel, overlays } = useMemo(() => {
-    const engine = new Engine();
+    const engine: EngineLike = injected ?? new Engine();
     const overlays = loadOverlays();
     const kernel = new Kernel({
       cwd,
