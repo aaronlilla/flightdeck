@@ -25,8 +25,20 @@ export interface EngineConfig {
   /** Model to open the session on. */
   model?: string;
   permissionMode?: PermissionMode;
-  /** Called by the engine whenever a tool needs a decision. */
+  /** Called when a tool needs a permission decision, which is the human's. */
   canUseTool: CanUseTool;
+  /**
+   * Called for every tool call, before it runs.
+   *
+   * This is where policy belongs. A permission rule that already allows a tool
+   * skips canUseTool entirely, so anything that has to see all traffic has to
+   * be here instead.
+   */
+  onToolCall?: (call: {
+    toolName: string;
+    input: Record<string, unknown>;
+    toolUseId: string;
+  }) => Promise<PreToolVerdict> | PreToolVerdict;
   /** Resume an existing session by id instead of starting a new one. */
   resume?: string;
   /**
@@ -36,6 +48,68 @@ export interface EngineConfig {
   settingSources?: SettingSource[];
   /** Extra agent definitions merged in from overlays. */
   agents?: Options['agents'];
+}
+
+/** What a PreToolUse inspection may answer. */
+export interface PreToolVerdict {
+  decision: 'deny' | 'ask' | undefined;
+  reason?: string;
+  updatedInput?: Record<string, unknown>;
+}
+
+/**
+ * Translate flightdeck's configuration into the SDK's options.
+ *
+ * Separate from `start` so the wiring can be asserted without spawning a
+ * session. The part worth asserting is that `onToolCall` becomes a PreToolUse
+ * hook: it is the only interception point that sees a tool an existing
+ * permission rule already allows, and guards that are never called look
+ * exactly like guards that found nothing.
+ */
+export function buildOptions(
+  config: EngineConfig,
+  onStderr: (data: string) => void = () => {},
+): Options {
+  const options: Options = {
+    cwd: config.cwd,
+    canUseTool: config.canUseTool,
+    settingSources: config.settingSources ?? ['user', 'project', 'local'],
+    includePartialMessages: false,
+    stderr: onStderr,
+  };
+  if (config.model) options.model = config.model;
+  if (config.permissionMode) options.permissionMode = config.permissionMode;
+  if (config.resume) options.resume = config.resume;
+  if (config.agents) options.agents = config.agents;
+
+  const inspect = config.onToolCall;
+  if (inspect) {
+    options.hooks = {
+      PreToolUse: [
+        {
+          hooks: [
+            async (hookInput, toolUseId) => {
+              const info = hookInput as { tool_name?: string; tool_input?: unknown };
+              const verdict = await inspect({
+                toolName: info.tool_name ?? '',
+                input: (info.tool_input ?? {}) as Record<string, unknown>,
+                toolUseId: toolUseId ?? '',
+              });
+              const specific: Record<string, unknown> = { hookEventName: 'PreToolUse' };
+              if (verdict.decision) specific['permissionDecision'] = verdict.decision;
+              if (verdict.reason) specific['permissionDecisionReason'] = verdict.reason;
+              if (verdict.updatedInput) specific['updatedInput'] = verdict.updatedInput;
+              return {
+                continue: verdict.decision !== 'deny',
+                hookSpecificOutput: specific,
+              } as never;
+            },
+          ],
+        },
+      ],
+    };
+  }
+  return options;
 }
 
 export class Engine {
@@ -75,19 +149,7 @@ export class Engine {
 
   start(config: EngineConfig): void {
     if (this.handle) throw new Error('engine already started');
-
-    const options: Options = {
-      cwd: config.cwd,
-      canUseTool: config.canUseTool,
-      settingSources: config.settingSources ?? ['user', 'project', 'local'],
-      includePartialMessages: false,
-      stderr: (data: string) => this.emit({ type: 'stderr', text: data }),
-    };
-    if (config.model) options.model = config.model;
-    if (config.permissionMode) options.permissionMode = config.permissionMode;
-    if (config.resume) options.resume = config.resume;
-    if (config.agents) options.agents = config.agents;
-
+    const options = buildOptions(config, (data) => this.emit({ type: 'stderr', text: data }));
     this.handle = query({ prompt: this.input, options });
     this.pump = this.drain(this.handle);
   }

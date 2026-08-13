@@ -260,19 +260,52 @@ machines, every guard proven against its specimens, and five consecutive full
 working days inside flightdeck without falling back to the CLI. My own daily
 use is the final sign-off.
 
+## What building it changed
+
+Two things in the design above turned out to be wrong, and both were found by
+running the thing rather than by reading it.
+
+The guards were to hang off the permission callback. A live session then ran a
+shell command without the kernel being consulted at all, because a permission
+rule in the loaded settings already allowed the tool and the callback is skipped
+in that case. Guards attached there would have silently skipped every allowed
+tool, including the writes the authorship guard exists to catch. A probe
+registering both interception points at once settled it: the permission callback
+saw none of the call and a `PreToolUse` hook saw all of it. Guards now run on
+`PreToolUse`, which fires for every tool call, and the permission callback is
+only the human's decision. Anything a guard objects to is escalated so that the
+objection is read rather than written past.
+
+The check that should have caught this said a tool call had reached the kernel
+while measuring only that a tool call had happened. It passed while the thing it
+named was false, which is the exact failure this doctrine was written for. The
+live checks now count what the kernel actually saw.
+
 ## Known unknowns
 
 The subscription authentication question is a policy reading, not a technical
-one, and it is unresolved in the documentation.
+one, and it is unresolved in the documentation. Mechanically it works: a live
+session authenticated with no API key present.
 
-Session store interoperability between the CLI and the SDK is assumed and
-unverified. It gets a spike in week one.
-
-Whether Ink is the right choice for an approval interface of this complexity
-is untested.
+Whether Ink is the right choice for an approval interface of this complexity is
+still only lightly tested.
 
 Whether an SDK hook callback may call `setModel()` is undocumented. Nothing in
 this design depends on the answer.
+
+## Assumptions that have since been proven
+
+Session store interoperability between the CLI and the SDK held: a session
+started by flightdeck lands at
+`~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`, which is the store the
+Claude CLI reads.
+
+Junction bootstrap held on Windows. The tests create real links and read content
+through them rather than mocking the filesystem, because a mock would prove only
+that the code calls symlink.
+
+Changing the model mid-session held, which is the claim the whole project rests
+on. It was exercised against a live session and not only against a fake.
 
 ## What would prove this wrong
 

@@ -90,23 +90,34 @@ export function App({ cwd, resume }: { cwd: string; resume?: string }): React.Re
 
     engine.start({
       cwd,
-      canUseTool: async (toolName, input) => {
-        const decision = await kernel.decide({ toolName, input });
-        if (!decision.allow) {
+      // Guards run here, because a tool an existing permission rule already
+      // allows never reaches the permission callback at all.
+      onToolCall: ({ toolName, input, toolUseId }) => {
+        const verdict = kernel.inspect({ toolName, input }, toolUseId);
+        if (verdict.decision === 'deny') {
           push({
             kind: 'tool',
             id: nextId(),
-            toolId: `denied-${nextId()}`,
+            toolId: `denied-${toolUseId}`,
             name: toolName,
             input,
             status: 'denied',
           });
-          say(decision.reason, 'warn');
-          return { behavior: 'deny', message: decision.reason };
+          say(verdict.reason ?? 'refused by a guard', 'warn');
         }
-        return decision.input
-          ? { behavior: 'allow', updatedInput: decision.input }
-          : { behavior: 'allow', updatedInput: input };
+        const out: { decision: 'deny' | 'ask' | undefined; reason?: string; updatedInput?: Record<string, unknown> } = {
+          decision: verdict.decision,
+        };
+        if (verdict.reason) out.reason = verdict.reason;
+        if (verdict.updatedInput) out.updatedInput = verdict.updatedInput;
+        return out;
+      },
+      // The permission callback is the human's decision and nothing else.
+      canUseTool: async (toolName, input, options) => {
+        const decision = await kernel.decide({ toolName, input }, options.toolUseID);
+        return decision.allow
+          ? { behavior: 'allow', updatedInput: decision.input ?? input }
+          : { behavior: 'deny', message: decision.reason };
       },
       ...(resume ? { resume } : {}),
     });

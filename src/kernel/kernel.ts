@@ -52,6 +52,18 @@ export type ApprovalDecision =
 
 export type ApprovalHandler = (request: ApprovalRequest) => Promise<ApprovalDecision>;
 
+/** What the guards concluded, in the shape a PreToolUse hook answers in. */
+export interface InspectResult {
+  /**
+   * Left undefined when the guards had nothing to say, which leaves the
+   * ordinary permission rules in charge.
+   */
+  decision: 'deny' | 'ask' | undefined;
+  reason?: string;
+  updatedInput?: Record<string, unknown>;
+  notes: GuardNote[];
+}
+
 export interface KernelOptions {
   cwd: string;
   controls: EngineControls;
@@ -71,6 +83,12 @@ export class Kernel {
   private readonly onNote: (note: GuardNote) => void;
   private readonly disabled = new Set<string>();
   private readonly failures: string[] = [];
+  /**
+   * Objections raised in PreToolUse, waiting for the approval screen that the
+   * same call will reach a moment later. Keyed by tool use id because the two
+   * interception points are separate calls.
+   */
+  private readonly pendingNotes = new Map<string, GuardNote[]>();
 
   constructor(options: KernelOptions) {
     this.state = initialSessionState(options.cwd);
@@ -189,12 +207,21 @@ export class Kernel {
   // ---------------------------------------------------------------- tools
 
   /**
-   * Answer the engine's permission request.
+   * Run the guards over a tool call.
    *
-   * A refusal from a guard ends it here. Everything else reaches Aaron, with
-   * any objections attached, because approval is his.
+   * This is wired to PreToolUse rather than to the permission callback, and the
+   * difference is not cosmetic. A live probe showed the permission callback
+   * seeing none of a tool call that a permission rule already allowed, so
+   * guards hung off it would silently skip every allowed tool, including the
+   * writes the authorship guard exists to catch. PreToolUse fires for all of
+   * them.
+   *
+   * Returning no decision is deliberate and is the common case: it leaves the
+   * ordinary permission rules in charge. Answering 'allow' here would hand out
+   * permission as a side effect of having checked something, which is how a
+   * guard turns into a way of skipping the human.
    */
-  async decide(call: ToolCall): Promise<ApprovalDecision> {
+  inspect(call: ToolCall, toolUseId?: string): InspectResult {
     let input = call.input;
     const notes: GuardNote[] = [];
 
@@ -209,7 +236,7 @@ export class Kernel {
       }
 
       if (decision.kind === 'deny') {
-        return { allow: false, reason: decision.reason };
+        return { decision: 'deny', reason: decision.reason, notes };
       }
       if (decision.kind === 'modify') {
         input = decision.input;
@@ -220,19 +247,37 @@ export class Kernel {
       }
     }
 
+    if (toolUseId) this.pendingNotes.set(toolUseId, notes);
+
+    const changed = input !== call.input;
+    const result: InspectResult = { decision: undefined, notes };
+    if (changed) result.updatedInput = input;
+
+    // A plan always reaches Aaron, and so does anything a guard objected to.
+    // Asking is the only way a note gets read: without it an allowed tool runs
+    // and the objection is written to a stream nobody stopped at.
+    if (call.toolName === PLAN_TOOL || notes.some((n) => n.severity === 'blocking')) {
+      result.decision = 'ask';
+      result.reason = notes.map((n) => `[${n.guard}] ${n.message}`).join('\n') || undefined;
+    }
+    return result;
+  }
+
+  /**
+   * Answer the engine's permission request, which is the human's decision.
+   *
+   * Guards already ran in `inspect`, so this only carries their objections to
+   * the screen and records what the answer implies for the phase.
+   */
+  async decide(call: ToolCall, toolUseId?: string): Promise<ApprovalDecision> {
+    const notes = (toolUseId && this.pendingNotes.get(toolUseId)) || [];
+    if (toolUseId) this.pendingNotes.delete(toolUseId);
+
     const isPlanApproval = call.toolName === PLAN_TOOL;
-    const result = await this.approve({ call: { ...call, input }, notes, isPlanApproval });
+    const result = await this.approve({ call, notes, isPlanApproval });
 
     if (!result.allow) return result;
-
-    if (isPlanApproval) {
-      await this.startImplementation();
-    }
-    // A guard's correction has to survive the approval. The handler only
-    // supplies input of its own when the human edited the call.
-    if (!result.input && input !== call.input) {
-      return { allow: true, input };
-    }
+    if (isPlanApproval) await this.startImplementation();
     return result;
   }
 

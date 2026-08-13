@@ -103,56 +103,74 @@ describe('phase routing', () => {
 describe('subagent tier correction', () => {
   const guards = [subagentTierGuard];
 
-  it('corrects a research subagent that named no model', async () => {
-    const { kernel, seen } = build({ guards });
-    const result = await kernel.decide(call('Agent', { subagent_type: 'Explore', prompt: 'x' }));
-    expect(result.allow).toBe(true);
-    expect(seen[0]?.call.input['model']).toBe('sonnet');
-    expect((result as { input?: Record<string, unknown> }).input?.['model']).toBe('sonnet');
+  it('corrects a research subagent that named no model', () => {
+    const { kernel } = build({ guards });
+    const verdict = kernel.inspect(call('Agent', { subagent_type: 'Explore', prompt: 'x' }));
+    expect(verdict.updatedInput?.['model']).toBe('sonnet');
+    expect(verdict.decision).toBeUndefined();
   });
 
-  it('corrects a research subagent asked for on the wrong tier', async () => {
+  it('corrects a research subagent asked for on the wrong tier', () => {
     const { kernel } = build({ guards });
-    const result = await kernel.decide(
+    const verdict = kernel.inspect(
       call('Agent', { subagent_type: 'Explore', model: 'opus', prompt: 'x' }),
     );
-    expect((result as { input?: Record<string, unknown> }).input?.['model']).toBe('sonnet');
+    expect(verdict.updatedInput?.['model']).toBe('sonnet');
   });
 
-  it('leaves a correctly tiered call alone', async () => {
-    const { kernel, seen } = build({ guards });
-    await kernel.decide(call('Agent', { subagent_type: 'Plan', model: 'fable', prompt: 'x' }));
-    expect(seen[0]?.call.input['model']).toBe('fable');
+  it('leaves a correctly tiered call alone', () => {
+    const { kernel } = build({ guards });
+    const verdict = kernel.inspect(call('Agent', { subagent_type: 'Plan', model: 'fable', prompt: 'x' }));
+    expect(verdict.updatedInput).toBeUndefined();
   });
 
-  it('treats an unlisted subagent as research', async () => {
-    const { kernel, seen } = build({ guards });
-    await kernel.decide(
+  it('treats an unlisted subagent as research', () => {
+    const { kernel } = build({ guards });
+    const verdict = kernel.inspect(
       call('Agent', { subagent_type: 'something-new', model: 'claude-opus-4-8', prompt: 'x' }),
     );
-    expect(seen[0]?.call.input['model']).toBe('sonnet');
+    expect(verdict.updatedInput?.['model']).toBe('sonnet');
   });
 });
 
 describe('guard orchestration', () => {
-  it('refuses a call a guard denied, without asking the human', async () => {
+  it('refuses a call a guard denied', () => {
     // Pulled from the corpus rather than written inline, so the payload has one
     // home and this file never has to contain the strings the guard bans.
     const banned = AUTHORSHIP_SPECIMENS.find((s) => s.expect === 'deny');
     expect(banned).toBeDefined();
-    const { kernel, seen } = build({ guards: [authorshipGuard] });
-    const result = await kernel.decide(banned!.input);
-    expect(result.allow).toBe(false);
-    expect(seen).toHaveLength(0);
+    const { kernel } = build({ guards: [authorshipGuard] });
+    const verdict = kernel.inspect(banned!.input);
+    expect(verdict.decision).toBe('deny');
   });
 
-  it('carries guard objections to the approval screen instead of refusing', async () => {
+  it('says nothing about a call no guard objected to, leaving the rules in charge', () => {
+    const { kernel } = build({ guards: [authorshipGuard] });
+    const verdict = kernel.inspect(call('Bash', { command: 'ls -la' }));
+    // Never 'allow'. Handing out permission as a side effect of checking
+    // something is how a guard becomes a way around the human.
+    expect(verdict.decision).toBeUndefined();
+  });
+
+  it('escalates an objected-to call so the objection is actually read', () => {
+    const { kernel } = build({ guards: [convergenceGuard] });
+    const verdict = kernel.inspect(call('ExitPlanMode', { plan: NONE_OF_THREE }), 'tu-1');
+    expect(verdict.decision).toBe('ask');
+    expect(verdict.notes.map((n) => n.message).join(' ')).toContain('falsifier');
+  });
+
+  it('carries objections from the inspection through to the approval screen', async () => {
     const { kernel, seen } = build({ guards: [convergenceGuard] });
-    const result = await kernel.decide(call('ExitPlanMode', { plan: NONE_OF_THREE }));
+    kernel.inspect(call('ExitPlanMode', { plan: NONE_OF_THREE }), 'tu-2');
+    const result = await kernel.decide(call('ExitPlanMode', { plan: NONE_OF_THREE }), 'tu-2');
     expect(result.allow).toBe(true);
     expect(seen[0]?.isPlanApproval).toBe(true);
-    expect(seen[0]?.notes.length).toBeGreaterThan(0);
     expect(seen[0]?.notes.map((n) => n.message).join(' ')).toContain('falsifier');
+  });
+
+  it('always asks about a plan, even one it had nothing to say about', () => {
+    const { kernel } = build({ guards: [] });
+    expect(kernel.inspect(call('ExitPlanMode', { plan: 'x' })).decision).toBe('ask');
   });
 });
 
@@ -167,19 +185,21 @@ describe('failure semantics', () => {
     },
   };
 
-  it('switches off a guard that throws and keeps the session alive', async () => {
+  it('switches off a guard that throws and lets the call continue', () => {
     const { kernel, notes } = build({ guards: [exploding] });
-    const result = await kernel.decide(call('Bash', { command: 'ls' }));
-    expect(result.allow).toBe(true);
+    const verdict = kernel.inspect(call('Bash', { command: 'ls' }));
+    // Fails open on a hot path. The session survives, and the fact that it is
+    // no longer being checked is stated rather than swallowed.
+    expect(verdict.decision).toBeUndefined();
     expect(kernel.health.healthy).toBe(false);
     expect(kernel.health.disabled).toContain('exploding');
     expect(notes.some((n) => n.message.includes('UNCHECKED'))).toBe(true);
   });
 
-  it('reports the failure once rather than on every call', async () => {
+  it('reports the failure once rather than on every call', () => {
     const { kernel } = build({ guards: [exploding] });
-    await kernel.decide(call('Bash', { command: 'ls' }));
-    await kernel.decide(call('Bash', { command: 'ls' }));
+    kernel.inspect(call('Bash', { command: 'ls' }));
+    kernel.inspect(call('Bash', { command: 'ls' }));
     expect(kernel.health.failures).toHaveLength(1);
   });
 
