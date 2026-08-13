@@ -17,6 +17,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { scanFiles } from './agnostic.ts';
+import { runLive, runNeutered } from './neuter.ts';
 
 interface Specimen {
   name: string;
@@ -106,8 +107,9 @@ export function runInjections(): InjectionResult[] {
 }
 
 function main(): void {
-  const results = runInjections();
   let failed = 0;
+
+  const results = runInjections();
   console.log('fault injection: contamination detectors\n');
   for (const r of results) {
     const want = r.expected ?? '(silence)';
@@ -119,6 +121,39 @@ function main(): void {
       console.error(`  FAIL  ${r.name}\n        expected ${want}, got ${got}`);
     }
   }
+
+  // Second leg: switch each guard off and require its corpus to notice. A
+  // corpus that stays green against a guard that does nothing is grading
+  // itself, which is the sensor validity problem standing order 6 names.
+  console.log('\nfault injection: guards neutered, corpus must object\n');
+  const live = runLive();
+  const dead = runNeutered();
+  for (let i = 0; i < dead.length; i += 1) {
+    const neutered = dead[i];
+    const working = live[i];
+    if (!neutered || !working) continue;
+    if (working.mismatches.length > 0) {
+      failed += 1;
+      console.error(
+        `  FAIL  ${working.guard}: corpus does not pass against the real guard\n` +
+          working.mismatches.map((m) => `        ${m}`).join('\n'),
+      );
+      continue;
+    }
+    if (neutered.mismatches.length === 0) {
+      failed += 1;
+      console.error(
+        `  FAIL  ${neutered.guard}: corpus still passes with the guard switched off. ` +
+          'It is not testing anything.',
+      );
+      continue;
+    }
+    console.log(
+      `  PASS  ${neutered.guard}: ${neutered.mismatches.length} of ${neutered.total} ` +
+        'specimens object when the guard is switched off',
+    );
+  }
+
   console.log('');
   if (failed > 0) {
     console.error(
@@ -127,7 +162,7 @@ function main(): void {
     );
     process.exit(1);
   }
-  console.log(`all ${results.length} injections behaved as specified`);
+  console.log('every detector fired on its broken specimens and stayed quiet on its controls');
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
