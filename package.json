@@ -1,0 +1,35 @@
+{
+  "name": "flightdeck",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Terminal cockpit for the Claude Agent SDK that enforces the verification doctrine in process.",
+  "bin": {
+    "flightdeck": "./dist/cli.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsx src/cli.tsx",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check:agnostic": "tsx tests/checks/agnostic.ts",
+    "check:faultinject": "tsx tests/checks/fault-inject.ts",
+    "verify": "npm run typecheck && npm run test && npm run check:agnostic && npm run check:faultinject"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.229",
+    "ink": "^7.1.1",
+    "react": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.10"
+  }
+}

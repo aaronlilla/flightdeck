@@ -1,0 +1,43 @@
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    # Both platforms run because bootstrap creates directory junctions on
+    # Windows and symlinks elsewhere, so a green Linux run says nothing about
+    # the path that actually matters on the machine this is used from.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Contamination check
+        run: npm run check:agnostic
+
+      # Runs after the contamination check on purpose. If this step fails, the
+      # step above it proved nothing: a detector that stays silent on a broken
+      # specimen cannot be read as evidence that the repository is clean.
+      - name: Fault injection
+        run: npm run check:faultinject
