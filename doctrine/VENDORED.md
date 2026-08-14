@@ -99,15 +99,60 @@ it into `skills/` without teaching both installers about it first.
   zero executable code (verified file-by-file at vendoring time; the
   upstream repo's one script is a local metadata validator, not skill
   payload).
-- **Local modifications (2026-08-12):** frontmatter `description`
-  collapsed from a multi-line block to a single line, because
-  `tests/lint_skills.py` requires single-line descriptions, fail-closed.
-  Wording unchanged. Upstream `README.md`, `AGENTS.md`,
-  `.claude-plugin/` manifests, `agents/openai.yaml`, and
-  `scripts/validate-package.py` were not vendored (packaging and repo
-  docs, not skill payload — same rule as stop-slop).
+- **Local modifications:** the `LOCAL AMENDMENT v1` block is appended to
+  the end of `SKILL.md` between HTML comment markers. Rules A through F:
+  authorship, mandatory surfaces, exclusions, precedence over
+  `stop-slop`, no fact drift, and composition with `i-have-adhd`.
+  Everything between the frontmatter and the amendment marker is
+  upstream verbatim. The frontmatter `description` is rewritten as well:
+  upstream's is passive ("Use when editing or reviewing text"), and a
+  passive description is why the skill never fires unless it is asked
+  for by name. The replacement names the outward-facing surfaces and the
+  authorship rule so the model reaches for it on its own. `metadata`
+  carries `upstream` and `local_amendment`.
+- **The 2026-08-12 vendoring lost both of those** and nobody noticed
+  until 2026-08-13, because the copy still looked like a humanizer. It
+  was re-cut from raw upstream, so the checkout shipped a skill that
+  would not fire on its own and carried no authorship policy, while
+  orders 13 and 14 named it as the thing enforcing exactly that. Restored
+  2026-08-13 from the working copy on Aaron's machine. Vendor from a
+  machine that has the amendment, never from upstream directly, unless
+  you are re-applying the amendment by hand afterwards.
+- **The copy here is the project-agnostic one.** Rules C and E on Aaron's
+  machine name paths and units belonging to one employer's codebase, and
+  `npm run check:agnostic` rejects those in this repository, correctly:
+  the checkout has to be usable on a machine that has never heard of that
+  project. The two
+  passages are generalized here and say the same thing without the
+  example. A machine is free to carry a project-specific variant, and
+  bootstrap will never overwrite it or reconcile it with this one, so
+  expect `humanizer` to report as kept rather than linked on any machine
+  that has amended it locally. That is the intended end state, not drift
+  waiting to be resolved.
+- **Upstream `README.md`, `AGENTS.md`, `.claude-plugin/` manifests,
+  `agents/openai.yaml` and `scripts/validate-package.py` are not
+  vendored** (packaging and repo docs, not skill payload, same rule as
+  stop-slop). `LICENSE` is.
 - **Precedence:** per CLAUDE.md order 14, `humanizer` outranks
   `stop-slop` where they conflict; both are installed.
+
+## sentry-cli
+
+- **Source:** ships with the Sentry MCP/CLI tooling and was installed on
+  Aaron's machine rather than fetched from a named repository; vendored
+  into the checkout 2026-08-13 from `~/.claude/skills/sentry-cli` so it
+  survives to the next machine. Frontmatter declares `version: 0.42.2`.
+- **License:** UNKNOWN. No LICENSE file upstream or in the vendored
+  tree, and the origin repository is unrecorded. Treat as
+  all-rights-reserved: fine as personal tooling on our own machines,
+  never redistribute or vendor into an employer repo until resolved.
+  Same posture as ui-ux-pro-max.
+- **What it is:** 35 markdown files, one guide plus 34 command
+  references, describing how to drive the `sentry` binary. Zero
+  executable code (verified: no non-markdown file in the tree). It
+  documents commands that talk to Sentry and can spend nothing on its
+  own.
+- **Local modifications:** none. Vendored verbatim.
 
 ## Marketplace plugins — vetting record (not vendored)
 
@@ -143,6 +188,31 @@ executes, record the verdict here.
   not by memo. The update poll is left on (freshness has security value).
 - **Prerequisite:** the design hook needs Node 22+; without it the plugin
   degrades to a one-time notice, never a silent failure.
+
+### Enabled but not yet vetted
+
+`doctrine/settings.portable.json` turns these on and no one has read what
+they execute. The rule at the top of this section applies to each, so
+until an entry exists here they are enabled on trust, which is the state
+this file exists to prevent. Bootstrap only writes the declaration; it
+does not audit anything.
+
+| Plugin | Marketplace |
+|---|---|
+| `superpowers@claude-plugins-official` | `anthropics/claude-plugins-official` |
+| `gsap-skills@gsap-skills` | `greensock/gsap-skills` |
+| `i-have-adhd@i-have-adhd` | `ayghri/i-have-adhd` |
+| `frontend-design@claude-plugins-official` | `anthropics/claude-plugins-official` |
+| `typescript-lsp@claude-plugins-official` | `anthropics/claude-plugins-official` |
+| `csharp-lsp@claude-plugins-official` | `anthropics/claude-plugins-official` |
+
+`superpowers` is the one to read first. It carries the most skills, and
+its `using-superpowers` skill instructs every session to invoke skills
+before answering, so it shapes behavior on turns that have nothing to do
+with it. Note also that the enabled copy comes from Anthropic's official
+marketplace while `superpowers-marketplace` (`obra/superpowers-marketplace`)
+is registered separately; the two can drift, and the version that installs
+is whichever marketplace the plugin name resolves against.
 
 ## Adding a vendored skill
 

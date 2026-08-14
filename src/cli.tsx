@@ -10,7 +10,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import React from 'react';
 
-import { apply, describe, planFor, verify } from './bootstrap/links.ts';
+import { apply, describe, isSettled, planFor, verify } from './bootstrap/links.ts';
+import {
+  applySettings,
+  describeSettings,
+  inspectSettings,
+  settingsPlan,
+} from './bootstrap/settings.ts';
 import { App } from './cockpit/app.tsx';
 import { loadOverlays } from './overlay/overlays.ts';
 
@@ -26,46 +32,62 @@ const HELP = `flightdeck
   flightdeck help            this text
 
 Bootstrap links rather than copies, so editing doctrine in the checkout is live
-everywhere at once and a pull is the whole sync. It refuses to replace a real
-directory unless you pass --force, because that directory is somebody's setup.
+everywhere at once and a pull is the whole sync. It links one skill at a time
+and never overwrites what it finds. Anything this machine already had stays,
+including a skill that shares a name with one in the checkout: that copy is
+there for a reason, and the checkout does not get to guess what it was.
 `;
 
-function bootstrap(force: boolean): number {
-  const reports = apply(planFor(repoRoot), { force });
+function bootstrap(): number {
+  const reports = apply(planFor(repoRoot));
+  const settings = applySettings(settingsPlan(repoRoot));
+
   console.log('bootstrap\n');
   console.log(describe(reports));
-  const bad = reports.filter((r) => r.status !== 'ok');
-  if (bad.length === 0) {
-    console.log('\nlinked. an edit in the checkout is live everywhere.');
-    return 0;
-  }
+  console.log(describeSettings(settings));
+
+  const kept = reports.filter(
+    (r) => r.status === 'machine-only' || r.status === 'machine-differs',
+  );
+  const outstanding = reports.filter((r) => !isSettled(r.status));
+
   console.log('');
-  for (const report of bad) {
-    if (report.status === 'occupied') {
-      console.error(
-        `${report.plan.target} already exists as a real directory. Move it aside, or ` +
-          're-run with --force to replace it.',
-      );
-    } else if (report.status === 'source-missing') {
-      console.error(`${report.plan.source} is missing from the checkout.`);
-    } else {
-      console.error(`${report.plan.target}: ${report.detail}`);
-    }
+  if (kept.length) {
+    console.log(
+      `left ${kept.length} as this machine had them. Bootstrap does not overwrite ` +
+        'what it finds, so anything here that came from somewhere else stays.',
+    );
   }
-  return 1;
+
+  for (const report of outstanding) {
+    console.error(`${report.plan.target}: ${report.detail}`);
+  }
+  if (settings.status === 'unreadable') console.error(settings.detail);
+
+  if (outstanding.length || settings.status === 'unreadable') return 1;
+  console.log('linked. an edit in the checkout is live everywhere.');
+  return 0;
 }
 
 function verifyLinks(): number {
   const reports = verify(planFor(repoRoot));
+  const settings = inspectSettings(settingsPlan(repoRoot));
   console.log('verify\n');
   console.log(describe(reports));
-  const bad = reports.filter((r) => r.status !== 'ok');
+  console.log(describeSettings(settings));
+
+  const bad = reports.filter((r) => !isSettled(r.status));
   console.log('');
-  if (bad.length === 0) {
+  if (bad.length === 0 && settings.status !== 'added') {
     console.log('every link points into the checkout.');
     return 0;
   }
-  console.error(`${bad.length} of ${reports.length} are not wired up. Run: flightdeck bootstrap`);
+  if (bad.length) {
+    console.error(`${bad.length} of ${reports.length} are not wired up. Run: flightdeck bootstrap`);
+  }
+  if (settings.status === 'added') {
+    console.error(`${settings.added.length} plugins are declared but not enabled here.`);
+  }
   return 1;
 }
 
@@ -96,7 +118,7 @@ function main(): void {
     return;
   }
   if (command === 'bootstrap') {
-    process.exitCode = bootstrap(argv.includes('--force'));
+    process.exitCode = bootstrap();
     return;
   }
   if (command === 'verify') {

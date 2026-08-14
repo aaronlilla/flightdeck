@@ -67,20 +67,42 @@ npm install
 npx tsx src/cli.tsx bootstrap
 ```
 
-Bootstrap links rather than copies. It points `~/.claude/skills`,
-`~/.claude/agents`, and `~/.claude/commands` at directories inside the checkout,
-so editing doctrine here is live everywhere at once and a pull is the whole
-sync. Copy drift becomes impossible instead of merely detectable, which is why
-verification shrinks to asking whether the links still point where they should.
+Bootstrap links rather than copies. Each skill, agent, and command in the
+checkout gets its own link under `~/.claude`, so editing doctrine here is live
+everywhere at once and a pull is the whole sync. Copy drift becomes impossible
+instead of merely detectable, which is why verification shrinks to asking
+whether the links still point where they should.
+
+It links one entry at a time and never overwrites what it finds. A machine
+collects skills from plugins, from experiments, and from other people, and the
+checkout has no claim on any of them. Where a name collides and the content
+differs, the machine's copy stands and bootstrap says so and moves on. That is a
+finished state, not a warning to clear.
+
+There is no flag for taking the checkout's version, and that is the point rather
+than an omission. A flag would get used, and the reason a machine's copy differs
+is usually written down nowhere: somebody amended it for a job this checkout has
+never heard of. Anyone who does want the checkout's copy can delete their own
+directory and run bootstrap again, which is a decision made in the open. The
+version of this that owned the whole directory instead of one entry at a time
+would have deleted a machine's skills the first time anyone ran it in earnest.
+
+A skill the machine already has that matches the checkout is linked without
+argument, including when the only difference is CRLF against LF.
 
 Directories are linked with junctions on Windows, which need no administrator
 rights. `CLAUDE.md` is copied and hashed instead, because a file symlink on
 Windows does require elevation and a bootstrap that demands an elevated shell
 does not get run.
 
-Bootstrap refuses to replace a real directory unless you pass `--force`. That
-directory is somebody's existing setup and deleting it silently is the kind of
-help nobody asks for twice.
+Plugins cannot be linked, since the engine owns their cache and installs them
+itself. What travels instead is the declaration: `doctrine/settings.portable.json`
+lists the plugins and marketplaces to enable, and bootstrap merges those entries
+into `~/.claude/settings.json`, adding only what is absent. A plugin the machine
+switched off stays off, and one the machine has that the checkout does not stays
+enabled. The engine fetches anything new on the next launch. Read
+`doctrine/VENDORED.md` before adding a plugin to that file: several of the ones
+listed there have not been audited yet.
 
 Credentials never enter the repository. It carries doctrine, not identity.
 
