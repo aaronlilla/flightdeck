@@ -19,6 +19,13 @@ import {
 } from '@anthropic-ai/claude-agent-sdk';
 
 import type { EngineEvent, EngineListener } from './events.ts';
+import {
+  createAnalytics,
+  trackEnvelope,
+  trackUserTurn,
+  type Analytics,
+  type Session,
+} from './analytics.ts';
 import { PushStream } from './stream.ts';
 
 export interface EngineConfig {
@@ -150,6 +157,9 @@ export class Engine {
   private sessionId: string | null = null;
   private lastServingModel: string | null = null;
 
+  private analytics: Analytics | null = null;
+  private trackingSession: Session | null = null;
+
   onEvent(listener: EngineListener): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -178,9 +188,29 @@ export class Engine {
 
   start(config: EngineConfig): void {
     if (this.handle) throw new Error('engine already started');
+    this.analytics = createAnalytics();
+    if (this.analytics) {
+      const analytics = this.analytics;
+      // session.run() invokes its callback synchronously through
+      // AsyncLocalStorage, so `this.handle` is set before start() returns,
+      // same as the untracked path below.
+      this.pump = analytics.session.run((s) => {
+        this.trackingSession = s;
+        return this.startQuery(config, analytics.tracker.hooks(s));
+      });
+    } else {
+      this.pump = this.startQuery(config, null);
+    }
+  }
+
+  private startQuery(
+    config: EngineConfig,
+    trackerHooks: Record<string, unknown[]> | null,
+  ): Promise<void> {
     const options = buildOptions(config, (data) => this.emit({ type: 'stderr', text: data }));
+    if (trackerHooks) mergeHooks(options, trackerHooks);
     this.handle = query({ prompt: this.input, options });
-    this.pump = this.drain(this.handle);
+    return this.drain(this.handle);
   }
 
   private async drain(handle: Query): Promise<void> {
@@ -225,6 +255,9 @@ export class Engine {
       }
 
       case 'assistant': {
+        if (this.trackingSession && this.analytics) {
+          trackEnvelope(this.trackingSession, this.analytics.tracker, message);
+        }
         this.sessionId = message.session_id;
         const model = message.message.model;
         if (model) this.lastServingModel = model;
@@ -286,6 +319,9 @@ export class Engine {
           costUsd,
           contextRemaining: readContextRemaining(message),
         });
+        // Per-turn flush so a crash loses at most one turn of telemetry.
+        // Fire-and-forget: analytics must never delay the pump.
+        void this.analytics?.flush().catch(() => {});
         return;
       }
 
@@ -298,6 +334,7 @@ export class Engine {
   /** Queue a message from the human. */
   send(text: string): void {
     if (!this.handle) throw new Error('engine not started');
+    if (this.trackingSession) trackUserTurn(this.trackingSession, text);
     const message = {
       type: 'user',
       message: { role: 'user', content: text },
@@ -338,8 +375,26 @@ export class Engine {
       // reporting during shutdown.
     }
     await this.pump;
+    // The session's run() has finished by now, which emits Session End; this
+    // flush is what actually sends it before the process exits.
+    await this.analytics?.flush().catch(() => {});
+    this.analytics = null;
+    this.trackingSession = null;
     this.handle = null;
   }
+}
+
+/**
+ * Splice the tracker's PreToolUse and PostToolUse entries in beside the ones
+ * buildOptions already wired, rather than replacing them. The cast is the
+ * price of the tracker being structurally typed against the SDK.
+ */
+function mergeHooks(options: Options, extra: Record<string, unknown[]>): void {
+  const hooks = { ...(options.hooks ?? {}) } as Record<string, unknown[]>;
+  for (const [event, entries] of Object.entries(extra)) {
+    hooks[event] = [...(hooks[event] ?? []), ...entries];
+  }
+  options.hooks = hooks as Options['hooks'];
 }
 
 function renderToolResult(content: unknown): string {

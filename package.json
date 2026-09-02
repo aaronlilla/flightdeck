@@ -21,6 +21,7 @@
     "verify": "npm run typecheck && npm run test && npm run check:agnostic && npm run check:faultinject"
   },
   "dependencies": {
+    "@amplitude/ai": "^0.16.0",
     "@anthropic-ai/claude-agent-sdk": "^0.3.229",
     "ink": "^7.1.1",
     "react": "^19.0.0"
