@@ -214,6 +214,32 @@ export function buildInboxHook(deps: InboxHookDeps) {
   };
 }
 
+export interface StreamPushEngine {
+  send(text: string): void;
+}
+
+/**
+ * The stream fallback's whole delivery step: fold anything waiting in the run's inbox
+ * into the prompt, push it, and mark those messages read only once the push does not
+ * throw.
+ *
+ * A push that throws (the CLI drops the stream, the process underneath is gone) must not
+ * also lose the message it was carrying: marking read before the push, as this used to,
+ * meant a failed push and a silently dropped message looked identical to a delivered one.
+ */
+export function deliverViaStream(
+  engine: StreamPushEngine, run: string, promptText: string, journal: Journal,
+): string {
+  const pendingMessage = pendingInboxText(run);
+  const text = pendingMessage ? `${pendingMessage.text}\n\n${promptText}` : promptText;
+  engine.send(text);
+  if (pendingMessage) {
+    new RunInbox(run).markRead(pendingMessage.ids);
+    journal.append({ event: 'inbox.delivered', run, actor: 'runner', via: 'stream' });
+  }
+  return text;
+}
+
 /** What is waiting for a run, rendered as the text a stream-delivery push should carry. */
 export function pendingInboxText(run: string): { text: string; ids: string[] } | undefined {
   const inbox = new RunInbox(run);
@@ -287,7 +313,6 @@ export class SdkEngine implements EngineLike {
     const journal = this.journal;
     const inbox = new Inbox(this.deps.inboxDir);
     const gotchas = new Gotchas(this.deps.gotchasDir, this.deps.journalPath);
-    const runInbox = new RunInbox(request.run);
 
     const handlers: ForgeToolHandlers = {
       onDone: (input) => {
@@ -424,16 +449,11 @@ export class SdkEngine implements EngineLike {
         }
       });
 
-      let text = promptText;
       if (this.deliverVia === 'stream') {
-        const pendingMessage = pendingInboxText(request.run);
-        if (pendingMessage) {
-          text = `${pendingMessage.text}\n\n${promptText}`;
-          runInbox.markRead(pendingMessage.ids);
-          journal.append({ event: 'inbox.delivered', run: request.run, actor: 'runner', via: 'stream' });
-        }
+        deliverViaStream(engine, request.run, promptText, journal);
+      } else {
+        engine.send(promptText);
       }
-      engine.send(text);
     });
 
     const turns = await runSegment(request.prompt);

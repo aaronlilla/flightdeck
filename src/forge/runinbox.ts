@@ -118,9 +118,7 @@ export async function injectMessages(
   const body = waiting
     .map((message) => `[${new Date(message.at).toISOString()} from ${message.from}]\n${message.text}`)
     .join('\n\n');
-  inbox.markRead(waiting.map((message) => message.id));
-
-  return {
+  const output: HookOutput = {
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
       additionalContext:
@@ -128,4 +126,9 @@ export async function injectMessages(
         + `change what that call should be.\n\n${body}`,
     },
   };
+  // Marked read only once the return value is fully built, so a throw while building it
+  // (a malformed message, a future field this loop learns to reject) leaves the message
+  // unread rather than losing it silently on the way to a value that was never delivered.
+  inbox.markRead(waiting.map((message) => message.id));
+  return output;
 }

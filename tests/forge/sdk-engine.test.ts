@@ -19,7 +19,8 @@ import { INHERITED, Worker } from '../../src/forge/worker.js';
 import { replay } from '../../src/forge/journal.js';
 import { RunInbox } from '../../src/forge/runinbox.js';
 import { Inbox } from '../../src/forge/inbox.js';
-import { buildCanUseTool, SdkEngine } from '../../src/forge/sdkengine.js';
+import { buildCanUseTool, deliverViaStream, SdkEngine } from '../../src/forge/sdkengine.js';
+import { Journal } from '../../src/forge/journal.js';
 
 let home: string;
 let journalPath: string;
@@ -27,6 +28,12 @@ let journalPath: string;
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'forge-sdkengine-'));
   journalPath = join(home, 'fleet.jsonl');
+  // RunInbox (used directly by several specimens below, and internally by the stream
+  // fallback) is not one of SdkEngineDeps's overridable paths -- it always resolves
+  // through paths.ts's forgeHome(), which falls back to the real machine's home
+  // directory when FORGE_HOME is unset. Without this, every specimen here that touches
+  // a RunInbox writes into this machine's actual ~/.forge/runs rather than a temp dir.
+  process.env['FORGE_HOME'] = home;
 });
 
 interface ScriptedStep {
@@ -361,6 +368,20 @@ describe('the stream fallback delivery', () => {
     expect(new RunInbox('stream-run').unread()).toHaveLength(0);
     const state = replay(journalPath);
     expect(state.events.some((e) => e.event === 'inbox.delivered' && e.via === 'stream')).toBe(true);
+  });
+
+  it('leaves the message unread when the push itself throws', () => {
+    new RunInbox('stream-reject-run').send('rebase before you push', 'console');
+    const journal = new Journal(journalPath);
+    const throwingEngine = { send: () => { throw new Error('stream is gone'); } };
+
+    expect(() => deliverViaStream(throwingEngine, 'stream-reject-run', 'do the goal', journal))
+      .toThrow('stream is gone');
+
+    journal.close();
+    expect(new RunInbox('stream-reject-run').unread()).toHaveLength(1);
+    const state = replay(journalPath);
+    expect(state.events.some((e) => e.event === 'inbox.delivered')).toBe(false);
   });
 });
 
