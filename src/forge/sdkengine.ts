@@ -20,6 +20,7 @@ import { Engine, buildForgeMcpServer, type EngineConfig, type ForgeToolHandlers,
 import { driftBlocker, readMergeable, type Mergeable } from './drift.js';
 import { run as execRun } from './exec.js';
 import { Gotchas } from './gotcha.js';
+import { redactFields } from './redact.js';
 import { Inbox } from './inbox.js';
 import { Journal } from './journal.js';
 import { fleetConfigDir } from './paths.js';
@@ -456,7 +457,7 @@ export class SdkEngine implements EngineLike {
         gotchas.file({ run: request.run, ...input });
       },
       onReport: (input) => {
-        journal.append({ event: 'forge.report', run: request.run, actor: 'worker', ...input });
+        journal.append({ event: 'forge.report', run: request.run, actor: 'worker', ...redactFields(input) });
       },
     };
 

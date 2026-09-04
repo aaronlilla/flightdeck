@@ -789,6 +789,20 @@ describe('journaling a tool call as it happens', () => {
   });
 });
 
+describe('B.3.9: a report row redacts a secret before it is journaled', () => {
+  it('redactFields scrubs a token-shaped run out of every string field, leaving non-strings alone', async () => {
+    const { redactFields } = await import('../../src/forge/redact.js');
+    const secret = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    const cleaned = redactFields({
+      outcome: 'done', done: `pushed with token ${secret}`, cost: 3.5,
+    });
+    expect(cleaned['done']).not.toContain(secret);
+    expect(cleaned['done']).toContain('[REDACTED]');
+    expect(cleaned['cost']).toBe(3.5);
+  });
+
+});
+
 describe('B.3.9: drift raised after a push', () => {
   it('a conflicting mergeable state after git push raises a blocker', async () => {
     const { fn } = fakeQuery([[{

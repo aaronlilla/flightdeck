@@ -15,6 +15,8 @@ import { execFileSync, spawn } from 'node:child_process';
 import { createWriteStream, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { redact } from './redact.js';
+
 export interface Budget {
   /** Seconds of total run time. */
   wall: number;
@@ -212,6 +214,9 @@ export async function run(request: RunRequest): Promise<RunResult> {
       log?.end();
 
       const durationMs = Date.now() - startedAt;
+      // Redacted on the whole accumulated buffer, never per chunk: a token split across
+      // two stdout reads would survive a redaction applied to each chunk on its own.
+      const tail = redact(buffer);
       if (killed && dumpPath) {
         writeFileSync(dumpPath, [
           `owner: ${request.owner}`,
@@ -221,7 +226,7 @@ export async function run(request: RunRequest): Promise<RunResult> {
           `ran for: ${Math.round(durationMs / 1000)}s`,
           '',
           '--- last output ---',
-          buffer,
+          tail,
         ].join('\n'), 'utf8');
       }
 
@@ -233,7 +238,7 @@ export async function run(request: RunRequest): Promise<RunResult> {
         ...(killed ? { killed } : {}),
         ...(logPath ? { logPath } : {}),
         ...(killed && dumpPath ? { dumpPath } : {}),
-        tail: buffer,
+        tail,
         startedAt,
         durationMs,
         ok: !killed && returncode === 0,

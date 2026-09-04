@@ -21,6 +21,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { join } from 'node:path';
 
 import { appendOnce } from './journal.js';
+import { redact } from './redact.js';
 
 export interface GotchaInput {
   run: string;
@@ -149,18 +150,22 @@ export class Gotchas {
       }
     }
 
-    const id = gotchaId(input);
+    // Redacted before anything is written: a gotcha's error is kept verbatim except for
+    // whatever in it looks like a secret, which is the one thing paraphrasing would be
+    // right to remove.
+    const clean: GotchaInput = { ...input, error: redact(input.error), where: redact(input.where) };
+    const id = gotchaId(clean);
     const existing = this.get(id);
-    const { lane, why } = classifyGotcha(input);
+    const { lane, why } = classifyGotcha(clean);
 
     const gotcha: Gotcha = existing
       ? {
         ...existing,
         hits: existing.hits + 1,
-        runs: existing.runs.includes(input.run) ? existing.runs : [...existing.runs, input.run],
+        runs: existing.runs.includes(clean.run) ? existing.runs : [...existing.runs, clean.run],
       }
       : {
-        ...input, id, at: Date.now(), hits: 1, runs: [input.run], lane, why,
+        ...clean, id, at: Date.now(), hits: 1, runs: [clean.run], lane, why,
         disposition: 'carry-on',
       };
 
@@ -168,11 +173,11 @@ export class Gotchas {
     writeFileSync(this.pathFor(id), JSON.stringify(gotcha, null, 2), 'utf8');
     appendOnce(this.journalPath, {
       event: 'gotcha',
-      run: input.run,
+      run: clean.run,
       actor: 'worker',
       gotcha: id,
       lane: gotcha.lane,
-      where: input.where,
+      where: clean.where,
     });
     return gotcha;
   }

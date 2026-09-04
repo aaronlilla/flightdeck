@@ -38,6 +38,19 @@ const TRAP = {
   prevention: 'add [CmdletBinding()] so an unknown flag is an error rather than $args',
 };
 
+describe('B.3.9: a gotcha redacts a secret before it is ever written', () => {
+  it('scrubs a token-shaped run out of the error before writing the file or the journal', () => {
+    const secret = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    const filed = gotchas.file({ ...TRAP, error: `auth failed: ${secret}` });
+
+    expect(filed.error).not.toContain(secret);
+    const onDisk = JSON.parse(readFileSync(join(dir, 'gotchas', `${filed.id}.json`), 'utf8')) as { error: string };
+    expect(onDisk.error).not.toContain(secret);
+    const state = replay(journalPath);
+    expect(JSON.stringify(state.events)).not.toContain(secret);
+  });
+});
+
 describe('filing a gotcha', () => {
   it('records it and hands back an id', () => {
     const filed = gotchas.file(TRAP);
