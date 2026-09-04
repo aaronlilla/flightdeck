@@ -117,11 +117,25 @@ export function aliasOf(modelId: string, path?: string): string {
   return base;
 }
 
+/** Whether `alias` names a tier this policy actually prices. */
+export function isKnownAlias(alias: string, path?: string): boolean {
+  return alias in loadPolicy(path).prices;
+}
+
+/**
+ * The price for a tier alias.
+ *
+ * An alias this policy has never priced used to fall back to Opus rates, which is a
+ * guess wearing the policy's authority: a fallback reroute to a model nobody priced would
+ * bill as if it were the most expensive tier rather than the unknown cost it actually is.
+ * Zero here on purpose -- `journal.ts`'s replay is what records that this happened, via
+ * `isKnownAlias`, rather than silently paying for it.
+ */
 export function priceFor(alias: string, path?: string): Price {
   const prices = loadPolicy(path).prices;
-  const found = prices[alias] ?? prices['opus'];
-  if (!found) throw new Error(`no prices in ${policyPath()}`);
-  return found;
+  const found = prices[alias];
+  if (found) return found;
+  return { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 };
 }
 
 export function fallbackFor(alias: string, path?: string): string[] {

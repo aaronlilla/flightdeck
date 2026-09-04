@@ -15,7 +15,7 @@
 import { appendFileSync, closeSync, existsSync, fsyncSync, openSync, readFileSync, writeSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 
-import { aliasOf, priceFor } from './policy.js';
+import { aliasOf, isKnownAlias, priceFor } from './policy.js';
 
 export interface Usage {
   input: number;
@@ -76,6 +76,9 @@ export interface FleetState {
   handoffs: number;
   /** Lines that would not parse. Reported, never silently dropped. */
   torn: number;
+  /** Model ids usage was reported under that this policy has no price for. Billed
+   *  nothing, named here rather than folded silently into burn at a guessed rate. */
+  unknownModels: string[];
 }
 
 /**
@@ -170,7 +173,9 @@ function runOf(state: FleetState, name: string): RunState {
  * restart honest rather than a fresh guess.
  */
 export function replay(path: string): FleetState {
-  const state: FleetState = { events: [], runs: {}, burn: {}, handoffs: 0, torn: 0 };
+  const state: FleetState = {
+    events: [], runs: {}, burn: {}, handoffs: 0, torn: 0, unknownModels: [],
+  };
   if (!existsSync(path)) return state;
 
   for (const line of readFileSync(path, 'utf8').split('\n')) {
@@ -186,9 +191,16 @@ export function replay(path: string): FleetState {
 
     if (row.usage) {
       const alias = aliasOf(row.model ?? '');
-      const spent = costOf(row.usage, alias);
-      state.burn[alias] = (state.burn[alias] ?? 0) + spent;
-      if (row.run) runOf(state, row.run).costUsd += spent;
+      if (!isKnownAlias(alias)) {
+        // Billed nothing rather than at whatever priceFor's fallback used to guess: the
+        // model itself is named here so a person can add it to model-policy.json instead
+        // of the fallback rate quietly becoming the answer for every reroute like it.
+        if (!state.unknownModels.includes(row.model ?? alias)) state.unknownModels.push(row.model ?? alias);
+      } else {
+        const spent = costOf(row.usage, alias);
+        state.burn[alias] = (state.burn[alias] ?? 0) + spent;
+        if (row.run) runOf(state, row.run).costUsd += spent;
+      }
     }
     if (!row.run) continue;
     const run = runOf(state, row.run);

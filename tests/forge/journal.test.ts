@@ -111,6 +111,22 @@ describe('replay', () => {
     );
   });
 
+  it('B.3.9: an unknown model id bills nothing and is named rather than priced as Opus', () => {
+    write(
+      { event: 'run.started', run: 'alpha', actor: 'runner' },
+      {
+        event: 'usage', run: 'alpha', actor: 'worker', model: 'claude-mystery-9',
+        usage: { input: 100, cacheRead: 90_000, cacheCreation: 1_000, output: 500 },
+      },
+    );
+    const state = replay(path);
+    // The falsifier this closes: a fallback that still bills Opus rates would put a
+    // nonzero amount somewhere in burn for this usage row.
+    expect(Object.values(state.burn).every((amount) => amount === 0)).toBe(true);
+    expect(state.runs['alpha']?.costUsd).toBe(0);
+    expect(state.unknownModels).toContain('claude-mystery-9');
+  });
+
   it('records a handoff and the successor it names', () => {
     write(
       { event: 'run.started', run: 'alpha', actor: 'runner' },
