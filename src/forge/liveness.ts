@@ -179,9 +179,24 @@ export interface LivenessJournal {
 }
 
 /**
+ * The minimal actuator (B.3.10). Parks the run and flags its lane, and does nothing else:
+ * no process is ever signalled from here. Optional, because `assess` and
+ * `LivenessSupervisor` still have to work with nothing wired up at all -- the 12:22
+ * decision that this "only watches" governs whatever this actuator is not given, not the
+ * fact that it exists.
+ */
+export interface WardenActuator {
+  /** Shared with the SdkEngine that owns this run's live session: setting an entry here
+   *  is what makes B.3.1's PreToolUse guard deny that run's next tool call. */
+  parked: Map<string, string>;
+  /** Flags the run's lane the same way the breaker does, for a board to show. */
+  lanes: { put(slug: string, fields: Record<string, unknown>): unknown };
+}
+
+/**
  * Ticks `assess` against a live snapshot, journals each new trip once and each clear once,
- * and publishes both. Parks, kills and nudges nothing, per the 12:22 decision: this only
- * watches.
+ * and publishes both. Beyond that it parks the run and flags its lane (B.3.10) when an
+ * actuator is wired up; it kills and nudges nothing, per the 12:22 decision.
  */
 export class LivenessSupervisor {
   private readonly open = new Map<string, StuckSignal>();
@@ -191,7 +206,22 @@ export class LivenessSupervisor {
     private readonly journal: LivenessJournal,
     private readonly publish: (event: Record<string, unknown>) => void,
     private readonly thresholds: LivenessThresholds = DEFAULT_THRESHOLDS,
+    private readonly actuator?: WardenActuator,
   ) {}
+
+  /** A run-keyed trip parked and flagged, once, the moment it is first seen.
+   *  login-stuck, stale-session and fleet-unknown name a process or a probe rather than a
+   *  run, and have nothing to park. */
+  private actOnStuck(trip: StuckSignal, id: string): void {
+    const runSignals: LivenessSignal[] = ['idle', 'tool-budget', 'context'];
+    if (!this.actuator || !runSignals.includes(trip.signal)) return;
+    const parkKey = `warden:${id}`;
+    this.actuator.parked.set(trip.key, parkKey);
+    this.actuator.lanes.put(trip.key, { needs_aaron: trip.hint });
+    this.journal.append({
+      event: 'warden.parked', run: trip.key, actor: 'warden', key: parkKey, evidence: trip,
+    });
+  }
 
   evaluate(): StuckSignal[] {
     const input = this.snapshot();
@@ -205,6 +235,7 @@ export class LivenessSupervisor {
         const event = { event: 'liveness.stuck', ...trip };
         this.journal.append(event);
         this.publish(event);
+        this.actOnStuck(trip, id);
       }
       // `since` marks when the condition first tripped, not when it was last observed.
       // Every signal but fleet-unknown derives it from a stable reader field (lastEventAt,
