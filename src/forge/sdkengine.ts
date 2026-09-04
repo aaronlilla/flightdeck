@@ -62,11 +62,17 @@ export interface WorkerOptions {
 /**
  * The tools a worker uses to talk back to the supervisor.
  *
- * Four, and each exists because the alternative is text parsing: a handoff, a completion
+ * Five, matching buildForgeMcpServer's own registration exactly: a handoff, a completion
  * claim the supervisor then verifies by running commands, a question that parks the run,
- * and a trap filed the moment it is hit.
+ * a trap filed the moment it is hit, and the end-of-goal report. This list had drifted to
+ * four (missing forge_report) while nothing in production read it at all: SdkEngine.run()
+ * always registered the real handlers straight from buildForgeMcpServer, and toEngineConfig
+ * (which does read this list, for its own name-only mcpServers field) never ran in
+ * production either. toEngineConfig is now called from SdkEngine.run() for the rest of its
+ * mapping (env, maxTurns, effort, resume), which is what makes it worth keeping this list
+ * correct rather than merely documented.
  */
-export const WORKER_TOOLS = ['forge_handoff', 'forge_done', 'forge_ask', 'forge_gotcha'];
+export const WORKER_TOOLS = ['forge_handoff', 'forge_done', 'forge_ask', 'forge_gotcha', 'forge_report'];
 
 /**
  * The two tool-call names the run loop itself has to recognise, qualified the way the SDK
@@ -500,14 +506,12 @@ export class SdkEngine implements EngineLike {
     // watches this across the whole session, not per turn or per segment.
     let committed = false;
 
+    // toEngineConfig carries the mapping every specimen in sdkengine.test.ts already
+    // pins (env, maxTurns, effort, resume); the three fields below are the ones a real
+    // run needs beyond that base, which toEngineConfig alone cannot build because they
+    // close over this request's own journal, inbox and park state.
     const engineConfig: EngineConfig = {
-      cwd: workerOptions.cwd,
-      model: workerOptions.model,
-      permissionMode: workerOptions.permissionMode,
-      settingSources: workerOptions.settingSources,
-      env: workerOptions.env,
-      maxTurns: workerOptions.maxTurns,
-      ...(workerOptions.effort ? { effort: workerOptions.effort as never } : {}),
+      ...toEngineConfig(workerOptions),
       mcpServers: { forge: buildForgeMcpServer(handlers) },
       canUseTool: buildCanUseTool({ run: request.run, goal, inbox, journal, parked: this.parked }) as never,
       onToolCall: buildPreToolUseHook({
@@ -515,7 +519,6 @@ export class SdkEngine implements EngineLike {
         ceilingHit: () => ceilingHit,
         onDelivered: (ids, text) => { pendingAck = { ids, text }; },
       }),
-      ...(workerOptions.resume ? { resume: workerOptions.resume } : {}),
     };
 
     const engine = new Engine(this.deps.queryFn);
