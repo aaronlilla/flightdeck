@@ -118,6 +118,26 @@ describe('budgets that run out', () => {
   }, 20_000);
 });
 
+describe('B.3.9: killTree is latched, not fired every tick', () => {
+  it('calls killFn twice (one attempt, one retry), never once per 250ms tick', async () => {
+    const calls: number[] = [];
+    const donePromise = run({
+      argv: ['node', '-e', 'setInterval(() => {}, 1000)'],
+      cwd: dir, owner: 'r1', wall: 1, idle: 60,
+      killFn: (pid) => { calls.push(pid); },
+    });
+    // The fake killFn never actually ends the process, so the budget stays tripped and
+    // the tick keeps firing well past the point a real kill would have landed -- which is
+    // exactly what proves the latch: without it, calls would keep growing here.
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    expect(calls).toHaveLength(2);
+    expect(new Set(calls).size).toBe(1);
+
+    killTree(calls[0]!);
+    await donePromise;
+  }, 20_000);
+});
+
 describe('killing the tree, not the process', () => {
   it('takes the children with it', async () => {
     // The grandchild is detached on purpose, and that detail is the whole specimen.

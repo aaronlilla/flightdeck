@@ -116,6 +116,8 @@ export interface RunRequest {
   env?: NodeJS.ProcessEnv;
   /** Where the log and dump go. Omitted means memory only. */
   logDir?: string;
+  /** Overrides `killTree`. A specimen counts calls instead of touching a real process. */
+  killFn?: (pid: number) => void;
 }
 
 export interface RunResult {
@@ -188,11 +190,19 @@ export async function run(request: RunRequest): Promise<RunResult> {
 
     // One timer for both budgets. A separate idle timer reset on every chunk would fire
     // thousands of times a second on a chatty build.
+    // Latched, not fired every tick: a process that ignores the first SIGKILL is not
+    // going to die from getting it forty times, and re-issuing it every 250ms this way
+    // spun on a process taskkill had already asked to end. One attempt, one retry.
+    let killAttempts = 0;
+    const killFn = request.killFn ?? killTree;
     const tick = setInterval(() => {
       const now = Date.now();
       if (now - startedAt > budget.wall * 1000) killed = 'wall';
       else if (now - lastActivity > budget.idle * 1000) killed = 'idle';
-      if (killed && child.pid) killTree(child.pid);
+      if (killed && child.pid && killAttempts < 2) {
+        killFn(child.pid);
+        killAttempts += 1;
+      }
     }, 250);
 
     const finish = (returncode: number | null) => {
