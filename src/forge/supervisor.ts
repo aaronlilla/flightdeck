@@ -11,7 +11,7 @@
  * race, and on 2026-09-03 a wake and a recycle landed twelve seconds apart and the goal
  * came out of it holding no session at all.
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { Journal } from './journal.js';
@@ -199,19 +199,52 @@ export class Breaker {
 /**
  * The whole fleet, and the one control that has to work when nothing else does.
  *
- * `forge stop --all` ends all spend. That is its only job, and everything about it is
- * shaped by the fact that it will be reached for when something is going wrong: it takes
- * no arguments it could get wrong, it is safe to run twice, and it never fails because a
- * lane was already finished.
+ * `forge stop --all` marks every running lane parked and blocks every new launch behind
+ * the kill switch below. It does not reach a live session: a worker mid-turn keeps
+ * running until that turn ends, because nothing here contacts the process. Everything
+ * about it is shaped by the fact that it will be reached for when something is going
+ * wrong: it takes no arguments it could get wrong, it is safe to run twice, and it never
+ * fails because a lane was already finished.
  *
  * Parking rather than killing, because the work has to survive. Every run is asked for a
  * handoff packet as it stops, so `forge up` continues rather than starting over. A stop
  * that lost an afternoon of work would be a stop nobody dares press.
  */
+export interface KillSwitchState {
+  engaged: boolean;
+  reason?: string;
+  at?: number;
+}
+
+/** Blocks `forge run` until cleared. Read fresh every time: nothing caches it. */
+export function readKillSwitch(path: string): KillSwitchState {
+  if (!existsSync(path)) return { engaged: false };
+  try {
+    const record = JSON.parse(readFileSync(path, 'utf8')) as { reason: string; at: number };
+    return { engaged: true, reason: record.reason, at: record.at };
+  } catch {
+    // An unreadable kill switch file still means someone tried to stop everything; failing
+    // open here would be the same silent-empty-fleet mistake liveness's sensor made.
+    return { engaged: true, reason: 'the kill switch file exists but could not be read' };
+  }
+}
+
+export function engageKillSwitch(path: string, reason: string): void {
+  writeFileSync(path, JSON.stringify({ reason, at: Date.now() }, null, 2), 'utf8');
+}
+
+export function clearKillSwitch(path: string): void {
+  if (existsSync(path)) rmSync(path);
+}
+
 export class Fleet {
   private readonly journal: Journal;
 
-  constructor(private readonly lanes: Lanes, journalPath: string) {
+  constructor(
+    private readonly lanes: Lanes,
+    journalPath: string,
+    private readonly killSwitchFile?: string,
+  ) {
     this.journal = new Journal(journalPath);
   }
 
@@ -221,13 +254,16 @@ export class Fleet {
   }
 
   /**
-   * Park every running lane and say what was stopped.
+   * Park every running lane, engage the kill switch, and say what was stopped.
    *
-   * Returns the lanes it acted on, which is empty when there was nothing to do. An empty
-   * list is the honest answer to a stop on an idle fleet; raising there would make the
-   * control feel broken at the moment it is most needed.
+   * The kill switch engages every time this runs, whether or not a lane was running: a
+   * stop on an idle fleet still means "block whatever launches next." Returns the lanes it
+   * acted on, which is empty when there was nothing to park. An empty list is the honest
+   * answer to a stop on an idle fleet; raising there would make the control feel broken at
+   * the moment it is most needed.
    */
   stopAll(reason: string): LaneRecord[] {
+    if (this.killSwitchFile) engageKillSwitch(this.killSwitchFile, reason);
     const stopped: LaneRecord[] = [];
     try {
       for (const lane of this.running()) {

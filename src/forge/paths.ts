@@ -20,6 +20,11 @@ export function journalPath(): string {
   return process.env['FORGE_JOURNAL'] ?? join(forgeHome(), 'fleet.jsonl');
 }
 
+/** Where `forge stop --all`'s kill switch is recorded: present means new launches refuse. */
+export function killSwitchPath(): string {
+  return join(forgeHome(), 'kill-switch.json');
+}
+
 export function lanesDir(): string {
   return join(forgeHome(), 'lanes');
 }

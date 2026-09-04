@@ -43,6 +43,8 @@ export interface LaunchRequest {
   condition: string;
   /** True when `claude login` is running on the account this worker would use. */
   loginRunning?: boolean;
+  /** Set by `forge stop --all`; cleared by `forge clear --all`. */
+  killSwitch?: { engaged: boolean; reason?: string };
 }
 
 export interface LaunchVerdict {
@@ -72,6 +74,11 @@ export function checkLaunch(request: LaunchRequest): LaunchVerdict {
   if (request.loginRunning) {
     refusals.push('a claude login is in flight on this account; starting now races the '
       + 'credential this worker is about to use');
+  }
+
+  if (request.killSwitch?.engaged) {
+    refusals.push(`forge stop --all engaged the kill switch (${request.killSwitch.reason ?? 'no reason given'}); `
+      + 'run forge clear --all before starting anything new');
   }
 
   if (WS_MONITOR.test(request.brief ?? '')) {

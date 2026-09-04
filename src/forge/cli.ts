@@ -25,12 +25,13 @@ import { replay, Journal } from './journal.js';
 import { checkLaunch, launchEnv, loginInFlight, pinnedRuntime, runtimeVersion } from './launcher.js';
 import { assess, LivenessSupervisor } from './liveness.js';
 import {
-  ensureHome, fleetConfigDirChoice, forgeHome, gotchasDir, inboxDir, journalPath, lanesDir,
+  ensureHome, fleetConfigDirChoice, forgeHome, gotchasDir, inboxDir, journalPath, killSwitchPath,
+  lanesDir,
 } from './paths.js';
 import { RunInbox } from './runinbox.js';
 import { SdkEngine } from './sdkengine.js';
 import { FORGE_PORT, ForgeServer } from './server.js';
-import { Breaker, Fleet, Lanes } from './supervisor.js';
+import { Breaker, clearKillSwitch, Fleet, Lanes, readKillSwitch } from './supervisor.js';
 import { Worker, type EngineLike } from './worker.js';
 
 export interface CliResult {
@@ -180,6 +181,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         brief,
         condition: condition || 'Work the brief to completion.',
         loginRunning: loginInFlight(),
+        killSwitch: readKillSwitch(killSwitchPath()),
       });
       if (!verdict.ok) {
         return { code: 1, lines: ['refusing to start:', ...verdict.refusals.map((r) => `  ${r}`)] };
@@ -277,12 +279,17 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         return { code: 2, lines: ['forge stop --all is the only form; it parks everything'] };
       }
       const reason = rest.filter((word) => word !== '--all').join(' ') || 'stopped by hand';
-      const stopped = new Fleet(lanes, journalPath()).stopAll(reason);
-      if (!stopped.length) return { code: 0, lines: ['nothing was running'] };
+      const stopped = new Fleet(lanes, journalPath(), killSwitchPath()).stopAll(reason);
+      const killSwitchLine = 'the kill switch is set: no new launch starts until '
+        + 'forge clear --all';
+      if (!stopped.length) {
+        return { code: 0, lines: ['nothing was running', killSwitchLine] };
+      }
       return {
         code: 0,
         lines: [
-          `parked ${stopped.length} run(s) with a handoff; all spend has stopped`,
+          `parked ${stopped.length} run(s) with a handoff; ${killSwitchLine}; `
+            + 'a live session finishes its current turn and was not contacted',
           ...stopped.map((lane) => `  ${lane.slug}`),
         ],
       };
@@ -300,7 +307,11 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
 
     case 'clear': {
       const slug = rest[0];
-      if (!slug) return { code: 2, lines: ['forge clear needs a lane'] };
+      if (!slug) return { code: 2, lines: ['forge clear needs a lane or --all'] };
+      if (slug === '--all') {
+        clearKillSwitch(killSwitchPath());
+        return { code: 0, lines: ['kill switch cleared; forge run may start again'] };
+      }
       new Breaker(lanes).clear(slug);
       return { code: 0, lines: [`${slug} may be relaunched again`] };
     }

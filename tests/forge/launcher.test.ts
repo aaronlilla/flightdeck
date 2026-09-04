@@ -89,6 +89,19 @@ describe('a login in flight', () => {
   });
 });
 
+describe('the kill switch', () => {
+  it('refuses to start while it is engaged, naming the reason', () => {
+    const verdict = check({ killSwitch: { engaged: true, reason: 'stopped by hand' } });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.refusals.join(' ')).toMatch(/kill switch/i);
+    expect(verdict.refusals.join(' ')).toContain('stopped by hand');
+  });
+
+  it('starts once it is cleared', () => {
+    expect(check({ killSwitch: { engaged: false } }).ok).toBe(true);
+  });
+});
+
 describe('websocket monitors', () => {
   it('refuses a brief that tells a worker to open one', () => {
     const verdict = check({

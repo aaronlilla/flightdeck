@@ -34,7 +34,7 @@ const lanes = () => new Lanes(join(home, 'lanes'));
 const journal = () => join(home, 'fleet.jsonl');
 
 describe('forge stop --all', () => {
-  it('parks every run and says so', async () => {
+  it('parks every run and names the count, without claiming a live session was stopped', async () => {
     lanes().put('alpha', { column: 'c', session_id: 's1', started: Date.now() });
     lanes().put('beta', { column: 'd', session_id: 's2', started: Date.now() });
 
@@ -42,7 +42,11 @@ describe('forge stop --all', () => {
 
     expect(result.code).toBe(0);
     expect(result.lines[0]).toMatch(/parked 2 run\(s\)/);
-    expect(result.lines.join(' ')).toMatch(/all spend has stopped/);
+    // The falsifier this closes: no wording may claim spend already stopped while a
+    // session could still be mid-turn.
+    expect(result.lines.join(' ')).not.toMatch(/all spend has stopped/);
+    expect(result.lines.join(' ')).toMatch(/not contacted/);
+    expect(result.lines.join(' ')).toMatch(/kill switch/i);
     expect(lanes().get('alpha')?.verdict).toBe('parked');
   });
 
@@ -51,13 +55,13 @@ describe('forge stop --all', () => {
     await forge(['stop', '--all']);
     const again = await forge(['stop', '--all']);
     expect(again.code).toBe(0);
-    expect(again.lines).toEqual(['nothing was running']);
+    expect(again.lines[0]).toBe('nothing was running');
   });
 
   it('says plainly when there was nothing to stop', async () => {
     const result = await forge(['stop', '--all']);
     expect(result.code).toBe(0);
-    expect(result.lines).toEqual(['nothing was running']);
+    expect(result.lines[0]).toBe('nothing was running');
   });
 
   it('refuses a bare stop, so nothing is half-stopped by a typo', async () => {
@@ -239,6 +243,37 @@ describe('forge run', () => {
     await forge(['clear', 'ok']);
     const result = await forge(['run', brief], { engine: zeroTurnEngine });
     expect(result.code).toBe(0);
+  });
+
+  it('refuses once forge stop --all has engaged the kill switch', async () => {
+    const brief = join(home, 'ok.md');
+    writeFileSync(brief, '# Goal\n\nDo the thing.\n', 'utf8');
+
+    await forge(['stop', '--all']);
+    const result = await forge(['run', brief]);
+
+    expect(result.code).toBe(1);
+    expect(result.lines.join(' ')).toMatch(/kill switch/i);
+  });
+
+  it('starts again once forge clear --all has cleared the kill switch', async () => {
+    const brief = join(home, 'ok.md');
+    writeFileSync(brief, '# Goal\n\nDo the thing.\n', 'utf8');
+    const started: SessionRequest[] = [];
+    const engine = {
+      started,
+      async run(config: SessionRequest) {
+        started.push(config);
+        return { sessionId: 'fake-session', turns: [{ text: 'done', context: 10, done: true }] };
+      },
+    };
+
+    await forge(['stop', '--all']);
+    await forge(['clear', '--all']);
+    const result = await forge(['run', brief], { engine });
+
+    expect(result.code).toBe(0);
+    expect(started).toHaveLength(1);
   });
 });
 

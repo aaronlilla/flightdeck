@@ -20,10 +20,13 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
   Breaker,
+  clearKillSwitch,
+  engageKillSwitch,
   Fleet,
   LANE_FIELDS,
   Lanes,
   laneRecord,
+  readKillSwitch,
 } from '../../src/forge/supervisor.js';
 import { replay } from '../../src/forge/journal.js';
 
@@ -231,5 +234,34 @@ describe('the kill switch', () => {
     lanes.put('flappy', { column: 'c', session_id: 's1', needs_aaron: 'three bad starts' });
     const fleet = new Fleet(lanes, join(dir, 'fleet.jsonl'));
     expect(fleet.stopAll('kill switch').map((row) => row.slug)).toEqual(['flappy']);
+  });
+});
+
+describe('the kill switch file', () => {
+  it('reads as not engaged when no file has ever been written', () => {
+    expect(readKillSwitch(join(dir, 'kill-switch.json'))).toEqual({ engaged: false });
+  });
+
+  it('engages with the reason and a timestamp', () => {
+    const path = join(dir, 'kill-switch.json');
+    engageKillSwitch(path, 'stopped by hand');
+    const state = readKillSwitch(path);
+    expect(state.engaged).toBe(true);
+    expect(state.reason).toBe('stopped by hand');
+    expect(state.at).toBeGreaterThan(0);
+  });
+
+  it('clears back to not engaged', () => {
+    const path = join(dir, 'kill-switch.json');
+    engageKillSwitch(path, 'stopped by hand');
+    clearKillSwitch(path);
+    expect(readKillSwitch(path)).toEqual({ engaged: false });
+  });
+
+  it('Fleet.stopAll engages it, whether or not any lane was running', () => {
+    const path = join(dir, 'kill-switch.json');
+    const fleet = new Fleet(lanes, join(dir, 'fleet.jsonl'), path);
+    fleet.stopAll('stopped by hand');
+    expect(readKillSwitch(path).engaged).toBe(true);
   });
 });
