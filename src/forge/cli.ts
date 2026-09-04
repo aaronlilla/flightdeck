@@ -15,14 +15,16 @@
  * it. A stop that lost an afternoon is a stop nobody dares press.
  */
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
-import { watchedProcesses } from './fleetwatch.js';
+import { runCutover } from './cutover.js';
+import { readProcessList, watchedProcesses } from './fleetwatch.js';
 import { Gotchas } from './gotcha.js';
 import { Inbox } from './inbox.js';
-import { replay } from './journal.js';
+import { replay, Journal } from './journal.js';
 import { checkLaunch, launchEnv, loginInFlight, pinnedRuntime, runtimeVersion } from './launcher.js';
-import { LivenessSupervisor } from './liveness.js';
-import { ensureHome, gotchasDir, inboxDir, journalPath, lanesDir } from './paths.js';
+import { assess, LivenessSupervisor } from './liveness.js';
+import { ensureHome, forgeHome, gotchasDir, inboxDir, journalPath, lanesDir } from './paths.js';
 import { RunInbox } from './runinbox.js';
 import { SdkEngine } from './sdkengine.js';
 import { FORGE_PORT, ForgeServer } from './server.js';
@@ -83,7 +85,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
   switch (command) {
     case 'status': {
       const state = replay(journalPath());
-      const stuckRows = (await import('./liveness.js')).assess({
+      const stuckRows = assess({
         now: Date.now(),
         runs: Object.values(state.runs).map((run) => ({
           run: run.run, className: 'implement', lastEventAt: run.lastEventAt,
@@ -118,7 +120,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         stuck: () => liveness.stuck(),
         fleet: () => watchedProcesses().map((proc) => ({ ...proc })),
       });
-      const livenessJournal = new (await import('./journal.js')).Journal(journalPath());
+      const livenessJournal = new Journal(journalPath());
       const liveness = new LivenessSupervisor(
         () => ({
           now: Date.now(),
@@ -257,12 +259,39 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       return { code: 0, lines: [`${slug} may be relaunched again`] };
     }
 
+    case 'cutover': {
+      const fromIndex = rest.indexOf('--from');
+      const from = fromIndex >= 0 ? rest[fromIndex + 1] : process.env['FORGE_COORDINATION_DIR'];
+      if (!from) {
+        return {
+          code: 2,
+          lines: ['forge cutover needs --from DIR, or FORGE_COORDINATION_DIR set in the environment'],
+        };
+      }
+      const dateStr = new Date().toISOString().slice(0, 10);
+      const retiredDir = join(forgeHome(), 'retired', dateStr);
+      const journal = new Journal(journalPath());
+      let result: ReturnType<typeof runCutover>;
+      try {
+        result = runCutover({ from, retiredDir, processList: readProcessList() }, journal);
+      } finally {
+        journal.close();
+      }
+      if (!result.ok) return { code: 1, lines: [`refusing to cut over: ${result.refusal}`] };
+      return {
+        code: 0,
+        lines: result.moved.length
+          ? [`retired ${result.moved.length} file(s) to ${retiredDir}`, ...result.moved.map((f) => `  ${f}`)]
+          : ['nothing to retire'],
+      };
+    }
+
     default:
       return {
         code: 2,
         lines: [
           'forge up | status | run BRIEF | send RUN TEXT | answer KEY ANSWER | stop --all '
-            + '| gotchas | clear LANE',
+            + '| gotchas | clear LANE | cutover [--from DIR]',
           `the server listens on ${FORGE_PORT}`,
         ],
       };

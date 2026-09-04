@@ -205,6 +205,26 @@ describe('forge send', () => {
   });
 });
 
+describe('forge cutover', () => {
+  it('retires the four spawn files given --from', async () => {
+    const { mkdirSync, writeFileSync } = await import('node:fs');
+    const src = join(home, 'coordination');
+    mkdirSync(src, { recursive: true });
+    const { CUTOVER_FILES } = await import('../../src/forge/cutover.js');
+    for (const name of CUTOVER_FILES) writeFileSync(join(src, name), '# stub\n', 'utf8');
+
+    const result = await forge(['cutover', '--from', src]);
+    expect(result.code).toBe(0);
+    expect(result.lines[0]).toMatch(/retired 4 file\(s\)/);
+  });
+
+  it('needs a source directory', async () => {
+    delete process.env['FORGE_COORDINATION_DIR'];
+    const result = await forge(['cutover']);
+    expect(result.code).toBe(2);
+  });
+});
+
 describe('an unknown command', () => {
   it('lists what there is', async () => {
     const result = await forge(['wat']);
