@@ -1,0 +1,71 @@
+{
+  "_comment": [
+    "One model policy for the whole fleet. Before this file there were four, and they",
+    "disagreed: CLAUDE.md order 17, hooks/model_gate.py's IMPL_MODEL, go.py's model_for()",
+    "and the Forge Phase 0 note. On 2026-09-03 that disagreement cost roughly $6,250 of",
+    "list-equivalent in four hours, because the one that won in practice -- go.py -- moved",
+    "a goal to Opus after two resumes, and a resume is what a bloated context causes.",
+    "So: a class decides the model, a brief may name a harder class, and nothing escalates",
+    "a tier by failing. Cost is calls x context x tier, and this file bounds all three."
+  ],
+  "version": 1,
+  "escalation": "never-by-retry",
+  "fallback": {
+    "fable": ["opus", "sonnet", "haiku"],
+    "opus": ["sonnet", "haiku"],
+    "sonnet": ["haiku"],
+    "haiku": []
+  },
+  "aliases": {
+    "fable": "claude-fable-5",
+    "opus": "claude-opus-5",
+    "sonnet": "claude-sonnet-5",
+    "haiku": "claude-haiku-4-5-20251001"
+  },
+  "interactive": {
+    "warnContext": 150000,
+    "model": "opus"
+  },
+  "_prices_comment": [
+    "US dollars per million tokens, list price. These are for the notice a person reads",
+    "and for the cost replay, not for billing: the fleet runs on a subscription, so the",
+    "number is a list-equivalent that makes one window comparable with another.",
+    "cacheRead is the field that matters -- 85% of the 2026-09-03 spend was cache re-read,",
+    "charged again on every turn, which is why context is the lever and the tier is the",
+    "multiplier on it."
+  ],
+  "prices": {
+    "fable": {"input": 15.0, "cacheRead": 1.5, "cacheWrite": 18.75, "output": 75.0},
+    "opus": {"input": 15.0, "cacheRead": 1.5, "cacheWrite": 18.75, "output": 75.0},
+    "sonnet": {"input": 3.0, "cacheRead": 0.3, "cacheWrite": 3.75, "output": 15.0},
+    "haiku": {"input": 1.0, "cacheRead": 0.1, "cacheWrite": 1.25, "output": 5.0}
+  },
+  "classes": {
+    "triage": {"model": "sonnet", "effort": "low", "maxContext": 60000, "maxTurns": 20},
+    "plan": {"model": "fable", "effort": "high", "maxContext": 200000, "maxTurns": 60},
+    "master": {"model": "fable", "effort": "medium", "maxContext": 30000, "maxTurns": 40},
+    "implement": {"model": "sonnet", "effort": "medium", "maxContext": 150000, "maxTurns": 120},
+    "implement-hard": {"model": "opus", "effort": "high", "maxContext": 150000, "maxTurns": 120},
+    "verify": {"model": "sonnet", "effort": "medium", "maxContext": 120000, "maxTurns": 40},
+    "audit-lens": {"model": "sonnet", "effort": "medium", "maxContext": 120000, "maxTurns": 40},
+    "audit-judge": {"model": "opus", "effort": "high", "maxContext": 150000, "maxTurns": 30},
+    "research": {"model": "sonnet", "effort": "medium", "maxContext": 150000, "maxTurns": 40},
+    "evaluate": {"model": "haiku", "effort": "low", "maxContext": 30000, "maxTurns": 6},
+    "sweep": {"model": "sonnet", "effort": "low", "maxContext": 80000, "maxTurns": 20}
+  },
+  "brief_tiers": {
+    "opus": "implement-hard",
+    "hard": "implement-hard",
+    "sonnet": "implement",
+    "default": "implement"
+  },
+  "subagents": {
+    "default": "research",
+    "Plan": "plan",
+    "Explore": "research",
+    "general-purpose": "research",
+    "claude-code-guide": "research",
+    "statusline-setup": "research"
+  },
+  "fanout_classes": ["research", "audit-lens", "triage", "sweep", "evaluate"]
+}

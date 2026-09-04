@@ -7,9 +7,12 @@
  * the control calls that make phase routing possible in the first place.
  */
 import {
+  createSdkMcpServer,
   listSessions,
   query,
+  tool,
   type CanUseTool,
+  type McpSdkServerConfigWithInstance,
   type Options,
   type PermissionMode,
   type Query,
@@ -17,6 +20,7 @@ import {
   type SDKUserMessage,
   type SettingSource,
 } from '@anthropic-ai/claude-agent-sdk';
+import { z } from 'zod';
 
 import type { EngineEvent, EngineListener } from './events.ts';
 import { PushStream } from './stream.ts';
@@ -49,6 +53,20 @@ export interface EngineConfig {
   settingSources?: SettingSource[];
   /** Extra agent definitions merged in from overlays. */
   agents?: Options['agents'];
+  /**
+   * The environment the session's subprocess runs with.
+   *
+   * Passed through for the Forge runner, which strips nine inherited CLAUDE names and
+   * ANTHROPIC_API_KEY before spawning a worker. Inheriting them means the child saves no
+   * transcript, and a worker with no transcript is one nothing can read afterwards.
+   */
+  env?: NodeJS.ProcessEnv;
+  /** A hard turn cap, taken from the run's class rather than asked for in the prompt. */
+  maxTurns?: number;
+  /** Tool servers the session may reach. The runner registers exactly one. */
+  mcpServers?: Options['mcpServers'];
+  /** When set, the only tools the session may use. */
+  allowedTools?: string[];
 }
 
 /** One earlier session, reduced to what a picker needs to show. */
@@ -84,7 +102,12 @@ export interface PreToolVerdict {
   decision: 'deny' | 'ask' | undefined;
   reason?: string;
   updatedInput?: Record<string, unknown>;
+  /** Text delivered to the model alongside this tool call, regardless of the decision. */
+  additionalContext?: string;
 }
+
+/** The SDK's own session-starting function, matched so a specimen can inject a fake. */
+export type QueryFn = typeof query;
 
 /**
  * Translate flightdeck's configuration into the SDK's options.
@@ -107,9 +130,19 @@ export function buildOptions(
     stderr: onStderr,
   };
   if (config.model) options.model = config.model;
-  if (config.permissionMode) options.permissionMode = config.permissionMode;
+  if (config.permissionMode) {
+    options.permissionMode = config.permissionMode;
+    // The SDK requires this alongside bypassPermissions and denies every tool call
+    // silently if it is missing; derived here so nothing that asks for bypassPermissions
+    // can forget to also ask for this.
+    if (config.permissionMode === 'bypassPermissions') options.allowDangerouslySkipPermissions = true;
+  }
   if (config.resume) options.resume = config.resume;
   if (config.agents) options.agents = config.agents;
+  if (config.env) options.env = config.env;
+  if (config.maxTurns !== undefined) options.maxTurns = config.maxTurns;
+  if (config.mcpServers) options.mcpServers = config.mcpServers;
+  if (config.allowedTools) options.allowedTools = config.allowedTools;
 
   const inspect = config.onToolCall;
   if (inspect) {
@@ -128,6 +161,7 @@ export function buildOptions(
               if (verdict.decision) specific['permissionDecision'] = verdict.decision;
               if (verdict.reason) specific['permissionDecisionReason'] = verdict.reason;
               if (verdict.updatedInput) specific['updatedInput'] = verdict.updatedInput;
+              if (verdict.additionalContext) specific['additionalContext'] = verdict.additionalContext;
               return {
                 continue: verdict.decision !== 'deny',
                 hookSpecificOutput: specific,
@@ -149,6 +183,15 @@ export class Engine {
 
   private sessionId: string | null = null;
   private lastServingModel: string | null = null;
+  private readonly queryFn: QueryFn;
+
+  /**
+   * `queryFn` defaults to the SDK's own `query`. A specimen passes a fake generator here
+   * instead, so the whole engine can be driven end to end without a model call.
+   */
+  constructor(queryFn: QueryFn = query) {
+    this.queryFn = queryFn;
+  }
 
   onEvent(listener: EngineListener): () => void {
     this.listeners.add(listener);
@@ -179,7 +222,7 @@ export class Engine {
   start(config: EngineConfig): void {
     if (this.handle) throw new Error('engine already started');
     const options = buildOptions(config, (data) => this.emit({ type: 'stderr', text: data }));
-    this.handle = query({ prompt: this.input, options });
+    this.handle = this.queryFn({ prompt: this.input, options });
     this.pump = this.drain(this.handle);
   }
 
@@ -228,6 +271,19 @@ export class Engine {
         this.sessionId = message.session_id;
         const model = message.message.model;
         if (model) this.lastServingModel = model;
+        const usage = message.message.usage;
+        if (usage) {
+          this.emit({
+            type: 'usage',
+            model: model ?? '',
+            input: usage.input_tokens ?? 0,
+            cacheRead: usage.cache_read_input_tokens ?? 0,
+            cacheCreation: typeof usage.cache_creation_input_tokens === 'number'
+              ? usage.cache_creation_input_tokens
+              : 0,
+            output: usage.output_tokens ?? 0,
+          });
+        }
         for (const block of message.message.content) {
           if (block.type === 'text' && block.text) {
             this.emit({
@@ -354,6 +410,82 @@ function renderToolResult(content: unknown): string {
       return '';
     })
     .join('');
+}
+
+/** What a worker hands back through each of its five tools. */
+export interface ForgeToolHandlers {
+  onDone: (input: { evidence: string }) => void | Promise<void>;
+  onHandoff: (input: { packet: string }) => void | Promise<void>;
+  onAsk: (input: {
+    question: string;
+    options?: string[];
+    kind?: 'question' | 'blocker';
+  }) => void | Promise<void>;
+  onGotcha: (input: {
+    what: string;
+    where: string;
+    error: string;
+    prevention: string;
+  }) => void | Promise<void>;
+  onReport: (input: {
+    outcome: string;
+    done: string;
+    leftOff: string;
+    issues?: string;
+    blockers?: string;
+    unverified?: string;
+    cost?: string;
+  }) => void | Promise<void>;
+}
+
+const ACK = { content: [{ type: 'text' as const, text: 'recorded' }] };
+
+/**
+ * The forge tool server: `forge_done`, `forge_handoff`, `forge_ask`, `forge_gotcha`,
+ * `forge_report`, the only channel a worker has back to the supervisor.
+ *
+ * A worker cannot block on a terminal prompt, so `forge_ask` is a tool rather than a
+ * question: it writes to the inbox and returns immediately, and the run parks on the
+ * `canUseTool` deny that follows it, not on this call.
+ */
+export function buildForgeMcpServer(handlers: ForgeToolHandlers): McpSdkServerConfigWithInstance {
+  return createSdkMcpServer({
+    name: 'forge',
+    tools: [
+      tool('forge_done', 'Mark this run done, with the evidence that proves it.',
+        { evidence: z.string() },
+        async (args) => { await handlers.onDone(args); return ACK; }),
+      tool('forge_handoff', 'Write the handoff packet for the successor session.',
+        { packet: z.string() },
+        async (args) => { await handlers.onHandoff(args); return ACK; }),
+      tool('forge_ask', 'Ask a question that parks this run for a person to answer.',
+        {
+          question: z.string(),
+          options: z.array(z.string()).optional(),
+          kind: z.enum(['question', 'blocker']).optional(),
+        },
+        async (args) => { await handlers.onAsk(args); return ACK; }),
+      tool('forge_gotcha', 'File a trap the moment it is hit, and keep working.',
+        {
+          what: z.string(),
+          where: z.string(),
+          error: z.string(),
+          prevention: z.string(),
+        },
+        async (args) => { await handlers.onGotcha(args); return ACK; }),
+      tool('forge_report', 'File the run report at the end of the goal.',
+        {
+          outcome: z.string(),
+          done: z.string(),
+          leftOff: z.string(),
+          issues: z.string().optional(),
+          blockers: z.string().optional(),
+          unverified: z.string().optional(),
+          cost: z.string().optional(),
+        },
+        async (args) => { await handlers.onReport(args); return ACK; }),
+    ],
+  });
 }
 
 /**

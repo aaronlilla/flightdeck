@@ -23,3 +23,25 @@ for (const name of [
 ]) {
   delete process.env[name];
 }
+
+/**
+ * The SDK's own `query` throws in every test in this suite.
+ *
+ * Nothing under test is allowed to reach the model: every session specimen injects its
+ * own fake in place of `query`, and this makes that a property the whole suite enforces
+ * rather than a habit each file has to remember. A test that forgot to inject a fake, or
+ * a production path that fell back to the real export, fails here instead of spending
+ * money the next time it runs against a live login.
+ */
+import { vi } from 'vitest';
+
+vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@anthropic-ai/claude-agent-sdk')>();
+  return {
+    ...actual,
+    query: () => {
+      throw new Error('the real SDK query() was called from inside the test suite; '
+        + 'every session specimen must inject a fake queryFn instead');
+    },
+  };
+});

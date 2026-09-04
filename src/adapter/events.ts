@@ -29,6 +29,14 @@ export type EngineEvent =
       /** Tokens the turn left unused, when the SDK reported them. */
       contextRemaining: number | null;
     }
+  | {
+      type: 'usage';
+      model: string;
+      input: number;
+      cacheRead: number;
+      cacheCreation: number;
+      output: number;
+    }
   | { type: 'compact-boundary'; trigger: string }
   | { type: 'engine-error'; message: string; fatal: boolean }
   | { type: 'stderr'; text: string }
