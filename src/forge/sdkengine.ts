@@ -17,6 +17,8 @@
  * exactly how a session reached 543,000 tokens with nothing noticing.
  */
 import { Engine, buildForgeMcpServer, type EngineConfig, type ForgeToolHandlers, type PreToolVerdict, type QueryFn } from '../adapter/engine.js';
+import { driftBlocker, readMergeable, type Mergeable } from './drift.js';
+import { run as execRun } from './exec.js';
 import { Gotchas } from './gotcha.js';
 import { Inbox } from './inbox.js';
 import { Journal } from './journal.js';
@@ -364,6 +366,17 @@ export interface SdkEngineDeps {
    * `SdkEngine` per `forge run` process, so nothing outside a specimen needs to share it.
    */
   parked?: Map<string, string>;
+  /**
+   * Reads whether the branch in `cwd` still applies to its base, after a push or a PR
+   * open (B.3.9). Defaults to running `gh pr view --json mergeable` for real; a specimen
+   * overrides this rather than the exec call underneath it.
+   */
+  checkDrift?: (cwd: string) => Promise<Mergeable>;
+}
+
+async function ghDriftCheck(cwd: string): Promise<Mergeable> {
+  const result = await execRun({ argv: ['gh', 'pr', 'view', '--json', 'mergeable'], cwd, owner: 'drift', cls: 'script' });
+  return readMergeable(result.tail);
 }
 
 /**
@@ -492,6 +505,8 @@ export class SdkEngine implements EngineLike {
     // id it answers, not the tool's name, so the name has to be remembered from the
     // matching tool-use to journal a tool.end a reader can act on.
     const toolNameById = new Map<string, string>();
+    const bashCommandById = new Map<string, string>();
+    const checkDrift = this.deps.checkDrift ?? ghDriftCheck;
 
     const runSegment = (promptText: string): Promise<FakeTurn[]> => new Promise((resolve, reject) => {
       const turns: FakeTurn[] = [];
@@ -550,9 +565,10 @@ export class SdkEngine implements EngineLike {
           case 'tool-use':
             toolNameById.set(event.id, event.name);
             journal.append({ event: 'tool.start', run: request.run, actor: 'worker', tool: event.name });
-            if (event.name === 'Bash' && typeof event.input['command'] === 'string'
-              && /\bgit\s+commit\b/.test(event.input['command'])) {
-              committed = true;
+            if (event.name === 'Bash' && typeof event.input['command'] === 'string') {
+              const command = event.input['command'];
+              bashCommandById.set(event.id, command);
+              if (/\bgit\s+commit\b/.test(command)) committed = true;
             }
             // The SDK's usage field is required on every real assistant message, so
             // `pending` should already exist; a defensive turn is opened here rather than
@@ -570,7 +586,7 @@ export class SdkEngine implements EngineLike {
               if (typeof packet === 'string') pending.text += packet;
             }
             break;
-          case 'tool-result':
+          case 'tool-result': {
             journal.append({
               event: 'tool.end', run: request.run, actor: 'worker',
               tool: toolNameById.get(event.id) ?? '', isError: event.isError,
@@ -581,7 +597,27 @@ export class SdkEngine implements EngineLike {
             if (toolNameById.get(event.id) === FORGE_DONE_TOOL && !event.isError && pending) {
               pending.done = true;
             }
+            const bashCommand = bashCommandById.get(event.id);
+            if (bashCommand && !event.isError && /\bgit\s+push\b|\bgh\s+pr\s+create\b/.test(bashCommand)) {
+              // Fire-and-forget: drift is checked after the push or PR open resolves, but
+              // nothing in the turn stream waits on it. A conflict raises a blocker in the
+              // inbox for a person, the same channel every other wall in this run uses.
+              void checkDrift(request.cwd).then((state) => {
+                const blocker = driftBlocker(request.run, state);
+                if (!blocker) return;
+                inbox.raise(blocker);
+                journal.append({
+                  event: 'run.blocked', run: request.run, actor: 'runner', reason: blocker.question,
+                });
+              }).catch((error) => {
+                journal.append({
+                  event: 'engine.error', run: request.run, actor: 'runner',
+                  message: `drift check failed: ${(error as Error).message}`, fatal: false,
+                });
+              });
+            }
             break;
+          }
           case 'turn-complete':
             flush();
             off();

@@ -788,3 +788,44 @@ describe('journaling a tool call as it happens', () => {
     expect(state.runs['tool-run']?.currentTool?.name).toBe('Bash');
   });
 });
+
+describe('B.3.9: drift raised after a push', () => {
+  it('a conflicting mergeable state after git push raises a blocker', async () => {
+    const { fn } = fakeQuery([[{
+      text: 'pushed', usage: { input: 10, cacheRead: 0, cacheCreation: 0, output: 1 },
+      toolUse: { name: 'Bash', input: { command: 'git push' } },
+    }]]);
+    const engine = new SdkEngine({
+      journalPath, inboxDir: join(home, 'inbox-drift'), gotchasDir: join(home, 'gotchas-drift'),
+      queryFn: fn, checkDrift: async () => 'CONFLICTING',
+    });
+    await engine.run({ ...REQUEST, run: 'drift-run', env: { PATH: '/usr/bin' } });
+    // The check is fire-and-forget from the tool-result handler; give its microtask a
+    // turn to settle before reading what it did.
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const inbox = new Inbox(join(home, 'inbox-drift'));
+    expect(inbox.open()).toHaveLength(1);
+    expect(inbox.open()[0]?.question).toMatch(/conflicts/);
+    const state = replay(journalPath);
+    expect(state.events.some((e) => e.event === 'run.blocked' && e.run === 'drift-run')).toBe(true);
+  });
+
+  it('the falsifier: the check is called but a MERGEABLE result raises nothing', async () => {
+    const { fn } = fakeQuery([[{
+      text: 'pushed', usage: { input: 10, cacheRead: 0, cacheCreation: 0, output: 1 },
+      toolUse: { name: 'Bash', input: { command: 'git push origin feature/x' } },
+    }]]);
+    let called = false;
+    const engine = new SdkEngine({
+      journalPath, inboxDir: join(home, 'inbox-drift2'), gotchasDir: join(home, 'gotchas-drift2'),
+      queryFn: fn, checkDrift: async () => { called = true; return 'MERGEABLE'; },
+    });
+    await engine.run({ ...REQUEST, run: 'drift-run-2', env: { PATH: '/usr/bin' } });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(called).toBe(true);
+    const inbox = new Inbox(join(home, 'inbox-drift2'));
+    expect(inbox.open()).toHaveLength(0);
+  });
+});
