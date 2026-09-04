@@ -83,7 +83,7 @@ describe('filing a gotcha', () => {
 
 describe('what a gotcha is allowed to change', () => {
   it('sends a vault note, a skill or a brief to the fix lane', () => {
-    expect(classifyGotcha({ ...TRAP, where: 'boltbetz-docs/70-ops/ops-mobile-release.md' }).lane)
+    expect(classifyGotcha({ ...TRAP, where: 'docs/70-ops/ops-mobile-release.md' }).lane)
       .toBe('fix');
   });
 
@@ -110,7 +110,7 @@ describe('what a gotcha is allowed to change', () => {
   it('never sends a guard to the fix lane however the path is written', () => {
     for (const path of [
       'hooks/authorship_guard.py',
-      'C:/dev/dev-harness/hooks/gitflow_guard.py',
+      '/absolute/checkout/hooks/gitflow_guard.py',
       'dev-harness\\hooks\\coordination_guard.py',
       'src/forge/model-policy.json',
     ]) {
