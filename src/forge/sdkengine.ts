@@ -255,8 +255,18 @@ export class SdkEngine implements EngineLike {
 
   private readonly deliverVia: 'hook' | 'stream';
 
+  /**
+   * One handle for the life of this engine, not one per `run()` call.
+   *
+   * A chain calls `run()` once per successor session; a fresh `Journal` on each call
+   * would leave every earlier one open, and `journal.ts`'s own contract is that a leaked
+   * handle keeps the file locked against a reader in the same process on Windows.
+   */
+  private readonly journal: Journal;
+
   constructor(private readonly deps: SdkEngineDeps) {
     this.deliverVia = deps.deliverVia ?? 'hook';
+    this.journal = new Journal(deps.journalPath);
   }
 
   async run(request: SessionRequest): Promise<SessionResult> {
@@ -271,7 +281,7 @@ export class SdkEngine implements EngineLike {
       ...(request.resume ? { resume: request.resume } : {}),
     });
 
-    const journal = new Journal(this.deps.journalPath);
+    const journal = this.journal;
     const inbox = new Inbox(this.deps.inboxDir);
     const gotchas = new Gotchas(this.deps.gotchasDir, this.deps.journalPath);
     const runInbox = new RunInbox(request.run);
@@ -422,5 +432,10 @@ export class SdkEngine implements EngineLike {
       turns,
       send: (prompt: string) => runSegment(prompt),
     };
+  }
+
+  /** Releases the journal handle. Call once the whole chain, not one session, is done. */
+  close(): void {
+    this.journal.close();
   }
 }

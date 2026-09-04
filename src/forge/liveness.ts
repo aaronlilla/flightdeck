@@ -109,8 +109,16 @@ export function assess(input: LivenessInput, thresholds: LivenessThresholds = DE
       }
     }
 
-    const ceiling = contextFor(run.className);
-    if (run.context >= ceiling) {
+    // classFor throws for a className the loaded policy no longer declares (a stale
+    // journal line, a renamed class). This watches; it must never be the thing that
+    // brings a long-lived forge up process down over one bad record.
+    let ceiling: number | undefined;
+    try {
+      ceiling = contextFor(run.className);
+    } catch {
+      ceiling = undefined;
+    }
+    if (ceiling !== undefined && run.context >= ceiling) {
       trips.push({
         key: run.run, signal: 'context', threshold: ceiling, observed: run.context,
         since: run.lastEventAt,

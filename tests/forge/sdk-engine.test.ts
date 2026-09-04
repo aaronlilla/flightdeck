@@ -209,6 +209,28 @@ describe('the ceiling, driven by real usage events', () => {
   });
 });
 
+describe('the journal handle across a chain', () => {
+  it('reuses one handle across every session in a chain and closes cleanly', async () => {
+    const { fn } = fakeQuery([
+      [{ text: 'working', usage: { input: 65_000, cacheRead: 0, cacheCreation: 0, output: 10 } }],
+      [{ text: 'done', usage: { input: 100, cacheRead: 0, cacheCreation: 0, output: 10 },
+        toolUse: { name: 'mcp__forge__forge_done', input: { evidence: 'shipped' } } }],
+    ]);
+    const engine = engineFor(fn);
+    const worker = new Worker({
+      run: 'chain-run', brief: '# Goal\n\nDo the thing.\n', briefPath: join(home, 'brief.md'),
+      cwd: home, journalPath, engine: engine as never, maxContext: 60_000,
+    });
+    await worker.run();
+    expect(() => engine.close()).not.toThrow();
+
+    const state = replay(journalPath);
+    expect(state.torn).toBe(0);
+    expect(state.events.some((e) => e.run === 'chain-run')).toBe(true);
+    expect(state.events.some((e) => e.run === 'chain-run-2')).toBe(true);
+  });
+});
+
 describe('the PreToolUse inbox hook, wired into a real run', () => {
   it('delivers a queued message verbatim on the first tool call and marks it read', async () => {
     // The fake `query` never calls a hook — only the real CLI subprocess does that. So

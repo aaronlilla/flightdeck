@@ -218,7 +218,12 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         ...(maxContext !== undefined ? { maxContext } : {}),
         ...(maxTurns !== undefined ? { maxTurns } : {}),
       });
-      const result = await worker.run();
+      let result: Awaited<ReturnType<Worker['run']>>;
+      try {
+        result = await worker.run();
+      } finally {
+        if (engine instanceof SdkEngine) engine.close();
+      }
       const started = result.sessions[0];
       // A session that opened and closed without a single turn is a failed start, not a
       // worker being quiet; three of those in fifteen minutes is the exact 2026-09-03

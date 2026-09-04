@@ -78,6 +78,16 @@ describe('the context signal', () => {
     expect(trip).toBeTruthy();
     expect(trip?.observed).toBe(ceiling);
   });
+
+  it('watches rather than crashing on a className the loaded policy no longer declares', () => {
+    expect(() => assess(baseInput({
+      runs: [{ run: 'r1', className: 'no-such-class-ever', lastEventAt: NOW, context: 999_999 }],
+    }))).not.toThrow();
+    const trips = assess(baseInput({
+      runs: [{ run: 'r1', className: 'no-such-class-ever', lastEventAt: NOW, context: 999_999 }],
+    }));
+    expect(trips.some((t) => t.signal === 'context')).toBe(false);
+  });
 });
 
 describe('the stale-session signal', () => {

@@ -132,6 +132,11 @@ export class ForgeServer {
       const lastEventAt = run?.lastEventAt || mtime;
       return {
         ...lane,
+        // The journal is updated on every turn; the lane file only at the end of a
+        // session chain. Once a run has taken at least one turn, its journaled context is
+        // the fresher number; before that, the run's own default (0) would incorrectly
+        // overwrite whatever the lane file still remembers from an earlier session.
+        context: run && run.turns > 0 ? run.context : lane.context,
         usd_per_hour: usdPerHour(lane),
         verified_at: mtime,
         last_event_age_s: Math.max(0, Math.round((now - lastEventAt) / 1000)),
