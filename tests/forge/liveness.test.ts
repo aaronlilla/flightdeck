@@ -167,6 +167,44 @@ describe('the supervisor', () => {
     expect(published.filter((e) => e['event'] === 'liveness.stuck')).toHaveLength(1);
   });
 
+  it('keeps a stuck trip\'s original since across ticks rather than resetting it to now', () => {
+    let now = NOW;
+    const lastEventAt = NOW - DEFAULT_THRESHOLDS.idleMs;
+    const supervisor = new LivenessSupervisor(
+      () => baseInput({
+        now,
+        runs: [{ run: 'r1', className: 'implement', lastEventAt, context: 0 }],
+      }),
+      { append: () => {} },
+      () => {},
+    );
+
+    supervisor.evaluate();
+    const firstSince = supervisor.stuck().find((t) => t.signal === 'idle')?.since;
+    now += 60_000;
+    supervisor.evaluate();
+    const secondSince = supervisor.stuck().find((t) => t.signal === 'idle')?.since;
+
+    expect(secondSince).toBe(firstSince);
+  });
+
+  it('a failed fleet probe keeps its since from when it first tripped, not the latest tick', () => {
+    let now = NOW;
+    const supervisor = new LivenessSupervisor(
+      () => baseInput({ now, fleet: { ok: false, reason: 'powershell timed out' } }),
+      { append: () => {} },
+      () => {},
+    );
+
+    supervisor.evaluate();
+    const firstSince = supervisor.stuck().find((t) => t.signal === 'fleet-unknown')?.since;
+    now += 60_000;
+    supervisor.evaluate();
+    const secondSince = supervisor.stuck().find((t) => t.signal === 'fleet-unknown')?.since;
+
+    expect(secondSince).toBe(firstSince);
+  });
+
   it('journals a clear exactly once when the condition goes away', () => {
     const journaled: Record<string, unknown>[] = [];
     let stuck = true;

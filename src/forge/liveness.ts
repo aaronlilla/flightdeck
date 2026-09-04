@@ -200,12 +200,19 @@ export class LivenessSupervisor {
 
     for (const trip of trips) {
       const id = `${trip.key}:${trip.signal}`;
-      if (!this.open.has(id)) {
+      const existing = this.open.get(id);
+      if (!existing) {
         const event = { event: 'liveness.stuck', ...trip };
         this.journal.append(event);
         this.publish(event);
       }
-      this.open.set(id, trip);
+      // `since` marks when the condition first tripped, not when it was last observed.
+      // Every signal but fleet-unknown derives it from a stable reader field (lastEventAt,
+      // credentialsMtime, sessionFileMtime) that only changes when the underlying thing
+      // does, so this is a no-op for them; fleet-unknown has no such field to read (a
+      // probe result carries no history of its own) and would otherwise report a fresh
+      // "since now" on every 30-second tick for as long as the probe kept failing.
+      this.open.set(id, existing ? { ...trip, since: existing.since } : trip);
     }
 
     for (const [id, trip] of [...this.open.entries()]) {

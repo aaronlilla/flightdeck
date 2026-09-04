@@ -36,8 +36,13 @@ export interface ForgeServerOptions {
   host?: string;
   /** What liveness currently has open. Defaults to reporting nothing stuck. */
   stuck?: () => StuckSignal[];
-  /** Every process liveness is watching, with its age and any trip. Defaults to empty. */
-  fleet?: () => Array<Record<string, unknown>>;
+  /**
+   * Every process liveness is watching, with its age and any trip. Defaults to empty.
+   * `{ ok: false, reason }` when the process probe behind it failed -- kept as its own
+   * shape rather than folded into the array, so a reader can tell "the probe is broken"
+   * from "here is a process record" instead of field-sniffing an entry with no `pid`.
+   */
+  fleet?: () => Array<Record<string, unknown>> | { ok: false; reason: string };
 }
 
 export class ForgeServer {
@@ -68,7 +73,7 @@ export class ForgeServer {
 
   private readonly stuckFn: () => StuckSignal[];
 
-  private readonly fleetFn: () => Array<Record<string, unknown>>;
+  private readonly fleetFn: () => Array<Record<string, unknown>> | { ok: false; reason: string };
 
   constructor(options: ForgeServerOptions) {
     this.lanes = options.lanes;

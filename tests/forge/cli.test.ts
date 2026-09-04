@@ -55,13 +55,19 @@ describe('forge stop --all', () => {
     await forge(['stop', '--all']);
     const again = await forge(['stop', '--all']);
     expect(again.code).toBe(0);
-    expect(again.lines[0]).toBe('nothing was running');
+    expect(again.lines).toEqual([
+      'nothing was running',
+      'the kill switch is set: no new launch starts until forge clear --all',
+    ]);
   });
 
   it('says plainly when there was nothing to stop', async () => {
     const result = await forge(['stop', '--all']);
     expect(result.code).toBe(0);
-    expect(result.lines[0]).toBe('nothing was running');
+    expect(result.lines).toEqual([
+      'nothing was running',
+      'the kill switch is set: no new launch starts until forge clear --all',
+    ]);
   });
 
   it('refuses a bare stop, so nothing is half-stopped by a typo', async () => {

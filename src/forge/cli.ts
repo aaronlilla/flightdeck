@@ -140,7 +140,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         stuck: () => liveness.stuck(),
         fleet: () => {
           const read = watchedProcesses();
-          return Array.isArray(read) ? read.map((proc) => ({ ...proc })) : [{ ...read }];
+          return Array.isArray(read) ? read.map((proc) => ({ ...proc })) : read;
         },
       });
       const livenessJournal = new Journal(journalPath());

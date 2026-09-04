@@ -104,6 +104,25 @@ describe('GET /state', () => {
     expect(state['fleet']).toHaveProperty('value');
   });
 
+  it('carries a failed fleet probe as its own shape, not folded into the array', async () => {
+    const failingServer = new ForgeServer({
+      lanes: new Lanes(join(dir, 'lanes')),
+      inbox: new Inbox(join(dir, 'inbox')),
+      journalPath: join(dir, 'fleet.jsonl'),
+      port: 0,
+      fleet: () => ({ ok: false, reason: 'powershell timed out' }),
+    });
+    const failingBase = `http://127.0.0.1:${await failingServer.listen()}`;
+    try {
+      const state = await (await fetch(`${failingBase}/state`)).json() as Record<string, unknown>;
+      const fleetValue = (state['fleet'] as { value: unknown }).value;
+      expect(Array.isArray(fleetValue)).toBe(false);
+      expect(fleetValue).toEqual({ ok: false, reason: 'powershell timed out' });
+    } finally {
+      await failingServer.close();
+    }
+  });
+
   it('a lane\'s verified_at moves with its file\'s mtime', async () => {
     const first = await (await fetch(`${base}/state`)).json() as Record<string, unknown>;
     const firstAt = ((first['lanes'] as Wrapped<Record<string, unknown>[]>).value[0]?.['verified_at']) as number;

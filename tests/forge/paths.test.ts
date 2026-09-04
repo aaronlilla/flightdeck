@@ -1,10 +1,13 @@
 /**
  * Where Forge's worker config directory comes from.
  *
- * A built `forge` defaulted to `~/.forge/claude`, where nothing has ever logged in,
- * even on a machine whose fleet login already lives at `~/.claude-fleet`. The `exists`
- * parameter lets these specimens pin both branches without depending on whether this
- * machine happens to have a real fleet login on it.
+ * A built `forge` defaulted to `~/.forge/claude`, where nothing has ever logged in, even
+ * when a dedicated fleet login exists at `~/.forge/fleet-claude`. That candidate is
+ * forge-owned rather than `~/.claude-fleet` on purpose: the latter is confirmed live on
+ * the machine this shipped from as Aaron's own account-wide Claude Code config directory,
+ * not something forge workers may share. The `exists` parameter lets these specimens pin
+ * both branches without depending on whether this machine happens to have a real fleet
+ * login provisioned.
  */
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -26,7 +29,8 @@ describe('choosing the worker config directory', () => {
   it('prefers the fleet directory when the injected reader says it exists', () => {
     const choice = fleetConfigDirChoice(() => true);
     expect(choice.source).toBe('fleet');
-    expect(choice.dir).toContain('.claude-fleet');
+    expect(choice.dir).toContain(home);
+    expect(choice.dir).toContain('fleet-claude');
   });
 
   it('falls back to the forge directory when the injected reader says the fleet one is absent', () => {
