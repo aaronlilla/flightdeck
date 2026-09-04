@@ -62,6 +62,10 @@ export interface ForgeServerOptions {
   /** Overrides how the journal cache reads bytes off disk. A specimen only: it is how a
    *  test counts exactly what a second /state read actually touched. */
   journalRangeReader?: RangeReader;
+  /** Shares an already-built cache with a caller reading the same journal (the 30-second
+   *  liveness tick in `cli.ts`), instead of each keeping its own offset and re-folding
+   *  bytes the other has already read. Takes precedence over `journalRangeReader`. */
+  journalCache?: JournalCache;
 }
 
 export class ForgeServer {
@@ -103,7 +107,7 @@ export class ForgeServer {
     this.lanes = options.lanes;
     this.inbox = options.inbox;
     this.journalPath = options.journalPath;
-    this.journalCache = new JournalCache(options.journalRangeReader);
+    this.journalCache = options.journalCache ?? new JournalCache(options.journalRangeReader);
     this.wanted = options.port ?? FORGE_PORT;
     this.host = options.host ?? '127.0.0.1';
     this.stuckFn = options.stuck ?? (() => []);

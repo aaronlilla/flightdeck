@@ -158,6 +158,34 @@ describe('GET /state', () => {
     }
   });
 
+  it('B.3.9 code review: a caller-supplied JournalCache is the one /state actually reads '
+    + 'from, so a liveness tick sharing it with the server pays for one fold, not two', async () => {
+    const journalPath = join(dir, 'fleet-shared.jsonl');
+    new Journal(journalPath).append({ event: 'turn.end', run: 'alpha', actor: 'worker', context: 1 });
+
+    const { JournalCache } = await import('../../src/forge/journal.js');
+    const sharedCache = new JournalCache();
+    // Priming the shared cache directly, the way cli.ts's liveness tick would between
+    // ticks: if the server built its own cache instead of using this one, its first read
+    // would still have to fold from byte zero and this assertion would fail.
+    sharedCache.read(journalPath);
+    let readCalls = 0;
+    const originalRead = sharedCache.read.bind(sharedCache);
+    sharedCache.read = (path: string) => { readCalls += 1; return originalRead(path); };
+
+    const sharedServer = new ForgeServer({
+      lanes: new Lanes(join(dir, 'lanes-shared')), inbox: new Inbox(join(dir, 'inbox-shared')),
+      journalPath, port: 0, journalCache: sharedCache,
+    });
+    const sharedBase = `http://127.0.0.1:${await sharedServer.listen()}`;
+    try {
+      await fetch(`${sharedBase}/state`);
+      expect(readCalls).toBe(1);
+    } finally {
+      await sharedServer.close();
+    }
+  });
+
   it('carries a failed fleet probe as its own shape, not folded into the array', async () => {
     const failingServer = new ForgeServer({
       lanes: new Lanes(join(dir, 'lanes')),

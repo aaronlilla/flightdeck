@@ -21,7 +21,7 @@ import { runCutover } from './cutover.js';
 import { readProcessList, watchedProcesses } from './fleetwatch.js';
 import { Gotchas } from './gotcha.js';
 import { Inbox } from './inbox.js';
-import { replay, Journal } from './journal.js';
+import { replay, Journal, JournalCache } from './journal.js';
 import { checkLaunch, launchEnv, loginInFlight, pinnedRuntime, runtimeVersion } from './launcher.js';
 import { assess, LivenessSupervisor } from './liveness.js';
 import {
@@ -173,8 +173,9 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         ? `reconciled ${outcome.goal}: resumed by session id`
         : `could not reconcile ${outcome.goal}: ${outcome.reason}`));
 
+      const sharedJournalCache = new JournalCache();
       const server = new ForgeServer({
-        lanes, inbox, journalPath: journalPath(),
+        lanes, inbox, journalPath: journalPath(), journalCache: sharedJournalCache,
         stuck: () => liveness.stuck(),
         fleet: () => {
           const read = watchedProcesses();
@@ -185,7 +186,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       const liveness = new LivenessSupervisor(
         () => ({
           now: Date.now(),
-          runs: snapshotRuns(replay(journalPath())),
+          runs: snapshotRuns(sharedJournalCache.read(journalPath())),
           fleet: watchedProcesses(),
         }),
         livenessJournal,
