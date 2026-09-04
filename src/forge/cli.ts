@@ -26,8 +26,9 @@ import { checkLaunch, launchEnv, loginInFlight, pinnedRuntime, runtimeVersion } 
 import { assess, LivenessSupervisor } from './liveness.js';
 import {
   ensureHome, fleetConfigDirChoice, forgeHome, gotchasDir, inboxDir, journalPath, killSwitchPath,
-  lanesDir,
+  lanesDir, registryDir,
 } from './paths.js';
+import { reconcileRegistry, Registry } from './registry.js';
 import { RunInbox } from './runinbox.js';
 import { SdkEngine } from './sdkengine.js';
 import { FORGE_PORT, ForgeServer } from './server.js';
@@ -137,6 +138,27 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
 
     case 'up': {
       const state = replay(journalPath());
+
+      // Before anything else starts: pick up whatever the registry says crashed. A row
+      // with a live pid is left alone (some other process still owns it); a row with a
+      // dead pid and a session id gets exactly one resume attempt; a row with no session
+      // id at all cannot be resumed and is only reported.
+      const registry = new Registry(registryDir());
+      const reconcileEngine = deps.engine ?? new SdkEngine({
+        journalPath: journalPath(), inboxDir: inboxDir(), gotchasDir: gotchasDir(),
+      });
+      const reconcileJournal = new Journal(journalPath());
+      let reconciled: Awaited<ReturnType<typeof reconcileRegistry>>;
+      try {
+        reconciled = await reconcileRegistry(registry, reconcileEngine, reconcileJournal);
+      } finally {
+        reconcileJournal.close();
+        if (reconcileEngine instanceof SdkEngine) reconcileEngine.close();
+      }
+      const reconcileLines = reconciled.map((outcome) => (outcome.ok
+        ? `reconciled ${outcome.goal}: resumed by session id`
+        : `could not reconcile ${outcome.goal}: ${outcome.reason}`));
+
       const server = new ForgeServer({
         lanes, inbox, journalPath: journalPath(),
         stuck: () => liveness.stuck(),
@@ -164,6 +186,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           `forge ${runtimeVersion()} up on http://127.0.0.1:${port}`,
           `replayed ${state.events.length} events, ${Object.keys(state.runs).length} run(s)`,
           state.torn ? `${state.torn} torn journal line(s) survived and were skipped` : '',
+          ...reconcileLines,
           `inbox: ${inbox.open().length} waiting`,
         ].filter(Boolean),
       };
@@ -216,6 +239,14 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         };
       }
 
+      const registry = new Registry(registryDir());
+      const admission = registry.admit({
+        goal: slug, cwd: process.cwd(), briefPath, pid: process.pid,
+      });
+      if (!admission.ok) {
+        return { code: 1, lines: [`refusing to start ${slug}: ${admission.reason}`] };
+      }
+
       lanes.put(slug, { column: 'forge', started: Date.now(), owner: 'forge' });
       const engine = deps.engine ?? new SdkEngine({
         journalPath: journalPath(), inboxDir: inboxDir(), gotchasDir: gotchasDir(),
@@ -227,6 +258,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         cwd: process.cwd(),
         journalPath: journalPath(),
         engine,
+        onSessionStarted: (_run, sessionId, model) => registry.setSession(slug, sessionId, model),
         ...(deps.exec ? { exec: deps.exec } : {}),
         ...(maxContext !== undefined ? { maxContext } : {}),
         ...(maxTurns !== undefined ? { maxTurns } : {}),
@@ -236,6 +268,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         result = await worker.run();
       } finally {
         if (engine instanceof SdkEngine) engine.close();
+        registry.remove(slug);
       }
       const started = result.sessions[0];
       // A session that opened and closed without a single turn is a failed start, not a

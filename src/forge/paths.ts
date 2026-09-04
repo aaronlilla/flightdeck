@@ -41,6 +41,11 @@ export function runsDir(): string {
   return join(forgeHome(), 'runs');
 }
 
+/** One record per live goal, admitted atomically. See registry.ts. */
+export function registryDir(): string {
+  return join(forgeHome(), 'registry');
+}
+
 /** The per-run directory: logs, dumps, and the run's own inbox. */
 export function runDir(run: string): string {
   return join(runsDir(), run.replace(/[^A-Za-z0-9._-]/g, '_'));
@@ -93,7 +98,7 @@ export function fleetConfigDir(exists: (path: string) => boolean = existsSync): 
 /** Create every directory Forge writes to. Called once at startup, safe to repeat. */
 export function ensureHome(): string {
   const root = forgeHome();
-  for (const dir of [root, lanesDir(), inboxDir(), packetsDir(), runsDir(), gotchasDir()]) {
+  for (const dir of [root, lanesDir(), inboxDir(), packetsDir(), runsDir(), gotchasDir(), registryDir()]) {
     mkdirSync(dir, { recursive: true });
   }
   return root;

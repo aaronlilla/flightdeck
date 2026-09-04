@@ -111,6 +111,9 @@ export interface WorkerConfig {
   /** Runs a brief's declared verification commands. Overridable so a specimen can record
    *  calls instead of spawning a real process; defaults to `exec.ts`'s own `run`. */
   exec?: (request: RunRequest) => Promise<RunResult>;
+  /** Called the moment a session in this chain has opened, so a caller (the registry, in
+   *  cli.ts's `run`) can persist the session id before a crash could ever lose it. */
+  onSessionStarted?: (run: string, sessionId: string, model: string) => void;
 }
 
 export interface WorkerResult {
@@ -239,6 +242,7 @@ export class Worker {
           run: runName, model, prompt, env, cwd: this.config.cwd, maxTurns, ceiling,
         });
         sessions.push(session.sessionId);
+        this.config.onSessionStarted?.(this.config.run, session.sessionId, model);
 
         let ceilingHit = false;
         let finished = false;
