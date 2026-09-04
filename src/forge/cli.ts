@@ -51,10 +51,16 @@ function snapshotRuns(state: ReturnType<typeof replay>): Array<{
   run: string; className: string; lastEventAt: number; context: number;
   currentTool?: { name: string; startedAt: number };
 }> {
-  return Object.values(state.runs).map((run) => ({
-    run: run.run, className: run.className ?? 'implement', lastEventAt: run.lastEventAt,
-    context: run.context, ...(run.currentTool ? { currentTool: run.currentTool } : {}),
-  }));
+  // A finished, handed-off or parked run's lastEventAt is frozen at whatever it was when
+  // it stopped, while `now` keeps moving; fed to assess() unfiltered, every one of them
+  // trips the idle signal forever and LivenessSupervisor never clears it, since the trip
+  // never stops reappearing. Only a run still actually going belongs in the snapshot.
+  return Object.values(state.runs)
+    .filter((run) => run.state === 'started')
+    .map((run) => ({
+      run: run.run, className: run.className ?? 'implement', lastEventAt: run.lastEventAt,
+      context: run.context, ...(run.currentTool ? { currentTool: run.currentTool } : {}),
+    }));
 }
 
 /**

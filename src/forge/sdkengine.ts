@@ -356,7 +356,13 @@ export class SdkEngine implements EngineLike {
           case 'tool-use':
             toolNameById.set(event.id, event.name);
             journal.append({ event: 'tool.start', run: request.run, actor: 'worker', tool: event.name });
-            if (!pending) break;
+            // The SDK's usage field is required on every real assistant message, so
+            // `pending` should already exist; a defensive turn is opened here rather than
+            // dropped, so a forge_done or forge_handoff call can never go unrecognised on
+            // the chance a message arrives with no preceding usage event.
+            if (!pending) {
+              pending = { text: '', context: runningContext };
+            }
             if (event.name === FORGE_DONE_TOOL) pending.done = true;
             if (event.name === FORGE_HANDOFF_TOOL) {
               // The successor reads this turn's text as the packet (worker.ts's

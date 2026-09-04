@@ -218,6 +218,7 @@ export function replay(path: string): FleetState {
         break;
       case 'run.paused':
         run.state = 'paused';
+        delete run.currentTool;
         break;
       case 'run.parked':
         run.state = 'parked';
