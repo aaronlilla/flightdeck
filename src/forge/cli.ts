@@ -5,6 +5,7 @@
  *   forge up                  replay the journal, report, serve on 4120
  *   forge status              what every lane is doing, and what it costs
  *   forge run BRIEF           launch a goal, refusing the four launch mistakes
+ *   forge send RUN TEXT       queue a message for a run already in flight
  *   forge answer KEY ANSWER   answer a question a worker parked on
  *   forge stop --all          park every run with a handoff and end all spend
  *
@@ -20,12 +21,45 @@ import { Inbox } from './inbox.js';
 import { replay } from './journal.js';
 import { checkLaunch, launchEnv, loginInFlight, pinnedRuntime, runtimeVersion } from './launcher.js';
 import { ensureHome, gotchasDir, inboxDir, journalPath, lanesDir } from './paths.js';
+import { RunInbox } from './runinbox.js';
+import { SdkEngine } from './sdkengine.js';
 import { FORGE_PORT, ForgeServer } from './server.js';
 import { Breaker, Fleet, Lanes } from './supervisor.js';
+import { Worker, type EngineLike } from './worker.js';
 
 export interface CliResult {
   code: number;
   lines: string[];
+}
+
+export interface ForgeDeps {
+  /** Overrides the production engine. Every specimen injects a fake here; nothing else may. */
+  engine?: EngineLike;
+}
+
+/**
+ * `forge run`'s arguments past the brief path: `--dry-run`, `--max-context N`,
+ * `--max-turns N`, and whatever words are left over become the condition.
+ */
+function parseRunArgs(rest: string[]): {
+  dryRun: boolean; maxContext?: number; maxTurns?: number; condition: string;
+} {
+  let dryRun = false;
+  let maxContext: number | undefined;
+  let maxTurns: number | undefined;
+  const words: string[] = [];
+  for (let index = 0; index < rest.length; index += 1) {
+    const token = rest[index]!;
+    if (token === '--dry-run') { dryRun = true; continue; }
+    if (token === '--max-context') { maxContext = Number(rest[index += 1]); continue; }
+    if (token === '--max-turns') { maxTurns = Number(rest[index += 1]); continue; }
+    words.push(token);
+  }
+  return {
+    dryRun, condition: words.join(' '),
+    ...(maxContext !== undefined ? { maxContext } : {}),
+    ...(maxTurns !== undefined ? { maxTurns } : {}),
+  };
 }
 
 function money(amount: number): string {
@@ -38,7 +72,7 @@ function money(amount: number): string {
  * Returns rather than printing, so the specimens can read the outcome and `main` stays
  * the only place that writes to a terminal.
  */
-export async function forge(argv: string[]): Promise<CliResult> {
+export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliResult> {
   const [command, ...rest] = argv;
   ensureHome();
   const lanes = new Lanes(lanesDir());
@@ -91,9 +125,10 @@ export async function forge(argv: string[]): Promise<CliResult> {
       } catch (error) {
         return { code: 2, lines: [`cannot read ${briefPath}: ${(error as Error).message}`] };
       }
+      const { dryRun, maxContext, maxTurns, condition } = parseRunArgs(rest.slice(1));
       const verdict = checkLaunch({
         brief,
-        condition: rest.slice(1).join(' ') || 'Work the brief to completion.',
+        condition: condition || 'Work the brief to completion.',
         loginRunning: loginInFlight(),
       });
       if (!verdict.ok) {
@@ -101,14 +136,52 @@ export async function forge(argv: string[]): Promise<CliResult> {
       }
       const slug = briefPath.split(/[\\/]/).pop()!.replace(/\.md$/, '');
       const pin = pinnedRuntime(slug);
-      lanes.put(slug, { column: 'forge', started: Date.now() });
+
+      if (dryRun) {
+        lanes.put(slug, { column: 'forge', started: Date.now() });
+        return {
+          code: 0,
+          lines: [
+            `${slug} pinned to forge ${pin.version}`,
+            `CLAUDE_CONFIG_DIR=${launchEnv()['CLAUDE_CONFIG_DIR']}`,
+          ],
+        };
+      }
+
+      lanes.put(slug, { column: 'forge', started: Date.now(), owner: 'forge' });
+      const engine = deps.engine ?? new SdkEngine({
+        journalPath: journalPath(), inboxDir: inboxDir(), gotchasDir: gotchasDir(),
+      });
+      const worker = new Worker({
+        run: slug,
+        brief,
+        briefPath,
+        cwd: process.cwd(),
+        journalPath: journalPath(),
+        engine,
+        ...(maxContext !== undefined ? { maxContext } : {}),
+        ...(maxTurns !== undefined ? { maxTurns } : {}),
+      });
+      const result = await worker.run();
+      const started = result.sessions[0];
+      lanes.put(slug, {
+        column: 'forge', owner: 'forge', model: result.model, context: result.context,
+        verdict: result.verdict, ...(started ? { session_id: started } : {}),
+      });
       return {
         code: 0,
         lines: [
-          `${slug} pinned to forge ${pin.version}`,
-          `CLAUDE_CONFIG_DIR=${launchEnv()['CLAUDE_CONFIG_DIR']}`,
+          `${slug} ${result.verdict} on ${result.model}, ${result.turns} turn(s), `
+            + `${result.sessions.length} session(s), ${result.handoffs} handoff(s)`,
         ],
       };
+    }
+
+    case 'send': {
+      const [run, ...text] = rest;
+      if (!run || !text.length) return { code: 2, lines: ['forge send needs a run and text'] };
+      new RunInbox(run).send(text.join(' '), 'console');
+      return { code: 0, lines: [`queued for ${run}`] };
     }
 
     case 'answer': {
@@ -158,7 +231,8 @@ export async function forge(argv: string[]): Promise<CliResult> {
       return {
         code: 2,
         lines: [
-          'forge up | status | run BRIEF | answer KEY ANSWER | stop --all | gotchas | clear LANE',
+          'forge up | status | run BRIEF | send RUN TEXT | answer KEY ANSWER | stop --all '
+            + '| gotchas | clear LANE',
           `the server listens on ${FORGE_PORT}`,
         ],
       };

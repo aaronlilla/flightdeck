@@ -15,7 +15,9 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { forge } from '../../src/forge/cli.js';
 import { Inbox } from '../../src/forge/inbox.js';
 import { replay } from '../../src/forge/journal.js';
+import { RunInbox } from '../../src/forge/runinbox.js';
 import { Lanes } from '../../src/forge/supervisor.js';
+import type { SessionRequest } from '../../src/forge/worker.js';
 
 let home: string;
 
@@ -136,11 +138,11 @@ describe('forge run', () => {
     expect(result.code).toBe(1);
   });
 
-  it('pins the runtime version when it does start', async () => {
+  it('pins the runtime version under --dry-run and calls no engine', async () => {
     const brief = join(home, 'ok.md');
     writeFileSync(brief, '# Goal\n\nDo the thing.\n', 'utf8');
 
-    const result = await forge(['run', brief]);
+    const result = await forge(['run', brief, '--dry-run']);
 
     expect(result.code).toBe(0);
     expect(result.lines[0]).toMatch(/pinned to forge /);
@@ -151,6 +153,55 @@ describe('forge run', () => {
     const result = await forge(['run', join(home, 'missing.md')]);
     expect(result.code).toBe(2);
     expect(result.lines[0]).toMatch(/cannot read/);
+  });
+
+  it('with the fake engine injected, calls it once with the brief\'s content', async () => {
+    const brief = join(home, 'ok.md');
+    writeFileSync(brief, '# Goal\n\nDo the thing.\n', 'utf8');
+
+    const started: SessionRequest[] = [];
+    const engine = {
+      started,
+      async run(config: SessionRequest) {
+        started.push(config);
+        return { sessionId: 'fake-session', turns: [{ text: 'done', context: 10, done: true }] };
+      },
+    };
+
+    const result = await forge(['run', brief], { engine });
+
+    expect(started).toHaveLength(1);
+    expect((started[0] as { prompt: string }).prompt).toBe('# Goal\n\nDo the thing.\n');
+    expect(result.code).toBe(0);
+  });
+
+  it('never calls the engine under --dry-run', async () => {
+    const brief = join(home, 'ok.md');
+    writeFileSync(brief, '# Goal\n\nDo the thing.\n', 'utf8');
+    const started: SessionRequest[] = [];
+    const engine = {
+      started, async run(config: SessionRequest) { started.push(config); return { sessionId: 's', turns: [] }; },
+    };
+
+    await forge(['run', brief, '--dry-run'], { engine });
+
+    expect(started).toHaveLength(0);
+  });
+});
+
+describe('forge send', () => {
+  it('leaves one unread message under the run\'s inbox dir', async () => {
+    const result = await forge(['send', 'alpha', 'rebase before you push']);
+    expect(result.code).toBe(0);
+
+    const unread = new RunInbox('alpha').unread();
+    expect(unread).toHaveLength(1);
+    expect(unread[0]?.text).toBe('rebase before you push');
+  });
+
+  it('needs a run and text', async () => {
+    expect((await forge(['send'])).code).toBe(2);
+    expect((await forge(['send', 'alpha'])).code).toBe(2);
   });
 });
 
