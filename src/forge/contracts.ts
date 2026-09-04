@@ -58,6 +58,16 @@ export function asRunId(value: string): RunId {
   return RunIdSchema.parse(value);
 }
 
+/**
+ * A `RunId`, composed the way the spec states it: goal plus attempt. `worker.ts`'s own
+ * successor naming (`${run}-${index + 2}`) is exactly this shape today; this is that
+ * composition made explicit and typed, so a caller builds a `RunId` from its parts
+ * instead of hand-rolling the same string template a second time.
+ */
+export function makeRunId(goal: GoalId, attempt: number): RunId {
+  return asRunId(attempt <= 1 ? goal : `${goal}-${attempt}`);
+}
+
 export function asSessionId(value: string): SessionId {
   return SessionIdSchema.parse(value);
 }
@@ -152,6 +162,13 @@ export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];
  * cost B.3.9's leftovers bullet names. `version` is the schema version this envelope was
  * written under, so a future field rename can tell an old row from a new one instead of
  * guessing from which fields happen to be present.
+ *
+ * `seq` and `version` are required here because the spec asks for them, and today's
+ * `journal.ts` writes neither: `Journal.append`/`appendOnce` on `main` stamp `id, at,
+ * event, actor` and nothing else. `replayEvents` below will quarantine every row of a
+ * real `main` journal until the writer that emits these envelopes exists (B.3's own
+ * work, or the reconcile pass after it). This file states the target shape; it does not
+ * claim today's journal already writes it.
  */
 export interface ForgeEventEnvelope {
   id: string;
@@ -264,6 +281,50 @@ export function replayEvents(text: string, options: { sinceSeq?: number } = {}):
 }
 
 // ---------------------------------------------------------------------------------------
+// StuckSignal, extended with drift and a blocker record
+// ---------------------------------------------------------------------------------------
+
+export type ExtendedLivenessSignal = LivenessSignal | 'drift' | 'blocker';
+
+/** A blocker's own identity, so Warden can build on `liveness.ts` rather than beside it. */
+export interface BlockerRecord {
+  key: string;
+  what: string;
+  since: number;
+}
+
+export interface ExtendedStuckSignal extends Omit<StuckSignal, 'signal'> {
+  signal: ExtendedLivenessSignal;
+  blocker?: BlockerRecord;
+}
+
+export const ExtendedStuckSignalSchema = z.object({
+  key: z.string().min(1),
+  signal: z.enum(['idle', 'tool-budget', 'context', 'stale-session', 'login-stuck', 'fleet-unknown', 'drift', 'blocker']),
+  threshold: z.number(),
+  observed: z.number(),
+  since: z.number(),
+  hint: z.string(),
+  blocker: z.object({ key: z.string().min(1), what: z.string().min(1), since: z.number() }).optional(),
+});
+
+/** Re-exported for anything importing the extension that also needs the class budgets. */
+export { CLASS_BUDGETS, DEFAULT_CLASS };
+
+/**
+ * One fleet process, matched to `liveness.ts`'s own `FleetProcess`. Declared here (ahead
+ * of `/state`, which needs it) rather than beside the imported type, because a zod schema
+ * for an imported interface has nowhere more natural to live than next to the extended
+ * signal it is checked alongside.
+ */
+export const FleetProcessSchema = z.object({
+  pid: z.number().int(),
+  isLogin: z.boolean(),
+  credentialsMtime: z.number().optional(),
+  sessionFileMtime: z.number().optional(),
+});
+
+// ---------------------------------------------------------------------------------------
 // State: VerifiedField and the full /state type
 // ---------------------------------------------------------------------------------------
 
@@ -337,16 +398,16 @@ export const ForgeStateSnapshotSchema = z.object({
   handoffs: VerifiedFieldSchema(z.number()),
   torn: VerifiedFieldSchema(z.number()),
   inbox_open: VerifiedFieldSchema(z.number()),
-  stuck: VerifiedFieldSchema(z.array(z.record(z.string(), z.unknown()))),
+  stuck: VerifiedFieldSchema(z.array(ExtendedStuckSignalSchema)),
   fleet: VerifiedFieldSchema(z.union([
-    z.array(z.record(z.string(), z.unknown())),
+    z.array(FleetProcessSchema),
     z.object({ ok: z.literal(false), reason: z.string() }),
   ])),
   runs: z.record(z.string(), z.object({
     run: z.string().min(1),
     lastEventAgeS: z.number(),
     inFlightTools: z.array(z.object({ id: z.string(), name: z.string(), startedAt: z.number() })),
-    openStuck: z.array(z.record(z.string(), z.unknown())),
+    openStuck: z.array(ExtendedStuckSignalSchema),
   })),
 });
 
@@ -684,37 +745,6 @@ export const redact: Redact = (text) => {
 };
 
 // ---------------------------------------------------------------------------------------
-// StuckSignal, extended with drift and a blocker record
-// ---------------------------------------------------------------------------------------
-
-export type ExtendedLivenessSignal = LivenessSignal | 'drift' | 'blocker';
-
-/** A blocker's own identity, so Warden can build on `liveness.ts` rather than beside it. */
-export interface BlockerRecord {
-  key: string;
-  what: string;
-  since: number;
-}
-
-export interface ExtendedStuckSignal extends Omit<StuckSignal, 'signal'> {
-  signal: ExtendedLivenessSignal;
-  blocker?: BlockerRecord;
-}
-
-export const ExtendedStuckSignalSchema = z.object({
-  key: z.string().min(1),
-  signal: z.enum(['idle', 'tool-budget', 'context', 'stale-session', 'login-stuck', 'fleet-unknown', 'drift', 'blocker']),
-  threshold: z.number(),
-  observed: z.number(),
-  since: z.number(),
-  hint: z.string(),
-  blocker: z.object({ key: z.string().min(1), what: z.string().min(1), since: z.number() }).optional(),
-});
-
-/** Re-exported for anything importing the extension that also needs the class budgets. */
-export { CLASS_BUDGETS, DEFAULT_CLASS };
-
-// ---------------------------------------------------------------------------------------
 // Inbox message states and AskEntry (the goal/run/action/resource/wording key)
 // ---------------------------------------------------------------------------------------
 
@@ -748,21 +778,29 @@ export interface AskInput {
   action: string;
   resource: string;
   wording: string;
+  /** Defaults to `'question'`. A question and a blocker over the same words are two asks. */
+  kind?: 'question' | 'blocker';
 }
 
 /**
  * An ask's identity. `inbox.ts`'s own `askKey` today hashes wording and options only,
  * which is exactly the falsifier the spec's version closes: two different runs asking the
  * same words about different resources ("dev or staging" for two different services)
- * must never collide. Wording alone is never enough; goal, run, action and resource all
- * enter the hash, and case and internal whitespace are normalised out because they carry
+ * must never collide. Wording alone is never enough; goal, run, action, resource and kind
+ * all enter the hash (a question and a blocker carrying identical words are still two
+ * different asks), and case and internal whitespace are normalised out because they carry
  * no decision.
+ *
+ * The five fields are JSON-encoded into one array before hashing rather than joined on a
+ * separator character: a joined string can be pried apart by a field that happens to
+ * contain the separator, and `JSON.stringify` already escapes exactly that.
  */
 export function askKey(input: AskInput): string {
   const norm = (value: string) => value.trim().toLowerCase().replace(/\s+/g, ' ');
-  const payload = [
+  const payload = JSON.stringify([
     norm(input.goal), norm(input.run), norm(input.action), norm(input.resource), norm(input.wording),
-  ].join('\u241F');
+    input.kind ?? 'question',
+  ]);
   return createHash('sha256').update(payload).digest('hex').slice(0, 16);
 }
 
@@ -810,3 +848,18 @@ export const CLI_COMMANDS = [
 ] as const;
 
 export type CliCommand = (typeof CLI_COMMANDS)[number];
+
+/**
+ * `forge run`'s exit codes, per B.3.4: 0 done, 1 refused (the launch never started), 2
+ * parked (an ask, a ceiling, or a stuck trip), 3 exhausted or stopped. Declared here so
+ * `cli.ts` reads its own exit codes off a shared name instead of a bare number a second
+ * caller could read differently.
+ */
+export const CLI_EXIT_CODES = {
+  done: 0,
+  refused: 1,
+  parked: 2,
+  exhaustedOrStopped: 3,
+} as const;
+
+export type CliExitCode = (typeof CLI_EXIT_CODES)[keyof typeof CLI_EXIT_CODES];

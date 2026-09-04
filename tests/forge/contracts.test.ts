@@ -19,6 +19,7 @@ import {
   askKey,
   canTransition,
   CLI_COMMANDS,
+  CLI_EXIT_CODES,
   EVENT_BUS_ROLES,
   EXTERNAL_WRITE_STATES,
   ExtendedStuckSignalSchema,
@@ -36,6 +37,7 @@ import {
   INBOX_MESSAGE_STATES,
   InboxMessageSchema,
   LaneRecordSchema,
+  makeRunId,
   mayRetryWithoutReconciling,
   observed,
   OwnershipSchema,
@@ -77,6 +79,13 @@ describe('branded identities', () => {
   it('asGoalId returns a value usable wherever a GoalId is expected', () => {
     const goal = asGoalId('forge-contracts');
     expect(goal).toBe('forge-contracts');
+  });
+
+  it('makeRunId composes goal plus attempt, matching worker.ts\'s own successor naming', () => {
+    const goal = asGoalId('forge-contracts');
+    expect(makeRunId(goal, 1)).toBe('forge-contracts');
+    expect(makeRunId(goal, 2)).toBe('forge-contracts-2');
+    expect(makeRunId(goal, 3)).toBe('forge-contracts-3');
   });
 });
 
@@ -247,6 +256,51 @@ describe('ForgeStateSnapshotSchema', () => {
       inbox_open: { value: 0, observed_at: 1 },
       stuck: { value: [], observed_at: 1 },
       fleet: { value: { ok: false, reason: 'tasklist failed' }, observed_at: 1 },
+      runs: {},
+    };
+    expect(ForgeStateSnapshotSchema.safeParse(snapshot).success).toBe(true);
+  });
+
+  it('rejects a stuck entry missing the fields a real StuckSignal always carries', () => {
+    const snapshot = {
+      at: 1,
+      lanes: { value: [], observed_at: 1 },
+      burn: { value: {}, observed_at: 1 },
+      handoffs: { value: 0, observed_at: 1 },
+      torn: { value: 0, observed_at: 1 },
+      inbox_open: { value: 0, observed_at: 1 },
+      stuck: { value: [{}], observed_at: 1 },
+      fleet: { value: [], observed_at: 1 },
+      runs: {},
+    };
+    expect(ForgeStateSnapshotSchema.safeParse(snapshot).success).toBe(false);
+  });
+
+  it('rejects a fleet entry that is not a real FleetProcess', () => {
+    const snapshot = {
+      at: 1,
+      lanes: { value: [], observed_at: 1 },
+      burn: { value: {}, observed_at: 1 },
+      handoffs: { value: 0, observed_at: 1 },
+      torn: { value: 0, observed_at: 1 },
+      inbox_open: { value: 0, observed_at: 1 },
+      stuck: { value: [], observed_at: 1 },
+      fleet: { value: [{}], observed_at: 1 },
+      runs: {},
+    };
+    expect(ForgeStateSnapshotSchema.safeParse(snapshot).success).toBe(false);
+  });
+
+  it('accepts a real-shaped fleet process entry', () => {
+    const snapshot = {
+      at: 1,
+      lanes: { value: [], observed_at: 1 },
+      burn: { value: {}, observed_at: 1 },
+      handoffs: { value: 0, observed_at: 1 },
+      torn: { value: 0, observed_at: 1 },
+      inbox_open: { value: 0, observed_at: 1 },
+      stuck: { value: [], observed_at: 1 },
+      fleet: { value: [{ pid: 1234, isLogin: false, sessionFileMtime: 1 }], observed_at: 1 },
       runs: {},
     };
     expect(ForgeStateSnapshotSchema.safeParse(snapshot).success).toBe(true);
@@ -515,6 +569,19 @@ describe('AskEntrySchema and askKey', () => {
     };
     expect(askKey(base)).toBe(askKey(noisy));
   });
+
+  it('changes on kind alone: a question and a blocker over identical words are two asks', () => {
+    expect(askKey({ ...base, kind: 'question' })).not.toBe(askKey({ ...base, kind: 'blocker' }));
+  });
+
+  it('does not let a field boundary shift produce a false collision', () => {
+    // goal:"g", run:"x" vs. goal:"gx", run:"" would collide under a plain separator-joined
+    // string once the empty run is trimmed away; JSON-encoding each field keeps the
+    // boundary unambiguous.
+    const a = askKey({ goal: 'g', run: 'x', action: 'a', resource: 'r', wording: 'w' });
+    const b = askKey({ goal: 'gx', run: '', action: 'a', resource: 'r', wording: 'w' });
+    expect(a).not.toBe(b);
+  });
 });
 
 // ---------------------------------------------------------------------------------------
@@ -532,6 +599,10 @@ describe('CLI_COMMANDS and EVENT_BUS_ROLES', () => {
     expect([...EVENT_BUS_ROLES].sort()).toEqual(
       ['console', 'council', 'governor', 'intake', 'runner', 'warden'].sort(),
     );
+  });
+
+  it('CLI_EXIT_CODES matches B.3.4: 0 done, 1 refused, 2 parked, 3 exhausted or stopped', () => {
+    expect(CLI_EXIT_CODES).toEqual({ done: 0, refused: 1, parked: 2, exhaustedOrStopped: 3 });
   });
 });
 
