@@ -159,6 +159,8 @@ function extractAskQuestion(input: Record<string, unknown>): { question: string;
 
 export interface CanUseToolDeps {
   run: string;
+  /** The stable goal id, part of the ask key alongside run and action target: B.3.7. */
+  goal: string;
   inbox: Inbox;
   journal: Journal;
   /**
@@ -185,7 +187,8 @@ export function buildCanUseTool(deps: CanUseToolDeps) {
     if (toolName === 'AskUserQuestion') {
       const asked = extractAskQuestion(input);
       const entry = deps.inbox.raise({
-        run: deps.run, question: asked.question, options: asked.options, kind: 'question',
+        run: deps.run, goal: deps.goal, actionTarget: 'AskUserQuestion',
+        question: asked.question, options: asked.options, kind: 'question',
       });
       deps.parked.set(deps.run, entry.key);
       deps.journal.append({
@@ -210,8 +213,16 @@ export function buildCanUseTool(deps: CanUseToolDeps) {
 }
 
 export interface InboxHookDeps {
+  /** This segment's own name, for the journal rows this writes. */
   run: string;
+  /** The goal's stable id, for the inbox itself: B.3.7. A message sent to the goal id
+   *  must reach whichever segment is live, not only the one whose exact name it was sent
+   *  under, which stops existing the moment a handoff renames the run. */
+  goal: string;
   journal: Journal;
+  /** Called with the delivered message ids and their raw text, when something was
+   *  delivered, so the caller can watch for it to be acknowledged: B.3.7. */
+  onDelivered?: (ids: string[], text: string) => void;
 }
 
 /**
@@ -221,10 +232,11 @@ export interface InboxHookDeps {
 export function buildInboxHook(deps: InboxHookDeps) {
   return async (call: { toolName: string; input: Record<string, unknown>; toolUseId: string }):
     Promise<PreToolVerdict> => {
-    const delivered = await injectMessages(deps.run, call.input);
+    const delivered = await injectMessages(deps.goal, call.input);
     const additionalContext = delivered?.hookSpecificOutput?.additionalContext;
     if (additionalContext) {
       deps.journal.append({ event: 'inbox.delivered', run: deps.run, actor: 'runner', via: 'hook' });
+      if (delivered?.messageIds?.length) deps.onDelivered?.(delivered.messageIds, delivered.rawText ?? '');
     }
     return { decision: undefined, ...(additionalContext ? { additionalContext } : {}) };
   };
@@ -232,6 +244,8 @@ export function buildInboxHook(deps: InboxHookDeps) {
 
 export interface PreToolUseHookDeps {
   run: string;
+  /** The goal's stable id, for the inbox: B.3.7. */
+  goal: string;
   journal: Journal;
   /** Shared with `buildCanUseTool`: run name to the ask key it is parked on. */
   parked: Map<string, string>;
@@ -243,6 +257,7 @@ export interface PreToolUseHookDeps {
    */
   ceilingHit?: () => boolean;
   deliverVia: 'hook' | 'stream';
+  onDelivered?: (ids: string[], text: string) => void;
 }
 
 /**
@@ -256,7 +271,11 @@ export interface PreToolUseHookDeps {
  * delivery either, because there is nothing left for either to act on until it clears.
  */
 export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
-  const inboxHook = deps.deliverVia === 'hook' ? buildInboxHook({ run: deps.run, journal: deps.journal }) : undefined;
+  const inboxHook = deps.deliverVia === 'hook'
+    ? buildInboxHook({
+      run: deps.run, goal: deps.goal, journal: deps.journal, onDelivered: deps.onDelivered,
+    })
+    : undefined;
   return async (call: { toolName: string; input: Record<string, unknown>; toolUseId: string }):
     Promise<PreToolVerdict> => {
     const key = deps.parked.get(deps.run);
@@ -388,6 +407,7 @@ export class SdkEngine implements EngineLike {
 
   async run(request: SessionRequest): Promise<SessionResult> {
     this.started.push(request);
+    const goal = request.goal ?? request.run;
 
     const workerOptions = buildWorkerOptions({
       model: request.model,
@@ -411,7 +431,8 @@ export class SdkEngine implements EngineLike {
       },
       onAsk: (input) => {
         inbox.raise({
-          run: request.run, question: input.question, options: input.options, kind: input.kind,
+          run: request.run, goal, actionTarget: 'forge_ask',
+          question: input.question, options: input.options, kind: input.kind,
         });
         journal.append({
           event: 'forge.ask', run: request.run, actor: 'worker', question: input.question,
@@ -438,6 +459,10 @@ export class SdkEngine implements EngineLike {
     // PreToolUse hook below. This is what makes the deny happen inside the turn a tool
     // call arrives in, rather than only after Worker sees the whole segment's result.
     let ceilingHit = false;
+    // What the inbox hook just delivered, watched for one assistant message to see
+    // whether it was acknowledged (B.3.7). Cleared after that one check either way: this
+    // is a one-shot window on "the next assistant message", not an open-ended watch.
+    let pendingAck: { ids: string[]; text: string } | undefined;
 
     const engineConfig: EngineConfig = {
       cwd: workerOptions.cwd,
@@ -447,10 +472,11 @@ export class SdkEngine implements EngineLike {
       env: workerOptions.env,
       maxTurns: workerOptions.maxTurns,
       mcpServers: { forge: buildForgeMcpServer(handlers) },
-      canUseTool: buildCanUseTool({ run: request.run, inbox, journal, parked: this.parked }) as never,
+      canUseTool: buildCanUseTool({ run: request.run, goal, inbox, journal, parked: this.parked }) as never,
       onToolCall: buildPreToolUseHook({
-        run: request.run, journal, parked: this.parked, deliverVia: this.deliverVia,
+        run: request.run, goal, journal, parked: this.parked, deliverVia: this.deliverVia,
         ceilingHit: () => ceilingHit,
+        onDelivered: (ids, text) => { pendingAck = { ids, text }; },
       }),
       ...(workerOptions.resume ? { resume: workerOptions.resume } : {}),
     };
@@ -504,6 +530,18 @@ export class SdkEngine implements EngineLike {
             break;
           case 'assistant-text':
             if (pending) pending.text += event.text;
+            if (pendingAck) {
+              // The one-shot window: whether this message (the next one after delivery)
+              // echoed the delivered text, checked once and then closed regardless.
+              if (pending && pendingAck.text && pending.text.includes(pendingAck.text)) {
+                for (const id of pendingAck.ids) {
+                  journal.append({
+                    event: 'inbox.acknowledged', run: request.run, actor: 'worker', messageId: id,
+                  });
+                }
+              }
+              pendingAck = undefined;
+            }
             break;
           case 'tool-use':
             toolNameById.set(event.id, event.name);
@@ -560,7 +598,7 @@ export class SdkEngine implements EngineLike {
       });
 
       if (this.deliverVia === 'stream') {
-        deliverViaStream(engine, request.run, promptText, journal);
+        deliverViaStream(engine, goal, promptText, journal);
       } else {
         engine.send(promptText);
       }

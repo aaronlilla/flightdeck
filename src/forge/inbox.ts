@@ -21,6 +21,11 @@ import { join } from 'node:path';
 
 export interface Ask {
   run: string;
+  /** The stable goal id this run belongs to. Part of the key: B.3.7. */
+  goal?: string;
+  /** What the ask is about -- the tool name, typically. Part of the key: two different
+   *  actions that happen to word their question the same way are two different walls. */
+  actionTarget?: string;
   question: string;
   options?: string[];
   /** What kind of wall this is. A `blocker` propagates to every run sharing its key. */
@@ -56,7 +61,12 @@ export interface InboxEntry {
 export function askKey(ask: Ask): string {
   const question = (ask.question ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
   const options = (ask.options ?? []).map((o) => o.trim().toLowerCase()).sort().join(' ');
-  return createHash('sha256').update(`${question}${options}`).digest('hex').slice(0, 16);
+  // Scoped by goal, run and action target as well as wording (B.3.7): a retry within the
+  // same segment still collapses to one entry (asked increments), but a genuinely
+  // different run -- a handoff's successor, a different goal, a different action --
+  // hitting the same words is its own wall, not a merge with whatever came before it.
+  const scope = `${ask.goal ?? ''}|${ask.run}|${ask.actionTarget ?? ''}`;
+  return createHash('sha256').update(`${scope}::${question}${options}`).digest('hex').slice(0, 16);
 }
 
 export class Inbox {

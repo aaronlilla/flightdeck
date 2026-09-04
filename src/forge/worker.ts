@@ -66,8 +66,13 @@ export interface FakeTurn {
 }
 
 export interface SessionRequest {
-  /** The run this session belongs to. Scopes the inbox and the journal rows it writes. */
+  /** This segment's own name: `goal` for the first session, `goal-2`, `goal-3` ... for
+   *  every successor a handoff starts. Scopes the journal rows this segment writes. */
   run: string;
+  /** The goal's own stable id, unchanged across every handoff in the chain. Scopes the
+   *  inbox, so a message sent to the goal id reaches whichever segment is live. Falls
+   *  back to `run` when omitted, which is what a first session (run === goal) needs. */
+  goal?: string;
   model: string;
   prompt: string;
   env: NodeJS.ProcessEnv;
@@ -244,7 +249,8 @@ export class Worker {
         let session: SessionResult;
         try {
           session = await this.engine.run({
-            run: runName, model, prompt, env, cwd: this.config.cwd, maxTurns, ceiling,
+            run: runName, goal: this.config.run, model, prompt, env, cwd: this.config.cwd, maxTurns,
+            ceiling,
           });
         } catch (error) {
           // An engine that throws (the subprocess exited, a fatal engine-error) must not

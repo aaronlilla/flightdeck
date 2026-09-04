@@ -61,10 +61,19 @@ describe('raising a question', () => {
     expect(inbox.open()).toHaveLength(2);
   });
 
-  it('treats the same question from another run as the same wall', () => {
-    // Two runs blocked on one decision is one decision to make, not two.
+  it('B.3.7: the same question from another run is a different wall', () => {
+    // Reversed from the pre-B.3.7 design ("two runs blocked on one decision is one
+    // decision to make"): a successor after a handoff is a different run asking the same
+    // words, and merging it with whatever the predecessor already asked would hide that
+    // it happened again. The key now scopes by run (and goal, and action target)
+    // alongside wording, so two runs asking identically get two keys.
     expect(askKey({ ...QUESTION, run: 'alpha' }))
-      .toBe(askKey({ ...QUESTION, run: 'beta' }));
+      .not.toBe(askKey({ ...QUESTION, run: 'beta' }));
+  });
+
+  it('B.3.7: the same run asking the same words twice is still one wall', () => {
+    expect(askKey({ ...QUESTION, run: 'alpha' }))
+      .toBe(askKey({ ...QUESTION, run: 'alpha' }));
   });
 
   it('is unmoved by whitespace and case in the wording', () => {
@@ -86,10 +95,18 @@ describe('answering', () => {
     expect(inbox.entry(entry.key)?.answer).toBe('staging');
   });
 
-  it('lists every run that was waiting on it', () => {
+  it('B.3.7: a repeat ask from the same run does not duplicate itself in runs', () => {
     inbox.raise(QUESTION);
+    const second = inbox.raise(QUESTION);
+    expect(second.runs).toEqual(['alpha']);
+    expect(second.asked).toBe(2);
+  });
+
+  it('B.3.7: a different run asking identically gets its own entry, not a shared one', () => {
+    const first = inbox.raise(QUESTION);
     const second = inbox.raise({ ...QUESTION, run: 'beta' });
-    expect(second.runs.sort()).toEqual(['alpha', 'beta']);
+    expect(second.key).not.toBe(first.key);
+    expect(second.runs).toEqual(['beta']);
   });
 
   it('reopens if the same question is asked after an answer', () => {

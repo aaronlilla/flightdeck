@@ -100,6 +100,10 @@ export interface HookOutput {
     additionalContext?: string;
     permissionDecision?: string;
   };
+  /** The messages just delivered, for a caller watching whether they get acknowledged. */
+  messageIds?: string[];
+  /** The delivered messages' own text, unwrapped from the "MESSAGE FOR THIS RUN" envelope. */
+  rawText?: string;
 }
 
 /**
@@ -115,6 +119,7 @@ export async function injectMessages(
   const waiting = inbox.unread();
   if (!waiting.length) return undefined;
 
+  const rawText = waiting.map((message) => message.text).join('\n\n');
   const body = waiting
     .map((message) => `[${new Date(message.at).toISOString()} from ${message.from}]\n${message.text}`)
     .join('\n\n');
@@ -125,6 +130,8 @@ export async function injectMessages(
         `MESSAGE FOR THIS RUN. Read it before the tool call you were about to make; it may `
         + `change what that call should be.\n\n${body}`,
     },
+    messageIds: waiting.map((message) => message.id),
+    rawText,
   };
   // Marked read only once the return value is fully built, so a throw while building it
   // (a malformed message, a future field this loop learns to reject) leaves the message

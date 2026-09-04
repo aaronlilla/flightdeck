@@ -310,7 +310,7 @@ describe('the PreToolUse inbox hook, wired into a real run', () => {
     const journal = new Journal(journalPath);
     const options = buildOptions({
       cwd: home, canUseTool: (async () => ({ behavior: 'deny', message: 'x' })) as never,
-      onToolCall: buildInboxHook({ run: REQUEST.run, journal }),
+      onToolCall: buildInboxHook({ run: REQUEST.run, goal: REQUEST.run, journal }),
     });
     const hook = options.hooks!['PreToolUse']![0]!.hooks[0]!;
 
@@ -332,6 +332,75 @@ describe('the PreToolUse inbox hook, wired into a real run', () => {
     journal.close();
     const state = replay(journalPath);
     expect(state.events.some((e) => e.event === 'inbox.delivered' && e.via === 'hook')).toBe(true);
+  });
+});
+
+describe('B.3.7: the inbox survives a handoff', () => {
+  it('a message sent to the goal id reaches the successor, which runs under goal-2', async () => {
+    const sent = new RunInbox('goal-run').send('the PR conflicts with main', 'console');
+    const { fn } = fakeQuery([
+      [{ text: 'working', usage: { input: 65_000, cacheRead: 0, cacheCreation: 0, output: 10 } }],
+      [{ text: 'packet', usage: { input: 100, cacheRead: 0, cacheCreation: 0, output: 10 } }],
+      [{ text: 'ok', usage: { input: 100, cacheRead: 0, cacheCreation: 0, output: 10 } }],
+    ]);
+    const engine = engineFor(fn);
+    const worker = new Worker({
+      run: 'goal-run', brief: '# Goal\n\nDo the thing.\n', briefPath: join(home, 'brief.md'),
+      cwd: home, journalPath, engine: engine as never, maxContext: 60_000,
+    });
+    await worker.run();
+
+    // The falsifier this closes: if the successor were given the original run name
+    // ("goal-run") rather than actually running under "goal-run-2" scoped by a separate
+    // stable goal id, this would pass for the wrong reason -- so this pins both: the
+    // successor's own segment name, and the goal id that still names the pre-handoff run.
+    expect(engine.started[1]?.run).toBe('goal-run-2');
+    expect(engine.started[1]?.goal).toBe('goal-run');
+    // The message was never marked read: nothing in this run consumed it under
+    // "goal-run-2" (fakeQuery never drives a real PreToolUse hook), which is exactly why
+    // it is still sitting there, addressable only by the goal id it was sent to.
+    expect(new RunInbox('goal-run').unread().map((message) => message.id)).toContain(sent.id);
+  });
+
+  it('inbox.acknowledged names the message id once the delivered text appears in the next assistant message', async () => {
+    const sent = new RunInbox('ack-run').send('the PR conflicts with main', 'console');
+    const fn = ((params: { prompt: string | AsyncIterable<unknown>; options?: Options }) => {
+      const hookEntry = (params.options as unknown as {
+        hooks?: { PreToolUse?: Array<{ hooks: Array<(input: unknown, id: string, ctx: unknown) =>
+          Promise<{ hookSpecificOutput?: { additionalContext?: string } }>> }> };
+      }).hooks?.['PreToolUse']?.[0]?.hooks[0];
+      const promptIter = params.prompt as AsyncIterable<unknown>;
+      async function* generate() {
+        yield {
+          type: 'system', subtype: 'init', session_id: 's', model: '', cwd: '', tools: [],
+          slash_commands: [],
+        };
+        for await (const _pushed of promptIter) {
+          // The tool call the hook rides on -- ordinary Bash, denied by canUseTool but
+          // that is irrelevant here: onToolCall (not canUseTool) is what delivers.
+          await hookEntry?.(
+            { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: {} }, 'tu-1', {},
+          );
+          yield {
+            type: 'assistant', session_id: 's',
+            message: {
+              model: '', content: [{ type: 'text', text: 'Read it: the PR conflicts with main. Rebasing now.' }],
+              usage: { input_tokens: 10, output_tokens: 1 },
+            },
+          };
+          yield { type: 'result', subtype: 'success', is_error: false, duration_ms: 1 };
+          return;
+        }
+      }
+      return generate() as unknown as Query;
+    }) as unknown as QueryFn;
+
+    const engine = engineFor(fn);
+    await engine.run({ ...REQUEST, run: 'ack-run', env: { PATH: '/usr/bin' } });
+
+    const state = replay(journalPath);
+    const acknowledged = state.events.find((e) => e.event === 'inbox.acknowledged' && e.run === 'ack-run');
+    expect(acknowledged?.['messageId']).toBe(sent.id);
   });
 });
 
@@ -389,7 +458,7 @@ describe('canUseTool, invoked directly', () => {
   it('denies an arbitrary tool and journals permission.denied', async () => {
     const inbox = new Inbox(join(home, 'inbox2'));
     const journal = new (await import('../../src/forge/journal.js')).Journal(journalPath);
-    const canUseTool = buildCanUseTool({ run: 'r2', inbox, journal, parked: new Map() });
+    const canUseTool = buildCanUseTool({ run: 'r2', goal: 'r2', inbox, journal, parked: new Map() });
 
     const verdict = await canUseTool('Bash', { command: 'rm -rf /' });
     expect(verdict.behavior).toBe('deny');
@@ -403,7 +472,7 @@ describe('canUseTool, invoked directly', () => {
     const inboxDir = join(home, 'inbox3');
     const inbox = new Inbox(inboxDir);
     const journal = new (await import('../../src/forge/journal.js')).Journal(journalPath);
-    const canUseTool = buildCanUseTool({ run: 'r3', inbox, journal, parked: new Map() });
+    const canUseTool = buildCanUseTool({ run: 'r3', goal: 'r3', inbox, journal, parked: new Map() });
 
     const askInput = {
       questions: [{ question: 'dev or prod?', header: 'env',
@@ -541,7 +610,7 @@ describe('B.3.1: park is a state', () => {
     const parked = new Map<string, string>();
     const inbox = new Inbox(join(home, 'inbox-park'));
     const journal = new Journal(journalPath);
-    const canUseTool = buildCanUseTool({ run: 'park-run', inbox, journal, parked });
+    const canUseTool = buildCanUseTool({ run: 'park-run', goal: 'park-run', inbox, journal, parked });
 
     const askInput = {
       questions: [{ question: 'dev or prod?', header: 'env',
@@ -551,7 +620,7 @@ describe('B.3.1: park is a state', () => {
     const key = parked.get('park-run');
     expect(key).toBeTruthy();
 
-    const hook = buildPreToolUseHook({ run: 'park-run', parked, journal, deliverVia: 'hook' });
+    const hook = buildPreToolUseHook({ run: 'park-run', goal: 'park-run', parked, journal, deliverVia: 'hook' });
     const denied = await hook({ toolName: 'Bash', input: { command: 'npm test' }, toolUseId: 'tu-1' });
     expect(denied.decision).toBe('deny');
     expect(denied.reason).toContain(key);
@@ -567,7 +636,7 @@ describe('B.3.1: park is a state', () => {
     // because the map says the run is parked, never unconditionally.
     const parked = new Map<string, string>();
     const journal = new Journal(journalPath);
-    const hook = buildPreToolUseHook({ run: 'unparked-run', parked, journal, deliverVia: 'hook' });
+    const hook = buildPreToolUseHook({ run: 'unparked-run', goal: 'unparked-run', parked, journal, deliverVia: 'hook' });
     const verdict = await hook({ toolName: 'Bash', input: {}, toolUseId: 'tu-1' });
     expect(verdict.decision).toBeUndefined();
   });
