@@ -24,6 +24,10 @@ let home: string;
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'forge-cli-'));
   process.env['FORGE_HOME'] = home;
+  // Pinned to a directory that does not exist, so `status`'s real process-table scan
+  // reads no session or credentials mtime from this machine's actual fleet login. None
+  // of these specimens are about the config-dir choice itself; paths.test.ts covers that.
+  process.env['FORGE_CONFIG_DIR'] = join(home, 'claude');
 });
 
 const lanes = () => new Lanes(join(home, 'lanes'));
@@ -147,6 +151,15 @@ describe('forge run', () => {
     expect(result.code).toBe(0);
     expect(result.lines[0]).toMatch(/pinned to forge /);
     expect(result.lines.join(' ')).toMatch(/CLAUDE_CONFIG_DIR=/);
+  });
+
+  it('says which config directory it chose and why', async () => {
+    const brief = join(home, 'ok.md');
+    writeFileSync(brief, '# Goal\n\nDo the thing.\n', 'utf8');
+
+    const result = await forge(['run', brief, '--dry-run']);
+
+    expect(result.lines.join(' ')).toMatch(/config dir: .+ \((override|fleet|forge)\)/);
   });
 
   it('says which brief it could not read rather than failing silently', async () => {

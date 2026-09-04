@@ -67,11 +67,14 @@ export const WORKER_TOOLS = ['forge_handoff', 'forge_done', 'forge_ask', 'forge_
 const FORGE_DONE_TOOL = 'mcp__forge__forge_done';
 const FORGE_HANDOFF_TOOL = 'mcp__forge__forge_handoff';
 
-export function buildWorkerOptions(request: WorkerRequest): WorkerOptions {
+export function buildWorkerOptions(
+  request: WorkerRequest,
+  existsConfigDir?: (path: string) => boolean,
+): WorkerOptions {
   const env = workerEnv(request.env);
   // Pinned, never inherited. This is the line that keeps the fleet's login separate from
   // the one Aaron is using interactively.
-  env['CLAUDE_CONFIG_DIR'] = fleetConfigDir();
+  env['CLAUDE_CONFIG_DIR'] = fleetConfigDir(existsConfigDir);
 
   const options: WorkerOptions = {
     model: request.model,

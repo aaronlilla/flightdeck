@@ -104,9 +104,12 @@ export function loginInFlight(lines: string[] = readProcessList()): boolean {
  * directory means the fleet writes into the store Aaron is using, and a login in either
  * place changes what the other authenticates as.
  */
-export function launchEnv(parent: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+export function launchEnv(
+  parent: NodeJS.ProcessEnv = process.env,
+  existsConfigDir?: (path: string) => boolean,
+): NodeJS.ProcessEnv {
   const clean = workerEnv(parent);
-  clean['CLAUDE_CONFIG_DIR'] = fleetConfigDir();
+  clean['CLAUDE_CONFIG_DIR'] = fleetConfigDir(existsConfigDir);
   clean['FORGE_HOME'] = forgeHome();
   clean['FORGE_RUNTIME'] = runtimeVersion();
   return clean;

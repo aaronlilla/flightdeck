@@ -106,7 +106,9 @@ describe('websocket monitors', () => {
 
 describe('the environment a launch builds', () => {
   it('pins CLAUDE_CONFIG_DIR to the fleet directory rather than inheriting one', () => {
-    const env = launchEnv({ CLAUDE_CONFIG_DIR: '/somewhere/aarons/own' });
+    // No fleet login on this machine, injected: proves the pin, not the fleet-vs-forge
+    // choice, which paths.test.ts covers on its own.
+    const env = launchEnv({ CLAUDE_CONFIG_DIR: '/somewhere/aarons/own' }, () => false);
     expect(env['CLAUDE_CONFIG_DIR']).toContain(home);
     expect(env['CLAUDE_CONFIG_DIR']).not.toBe('/somewhere/aarons/own');
   });

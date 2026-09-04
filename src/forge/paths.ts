@@ -7,7 +7,7 @@
  * overridable, which is also what lets a specimen point the whole tree at a temporary
  * directory.
  */
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -46,14 +46,33 @@ export function gotchasDir(): string {
 }
 
 /**
- * The config directory a worker's Claude Code process uses.
+ * The config directory a worker's Claude Code process uses, and which of the three
+ * reasons picked it.
  *
+ * `FORGE_CONFIG_DIR` wins outright when set. Otherwise this prefers `~/.claude-fleet`,
+ * where the fleet's own login already lives, over `~/.forge/claude`, where nothing has
+ * ever logged in: a built `forge` run that defaulted to the empty directory pointed at a
+ * login that does not exist. `exists` is a parameter rather than a bare `existsSync` call
+ * so a specimen can pin both branches without depending on whether this machine happens
+ * to have a fleet login on it.
+ */
+export function fleetConfigDirChoice(exists: (path: string) => boolean = existsSync): {
+  dir: string; source: 'override' | 'fleet' | 'forge';
+} {
+  const override = process.env['FORGE_CONFIG_DIR'];
+  if (override) return { dir: override, source: 'override' };
+  const fleetDir = join(homedir(), '.claude-fleet');
+  if (exists(fleetDir)) return { dir: fleetDir, source: 'fleet' };
+  return { dir: join(forgeHome(), 'claude'), source: 'forge' };
+}
+
+/**
  * Pinned to the fleet's own directory rather than inherited. Sharing the interactive
  * login's directory is how a worker ends up writing to the same session store Aaron is
  * using, and how a `claude login` in one place changes what the fleet authenticates as.
  */
-export function fleetConfigDir(): string {
-  return process.env['FORGE_CONFIG_DIR'] ?? join(forgeHome(), 'claude');
+export function fleetConfigDir(exists: (path: string) => boolean = existsSync): string {
+  return fleetConfigDirChoice(exists).dir;
 }
 
 /** Create every directory Forge writes to. Called once at startup, safe to repeat. */

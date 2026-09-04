@@ -66,9 +66,11 @@ describe('the options a worker runs under', () => {
   });
 
   it('pins CLAUDE_CONFIG_DIR to the fleet directory rather than inheriting one', () => {
+    // No fleet login on this machine, injected: proves the pin, not the fleet-vs-forge
+    // choice, which has its own specimens below.
     const options = buildWorkerOptions({
       ...REQUEST, env: { CLAUDE_CONFIG_DIR: '/somebody/elses/claude', PATH: '/usr/bin' },
-    });
+    }, () => false);
     expect(options.env['CLAUDE_CONFIG_DIR']).toContain(home);
     expect(options.env['CLAUDE_CONFIG_DIR']).not.toBe('/somebody/elses/claude');
   });
@@ -151,7 +153,7 @@ describe('what actually reaches the SDK', () => {
   it('carries the pinned config directory through', () => {
     const options = buildOptions(toEngineConfig(buildWorkerOptions({
       ...REQUEST, env: { CLAUDE_CONFIG_DIR: '/somebody/elses/claude' },
-    })));
+    }, () => false)));
     expect(options.env?.['CLAUDE_CONFIG_DIR']).toContain(home);
   });
 });

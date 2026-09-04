@@ -24,7 +24,9 @@ import { Inbox } from './inbox.js';
 import { replay, Journal } from './journal.js';
 import { checkLaunch, launchEnv, loginInFlight, pinnedRuntime, runtimeVersion } from './launcher.js';
 import { assess, LivenessSupervisor } from './liveness.js';
-import { ensureHome, forgeHome, gotchasDir, inboxDir, journalPath, lanesDir } from './paths.js';
+import {
+  ensureHome, fleetConfigDirChoice, forgeHome, gotchasDir, inboxDir, journalPath, lanesDir,
+} from './paths.js';
 import { RunInbox } from './runinbox.js';
 import { SdkEngine } from './sdkengine.js';
 import { FORGE_PORT, ForgeServer } from './server.js';
@@ -182,6 +184,8 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       const slug = briefPath.split(/[\\/]/).pop()!.replace(/\.md$/, '');
       const pin = pinnedRuntime(slug);
       const breaker = new Breaker(lanes);
+      const configDir = fleetConfigDirChoice();
+      const configDirLine = `config dir: ${configDir.dir} (${configDir.source})`;
 
       if (dryRun) {
         lanes.put(slug, { column: 'forge', started: Date.now() });
@@ -190,6 +194,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           lines: [
             `${slug} pinned to forge ${pin.version}`,
             `CLAUDE_CONFIG_DIR=${launchEnv()['CLAUDE_CONFIG_DIR']}`,
+            configDirLine,
           ],
         };
       }
@@ -242,6 +247,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         lines: [
           `${slug} ${result.verdict} on ${result.model}, ${result.turns} turn(s), `
             + `${result.sessions.length} session(s), ${result.handoffs} handoff(s)`,
+          configDirLine,
         ],
       };
     }
