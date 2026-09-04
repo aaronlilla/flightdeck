@@ -184,7 +184,8 @@ describe('forge run', () => {
 
   it('with the fake engine injected, calls it once with the brief\'s content', async () => {
     const brief = join(home, 'ok.md');
-    writeFileSync(brief, '# Goal\n\nDo the thing.\n', 'utf8');
+    const briefText = '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnode -e process.exit(0)\n```\n';
+    writeFileSync(brief, briefText, 'utf8');
 
     const started: SessionRequest[] = [];
     const engine = {
@@ -198,7 +199,7 @@ describe('forge run', () => {
     const result = await forge(['run', brief], { engine });
 
     expect(started).toHaveLength(1);
-    expect((started[0] as { prompt: string }).prompt).toBe('# Goal\n\nDo the thing.\n');
+    expect((started[0] as { prompt: string }).prompt).toBe(briefText);
     expect(result.code).toBe(0);
   });
 
@@ -228,7 +229,8 @@ describe('forge run', () => {
 
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const result = await forge(['run', brief], { engine: zeroTurnEngine });
-      expect(result.code).toBe(0);
+      // A zero-turn start never ran forge_done, so it parks: exit 2, per B.3.4.
+      expect(result.code).toBe(2);
     }
     const fourth = await forge(['run', brief], { engine: zeroTurnEngine });
 
@@ -252,7 +254,9 @@ describe('forge run', () => {
     }
     await forge(['clear', 'ok']);
     const result = await forge(['run', brief], { engine: zeroTurnEngine });
-    expect(result.code).toBe(0);
+    // The clear let it launch again; it still parks with no turns, so exit 2, not a
+    // refusal (1) and not done (0).
+    expect(result.code).toBe(2);
   });
 
   it('refuses once forge stop --all has engaged the kill switch', async () => {
@@ -268,7 +272,7 @@ describe('forge run', () => {
 
   it('starts again once forge clear --all has cleared the kill switch', async () => {
     const brief = join(home, 'ok.md');
-    writeFileSync(brief, '# Goal\n\nDo the thing.\n', 'utf8');
+    writeFileSync(brief, '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnode -e process.exit(0)\n```\n', 'utf8');
     const started: SessionRequest[] = [];
     const engine = {
       started,
@@ -284,6 +288,27 @@ describe('forge run', () => {
 
     expect(result.code).toBe(0);
     expect(started).toHaveLength(1);
+  });
+
+  it('B.3.4: exits 2 when verification never passes and the run parks', async () => {
+    const brief = join(home, 'ok.md');
+    writeFileSync(brief, '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnpm run verify\n```\n', 'utf8');
+    const engine = {
+      started: [] as SessionRequest[],
+      async run(config: SessionRequest) {
+        this.started.push(config);
+        return { sessionId: 'fake-session', turns: [{ text: 'done', context: 10, done: true }] };
+      },
+    };
+    const exec = async () => ({
+      ok: false, tail: 'FAIL', returncode: 1, argv: ['npm', 'run', 'verify'], owner: 'ok',
+      startedAt: 0, durationMs: 1,
+    });
+
+    const result = await forge(['run', brief], { engine, exec });
+
+    expect(result.code).toBe(2);
+    expect(result.lines[0]).toMatch(/parked/);
   });
 });
 

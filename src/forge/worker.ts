@@ -17,6 +17,7 @@
  */
 import { tierOfBrief, contextFor, modelFor, modelIdFor, turnsFor } from './policy.js';
 import { Journal } from './journal.js';
+import { run as execRun, type RunRequest, type RunResult } from './exec.js';
 
 /**
  * Markers a session inherits from the session that spawned it.
@@ -107,6 +108,9 @@ export interface WorkerConfig {
   maxSessions?: number;
   parentEnv?: NodeJS.ProcessEnv;
   ticket?: string;
+  /** Runs a brief's declared verification commands. Overridable so a specimen can record
+   *  calls instead of spawning a real process; defaults to `exec.ts`'s own `run`. */
+  exec?: (request: RunRequest) => Promise<RunResult>;
 }
 
 export interface WorkerResult {
@@ -117,7 +121,40 @@ export interface WorkerResult {
   handoffs: number;
   turns: number;
   context: number;
-  verdict: 'done' | 'exhausted' | 'parked';
+  /**
+   * `unverified` is what `forge_done` alone used to be treated as `done`: a brief with no
+   * `## Verification` block never earns `done`, however clean the tool call looked.
+   */
+  verdict: 'done' | 'exhausted' | 'parked' | 'unverified';
+}
+
+/**
+ * The commands a brief declares under a `## Verification` heading, one per line inside a
+ * single fenced block. Missing entirely, or an empty block, both read as "nothing
+ * declared" -- there is no default command to fall back to, because guessing one would be
+ * exactly the unproven `done` this item exists to close off.
+ */
+export function verificationCommands(brief: string): string[] | undefined {
+  const match = /^##[ \t]+Verification[ \t]*\r?\n+```[^\n]*\r?\n([\s\S]*?)```/m.exec(brief);
+  if (!match) return undefined;
+  const lines = match[1]!.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  return lines.length ? lines : undefined;
+}
+
+/** A verification command, run and reported as pass or fail with what it printed. */
+interface VerificationOutcome {
+  command: string;
+  ok: boolean;
+  tail: string;
+}
+
+function bounceMessage(failures: VerificationOutcome[]): string {
+  return [
+    'forge_done was accepted for verification, and it failed. Fix the problem and call',
+    'forge_done again; the same commands run again before this run is honoured as done.',
+    '',
+    ...failures.flatMap((failure) => [`$ ${failure.command}`, failure.tail, '']),
+  ].join('\n');
 }
 
 /**
@@ -227,8 +264,7 @@ export class Worker {
         }
 
         if (finished) {
-          journal.append({ event: 'run.finished', run: runName, actor: 'runner', verdict: 'done' });
-          verdict = 'done';
+          verdict = await this.verifyDone(runName, session, journal);
           break;
         }
 
@@ -260,6 +296,53 @@ export class Worker {
     }
 
     return { run: this.config.run, model, className, sessions, handoffs, turns, context, verdict };
+  }
+
+  /**
+   * `forge_done` was called and its result came back clean. This is what earns it a
+   * `done` verdict instead of just taking the claim: a brief's `## Verification` commands
+   * run for real, under `exec.ts`'s own budgets, and the run only counts as done once
+   * they all come back green.
+   *
+   * A brief with no `## Verification` block has nothing to run and is `unverified`, never
+   * `done`: guessing a command would be exactly the unproven claim this exists to close
+   * off. A failing command goes back into the session as a message and the run bounces --
+   * up to three verification attempts total, whether or not the model calls `forge_done`
+   * again in between -- before it parks rather than continuing to spend on its own.
+   */
+  private async verifyDone(
+    runName: string, session: SessionResult, journal: Journal,
+  ): Promise<'done' | 'unverified' | 'parked'> {
+    const commands = verificationCommands(this.config.brief);
+    if (!commands) {
+      journal.append({ event: 'run.finished', run: runName, actor: 'runner', verdict: 'unverified' });
+      return 'unverified';
+    }
+
+    const exec = this.config.exec ?? execRun;
+    const attempts = 3;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      const outcomes: VerificationOutcome[] = [];
+      for (const command of commands) {
+        const result = await exec({
+          argv: command.split(/\s+/).filter(Boolean), cwd: this.config.cwd, owner: runName, cls: 'verify',
+        });
+        outcomes.push({ command, ok: result.ok, tail: result.tail });
+      }
+      const failed = outcomes.filter((outcome) => !outcome.ok);
+      if (!failed.length) {
+        journal.append({ event: 'run.finished', run: runName, actor: 'runner', verdict: 'done' });
+        return 'done';
+      }
+      journal.append({
+        event: 'run.verify-failed', run: runName, actor: 'runner', attempt,
+        commands: failed.map((outcome) => outcome.command),
+      });
+      if (attempt === attempts || !session.send) break;
+      await session.send(bounceMessage(failed));
+    }
+    journal.append({ event: 'run.finished', run: runName, actor: 'runner', verdict: 'parked' });
+    return 'parked';
   }
 
   /**

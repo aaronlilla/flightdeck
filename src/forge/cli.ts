@@ -32,7 +32,7 @@ import { RunInbox } from './runinbox.js';
 import { SdkEngine } from './sdkengine.js';
 import { FORGE_PORT, ForgeServer } from './server.js';
 import { Breaker, clearKillSwitch, Fleet, Lanes, readKillSwitch } from './supervisor.js';
-import { Worker, type EngineLike } from './worker.js';
+import { Worker, type EngineLike, type WorkerConfig } from './worker.js';
 
 export interface CliResult {
   code: number;
@@ -42,6 +42,8 @@ export interface CliResult {
 export interface ForgeDeps {
   /** Overrides the production engine. Every specimen injects a fake here; nothing else may. */
   engine?: EngineLike;
+  /** Overrides the verification commands' executor. Same rule: fakes only. */
+  exec?: WorkerConfig['exec'];
 }
 
 /**
@@ -225,6 +227,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         cwd: process.cwd(),
         journalPath: journalPath(),
         engine,
+        ...(deps.exec ? { exec: deps.exec } : {}),
         ...(maxContext !== undefined ? { maxContext } : {}),
         ...(maxTurns !== undefined ? { maxTurns } : {}),
       });
@@ -247,8 +250,13 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         column: 'forge', owner: 'forge', model: result.model, context: result.context,
         verdict: result.verdict, ...(started ? { session_id: started } : {}),
       });
+      // 0 done, 1 refused (handled above, before a worker ever ran), 2 parked, 3
+      // exhausted, stopped or unverified: every one of those is "not proven done," and a
+      // caller scripting off the exit code should never have to parse a verdict string to
+      // tell them apart from 0.
+      const exitCode = result.verdict === 'done' ? 0 : result.verdict === 'parked' ? 2 : 3;
       return {
-        code: 0,
+        code: exitCode,
         lines: [
           `${slug} ${result.verdict} on ${result.model}, ${result.turns} turn(s), `
             + `${result.sessions.length} session(s), ${result.handoffs} handoff(s)`,

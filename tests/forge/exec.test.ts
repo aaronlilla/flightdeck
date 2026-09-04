@@ -26,9 +26,9 @@ beforeEach(() => {
 });
 
 describe('budgets', () => {
-  it('carries the five classes Phase 1 settled on', () => {
+  it('carries the class budgets: the five from Phase 1 plus B.3.4 verify', () => {
     expect(Object.keys(CLASS_BUDGETS).sort())
-      .toEqual(['build', 'goal', 'install', 'script', 'test']);
+      .toEqual(['build', 'goal', 'install', 'script', 'test', 'verify']);
   });
 
   it('gives every class a wall and an idle budget', () => {

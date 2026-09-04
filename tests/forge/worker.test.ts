@@ -54,7 +54,10 @@ function makeWorker(script: FakeTurn[][], overrides: Record<string, unknown> = {
   } as never);
   // The concrete fake, not the interface: the specimens assert on what it recorded,
   // and EngineLike deliberately does not expose that.
-  return worker as unknown as { run: () => Promise<{ handoffs: number }>; engine: FakeEngine };
+  return worker as unknown as {
+    run: () => Promise<{ handoffs: number; verdict: string }>;
+    engine: FakeEngine;
+  };
 }
 
 /**
@@ -218,5 +221,73 @@ describe('the environment a worker is spawned with', () => {
     expect(spawned['CLAUDECODE']).toBeUndefined();
     expect(spawned['CLAUDE_PID']).toBeUndefined();
     expect(spawned['PATH']).toBe('/usr/bin');
+  });
+});
+
+describe('B.3.4: done is verified', () => {
+  it('yields unverified, never done, when the brief has no Verification block', async () => {
+    const worker = makeWorker([[{ text: 'shipped', context: 10, done: true }]]);
+    const result = await worker.run();
+
+    expect(result.verdict).toBe('unverified');
+    const finished = replay(journalPath).events
+      .find((e) => e.event === 'run.finished' && e.run === 'alpha');
+    expect(finished?.['verdict']).toBe('unverified');
+  });
+
+  it('runs the declared verification command and only marks done once it passes', async () => {
+    const brief = '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnode -e process.exit(0)\n```\n';
+    const calls: string[] = [];
+    const exec = async (request: { argv: string[] }) => {
+      calls.push(request.argv.join(' '));
+      return {
+        ok: true, tail: '', returncode: 0, argv: request.argv, owner: 'alpha',
+        startedAt: 0, durationMs: 1,
+      };
+    };
+    const worker = makeWorker([[{ text: 'shipped', context: 10, done: true }]], { brief, exec });
+
+    const result = await worker.run();
+
+    expect(result.verdict).toBe('done');
+    expect(calls).toEqual(['node -e process.exit(0)']);
+  });
+
+  it('bounces a failing verification command three times, then parks', async () => {
+    const brief = '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnpm run verify\n```\n';
+    let execCalls = 0;
+    const exec = async (request: { argv: string[] }) => {
+      execCalls += 1;
+      return {
+        ok: false, tail: 'FAIL', returncode: 1, argv: request.argv, owner: 'alpha',
+        startedAt: 0, durationMs: 1,
+      };
+    };
+    const worker = makeWorker([[{ text: 'shipped', context: 10, done: true }]], { brief, exec });
+
+    const result = await worker.run();
+
+    expect(result.verdict).toBe('parked');
+    expect(execCalls).toBe(3);
+    const bounces = replay(journalPath).events.filter((e) => e.event === 'run.verify-failed');
+    expect(bounces).toHaveLength(3);
+  });
+
+  it('the falsifier: done is never reachable without exec having actually run', async () => {
+    const brief = '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnode -e process.exit(0)\n```\n';
+    const order: string[] = [];
+    const exec = async (request: { argv: string[] }) => {
+      order.push('exec');
+      return {
+        ok: true, tail: '', returncode: 0, argv: request.argv, owner: 'alpha',
+        startedAt: 0, durationMs: 1,
+      };
+    };
+    const worker = makeWorker([[{ text: 'shipped', context: 10, done: true }]], { brief, exec });
+
+    const result = await worker.run();
+
+    expect(result.verdict).toBe('done');
+    expect(order).toEqual(['exec']);
   });
 });

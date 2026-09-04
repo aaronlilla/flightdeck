@@ -35,6 +35,8 @@ export const CLASS_BUDGETS: Record<string, Budget> = {
   build: { wall: 1800, idle: 600 },
   script: { wall: 120, idle: 60 },
   goal: { wall: 7200, idle: 900 },
+  /** A brief's `## Verification` commands, run by `forge_done` before it honours a claim. */
+  verify: { wall: 900, idle: 300 },
 };
 
 export const DEFAULT_CLASS = 'script';
