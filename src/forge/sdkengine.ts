@@ -159,10 +159,22 @@ export function toEngineConfig(options: WorkerOptions): EngineConfig {
 function extractAskQuestion(input: Record<string, unknown>): { question: string; options: string[] } {
   const questions = (input['questions']
     ?? []) as Array<{ question?: string; options?: Array<{ label?: string }> }>;
-  const first = questions[0];
+  if (questions.length <= 1) {
+    const first = questions[0];
+    return {
+      question: first?.question ?? 'a worker is asking a question',
+      options: (first?.options ?? []).map((option) => option.label ?? '').filter(Boolean),
+    };
+  }
+  // A multi-question AskUserQuestion parks on all of them, named by count, rather than
+  // silently dropping every question after the first.
+  const combined = questions
+    .map((question, index) => `Q${index + 1}: ${question.question ?? '(no question text)'}`)
+    .join('\n');
   return {
-    question: first?.question ?? 'a worker is asking a question',
-    options: (first?.options ?? []).map((option) => option.label ?? '').filter(Boolean),
+    question: `${questions.length} questions asked together:\n${combined}`,
+    options: questions.flatMap((question) => (question.options ?? []).map((option) => option.label ?? ''))
+      .filter(Boolean),
   };
 }
 

@@ -504,6 +504,28 @@ describe('canUseTool, invoked directly', () => {
     expect(inbox.all()[0]?.asked).toBe(2);
     void second;
   });
+
+  it('B.3.9: a two-question AskUserQuestion parks both, naming the count in the reason', async () => {
+    const inbox = new Inbox(join(home, 'inbox-multi'));
+    const journal = new (await import('../../src/forge/journal.js')).Journal(journalPath);
+    const canUseTool = buildCanUseTool({ run: 'r4', goal: 'r4', inbox, journal, parked: new Map() });
+
+    const askInput = {
+      questions: [
+        { question: 'dev or prod?', options: [{ label: 'dev' }, { label: 'prod' }] },
+        { question: 'now or later?', options: [{ label: 'now' }, { label: 'later' }] },
+      ],
+    };
+    const verdict = await canUseTool('AskUserQuestion', askInput);
+    journal.close();
+
+    const entry = inbox.all()[0];
+    expect(entry?.question).toMatch(/2 questions/);
+    expect(entry?.question).toContain('dev or prod?');
+    expect(entry?.question).toContain('now or later?');
+    expect(entry?.options.sort()).toEqual(['dev', 'later', 'now', 'prod'].sort());
+    expect((verdict as { message: string }).message).toMatch(/2 questions/);
+  });
 });
 
 describe('B.3.6: honest recording', () => {
