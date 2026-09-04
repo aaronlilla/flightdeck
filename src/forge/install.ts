@@ -38,12 +38,19 @@ export interface Survey {
  * not replace, and a glob that swept those up would be an installer deleting files it
  * was never asked about.
  */
-const OLD_RUNTIME = [
+export const OLD_RUNTIME = [
   /^conductor.*\.(py|cmd|json)$/i,
   /^go\.py$/i,
   /^terminals\.py$/i,
   /^tile.*\.(ps1|vbs|cmd)$/i,
 ];
+
+/** Every name in `dir` that matches one of `patterns`. The one scan both the survey and
+ *  the cutover manifest (cutover.ts) are built from, so they can never drift apart. */
+export function filesMatching(dir: string, patterns: RegExp[] = OLD_RUNTIME): string[] {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir).filter((name) => patterns.some((pattern) => pattern.test(name))).sort();
+}
 
 /** What replaces each of them, so the plan says what is lost as well as what goes. */
 const REPLACED_BY: Record<string, string> = {
@@ -83,11 +90,7 @@ const NEVER_REMOVE = [
 
 export function surveyOldRuntime(home: string): Survey {
   const coordination = join(home, '.claude', 'coordination');
-  if (!existsSync(coordination)) return { present: false, found: [], coordination };
-  const found = readdirSync(coordination)
-    .filter((name) => OLD_RUNTIME.some((pattern) => pattern.test(name)))
-    .sort()
-    .map((name) => ({ name, path: join(coordination, name) }));
+  const found = filesMatching(coordination).map((name) => ({ name, path: join(coordination, name) }));
   return { present: found.length > 0, found, coordination };
 }
 

@@ -71,14 +71,27 @@ describe('a clean cutover', () => {
     expect(journaled.slice(0, completedIndex).every((e) => e['event'] === 'cutover.moved')).toBe(true);
   });
 
-  it('cutover.completed lists both moved and missing files', () => {
+  it('B.3.9: a file absent before the cutover starts is simply not in the manifest at all', () => {
+    // The manifest is now scanned from what is actually present (filesMatching), not
+    // compared against a fixed expected list, so there is no "missing" to report: a file
+    // that was never there was never part of this cutover's work.
     rmSync(join(from, 'terminals.py'));
     runCutover({ from, retiredDir, processList: [] }, journal);
     const event = journaled.find((e) => e['event'] === 'cutover.completed');
     expect((event?.['files'] as string[]).sort()).toEqual(
       CUTOVER_FILES.filter((name) => name !== 'terminals.py').sort(),
     );
-    expect(event?.['missing']).toEqual(['terminals.py']);
+    expect(event?.['missing']).toBeUndefined();
+  });
+
+  it('B.3.9: the manifest is derived from install.ts\'s detection list, not a hardcoded four', () => {
+    // A fifth file the fixed CUTOVER_FILES array never named, but which install.ts's own
+    // OLD_RUNTIME patterns match (a second tile script): if the manifest were still the
+    // hardcoded four, this would be left behind.
+    writeFileSync(join(from, 'tile-watch-2.cmd'), '# extra\n', 'utf8');
+    const result = runCutover({ from, retiredDir, processList: [] }, journal);
+    expect(result.moved).toContain('tile-watch-2.cmd');
+    expect(existsSync(join(retiredDir, 'tile-watch-2.cmd'))).toBe(true);
   });
 });
 
