@@ -158,6 +158,12 @@ export interface CanUseToolDeps {
   run: string;
   inbox: Inbox;
   journal: Journal;
+  /**
+   * The park state: run name to the ask key it is parked on. Shared with the PreToolUse
+   * hook (`buildPreToolUseHook`) built for the same run, so a deny here is what makes
+   * every later tool call on this run deny too, until `SdkEngine.answer` clears it.
+   */
+  parked: Map<string, string>;
 }
 
 /**
@@ -167,7 +173,9 @@ export interface CanUseToolDeps {
  * and every allowed-tools rule let through still lands here if nothing else answered it,
  * and a headless run has nobody at the terminal to answer a prompt. `AskUserQuestion` gets
  * a named park key in the inbox on top of the deny, because a worker that hits it is
- * asking something a person has to decide, not something the run can route around.
+ * asking something a person has to decide, not something the run can route around. It also
+ * sets the run's entry in `parked`, which is what turns "this one call was denied" into
+ * "nothing on this run moves again until a person answers."
  */
 export function buildCanUseTool(deps: CanUseToolDeps) {
   return async (toolName: string, input: Record<string, unknown>) => {
@@ -176,9 +184,14 @@ export function buildCanUseTool(deps: CanUseToolDeps) {
       const entry = deps.inbox.raise({
         run: deps.run, question: asked.question, options: asked.options, kind: 'question',
       });
+      deps.parked.set(deps.run, entry.key);
       deps.journal.append({
         event: 'permission.denied', run: deps.run, actor: 'runner', tool: toolName,
         reason: `parking on ${entry.key}`,
+      });
+      deps.journal.append({
+        event: 'run.parked', run: deps.run, actor: 'runner', key: entry.key,
+        reason: `parking on ${entry.key}: ${asked.question}`,
       });
       return {
         behavior: 'deny' as const,
@@ -211,6 +224,43 @@ export function buildInboxHook(deps: InboxHookDeps) {
       deps.journal.append({ event: 'inbox.delivered', run: deps.run, actor: 'runner', via: 'hook' });
     }
     return { decision: undefined, ...(additionalContext ? { additionalContext } : {}) };
+  };
+}
+
+export interface PreToolUseHookDeps {
+  run: string;
+  journal: Journal;
+  /** Shared with `buildCanUseTool`: run name to the ask key it is parked on. */
+  parked: Map<string, string>;
+  deliverVia: 'hook' | 'stream';
+}
+
+/**
+ * The PreToolUse hook a live run's engine is opened with. It sees every tool call, not
+ * only the ones a permission rule would otherwise route to `canUseTool`, which is what
+ * makes it the place a park actually holds: a deny here happens before the tool runs, on
+ * every call, for as long as `parked` names this run.
+ *
+ * The park check runs first and short-circuits: a parked run gets no inbox delivery
+ * either, because there is nothing left for it to act on until the park clears.
+ */
+export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
+  const inboxHook = deps.deliverVia === 'hook' ? buildInboxHook({ run: deps.run, journal: deps.journal }) : undefined;
+  return async (call: { toolName: string; input: Record<string, unknown>; toolUseId: string }):
+    Promise<PreToolVerdict> => {
+    const key = deps.parked.get(deps.run);
+    if (key) {
+      deps.journal.append({
+        event: 'permission.denied', run: deps.run, actor: 'runner', tool: call.toolName,
+        reason: `parked on ${key}`,
+      });
+      return {
+        decision: 'deny',
+        reason: `parked on ${key}: this run takes no further tool call until that question is answered`,
+      };
+    }
+    if (inboxHook) return inboxHook(call);
+    return { decision: undefined };
   };
 }
 
@@ -267,6 +317,11 @@ export interface SdkEngineDeps {
    */
   deliverVia?: 'hook' | 'stream';
   queryFn?: QueryFn;
+  /**
+   * Run name to the ask key it is parked on. Defaults to a fresh map: production has one
+   * `SdkEngine` per `forge run` process, so nothing outside a specimen needs to share it.
+   */
+  parked?: Map<string, string>;
 }
 
 /**
@@ -293,9 +348,20 @@ export class SdkEngine implements EngineLike {
    */
   private readonly journal: Journal;
 
+  /** Run name to the ask key it is parked on. Shared by `canUseTool` and the PreToolUse hook. */
+  private readonly parked: Map<string, string>;
+
+  /**
+   * The live `Engine` for each run this instance has started, kept for the life of this
+   * `SdkEngine` so `answer()` can push into a session that is still open. Cleared by
+   * `close()`, which is called once per whole chain, matching the journal handle above.
+   */
+  private readonly liveEngines = new Map<string, Engine>();
+
   constructor(private readonly deps: SdkEngineDeps) {
     this.deliverVia = deps.deliverVia ?? 'hook';
     this.journal = new Journal(deps.journalPath);
+    this.parked = deps.parked ?? new Map();
   }
 
   async run(request: SessionRequest): Promise<SessionResult> {
@@ -345,15 +411,16 @@ export class SdkEngine implements EngineLike {
       env: workerOptions.env,
       maxTurns: workerOptions.maxTurns,
       mcpServers: { forge: buildForgeMcpServer(handlers) },
-      canUseTool: buildCanUseTool({ run: request.run, inbox, journal }) as never,
-      ...(this.deliverVia === 'hook'
-        ? { onToolCall: buildInboxHook({ run: request.run, journal }) }
-        : {}),
+      canUseTool: buildCanUseTool({ run: request.run, inbox, journal, parked: this.parked }) as never,
+      onToolCall: buildPreToolUseHook({
+        run: request.run, journal, parked: this.parked, deliverVia: this.deliverVia,
+      }),
       ...(workerOptions.resume ? { resume: workerOptions.resume } : {}),
     };
 
     const engine = new Engine(this.deps.queryFn);
     engine.start(engineConfig);
+    this.liveEngines.set(request.run, engine);
 
     // Each assistant message's usage already carries the whole context of that turn --
     // uncached input plus cache read plus cache creation is the entire prompt that turn
@@ -466,8 +533,38 @@ export class SdkEngine implements EngineLike {
     };
   }
 
+  /**
+   * `forge answer KEY TEXT`, for a run this instance itself has a live session for.
+   *
+   * Only delivers when both hold: the run is actually parked on this exact key (answering
+   * a stale or wrong key does nothing, on purpose -- a park exists so a decision made for
+   * a different question can never be mistaken for this one), and this process still holds
+   * that run's live engine. The second condition fails across a process boundary (a
+   * separate `forge answer` invocation against a run some other `forge run` process owns),
+   * which is what `RunInbox`-based delivery and session-id resume exist to cover instead.
+   */
+  async answer(run: string, key: string, text: string): Promise<{ delivered: boolean }> {
+    if (this.parked.get(run) !== key) return { delivered: false };
+    this.parked.delete(run);
+    this.journal.append({ event: 'run.resumed', run, actor: 'console', key });
+    const engine = this.liveEngines.get(run);
+    if (!engine) return { delivered: false };
+    await new Promise<void>((resolve) => {
+      const off = engine.onEvent((event) => {
+        if (event.type === 'turn-complete') {
+          off();
+          resolve();
+        }
+      });
+      engine.send(text);
+    });
+    return { delivered: true };
+  }
+
   /** Releases the journal handle. Call once the whole chain, not one session, is done. */
   close(): void {
     this.journal.close();
+    this.liveEngines.clear();
+    this.parked.clear();
   }
 }

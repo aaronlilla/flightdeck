@@ -62,6 +62,8 @@ export interface RunState {
   className?: string;
   /** When this run last produced any journal event, for liveness's idle signal. */
   lastEventAt: number;
+  /** The ask key this run is parked on, while `state` is `'parked'`. */
+  parkKey?: string;
   /** The tool call in flight, when the last event named one and none has closed it since. */
   currentTool?: { name: string; startedAt: number };
 }
@@ -223,7 +225,12 @@ export function replay(path: string): FleetState {
       case 'run.parked':
         run.state = 'parked';
         if (row.verdict) run.verdict = row.verdict;
+        if (typeof row['key'] === 'string') run.parkKey = row['key'];
         delete run.currentTool;
+        break;
+      case 'run.resumed':
+        run.state = 'started';
+        delete run.parkKey;
         break;
       case 'tool.start':
         run.currentTool = { name: String(row['tool'] ?? ''), startedAt: row.at };

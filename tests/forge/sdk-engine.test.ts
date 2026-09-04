@@ -19,7 +19,7 @@ import { INHERITED, Worker } from '../../src/forge/worker.js';
 import { replay } from '../../src/forge/journal.js';
 import { RunInbox } from '../../src/forge/runinbox.js';
 import { Inbox } from '../../src/forge/inbox.js';
-import { buildCanUseTool, deliverViaStream, SdkEngine } from '../../src/forge/sdkengine.js';
+import { buildCanUseTool, buildPreToolUseHook, deliverViaStream, SdkEngine } from '../../src/forge/sdkengine.js';
 import { Journal } from '../../src/forge/journal.js';
 
 let home: string;
@@ -389,7 +389,7 @@ describe('canUseTool, invoked directly', () => {
   it('denies an arbitrary tool and journals permission.denied', async () => {
     const inbox = new Inbox(join(home, 'inbox2'));
     const journal = new (await import('../../src/forge/journal.js')).Journal(journalPath);
-    const canUseTool = buildCanUseTool({ run: 'r2', inbox, journal });
+    const canUseTool = buildCanUseTool({ run: 'r2', inbox, journal, parked: new Map() });
 
     const verdict = await canUseTool('Bash', { command: 'rm -rf /' });
     expect(verdict.behavior).toBe('deny');
@@ -403,7 +403,7 @@ describe('canUseTool, invoked directly', () => {
     const inboxDir = join(home, 'inbox3');
     const inbox = new Inbox(inboxDir);
     const journal = new (await import('../../src/forge/journal.js')).Journal(journalPath);
-    const canUseTool = buildCanUseTool({ run: 'r3', inbox, journal });
+    const canUseTool = buildCanUseTool({ run: 'r3', inbox, journal, parked: new Map() });
 
     const askInput = {
       questions: [{ question: 'dev or prod?', header: 'env',
@@ -418,6 +418,95 @@ describe('canUseTool, invoked directly', () => {
     expect(inbox.all()).toHaveLength(1);
     expect(inbox.all()[0]?.asked).toBe(2);
     void second;
+  });
+});
+
+describe('B.3.1: park is a state', () => {
+  it('canUseTool parks the run and the pretool hook denies every tool call until answered', async () => {
+    const parked = new Map<string, string>();
+    const inbox = new Inbox(join(home, 'inbox-park'));
+    const journal = new Journal(journalPath);
+    const canUseTool = buildCanUseTool({ run: 'park-run', inbox, journal, parked });
+
+    const askInput = {
+      questions: [{ question: 'dev or prod?', header: 'env',
+        options: [{ label: 'dev', description: '' }, { label: 'prod', description: '' }] }],
+    };
+    await canUseTool('AskUserQuestion', askInput);
+    const key = parked.get('park-run');
+    expect(key).toBeTruthy();
+
+    const hook = buildPreToolUseHook({ run: 'park-run', parked, journal, deliverVia: 'hook' });
+    const denied = await hook({ toolName: 'Bash', input: { command: 'npm test' }, toolUseId: 'tu-1' });
+    expect(denied.decision).toBe('deny');
+    expect(denied.reason).toContain(key);
+
+    journal.close();
+    const state = replay(journalPath);
+    expect(state.events.some((e) => e.event === 'permission.denied' && e.run === 'park-run'
+      && String(e['reason'] ?? '').includes(key!))).toBe(true);
+  });
+
+  it('the falsifier: a tool call after the ask still executes if the guard is skipped', async () => {
+    // Same setup as above, but with an empty `parked` map, to prove the hook only denies
+    // because the map says the run is parked, never unconditionally.
+    const parked = new Map<string, string>();
+    const journal = new Journal(journalPath);
+    const hook = buildPreToolUseHook({ run: 'unparked-run', parked, journal, deliverVia: 'hook' });
+    const verdict = await hook({ toolName: 'Bash', input: {}, toolUseId: 'tu-1' });
+    expect(verdict.decision).toBeUndefined();
+  });
+
+  it('forge answer clears the park and delivers the answer verbatim as the next user message', async () => {
+    let seenPrompts: string[] = [];
+    const fn = ((params: { prompt: string | AsyncIterable<unknown>; options?: Options }) => {
+      const promptIter = params.prompt as AsyncIterable<{ message: { content: string } }>;
+      async function* generate() {
+        yield {
+          type: 'system', subtype: 'init', session_id: 's', model: '', cwd: '', tools: [],
+          slash_commands: [],
+        };
+        for await (const pushed of promptIter) {
+          seenPrompts.push(pushed.message.content);
+          yield {
+            type: 'assistant', session_id: 's',
+            message: { model: '', content: [{ type: 'text', text: 'ack' }],
+              usage: { input_tokens: 1, output_tokens: 1 } },
+          };
+          yield { type: 'result', subtype: 'success', is_error: false, duration_ms: 1 };
+        }
+      }
+      return generate() as unknown as Query;
+    }) as unknown as QueryFn;
+
+    const parked = new Map<string, string>([['answer-run', 'abc123']]);
+    const engine = new SdkEngine({
+      journalPath, inboxDir: join(home, 'inbox-park2'), gotchasDir: join(home, 'gotchas-park'),
+      queryFn: fn, parked,
+    });
+    await engine.run({ ...REQUEST, run: 'answer-run', env: { PATH: '/usr/bin' } });
+
+    const result = await engine.answer('answer-run', 'abc123', 'go with dev');
+    expect(result.delivered).toBe(true);
+    expect(seenPrompts).toContain('go with dev');
+    expect(parked.has('answer-run')).toBe(false);
+
+    const state = replay(journalPath);
+    expect(state.events.some((e) => e.event === 'run.resumed' && e.run === 'answer-run')).toBe(true);
+  });
+
+  it('the falsifier: answering the wrong key delivers nothing', async () => {
+    const { fn } = fakeQuery([[{ text: 'ok' }]]);
+    const parked = new Map<string, string>([['wrong-key-run', 'real-key']]);
+    const engine = new SdkEngine({
+      journalPath, inboxDir: join(home, 'inbox-park3'), gotchasDir: join(home, 'gotchas-park3'),
+      queryFn: fn, parked,
+    });
+    await engine.run({ ...REQUEST, run: 'wrong-key-run', env: { PATH: '/usr/bin' } });
+
+    const result = await engine.answer('wrong-key-run', 'nope', 'go with dev');
+    expect(result.delivered).toBe(false);
+    expect(parked.get('wrong-key-run')).toBe('real-key');
   });
 });
 

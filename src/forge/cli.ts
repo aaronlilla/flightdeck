@@ -269,9 +269,29 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       if (!key || !answer.length) {
         return { code: 2, lines: ['forge answer needs a key and an answer'] };
       }
-      const answered = inbox.answer(key, answer.join(' '));
+      const answerText = answer.join(' ');
+      const answered = inbox.answer(key, answerText);
       if (!answered) return { code: 1, lines: [`nothing asked ${key}`] };
-      return { code: 0, lines: [`answered ${key}; ${answered.runs.join(', ')} can resume`] };
+      // A run this process itself holds the live session for (deps.engine, injected by a
+      // specimen or by `forge run` calling straight through) is answered in place. Every
+      // run also gets its answer queued through the inbox, which is what reaches a run
+      // this process cannot see directly: another `forge run` process, or a segment that
+      // has already ended.
+      const delivered: string[] = [];
+      for (const run of answered.runs) {
+        new RunInbox(run).send(`Question: ${answered.question}\nAnswer: ${answerText}`, 'console');
+        if (deps.engine instanceof SdkEngine) {
+          const result = await deps.engine.answer(run, key, answerText);
+          if (result.delivered) delivered.push(run);
+        }
+      }
+      return {
+        code: 0,
+        lines: [
+          `answered ${key}; ${answered.runs.join(', ')} can resume`,
+          delivered.length ? `delivered in place to: ${delivered.join(', ')}` : 'queued for pickup on next tool call',
+        ],
+      };
     }
 
     case 'stop': {
