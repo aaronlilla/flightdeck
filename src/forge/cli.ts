@@ -74,23 +74,37 @@ function snapshotRuns(state: ReturnType<typeof replay>): Array<{
  * `--max-turns N`, and whatever words are left over become the condition.
  */
 function parseRunArgs(rest: string[]): {
-  dryRun: boolean; maxContext?: number; maxTurns?: number; condition: string;
+  dryRun: boolean; maxContext?: number; maxTurns?: number; condition: string; invalid?: string;
 } {
   let dryRun = false;
   let maxContext: number | undefined;
   let maxTurns: number | undefined;
+  let invalid: string | undefined;
   const words: string[] = [];
   for (let index = 0; index < rest.length; index += 1) {
     const token = rest[index]!;
     if (token === '--dry-run') { dryRun = true; continue; }
-    if (token === '--max-context') { maxContext = Number(rest[index += 1]); continue; }
-    if (token === '--max-turns') { maxTurns = Number(rest[index += 1]); continue; }
+    if (token === '--max-context') {
+      const raw = rest[index += 1];
+      const value = Number(raw);
+      if (!Number.isFinite(value)) invalid ??= `--max-context needs a number, got ${raw ?? '(nothing)'}`;
+      maxContext = value;
+      continue;
+    }
+    if (token === '--max-turns') {
+      const raw = rest[index += 1];
+      const value = Number(raw);
+      if (!Number.isFinite(value)) invalid ??= `--max-turns needs a number, got ${raw ?? '(nothing)'}`;
+      maxTurns = value;
+      continue;
+    }
     words.push(token);
   }
   return {
     dryRun, condition: words.join(' '),
     ...(maxContext !== undefined ? { maxContext } : {}),
     ...(maxTurns !== undefined ? { maxTurns } : {}),
+    ...(invalid ? { invalid } : {}),
   };
 }
 
@@ -201,7 +215,12 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       } catch (error) {
         return { code: 2, lines: [`cannot read ${briefPath}: ${(error as Error).message}`] };
       }
-      const { dryRun, maxContext, maxTurns, condition } = parseRunArgs(rest.slice(1));
+      const { dryRun, maxContext, maxTurns, condition, invalid } = parseRunArgs(rest.slice(1));
+      if (invalid) {
+        // Refused before checkLaunch and before any lane is written: a NaN ceiling never
+        // fires, which is the exact silent-unbounded-run this check exists to close.
+        return { code: 2, lines: [`refusing to start: ${invalid}`] };
+      }
       const verdict = checkLaunch({
         brief,
         condition: condition || 'Work the brief to completion.',

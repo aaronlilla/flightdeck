@@ -139,6 +139,25 @@ describe('forge answer', () => {
 });
 
 describe('forge run', () => {
+  it('B.3.9: refuses a non-numeric --max-context rather than launching with a NaN ceiling', async () => {
+    const brief = join(home, 'ok.md');
+    writeFileSync(brief, '# Goal\n\nDo the thing.\n', 'utf8');
+    const result = await forge(['run', brief, '--max-context', 'abc']);
+    expect(result.code).toBe(2);
+    expect(result.lines.join(' ')).toMatch(/--max-context needs a number/);
+    expect(lanes().get('ok')).toBeUndefined();
+  });
+
+  it('B.3.9: refuses a --max-turns with no value at all', async () => {
+    const brief = join(home, 'ok.md');
+    writeFileSync(brief, '# Goal\n\nDo the thing.\n', 'utf8');
+    const result = await forge(['run', brief, '--max-turns']);
+    expect(result.code).toBe(2);
+    expect(result.lines.join(' ')).toMatch(/--max-turns needs a number/);
+  });
+});
+
+describe('forge run', () => {
   it('refuses a brief that opens a websocket Monitor', async () => {
     const brief = join(home, 'bad.md');
     writeFileSync(brief, 'Open Monitor({ws:{url:"ws://127.0.0.1:4100"}}) first.\n', 'utf8');
