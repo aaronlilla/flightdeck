@@ -26,6 +26,10 @@ let base: string;
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'forge-server-'));
+  // ensureServerToken() falls back to serverTokenPath(), which resolves through
+  // forgeHome(): without this every specimen here would mint (or read) a token from this
+  // machine's real ~/.forge rather than the test's own temp directory.
+  process.env['FORGE_HOME'] = dir;
   const lanes = new Lanes(join(dir, 'lanes'));
   lanes.put('alpha', {
     column: 'c', model: 'claude-sonnet-5', context: 42_000, cost_usd: 1.25,
@@ -175,7 +179,7 @@ describe('POST /answer', () => {
     const entry = server.inbox.raise({ run: 'alpha', question: 'Which environment?' });
     const response = await fetch(`${base}/answer`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', 'x-forge-token': server.token },
       body: JSON.stringify({ key: entry.key, answer: 'staging' }),
     });
 
@@ -187,7 +191,7 @@ describe('POST /answer', () => {
   it('refuses an answer to a key nobody asked', async () => {
     const response = await fetch(`${base}/answer`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', 'x-forge-token': server.token },
       body: JSON.stringify({ key: 'not-a-key', answer: 'yes' }),
     });
     expect(response.status).toBe(404);
@@ -196,7 +200,7 @@ describe('POST /answer', () => {
   it('refuses a body it cannot read rather than guessing', async () => {
     const response = await fetch(`${base}/answer`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', 'x-forge-token': server.token },
       body: 'not json',
     });
     expect(response.status).toBe(400);
@@ -204,6 +208,60 @@ describe('POST /answer', () => {
 
   it('refuses a GET, because answering is not a safe method', async () => {
     expect((await fetch(`${base}/answer`)).status).toBe(405);
+  });
+
+  it('B.3.9: refuses a request with no token', async () => {
+    const entry = server.inbox.raise({ run: 'alpha', question: 'Which environment?' });
+    const response = await fetch(`${base}/answer`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ key: entry.key, answer: 'staging' }),
+    });
+    expect(response.status).toBe(401);
+    expect(server.inbox.entry(entry.key)?.answer).toBeUndefined();
+  });
+
+  it('B.3.9: refuses a request with the wrong token', async () => {
+    const entry = server.inbox.raise({ run: 'alpha', question: 'Which environment?' });
+    const response = await fetch(`${base}/answer`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forge-token': 'not-the-token' },
+      body: JSON.stringify({ key: entry.key, answer: 'staging' }),
+    });
+    expect(response.status).toBe(401);
+    expect(server.inbox.entry(entry.key)?.answer).toBeUndefined();
+  });
+
+  it('B.3.9: refuses a request from a different Origin', async () => {
+    const entry = server.inbox.raise({ run: 'alpha', question: 'Which environment?' });
+    const response = await fetch(`${base}/answer`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json', 'x-forge-token': server.token, origin: 'http://evil.example',
+      },
+      body: JSON.stringify({ key: entry.key, answer: 'staging' }),
+    });
+    expect(response.status).toBe(403);
+    expect(server.inbox.entry(entry.key)?.answer).toBeUndefined();
+  });
+
+  it('B.3.9: refuses a null body', async () => {
+    const response = await fetch(`${base}/answer`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forge-token': server.token },
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it('B.3.9: refuses an oversized body', async () => {
+    const entry = server.inbox.raise({ run: 'alpha', question: 'Which environment?' });
+    const response = await fetch(`${base}/answer`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forge-token': server.token },
+      body: JSON.stringify({ key: entry.key, answer: 'x'.repeat(100_000) }),
+    });
+    expect(response.status).toBe(413);
+    expect(server.inbox.entry(entry.key)?.answer).toBeUndefined();
   });
 });
 

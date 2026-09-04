@@ -14,15 +14,27 @@
  * dependency in a repository whose dependency policy is not mine to set costs more than
  * eighty lines.
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import type { Duplex } from 'node:stream';
 
 import type { Inbox } from './inbox.js';
 import { replay } from './journal.js';
 import type { StuckSignal } from './liveness.js';
+import { serverTokenPath } from './paths.js';
 import type { LaneRecord, Lanes } from './supervisor.js';
+
+/** Reads the server's own bearer token, minting one on first use. */
+export function ensureServerToken(path: string = serverTokenPath()): string {
+  if (existsSync(path)) return readFileSync(path, 'utf8').trim();
+  const token = randomBytes(24).toString('hex');
+  writeFileSync(path, token, 'utf8');
+  return token;
+}
+
+/** The maximum a request body may be before it is refused outright. */
+export const MAX_BODY_BYTES = 64 * 1024;
 
 export const FORGE_PORT = 4120;
 
@@ -44,12 +56,17 @@ export interface ForgeServerOptions {
    * from "here is a process record" instead of field-sniffing an entry with no `pid`.
    */
   fleet?: () => Array<Record<string, unknown>> | { ok: false; reason: string };
+  /** Overrides the token minted from `serverTokenPath()`. A specimen only. */
+  token?: string;
 }
 
 export class ForgeServer {
   readonly host: string;
 
   readonly inbox: Inbox;
+
+  /** The bearer token `/answer` requires, in the `X-Forge-Token` header. */
+  readonly token: string;
 
   private readonly lanes: Lanes;
 
@@ -84,6 +101,7 @@ export class ForgeServer {
     this.host = options.host ?? '127.0.0.1';
     this.stuckFn = options.stuck ?? (() => []);
     this.fleetFn = options.fleet ?? (() => []);
+    this.token = options.token ?? ensureServerToken();
   }
 
   get listeners(): number {
@@ -201,20 +219,52 @@ export class ForgeServer {
     return json(response, 404, { error: `nothing serves ${path}` });
   }
 
+  /**
+   * A request's Origin, allowed only when it names this server itself or is absent
+   * entirely (a `curl`, a script, `forge answer` itself -- none of which set one). Any
+   * other Origin is a browser tab on some other page reaching for a local port, which is
+   * exactly the CSRF this control exists to refuse.
+   */
+  private originAllowed(request: IncomingMessage): boolean {
+    const origin = request.headers.origin;
+    if (!origin) return true;
+    return origin === `http://${this.host}:${this.port}` || origin === `http://127.0.0.1:${this.port}`;
+  }
+
   private answer(request: IncomingMessage, response: ServerResponse): void {
+    if (!this.originAllowed(request)) {
+      json(response, 403, { error: 'that origin is not this server' });
+      return;
+    }
+    const presented = request.headers['x-forge-token'];
+    if (presented !== this.token) {
+      json(response, 401, { error: 'missing or wrong X-Forge-Token' });
+      return;
+    }
+
     let body = '';
-    request.on('data', (chunk) => { body += chunk; });
+    let overLimit = false;
+    request.on('data', (chunk: Buffer) => {
+      if (overLimit) return;
+      body += chunk;
+      if (Buffer.byteLength(body) > MAX_BODY_BYTES) {
+        overLimit = true;
+        json(response, 413, { error: `body over ${MAX_BODY_BYTES} bytes` });
+        request.destroy();
+      }
+    });
     request.on('end', () => {
-      let parsed: { key?: string; answer?: string };
+      if (overLimit) return;
+      let parsed: { key?: string; answer?: string } | null;
       try {
-        parsed = JSON.parse(body) as { key?: string; answer?: string };
+        parsed = body ? JSON.parse(body) as { key?: string; answer?: string } : null;
       } catch {
         // A body that will not parse is not an answer. Guessing what was meant here
         // would resume a run on a decision nobody made.
         json(response, 400, { error: 'the body was not JSON' });
         return;
       }
-      if (!parsed.key || parsed.answer === undefined) {
+      if (!parsed || !parsed.key || parsed.answer === undefined) {
         json(response, 400, { error: 'an answer needs a key and an answer' });
         return;
       }

@@ -46,6 +46,11 @@ export function registryDir(): string {
   return join(forgeHome(), 'registry');
 }
 
+/** The 4120 server's own bearer token, read fresh on every request (B.3.9). */
+export function serverTokenPath(): string {
+  return join(forgeHome(), 'server-token');
+}
+
 /** The per-run directory: logs, dumps, and the run's own inbox. */
 export function runDir(run: string): string {
   return join(runsDir(), run.replace(/[^A-Za-z0-9._-]/g, '_'));
