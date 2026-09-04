@@ -2,15 +2,15 @@
  * Where Forge's worker config directory comes from.
  *
  * A built `forge` defaulted to `~/.forge/claude`, where nothing has ever logged in, even
- * when a dedicated fleet login exists at `~/.forge/fleet-claude`. That candidate is
- * forge-owned rather than `~/.claude-fleet` on purpose: the latter is confirmed live on
- * the machine this shipped from as Aaron's own account-wide Claude Code config directory,
- * not something forge workers may share. The `exists` parameter lets these specimens pin
- * both branches without depending on whether this machine happens to have a real fleet
- * login provisioned.
+ * when `~/.claude-fleet` -- the account every worker already launches with -- sat one
+ * directory over. An earlier version of this function preferred a forge-owned
+ * `~/.forge/fleet-claude` over `~/.claude-fleet` on the wrong premise that the latter was
+ * Aaron's own interactive directory (it is `~/.claude`); B.3.9 corrects the choice. The
+ * `exists` parameter lets these specimens pin both branches without depending on whether
+ * this machine happens to have a real fleet login provisioned.
  */
 import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -26,11 +26,11 @@ beforeEach(() => {
 });
 
 describe('choosing the worker config directory', () => {
-  it('prefers the fleet directory when the injected reader says it exists', () => {
-    const choice = fleetConfigDirChoice(() => true);
+  it('B.3.9: prefers ~/.claude-fleet when the injected reader says it exists', () => {
+    const fleetDir = join(homedir(), '.claude-fleet');
+    const choice = fleetConfigDirChoice((path) => path === fleetDir);
     expect(choice.source).toBe('fleet');
-    expect(choice.dir).toContain(home);
-    expect(choice.dir).toContain('fleet-claude');
+    expect(choice.dir).toBe(fleetDir);
   });
 
   it('falls back to the forge directory when the injected reader says the fleet one is absent', () => {
