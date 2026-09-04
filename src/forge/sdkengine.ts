@@ -475,12 +475,27 @@ export class SdkEngine implements EngineLike {
       const off = engine.onEvent((event) => {
         switch (event.type) {
           case 'usage':
+            // A subagent's own Task-tool conversation, not the main loop this ceiling and
+            // this turn stream belong to: its tokens are real spend (journaled below, so
+            // replay's cost fold still counts them) but not context the main loop is
+            // carrying, and it is not a turn of the main loop's own stream either.
+            if (event.parentToolUseId) {
+              journal.append({
+                event: 'subagent.usage', run: request.run, actor: 'worker', model: event.model,
+                usage: {
+                  input: event.input, cacheRead: event.cacheRead,
+                  cacheCreation: event.cacheCreation, output: event.output,
+                },
+              });
+              break;
+            }
             flush();
             latestContext = event.input + event.cacheRead + event.cacheCreation;
             if (request.ceiling !== undefined && latestContext >= request.ceiling) ceilingHit = true;
             pending = {
               text: '',
               context: latestContext,
+              model: event.model,
               usage: {
                 input: event.input, cacheRead: event.cacheRead,
                 cacheCreation: event.cacheCreation, output: event.output,

@@ -36,6 +36,10 @@ export type EngineEvent =
       cacheRead: number;
       cacheCreation: number;
       output: number;
+      /** Set when this message belongs to a subagent's own Task tool call, not the main
+       *  loop. A ceiling reads only the main loop's own context; a subagent's usage is
+       *  its own conversation and does not belong in that number. */
+      parentToolUseId: string | null;
     }
   | { type: 'compact-boundary'; trigger: string }
   | { type: 'engine-error'; message: string; fatal: boolean }

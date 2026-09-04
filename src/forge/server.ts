@@ -16,6 +16,7 @@
  */
 import { createHash } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { existsSync, statSync } from 'node:fs';
 import type { Duplex } from 'node:stream';
 
 import type { Inbox } from './inbox.js';
@@ -149,15 +150,23 @@ export class ForgeServer {
       };
     });
 
+    // Everything the journal backs is stamped from the journal file's own mtime, a real
+    // source read, never Date.now(): a verified_at that only ever equals "now" is not a
+    // freshness claim, it is the request time wearing one. stuck and fleet have no file
+    // behind them at all -- they are computed fresh on every call from a live process
+    // scan -- so they carry observed_at instead, honestly naming what they are: seen just
+    // now, not read from something that was written down.
+    const journalMtime = existsSync(this.journalPath) ? statSync(this.journalPath).mtimeMs : now;
+
     return {
       at: now,
       lanes: { value: lanes, verified_at: now },
-      burn: { value: fleet.burn, verified_at: now },
-      handoffs: { value: fleet.handoffs, verified_at: now },
-      torn: { value: fleet.torn, verified_at: now },
+      burn: { value: fleet.burn, verified_at: journalMtime },
+      handoffs: { value: fleet.handoffs, verified_at: journalMtime },
+      torn: { value: fleet.torn, verified_at: journalMtime },
       inbox_open: { value: this.inbox.open().length, verified_at: this.inbox.mtime() ?? now },
-      stuck: { value: this.stuckFn(), verified_at: now },
-      fleet: { value: this.fleetFn(), verified_at: now },
+      stuck: { value: this.stuckFn(), observed_at: now },
+      fleet: { value: this.fleetFn(), observed_at: now },
     };
   }
 

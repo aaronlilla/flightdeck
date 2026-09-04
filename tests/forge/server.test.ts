@@ -9,7 +9,7 @@
  * Bound to loopback. This serves the fleet's state and takes answers that resume runs, so
  * a wrong bind address is a control surface on the network.
  */
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -102,6 +102,23 @@ describe('GET /state', () => {
     const state = await (await fetch(`${base}/state`)).json() as Record<string, unknown>;
     expect(state['stuck']).toHaveProperty('value');
     expect(state['fleet']).toHaveProperty('value');
+  });
+
+  it('B.3.6 sentence 1: stuck and fleet carry observed_at, not verified_at -- neither is backed by a source read', async () => {
+    const state = await (await fetch(`${base}/state`)).json() as Record<string, unknown>;
+    expect(state['stuck']).toHaveProperty('observed_at');
+    expect(state['stuck']).not.toHaveProperty('verified_at');
+    expect(state['fleet']).toHaveProperty('observed_at');
+    expect(state['fleet']).not.toHaveProperty('verified_at');
+  });
+
+  it('B.3.6 sentence 1: burn, handoffs and torn carry verified_at from the journal file\'s own mtime', async () => {
+    const state = await (await fetch(`${base}/state`)).json() as Record<string, unknown>;
+    const burn = state['burn'] as { verified_at: number };
+    // Read fresh from the file the journal actually is, not from Date.now() at request
+    // time: the falsifier this closes is a verified_at that only ever equals "now".
+    const mtime = statSync(join(dir, 'fleet.jsonl')).mtimeMs;
+    expect(burn.verified_at).toBe(mtime);
   });
 
   it('carries a failed fleet probe as its own shape, not folded into the array', async () => {

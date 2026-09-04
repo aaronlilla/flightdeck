@@ -60,6 +60,9 @@ export interface FakeTurn {
   usage?: { input: number; cacheRead: number; cacheCreation: number; output: number };
   /** Set when the session called forge_done. */
   done?: boolean;
+  /** The model that actually served this message, which a fallback reroute can make
+   *  different from the one the class asked for. */
+  model?: string;
 }
 
 export interface SessionRequest {
@@ -238,9 +241,21 @@ export class Worker {
           ...(predecessor ? { predecessor } : {}),
         });
 
-        const session = await this.engine.run({
-          run: runName, model, prompt, env, cwd: this.config.cwd, maxTurns, ceiling,
-        });
+        let session: SessionResult;
+        try {
+          session = await this.engine.run({
+            run: runName, model, prompt, env, cwd: this.config.cwd, maxTurns, ceiling,
+          });
+        } catch (error) {
+          // An engine that throws (the subprocess exited, a fatal engine-error) must not
+          // take this call down with it: the run is paused, honestly, with the error that
+          // actually happened, rather than an uncaught rejection nothing downstream can
+          // read as a run outcome at all.
+          const message = error instanceof Error ? error.message : String(error);
+          journal.append({ event: 'run.paused', run: runName, actor: 'runner', reason: message });
+          verdict = 'exhausted';
+          break;
+        }
         sessions.push(session.sessionId);
         this.config.onSessionStarted?.(this.config.run, session.sessionId, model);
 
@@ -255,6 +270,10 @@ export class Worker {
             actor: 'worker',
             context: turn.context,
             model,
+            // `model` above is the class-selected model this run was asked to open on;
+            // `messageModel` is what the SDK actually reported serving this specific
+            // message with, which a fallback reroute can make different.
+            ...(turn.model ? { messageModel: turn.model } : {}),
             ...(turn.usage ? { usage: turn.usage } : {}),
           });
           if (turn.done) {
@@ -280,9 +299,21 @@ export class Worker {
           break;
         }
 
-        // The ceiling. Ask for the packet, then continue as a new run on the same model.
+        if (index === maxSessions - 1) {
+          // The ceiling was hit on the last session this chain is allowed. A handoff
+          // packet with no successor to seed is a phantom: journaling run.handoff here
+          // would claim a continuation that never starts. This is exhausted, plainly.
+          journal.append({
+            event: 'run.finished', run: runName, actor: 'runner', verdict: 'exhausted',
+          });
+          verdict = 'exhausted';
+          break;
+        }
+
+        // The ceiling, with sessions left in the budget. Ask for the packet, then
+        // continue as a new run on the same model.
         const successor = `${this.config.run}-${index + 2}`;
-        const packet = await this.requestHandoff(runName, session);
+        const packet = await this.requestHandoff(runName, session, journal);
         journal.append({
           event: 'run.handoff',
           run: runName,
@@ -357,11 +388,20 @@ export class Worker {
    * the successor is told plainly that it is starting blind rather than being handed a
    * confident-looking empty packet.
    */
-  private async requestHandoff(run: string, session: SessionResult): Promise<string> {
+  private async requestHandoff(run: string, session: SessionResult, journal: Journal): Promise<string> {
     if (!session.send) {
       return `(this engine cannot resume a session; run ${run} continues without a packet)`;
     }
     const reply = await session.send(HANDOFF_REQUEST);
+    // The packet costs tokens too, and a reply this loop never journals is spend nothing
+    // else will ever see: replay's cost fold only sees a usage field on an event it reads.
+    for (const turn of reply) {
+      if (!turn.usage) continue;
+      journal.append({
+        event: 'turn.end', run, actor: 'worker', context: turn.context,
+        ...(turn.model ? { messageModel: turn.model } : {}), usage: turn.usage,
+      });
+    }
     const text = reply.map((turn) => turn.text).join('\n').trim();
     return text || `(the session at its ceiling wrote no packet; run ${run} continues blind)`;
   }

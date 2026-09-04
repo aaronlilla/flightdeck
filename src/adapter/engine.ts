@@ -282,6 +282,7 @@ export class Engine {
               ? usage.cache_creation_input_tokens
               : 0,
             output: usage.output_tokens ?? 0,
+            parentToolUseId: (message as { parent_tool_use_id?: string | null }).parent_tool_use_id ?? null,
           });
         }
         for (const block of message.message.content) {

@@ -291,3 +291,68 @@ describe('B.3.4: done is verified', () => {
     expect(order).toEqual(['exec']);
   });
 });
+
+describe('B.3.6: honest recording', () => {
+  it('sentence 6: a throw from engine.run becomes run.paused with the verbatim error, not an uncaught rejection', async () => {
+    const throwingEngine = {
+      started: [] as unknown[],
+      async run(): Promise<never> {
+        throw new Error('the SDK subprocess exited with code 1');
+      },
+    };
+    const worker = new Worker({
+      run: 'throwing-run', brief: '# Goal\n\nDo the thing.\n', briefPath: join(dir, 'brief.md'),
+      cwd: dir, journalPath, engine: throwingEngine as never,
+    });
+
+    const result = await worker.run();
+
+    expect(result.verdict).not.toBe('done');
+    const state = replay(journalPath);
+    const paused = state.events.find((e) => e.event === 'run.paused' && e.run === 'throwing-run');
+    expect(paused?.['reason']).toBe('the SDK subprocess exited with code 1');
+  });
+
+  it('sentence 7: no phantom handoff on the last permitted session', async () => {
+    // maxSessions: 1 -- this session's own ceiling hit has nowhere to hand off to.
+    const worker = makeWorker([climbing(30_000, 4)], { maxContext: 60_000, maxSessions: 1 });
+    const result = await worker.run();
+
+    expect(result.handoffs).toBe(0);
+    expect(worker.engine.started).toHaveLength(1);
+    const state = replay(journalPath);
+    expect(state.events.some((e) => e.event === 'run.handoff')).toBe(false);
+  });
+
+  it('sentence 8: the handoff reply\'s own usage is journaled, not discarded once its text is read', async () => {
+    let sendCalls = 0;
+    const engine = {
+      started: [] as { model: string; prompt: string; env: NodeJS.ProcessEnv }[],
+      async run(config: { model: string; prompt: string; env: NodeJS.ProcessEnv }) {
+        this.started.push(config);
+        return {
+          sessionId: 'session-1',
+          turns: climbing(30_000, 4),
+          async send(_prompt: string) {
+            sendCalls += 1;
+            return [{
+              text: 'packet', context: 5_000,
+              usage: { input: 5_000, cacheRead: 0, cacheCreation: 0, output: 20 },
+            }];
+          },
+        };
+      },
+    };
+    const worker = new Worker({
+      run: 'handoff-usage-run', brief: '# Goal\n\nDo the thing.\n', briefPath: join(dir, 'brief.md'),
+      cwd: dir, journalPath, engine: engine as never, maxContext: 60_000, maxSessions: 2,
+    });
+    await worker.run();
+
+    expect(sendCalls).toBe(1);
+    const state = replay(journalPath);
+    const handoffTurn = state.events.find((e) => e.event === 'turn.end' && e.run === 'handoff-usage-run'
+      && (e['usage'] as { input: number } | undefined)?.input === 5_000);
+    expect(handoffTurn).toBeDefined();
+  });
+});

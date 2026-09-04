@@ -421,6 +421,121 @@ describe('canUseTool, invoked directly', () => {
   });
 });
 
+describe('B.3.6: honest recording', () => {
+  it('sentence 3, already on main at a4c9c40: a non-fatal engine error is journaled, not dropped', async () => {
+    const fn = ((params: { prompt: string | AsyncIterable<unknown>; options?: Options }) => {
+      const promptIter = params.prompt as AsyncIterable<unknown>;
+      async function* generate() {
+        yield {
+          type: 'system', subtype: 'init', session_id: 's', model: '', cwd: '', tools: [],
+          slash_commands: [],
+        };
+        for await (const _pushed of promptIter) {
+          yield {
+            type: 'assistant', session_id: 's',
+            message: { model: '', content: [{ type: 'text', text: 'retrying' }] },
+            error: 'rate_limited',
+          };
+          yield { type: 'result', subtype: 'success', is_error: false, duration_ms: 1 };
+          return;
+        }
+      }
+      return generate() as unknown as Query;
+    }) as unknown as QueryFn;
+
+    const engine = engineFor(fn);
+    await engine.run({ ...REQUEST, run: 'error-run', env: { PATH: '/usr/bin' } });
+
+    const state = replay(journalPath);
+    const errorRow = state.events.find((e) => e.event === 'engine.error' && e.run === 'error-run');
+    expect(errorRow?.['message']).toContain('rate_limited');
+    expect(errorRow?.['fatal']).toBe(false);
+  });
+
+  // Sentence 5 ("one Journal per engine, closed with it") is also already on main at
+  // a4c9c40: SdkEngine's constructor opens exactly one Journal, reused by every session
+  // run() starts and closed once by close(). No new specimen needed -- "the journal
+  // handle across a chain" describe block above already proves state.torn stays 0 across
+  // a two-session chain, which a leaked-and-reopened handle on Windows would not survive.
+
+  it('sentence 2: journals the message\'s own serving model on turn.end, not just the class-selected one', async () => {
+    const { fn } = fakeQuery([[{
+      text: 'shipped', usage: { input: 10, cacheRead: 0, cacheCreation: 0, output: 1 },
+      toolUse: { name: 'mcp__forge__forge_done', input: { evidence: 'shipped' } },
+    }]]);
+    // The fake reports whatever model the SDK options carried; a real fallback reroute
+    // would report something different from what was asked for, which is the whole point.
+    // turn.end is journaled by Worker, which is what this drives through rather than
+    // SdkEngine.run() directly.
+    const engine = engineFor(fn);
+    const worker = new Worker({
+      run: 'model-run', brief: '# Goal\n\nDo the thing.\n', briefPath: join(home, 'brief.md'),
+      cwd: home, journalPath, engine: engine as never, maxContext: 60_000,
+    });
+    await worker.run();
+
+    const state = replay(journalPath);
+    const turnEnd = state.events.find((e) => e.event === 'turn.end' && e.run === 'model-run');
+    expect(turnEnd?.['messageModel']).toBe('claude-sonnet-5');
+  });
+
+  it('sentence 4: a subagent message (parent_tool_use_id set) is skipped for context and counted for cost', async () => {
+    const fn = ((params: { prompt: string | AsyncIterable<unknown>; options?: Options }) => {
+      const promptIter = params.prompt as AsyncIterable<unknown>;
+      async function* generate() {
+        yield {
+          type: 'system', subtype: 'init', session_id: 's', model: '', cwd: '', tools: [],
+          slash_commands: [],
+        };
+        for await (const _pushed of promptIter) {
+          yield {
+            type: 'assistant', session_id: 's', parent_tool_use_id: 'tu-agent',
+            message: {
+              model: 'claude-sonnet-5', content: [{ type: 'text', text: 'subagent working' }],
+              usage: {
+                input_tokens: 200_000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0,
+                output_tokens: 10,
+              },
+            },
+          };
+          yield {
+            type: 'assistant', session_id: 's',
+            message: {
+              model: 'claude-sonnet-5', content: [{ type: 'text', text: 'main loop' }],
+              usage: {
+                input_tokens: 100, cache_read_input_tokens: 0, cache_creation_input_tokens: 0,
+                output_tokens: 1,
+              },
+            },
+          };
+          yield { type: 'result', subtype: 'success', is_error: false, duration_ms: 1 };
+          return;
+        }
+      }
+      return generate() as unknown as Query;
+    }) as unknown as QueryFn;
+
+    const engine = engineFor(fn);
+    // request.ceiling is set below the subagent's 200,000 tokens but above the main
+    // loop's 100: if the subagent's usage were not skipped, the single turn SdkEngine
+    // hands back would carry a context at or past the ceiling. It must not, because none
+    // of that 200,000 belongs to the main loop this ceiling governs.
+    const { turns } = await engine.run({
+      ...REQUEST, run: 'subagent-run', env: { PATH: '/usr/bin' }, ceiling: 60_000,
+    });
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.context).toBe(100);
+    // Isolated from the main loop's own 100-token turn: this asserts the subagent's own
+    // 200,000 tokens were journaled for cost under their own row, not merely that some
+    // burn exists (which the main loop's turn.end would produce on its own either way).
+    const state = replay(journalPath);
+    const subagentRow = state.events.find((e) => e.event === 'subagent.usage' && e.run === 'subagent-run');
+    expect((subagentRow?.['usage'] as { input: number } | undefined)?.input).toBe(200_000);
+    expect(state.burn['sonnet']).toBeGreaterThan(0.5);
+  });
+});
+
 describe('B.3.1: park is a state', () => {
   it('canUseTool parks the run and the pretool hook denies every tool call until answered', async () => {
     const parked = new Map<string, string>();
