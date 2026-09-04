@@ -166,19 +166,37 @@ describe('the falsifier: the fake must actually be called', () => {
 });
 
 describe('the ceiling, driven by real usage events', () => {
-  it('two assistant messages whose usage sums past 60000 produce one run.handoff', async () => {
+  it('two 40000-then-25000 usage messages do not hand off under a 60000 ceiling, because each message already carries its whole context and summing them double-counts the shared prefix', async () => {
     const { fn } = fakeQuery([
       [
         { text: 'working', usage: { input: 40_000, cacheRead: 0, cacheCreation: 0, output: 10 } },
         { text: 'still working', usage: { input: 25_000, cacheRead: 0, cacheCreation: 0, output: 10 } },
       ],
-      [{ text: 'handoff packet', usage: { input: 100, cacheRead: 0, cacheCreation: 0, output: 10 } }],
       [{ text: 'done', usage: { input: 100, cacheRead: 0, cacheCreation: 0, output: 10 },
         toolUse: { name: 'mcp__forge__forge_done', input: { evidence: 'shipped' } } }],
     ]);
     const engine = engineFor(fn);
     const worker = new Worker({
       run: 'ceiling-run', brief: '# Goal\n\nDo the thing.\n', briefPath: join(home, 'brief.md'),
+      cwd: home, journalPath, engine: engine as never, maxContext: 60_000,
+    });
+    const result = await worker.run();
+
+    expect(result.handoffs).toBe(0);
+    const state = replay(journalPath);
+    expect(state.events.filter((e) => e.event === 'run.handoff')).toHaveLength(0);
+  });
+
+  it('one message of 61000 alone does hand off under a 60000 ceiling', async () => {
+    const { fn } = fakeQuery([
+      [{ text: 'working', usage: { input: 61_000, cacheRead: 0, cacheCreation: 0, output: 10 } }],
+      [{ text: 'handoff packet', usage: { input: 100, cacheRead: 0, cacheCreation: 0, output: 10 } }],
+      [{ text: 'done', usage: { input: 100, cacheRead: 0, cacheCreation: 0, output: 10 },
+        toolUse: { name: 'mcp__forge__forge_done', input: { evidence: 'shipped' } } }],
+    ]);
+    const engine = engineFor(fn);
+    const worker = new Worker({
+      run: 'ceiling-run-2', brief: '# Goal\n\nDo the thing.\n', briefPath: join(home, 'brief.md'),
       cwd: home, journalPath, engine: engine as never, maxContext: 60_000,
     });
     const result = await worker.run();

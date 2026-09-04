@@ -327,11 +327,15 @@ export class SdkEngine implements EngineLike {
     const engine = new Engine(this.deps.queryFn);
     engine.start(engineConfig);
 
-    // Context is charged again on every turn, so what the ceiling compares against is
-    // the running total across the whole run, not any one message's own usage: two
-    // messages of 40,000 and 25,000 together describe a session that has read 65,000
-    // tokens, and the second alone would look safely under a 60,000 ceiling.
-    let runningContext = 0;
+    // Each assistant message's usage already carries the whole context of that turn --
+    // uncached input plus cache read plus cache creation is the entire prompt that turn
+    // re-read, not an increment on top of the last one. So the ceiling (and the context
+    // this loop journals) reads the latest message's own usage, never a running sum:
+    // summing two 140,000-token requests would read 280,000 and hand off under a
+    // 150,000 ceiling for a session whose real context is 140,000. Cost is tracked
+    // separately, per turn, from each turn's own `usage` (see journal.ts's `costOf`),
+    // so it never needs a cumulative context total either.
+    let latestContext = 0;
     // Named per call id rather than per segment: a tool's result event carries only the
     // id it answers, not the tool's name, so the name has to be remembered from the
     // matching tool-use to journal a tool.end a reader can act on.
@@ -350,10 +354,10 @@ export class SdkEngine implements EngineLike {
         switch (event.type) {
           case 'usage':
             flush();
-            runningContext += event.input + event.cacheRead + event.cacheCreation;
+            latestContext = event.input + event.cacheRead + event.cacheCreation;
             pending = {
               text: '',
-              context: runningContext,
+              context: latestContext,
               usage: {
                 input: event.input, cacheRead: event.cacheRead,
                 cacheCreation: event.cacheCreation, output: event.output,
@@ -371,7 +375,7 @@ export class SdkEngine implements EngineLike {
             // dropped, so a forge_done or forge_handoff call can never go unrecognised on
             // the chance a message arrives with no preceding usage event.
             if (!pending) {
-              pending = { text: '', context: runningContext };
+              pending = { text: '', context: latestContext };
             }
             if (event.name === FORGE_DONE_TOOL) pending.done = true;
             if (event.name === FORGE_HANDOFF_TOOL) {
