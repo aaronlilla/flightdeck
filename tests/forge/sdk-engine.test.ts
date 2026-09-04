@@ -32,13 +32,19 @@ beforeEach(() => {
 interface ScriptedStep {
   text?: string;
   usage?: { input: number; cacheRead: number; cacheCreation: number; output: number };
-  toolUse?: { name: string; input?: Record<string, unknown> };
+  /**
+   * `isError` defaults to false, matching a tool that ran cleanly. `noResult` skips
+   * emitting the `tool_result` message at all, for a specimen that needs a tool call
+   * left hanging with no reply.
+   */
+  toolUse?: { name: string; input?: Record<string, unknown>; isError?: boolean; noResult?: boolean };
 }
 
 /**
  * A fake `query`: one script entry per prompt pushed. Each entry becomes the assistant
  * messages for that turn, followed by a `result`, matching how the real SDK answers one
- * exchange in streaming-input mode.
+ * exchange in streaming-input mode. A `toolUse` step also emits the `user` message
+ * carrying its `tool_result`, the way a real tool call resolves before the turn ends.
  */
 function fakeQuery(script: ScriptedStep[][]) {
   const calls: Array<{ options: Options }> = [];
@@ -59,10 +65,11 @@ function fakeQuery(script: ScriptedStep[][]) {
         index += 1;
         for (const step of turn) {
           const content: unknown[] = [];
+          const toolUseId = `tu-${index}`;
           if (step.text !== undefined) content.push({ type: 'text', text: step.text });
           if (step.toolUse) {
             content.push({
-              type: 'tool_use', id: `tu-${index}`, name: step.toolUse.name,
+              type: 'tool_use', id: toolUseId, name: step.toolUse.name,
               input: step.toolUse.input ?? {},
             });
           }
@@ -81,6 +88,17 @@ function fakeQuery(script: ScriptedStep[][]) {
               } : {}),
             },
           };
+          if (step.toolUse && !step.toolUse.noResult) {
+            yield {
+              type: 'user', session_id: 'sdk-fake-session',
+              message: {
+                content: [{
+                  type: 'tool_result', tool_use_id: toolUseId,
+                  is_error: step.toolUse.isError === true, content: 'ok',
+                }],
+              },
+            };
+          }
         }
         yield { type: 'result', subtype: 'success', is_error: false, duration_ms: 1 };
         if (index >= script.length) return;
@@ -227,6 +245,26 @@ describe('the ceiling, driven by real usage events', () => {
   });
 });
 
+describe('forge_done is only honoured on a clean result', () => {
+  it('an errored forge_done tool result yields run.finished with verdict stopped, not done', async () => {
+    const { fn } = fakeQuery([
+      [{ text: 'trying', usage: { input: 100, cacheRead: 0, cacheCreation: 0, output: 10 },
+        toolUse: { name: 'mcp__forge__forge_done', input: { evidence: 'shipped' }, isError: true } }],
+    ]);
+    const engine = engineFor(fn);
+    const worker = new Worker({
+      run: 'errored-done-run', brief: '# Goal\n\nDo the thing.\n', briefPath: join(home, 'brief.md'),
+      cwd: home, journalPath, engine: engine as never, maxContext: 60_000,
+    });
+    const result = await worker.run();
+
+    expect(result.verdict).not.toBe('done');
+    const state = replay(journalPath);
+    const finished = state.events.find((e) => e.event === 'run.finished' && e.run === 'errored-done-run');
+    expect(finished?.['verdict']).toBe('stopped');
+  });
+});
+
 describe('the journal handle across a chain', () => {
   it('reuses one handle across every session in a chain and closes cleanly', async () => {
     const { fn } = fakeQuery([
@@ -366,7 +404,7 @@ describe('journaling a tool call as it happens', () => {
   it('writes tool.start and tool.end so a run\'s currentTool can be read back from the journal', async () => {
     const { fn } = fakeQuery([
       [
-        { text: 'checking', toolUse: { name: 'Bash', input: { command: 'npm test' } },
+        { text: 'checking', toolUse: { name: 'Bash', input: { command: 'npm test' }, noResult: true },
           usage: { input: 10, cacheRead: 0, cacheCreation: 0, output: 1 } },
       ],
     ]);
@@ -376,7 +414,7 @@ describe('journaling a tool call as it happens', () => {
     const state = replay(journalPath);
     const started = state.events.find((e) => e.event === 'tool.start' && e.run === 'tool-run');
     expect(started?.['tool']).toBe('Bash');
-    // The fake never emits a matching tool-result, so the run's currentTool stays open --
+    // No matching tool-result was emitted, so the run's currentTool stays open --
     // which is exactly the case liveness's tool-budget signal exists to catch.
     expect(state.runs['tool-run']?.currentTool?.name).toBe('Bash');
   });

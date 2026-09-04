@@ -377,7 +377,6 @@ export class SdkEngine implements EngineLike {
             if (!pending) {
               pending = { text: '', context: latestContext };
             }
-            if (event.name === FORGE_DONE_TOOL) pending.done = true;
             if (event.name === FORGE_HANDOFF_TOOL) {
               // The successor reads this turn's text as the packet (worker.ts's
               // requestHandoff joins every turn's text after a send()). Without this the
@@ -392,6 +391,12 @@ export class SdkEngine implements EngineLike {
               event: 'tool.end', run: request.run, actor: 'worker',
               tool: toolNameById.get(event.id) ?? '', isError: event.isError,
             });
+            // `done` is set on the result, not the call: a forge_done whose result comes
+            // back an error (a malformed evidence argument, the handler throwing) must
+            // not read as a finished run just because the model tried to call it.
+            if (toolNameById.get(event.id) === FORGE_DONE_TOOL && !event.isError && pending) {
+              pending.done = true;
+            }
             break;
           case 'turn-complete':
             flush();
