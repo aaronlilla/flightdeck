@@ -61,6 +61,35 @@ describe('a clean cutover', () => {
     expect(result.moved).not.toContain('terminals.py');
     expect(result.moved).toHaveLength(3);
   });
+
+  it('journals one cutover.moved row per file, before cutover.completed', () => {
+    runCutover({ from, retiredDir, processList: [] }, journal);
+    const movedEvents = journaled.filter((e) => e['event'] === 'cutover.moved');
+    expect(movedEvents.map((e) => e['file']).sort()).toEqual([...CUTOVER_FILES].sort());
+    const completedIndex = journaled.findIndex((e) => e['event'] === 'cutover.completed');
+    expect(completedIndex).toBe(journaled.length - 1);
+    expect(journaled.slice(0, completedIndex).every((e) => e['event'] === 'cutover.moved')).toBe(true);
+  });
+
+  it('cutover.completed lists both moved and missing files', () => {
+    rmSync(join(from, 'terminals.py'));
+    runCutover({ from, retiredDir, processList: [] }, journal);
+    const event = journaled.find((e) => e['event'] === 'cutover.completed');
+    expect((event?.['files'] as string[]).sort()).toEqual(
+      CUTOVER_FILES.filter((name) => name !== 'terminals.py').sort(),
+    );
+    expect(event?.['missing']).toEqual(['terminals.py']);
+  });
+});
+
+describe('an empty source directory', () => {
+  it('refuses rather than reporting cutover.completed over a no-op', () => {
+    for (const name of CUTOVER_FILES) rmSync(join(from, name));
+    const result = runCutover({ from, retiredDir, processList: [] }, journal);
+    expect(result.ok).toBe(false);
+    expect(result.refusal).toMatch(/no.*file|nothing/i);
+    expect(journaled.some((e) => e['event'] === 'cutover.completed')).toBe(false);
+  });
 });
 
 describe('the warden refusal', () => {

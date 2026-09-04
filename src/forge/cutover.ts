@@ -48,8 +48,9 @@ function findWardenLine(processList: string[]): string | undefined {
 /**
  * Move the four old spawn files aside, or refuse.
  *
- * Refuses rather than moving nothing: a cutover that silently skipped every file because
- * the warden check passed by accident would report success over a no-op.
+ * Refuses rather than moving nothing: a `--from` directory holding none of the four
+ * files (already retired, or never the right directory) used to still journal
+ * `cutover.completed`, which is how a no-op looked exactly like a real run.
  */
 export function runCutover(request: CutoverRequest, journal: CutoverJournal): CutoverResult {
   const wardenLine = findWardenLine(request.processList);
@@ -62,15 +63,33 @@ export function runCutover(request: CutoverRequest, journal: CutoverJournal): Cu
     };
   }
 
-  mkdirSync(request.retiredDir, { recursive: true });
-  const moved: string[] = [];
-  for (const name of CUTOVER_FILES) {
-    const source = join(request.from, name);
-    if (!existsSync(source)) continue;
-    renameSync(source, join(request.retiredDir, name));
-    moved.push(name);
+  const present = CUTOVER_FILES.filter((name) => existsSync(join(request.from, name)));
+  if (present.length === 0) {
+    return {
+      ok: false,
+      refusal: `none of the four cutover files were found under ${request.from}; `
+        + 'nothing to move',
+      moved: [],
+    };
   }
 
-  journal.append({ event: 'cutover.completed', actor: 'runner', files: moved });
+  mkdirSync(request.retiredDir, { recursive: true });
+  const moved: string[] = [];
+  const missing: string[] = [];
+  for (const name of CUTOVER_FILES) {
+    const source = join(request.from, name);
+    if (!existsSync(source)) {
+      missing.push(name);
+      continue;
+    }
+    renameSync(source, join(request.retiredDir, name));
+    moved.push(name);
+    // One row per file, before the next rename: a crash partway through a multi-file
+    // cutover leaves a record of exactly which files already moved, not just a summary
+    // that never got written.
+    journal.append({ event: 'cutover.moved', actor: 'runner', file: name });
+  }
+
+  journal.append({ event: 'cutover.completed', actor: 'runner', files: moved, missing });
   return { ok: true, moved };
 }
