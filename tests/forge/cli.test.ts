@@ -45,7 +45,11 @@ describe('forge stop --all', () => {
     // The falsifier this closes: no wording may claim spend already stopped while a
     // session could still be mid-turn.
     expect(result.lines.join(' ')).not.toMatch(/all spend has stopped/);
-    expect(result.lines.join(' ')).toMatch(/not contacted/);
+    // B.3.2: this process holds no live session for either lane (a separate `forge stop`
+    // invocation never does), so both must be named unreachable, never reached.
+    expect(result.lines[0]).toMatch(/reached 0, unreachable 2/);
+    expect(result.lines.join(' ')).toMatch(/unreachable {2}alpha/);
+    expect(result.lines.join(' ')).toMatch(/unreachable {2}beta/);
     expect(result.lines.join(' ')).toMatch(/kill switch/i);
     expect(lanes().get('alpha')?.verdict).toBe('parked');
   });

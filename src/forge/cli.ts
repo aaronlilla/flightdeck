@@ -299,18 +299,19 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         return { code: 2, lines: ['forge stop --all is the only form; it parks everything'] };
       }
       const reason = rest.filter((word) => word !== '--all').join(' ') || 'stopped by hand';
-      const stopped = new Fleet(lanes, journalPath(), killSwitchPath()).stopAll(reason);
+      const stopped = await new Fleet(lanes, journalPath(), killSwitchPath()).stopAll(reason);
       const killSwitchLine = 'the kill switch is set: no new launch starts until '
         + 'forge clear --all';
       if (!stopped.length) {
         return { code: 0, lines: ['nothing was running', killSwitchLine] };
       }
+      const reachedCount = stopped.filter((lane) => lane.reached).length;
       return {
         code: 0,
         lines: [
-          `parked ${stopped.length} run(s) with a handoff; ${killSwitchLine}; `
-            + 'a live session finishes its current turn and was not contacted',
-          ...stopped.map((lane) => `  ${lane.slug}`),
+          `parked ${stopped.length} run(s) with a handoff; reached ${reachedCount}, `
+            + `unreachable ${stopped.length - reachedCount}; ${killSwitchLine}`,
+          ...stopped.map((lane) => `  ${lane.reached ? 'reached' : 'unreachable'}  ${lane.slug}`),
         ],
       };
     }
