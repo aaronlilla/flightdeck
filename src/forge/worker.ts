@@ -62,6 +62,8 @@ export interface FakeTurn {
 }
 
 export interface SessionRequest {
+  /** The run this session belongs to. Scopes the inbox and the journal rows it writes. */
+  run: string;
   model: string;
   prompt: string;
   env: NodeJS.ProcessEnv;
@@ -194,7 +196,7 @@ export class Worker {
         });
 
         const session = await this.engine.run({
-          model, prompt, env, cwd: this.config.cwd, maxTurns,
+          run: runName, model, prompt, env, cwd: this.config.cwd, maxTurns,
         });
         sessions.push(session.sessionId);
 
