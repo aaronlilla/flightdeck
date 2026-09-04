@@ -78,7 +78,9 @@ export interface SessionRequest {
   env: NodeJS.ProcessEnv;
   cwd: string;
   resume?: string;
-  maxTurns: number;
+  /** Omitted for the implement classes (B.3.8, the 2026-09-04 12:58 decision): the class
+   *  ceiling and the stuck rule are what bound an implement run, not a turn count. */
+  maxTurns?: number;
   /** The class ceiling. Below this, a turn's own tool calls run; at or past it, every
    *  tool call on this session denies until a successor starts (see B.3.3). */
   ceiling?: number;
@@ -95,6 +97,9 @@ export interface SessionResult {
    * and would double the spawn count behind a suite that still looked green.
    */
   send?(prompt: string): Promise<FakeTurn[]>;
+  /** True when this session ran a `git commit`. What the stuck rule (B.3.8) watches for:
+   *  three sessions in a row with none is a chain going nowhere, not just a slow one. */
+  committed?: boolean;
 }
 
 export interface EngineLike {
@@ -219,8 +224,13 @@ export class Worker {
     const className = tierOfBrief(this.config.brief);
     const model = modelIdFor(modelFor(className));
     const ceiling = this.config.maxContext ?? contextFor(className);
-    const maxTurns = this.config.maxTurns ?? turnsFor(className);
-    const maxSessions = this.config.maxSessions ?? 10;
+    // No turn cap on an implement run (B.3.8, the 2026-09-04 12:58 decision): the class
+    // ceiling and the stuck rule below are what bound it, not a count of turns that has
+    // no relationship to how much a goal actually needs.
+    const isImplementClass = className === 'implement' || className === 'implement-hard';
+    const maxTurns = this.config.maxTurns
+      ?? (isImplementClass ? undefined : turnsFor(className));
+    const maxSessions = this.config.maxSessions ?? (isImplementClass ? Number.POSITIVE_INFINITY : 10);
     const env = workerEnv(this.config.parentEnv ?? process.env);
 
     const journal = new Journal(this.config.journalPath);
@@ -232,6 +242,10 @@ export class Worker {
     let runName = this.config.run;
     let prompt = this.config.brief;
     let predecessor: string | undefined;
+    // The stuck rule, replacing a bare session cap (B.3.8): a chain that keeps handing
+    // off or stopping without ever committing is going nowhere, whatever its budget says.
+    let sessionsSinceCommit = 0;
+    const staleSessions: string[] = [];
 
     try {
       for (let index = 0; index < maxSessions; index += 1) {
@@ -249,7 +263,8 @@ export class Worker {
         let session: SessionResult;
         try {
           session = await this.engine.run({
-            run: runName, goal: this.config.run, model, prompt, env, cwd: this.config.cwd, maxTurns,
+            run: runName, goal: this.config.run, model, prompt, env, cwd: this.config.cwd,
+            ...(maxTurns !== undefined ? { maxTurns } : {}),
             ceiling,
           });
         } catch (error) {
@@ -294,6 +309,22 @@ export class Worker {
 
         if (finished) {
           verdict = await this.verifyDone(runName, session, journal);
+          break;
+        }
+
+        if (session.committed) {
+          sessionsSinceCommit = 0;
+          staleSessions.length = 0;
+        } else {
+          sessionsSinceCommit += 1;
+          staleSessions.push(runName);
+        }
+        if (sessionsSinceCommit >= 3) {
+          const report = `three sessions without a commit: ${staleSessions.join(', ')}`;
+          journal.append({
+            event: 'run.finished', run: runName, actor: 'runner', verdict: 'parked', report,
+          });
+          verdict = 'parked';
           break;
         }
 

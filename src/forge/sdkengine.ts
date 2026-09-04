@@ -31,7 +31,8 @@ export interface WorkerRequest {
   model: string;
   prompt: string;
   cwd: string;
-  maxTurns: number;
+  /** Omitted for an implement-class run (B.3.8): no maxTurns reaches the SDK at all. */
+  maxTurns?: number;
   env: NodeJS.ProcessEnv;
   resume?: string;
 }
@@ -44,7 +45,7 @@ export interface WorkerOptions {
   model: string;
   prompt: string;
   cwd: string;
-  maxTurns: number;
+  maxTurns?: number;
   permissionMode: 'bypassPermissions';
   settingSources: ('user' | 'project')[];
   env: NodeJS.ProcessEnv;
@@ -83,7 +84,7 @@ export function buildWorkerOptions(
     model: request.model,
     prompt: request.prompt,
     cwd: request.cwd,
-    maxTurns: request.maxTurns,
+    ...(request.maxTurns !== undefined ? { maxTurns: request.maxTurns } : {}),
     permissionMode: 'bypassPermissions',
     // user and project, never local: local settings belong to one machine and a worker
     // that picked them up would behave differently depending on where it ran.
@@ -463,6 +464,9 @@ export class SdkEngine implements EngineLike {
     // whether it was acknowledged (B.3.7). Cleared after that one check either way: this
     // is a one-shot window on "the next assistant message", not an open-ended watch.
     let pendingAck: { ids: string[]; text: string } | undefined;
+    // True once any Bash call in this session ran `git commit`: the stuck rule (B.3.8)
+    // watches this across the whole session, not per turn or per segment.
+    let committed = false;
 
     const engineConfig: EngineConfig = {
       cwd: workerOptions.cwd,
@@ -546,6 +550,10 @@ export class SdkEngine implements EngineLike {
           case 'tool-use':
             toolNameById.set(event.id, event.name);
             journal.append({ event: 'tool.start', run: request.run, actor: 'worker', tool: event.name });
+            if (event.name === 'Bash' && typeof event.input['command'] === 'string'
+              && /\bgit\s+commit\b/.test(event.input['command'])) {
+              committed = true;
+            }
             // The SDK's usage field is required on every real assistant message, so
             // `pending` should already exist; a defensive turn is opened here rather than
             // dropped, so a forge_done or forge_handoff call can never go unrecognised on
@@ -611,6 +619,7 @@ export class SdkEngine implements EngineLike {
       sessionId,
       turns,
       send: (prompt: string) => runSegment(prompt),
+      get committed() { return committed; },
     };
   }
 

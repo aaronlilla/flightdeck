@@ -356,3 +356,74 @@ describe('B.3.6: honest recording', () => {
     expect(handoffTurn).toBeDefined();
   });
 });
+
+describe('B.3.8: no caps on implementation', () => {
+  it('carries no maxTurns for an implement-class run', async () => {
+    // The default brief (no `tier:` line) resolves to the implement class.
+    const worker = makeWorker([[{ text: 'ok', context: 10 }]]);
+    await worker.run();
+    expect(worker.engine.started[0]).not.toHaveProperty('maxTurns');
+  });
+
+  it('the falsifier: a large number is not an omission', async () => {
+    const worker = makeWorker([[{ text: 'ok', context: 10 }]]);
+    await worker.run();
+    const started = worker.engine.started[0] as { maxTurns?: number };
+    expect(started.maxTurns).not.toBe(Number.MAX_SAFE_INTEGER);
+    expect(started.maxTurns).toBeUndefined();
+  });
+
+  it('three sessions with no commit park the run with a report naming the three', async () => {
+    // Each session hits the ceiling, so the chain would otherwise hand off forever with
+    // no session cap (B.3.8 removes it for implement classes): the stuck rule is what
+    // has to stop it instead.
+    const worker = makeWorker([
+      climbing(30_000, 4), climbing(30_000, 4), climbing(30_000, 4), climbing(30_000, 4),
+    ], { maxContext: 60_000 });
+
+    const result = await worker.run();
+
+    expect(result.verdict).toBe('parked');
+    // Exactly three sessions ran, not a fourth: the stuck rule fired the moment the third
+    // one closed without a commit, before any successor could start.
+    expect(worker.engine.started).toHaveLength(3);
+    const state = replay(journalPath);
+    const parked = state.events.find((e) => e.event === 'run.finished' && e['verdict'] === 'parked');
+    expect(parked?.['report']).toBe('three sessions without a commit: alpha, alpha-2, alpha-3');
+  });
+
+  it('a session that commits resets the count, so the chain is not stuck', async () => {
+    let index = 0;
+    const engine = {
+      started: [] as { model: string; prompt: string; env: NodeJS.ProcessEnv }[],
+      async run(config: { model: string; prompt: string; env: NodeJS.ProcessEnv }) {
+        index += 1;
+        this.started.push(config);
+        return {
+          sessionId: `session-${index}`,
+          turns: climbing(30_000, 4),
+          committed: index === 2,
+          async send(_prompt: string) {
+            return [{ text: 'packet', context: 0 }];
+          },
+        };
+      },
+    };
+    const worker = new Worker({
+      run: 'alpha', brief: '# Goal\n\nDo the thing.\n', briefPath: join(dir, 'brief.md'),
+      cwd: dir, journalPath, engine: engine as never, maxContext: 60_000,
+      // Bounded so the specimen terminates: climbing() never sets done, and with no
+      // session cap (the very thing B.3.8 removes) an always-committed-false chain would
+      // otherwise run forever. Session 2 commits, which is the thing under test.
+      maxSessions: 4,
+    });
+
+    const result = await worker.run();
+
+    // Session 2 committed, resetting the count to zero; sessions 3 and 4 bring it back to
+    // two, still under three by the time the chain runs out of its own bounded budget --
+    // it stops for running out of sessions, not because the stuck rule fired.
+    expect(result.verdict).not.toBe('parked');
+    expect(engine.started).toHaveLength(4);
+  });
+});
