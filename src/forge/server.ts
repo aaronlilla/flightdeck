@@ -20,7 +20,8 @@ import type { Duplex } from 'node:stream';
 
 import type { Inbox } from './inbox.js';
 import { replay } from './journal.js';
-import type { Lanes, LaneRecord } from './supervisor.js';
+import type { StuckSignal } from './liveness.js';
+import type { LaneRecord, Lanes } from './supervisor.js';
 
 export const FORGE_PORT = 4120;
 
@@ -33,6 +34,10 @@ export interface ForgeServerOptions {
   journalPath: string;
   port?: number;
   host?: string;
+  /** What liveness currently has open. Defaults to reporting nothing stuck. */
+  stuck?: () => StuckSignal[];
+  /** Every process liveness is watching, with its age and any trip. Defaults to empty. */
+  fleet?: () => Array<Record<string, unknown>>;
 }
 
 export class ForgeServer {
@@ -61,12 +66,18 @@ export class ForgeServer {
 
   port = 0;
 
+  private readonly stuckFn: () => StuckSignal[];
+
+  private readonly fleetFn: () => Array<Record<string, unknown>>;
+
   constructor(options: ForgeServerOptions) {
     this.lanes = options.lanes;
     this.inbox = options.inbox;
     this.journalPath = options.journalPath;
     this.wanted = options.port ?? FORGE_PORT;
     this.host = options.host ?? '127.0.0.1';
+    this.stuckFn = options.stuck ?? (() => []);
+    this.fleetFn = options.fleet ?? (() => []);
   }
 
   get listeners(): number {
@@ -105,17 +116,38 @@ export class ForgeServer {
    *
    * Lanes come from their files and the burn from the journal, which is the split that
    * keeps this honest: the lane record is what a worker last said about itself, and the
-   * journal is what actually happened.
+   * journal is what actually happened. Every field but `at` carries its own
+   * `verified_at`, read fresh from the thing that backs it (a lane's own file mtime, the
+   * inbox directory's mtime) rather than a value cached in memory since the process
+   * started. Each lane also carries its own `verified_at` for the same reason: the fleet
+   * as a whole is only as current as its stalest lane.
    */
   state(): Record<string, unknown> {
     const fleet = replay(this.journalPath);
+    const now = Date.now();
+
+    const lanes = this.lanes.all().map((lane) => {
+      const mtime = this.lanes.mtimeOf(lane.slug) ?? now;
+      const run = fleet.runs[lane.slug];
+      const lastEventAt = run?.lastEventAt || mtime;
+      return {
+        ...lane,
+        usd_per_hour: usdPerHour(lane),
+        verified_at: mtime,
+        last_event_age_s: Math.max(0, Math.round((now - lastEventAt) / 1000)),
+        current_tool: run?.currentTool ?? null,
+      };
+    });
+
     return {
-      at: Date.now(),
-      lanes: this.lanes.all().map((lane) => ({ ...lane, usd_per_hour: usdPerHour(lane) })),
-      burn: fleet.burn,
-      handoffs: fleet.handoffs,
-      torn: fleet.torn,
-      inbox_open: this.inbox.open().length,
+      at: now,
+      lanes: { value: lanes, verified_at: now },
+      burn: { value: fleet.burn, verified_at: now },
+      handoffs: { value: fleet.handoffs, verified_at: now },
+      torn: { value: fleet.torn, verified_at: now },
+      inbox_open: { value: this.inbox.open().length, verified_at: this.inbox.mtime() ?? now },
+      stuck: { value: this.stuckFn(), verified_at: now },
+      fleet: { value: this.fleetFn(), verified_at: now },
     };
   }
 

@@ -16,7 +16,7 @@
  * pick it up without a protocol.
  */
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 export interface Ask {
@@ -62,6 +62,12 @@ export function askKey(ask: Ask): string {
 export class Inbox {
   constructor(private readonly dir: string) {
     mkdirSync(dir, { recursive: true });
+  }
+
+  /** When the inbox directory itself was last written, read fresh every call. */
+  mtime(): number | undefined {
+    if (!existsSync(this.dir)) return undefined;
+    return statSync(this.dir).mtimeMs;
   }
 
   private pathFor(key: string): string {

@@ -11,7 +11,7 @@
  * race, and on 2026-09-03 a wake and a recycle landed twelve seconds apart and the goal
  * came out of it holding no session at all.
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { Journal } from './journal.js';
@@ -95,6 +95,18 @@ export class Lanes {
     } catch {
       return undefined;
     }
+  }
+
+  /**
+   * When a lane's file was last written, read fresh from disk every call.
+   *
+   * This is what lets a reader say a lane's state is only as current as its last write,
+   * rather than trusting an in-memory copy that may already be stale.
+   */
+  mtimeOf(slug: string): number | undefined {
+    const path = this.pathFor(slug);
+    if (!existsSync(path)) return undefined;
+    return statSync(path).mtimeMs;
   }
 
   /** Merge fields into a lane. Never a replace: two writers would lose each other's work. */

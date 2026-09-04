@@ -58,10 +58,15 @@ describe('the port', () => {
   });
 });
 
+interface Wrapped<T> {
+  value: T;
+  verified_at: number;
+}
+
 describe('GET /state', () => {
   it('returns the lanes with model, context and cost', async () => {
     const state = await (await fetch(`${base}/state`)).json() as Record<string, unknown>;
-    const lanes = state['lanes'] as Record<string, unknown>[];
+    const lanes = (state['lanes'] as Wrapped<Record<string, unknown>[]>).value;
     expect(lanes).toHaveLength(1);
     expect(lanes[0]?.['model']).toBe('claude-sonnet-5');
     expect(lanes[0]?.['context']).toBe(42_000);
@@ -70,18 +75,49 @@ describe('GET /state', () => {
 
   it('reports dollars per hour per lane, which no board could show before', async () => {
     const state = await (await fetch(`${base}/state`)).json() as Record<string, unknown>;
-    const lanes = state['lanes'] as Record<string, unknown>[];
+    const lanes = (state['lanes'] as Wrapped<Record<string, unknown>[]>).value;
     expect(lanes[0]).toHaveProperty('usd_per_hour');
   });
 
   it('carries the fleet burn per tier from the journal', async () => {
     const state = await (await fetch(`${base}/state`)).json() as Record<string, unknown>;
     expect(state).toHaveProperty('burn');
+    expect(state['burn']).toHaveProperty('value');
+    expect(state['burn']).toHaveProperty('verified_at');
   });
 
   it('answers JSON with a content type a browser will parse', async () => {
     const response = await fetch(`${base}/state`);
     expect(response.headers.get('content-type')).toMatch(/application\/json/);
+  });
+
+  it('carries per-run last_event_age_s and current_tool on each lane', async () => {
+    const state = await (await fetch(`${base}/state`)).json() as Record<string, unknown>;
+    const lanes = (state['lanes'] as Wrapped<Record<string, unknown>[]>).value;
+    expect(lanes[0]).toHaveProperty('last_event_age_s');
+    expect(lanes[0]).toHaveProperty('current_tool');
+  });
+
+  it('carries a stuck list and a fleet section', async () => {
+    const state = await (await fetch(`${base}/state`)).json() as Record<string, unknown>;
+    expect(state['stuck']).toHaveProperty('value');
+    expect(state['fleet']).toHaveProperty('value');
+  });
+
+  it('a lane\'s verified_at moves with its file\'s mtime', async () => {
+    const first = await (await fetch(`${base}/state`)).json() as Record<string, unknown>;
+    const firstAt = ((first['lanes'] as Wrapped<Record<string, unknown>[]>).value[0]?.['verified_at']) as number;
+
+    // Force the file's mtime forward, the way a second passing between two real writes
+    // would: writing the same lane again is enough to move it.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const lanes = new Lanes(join(dir, 'lanes'));
+    lanes.put('alpha', { note: 'touched' });
+
+    const second = await (await fetch(`${base}/state`)).json() as Record<string, unknown>;
+    const secondAt = ((second['lanes'] as Wrapped<Record<string, unknown>[]>).value[0]?.['verified_at']) as number;
+
+    expect(secondAt).toBeGreaterThan(firstAt);
   });
 });
 

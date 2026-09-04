@@ -58,6 +58,10 @@ export interface RunState {
   model?: string;
   successor?: string;
   predecessor?: string;
+  /** When this run last produced any journal event, for liveness's idle signal. */
+  lastEventAt: number;
+  /** The tool call in flight, when the last event named one and none has closed it since. */
+  currentTool?: { name: string; startedAt: number };
 }
 
 export interface FleetState {
@@ -147,7 +151,9 @@ function costOf(usage: Usage, alias: string): number {
 function runOf(state: FleetState, name: string): RunState {
   const found = state.runs[name];
   if (found) return found;
-  const created: RunState = { run: name, state: 'started', turns: 0, context: 0, costUsd: 0 };
+  const created: RunState = {
+    run: name, state: 'started', turns: 0, context: 0, costUsd: 0, lastEventAt: 0,
+  };
   state.runs[name] = created;
   return created;
 }
@@ -182,6 +188,7 @@ export function replay(path: string): FleetState {
     }
     if (!row.run) continue;
     const run = runOf(state, row.run);
+    run.lastEventAt = row.at;
 
     switch (row.event) {
       case 'run.started':
@@ -193,15 +200,18 @@ export function replay(path: string): FleetState {
       case 'turn.end':
         run.turns += 1;
         if (typeof row.context === 'number') run.context = row.context;
+        delete run.currentTool;
         break;
       case 'run.handoff':
         run.state = 'handed-off';
         if (row.successor) run.successor = row.successor;
         state.handoffs += 1;
+        delete run.currentTool;
         break;
       case 'run.finished':
         run.state = 'finished';
         if (row.verdict) run.verdict = row.verdict;
+        delete run.currentTool;
         break;
       case 'run.paused':
         run.state = 'paused';
@@ -209,6 +219,13 @@ export function replay(path: string): FleetState {
       case 'run.parked':
         run.state = 'parked';
         if (row.verdict) run.verdict = row.verdict;
+        delete run.currentTool;
+        break;
+      case 'tool.start':
+        run.currentTool = { name: String(row['tool'] ?? ''), startedAt: row.at };
+        break;
+      case 'tool.end':
+        delete run.currentTool;
         break;
       default:
         break;

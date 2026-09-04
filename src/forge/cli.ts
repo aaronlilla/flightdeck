@@ -16,10 +16,12 @@
  */
 import { readFileSync } from 'node:fs';
 
+import { watchedProcesses } from './fleetwatch.js';
 import { Gotchas } from './gotcha.js';
 import { Inbox } from './inbox.js';
 import { replay } from './journal.js';
 import { checkLaunch, launchEnv, loginInFlight, pinnedRuntime, runtimeVersion } from './launcher.js';
+import { LivenessSupervisor } from './liveness.js';
 import { ensureHome, gotchasDir, inboxDir, journalPath, lanesDir } from './paths.js';
 import { RunInbox } from './runinbox.js';
 import { SdkEngine } from './sdkengine.js';
@@ -81,6 +83,14 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
   switch (command) {
     case 'status': {
       const state = replay(journalPath());
+      const stuckRows = (await import('./liveness.js')).assess({
+        now: Date.now(),
+        runs: Object.values(state.runs).map((run) => ({
+          run: run.run, className: 'implement', lastEventAt: run.lastEventAt,
+          context: run.context, ...(run.currentTool ? { currentTool: run.currentTool } : {}),
+        })),
+        fleet: watchedProcesses(),
+      }).map((trip) => `STUCK  ${trip.key.padEnd(24)} ${trip.signal.padEnd(14)} ${trip.hint}`);
       const rows = lanes.all().map((lane) => [
         lane.slug.padEnd(28),
         (lane.model ?? '-').padEnd(18),
@@ -91,20 +101,40 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       const waiting = inbox.open().length;
       // An idle fleet says one thing and stops. Appending "inbox: 0 waiting" to it made
       // "nothing is running" impossible to say, which is the answer a person most wants.
-      if (!rows.length && !waiting && !state.torn) {
+      if (!rows.length && !waiting && !state.torn && !stuckRows.length) {
         return { code: 0, lines: ['nothing is running'] };
       }
       if (state.torn) {
         rows.push(`journal: ${state.torn} torn line(s), which is a crash somebody should read`);
       }
       rows.push(`inbox: ${waiting} waiting`);
-      return { code: 0, lines: rows };
+      return { code: 0, lines: [...stuckRows, ...rows] };
     }
 
     case 'up': {
       const state = replay(journalPath());
-      const server = new ForgeServer({ lanes, inbox, journalPath: journalPath() });
+      const server = new ForgeServer({
+        lanes, inbox, journalPath: journalPath(),
+        stuck: () => liveness.stuck(),
+        fleet: () => watchedProcesses().map((proc) => ({ ...proc })),
+      });
+      const livenessJournal = new (await import('./journal.js')).Journal(journalPath());
+      const liveness = new LivenessSupervisor(
+        () => ({
+          now: Date.now(),
+          runs: Object.values(replay(journalPath()).runs).map((run) => ({
+            run: run.run, className: 'implement', lastEventAt: run.lastEventAt,
+            context: run.context,
+            ...(run.currentTool ? { currentTool: run.currentTool } : {}),
+          })),
+          fleet: watchedProcesses(),
+        }),
+        livenessJournal,
+        (event) => server.publish(event),
+      );
       const port = await server.listen();
+      const tick = setInterval(() => liveness.evaluate(), 30_000);
+      tick.unref();
       return {
         code: 0,
         lines: [
