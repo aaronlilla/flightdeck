@@ -510,6 +510,81 @@ describe('B.3.1: park is a state', () => {
   });
 });
 
+describe('B.3.3: the ceiling fires inside the turn', () => {
+  it('denies a tool call inside the same turn once usage crosses the ceiling, before the segment resolves', async () => {
+    const executed: string[] = [];
+    const fn = ((params: { prompt: string | AsyncIterable<unknown>; options?: Options }) => {
+      const hookEntry = (params.options as unknown as {
+        hooks?: { PreToolUse?: Array<{ hooks: Array<(input: unknown, id: string, ctx: unknown) =>
+          Promise<{ continue: boolean }>> }> };
+      }).hooks?.['PreToolUse']?.[0]?.hooks[0];
+      const promptIter = params.prompt as AsyncIterable<unknown>;
+      const steps = [
+        { usage: { input: 1_000, cacheRead: 0, cacheCreation: 0, output: 1 }, toolName: 'Bash' },
+        { usage: { input: 65_000, cacheRead: 0, cacheCreation: 0, output: 1 }, toolName: 'Bash' },
+        { toolName: 'Bash' },
+      ];
+      async function* generate() {
+        yield {
+          type: 'system', subtype: 'init', session_id: 'gated', model: '', cwd: '', tools: [],
+          slash_commands: [],
+        };
+        for await (const _pushed of promptIter) {
+          for (const step of steps) {
+            if (step.usage) {
+              yield {
+                type: 'assistant', session_id: 'gated',
+                message: {
+                  model: '', content: [],
+                  usage: {
+                    input_tokens: step.usage.input, cache_read_input_tokens: step.usage.cacheRead,
+                    cache_creation_input_tokens: step.usage.cacheCreation,
+                    output_tokens: step.usage.output,
+                  },
+                },
+              };
+            }
+            const toolUseId = `tu-${executed.length}`;
+            const verdict = hookEntry
+              ? await hookEntry(
+                { hook_event_name: 'PreToolUse', tool_name: step.toolName, tool_input: {} },
+                toolUseId, {},
+              )
+              : { continue: true };
+            if (verdict.continue === false) continue;
+            executed.push(step.toolName);
+            yield {
+              type: 'assistant', session_id: 'gated',
+              message: { model: '', content: [{ type: 'tool_use', id: toolUseId, name: step.toolName, input: {} }] },
+            };
+            yield {
+              type: 'user', session_id: 'gated',
+              message: { content: [{ type: 'tool_result', tool_use_id: toolUseId, is_error: false, content: 'ok' }] },
+            };
+          }
+          yield { type: 'result', subtype: 'success', is_error: false, duration_ms: 1 };
+          return;
+        }
+      }
+      return generate() as unknown as Query;
+    }) as unknown as QueryFn;
+
+    const engine = engineFor(fn);
+    await engine.run({ ...REQUEST, run: 'gated-run', env: { PATH: '/usr/bin' }, ceiling: 60_000 } as never);
+
+    // The falsifier this closes: a deny that only ever happens after the segment's
+    // result row would let every scripted tool call run first. Here the third (and, on
+    // this implementation, the second) never executes, proven by counting what the fake
+    // stream actually let through rather than trusting a return value.
+    expect(executed).toEqual(['Bash']);
+
+    const state = replay(journalPath);
+    const denies = state.events.filter((e) => e.event === 'permission.denied' && e.run === 'gated-run'
+      && String(e['reason'] ?? '').includes('ceiling'));
+    expect(denies.length).toBeGreaterThan(0);
+  });
+});
+
 describe('journaling a tool call as it happens', () => {
   it('writes tool.start and tool.end so a run\'s currentTool can be read back from the journal', async () => {
     const { fn } = fakeQuery([

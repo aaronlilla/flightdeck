@@ -70,6 +70,9 @@ export interface SessionRequest {
   cwd: string;
   resume?: string;
   maxTurns: number;
+  /** The class ceiling. Below this, a turn's own tool calls run; at or past it, every
+   *  tool call on this session denies until a successor starts (see B.3.3). */
+  ceiling?: number;
 }
 
 export interface SessionResult {
@@ -196,7 +199,7 @@ export class Worker {
         });
 
         const session = await this.engine.run({
-          run: runName, model, prompt, env, cwd: this.config.cwd, maxTurns,
+          run: runName, model, prompt, env, cwd: this.config.cwd, maxTurns, ceiling,
         });
         sessions.push(session.sessionId);
 

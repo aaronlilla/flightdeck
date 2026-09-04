@@ -22,7 +22,10 @@ import { Inbox } from './inbox.js';
 import { Journal } from './journal.js';
 import { fleetConfigDir } from './paths.js';
 import { injectMessages, RunInbox } from './runinbox.js';
-import { workerEnv, type EngineLike, type FakeTurn, type SessionRequest, type SessionResult } from './worker.js';
+import {
+  HANDOFF_REQUEST, workerEnv, type EngineLike, type FakeTurn, type SessionRequest,
+  type SessionResult,
+} from './worker.js';
 
 export interface WorkerRequest {
   model: string;
@@ -232,17 +235,25 @@ export interface PreToolUseHookDeps {
   journal: Journal;
   /** Shared with `buildCanUseTool`: run name to the ask key it is parked on. */
   parked: Map<string, string>;
+  /**
+   * True once this run's latest usage has reached its class ceiling. Checked after park,
+   * before inbox delivery, so a session past its ceiling gets no further tool call: only
+   * the handoff prompt, riding along as `additionalContext` on the deny itself, so the
+   * model does not need a whole extra turn just to be told to write the packet.
+   */
+  ceilingHit?: () => boolean;
   deliverVia: 'hook' | 'stream';
 }
 
 /**
  * The PreToolUse hook a live run's engine is opened with. It sees every tool call, not
  * only the ones a permission rule would otherwise route to `canUseTool`, which is what
- * makes it the place a park actually holds: a deny here happens before the tool runs, on
- * every call, for as long as `parked` names this run.
+ * makes it the place a park, and the context ceiling, actually hold: a deny here happens
+ * before the tool runs, on every call, for as long as `parked` names this run or
+ * `ceilingHit()` says so.
  *
- * The park check runs first and short-circuits: a parked run gets no inbox delivery
- * either, because there is nothing left for it to act on until the park clears.
+ * The park check runs first, then the ceiling, and both short-circuit: neither gets inbox
+ * delivery either, because there is nothing left for either to act on until it clears.
  */
 export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
   const inboxHook = deps.deliverVia === 'hook' ? buildInboxHook({ run: deps.run, journal: deps.journal }) : undefined;
@@ -257,6 +268,17 @@ export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
       return {
         decision: 'deny',
         reason: `parked on ${key}: this run takes no further tool call until that question is answered`,
+      };
+    }
+    if (deps.ceilingHit?.()) {
+      deps.journal.append({
+        event: 'permission.denied', run: deps.run, actor: 'runner', tool: call.toolName,
+        reason: 'context ceiling reached',
+      });
+      return {
+        decision: 'deny',
+        reason: 'context ceiling reached: write the handoff packet instead of another tool call',
+        additionalContext: HANDOFF_REQUEST,
       };
     }
     if (inboxHook) return inboxHook(call);
@@ -403,6 +425,20 @@ export class SdkEngine implements EngineLike {
       },
     };
 
+    // Each assistant message's usage already carries the whole context of that turn --
+    // uncached input plus cache read plus cache creation is the entire prompt that turn
+    // re-read, not an increment on top of the last one. So the ceiling (and the context
+    // this loop journals) reads the latest message's own usage, never a running sum:
+    // summing two 140,000-token requests would read 280,000 and hand off under a
+    // 150,000 ceiling for a session whose real context is 140,000. Cost is tracked
+    // separately, per turn, from each turn's own `usage` (see journal.ts's `costOf`),
+    // so it never needs a cumulative context total either.
+    let latestContext = 0;
+    // Sticky once true: set by a usage event at or past request.ceiling, checked by the
+    // PreToolUse hook below. This is what makes the deny happen inside the turn a tool
+    // call arrives in, rather than only after Worker sees the whole segment's result.
+    let ceilingHit = false;
+
     const engineConfig: EngineConfig = {
       cwd: workerOptions.cwd,
       model: workerOptions.model,
@@ -414,6 +450,7 @@ export class SdkEngine implements EngineLike {
       canUseTool: buildCanUseTool({ run: request.run, inbox, journal, parked: this.parked }) as never,
       onToolCall: buildPreToolUseHook({
         run: request.run, journal, parked: this.parked, deliverVia: this.deliverVia,
+        ceilingHit: () => ceilingHit,
       }),
       ...(workerOptions.resume ? { resume: workerOptions.resume } : {}),
     };
@@ -421,16 +458,6 @@ export class SdkEngine implements EngineLike {
     const engine = new Engine(this.deps.queryFn);
     engine.start(engineConfig);
     this.liveEngines.set(request.run, engine);
-
-    // Each assistant message's usage already carries the whole context of that turn --
-    // uncached input plus cache read plus cache creation is the entire prompt that turn
-    // re-read, not an increment on top of the last one. So the ceiling (and the context
-    // this loop journals) reads the latest message's own usage, never a running sum:
-    // summing two 140,000-token requests would read 280,000 and hand off under a
-    // 150,000 ceiling for a session whose real context is 140,000. Cost is tracked
-    // separately, per turn, from each turn's own `usage` (see journal.ts's `costOf`),
-    // so it never needs a cumulative context total either.
-    let latestContext = 0;
     // Named per call id rather than per segment: a tool's result event carries only the
     // id it answers, not the tool's name, so the name has to be remembered from the
     // matching tool-use to journal a tool.end a reader can act on.
@@ -450,6 +477,7 @@ export class SdkEngine implements EngineLike {
           case 'usage':
             flush();
             latestContext = event.input + event.cacheRead + event.cacheCreation;
+            if (request.ceiling !== undefined && latestContext >= request.ceiling) ceilingHit = true;
             pending = {
               text: '',
               context: latestContext,
