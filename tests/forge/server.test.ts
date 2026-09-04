@@ -9,7 +9,7 @@
  * Bound to loopback. This serves the fleet's state and takes answers that resume runs, so
  * a wrong bind address is a control surface on the network.
  */
-import { mkdtempSync, statSync } from 'node:fs';
+import { mkdtempSync, readFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -123,6 +123,39 @@ describe('GET /state', () => {
     // time: the falsifier this closes is a verified_at that only ever equals "now".
     const mtime = statSync(join(dir, 'fleet.jsonl')).mtimeMs;
     expect(burn.verified_at).toBe(mtime);
+  });
+
+  it('B.3.9: a second /state read only parses the bytes appended since the first', async () => {
+    let bytesRead = 0;
+    const countingReader = {
+      size: (path: string) => statSync(path).size,
+      readRange: (path: string, start: number, end: number) => {
+        bytesRead += end - start;
+        return readFileSync(path, 'utf8').slice(start, end);
+      },
+    };
+    const journalPath = join(dir, 'fleet.jsonl');
+    for (let index = 0; index < 50; index += 1) {
+      new Journal(journalPath).append({ event: 'turn.end', run: 'alpha', actor: 'worker', context: index });
+    }
+    const countingServer = new ForgeServer({
+      lanes: new Lanes(join(dir, 'lanes')), inbox: new Inbox(join(dir, 'inbox')),
+      journalPath, port: 0, journalRangeReader: countingReader,
+    });
+    const countingBase = `http://127.0.0.1:${await countingServer.listen()}`;
+    try {
+      await fetch(`${countingBase}/state`);
+      const afterFirst = bytesRead;
+      expect(afterFirst).toBeGreaterThan(0);
+
+      new Journal(journalPath).append({ event: 'turn.end', run: 'alpha', actor: 'worker', context: 999 });
+      await fetch(`${countingBase}/state`);
+      const onSecondRead = bytesRead - afterFirst;
+      expect(onSecondRead).toBeGreaterThan(0);
+      expect(onSecondRead).toBeLessThan(afterFirst / 10);
+    } finally {
+      await countingServer.close();
+    }
   });
 
   it('carries a failed fleet probe as its own shape, not folded into the array', async () => {

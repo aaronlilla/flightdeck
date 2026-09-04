@@ -12,7 +12,10 @@
  * provenance graph: a ticket sheet can walk it from a Sentry issue to a merged pull
  * request without anybody writing the link down twice.
  */
-import { appendFileSync, closeSync, existsSync, fsyncSync, openSync, readFileSync, writeSync } from 'node:fs';
+import {
+  appendFileSync, closeSync, existsSync, fsyncSync, openSync, readFileSync, readSync, statSync,
+  writeSync,
+} from 'node:fs';
 import { randomUUID } from 'node:crypto';
 
 import { aliasOf, isKnownAlias, priceFor } from './policy.js';
@@ -165,48 +168,41 @@ function runOf(state: FleetState, name: string): RunState {
   return created;
 }
 
-/**
- * Rebuild the fleet's state from its journal.
- *
- * Every branch here is a fold over events in the order they were written. Nothing reads
- * the world: two replays of the same file give the same answer, which is what makes a
- * restart honest rather than a fresh guess.
- */
-export function replay(path: string): FleetState {
-  const state: FleetState = {
-    events: [], runs: {}, burn: {}, handoffs: 0, torn: 0, unknownModels: [],
-  };
-  if (!existsSync(path)) return state;
+function emptyState(): FleetState {
+  return { events: [], runs: {}, burn: {}, handoffs: 0, torn: 0, unknownModels: [] };
+}
 
-  for (const line of readFileSync(path, 'utf8').split('\n')) {
-    if (!line.trim()) continue;
-    let row: ForgeEvent;
-    try {
-      row = JSON.parse(line) as ForgeEvent;
-    } catch {
-      state.torn += 1;
-      continue;
+/** One line folded into `state`. Shared by `replay()` and `JournalCache`, so a full parse
+ *  and an incremental one can never learn different lessons from the same line. */
+function foldLine(state: FleetState, line: string): void {
+  if (!line.trim()) return;
+  let row: ForgeEvent;
+  try {
+    row = JSON.parse(line) as ForgeEvent;
+  } catch {
+    state.torn += 1;
+    return;
+  }
+  state.events.push(row);
+
+  if (row.usage) {
+    const alias = aliasOf(row.model ?? '');
+    if (!isKnownAlias(alias)) {
+      // Billed nothing rather than at whatever priceFor's fallback used to guess: the
+      // model itself is named here so a person can add it to model-policy.json instead
+      // of the fallback rate quietly becoming the answer for every reroute like it.
+      if (!state.unknownModels.includes(row.model ?? alias)) state.unknownModels.push(row.model ?? alias);
+    } else {
+      const spent = costOf(row.usage, alias);
+      state.burn[alias] = (state.burn[alias] ?? 0) + spent;
+      if (row.run) runOf(state, row.run).costUsd += spent;
     }
-    state.events.push(row);
+  }
+  if (!row.run) return;
+  const run = runOf(state, row.run);
+  run.lastEventAt = row.at;
 
-    if (row.usage) {
-      const alias = aliasOf(row.model ?? '');
-      if (!isKnownAlias(alias)) {
-        // Billed nothing rather than at whatever priceFor's fallback used to guess: the
-        // model itself is named here so a person can add it to model-policy.json instead
-        // of the fallback rate quietly becoming the answer for every reroute like it.
-        if (!state.unknownModels.includes(row.model ?? alias)) state.unknownModels.push(row.model ?? alias);
-      } else {
-        const spent = costOf(row.usage, alias);
-        state.burn[alias] = (state.burn[alias] ?? 0) + spent;
-        if (row.run) runOf(state, row.run).costUsd += spent;
-      }
-    }
-    if (!row.run) continue;
-    const run = runOf(state, row.run);
-    run.lastEventAt = row.at;
-
-    switch (row.event) {
+  switch (row.event) {
       case 'run.started':
         run.state = 'started';
         if (row.ticket) run.ticket = row.ticket;
@@ -253,6 +249,82 @@ export function replay(path: string): FleetState {
       default:
         break;
     }
-  }
+}
+
+/**
+ * Rebuild the fleet's state from its journal.
+ *
+ * Every branch here is a fold over events in the order they were written. Nothing reads
+ * the world: two replays of the same file give the same answer, which is what makes a
+ * restart honest rather than a fresh guess.
+ */
+export function replay(path: string): FleetState {
+  const state = emptyState();
+  if (!existsSync(path)) return state;
+  for (const line of readFileSync(path, 'utf8').split('\n')) foldLine(state, line);
   return state;
+}
+
+/** Reads a byte range from a file. The one seam `JournalCache` uses, so a specimen can
+ *  count exactly how many bytes a read actually touched. */
+export interface RangeReader {
+  size(path: string): number;
+  readRange(path: string, start: number, end: number): string;
+}
+
+const defaultRangeReader: RangeReader = {
+  size: (path) => (existsSync(path) ? statSync(path).size : 0),
+  readRange: (path, start, end) => {
+    if (end <= start) return '';
+    const fd = openSync(path, 'r');
+    try {
+      const buffer = Buffer.alloc(end - start);
+      readSync(fd, buffer, 0, end - start, start);
+      return buffer.toString('utf8');
+    } finally {
+      closeSync(fd);
+    }
+  },
+};
+
+/**
+ * `replay()`'s incremental twin.
+ *
+ * `/state` on 4120 and the 30-second liveness tick both call this on the same journal
+ * repeatedly, and the journal only grows: re-parsing the whole file on every call is work
+ * that scales with how long the fleet has been running, for state that has not changed
+ * except at the tail. This instead remembers how many bytes it has already folded and
+ * reads only what was appended since, folding those lines into the same running state.
+ *
+ * A file that got smaller than the last read (rotated, truncated) is treated as a new
+ * journal: starting over here is honest, where trying to resume from a stale offset into
+ * different bytes would not be.
+ */
+export class JournalCache {
+  private offset = 0;
+
+  private state: FleetState = emptyState();
+
+  private carry = '';
+
+  constructor(private readonly reader: RangeReader = defaultRangeReader) {}
+
+  read(path: string): FleetState {
+    const size = this.reader.size(path);
+    if (size < this.offset) {
+      this.offset = 0;
+      this.state = emptyState();
+      this.carry = '';
+    }
+    if (size > this.offset) {
+      const chunk = this.carry + this.reader.readRange(path, this.offset, size);
+      this.offset = size;
+      const lines = chunk.split('\n');
+      // The last entry is kept back rather than folded: it may be a line the writer has
+      // not finished yet, and the next read's bytes complete it.
+      this.carry = lines.pop() ?? '';
+      for (const line of lines) foldLine(this.state, line);
+    }
+    return this.state;
+  }
 }

@@ -8,13 +8,13 @@
  * The `cause` field is the other load-bearing one. Every event names the event it answers,
  * and that chain is the provenance graph the ticket sheet reads.
  */
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { closeSync, mkdtempSync, openSync, readFileSync, readSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { Journal, replay, type ForgeEvent } from '../../src/forge/journal.js';
+import { Journal, JournalCache, replay, type ForgeEvent, type RangeReader } from '../../src/forge/journal.js';
 
 let dir: string;
 let path: string;
@@ -187,5 +187,63 @@ describe('a journal torn by a crash', () => {
     const state = replay(path);
     expect(state.torn).toBe(1);
     expect(state.runs['alpha']?.state).toBe('finished');
+  });
+});
+
+describe('B.3.9: JournalCache reads only the appended bytes', () => {
+  it('a second read after one appended row only touches the bytes written since the first', () => {
+    // Many rows already on disk before the first read, so a second read that re-parsed
+    // the whole file (the falsifier) would read close to the full file size again,
+    // rather than the one small row appended since.
+    for (let index = 0; index < 50; index += 1) {
+      write({ event: 'turn.end', run: 'alpha', actor: 'worker', context: index });
+    }
+
+    let bytesRead = 0;
+    const countingReader: RangeReader = {
+      size: (path2) => statSync(path2).size,
+      readRange: (path2, start, end) => {
+        bytesRead += end - start;
+        const fd = openSync(path2, 'r');
+        const buffer = Buffer.alloc(end - start);
+        readSync(fd, buffer, 0, end - start, start);
+        closeSync(fd);
+        return buffer.toString('utf8');
+      },
+    };
+    const cache = new JournalCache(countingReader);
+
+    const first = cache.read(path);
+    expect(first.runs['alpha']?.turns).toBe(50);
+    const bytesAfterFirst = bytesRead;
+    expect(bytesAfterFirst).toBeGreaterThan(0);
+
+    write({ event: 'run.finished', run: 'alpha', actor: 'runner' });
+    const second = cache.read(path);
+    expect(second.runs['alpha']?.state).toBe('finished');
+
+    // The falsifier this closes: re-parsing the whole file on the second read would make
+    // the second read's byte count close to the first read's total (50 rows), not the
+    // one small row actually appended since.
+    const bytesOnSecondRead = bytesRead - bytesAfterFirst;
+    expect(bytesOnSecondRead).toBeGreaterThan(0);
+    expect(bytesOnSecondRead).toBeLessThan(bytesAfterFirst / 10);
+  });
+
+  it('folds the same state as a full replay would, read incrementally in three steps', () => {
+    const cache = new JournalCache();
+    write({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    cache.read(path);
+    write({
+      event: 'usage', run: 'alpha', actor: 'worker', model: 'claude-sonnet-5',
+      usage: { input: 100, cacheRead: 1_000, cacheCreation: 0, output: 10 },
+    });
+    cache.read(path);
+    write({ event: 'run.finished', run: 'alpha', actor: 'runner' });
+    const incremental = cache.read(path);
+    const full = replay(path);
+
+    expect(incremental.runs['alpha']).toEqual(full.runs['alpha']);
+    expect(incremental.burn).toEqual(full.burn);
   });
 });

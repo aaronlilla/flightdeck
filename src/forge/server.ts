@@ -20,7 +20,7 @@ import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import type { Duplex } from 'node:stream';
 
 import type { Inbox } from './inbox.js';
-import { replay } from './journal.js';
+import { JournalCache, type RangeReader } from './journal.js';
 import type { StuckSignal } from './liveness.js';
 import { serverTokenPath } from './paths.js';
 import type { LaneRecord, Lanes } from './supervisor.js';
@@ -58,6 +58,9 @@ export interface ForgeServerOptions {
   fleet?: () => Array<Record<string, unknown>> | { ok: false; reason: string };
   /** Overrides the token minted from `serverTokenPath()`. A specimen only. */
   token?: string;
+  /** Overrides how the journal cache reads bytes off disk. A specimen only: it is how a
+   *  test counts exactly what a second /state read actually touched. */
+  journalRangeReader?: RangeReader;
 }
 
 export class ForgeServer {
@@ -71,6 +74,8 @@ export class ForgeServer {
   private readonly lanes: Lanes;
 
   private readonly journalPath: string;
+
+  private readonly journalCache: JournalCache;
 
   private readonly wanted: number;
 
@@ -97,6 +102,7 @@ export class ForgeServer {
     this.lanes = options.lanes;
     this.inbox = options.inbox;
     this.journalPath = options.journalPath;
+    this.journalCache = new JournalCache(options.journalRangeReader);
     this.wanted = options.port ?? FORGE_PORT;
     this.host = options.host ?? '127.0.0.1';
     this.stuckFn = options.stuck ?? (() => []);
@@ -147,7 +153,7 @@ export class ForgeServer {
    * as a whole is only as current as its stalest lane.
    */
   state(): Record<string, unknown> {
-    const fleet = replay(this.journalPath);
+    const fleet = this.journalCache.read(this.journalPath);
     const now = Date.now();
 
     const lanes = this.lanes.all().map((lane) => {
