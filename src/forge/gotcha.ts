@@ -150,11 +150,21 @@ export class Gotchas {
       }
     }
 
-    // Redacted before anything is written: a gotcha's error is kept verbatim except for
-    // whatever in it looks like a secret, which is the one thing paraphrasing would be
-    // right to remove.
-    const clean: GotchaInput = { ...input, error: redact(input.error), where: redact(input.where) };
-    const id = gotchaId(clean);
+    // Identity computed from the verbatim input, before redaction: two errors that differ
+    // only in an embedded secret (a different bad token, a different session id) are
+    // still two different failures, and hashing the post-redaction text would collapse
+    // them into one gotcha gaining a hit instead of each getting its own record.
+    const id = gotchaId(input);
+    // Every string field redacted, not just error and where: what and prevention are
+    // model-written prose about the failure and exactly the kind of place a leaked token
+    // gets echoed back.
+    const clean: GotchaInput = {
+      ...input,
+      what: redact(input.what),
+      where: redact(input.where),
+      error: redact(input.error),
+      prevention: redact(input.prevention),
+    };
     const existing = this.get(id);
     const { lane, why } = classifyGotcha(clean);
 

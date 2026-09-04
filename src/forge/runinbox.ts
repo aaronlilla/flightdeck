@@ -139,3 +139,43 @@ export async function injectMessages(
   inbox.markRead(waiting.map((message) => message.id));
   return output;
 }
+
+/** What `SdkEngine.answer` looks like, without importing the class itself: `runinbox.ts`
+ *  is a dependency of `sdkengine.ts`, so a hard import the other way would be circular. */
+export interface AnswerableEngine {
+  answer(run: string, key: string, text: string): Promise<{ delivered: boolean }>;
+}
+
+/**
+ * Everything `forge answer` and the 4120 server's `/answer` both have to do once an
+ * inbox entry is answered, in one place so neither can fix half the problem the other
+ * still has.
+ *
+ * The cross-process path (every real invocation of either caller) queues the resume text
+ * into the goal's own inbox -- `entry.goals` when an ask recorded one, `entry.runs`
+ * otherwise -- because that is the id the live PreToolUse hook actually polls
+ * (`injectMessages(deps.goal, ...)`), not the per-segment run name a handoff renames.
+ * `engine`, when this process happens to hold the answered run's live session, resumes it
+ * in place immediately.
+ */
+export async function deliverAnswer(
+  entry: { runs: string[]; goals: string[]; question: string },
+  key: string,
+  answerText: string,
+  engine?: AnswerableEngine,
+): Promise<{ delivered: string[] }> {
+  const resumeText = `Question: ${entry.question}\nAnswer: ${answerText}`;
+  const inboxTargets = entry.goals.length ? entry.goals : entry.runs;
+  for (const target of inboxTargets) {
+    new RunInbox(target).send(resumeText, 'console');
+  }
+
+  const delivered: string[] = [];
+  if (engine) {
+    for (const run of entry.runs) {
+      const result = await engine.answer(run, key, answerText);
+      if (result.delivered) delivered.push(run);
+    }
+  }
+  return { delivered };
+}

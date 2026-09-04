@@ -12,7 +12,7 @@
 import { existsSync, mkdirSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { filesMatching } from './install.js';
+import { filesMatching, isNeverRemove } from './install.js';
 
 export interface CutoverJournal {
   append(event: Record<string, unknown>): unknown;
@@ -72,7 +72,10 @@ export function runCutover(request: CutoverRequest, journal: CutoverJournal): Cu
     };
   }
 
-  const manifest = filesMatching(request.from);
+  // NEVER_REMOVE filtered out here, the same way planUninstall filters it out of what it
+  // proposes: filesMatching reports everything present, informationally, and a caller
+  // that acts on the result is the one that must never touch a guard or the model policy.
+  const manifest = filesMatching(request.from).filter((name) => !isNeverRemove(name));
   if (manifest.length === 0) {
     return {
       ok: false,

@@ -310,11 +310,22 @@ export class Fleet {
         let packet: string | undefined;
 
         if (live) {
+          // A rejected send must not take the rest of this loop down with it: the lane
+          // that threw is unreachable, not a reason for every lane after it in the
+          // iteration order to never be looked at during the one control that has to work
+          // when something is already going wrong.
           const outcome = await Promise.race([
-            live.send(HANDOFF_REQUEST).then((value) => ({ kind: 'sent' as const, value })),
+            live.send(HANDOFF_REQUEST)
+              .then((value) => ({ kind: 'sent' as const, value }))
+              .catch(() => ({ kind: 'errored' as const, value: undefined })),
             sleep(idleBudgetMs).then(() => ({ kind: 'timeout' as const, value: undefined })),
           ]);
-          await live.stop();
+          try {
+            await live.stop();
+          } catch {
+            // Already gone, or never willing to stop cleanly; either way there is nothing
+            // further this loop can do to it, and the lane is already unreachable.
+          }
           reached = outcome.kind === 'sent';
           if (reached && typeof outcome.value === 'string') packet = outcome.value;
         } else {

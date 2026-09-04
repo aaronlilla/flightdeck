@@ -40,6 +40,11 @@ export interface InboxEntry {
   kind: 'question' | 'blocker';
   /** Every run that hit this wall, in the order they hit it. */
   runs: string[];
+  /** Every goal id an asking run named, in the order raised. What `forge answer` and the
+   *  4120 server's /answer deliver a resume message to: a run's own segment name stops
+   *  being live the moment a handoff renames it, but its goal id never does. Empty when
+   *  no ask that raised this entry named one. */
+  goals: string[];
   /** How many times it has been asked. A repeat is counted, never dropped. */
   asked: number;
   at: number;
@@ -57,15 +62,18 @@ export interface InboxEntry {
  * time a model hits it: case and spacing carry no decision. The options do carry one, so
  * they are part of the key: "dev or staging" and "dev or prod" are different questions
  * however similar the sentence is.
+ *
+ * A `blocker` is scoped by wording alone, unchanged from before B.3.7: `driftBlocker`'s
+ * whole point is that every run stuck behind the same base is the same wall, one answer
+ * releasing all of them, and folding `run` into that key here would have split them back
+ * into one entry each. `question` and `forge_ask`'s asks get the B.3.7 scoping (goal, run,
+ * action target) instead, because those genuinely are a new wall each time a different run
+ * hits one, even with identical wording.
  */
 export function askKey(ask: Ask): string {
   const question = (ask.question ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
   const options = (ask.options ?? []).map((o) => o.trim().toLowerCase()).sort().join(' ');
-  // Scoped by goal, run and action target as well as wording (B.3.7): a retry within the
-  // same segment still collapses to one entry (asked increments), but a genuinely
-  // different run -- a handoff's successor, a different goal, a different action --
-  // hitting the same words is its own wall, not a merge with whatever came before it.
-  const scope = `${ask.goal ?? ''}|${ask.run}|${ask.actionTarget ?? ''}`;
+  const scope = ask.kind === 'blocker' ? '' : `${ask.goal ?? ''}|${ask.run}|${ask.actionTarget ?? ''}`;
   return createHash('sha256').update(`${scope}::${question}${options}`).digest('hex').slice(0, 16);
 }
 
@@ -123,12 +131,18 @@ export class Inbox {
     const existing = this.entry(key);
     const now = Date.now();
 
+    const goals = (current: string[]): string[] => {
+      if (!ask.goal || current.includes(ask.goal)) return current;
+      return [...current, ask.goal];
+    };
+
     let entry: InboxEntry;
     if (existing && existing.answer === undefined) {
       entry = {
         ...existing,
         asked: existing.asked + 1,
         runs: existing.runs.includes(ask.run) ? existing.runs : [...existing.runs, ask.run],
+        goals: goals(existing.goals ?? []),
       };
     } else if (existing) {
       entry = {
@@ -136,6 +150,7 @@ export class Inbox {
         asked: existing.asked + 1,
         at: now,
         runs: existing.runs.includes(ask.run) ? existing.runs : [...existing.runs, ask.run],
+        goals: goals(existing.goals ?? []),
       };
       delete entry.answer;
       delete entry.answeredAt;
@@ -146,6 +161,7 @@ export class Inbox {
         options: ask.options ?? [],
         kind: ask.kind ?? 'question',
         runs: [ask.run],
+        goals: goals([]),
         asked: 1,
         at: now,
         disposition: 'park',

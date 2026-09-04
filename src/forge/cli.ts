@@ -29,7 +29,7 @@ import {
   lanesDir, registryDir,
 } from './paths.js';
 import { reconcileRegistry, Registry } from './registry.js';
-import { RunInbox } from './runinbox.js';
+import { deliverAnswer, RunInbox } from './runinbox.js';
 import { SdkEngine } from './sdkengine.js';
 import { FORGE_PORT, ForgeServer } from './server.js';
 import { Breaker, clearKillSwitch, Fleet, Lanes, readKillSwitch } from './supervisor.js';
@@ -337,14 +337,9 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       // run also gets its answer queued through the inbox, which is what reaches a run
       // this process cannot see directly: another `forge run` process, or a segment that
       // has already ended.
-      const delivered: string[] = [];
-      for (const run of answered.runs) {
-        new RunInbox(run).send(`Question: ${answered.question}\nAnswer: ${answerText}`, 'console');
-        if (deps.engine instanceof SdkEngine) {
-          const result = await deps.engine.answer(run, key, answerText);
-          if (result.delivered) delivered.push(run);
-        }
-      }
+      const { delivered } = await deliverAnswer(
+        answered, key, answerText, deps.engine instanceof SdkEngine ? deps.engine : undefined,
+      );
       return {
         code: 0,
         lines: [

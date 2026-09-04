@@ -23,6 +23,7 @@ import type { Inbox } from './inbox.js';
 import { JournalCache, type RangeReader } from './journal.js';
 import type { StuckSignal } from './liveness.js';
 import { serverTokenPath } from './paths.js';
+import { deliverAnswer } from './runinbox.js';
 import type { LaneRecord, Lanes } from './supervisor.js';
 
 /** Reads the server's own bearer token, minting one on first use. */
@@ -260,27 +261,34 @@ export class ForgeServer {
       }
     });
     request.on('end', () => {
-      if (overLimit) return;
-      let parsed: { key?: string; answer?: string } | null;
-      try {
-        parsed = body ? JSON.parse(body) as { key?: string; answer?: string } : null;
-      } catch {
-        // A body that will not parse is not an answer. Guessing what was meant here
-        // would resume a run on a decision nobody made.
-        json(response, 400, { error: 'the body was not JSON' });
-        return;
-      }
-      if (!parsed || !parsed.key || parsed.answer === undefined) {
-        json(response, 400, { error: 'an answer needs a key and an answer' });
-        return;
-      }
-      const answered = this.inbox.answer(parsed.key, parsed.answer);
-      if (!answered) {
-        json(response, 404, { error: `nothing asked ${parsed.key}` });
-        return;
-      }
-      this.publish({ event: 'ask.answered', key: answered.key, runs: answered.runs });
-      json(response, 200, answered);
+      void (async () => {
+        if (overLimit) return;
+        let parsed: { key?: string; answer?: string } | null;
+        try {
+          parsed = body ? JSON.parse(body) as { key?: string; answer?: string } : null;
+        } catch {
+          // A body that will not parse is not an answer. Guessing what was meant here
+          // would resume a run on a decision nobody made.
+          json(response, 400, { error: 'the body was not JSON' });
+          return;
+        }
+        if (!parsed || !parsed.key || parsed.answer === undefined) {
+          json(response, 400, { error: 'an answer needs a key and an answer' });
+          return;
+        }
+        const answered = this.inbox.answer(parsed.key, parsed.answer);
+        if (!answered) {
+          json(response, 404, { error: `nothing asked ${parsed.key}` });
+          return;
+        }
+        // Same delivery cli.ts's `forge answer` uses: writing the inbox entry alone does
+        // not resume anything. This process holds no live SdkEngine to answer in place
+        // (that path is the CLI's, when it happens to share a process with the run), so
+        // this always rides the cross-process inbox queue.
+        await deliverAnswer(answered, parsed.key, parsed.answer);
+        this.publish({ event: 'ask.answered', key: answered.key, runs: answered.runs });
+        json(response, 200, answered);
+      })();
     });
   }
 

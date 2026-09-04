@@ -76,6 +76,14 @@ describe('raising a question', () => {
       .toBe(askKey({ ...QUESTION, run: 'alpha' }));
   });
 
+  it('code-review finding: a blocker keeps the pre-B.3.7 cross-run merge, unlike a question', () => {
+    // driftBlocker (drift.ts) never sets goal or actionTarget and relies on every run
+    // behind the same base sharing one key, one answer releasing all of them. The B.3.7
+    // scoping above is for question/forge_ask asks specifically, not blockers.
+    const blocker = { ...QUESTION, kind: 'blocker' as const };
+    expect(askKey({ ...blocker, run: 'alpha' })).toBe(askKey({ ...blocker, run: 'beta' }));
+  });
+
   it('is unmoved by whitespace and case in the wording', () => {
     expect(askKey(QUESTION))
       .toBe(askKey({ ...QUESTION, question: '  which ENVIRONMENT should the migration target?  ' }));
@@ -147,5 +155,32 @@ describe('what a blocked worker does', () => {
     const resume = inbox.resumePrompt(entry.key);
     expect(resume).toMatch(/staging/);
     expect(resume).toMatch(/Which environment/);
+  });
+});
+
+describe('code-review finding: deliverAnswer targets the goal id, not the segment name', () => {
+  it('queues the resume message under the goal, which a handoff never renames', async () => {
+    const { deliverAnswer } = await import('../../src/forge/runinbox.js');
+    const { RunInbox } = await import('../../src/forge/runinbox.js');
+    process.env['FORGE_HOME'] = dir;
+
+    const entry = inbox.raise({ ...QUESTION, run: 'goal-3', goal: 'goal' });
+    await deliverAnswer(entry, entry.key, 'staging');
+
+    // The falsifier this closes: queuing under 'goal-3' (the segment answered.runs would
+    // give you without this fix) would leave the live session -- which only polls its
+    // stable goal id's inbox -- with nothing to read.
+    expect(new RunInbox('goal').unread()).toHaveLength(1);
+    expect(new RunInbox('goal-3').unread()).toHaveLength(0);
+  });
+
+  it('falls back to the run name when no ask ever recorded a goal', async () => {
+    const { deliverAnswer, RunInbox } = await import('../../src/forge/runinbox.js');
+    process.env['FORGE_HOME'] = dir;
+
+    const entry = inbox.raise({ ...QUESTION, run: 'no-goal-run' });
+    await deliverAnswer(entry, entry.key, 'staging');
+
+    expect(new RunInbox('no-goal-run').unread()).toHaveLength(1);
   });
 });

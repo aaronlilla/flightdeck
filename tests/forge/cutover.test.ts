@@ -93,6 +93,20 @@ describe('a clean cutover', () => {
     expect(result.moved).toContain('tile-watch-2.cmd');
     expect(existsSync(join(retiredDir, 'tile-watch-2.cmd'))).toBe(true);
   });
+
+  it('code-review finding: never moves conductor_hooks.py or the model policy, even though OLD_RUNTIME matches them', () => {
+    // The falsifier this closes: a broadened manifest (B.3.9's own fix, above) that
+    // matches more than the fixed four also has to keep excluding NEVER_REMOVE, or the
+    // widening reintroduces exactly the guard-removed-mid-flight failure NEVER_REMOVE
+    // exists to prevent.
+    writeFileSync(join(from, 'conductor_hooks.py'), '# hooks\n', 'utf8');
+    writeFileSync(join(from, 'model-policy.json'), '{}', 'utf8');
+    const result = runCutover({ from, retiredDir, processList: [] }, journal);
+    expect(result.moved).not.toContain('conductor_hooks.py');
+    expect(result.moved).not.toContain('model-policy.json');
+    expect(existsSync(join(from, 'conductor_hooks.py'))).toBe(true);
+    expect(existsSync(join(from, 'model-policy.json'))).toBe(true);
+  });
 });
 
 describe('an empty source directory', () => {

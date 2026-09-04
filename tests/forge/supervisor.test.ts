@@ -281,6 +281,29 @@ describe('the kill switch', () => {
 
     expect(stopped[0]?.reached).toBe(false);
   });
+
+  it('code-review finding: a rejected send on one live session does not abort the rest of the loop', async () => {
+    lanes.put('alpha', { column: 'c', session_id: 's1' });
+    lanes.put('beta', { column: 'd', session_id: 's2' });
+    const rejecting = { send: async () => { throw new Error('the subprocess is gone'); }, stop: async () => {} };
+    const betaStops: string[] = [];
+    const healthy = {
+      send: async () => 'packet from beta',
+      stop: async () => { betaStops.push('beta'); },
+    };
+    const fleet = new Fleet(
+      lanes, join(dir, 'fleet.jsonl'), undefined,
+      new Map([['alpha', rejecting], ['beta', healthy]]),
+    );
+
+    const stopped = await fleet.stopAll('kill switch');
+
+    // Both lanes were actually looked at, not just the first one before the throw.
+    expect(stopped.map((row) => row.slug).sort()).toEqual(['alpha', 'beta']);
+    expect(stopped.find((row) => row.slug === 'alpha')?.reached).toBe(false);
+    expect(stopped.find((row) => row.slug === 'beta')?.reached).toBe(true);
+    expect(betaStops).toEqual(['beta']);
+  });
 });
 
 describe('the kill switch file', () => {
