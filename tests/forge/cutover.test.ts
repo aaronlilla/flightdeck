@@ -67,7 +67,7 @@ describe('the warden refusal', () => {
   it('refuses when the process list holds a conductor warden line', () => {
     const result = runCutover({
       from, retiredDir,
-      processList: ['1234 python conductor.py warden --home C:/dev/.claude'],
+      processList: ['1234 python conductor.py warden --home /coordination'],
     }, journal);
     expect(result.ok).toBe(false);
     expect(result.refusal).toMatch(/warden/i);
