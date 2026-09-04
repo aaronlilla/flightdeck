@@ -20,10 +20,12 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
   Breaker,
+  Fleet,
   LANE_FIELDS,
   Lanes,
   laneRecord,
 } from '../../src/forge/supervisor.js';
+import { replay } from '../../src/forge/journal.js';
 
 let dir: string;
 let lanes: Lanes;
@@ -162,5 +164,72 @@ describe('the zero-turn breaker', () => {
     breaker.noteZeroTurnStart('flappy', START + 1_000);
     breaker.noteZeroTurnStart('flappy', START + 2_000);
     expect(String(lanes.get('flappy')?.needs_aaron)).toMatch(/without taking a turn/i);
+  });
+});
+
+
+describe('the kill switch', () => {
+  /**
+   * `forge stop --all` is the one control that has to work when nothing else does.
+   * Its job is to end all spend, and to end it in a way the work survives: every run
+   * parks with a handoff packet, so restarting continues rather than starting over.
+   */
+  it('parks every running lane', () => {
+    lanes.put('alpha', { column: 'c', session_id: 's1' });
+    lanes.put('beta', { column: 'd', session_id: 's2' });
+    const fleet = new Fleet(lanes, join(dir, 'fleet.jsonl'));
+
+    const stopped = fleet.stopAll('kill switch');
+
+    expect(stopped.map((row) => row.slug).sort()).toEqual(['alpha', 'beta']);
+    expect(lanes.get('alpha')?.verdict).toBe('parked');
+    expect(lanes.get('beta')?.verdict).toBe('parked');
+  });
+
+  it('asks each run for a handoff, so restarting continues rather than starts over', () => {
+    lanes.put('alpha', { column: 'c', session_id: 's1' });
+    const fleet = new Fleet(lanes, join(dir, 'fleet.jsonl'));
+    fleet.stopAll('kill switch');
+
+    const state = replay(join(dir, 'fleet.jsonl'));
+    const parked = state.events.filter((event) => event.event === 'run.parked');
+    expect(parked).toHaveLength(1);
+    expect(parked[0]?.['handoffRequested']).toBe(true);
+  });
+
+  it('journals why, so the stop is not a mystery afterwards', () => {
+    lanes.put('alpha', { column: 'c', session_id: 's1' });
+    const fleet = new Fleet(lanes, join(dir, 'fleet.jsonl'));
+    fleet.stopAll('the window is nearly spent');
+
+    const state = replay(join(dir, 'fleet.jsonl'));
+    expect(state.events.some((event) => String(event['reason'] ?? '').includes('window')))
+      .toBe(true);
+  });
+
+  it('leaves a lane that had already finished alone', () => {
+    lanes.put('done', { column: 'c', verdict: 'done', ended: 1 });
+    const fleet = new Fleet(lanes, join(dir, 'fleet.jsonl'));
+
+    expect(fleet.stopAll('kill switch')).toHaveLength(0);
+    expect(lanes.get('done')?.verdict).toBe('done');
+  });
+
+  it('is safe to run twice', () => {
+    lanes.put('alpha', { column: 'c', session_id: 's1' });
+    const fleet = new Fleet(lanes, join(dir, 'fleet.jsonl'));
+    fleet.stopAll('once');
+    expect(fleet.stopAll('twice')).toHaveLength(0);
+  });
+
+  it('reports nothing to stop rather than failing when the fleet is idle', () => {
+    const fleet = new Fleet(lanes, join(dir, 'fleet.jsonl'));
+    expect(fleet.stopAll('kill switch')).toEqual([]);
+  });
+
+  it('counts a lane the breaker has flagged as stopped too', () => {
+    lanes.put('flappy', { column: 'c', session_id: 's1', needs_aaron: 'three bad starts' });
+    const fleet = new Fleet(lanes, join(dir, 'fleet.jsonl'));
+    expect(fleet.stopAll('kill switch').map((row) => row.slug)).toEqual(['flappy']);
   });
 });

@@ -14,6 +14,8 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { Journal } from './journal.js';
+
 /**
  * Every field a lane record carries.
  *
@@ -178,5 +180,62 @@ export class Breaker {
   /** Hand a flagged lane back once a person has looked at it. */
   clear(slug: string): void {
     this.lanes.put(slug, { needs_aaron: null, zero_turn_starts: [] });
+  }
+}
+
+
+/**
+ * The whole fleet, and the one control that has to work when nothing else does.
+ *
+ * `forge stop --all` ends all spend. That is its only job, and everything about it is
+ * shaped by the fact that it will be reached for when something is going wrong: it takes
+ * no arguments it could get wrong, it is safe to run twice, and it never fails because a
+ * lane was already finished.
+ *
+ * Parking rather than killing, because the work has to survive. Every run is asked for a
+ * handoff packet as it stops, so `forge up` continues rather than starting over. A stop
+ * that lost an afternoon of work would be a stop nobody dares press.
+ */
+export class Fleet {
+  private readonly journal: Journal;
+
+  constructor(private readonly lanes: Lanes, journalPath: string) {
+    this.journal = new Journal(journalPath);
+  }
+
+  /** Lanes that are still doing something, and so still costing something. */
+  running(): LaneRecord[] {
+    return this.lanes.all().filter((row) => !row.ended && !row.verdict);
+  }
+
+  /**
+   * Park every running lane and say what was stopped.
+   *
+   * Returns the lanes it acted on, which is empty when there was nothing to do. An empty
+   * list is the honest answer to a stop on an idle fleet; raising there would make the
+   * control feel broken at the moment it is most needed.
+   */
+  stopAll(reason: string): LaneRecord[] {
+    const stopped: LaneRecord[] = [];
+    try {
+      for (const lane of this.running()) {
+        this.journal.append({
+          event: 'run.parked',
+          run: lane.slug,
+          actor: 'console',
+          reason,
+          verdict: 'parked',
+          handoffRequested: true,
+        });
+        stopped.push(this.lanes.put(lane.slug, {
+          verdict: 'parked',
+          ended: Date.now(),
+          note: `stopped: ${reason}`,
+        }));
+      }
+    } finally {
+      this.journal.close();
+    }
+    return stopped;
   }
 }
