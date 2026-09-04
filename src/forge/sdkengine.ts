@@ -38,6 +38,8 @@ export interface WorkerRequest {
   maxTurns?: number;
   env: NodeJS.ProcessEnv;
   resume?: string;
+  /** The class's own effort, from model-policy.json. */
+  effort?: string;
 }
 
 export interface McpServerSpec {
@@ -54,6 +56,7 @@ export interface WorkerOptions {
   env: NodeJS.ProcessEnv;
   mcpServers: Record<string, McpServerSpec>;
   resume?: string;
+  effort?: string;
 }
 
 /**
@@ -96,6 +99,7 @@ export function buildWorkerOptions(
     mcpServers: { forge: { tools: [...WORKER_TOOLS] } },
   };
   if (request.resume) options.resume = request.resume;
+  if (request.effort) options.effort = request.effort;
   return options;
 }
 
@@ -147,6 +151,7 @@ export function toEngineConfig(options: WorkerOptions): EngineConfig {
     }) as never,
   };
   if (options.resume) config.resume = options.resume;
+  if (options.effort) config.effort = options.effort as never;
   return config;
 }
 
@@ -431,6 +436,7 @@ export class SdkEngine implements EngineLike {
       maxTurns: request.maxTurns,
       env: request.env,
       ...(request.resume ? { resume: request.resume } : {}),
+      ...(request.effort ? { effort: request.effort } : {}),
     });
 
     const journal = this.journal;
@@ -489,6 +495,7 @@ export class SdkEngine implements EngineLike {
       settingSources: workerOptions.settingSources,
       env: workerOptions.env,
       maxTurns: workerOptions.maxTurns,
+      ...(workerOptions.effort ? { effort: workerOptions.effort as never } : {}),
       mcpServers: { forge: buildForgeMcpServer(handlers) },
       canUseTool: buildCanUseTool({ run: request.run, goal, inbox, journal, parked: this.parked }) as never,
       onToolCall: buildPreToolUseHook({

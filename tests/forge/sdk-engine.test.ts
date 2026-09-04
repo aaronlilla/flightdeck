@@ -165,6 +165,22 @@ describe('the options the production engine opens with', () => {
   });
 });
 
+describe('B.3.9: the class effort reaches the engine options', () => {
+  it('carries the effort from the session request through to the SDK options', async () => {
+    const { fn, calls } = fakeQuery([[{ text: 'ok' }]]);
+    const engine = engineFor(fn);
+    await engine.run({ ...REQUEST, env: { PATH: '/usr/bin' }, effort: 'high' } as never);
+    expect((calls[0]!.options as unknown as { effort?: string }).effort).toBe('high');
+  });
+
+  it('the falsifier: no effort on the request means none reaches the options', async () => {
+    const { fn, calls } = fakeQuery([[{ text: 'ok' }]]);
+    const engine = engineFor(fn);
+    await engine.run({ ...REQUEST, env: { PATH: '/usr/bin' } });
+    expect((calls[0]!.options as unknown as { effort?: string }).effort).toBeUndefined();
+  });
+});
+
 describe('registering the forge tools', () => {
   it('exposes forge_done, forge_handoff, forge_ask, forge_gotcha and forge_report', async () => {
     const { fn, calls } = fakeQuery([[{ text: 'ok' }]]);

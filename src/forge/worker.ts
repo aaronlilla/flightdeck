@@ -15,7 +15,7 @@
  * The engine is injected. Every specimen runs against a fake stream, so the suite spends
  * nothing and still exercises the loop that decides the money.
  */
-import { tierOfBrief, contextFor, modelFor, modelIdFor, turnsFor } from './policy.js';
+import { tierOfBrief, contextFor, effortFor, modelFor, modelIdFor, turnsFor } from './policy.js';
 import { Journal } from './journal.js';
 import { run as execRun, type RunRequest, type RunResult } from './exec.js';
 
@@ -84,6 +84,8 @@ export interface SessionRequest {
   /** The class ceiling. Below this, a turn's own tool calls run; at or past it, every
    *  tool call on this session denies until a successor starts (see B.3.3). */
   ceiling?: number;
+  /** How much effort the class asks the model to spend, from model-policy.json. */
+  effort?: string;
 }
 
 export interface SessionResult {
@@ -223,6 +225,7 @@ export class Worker {
   async run(): Promise<WorkerResult> {
     const className = tierOfBrief(this.config.brief);
     const model = modelIdFor(modelFor(className));
+    const effort = effortFor(className);
     const ceiling = this.config.maxContext ?? contextFor(className);
     // No turn cap on an implement run (B.3.8, the 2026-09-04 12:58 decision): the class
     // ceiling and the stuck rule below are what bound it, not a count of turns that has
@@ -265,7 +268,7 @@ export class Worker {
           session = await this.engine.run({
             run: runName, goal: this.config.run, model, prompt, env, cwd: this.config.cwd,
             ...(maxTurns !== undefined ? { maxTurns } : {}),
-            ceiling,
+            ceiling, effort,
           });
         } catch (error) {
           // An engine that throws (the subprocess exited, a fatal engine-error) must not
