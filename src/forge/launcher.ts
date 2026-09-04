@@ -17,6 +17,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { readProcessList } from './fleetwatch.js';
 import { fleetConfigDir, forgeHome, runDir } from './paths.js';
 import { INHERITED, workerEnv } from './worker.js';
 
@@ -87,22 +88,13 @@ export function checkLaunch(request: LaunchRequest): LaunchVerdict {
  * Asked of the process table rather than of a flag file, because the flag is what goes
  * stale. Unreadable means no: refusing every launch because the probe failed is worse
  * than the race it prevents, and the warden checks credentials on its own cadence.
+ *
+ * Reads through `fleetwatch.ts`'s own process-table reader rather than shelling out a
+ * second time: two independent implementations of "is a claude login running" already
+ * drifted once (different flags, and only one of them survived Windows dropping `wmic`).
  */
-export function loginInFlight(): boolean {
-  try {
-    if (process.platform === 'win32') {
-      const out = execFileSync('wmic', ['process', 'get', 'CommandLine'], {
-        encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
-      });
-      return /claude(\.exe)?\s+login/i.test(out);
-    }
-    const out = execFileSync('ps', ['-eo', 'args'], {
-      encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
-    });
-    return /claude\s+login/i.test(out);
-  } catch {
-    return false;
-  }
+export function loginInFlight(lines: string[] = readProcessList()): boolean {
+  return lines.some((line) => /claude(\.exe)?\s+login/i.test(line));
 }
 
 /**

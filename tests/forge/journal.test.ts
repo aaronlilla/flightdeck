@@ -81,6 +81,16 @@ describe('replay', () => {
     expect(run?.context).toBe(40_000);
   });
 
+  it('carries the run\'s model-policy class forward, for liveness\'s context ceiling', () => {
+    write({ event: 'run.started', run: 'alpha', actor: 'runner', className: 'master' });
+    expect(replay(path).runs['alpha']?.className).toBe('master');
+  });
+
+  it('leaves className unset when a run never journaled one', () => {
+    write({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    expect(replay(path).runs['alpha']?.className).toBeUndefined();
+  });
+
   it('carries usage forward into a burn total per tier', () => {
     write(
       { event: 'run.started', run: 'alpha', actor: 'runner' },

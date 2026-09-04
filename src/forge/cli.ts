@@ -42,6 +42,22 @@ export interface ForgeDeps {
 }
 
 /**
+ * A fleet snapshot's runs, from the journal's own replayed state.
+ *
+ * Shared by `status` and `up` so there is exactly one place that reads a run's model-policy
+ * class off `RunState` rather than assuming `implement` for every run.
+ */
+function snapshotRuns(state: ReturnType<typeof replay>): Array<{
+  run: string; className: string; lastEventAt: number; context: number;
+  currentTool?: { name: string; startedAt: number };
+}> {
+  return Object.values(state.runs).map((run) => ({
+    run: run.run, className: run.className ?? 'implement', lastEventAt: run.lastEventAt,
+    context: run.context, ...(run.currentTool ? { currentTool: run.currentTool } : {}),
+  }));
+}
+
+/**
  * `forge run`'s arguments past the brief path: `--dry-run`, `--max-context N`,
  * `--max-turns N`, and whatever words are left over become the condition.
  */
@@ -86,12 +102,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
     case 'status': {
       const state = replay(journalPath());
       const stuckRows = assess({
-        now: Date.now(),
-        runs: Object.values(state.runs).map((run) => ({
-          run: run.run, className: 'implement', lastEventAt: run.lastEventAt,
-          context: run.context, ...(run.currentTool ? { currentTool: run.currentTool } : {}),
-        })),
-        fleet: watchedProcesses(),
+        now: Date.now(), runs: snapshotRuns(state), fleet: watchedProcesses(),
       }).map((trip) => `STUCK  ${trip.key.padEnd(24)} ${trip.signal.padEnd(14)} ${trip.hint}`);
       const rows = lanes.all().map((lane) => [
         lane.slug.padEnd(28),
@@ -124,11 +135,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       const liveness = new LivenessSupervisor(
         () => ({
           now: Date.now(),
-          runs: Object.values(replay(journalPath()).runs).map((run) => ({
-            run: run.run, className: 'implement', lastEventAt: run.lastEventAt,
-            context: run.context,
-            ...(run.currentTool ? { currentTool: run.currentTool } : {}),
-          })),
+          runs: snapshotRuns(replay(journalPath())),
           fleet: watchedProcesses(),
         }),
         livenessJournal,
@@ -168,6 +175,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       }
       const slug = briefPath.split(/[\\/]/).pop()!.replace(/\.md$/, '');
       const pin = pinnedRuntime(slug);
+      const breaker = new Breaker(lanes);
 
       if (dryRun) {
         lanes.put(slug, { column: 'forge', started: Date.now() });
@@ -176,6 +184,16 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           lines: [
             `${slug} pinned to forge ${pin.version}`,
             `CLAUDE_CONFIG_DIR=${launchEnv()['CLAUDE_CONFIG_DIR']}`,
+          ],
+        };
+      }
+
+      if (breaker.blocked(slug)) {
+        return {
+          code: 1,
+          lines: [
+            `refusing to start ${slug}: ${lanes.get(slug)?.needs_aaron}`,
+            `run forge clear ${slug} once you have looked at why it kept failing to start`,
           ],
         };
       }
@@ -196,6 +214,14 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       });
       const result = await worker.run();
       const started = result.sessions[0];
+      // A session that opened and closed without a single turn is a failed start, not a
+      // worker being quiet; three of those in fifteen minutes is the exact 2026-09-03
+      // thrash this breaker exists to stop, so it has to see every real launch.
+      if (result.sessions.length === 1 && result.turns === 0) {
+        breaker.noteZeroTurnStart(slug);
+      } else {
+        breaker.noteWorkingStart(slug);
+      }
       lanes.put(slug, {
         column: 'forge', owner: 'forge', model: result.model, context: result.context,
         verdict: result.verdict, ...(started ? { session_id: started } : {}),

@@ -130,7 +130,13 @@ export function buildOptions(
     stderr: onStderr,
   };
   if (config.model) options.model = config.model;
-  if (config.permissionMode) options.permissionMode = config.permissionMode;
+  if (config.permissionMode) {
+    options.permissionMode = config.permissionMode;
+    // The SDK requires this alongside bypassPermissions and denies every tool call
+    // silently if it is missing; derived here so nothing that asks for bypassPermissions
+    // can forget to also ask for this.
+    if (config.permissionMode === 'bypassPermissions') options.allowDangerouslySkipPermissions = true;
+  }
   if (config.resume) options.resume = config.resume;
   if (config.agents) options.agents = config.agents;
   if (config.env) options.env = config.env;

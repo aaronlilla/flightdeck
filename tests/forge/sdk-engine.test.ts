@@ -121,6 +121,9 @@ describe('the options the production engine opens with', () => {
     expect(options.model).toBe('claude-sonnet-5');
     expect(options.cwd).toBe(REQUEST.cwd);
     expect(options.permissionMode).toBe('bypassPermissions');
+    // The SDK denies every tool under bypassPermissions unless this is also set; a worker
+    // launched without it can read nothing, run nothing, and has no way to report back.
+    expect(options.allowDangerouslySkipPermissions).toBe(true);
     expect(options.settingSources).toEqual(['user', 'project']);
     expect(options.maxTurns).toBe(40);
     for (const name of INHERITED) expect(options.env?.[name]).toBeUndefined();
@@ -183,6 +186,26 @@ describe('the ceiling, driven by real usage events', () => {
     expect(result.handoffs).toBe(1);
     const state = replay(journalPath);
     expect(state.events.filter((e) => e.event === 'run.handoff')).toHaveLength(1);
+  });
+
+  it('carries the forge_handoff tool call\'s packet into the successor\'s prompt', async () => {
+    const { fn } = fakeQuery([
+      [{ text: 'working', usage: { input: 65_000, cacheRead: 0, cacheCreation: 0, output: 10 } }],
+      [{
+        text: '', usage: { input: 100, cacheRead: 0, cacheCreation: 0, output: 10 },
+        toolUse: { name: 'mcp__forge__forge_handoff', input: { packet: 'left off at src/x.ts:42' } },
+      }],
+      [{ text: 'done', usage: { input: 100, cacheRead: 0, cacheCreation: 0, output: 10 },
+        toolUse: { name: 'mcp__forge__forge_done', input: { evidence: 'shipped' } } }],
+    ]);
+    const engine = engineFor(fn);
+    const worker = new Worker({
+      run: 'handoff-run', brief: '# Goal\n\nDo the thing.\n', briefPath: join(home, 'brief.md'),
+      cwd: home, journalPath, engine: engine as never, maxContext: 60_000,
+    });
+    await worker.run();
+
+    expect(engine.started[1]?.prompt).toContain('left off at src/x.ts:42');
   });
 });
 
@@ -296,5 +319,25 @@ describe('canUseTool, invoked directly', () => {
     expect(inbox.all()).toHaveLength(1);
     expect(inbox.all()[0]?.asked).toBe(2);
     void second;
+  });
+});
+
+describe('journaling a tool call as it happens', () => {
+  it('writes tool.start and tool.end so a run\'s currentTool can be read back from the journal', async () => {
+    const { fn } = fakeQuery([
+      [
+        { text: 'checking', toolUse: { name: 'Bash', input: { command: 'npm test' } },
+          usage: { input: 10, cacheRead: 0, cacheCreation: 0, output: 1 } },
+      ],
+    ]);
+    const engine = engineFor(fn);
+    await engine.run({ ...REQUEST, run: 'tool-run', env: { PATH: '/usr/bin' } });
+
+    const state = replay(journalPath);
+    const started = state.events.find((e) => e.event === 'tool.start' && e.run === 'tool-run');
+    expect(started?.['tool']).toBe('Bash');
+    // The fake never emits a matching tool-result, so the run's currentTool stays open --
+    // which is exactly the case liveness's tool-budget signal exists to catch.
+    expect(state.runs['tool-run']?.currentTool?.name).toBe('Bash');
   });
 });

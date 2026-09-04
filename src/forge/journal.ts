@@ -58,6 +58,8 @@ export interface RunState {
   model?: string;
   successor?: string;
   predecessor?: string;
+  /** The model-policy class this run opened under, for liveness's context ceiling. */
+  className?: string;
   /** When this run last produced any journal event, for liveness's idle signal. */
   lastEventAt: number;
   /** The tool call in flight, when the last event named one and none has closed it since. */
@@ -196,6 +198,7 @@ export function replay(path: string): FleetState {
         if (row.ticket) run.ticket = row.ticket;
         if (row.model) run.model = row.model;
         if (row.predecessor) run.predecessor = row.predecessor;
+        if (typeof row['className'] === 'string') run.className = row['className'];
         break;
       case 'turn.end':
         run.turns += 1;

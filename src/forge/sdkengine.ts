@@ -58,6 +58,15 @@ export interface WorkerOptions {
  */
 export const WORKER_TOOLS = ['forge_handoff', 'forge_done', 'forge_ask', 'forge_gotcha'];
 
+/**
+ * The two tool-call names the run loop itself has to recognise, qualified the way the SDK
+ * presents an MCP server's tools to the model. Matched exactly rather than by suffix: a
+ * different server whose author happened to register a tool ending in `forge_done` must
+ * never be able to end a worker's session chain early.
+ */
+const FORGE_DONE_TOOL = 'mcp__forge__forge_done';
+const FORGE_HANDOFF_TOOL = 'mcp__forge__forge_handoff';
+
 export function buildWorkerOptions(request: WorkerRequest): WorkerOptions {
   const env = workerEnv(request.env);
   // Pinned, never inherited. This is the line that keeps the fleet's login separate from
@@ -313,6 +322,10 @@ export class SdkEngine implements EngineLike {
     // messages of 40,000 and 25,000 together describe a session that has read 65,000
     // tokens, and the second alone would look safely under a 60,000 ceiling.
     let runningContext = 0;
+    // Named per call id rather than per segment: a tool's result event carries only the
+    // id it answers, not the tool's name, so the name has to be remembered from the
+    // matching tool-use to journal a tool.end a reader can act on.
+    const toolNameById = new Map<string, string>();
 
     const runSegment = (promptText: string): Promise<FakeTurn[]> => new Promise((resolve, reject) => {
       const turns: FakeTurn[] = [];
@@ -341,7 +354,24 @@ export class SdkEngine implements EngineLike {
             if (pending) pending.text += event.text;
             break;
           case 'tool-use':
-            if (pending && event.name.endsWith('forge_done')) pending.done = true;
+            toolNameById.set(event.id, event.name);
+            journal.append({ event: 'tool.start', run: request.run, actor: 'worker', tool: event.name });
+            if (!pending) break;
+            if (event.name === FORGE_DONE_TOOL) pending.done = true;
+            if (event.name === FORGE_HANDOFF_TOOL) {
+              // The successor reads this turn's text as the packet (worker.ts's
+              // requestHandoff joins every turn's text after a send()). Without this the
+              // tool call still fires and journals, but the packet itself never reaches
+              // the chain that is supposed to carry it forward.
+              const packet = (event.input as { packet?: unknown }).packet;
+              if (typeof packet === 'string') pending.text += packet;
+            }
+            break;
+          case 'tool-result':
+            journal.append({
+              event: 'tool.end', run: request.run, actor: 'worker',
+              tool: toolNameById.get(event.id) ?? '', isError: event.isError,
+            });
             break;
           case 'turn-complete':
             flush();
@@ -349,6 +379,13 @@ export class SdkEngine implements EngineLike {
             resolve(turns);
             break;
           case 'engine-error':
+            // Not fatal to the segment (a `result` message still follows and resolves it),
+            // but a turn that errored partway through must not read identically to one
+            // that finished cleanly, or a billing or rate-limit failure looks like progress.
+            journal.append({
+              event: 'engine.error', run: request.run, actor: 'worker', message: event.message,
+              fatal: event.fatal,
+            });
             if (event.fatal) {
               off();
               reject(new Error(event.message));

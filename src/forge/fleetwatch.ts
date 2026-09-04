@@ -12,13 +12,23 @@ import { join } from 'node:path';
 import type { FleetProcess } from './liveness.js';
 import { fleetConfigDir } from './paths.js';
 
-/** Every line of the process table, one process per line. Empty on a read failure. */
+/**
+ * Every line of the process table, pid first on every platform. Empty on a read failure.
+ *
+ * `wmic` is deprecated and gone from newer Windows images (verified absent on this
+ * machine), so the win32 branch goes through PowerShell's CIM cmdlet instead. Both
+ * branches are written pid-first on purpose: a command line ending in a number (a port, a
+ * turn count) would otherwise be misread as the pid if the match tried the line's tail
+ * first, which is what happened on POSIX when this used the same trailing-digit pattern
+ * for both platforms.
+ */
 export function readProcessList(): string[] {
   try {
     if (process.platform === 'win32') {
-      return execFileSync('wmic', ['process', 'get', 'ProcessId,CommandLine'], {
-        encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
-      }).split('\n');
+      return execFileSync('powershell', [
+        '-NoProfile', '-NonInteractive', '-Command',
+        'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" }',
+      ], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }).split('\n');
     }
     return execFileSync('ps', ['-eo', 'pid,args'], {
       encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
@@ -46,15 +56,18 @@ export function watchedProcesses(lines: string[] = readProcessList()): FleetProc
     }, undefined)
     : undefined;
 
+  const credentialsPath = join(fleetConfigDir(), '.credentials.json');
+  const credentialsMtime = existsSync(credentialsPath) ? statSync(credentialsPath).mtimeMs : undefined;
+
   return lines
     .filter((line) => /claude(\.exe)?\b/i.test(line))
     .map((line): FleetProcess | undefined => {
-      const pidMatch = /(\d+)\s*$/.exec(line.trim()) ?? /^\s*(\d+)/.exec(line);
+      const pidMatch = /^\s*(\d+)/.exec(line);
       const pid = pidMatch ? Number(pidMatch[1]) : NaN;
       if (!Number.isFinite(pid)) return undefined;
       const isLogin = /claude(\.exe)?\s+login/i.test(line);
       return isLogin
-        ? { pid, isLogin: true }
+        ? { pid, isLogin: true, ...(credentialsMtime !== undefined ? { credentialsMtime } : {}) }
         : { pid, isLogin: false, ...(latestSessionMtime !== undefined ? { sessionFileMtime: latestSessionMtime } : {}) };
     })
     .filter((proc): proc is FleetProcess => Boolean(proc));

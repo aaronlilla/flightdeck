@@ -187,6 +187,46 @@ describe('forge run', () => {
 
     expect(started).toHaveLength(0);
   });
+
+  it('trips the breaker after three zero-turn starts and refuses a fourth', async () => {
+    const brief = join(home, 'ok.md');
+    writeFileSync(brief, '# Goal\n\nDo the thing.\n', 'utf8');
+    const zeroTurnEngine = {
+      started: [] as SessionRequest[],
+      async run(config: SessionRequest) {
+        this.started.push(config);
+        return { sessionId: `s-${this.started.length}`, turns: [] };
+      },
+    };
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const result = await forge(['run', brief], { engine: zeroTurnEngine });
+      expect(result.code).toBe(0);
+    }
+    const fourth = await forge(['run', brief], { engine: zeroTurnEngine });
+
+    expect(fourth.code).toBe(1);
+    expect(fourth.lines.join(' ')).toMatch(/refusing to start/);
+    expect(zeroTurnEngine.started).toHaveLength(3);
+  });
+
+  it('clears the breaker once forge clear runs', async () => {
+    const brief = join(home, 'ok.md');
+    writeFileSync(brief, '# Goal\n\nDo the thing.\n', 'utf8');
+    const zeroTurnEngine = {
+      started: [] as SessionRequest[],
+      async run(config: SessionRequest) {
+        this.started.push(config);
+        return { sessionId: `s-${this.started.length}`, turns: [] };
+      },
+    };
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await forge(['run', brief], { engine: zeroTurnEngine });
+    }
+    await forge(['clear', 'ok']);
+    const result = await forge(['run', brief], { engine: zeroTurnEngine });
+    expect(result.code).toBe(0);
+  });
 });
 
 describe('forge send', () => {
