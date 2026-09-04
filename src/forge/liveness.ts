@@ -14,7 +14,8 @@
 import { CLASS_BUDGETS, DEFAULT_CLASS } from './exec.js';
 import { contextFor } from './policy.js';
 
-export type LivenessSignal = 'idle' | 'tool-budget' | 'context' | 'stale-session' | 'login-stuck';
+export type LivenessSignal =
+  | 'idle' | 'tool-budget' | 'context' | 'stale-session' | 'login-stuck' | 'fleet-unknown';
 
 export interface StuckSignal {
   /** The run name, or `pid:N` for a fleet-process signal. */
@@ -56,7 +57,12 @@ export interface FleetProcess {
 export interface LivenessInput {
   now: number;
   runs: RunSnapshot[];
-  fleet: FleetProcess[];
+  /**
+   * `{ ok: false, reason }` when the process probe behind this snapshot failed. A failed
+   * probe is not the same fact as a verified empty fleet: reading it as `[]` is how a
+   * broken sensor gets reported as a clean one.
+   */
+  fleet: FleetProcess[] | { ok: false; reason: string };
 }
 
 export interface LivenessThresholds {
@@ -128,29 +134,40 @@ export function assess(input: LivenessInput, thresholds: LivenessThresholds = DE
     }
   }
 
-  for (const proc of input.fleet) {
-    if (proc.isLogin) {
-      if (proc.credentialsMtime === undefined) continue;
-      const stuckFor = input.now - proc.credentialsMtime;
-      if (stuckFor >= thresholds.loginGraceMs) {
+  if (!Array.isArray(input.fleet)) {
+    // A failed probe and a verified empty fleet must never look the same: the first is a
+    // broken sensor, and reading it as zero stale sessions is exactly how one goes
+    // unnoticed. This never expires and is never journaled twice for the same reason,
+    // the same as every other signal here.
+    trips.push({
+      key: 'fleet', signal: 'fleet-unknown', threshold: 0, observed: 0, since: input.now,
+      hint: `the fleet process probe failed: ${input.fleet.reason}`,
+    });
+  } else {
+    for (const proc of input.fleet) {
+      if (proc.isLogin) {
+        if (proc.credentialsMtime === undefined) continue;
+        const stuckFor = input.now - proc.credentialsMtime;
+        if (stuckFor >= thresholds.loginGraceMs) {
+          trips.push({
+            key: `pid:${proc.pid}`, signal: 'login-stuck', threshold: thresholds.loginGraceMs,
+            observed: stuckFor, since: proc.credentialsMtime,
+            hint: `login pid ${proc.pid} is still alive `
+              + `${Math.round(stuckFor / 60_000)} minutes after its credentials were written`,
+          });
+        }
+        continue;
+      }
+      if (proc.sessionFileMtime === undefined) continue;
+      const staleFor = input.now - proc.sessionFileMtime;
+      if (staleFor >= thresholds.staleSessionMs) {
         trips.push({
-          key: `pid:${proc.pid}`, signal: 'login-stuck', threshold: thresholds.loginGraceMs,
-          observed: stuckFor, since: proc.credentialsMtime,
-          hint: `login pid ${proc.pid} is still alive `
-            + `${Math.round(stuckFor / 60_000)} minutes after its credentials were written`,
+          key: `pid:${proc.pid}`, signal: 'stale-session', threshold: thresholds.staleSessionMs,
+          observed: staleFor, since: proc.sessionFileMtime,
+          hint: `fleet pid ${proc.pid}'s session file has not updated in `
+            + `${Math.round(staleFor / 60_000)} minutes`,
         });
       }
-      continue;
-    }
-    if (proc.sessionFileMtime === undefined) continue;
-    const staleFor = input.now - proc.sessionFileMtime;
-    if (staleFor >= thresholds.staleSessionMs) {
-      trips.push({
-        key: `pid:${proc.pid}`, signal: 'stale-session', threshold: thresholds.staleSessionMs,
-        observed: staleFor, since: proc.sessionFileMtime,
-        hint: `fleet pid ${proc.pid}'s session file has not updated in `
-          + `${Math.round(staleFor / 60_000)} minutes`,
-      });
     }
   }
 

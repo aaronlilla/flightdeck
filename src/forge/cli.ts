@@ -137,7 +137,10 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       const server = new ForgeServer({
         lanes, inbox, journalPath: journalPath(),
         stuck: () => liveness.stuck(),
-        fleet: () => watchedProcesses().map((proc) => ({ ...proc })),
+        fleet: () => {
+          const read = watchedProcesses();
+          return Array.isArray(read) ? read.map((proc) => ({ ...proc })) : [{ ...read }];
+        },
       });
       const livenessJournal = new Journal(journalPath());
       const liveness = new LivenessSupervisor(

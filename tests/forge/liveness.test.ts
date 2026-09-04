@@ -126,6 +126,24 @@ describe('the login-stuck signal', () => {
   });
 });
 
+describe('a failed fleet probe', () => {
+  it('trips fleet-unknown with the reason rather than reading as zero stale sessions', () => {
+    const trips = assess(baseInput({ fleet: { ok: false, reason: 'powershell timed out' } }));
+    expect(trips.some((t) => t.signal === 'stale-session')).toBe(false);
+    const trip = trips.find((t) => t.signal === 'fleet-unknown');
+    expect(trip).toBeTruthy();
+    expect(trip?.hint).toContain('powershell timed out');
+  });
+
+  it('still runs the per-run signals when the fleet probe itself fails', () => {
+    const trips = assess(baseInput({
+      fleet: { ok: false, reason: 'powershell timed out' },
+      runs: [{ run: 'r1', className: 'implement', lastEventAt: NOW - DEFAULT_THRESHOLDS.idleMs, context: 0 }],
+    }));
+    expect(trips.some((t) => t.signal === 'idle' && t.key === 'r1')).toBe(true);
+  });
+});
+
 describe('the supervisor', () => {
   it('journals a new trip once and does not repeat it on the next tick', () => {
     const journaled: Record<string, unknown>[] = [];

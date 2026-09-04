@@ -12,8 +12,10 @@ import { join } from 'node:path';
 import type { FleetProcess } from './liveness.js';
 import { fleetConfigDir } from './paths.js';
 
+export type ProcessProbe = { ok: true; lines: string[] } | { ok: false; reason: string };
+
 /**
- * Every line of the process table, pid first on every platform. Empty on a read failure.
+ * The process table, pid first on every platform, or why reading it failed.
  *
  * `wmic` is deprecated and gone from newer Windows images (verified absent on this
  * machine), so the win32 branch goes through PowerShell's CIM cmdlet instead. Both
@@ -22,28 +24,49 @@ import { fleetConfigDir } from './paths.js';
  * first, which is what happened on POSIX when this used the same trailing-digit pattern
  * for both platforms.
  */
-export function readProcessList(): string[] {
+export function probeProcessList(): ProcessProbe {
   try {
     if (process.platform === 'win32') {
-      return execFileSync('powershell', [
+      const lines = execFileSync('powershell', [
         '-NoProfile', '-NonInteractive', '-Command',
         'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" }',
       ], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }).split('\n');
+      return { ok: true, lines };
     }
-    return execFileSync('ps', ['-eo', 'pid,args'], {
+    const lines = execFileSync('ps', ['-eo', 'pid,args'], {
       encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
     }).split('\n');
-  } catch {
-    return [];
+    return { ok: true, lines };
+  } catch (error) {
+    return { ok: false, reason: (error as Error).message };
   }
+}
+
+/**
+ * Every line of the process table, pid first on every platform. Empty on a read failure.
+ *
+ * For a caller that only needs a best-effort list and has nothing sensible to do with a
+ * failure reason (checking whether a `claude login` is in flight, feeding the cutover
+ * warden). `watchedProcesses` below does not use this: liveness's stale-session signal is
+ * exactly the case a silently empty list would hide.
+ */
+export function readProcessList(): string[] {
+  const probe = probeProcessList();
+  return probe.ok ? probe.lines : [];
 }
 
 /**
  * Every `claude` process on this machine, read from the process list: the fleet's workers
  * and its login, and Aaron's own interactive sessions, which the caller must list and
- * never act on.
+ * never act on. `{ ok: false, reason }` when the probe behind it failed, rather than the
+ * empty list a failure used to produce -- liveness's stale-session signal cannot tell a
+ * verified-clean fleet from a probe that never ran unless the two are shaped differently.
  */
-export function watchedProcesses(lines: string[] = readProcessList()): FleetProcess[] {
+export function watchedProcesses(
+  probe: ProcessProbe = probeProcessList(),
+): FleetProcess[] | { ok: false; reason: string } {
+  if (!probe.ok) return { ok: false, reason: probe.reason };
+  const lines = probe.lines;
   const sessionsDir = join(fleetConfigDir(), 'projects');
   const latestSessionMtime = existsSync(sessionsDir)
     ? readdirSync(sessionsDir).reduce<number | undefined>((latest, name) => {
