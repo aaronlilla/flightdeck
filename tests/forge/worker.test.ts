@@ -273,6 +273,40 @@ describe('B.3.4: done is verified', () => {
     expect(bounces).toHaveLength(3);
   });
 
+  it('journals the usage from a bounce reply, so a verification retry is not free', async () => {
+    const brief = '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnpm run verify\n```\n';
+    let execCalls = 0;
+    const exec = async (request: { argv: string[] }) => {
+      execCalls += 1;
+      return {
+        ok: execCalls > 1, tail: execCalls > 1 ? '' : 'FAIL', returncode: execCalls > 1 ? 0 : 1,
+        argv: request.argv, owner: 'alpha', startedAt: 0, durationMs: 1,
+      };
+    };
+    const bounceUsage = { input: 500, cacheRead: 0, cacheCreation: 0, output: 20 };
+    const engine = {
+      async run() {
+        return {
+          sessionId: 'session-bounce',
+          turns: [{ text: 'shipped', context: 10, done: true }],
+          async send() {
+            return [{ text: 'retrying', context: 15, usage: bounceUsage }];
+          },
+        };
+      },
+    };
+    const worker = new Worker({
+      run: 'alpha', brief, briefPath: join(dir, 'brief.md'), cwd: dir, journalPath,
+      engine, exec,
+    } as never) as unknown as { run: () => Promise<{ verdict: string }> };
+
+    const result = await worker.run();
+
+    expect(result.verdict).toBe('done');
+    const turnEnds = replay(journalPath).events.filter((e) => e.event === 'turn.end');
+    expect(turnEnds.some((e) => JSON.stringify(e['usage']) === JSON.stringify(bounceUsage))).toBe(true);
+  });
+
   it('the falsifier: done is never reachable without exec having actually run', async () => {
     const brief = '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnode -e process.exit(0)\n```\n';
     const order: string[] = [];

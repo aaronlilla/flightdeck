@@ -161,6 +161,23 @@ export function toEngineConfig(options: WorkerOptions): EngineConfig {
   return config;
 }
 
+/**
+ * Whether one of a shell command's top-level segments actually invokes `program subcommand`
+ * as its first two words, rather than merely mentioning that text.
+ *
+ * A bare `/\bgit\s+commit\b/` regex also fires on `git log --grep "git commit"` or an echoed
+ * string, which is not a commit: splitting on the shell's own separators first and checking
+ * the first two words of each segment is what tells "ran it" apart from "said it".
+ */
+function invokesCommand(command: string, program: string, ...subcommand: string[]): boolean {
+  return command
+    .split(/&&|\|\||[;|\n]/)
+    .some((segment) => {
+      const words = segment.trim().split(/\s+/);
+      return words[0] === program && subcommand.every((word, index) => words[index + 1] === word);
+    });
+}
+
 /** The park key an AskUserQuestion is denied on, and the options it offered. */
 function extractAskQuestion(input: Record<string, unknown>): { question: string; options: string[] } {
   const questions = (input['questions']
@@ -591,7 +608,7 @@ export class SdkEngine implements EngineLike {
             if (event.name === 'Bash' && typeof event.input['command'] === 'string') {
               const command = event.input['command'];
               bashCommandById.set(event.id, command);
-              if (/\bgit\s+commit\b/.test(command)) committed = true;
+              if (invokesCommand(command, 'git', 'commit')) committed = true;
             }
             // The SDK's usage field is required on every real assistant message, so
             // `pending` should already exist; a defensive turn is opened here rather than
@@ -621,7 +638,8 @@ export class SdkEngine implements EngineLike {
               pending.done = true;
             }
             const bashCommand = bashCommandById.get(event.id);
-            if (bashCommand && !event.isError && /\bgit\s+push\b|\bgh\s+pr\s+create\b/.test(bashCommand)) {
+            if (bashCommand && !event.isError
+              && (invokesCommand(bashCommand, 'git', 'push') || invokesCommand(bashCommand, 'gh', 'pr', 'create'))) {
               // Fire-and-forget: drift is checked after the push or PR open resolves, but
               // nothing in the turn stream waits on it. A conflict raises a blocker in the
               // inbox for a person, the same channel every other wall in this run uses.

@@ -880,4 +880,48 @@ describe('B.3.9: drift raised after a push', () => {
     const inbox = new Inbox(join(home, 'inbox-drift2'));
     expect(inbox.open()).toHaveLength(0);
   });
+
+  it('a command that only mentions "git push" in an argument does not fire the drift check', async () => {
+    const { fn } = fakeQuery([[{
+      text: 'searched', usage: { input: 10, cacheRead: 0, cacheCreation: 0, output: 1 },
+      toolUse: { name: 'Bash', input: { command: 'git log --grep "git push"' } },
+    }]]);
+    let called = false;
+    const engine = new SdkEngine({
+      journalPath, inboxDir: join(home, 'inbox-drift3'), gotchasDir: join(home, 'gotchas-drift3'),
+      queryFn: fn, checkDrift: async () => { called = true; return 'MERGEABLE'; },
+    });
+    await engine.run({ ...REQUEST, run: 'drift-run-3', env: { PATH: '/usr/bin' } });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(called).toBe(false);
+  });
+});
+
+describe('B.3.8: `committed` reflects an actual git commit, not just the phrase appearing', () => {
+  it('sets committed when the session ran git commit', async () => {
+    const { fn } = fakeQuery([[{
+      text: 'committed', usage: { input: 10, cacheRead: 0, cacheCreation: 0, output: 1 },
+      toolUse: { name: 'Bash', input: { command: 'git commit -m "fix"' } },
+    }]]);
+    const engine = new SdkEngine({
+      journalPath, inboxDir: join(home, 'inbox-commit'), gotchasDir: join(home, 'gotchas-commit'),
+      queryFn: fn,
+    });
+    const result = await engine.run({ ...REQUEST, run: 'commit-run', env: { PATH: '/usr/bin' } });
+    expect(result.committed).toBe(true);
+  });
+
+  it('the falsifier: a command that only mentions "git commit" in an argument leaves committed false', async () => {
+    const { fn } = fakeQuery([[{
+      text: 'searched', usage: { input: 10, cacheRead: 0, cacheCreation: 0, output: 1 },
+      toolUse: { name: 'Bash', input: { command: 'git log --grep "git commit"' } },
+    }]]);
+    const engine = new SdkEngine({
+      journalPath, inboxDir: join(home, 'inbox-commit2'), gotchasDir: join(home, 'gotchas-commit2'),
+      queryFn: fn,
+    });
+    const result = await engine.run({ ...REQUEST, run: 'commit-run-2', env: { PATH: '/usr/bin' } });
+    expect(result.committed).toBe(false);
+  });
 });

@@ -311,7 +311,7 @@ export class Worker {
         }
 
         if (finished) {
-          verdict = await this.verifyDone(runName, session, journal);
+          verdict = await this.verifyDone(runName, session, journal, model);
           break;
         }
 
@@ -386,7 +386,7 @@ export class Worker {
    * again in between -- before it parks rather than continuing to spend on its own.
    */
   private async verifyDone(
-    runName: string, session: SessionResult, journal: Journal,
+    runName: string, session: SessionResult, journal: Journal, model: string,
   ): Promise<'done' | 'unverified' | 'parked'> {
     const commands = verificationCommands(this.config.brief);
     if (!commands) {
@@ -414,7 +414,16 @@ export class Worker {
         commands: failed.map((outcome) => outcome.command),
       });
       if (attempt === attempts || !session.send) break;
-      await session.send(bounceMessage(failed));
+      const reply = await session.send(bounceMessage(failed));
+      // The bounce is a real turn against the model and costs real tokens: skipping this
+      // would undercount a run's spend by exactly the retries verification itself caused.
+      for (const turn of reply) {
+        journal.append({
+          event: 'turn.end', run: runName, actor: 'worker', context: turn.context, model,
+          ...(turn.model ? { messageModel: turn.model } : {}),
+          ...(turn.usage ? { usage: turn.usage } : {}),
+        });
+      }
     }
     journal.append({ event: 'run.finished', run: runName, actor: 'runner', verdict: 'parked' });
     return 'parked';
