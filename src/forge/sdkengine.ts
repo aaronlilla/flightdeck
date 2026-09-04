@@ -16,6 +16,7 @@
  * `input_tokens` alone reports single digits on a half-million-token turn, and that is
  * exactly how a session reached 543,000 tokens with nothing noticing.
  */
+import type { EngineConfig } from '../adapter/engine.js';
 import { fleetConfigDir } from './paths.js';
 import { workerEnv } from './worker.js';
 
@@ -93,4 +94,35 @@ export function contextOf(usage: RawUsage | undefined): number {
   return (usage.input_tokens ?? 0)
     + (usage.cache_read_input_tokens ?? 0)
     + (usage.cache_creation_input_tokens ?? 0);
+}
+
+
+/**
+ * The worker's options as the adapter takes them.
+ *
+ * Kept as its own step so the mapping can be asserted end to end. Building the options
+ * correctly and having the adapter drop half of them looks identical from inside
+ * `buildWorkerOptions`, and until 2026-09-04 engine.ts passed through none of `env`,
+ * `maxTurns`, `mcpServers` or `allowedTools`.
+ *
+ * `canUseTool` routes questions to the inbox rather than to a terminal nobody is at. The
+ * default here denies, because a worker that reaches a permission prompt with no handler
+ * would otherwise sit at it forever, which is the failure the inbox exists to replace.
+ */
+export function toEngineConfig(options: WorkerOptions): EngineConfig {
+  const config: EngineConfig = {
+    cwd: options.cwd,
+    model: options.model,
+    permissionMode: options.permissionMode,
+    settingSources: options.settingSources,
+    env: options.env,
+    maxTurns: options.maxTurns,
+    mcpServers: options.mcpServers as never,
+    canUseTool: async () => ({
+      behavior: 'deny',
+      message: 'a worker asks through forge_ask, which parks the run for a person',
+    }) as never,
+  };
+  if (options.resume) config.resume = options.resume;
+  return config;
 }

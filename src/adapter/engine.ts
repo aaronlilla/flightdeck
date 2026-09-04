@@ -49,6 +49,20 @@ export interface EngineConfig {
   settingSources?: SettingSource[];
   /** Extra agent definitions merged in from overlays. */
   agents?: Options['agents'];
+  /**
+   * The environment the session's subprocess runs with.
+   *
+   * Passed through for the Forge runner, which strips nine inherited CLAUDE names and
+   * ANTHROPIC_API_KEY before spawning a worker. Inheriting them means the child saves no
+   * transcript, and a worker with no transcript is one nothing can read afterwards.
+   */
+  env?: NodeJS.ProcessEnv;
+  /** A hard turn cap, taken from the run's class rather than asked for in the prompt. */
+  maxTurns?: number;
+  /** Tool servers the session may reach. The runner registers exactly one. */
+  mcpServers?: Options['mcpServers'];
+  /** When set, the only tools the session may use. */
+  allowedTools?: string[];
 }
 
 /** One earlier session, reduced to what a picker needs to show. */
@@ -110,6 +124,10 @@ export function buildOptions(
   if (config.permissionMode) options.permissionMode = config.permissionMode;
   if (config.resume) options.resume = config.resume;
   if (config.agents) options.agents = config.agents;
+  if (config.env) options.env = config.env;
+  if (config.maxTurns !== undefined) options.maxTurns = config.maxTurns;
+  if (config.mcpServers) options.mcpServers = config.mcpServers;
+  if (config.allowedTools) options.allowedTools = config.allowedTools;
 
   const inspect = config.onToolCall;
   if (inspect) {

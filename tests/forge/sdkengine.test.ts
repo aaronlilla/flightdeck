@@ -16,7 +16,8 @@ import { join } from 'node:path';
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { buildWorkerOptions, contextOf } from '../../src/forge/sdkengine.js';
+import { buildWorkerOptions, contextOf, toEngineConfig } from '../../src/forge/sdkengine.js';
+import { buildOptions } from '../../src/adapter/engine.js';
 
 let home: string;
 
@@ -28,7 +29,7 @@ beforeEach(() => {
 const REQUEST = {
   model: 'claude-sonnet-5',
   prompt: '# Goal\n\nDo the thing.\n',
-  cwd: 'C:/dev',
+  cwd: join(tmpdir(), 'forge-workspace-specimen'),
   maxTurns: 120,
   env: { PATH: '/usr/bin' } as NodeJS.ProcessEnv,
 };
@@ -43,7 +44,7 @@ describe('the options a worker runs under', () => {
   });
 
   it('runs in the directory it was given', () => {
-    expect(buildWorkerOptions(REQUEST).cwd).toBe('C:/dev');
+    expect(buildWorkerOptions(REQUEST).cwd).toBe(join(tmpdir(), 'forge-workspace-specimen'));
   });
 
   it('bypasses permission prompts, because nobody is at the terminal', () => {
@@ -117,5 +118,40 @@ describe('reading how much context a turn carried', () => {
 
   it('ignores output tokens, which are not re-read next turn', () => {
     expect(contextOf({ input_tokens: 10, output_tokens: 9_000 })).toBe(10);
+  });
+});
+
+
+describe('what actually reaches the SDK', () => {
+  /**
+   * The mapping above is only worth asserting if it survives the adapter. Until
+   * 2026-09-04 engine.ts passed through neither env, maxTurns, mcpServers nor
+   * allowedTools, so a worker could be built correctly and still open with none of them.
+   */
+  it('carries the environment all the way through buildOptions', () => {
+    const options = buildOptions(toEngineConfig(buildWorkerOptions(REQUEST)));
+    expect(options.env?.['PATH']).toBe('/usr/bin');
+    expect(options.env?.['CLAUDECODE']).toBeUndefined();
+  });
+
+  it('carries the turn cap through', () => {
+    expect(buildOptions(toEngineConfig(buildWorkerOptions(REQUEST))).maxTurns).toBe(120);
+  });
+
+  it('carries the forge tool server through', () => {
+    const options = buildOptions(toEngineConfig(buildWorkerOptions(REQUEST)));
+    expect(Object.keys(options.mcpServers ?? {})).toEqual(['forge']);
+  });
+
+  it('carries bypassPermissions through, because nobody is at the terminal', () => {
+    expect(buildOptions(toEngineConfig(buildWorkerOptions(REQUEST))).permissionMode)
+      .toBe('bypassPermissions');
+  });
+
+  it('carries the pinned config directory through', () => {
+    const options = buildOptions(toEngineConfig(buildWorkerOptions({
+      ...REQUEST, env: { CLAUDE_CONFIG_DIR: '/somebody/elses/claude' },
+    })));
+    expect(options.env?.['CLAUDE_CONFIG_DIR']).toContain(home);
   });
 });

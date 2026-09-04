@@ -11,7 +11,7 @@
  * spawns `java`, and killing the process the supervisor started leaves those running: the
  * budget looks enforced while the machine stays busy. `taskkill /F /T` takes the tree.
  */
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createWriteStream, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -48,6 +48,27 @@ export function budgetsFor(cls: string, overrides: Partial<Budget> = {}): Budget
 }
 
 /**
+ * Every descendant of a pid, found by walking `pgrep -P` recursively.
+ *
+ * A detached grandchild starts its own process group, so it never shows up under the
+ * parent's group kill; the only way to find it is to ask the OS which pids claim the
+ * parent as their ppid, and then ask again for each of those.
+ */
+function descendantsOf(pid: number): number[] {
+  let children: number[];
+  try {
+    children = execFileSync('pgrep', ['-P', String(pid)], { encoding: 'utf8' })
+      .split('\n')
+      .map((line) => Number.parseInt(line, 10))
+      .filter((value) => Number.isFinite(value));
+  } catch {
+    // pgrep exits non-zero when a pid has no children, or is missing entirely.
+    return [];
+  }
+  return children.flatMap((child) => [child, ...descendantsOf(child)]);
+}
+
+/**
  * End a process and everything it started.
  *
  * A no-op on a pid that has already gone: a command that finished a moment before its
@@ -56,15 +77,29 @@ export function budgetsFor(cls: string, overrides: Partial<Budget> = {}): Budget
  */
 export function killTree(pid: number): void {
   if (!pid) return;
-  try {
-    if (process.platform === 'win32') {
+  if (process.platform === 'win32') {
+    try {
       spawn('taskkill', ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore' });
-    } else {
-      // Negative pid is the process group, which is the same idea by another name.
-      process.kill(-pid, 'SIGKILL');
+    } catch {
+      // Already gone, or never ours to kill.
     }
-  } catch {
-    // Already gone, or never ours to kill. Either way there is nothing left to do.
+    return;
+  }
+  // Negative pid is the process group, which reaches an ordinary child. A detached
+  // grandchild sits in its own group and needs its own pid (and its own group) killed
+  // directly, which is why the descendant walk below exists.
+  const targets = [pid, ...descendantsOf(pid)];
+  for (const target of targets) {
+    try {
+      process.kill(-target, 'SIGKILL');
+    } catch {
+      // Already gone, or never had its own group.
+    }
+    try {
+      process.kill(target, 'SIGKILL');
+    } catch {
+      // Already gone.
+    }
   }
 }
 
