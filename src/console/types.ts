@@ -1,0 +1,105 @@
+/**
+ * Shapes the console reads today, copied from `src/forge/server.ts`,
+ * `src/forge/supervisor.ts`, `src/forge/journal.ts` and `src/forge/inbox.ts`
+ * on main (read, never imported: cut 1 does not touch `src/forge/**`).
+ *
+ * `VerifiedField` is the P3.1 contracts shape the console is built to expect
+ * once `src/forge/contracts.ts` lands: `{ value, observed_at, verified_at?,
+ * source }`, `verified_at` present only when the value came from an actual
+ * source read. Today's real `/state` always stamps `verified_at` from an
+ * in-memory clock, which is the known over-claim the contracts work fixes;
+ * this type and the `Freshness` component render the distinction the moment
+ * a field arrives without one, without waiting on that merge.
+ */
+
+export interface VerifiedField<T> {
+  value: T;
+  observed_at?: number;
+  verified_at?: number;
+  source?: string;
+}
+
+export type RunLifecycleState =
+  | 'queued'
+  | 'admitted'
+  | 'running'
+  | 'handing-off'
+  | 'parked'
+  | 'paused'
+  | 'blocked'
+  | 'verifying'
+  | 'done'
+  | 'failed'
+  | 'killed';
+
+export interface LaneRecord {
+  slug: string;
+  column: string;
+  owner: string;
+  session_id: string | null;
+  claude_pid: number | null;
+  started: number | null;
+  ended: number | null;
+  verdict: string | null;
+  position: number | null;
+  note: string | null;
+  woken: number;
+  model: string | null;
+  context: number;
+  cost_usd: number;
+  handoff: string | null;
+  needs_aaron?: string | null;
+  /** Set by `server.ts#state()`, not stored on the lane file itself. */
+  usd_per_hour: number;
+  verified_at: number;
+  last_event_age_s: number;
+  current_tool: { name: string; startedAt: number } | null;
+  goal?: string;
+  className?: string;
+  provider?: string;
+}
+
+export interface ForgeState {
+  at: number;
+  lanes: VerifiedField<LaneRecord[]>;
+  burn: VerifiedField<Record<string, number>>;
+  handoffs: VerifiedField<number>;
+  torn: VerifiedField<number>;
+  inbox_open: VerifiedField<number>;
+  stuck: VerifiedField<unknown[]>;
+  fleet: VerifiedField<Array<Record<string, unknown>> | { ok: false; reason: string }>;
+}
+
+export interface InboxEntry {
+  key: string;
+  question: string;
+  options: string[];
+  kind: 'question' | 'blocker';
+  runs: string[];
+  asked: number;
+  at: number;
+  answer?: string;
+  answeredAt?: number;
+  disposition: 'park';
+  ticket?: string;
+}
+
+export interface InboxState {
+  open: InboxEntry[];
+  all: InboxEntry[];
+}
+
+export interface ForgeEvent {
+  id?: string;
+  seq?: number;
+  at?: number;
+  event: string;
+  run?: string;
+  goal?: string;
+  actor?: string;
+  cause?: string;
+  ticket?: string;
+  [key: string]: unknown;
+}
+
+export type ConnectionStatus = 'connecting' | 'open' | 'closed';

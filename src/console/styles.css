@@ -1,0 +1,402 @@
+/*
+ * Forge console, cut 1: light-glass palette, 24px radius, the type scale.
+ * The blur budget (backdrop-filter, grain) is cut 2 — surfaces here are flat
+ * and opaque on purpose.
+ *
+ * The vernacular is a flight strip board: every lane tile reads like a strip
+ * on a runway rack, identifiers set in a mono face because they are data
+ * (a callsign, a ticket key), everything else in Inter.
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap');
+
+:root {
+  --gd-ground: #eef3ee;
+  --gd-ground-wash: #e2ece1;
+  --gd-surface: #ffffff;
+  --gd-surface-sunken: #f4f8f3;
+  --gd-border: #cfdccb;
+  --gd-border-strong: #a9c0a2;
+  --gd-ink: #16241a;
+  --gd-ink-muted: #56695b;
+  --gd-ink-faint: #82927f;
+
+  --gd-accent: #1f7a4d;
+  --gd-accent-strong: #0f5c37;
+  --gd-accent-soft: #d9efe0;
+  --gd-verified: #1f7a4d;
+  --gd-observed: #a4770c;
+  --gd-observed-soft: #f6ecd2;
+  --gd-danger: #a3352b;
+  --gd-danger-soft: #f4dcd9;
+  --gd-info: #2c5f8a;
+
+  --gd-radius: 24px;
+  --gd-radius-sm: 12px;
+
+  --gd-font-body: 'Inter', system-ui, sans-serif;
+  --gd-font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  --gd-size-label: 0.8125rem;
+  --gd-size-body: 0.9375rem;
+  --gd-size-title: 1.125rem;
+  --gd-size-heading: 1.5rem;
+  --gd-size-hero: 2rem;
+
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: radial-gradient(circle at 15% -10%, var(--gd-ground-wash), var(--gd-ground) 55%);
+  color: var(--gd-ink);
+  font-family: var(--gd-font-body);
+  font-size: var(--gd-size-body);
+  line-height: 1.45;
+}
+
+button {
+  font-family: inherit;
+}
+
+.forge-app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+/* -- Command bar --------------------------------------------------------- */
+
+.command-bar {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  padding: 0.875rem 1.5rem;
+  background: var(--gd-surface);
+  border-bottom: 1px solid var(--gd-border);
+}
+
+.command-bar__title {
+  font-size: var(--gd-size-heading);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+
+.command-bar__stats {
+  display: flex;
+  gap: 0.75rem;
+  flex: 1;
+  flex-wrap: wrap;
+}
+
+.stat-chip {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  padding: 0.4rem 0.75rem;
+  border-radius: var(--gd-radius-sm);
+  background: var(--gd-surface-sunken);
+  border: 1px solid var(--gd-border);
+}
+
+.stat-chip__value {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-chip__label {
+  color: var(--gd-ink-muted);
+  font-size: var(--gd-size-label);
+}
+
+.command-bar__actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.btn {
+  border: 1px solid var(--gd-border-strong);
+  background: var(--gd-surface);
+  color: var(--gd-ink);
+  border-radius: var(--gd-radius-sm);
+  padding: 0.5rem 1rem;
+  font-size: var(--gd-size-body);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--gd-surface-sunken);
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--gd-accent);
+  outline-offset: 2px;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn--primary {
+  background: var(--gd-accent);
+  border-color: var(--gd-accent-strong);
+  color: #fff;
+}
+
+.btn--primary:hover:not(:disabled) {
+  background: var(--gd-accent-strong);
+}
+
+.btn--danger {
+  border-color: var(--gd-danger);
+  color: var(--gd-danger);
+}
+
+.btn--danger:hover:not(:disabled) {
+  background: var(--gd-danger-soft);
+}
+
+/* -- Layout --------------------------------------------------------------- */
+
+.forge-main {
+  display: grid;
+  grid-template-columns: 1fr 300px;
+  gap: 1.25rem;
+  padding: 1.25rem;
+  flex: 1;
+  min-height: 0;
+  align-items: start;
+}
+
+@media (max-width: 860px) {
+  .forge-main {
+    grid-template-columns: 1fr;
+  }
+
+  .inbox-rail {
+    max-height: none;
+  }
+}
+
+.lanes-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 1rem;
+}
+
+.lanes-empty {
+  border: 1px dashed var(--gd-border-strong);
+  border-radius: var(--gd-radius);
+  padding: 2rem;
+  color: var(--gd-ink-muted);
+  text-align: left;
+  grid-column: 1 / -1;
+}
+
+/* -- Lane tile (flight strip) --------------------------------------------- */
+
+.lane-tile {
+  background: var(--gd-surface);
+  border: 1px solid var(--gd-border);
+  border-radius: var(--gd-radius);
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.lane-tile__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.lane-tile__slug {
+  font-family: var(--gd-font-mono);
+  font-size: var(--gd-size-title);
+  font-weight: 500;
+  margin: 0;
+}
+
+.lane-tile__goal {
+  color: var(--gd-ink-muted);
+  font-size: var(--gd-size-label);
+  margin: 0;
+}
+
+.lane-tile__row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-size: var(--gd-size-label);
+  color: var(--gd-ink-muted);
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  font-size: var(--gd-size-label);
+  font-weight: 500;
+  background: var(--gd-accent-soft);
+  color: var(--gd-accent-strong);
+  border: 1px solid transparent;
+}
+
+.pill--state-blocked,
+.pill--state-stuck,
+.pill--state-failed,
+.pill--state-killed {
+  background: var(--gd-danger-soft);
+  color: var(--gd-danger);
+}
+
+.pill--state-parked,
+.pill--state-paused,
+.pill--state-queued {
+  background: var(--gd-surface-sunken);
+  color: var(--gd-ink-muted);
+  border-color: var(--gd-border);
+}
+
+.context-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--gd-surface-sunken);
+  overflow: hidden;
+  border: 1px solid var(--gd-border);
+}
+
+.context-bar__fill {
+  height: 100%;
+  background: var(--gd-accent);
+}
+
+.freshness {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: var(--gd-size-label);
+  font-weight: 500;
+}
+
+.freshness--verified {
+  color: var(--gd-verified);
+}
+
+.freshness--observed {
+  color: var(--gd-observed);
+}
+
+.freshness__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* -- Inbox rail ------------------------------------------------------------ */
+
+.inbox-rail {
+  width: 300px;
+  background: var(--gd-surface);
+  border: 1px solid var(--gd-border);
+  border-radius: var(--gd-radius);
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  max-height: calc(100vh - 6rem);
+  overflow-y: auto;
+}
+
+.inbox-rail__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.inbox-rail__title {
+  font-size: var(--gd-size-title);
+  font-weight: 600;
+  margin: 0;
+}
+
+.inbox-empty {
+  color: var(--gd-ink-muted);
+  font-size: var(--gd-size-label);
+}
+
+.inbox-card {
+  background: var(--gd-surface-sunken);
+  border: 1px solid var(--gd-border);
+  border-radius: var(--gd-radius-sm);
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.inbox-card__question {
+  margin: 0;
+  font-size: var(--gd-size-body);
+}
+
+.inbox-card__runs {
+  font-size: var(--gd-size-label);
+  color: var(--gd-ink-muted);
+  font-family: var(--gd-font-mono);
+}
+
+.inbox-card__options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.inbox-card__free-text {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.inbox-card__free-text input {
+  flex: 1;
+  border: 1px solid var(--gd-border-strong);
+  border-radius: var(--gd-radius-sm);
+  padding: 0.4rem 0.6rem;
+  font-size: var(--gd-size-body);
+  font-family: inherit;
+}
+
+.inbox-card__error {
+  color: var(--gd-danger);
+  font-size: var(--gd-size-label);
+  margin: 0;
+}
+
+/* -- Connection banner ------------------------------------------------------ */
+
+.disconnected-banner {
+  background: var(--gd-observed-soft);
+  color: var(--gd-observed);
+  border-bottom: 1px solid var(--gd-border-strong);
+  padding: 0.5rem 1.5rem;
+  font-size: var(--gd-size-label);
+  font-weight: 500;
+}
