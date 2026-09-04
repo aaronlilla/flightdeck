@@ -11,6 +11,9 @@
  * the budget, and this row is what makes exceeding it visible on the day it happens
  * rather than on the bill.
  */
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -67,8 +70,16 @@ describe('what the master is allowed to do', () => {
   });
 
   it('reads only the packets directory', () => {
-    const request = buildMasterRequest({ packets: packets(1), packetsDir: 'C:/dev/.forge/packets' });
-    expect(request.cwd).toBe('C:/dev/.forge/packets');
+    const packetsDir = join(tmpdir(), 'forge-packets-specimen');
+    const request = buildMasterRequest({ packets: packets(1), packetsDir });
+    expect(request.cwd).toBe(packetsDir);
+  });
+
+  it('defaults to the packets directory under the Forge home, wherever that is', () => {
+    process.env['FORGE_HOME'] = join(tmpdir(), 'forge-home-specimen');
+    expect(buildMasterRequest({ packets: packets(1) }).cwd)
+      .toBe(join(tmpdir(), 'forge-home-specimen', 'packets'));
+    delete process.env['FORGE_HOME'];
   });
 });
 

@@ -203,8 +203,9 @@ describe('the environment a worker is spawned with', () => {
   });
 
   it('leaves everything else the parent had', () => {
-    const clean = workerEnv({ HOME: '/home/aaron', FOO: 'bar' });
-    expect(clean['HOME']).toBe('/home/aaron');
+    const home = join(tmpdir(), 'forge-home-specimen');
+    const clean = workerEnv({ HOME: home, FOO: 'bar' });
+    expect(clean['HOME']).toBe(home);
     expect(clean['FOO']).toBe('bar');
   });
 

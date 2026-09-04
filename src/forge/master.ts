@@ -12,7 +12,10 @@
  * the prompt would cross it, and what did not fit is counted in the prompt itself, because
  * a master that silently sees half the fleet is worse than one that says it is behind.
  */
+import { join } from 'node:path';
+
 import { contextFor, modelFor, modelIdFor } from './policy.js';
+import { forgeHome } from './paths.js';
 
 export const MASTER_CLASS = 'master';
 
@@ -120,7 +123,7 @@ export function buildMasterRequest(options: MasterOptions): MasterRequest {
     className: MASTER_CLASS,
     allowedTools: [...MASTER_TOOLS],
     mcpServers: { forge: { tools: ['forge_decide'] } },
-    cwd: options.packetsDir ?? 'C:/dev/.forge/packets',
+    cwd: options.packetsDir ?? join(forgeHome(), 'packets'),
     prompt: HEADER + chosen.join('\n') + tail,
     dropped,
     maxTurns: Math.max(1, Math.floor(contextFor(MASTER_CLASS) / 1000)),
