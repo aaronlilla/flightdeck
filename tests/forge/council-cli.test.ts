@@ -268,3 +268,13 @@ describe('forge gate', () => {
     expect(kinds).toContain('external.complete');
   });
 });
+
+describe('forge gate: base moved also refuses', () => {
+  it('refuses when the attested base no longer matches the PR\'s current base', async () => {
+    await attestPass();
+    const result = await forge(['gate', '--repo', REPO, '--pr', String(PR)], {
+      councilGh: fakeGh([smallSnapshot({ body: bodyWithHandoff(), baseSha: 'base-2' })]),
+    });
+    expect(result.code).toBe(1);
+  });
+});
