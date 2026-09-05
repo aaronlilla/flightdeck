@@ -17,14 +17,16 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, extname, join } from 'node:path';
 import type { Duplex } from 'node:stream';
+import { fileURLToPath } from 'node:url';
 
 import type { Inbox } from './inbox.js';
 import { JournalCache, type RangeReader } from './journal.js';
 import type { StuckSignal } from './liveness.js';
-import { serverTokenPath } from './paths.js';
-import { deliverAnswer } from './runinbox.js';
-import type { LaneRecord, Lanes } from './supervisor.js';
+import { killSwitchPath as defaultKillSwitchPath, serverTokenPath } from './paths.js';
+import { RunInbox, deliverAnswer } from './runinbox.js';
+import { Breaker, clearKillSwitch, Fleet, type LaneRecord, type Lanes } from './supervisor.js';
 
 /** Reads the server's own bearer token, minting one on first use. */
 export function ensureServerToken(path: string = serverTokenPath()): string {
@@ -41,6 +43,37 @@ export const FORGE_PORT = 4120;
 
 /** The constant RFC 6455 requires in the handshake. Not a secret, just a ritual. */
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+
+const CONSOLE_MIME: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.json': 'application/json; charset=utf-8',
+};
+
+/**
+ * `dist/console/`, found by walking up from this file to the repository root instead of
+ * assuming a fixed number of directory levels. Compiled, this file lives at
+ * `dist/forge/server.js`, one level under the console's own `dist/console/`. Run straight
+ * off source with `tsx`, it lives at `src/forge/server.ts`, two levels under
+ * `src/console/`, and `dist/console/` still has to be reached through the repo root.
+ * Walking up to the nearest `package.json` handles both cases without hard-coding either.
+ */
+function repoRoot(from: string): string {
+  let dir = from;
+  for (;;) {
+    if (existsSync(join(dir, 'package.json'))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return from;
+    dir = parent;
+  }
+}
+
+function defaultConsoleDistDir(): string {
+  const here = dirname(fileURLToPath(import.meta.url));
+  return join(repoRoot(here), 'dist', 'console');
+}
 
 export interface ForgeServerOptions {
   lanes: Lanes;
@@ -66,6 +99,12 @@ export interface ForgeServerOptions {
    *  liveness tick in `cli.ts`), instead of each keeping its own offset and re-folding
    *  bytes the other has already read. Takes precedence over `journalRangeReader`. */
   journalCache?: JournalCache;
+  /** Overrides where `/stop` and `/clear --all` read and write the kill switch. Defaults
+   *  to `killSwitchPath()`, which itself follows `FORGE_HOME`. A specimen only. */
+  killSwitchFile?: string;
+  /** Overrides where `/` serves the built console from. Defaults to `dist/console/`
+   *  found by walking up to the repo root. A specimen only. */
+  consoleDistDir?: string;
 }
 
 export class ForgeServer {
@@ -73,7 +112,8 @@ export class ForgeServer {
 
   readonly inbox: Inbox;
 
-  /** The bearer token `/answer` requires, in the `X-Forge-Token` header. */
+  /** The bearer token `/answer`, `/stop`, `/send` and `/clear` require, in the
+   *  `X-Forge-Token` header. */
   readonly token: string;
 
   private readonly lanes: Lanes;
@@ -81,6 +121,10 @@ export class ForgeServer {
   private readonly journalPath: string;
 
   private readonly journalCache: JournalCache;
+
+  private readonly killSwitchFile: string;
+
+  private readonly consoleDistDir: string;
 
   private readonly wanted: number;
 
@@ -113,6 +157,8 @@ export class ForgeServer {
     this.stuckFn = options.stuck ?? (() => []);
     this.fleetFn = options.fleet ?? (() => []);
     this.token = options.token ?? ensureServerToken();
+    this.killSwitchFile = options.killSwitchFile ?? defaultKillSwitchPath();
+    this.consoleDistDir = options.consoleDistDir ?? defaultConsoleDistDir();
   }
 
   get listeners(): number {
@@ -213,7 +259,7 @@ export class ForgeServer {
   }
 
   private route(request: IncomingMessage, response: ServerResponse): void {
-    const path = (request.url ?? '/').split('?')[0];
+    const path = (request.url ?? '/').split('?')[0] ?? '/';
 
     if (path === '/state' && request.method === 'GET') {
       return json(response, 200, this.state());
@@ -226,6 +272,27 @@ export class ForgeServer {
         return json(response, 405, { error: 'answering a question is not a safe method' });
       }
       return this.answer(request, response);
+    }
+    if (path === '/stop') {
+      if (request.method !== 'POST') {
+        return json(response, 405, { error: 'stopping the fleet is not a safe method' });
+      }
+      return this.stop(request, response);
+    }
+    if (path === '/send') {
+      if (request.method !== 'POST') {
+        return json(response, 405, { error: 'sending to a run is not a safe method' });
+      }
+      return this.send(request, response);
+    }
+    if (path === '/clear') {
+      if (request.method !== 'POST') {
+        return json(response, 405, { error: 'clearing a lane is not a safe method' });
+      }
+      return this.clearLane(request, response);
+    }
+    if (request.method === 'GET') {
+      return this.serveStatic(path, response);
     }
     return json(response, 404, { error: `nothing serves ${path}` });
   }
@@ -242,17 +309,30 @@ export class ForgeServer {
     return origin === `http://${this.host}:${this.port}` || origin === `http://127.0.0.1:${this.port}`;
   }
 
-  private answer(request: IncomingMessage, response: ServerResponse): void {
+  /**
+   * The Origin and token checks every mutating route needs. Written as the console's own
+   * `<meta name="forge-token">` plus this same code path on `/answer`, `/stop`, `/send`
+   * and `/clear`, so there is exactly one place that decides whether a write is allowed.
+   */
+  private authorized(request: IncomingMessage, response: ServerResponse): boolean {
     if (!this.originAllowed(request)) {
       json(response, 403, { error: 'that origin is not this server' });
-      return;
+      return false;
     }
-    const presented = request.headers['x-forge-token'];
-    if (presented !== this.token) {
+    if (request.headers['x-forge-token'] !== this.token) {
       json(response, 401, { error: 'missing or wrong X-Forge-Token' });
-      return;
+      return false;
     }
+    return true;
+  }
 
+  /**
+   * Reads a request body up to `MAX_BODY_BYTES`, parses it as JSON, and hands the result
+   * to `handle`. A body over the limit or one that will not parse answers for itself and
+   * `handle` is never called: guessing what a broken write meant is how a run gets resumed
+   * on a decision nobody made.
+   */
+  private readJson<T>(request: IncomingMessage, response: ServerResponse, handle: (parsed: T | null) => void): void {
     let body = '';
     let overLimit = false;
     request.on('data', (chunk: Buffer) => {
@@ -265,17 +345,22 @@ export class ForgeServer {
       }
     });
     request.on('end', () => {
+      if (overLimit) return;
+      let parsed: T | null;
+      try {
+        parsed = body ? JSON.parse(body) as T : null;
+      } catch {
+        json(response, 400, { error: 'the body was not JSON' });
+        return;
+      }
+      handle(parsed);
+    });
+  }
+
+  private answer(request: IncomingMessage, response: ServerResponse): void {
+    if (!this.authorized(request, response)) return;
+    this.readJson<{ key?: string; answer?: string }>(request, response, (parsed) => {
       void (async () => {
-        if (overLimit) return;
-        let parsed: { key?: string; answer?: string } | null;
-        try {
-          parsed = body ? JSON.parse(body) as { key?: string; answer?: string } : null;
-        } catch {
-          // A body that will not parse is not an answer. Guessing what was meant here
-          // would resume a run on a decision nobody made.
-          json(response, 400, { error: 'the body was not JSON' });
-          return;
-        }
         if (!parsed || !parsed.key || parsed.answer === undefined) {
           json(response, 400, { error: 'an answer needs a key and an answer' });
           return;
@@ -294,6 +379,88 @@ export class ForgeServer {
         json(response, 200, answered);
       })();
     });
+  }
+
+  /**
+   * `POST /stop`: the console's Stop all button, wired to the same `Fleet.stopAll` that
+   * `forge stop --all` runs from a terminal. Parks every running lane with a handoff
+   * request and engages the kill switch; safe to call on an idle fleet.
+   */
+  private stop(request: IncomingMessage, response: ServerResponse): void {
+    if (!this.authorized(request, response)) return;
+    this.readJson<{ reason?: string }>(request, response, (parsed) => {
+      void (async () => {
+        const reason = parsed?.reason || 'stopped from the console';
+        const outcomes = await new Fleet(this.lanes, this.journalPath, this.killSwitchFile).stopAll(reason);
+        for (const outcome of outcomes) {
+          this.publish({ event: 'run.parked', run: outcome.slug, actor: 'console', reached: outcome.reached });
+        }
+        json(response, 200, { stopped: outcomes.map((outcome) => outcome.slug) });
+      })();
+    });
+  }
+
+  /**
+   * `POST /send`: queues a message into a run's own inbox, the same `RunInbox.send` that
+   * `forge send RUN TEXT` calls. Delivered by the run's next tool call, per `runinbox.ts`.
+   */
+  private send(request: IncomingMessage, response: ServerResponse): void {
+    if (!this.authorized(request, response)) return;
+    this.readJson<{ run?: string; text?: string }>(request, response, (parsed) => {
+      if (!parsed || !parsed.run || !parsed.text) {
+        json(response, 400, { error: 'a send needs a run and text' });
+        return;
+      }
+      new RunInbox(parsed.run).send(parsed.text, 'console');
+      json(response, 200, { ok: true });
+    });
+  }
+
+  /**
+   * `POST /clear`: `{ lane }` hands one breaker-blocked lane back the way `forge clear
+   * LANE` does; `{ all: true }` clears the kill switch the way `forge clear --all` does.
+   */
+  private clearLane(request: IncomingMessage, response: ServerResponse): void {
+    if (!this.authorized(request, response)) return;
+    this.readJson<{ lane?: string; all?: boolean }>(request, response, (parsed) => {
+      if (parsed?.all === true) {
+        clearKillSwitch(this.killSwitchFile);
+        json(response, 200, { ok: true });
+        return;
+      }
+      if (!parsed || !parsed.lane) {
+        json(response, 400, { error: 'a clear needs a lane or { all: true }' });
+        return;
+      }
+      new Breaker(this.lanes).clear(parsed.lane);
+      json(response, 200, { ok: true });
+    });
+  }
+
+  /**
+   * The built console at `dist/console/`, decision 1 in the goal brief: served at `/` on
+   * this same port rather than a second process. `index.html`'s empty
+   * `<meta name="forge-token">` is filled in with this server's real token as the file is
+   * served, never written back to disk, so the token that reaches a browser always
+   * matches the process answering it.
+   */
+  private serveStatic(urlPath: string, response: ServerResponse): void {
+    const relative = urlPath === '/' ? 'index.html' : urlPath.replace(/^\//, '');
+    const full = join(this.consoleDistDir, relative);
+    if (!full.startsWith(this.consoleDistDir) || !existsSync(full)) {
+      json(response, 404, { error: `nothing serves ${urlPath}. Did you run npm run console:build?` });
+      return;
+    }
+    let text = readFileSync(full, 'utf8');
+    if (extname(full) === '.html') {
+      text = text.replace(
+        '<meta name="forge-token" content="" />',
+        `<meta name="forge-token" content="${this.token}" />`,
+      );
+    }
+    const mime = CONSOLE_MIME[extname(full)] ?? 'application/octet-stream';
+    response.writeHead(200, { 'content-type': mime });
+    response.end(text);
   }
 
   private upgrade(request: IncomingMessage, socket: Duplex): void {

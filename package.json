@@ -12,15 +12,20 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && node scripts/copy-build-assets.mjs",
+    "build": "tsc -p tsconfig.build.json && node scripts/copy-build-assets.mjs && npm run console:build",
     "dev": "tsx src/cli.tsx",
     "typecheck": "tsc --noEmit",
+    "typecheck:console": "tsc -p tsconfig.console.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "check:agnostic": "tsx tests/checks/agnostic.ts",
     "check:faultinject": "tsx tests/checks/fault-inject.ts",
-    "verify": "npm run typecheck && npm run test && npm run check:agnostic && npm run check:faultinject",
-    "forge": "tsx src/forge/cli.ts"
+    "verify": "npm run typecheck && npm run typecheck:console && npm run test && npm run check:agnostic && npm run check:faultinject",
+    "forge": "tsx src/forge/cli.ts",
+    "console:dev": "vite --config vite.console.config.ts",
+    "console:build": "vite build --config vite.console.config.ts",
+    "console:preview": "vite preview --config vite.console.config.ts",
+    "console:stub": "tsx src/console/stub-server.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.229",
@@ -29,10 +34,17 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.7",
     "@types/node": "^24.0.0",
     "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.2.7",
+    "@vitejs/plugin-react": "^4.7.0",
+    "jsdom": "^25.0.1",
+    "react-dom": "^19.2.8",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
+    "vite": "^6.4.3",
     "vitest": "^4.1.10"
   }
 }
