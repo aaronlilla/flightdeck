@@ -861,3 +861,56 @@ describe('forge reason', () => {
     expect(result.lines.join(' ')).toMatch(/forge reason --class CLASS/);
   });
 });
+
+/**
+ * F3: an ask whose every run is dead stays open forever, with nothing left to resume if
+ * it were answered. `~/.forge/inbox/5ab5510a66092343.json` on 2026-09-04 was "Probe:
+ * continue to the end?" asked by three runs, all long gone, and the console still showed
+ * it as the one open ask.
+ */
+describe('F3: stale inbox asks', () => {
+  it('forge status counts a stale ask separately from waiting', async () => {
+    // A blocker merges across runs by wording alone, the shape the real dead entry was
+    // in: three runs sharing one inbox key.
+    new Inbox(join(home, 'inbox')).raise({
+      run: 'forge-live-probe', kind: 'blocker', question: 'Probe: continue to the end?',
+    });
+    const result = await forge(['status'], { processes: () => [] });
+    expect(result.lines.join('\n')).toMatch(/inbox: 1 waiting \(1 stale\)/);
+  });
+
+  it('forge status does not call a live ask stale', async () => {
+    admitLive('forge-live-probe');
+    new Inbox(join(home, 'inbox')).raise({
+      run: 'forge-live-probe', kind: 'blocker', question: 'Probe: continue to the end?',
+    });
+    const result = await forge(['status'], { processes: () => [] });
+    expect(result.lines.join('\n')).toMatch(/inbox: 1 waiting/);
+    expect(result.lines.join('\n')).not.toMatch(/stale/);
+  });
+
+  it('forge clear --all retires a stale ask and journals inbox.retired', async () => {
+    const inbox = new Inbox(join(home, 'inbox'));
+    const raised = inbox.raise({
+      run: 'forge-live-probe', kind: 'blocker', question: 'Probe: continue to the end?',
+    });
+    const result = await forge(['clear', '--all']);
+    expect(result.code).toBe(0);
+    expect(result.lines.join('\n')).toMatch(/retired 1 stale inbox ask/);
+    expect(inbox.open()).toHaveLength(0);
+    expect(existsSync(join(home, 'inbox', 'retired', `${raised.key}.json`))).toBe(true);
+
+    const journaled = replay(journal());
+    const retiredEvent = journaled.events.find((e) => e['event'] === 'inbox.retired');
+    expect(retiredEvent).toMatchObject({ key: raised.key, runs: ['forge-live-probe'] });
+  });
+
+  it('forge clear --all never retires an ask still backed by a live run', async () => {
+    admitLive('forge-live-probe');
+    const inbox = new Inbox(join(home, 'inbox'));
+    inbox.raise({ run: 'forge-live-probe', kind: 'blocker', question: 'Probe: continue to the end?' });
+    const result = await forge(['clear', '--all']);
+    expect(result.lines.join('\n')).toMatch(/no stale inbox asks found/);
+    expect(inbox.open()).toHaveLength(1);
+  });
+});

@@ -22,7 +22,7 @@ import type { Duplex } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
 import type { Reasoner } from './contracts.js';
-import type { Inbox } from './inbox.js';
+import { isAskStale, projectStaleness, type Inbox } from './inbox.js';
 import { appendOnce, JournalCache, type RangeReader } from './journal.js';
 import type { StuckSignal } from './liveness.js';
 import {
@@ -360,7 +360,14 @@ export class ForgeServer {
       return json(response, 200, this.state());
     }
     if (path === '/inbox' && request.method === 'GET') {
-      return json(response, 200, { open: this.inbox.open(), all: this.inbox.all() });
+      // F3: `stale`/`staleReason` computed fresh on every read, from the registry as it
+      // is right now -- an ask's runs can all disappear with no new inbox event to say
+      // so, so stamping this at write time would go stale itself.
+      const hasRegistryRow = (run: string): boolean => Boolean(this.registry.get(run));
+      return json(response, 200, {
+        open: projectStaleness(this.inbox.open(), hasRegistryRow),
+        all: projectStaleness(this.inbox.all(), hasRegistryRow),
+      });
     }
     if (path.startsWith('/run/') && request.method === 'GET') {
       return this.runDetail(request, response, decodeURIComponent(path.slice('/run/'.length)));
@@ -528,14 +535,34 @@ export class ForgeServer {
    */
   private clearLane(request: IncomingMessage, response: ServerResponse): void {
     if (!this.authorized(request, response)) return;
-    this.readJson<{ lane?: string; all?: boolean }>(request, response, (parsed) => {
+    this.readJson<{ lane?: string; all?: boolean; inboxKey?: string }>(request, response, (parsed) => {
+      if (parsed?.inboxKey) {
+        // F3: retire one stale ask from the console's own Clear button. The client's say-
+        // so is not proof -- staleness is checked again here, against the registry as it
+        // is right now, before anything is moved.
+        const entry = this.inbox.entry(parsed.inboxKey);
+        if (!entry) {
+          json(response, 404, { error: `nothing asked ${parsed.inboxKey}` });
+          return;
+        }
+        if (!isAskStale(entry, (run) => Boolean(this.registry.get(run)))) {
+          json(response, 400, { error: `${parsed.inboxKey} still has a live run; it is not stale` });
+          return;
+        }
+        this.inbox.retire(parsed.inboxKey);
+        appendOnce(this.journalPath, {
+          event: 'inbox.retired', actor: 'console', key: parsed.inboxKey, runs: entry.runs,
+        });
+        json(response, 200, { ok: true });
+        return;
+      }
       if (parsed?.all === true) {
         clearKillSwitch(this.killSwitchFile);
         json(response, 200, { ok: true });
         return;
       }
       if (!parsed || !parsed.lane) {
-        json(response, 400, { error: 'a clear needs a lane or { all: true }' });
+        json(response, 400, { error: 'a clear needs a lane, { all: true } or { inboxKey }' });
         return;
       }
       new Breaker(this.lanes).clear(parsed.lane);

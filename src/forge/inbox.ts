@@ -16,7 +16,9 @@
  * pick it up without a protocol.
  */
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import {
+  existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 
 export interface Ask {
@@ -53,6 +55,48 @@ export interface InboxEntry {
   /** What the worker does about it: park, never wait. */
   disposition: 'park';
   ticket?: string;
+  /**
+   * F3: computed fresh on every read, never stored on the file. `true` when none of
+   * `runs` has a registry row left, meaning every run that ever hit this wall is gone
+   * and answering it would resume nothing. Absent on any entry `projectStaleness` was
+   * not asked to look at (e.g. a raw `entry()`/`all()` read that skips the projection).
+   */
+  stale?: boolean;
+  /** Set alongside `stale: true`: one line saying why, for the console to show in place
+   *  of the answer controls. */
+  staleReason?: string;
+}
+
+/**
+ * F3: an ask whose every run is dead stays open forever, with nothing to resume.
+ *
+ * `~/.forge/inbox/*.json` entries are keyed by the question, not the run, so a wall three
+ * runs hit in a row (`forge-live-probe`, `forge-live-probe-3`, `forge-live-probe-5`) is
+ * one entry, and it goes on showing Yes/No/free-text controls long after all three runs
+ * are gone -- there is nothing left for an answer to reach. Computed rather than stored,
+ * because a run's registry row can disappear at any time with no new inbox event to mark
+ * it: reading `stale` off a stored value would go stale itself.
+ */
+export function isAskStale(entry: InboxEntry, hasRegistryRow: (run: string) => boolean): boolean {
+  if (entry.answer !== undefined) return false;
+  if (!entry.runs.length) return false;
+  return entry.runs.every((run) => !hasRegistryRow(run));
+}
+
+/** Adds `stale`/`staleReason` to every entry, without mutating the input. */
+export function projectStaleness<T extends InboxEntry>(
+  entries: T[], hasRegistryRow: (run: string) => boolean,
+): (T & { stale: boolean; staleReason?: string })[] {
+  return entries.map((entry) => {
+    const stale = isAskStale(entry, hasRegistryRow);
+    return {
+      ...entry,
+      stale,
+      ...(stale
+        ? { staleReason: `every run that asked this (${entry.runs.join(', ')}) is gone; answering resumes nothing` }
+        : {}),
+    };
+  });
 }
 
 /**
@@ -203,5 +247,20 @@ export class Inbox {
   private write(entry: InboxEntry): void {
     mkdirSync(this.dir, { recursive: true });
     writeFileSync(this.pathFor(entry.key), JSON.stringify(entry, null, 2), 'utf8');
+  }
+
+  /**
+   * F3: `forge clear --all`'s side of retiring a stale ask. Moves the entry's file under
+   * `retired/` rather than deleting it, so the question and every run that hit it stay on
+   * disk for whoever wants to know what was actually asked. Returns `undefined` when
+   * there was nothing at that key to move (nothing to journal, then).
+   */
+  retire(key: string): InboxEntry | undefined {
+    const entry = this.entry(key);
+    if (!entry) return undefined;
+    const retiredDir = join(this.dir, 'retired');
+    mkdirSync(retiredDir, { recursive: true });
+    renameSync(this.pathFor(key), join(retiredDir, `${key}.json`));
+    return entry;
   }
 }

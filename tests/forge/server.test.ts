@@ -407,6 +407,51 @@ describe('GET /inbox', () => {
     const body = await (await fetch(`${base}/inbox`)).json() as Record<string, unknown>;
     expect((body['open'] as unknown[])).toHaveLength(1);
   });
+
+  // F3: an ask whose every run is dead stays open with no run left to resume. `alpha`
+  // has a live registry row (this suite's own beforeEach); `ghost` never gets one.
+  it('F3: marks an ask stale once none of its runs has a registry row', async () => {
+    server.inbox.raise({ run: 'alpha', question: 'Which environment?', options: ['dev'] });
+    server.inbox.raise({ run: 'ghost', question: 'Probe: continue to the end?' });
+    const body = await (await fetch(`${base}/inbox`)).json() as Record<string, unknown>;
+    const open = body['open'] as Array<Record<string, unknown>>;
+    const live = open.find((entry) => entry['runs'] as string[] === undefined
+      ? false : (entry['runs'] as string[]).includes('alpha'))!;
+    const dead = open.find((entry) => (entry['runs'] as string[]).includes('ghost'))!;
+    expect(live['stale']).toBe(false);
+    expect(dead['stale']).toBe(true);
+    expect(dead['staleReason']).toMatch(/ghost/);
+  });
+});
+
+describe('POST /clear on a stale inbox ask', () => {
+  it('F3: refuses to retire an ask that still has a live run', async () => {
+    server.inbox.raise({ run: 'alpha', question: 'Which environment?', options: ['dev'] });
+    const [key] = server.inbox.open().map((e) => e.key);
+    const response = await fetch(`${base}/clear`, {
+      method: 'POST',
+      headers: { 'x-forge-token': server.token, 'content-type': 'application/json' },
+      body: JSON.stringify({ inboxKey: key }),
+    });
+    expect(response.status).toBe(400);
+    expect(server.inbox.open()).toHaveLength(1);
+  });
+
+  it('F3: retires a stale ask and journals inbox.retired with the key and runs', async () => {
+    server.inbox.raise({ run: 'ghost', question: 'Probe: continue to the end?' });
+    const [key] = server.inbox.open().map((e) => e.key);
+    const response = await fetch(`${base}/clear`, {
+      method: 'POST',
+      headers: { 'x-forge-token': server.token, 'content-type': 'application/json' },
+      body: JSON.stringify({ inboxKey: key }),
+    });
+    expect(response.status).toBe(200);
+    expect(server.inbox.open()).toHaveLength(0);
+    const journalText = readFileSync(join(dir, 'fleet.jsonl'), 'utf8');
+    const retiredRow = journalText.split('\n').filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>)
+      .find((row) => row['event'] === 'inbox.retired');
+    expect(retiredRow).toMatchObject({ key, runs: ['ghost'] });
+  });
 });
 
 describe('GET /run/:id', () => {
