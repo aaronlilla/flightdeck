@@ -7,6 +7,7 @@
  *   forge run BRIEF           launch a goal, refusing the four launch mistakes
  *   forge send RUN TEXT       queue a message for a run already in flight
  *   forge answer KEY ANSWER   answer a question a worker parked on
+ *   forge decide RUN kill R   the only way a kill decision id gets made
  *   forge stop --all          park every run with a handoff and end all spend
  *
  * `stop --all` is the control that has to work when nothing else does, so it takes no
@@ -351,6 +352,19 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           delivered.length ? `delivered in place to: ${delivered.join(', ')}` : 'queued for pickup on next tool call',
         ],
       };
+    }
+
+    case 'decide': {
+      const [run, action, ...reasonWords] = rest;
+      if (!run || action !== 'kill' || !reasonWords.length) {
+        return { code: 2, lines: ['forge decide RUN kill "<reason>" is the only form'] };
+      }
+      const journal = new Journal(journalPath());
+      const decision = journal.append({
+        event: 'decision.made', run, actor: 'aaron', action, reason: reasonWords.join(' '),
+      });
+      journal.close();
+      return { code: 0, lines: [`decision ${decision.id} recorded: kill ${run}`] };
     }
 
     case 'stop': {
