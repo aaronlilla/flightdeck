@@ -54,7 +54,7 @@ describe('PacketSchema', () => {
       where: 'src/features/auth/LoginScreen.tsx:41',
       evidence: ['Sentry issue BBZ-1: TypeError undefined is not a function'],
       confidence: 'high',
-      repo: 'v2-React-Native',
+      repo: 'mobile-app',
       blockedBy: [],
       at: 1_725_000_000_000,
     };
