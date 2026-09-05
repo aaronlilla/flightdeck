@@ -1,0 +1,94 @@
+/**
+ * Whether a run's last few tool calls still serve its own brief.
+ *
+ * "Every N turns a Haiku `evaluate` call sees the brief's acceptance criteria and the last
+ * N tool calls: still on task, with a reason. Two consecutive no's park." This is that
+ * check: a `Reasoner` call on the `evaluate` class (Haiku, per `model-policy.json`), the
+ * brief's own `## Definition of Done` as the criteria, and a park -- with both verdicts
+ * carried verbatim -- once two `no`s land back to back. A single `no` is a run correcting
+ * itself mid-turn, not drift; only two in a row is.
+ */
+import type { Journal } from './journal.js';
+import type { Reasoner } from './contracts.js';
+
+export interface DriftActuator {
+  park(run: string, reason: string): Promise<void>;
+}
+
+export interface ConformanceDriftDeps {
+  reasoner: Reasoner;
+  journal: Journal;
+  actuator: DriftActuator;
+}
+
+const DOD_HEADING = /^##[ \t]+Definition of Done[ \t]*\r?\n/im;
+const NEXT_HEADING = /^##[ \t]+\S/m;
+
+/**
+ * The brief's own `## Definition of Done` section, verbatim, or `undefined` when the
+ * brief declares none. There is no fallback criteria to invent: a run with nothing
+ * declared has nothing this checker can hold it to.
+ */
+export function extractDoD(brief: string): string | undefined {
+  const start = DOD_HEADING.exec(brief);
+  if (!start) return undefined;
+  const bodyStart = start.index + start[0].length;
+  const rest = brief.slice(bodyStart);
+  NEXT_HEADING.lastIndex = 0;
+  const next = NEXT_HEADING.exec(rest);
+  const body = (next ? rest.slice(0, next.index) : rest).trim();
+  return body.length ? body : undefined;
+}
+
+function buildPrompt(dod: string, recentToolCalls: string[]): string {
+  return [
+    "Judge whether a coding agent's recent tool calls still serve its brief.",
+    '',
+    'Definition of Done:',
+    dod,
+    '',
+    'Recent tool calls:',
+    ...(recentToolCalls.length ? recentToolCalls.map((call) => `- ${call}`) : ['(none yet)']),
+    '',
+    'Answer "yes" or "no" as the first word, then one short reason.',
+  ].join('\n');
+}
+
+/** `false` only when the response's first word is `no`. Anything else -- "yes", a blank
+ *  or malformed response -- reads as on task: a run does not park because the classifier
+ *  stumbled, only because it said so twice in a row. */
+export function isOnTask(responseText: string): boolean {
+  return !/^\s*no\b/i.test(responseText ?? '');
+}
+
+export class ConformanceDrift {
+  /** Verdict text, most recent last, kept to the last two, per run. */
+  private readonly history = new Map<string, string[]>();
+
+  constructor(private readonly deps: ConformanceDriftDeps) {}
+
+  async check(
+    run: string, dod: string, recentToolCalls: string[],
+  ): Promise<{ onTask: boolean; parked: boolean }> {
+    const result = await this.deps.reasoner.call({
+      className: 'evaluate', prompt: buildPrompt(dod, recentToolCalls),
+    });
+    const onTask = isOnTask(result.text);
+
+    if (onTask) {
+      this.history.set(run, []);
+      return { onTask: true, parked: false };
+    }
+
+    const kept = [...(this.history.get(run) ?? []), result.text].slice(-2);
+    this.history.set(run, kept);
+    if (kept.length < 2) return { onTask: false, parked: false };
+
+    await this.deps.actuator.park(run, 'conformance drift: two consecutive off-task verdicts');
+    this.deps.journal.append({
+      event: 'warden.parked', run, actor: 'warden', signal: 'drift', verdicts: kept,
+    });
+    this.history.set(run, []);
+    return { onTask: false, parked: true };
+  }
+}
