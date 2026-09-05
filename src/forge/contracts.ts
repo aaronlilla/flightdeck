@@ -172,6 +172,13 @@ export const FORGE_EVENT_NAMES = [
   'inbox.queued', 'inbox.offered', 'stuck', 'cleared', 'blocker.raised', 'blocker.cleared',
   'external.intent', 'external.complete', 'external.unknown', 'decision.made',
   'source.observed', 'packet.written', 'policy.unknown-model',
+  // The Governor stream's own (roadmap P4.2, `src/forge/governor.ts`): `result.usage`
+  // carries the SDK result message's own `modelUsage` map, journaled by the engine on a
+  // segment's end row; `burn.mismatch` is the reconciliation between that sum and B.3.6's
+  // per-message sum; `governor.parked` is a budget-cap park, kept apart from
+  // `warden.parked`'s model-mismatch park even though both use the same `run.parked`
+  // liveness fold, so a reader can tell a cap from a mismatch without inspecting `reason`.
+  'result.usage', 'burn.mismatch', 'governor.parked',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];

@@ -73,6 +73,9 @@ export interface RunState {
   lastEventAt: number;
   /** The ask key this run is parked on, while `state` is `'parked'`. */
   parkKey?: string;
+  /** When a `run.paused` row (the Governor's window pause) names one: milliseconds since
+   *  the epoch, the earliest this run may be admitted again. */
+  resumeAt?: number;
   /** The tool call in flight, when the last event named one and none has closed it since. */
   currentTool?: { name: string; startedAt: number };
 }
@@ -267,9 +270,20 @@ function foldLine(state: FleetState, line: string): void {
         break;
       case 'run.paused':
         run.state = 'paused';
+        // The Governor's window pause (P4.2, `governor.ts`'s `WindowGate`) stamps a
+        // resume time so a reader (the console, or a resume check) knows when to try
+        // this run again without re-deriving the reset window itself.
+        if (typeof row['resumeAt'] === 'number') run.resumeAt = row['resumeAt'];
         delete run.currentTool;
         break;
       case 'run.parked':
+      // The Governor's own two park kinds (P4.2, `governor.ts`): `warden.parked` for a
+      // per-turn model-mismatch (the Warden actuator path) and `governor.parked` for a
+      // budget-cap refusal. Both fold exactly like `run.parked` so a reader sees the park
+      // immediately either way; `reason` (carried on the row, not read here) is what
+      // tells the two apart.
+      case 'warden.parked':
+      case 'governor.parked':
         run.state = 'parked';
         if (row.verdict) run.verdict = row.verdict;
         if (typeof row['key'] === 'string') run.parkKey = row['key'];
