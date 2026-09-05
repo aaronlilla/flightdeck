@@ -8,7 +8,9 @@
  * this codebase constructs one.
  */
 import { spawn } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  existsSync, mkdirSync, readFileSync, statSync, writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import type { CliResult, ForgeDeps } from './cli.js';
@@ -124,33 +126,171 @@ export async function runWorktreeSetup(input: {
   }
 }
 
+/**
+ * D1, 2026-09-05: a worktree already on disk, on the packet's own branch, is a thing to
+ * reuse rather than a fresh `git worktree add` to attempt. The old check leaned on
+ * `git worktree add` refusing and the string `already exists` showing up in its output --
+ * which is exactly the shape that broke on the live run this fixes: a retry after a
+ * failed `worktreeSetup` ran `add` again for a worktree the first attempt had already
+ * created, and it wasn't a `chain.provisioned` row (only written after setup succeeds)
+ * that would have told this hop to skip the add, it was git's own error text. This reads
+ * `git worktree list` first instead, so the decision is made from what git says exists
+ * right now, never from a journal row that setup failing left unwritten.
+ */
+export interface WorktreeListEntry {
+  path: string;
+  branch?: string;
+}
+
+/** `git worktree list --porcelain` is entries separated by a blank line, each carrying a
+ *  `worktree <path>` line and (for anything but a detached checkout) a `branch
+ *  refs/heads/<name>` line. */
+export function parseWorktreeList(output: string): WorktreeListEntry[] {
+  const entries: WorktreeListEntry[] = [];
+  let current: WorktreeListEntry | undefined;
+  for (const rawLine of output.split('\n')) {
+    const line = rawLine.trimEnd();
+    if (line.startsWith('worktree ')) {
+      current = { path: line.slice('worktree '.length).trim() };
+      entries.push(current);
+    } else if (line.startsWith('branch ') && current) {
+      current.branch = line.slice('branch '.length).trim().replace(/^refs\/heads\//, '');
+    } else if (line === '') {
+      current = undefined;
+    }
+  }
+  return entries;
+}
+
+function normalizeWorktreePath(worktreePath: string): string {
+  return worktreePath.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+export interface ProvisionFs {
+  existsSync: typeof existsSync;
+  readFileSync: typeof readFileSync;
+  writeFileSync: typeof writeFileSync;
+  statSync: typeof statSync;
+  mkdirSync: typeof mkdirSync;
+}
+
+const REAL_FS: ProvisionFs = {
+  existsSync, readFileSync, writeFileSync, statSync, mkdirSync,
+};
+
+const SETUP_DONE_MARKER = 'forge-chain-setup-done';
+
+/**
+ * A linked worktree's `.git` is a file naming its real metadata directory (`gitdir:
+ * <path>`), not a directory of its own -- the marker lives there, never inside the
+ * worktree's own tracked tree, so a specimen swapping worktrees never finds it staged.
+ * Falls back to `<worktreePath>/.git` itself on anything unexpected (a plain directory,
+ * or a fake filesystem a specimen never bothered to shape as a real linked worktree).
+ */
+function gitMetaDir(worktreePath: string, fs: ProvisionFs): string {
+  const dotGit = join(worktreePath, '.git');
+  try {
+    if (fs.statSync(dotGit).isDirectory()) return dotGit;
+  } catch {
+    return dotGit;
+  }
+  try {
+    const content = fs.readFileSync(dotGit, 'utf8');
+    const match = /^gitdir:\s*(.+)\s*$/m.exec(content);
+    if (match?.[1]) return match[1].trim();
+  } catch {
+    // fall through to the plain path below
+  }
+  return dotGit;
+}
+
+function setupMarkerPath(worktreePath: string, fs: ProvisionFs): string {
+  return join(gitMetaDir(worktreePath, fs), SETUP_DONE_MARKER);
+}
+
+function setupAlreadyDone(worktreePath: string, fs: ProvisionFs): boolean {
+  try {
+    return fs.existsSync(setupMarkerPath(worktreePath, fs));
+  } catch {
+    return false;
+  }
+}
+
+function markSetupDone(worktreePath: string, fs: ProvisionFs): void {
+  fs.writeFileSync(setupMarkerPath(worktreePath, fs), '', 'utf8');
+}
+
+export interface ProvisionResult {
+  worktreePath: string;
+  branch: string;
+  base: string;
+  /** True when an existing worktree on the expected branch was reused rather than
+   *  created fresh -- carried onto the `chain.provisioned` journal row. */
+  reused: boolean;
+}
+
+/** D1: the reuse decision itself, plus the real `git worktree add`/setup when there is
+ *  nothing to reuse. Takes `exec` and `fs` as parameters the same way `runWorktreeSetup`
+ *  does, so a specimen proves every branch (fresh path, existing path on the branch,
+ *  branch checked out elsewhere, setup already marked done) against fakes rather than a
+ *  real git checkout. */
+export async function provisionWorktree(input: {
+  chainEnv: ChainEnv; repo: string; ticket: string;
+  exec?: (request: RunRequest) => Promise<RunResult>;
+  fs?: ProvisionFs;
+}): Promise<ProvisionResult> {
+  const checkout = checkoutFor(input.chainEnv, input.repo);
+  if (!checkout) throw new Error(`no FORGE_REPO_CHECKOUTS entry for ${input.repo}`);
+  const base = baseFor(input.chainEnv, input.repo);
+  const worktreePath = worktreePathFor(checkout, input.repo, input.ticket);
+  const branch = branchFor(input.ticket);
+
+  const runner = input.exec ?? execRun;
+  const fs = input.fs ?? REAL_FS;
+
+  const list = await runner({
+    argv: ['git', '-C', checkout, 'worktree', 'list', '--porcelain'],
+    cwd: checkout, owner: `chain-${input.ticket}`, cls: 'script',
+  });
+  const entries = list.ok ? parseWorktreeList(list.tail) : [];
+
+  const target = normalizeWorktreePath(worktreePath);
+  const samePath = entries.find((entry) => normalizeWorktreePath(entry.path) === target);
+  const branchElsewhere = entries.find(
+    (entry) => entry.branch === branch && normalizeWorktreePath(entry.path) !== target,
+  );
+
+  let reused = false;
+  if (samePath && samePath.branch === branch) {
+    reused = true;
+  } else if (branchElsewhere) {
+    throw new Error(`branch ${branch} is already checked out at ${branchElsewhere.path}`);
+  } else {
+    fs.mkdirSync(dirname(worktreePath), { recursive: true });
+    const add = await runner({
+      argv: ['git', '-C', checkout, 'worktree', 'add', '-B', branch, worktreePath, `origin/${base}`],
+      cwd: checkout, owner: `chain-${input.ticket}`, cls: 'script',
+    });
+    if (!add.ok) throw new Error(tailOfCommand(add.tail));
+  }
+
+  if (!reused || !setupAlreadyDone(worktreePath, fs)) {
+    await runWorktreeSetup({
+      chainEnv: input.chainEnv, repo: input.repo, ticket: input.ticket, worktreePath, exec: input.exec,
+    });
+    markSetupDone(worktreePath, fs);
+  }
+
+  return { worktreePath, branch, base, reused };
+}
+
 /** H2/H3: real worktrees, a real detached launch, and a real status read off the shared
  *  journal -- one `ChainLauncher` per `chain-env.ts` configuration, built fresh on every
  *  `forge up` process. */
 export function chainLauncher(chainEnv: ChainEnv, fleetConfigDir: string): ChainLauncher {
   return {
     async provision({ ticket, repo }) {
-      const checkout = checkoutFor(chainEnv, repo);
-      if (!checkout) throw new Error(`no FORGE_REPO_CHECKOUTS entry for ${repo}`);
-      const base = baseFor(chainEnv, repo);
-      const worktreePath = worktreePathFor(checkout, repo, ticket);
-      const branch = branchFor(ticket);
-
-      mkdirSync(dirname(worktreePath), { recursive: true });
-      const add = await execRun({
-        argv: ['git', '-C', checkout, 'worktree', 'add', '-B', branch, worktreePath, `origin/${base}`],
-        cwd: checkout, owner: `chain-${ticket}`, cls: 'script',
-      });
-      // A worktree that already exists for this branch is exactly the idempotent reuse
-      // H2 asks for -- `git worktree add` itself refuses with a message naming the path,
-      // which this treats as success rather than as a fresh failure to report.
-      if (!add.ok && !add.tail.includes('already exists')) {
-        throw new Error(tailOfCommand(add.tail));
-      }
-
-      await runWorktreeSetup({ chainEnv, repo, ticket, worktreePath });
-
-      return { worktreePath, branch, base };
+      return provisionWorktree({ chainEnv, repo, ticket });
     },
 
     async launch({ ticket, repo, briefPath, worktreePath, branch }) {
