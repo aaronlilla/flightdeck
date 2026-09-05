@@ -61,7 +61,7 @@ describe('a single lapse', () => {
   it('starts exactly one login flow and sends Aaron exactly one message naming the page', async () => {
     let starts = 0;
     const outcome = await horizon(async () => { starts += 1; return { page: 'https://example.test/authorize' }; })
-      .onLapse('aws-boltbetz', 'r1', { pid: 424242, startedAt: 1 });
+      .onLapse('aws-example', 'r1', { pid: 424242, startedAt: 1 });
 
     expect(outcome).toBe('started');
     expect(starts).toBe(1);
@@ -72,7 +72,7 @@ describe('a single lapse', () => {
   it('never leaks a secret shape into the Aaron-facing message', async () => {
     const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dGhpc19pc19hX3NpZ25hdHVyZQ';
     const secretPage = `https://example.test/authorize?token=${jwt}`;
-    await horizon(async () => ({ page: secretPage })).onLapse('aws-boltbetz', 'r1', { pid: 1, startedAt: 1 });
+    await horizon(async () => ({ page: secretPage })).onLapse('aws-example', 'r1', { pid: 1, startedAt: 1 });
     expect(messages[0]).not.toContain(jwt);
     expect(messages[0]).toContain('[redacted]');
   });
@@ -83,15 +83,15 @@ describe('a second run lapsing on the same account mid-flight', () => {
     let starts = 0;
     const h = horizon(async () => { starts += 1; return { page: 'https://example.test/authorize' }; });
 
-    const first = await h.onLapse('aws-boltbetz', 'r1', { pid: 424242, startedAt: 1 });
+    const first = await h.onLapse('aws-example', 'r1', { pid: 424242, startedAt: 1 });
     const second = await h.onLapse(
-      'aws-boltbetz', 'r2', { pid: 555555, startedAt: 2 },
+      'aws-example', 'r2', { pid: 555555, startedAt: 2 },
     );
 
     expect(first).toBe('started');
     expect(second).toBe('parked');
     expect(starts).toBe(1);
-    expect(parked).toEqual(['r2:blocked on credential:aws-boltbetz: login lapse on aws-boltbetz']);
+    expect(parked).toEqual(['r2:blocked on credential:aws-example: login lapse on aws-example']);
 
     const { events } = replayEvents(readFileSync(journalPath, 'utf8'));
     expect(events.filter((e) => e.event === 'blocker.raised')).toHaveLength(1);
@@ -105,8 +105,8 @@ describe('a second run lapsing on the same account mid-flight', () => {
       isAlive: () => false,
     });
 
-    const first = await h.onLapse('aws-boltbetz', 'r1', { pid: 1, startedAt: 1 });
-    const second = await h.onLapse('aws-boltbetz', 'r2', { pid: 2, startedAt: 2 });
+    const first = await h.onLapse('aws-example', 'r1', { pid: 1, startedAt: 1 });
+    const second = await h.onLapse('aws-example', 'r2', { pid: 2, startedAt: 2 });
 
     expect(first).toBe('started');
     expect(second).toBe('started');
@@ -117,22 +117,22 @@ describe('a second run lapsing on the same account mid-flight', () => {
 describe('tick', () => {
   it('does nothing while the provider probe is still invalid', async () => {
     const h = horizon();
-    await h.onLapse('aws-boltbetz', 'r1', { pid: 1, startedAt: 1 });
-    const resolved = await h.tick('aws-boltbetz', () => false);
+    await h.onLapse('aws-example', 'r1', { pid: 1, startedAt: 1 });
+    const resolved = await h.tick('aws-example', () => false);
     expect(resolved).toBe(false);
-    expect(readLoginLock('aws-boltbetz')).toBeTruthy();
+    expect(readLoginLock('aws-example')).toBeTruthy();
   });
 
   it('releases the lock and resumes every parked run in order once the probe is valid', async () => {
     const h = horizon();
-    await h.onLapse('aws-boltbetz', 'r1', { pid: 424242, startedAt: 1 });
-    await h.onLapse('aws-boltbetz', 'r2', { pid: 999, startedAt: 2 });
-    await h.onLapse('aws-boltbetz', 'r3', { pid: 998, startedAt: 3 });
+    await h.onLapse('aws-example', 'r1', { pid: 424242, startedAt: 1 });
+    await h.onLapse('aws-example', 'r2', { pid: 999, startedAt: 2 });
+    await h.onLapse('aws-example', 'r3', { pid: 998, startedAt: 3 });
 
-    const resolved = await h.tick('aws-boltbetz', () => true);
+    const resolved = await h.tick('aws-example', () => true);
 
     expect(resolved).toBe(true);
-    expect(readLoginLock('aws-boltbetz')).toBeUndefined();
+    expect(readLoginLock('aws-example')).toBeUndefined();
     expect(resumed.map((line) => line.split(':')[0])).toEqual(['r2', 'r3']);
   });
 });
@@ -140,9 +140,9 @@ describe('tick', () => {
 describe('remind', () => {
   it('sends at most two reminders, then stays silent', () => {
     const h = horizon();
-    expect(h.remind('aws-boltbetz', 'https://example.test/authorize')).toBe(true);
-    expect(h.remind('aws-boltbetz', 'https://example.test/authorize')).toBe(true);
-    expect(h.remind('aws-boltbetz', 'https://example.test/authorize')).toBe(false);
+    expect(h.remind('aws-example', 'https://example.test/authorize')).toBe(true);
+    expect(h.remind('aws-example', 'https://example.test/authorize')).toBe(true);
+    expect(h.remind('aws-example', 'https://example.test/authorize')).toBe(false);
     expect(messages).toHaveLength(2);
   });
 });
