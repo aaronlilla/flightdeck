@@ -635,7 +635,12 @@ export class ForgeServer {
 function usdPerHour(lane: LaneRecord): number {
   if (!lane.started || !lane.cost_usd) return 0;
   const hours = (Date.now() - lane.started) / 3_600_000;
-  if (hours < 1 / 120) return 0;
+  // Item 3, 2026-09-05: a three-minute-old probe that had spent $3.06 was shown as
+  // $61.11/h -- the old five-minute-hour fraction (1/120, i.e. 30 seconds) let anything
+  // past its first half-minute get divided by a sliver of an hour and reported as a rate
+  // with no relationship to what the run would cost across a real one. Five minutes
+  // (1/12 of an hour) is the shortest span this treats as long enough to extrapolate from.
+  if (hours < 1 / 12) return 0;
   return Number((lane.cost_usd / hours).toFixed(4));
 }
 
