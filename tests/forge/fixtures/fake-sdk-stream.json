@@ -1,0 +1,73 @@
+[
+  {
+    "type": "system",
+    "subtype": "init",
+    "session_id": "fake-session-0001",
+    "model": "claude-sonnet-5",
+    "cwd": "<cwd>",
+    "tools": ["Bash"],
+    "slash_commands": []
+  },
+  {
+    "type": "assistant",
+    "session_id": "fake-session-0001",
+    "message": {
+      "model": "claude-sonnet-5",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "toolu_fake0001",
+          "name": "Bash",
+          "input": { "command": "echo hi" }
+        }
+      ]
+    }
+  },
+  {
+    "type": "user",
+    "session_id": "fake-session-0001",
+    "message": {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_fake0001",
+          "is_error": false,
+          "content": "hi\n"
+        }
+      ]
+    }
+  },
+  {
+    "type": "assistant",
+    "session_id": "fake-session-0001",
+    "message": {
+      "model": "claude-sonnet-5",
+      "role": "assistant",
+      "content": [
+        { "type": "text", "text": "Done." }
+      ],
+      "usage": {
+        "input_tokens": 4,
+        "cache_read_input_tokens": 1200,
+        "cache_creation_input_tokens": 300,
+        "output_tokens": 6
+      }
+    }
+  },
+  {
+    "type": "result",
+    "subtype": "success",
+    "session_id": "fake-session-0001",
+    "is_error": false,
+    "duration_ms": 812,
+    "total_cost_usd": 0.0019,
+    "usage": {
+      "input_tokens": 4,
+      "cache_read_input_tokens": 1200,
+      "cache_creation_input_tokens": 300,
+      "output_tokens": 6
+    }
+  }
+]

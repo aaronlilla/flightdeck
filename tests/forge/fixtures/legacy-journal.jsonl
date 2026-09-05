@@ -1,0 +1,3 @@
+{"id":"legacy-1","at":1725000000000,"event":"run.started","actor":"runner","run":"forge-legacy"}
+{"id":"legacy-2","at":1725000000100,"event":"turn.end","actor":"worker","run":"forge-legacy"}
+{"id":"legacy-3","at":1725000000200,"event":"run.finished","actor":"runner","run":"forge-legacy"}

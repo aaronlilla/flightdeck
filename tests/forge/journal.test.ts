@@ -14,7 +14,7 @@ import { join } from 'node:path';
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { Journal, JournalCache, replay, type ForgeEvent, type RangeReader } from '../../src/forge/journal.js';
+import { Journal, JournalCache, appendOnce, replay, type ForgeEvent, type RangeReader } from '../../src/forge/journal.js';
 
 let dir: string;
 let path: string;
@@ -61,6 +61,48 @@ describe('appending', () => {
     journal.append({ event: 'run.finished', run: 'alpha', actor: 'runner' });
     journal.close();
     expect(readFileSync(path, 'utf8').startsWith(before)).toBe(true);
+  });
+
+  it('stamps a monotonic seq and a schema version on every row', () => {
+    const journal = new Journal(path);
+    const first = journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    const second = journal.append({ event: 'turn.end', run: 'alpha', actor: 'worker' });
+    journal.close();
+
+    expect(first.seq).toBe(1);
+    expect(second.seq).toBe(2);
+    expect(first.version).toBe(1);
+    expect(second.version).toBe(1);
+  });
+
+  it('keeps seq monotonic across a fresh Journal instance opened on an existing file', () => {
+    let journal = new Journal(path);
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.close();
+
+    journal = new Journal(path);
+    const third = journal.append({ event: 'turn.end', run: 'alpha', actor: 'worker' });
+    journal.close();
+
+    expect(third.seq).toBe(2);
+  });
+
+  it('a caller cannot override the seq or version Journal stamps', () => {
+    const journal = new Journal(path);
+    const row = journal.append({
+      event: 'run.started', run: 'alpha', actor: 'runner', seq: 999, version: 999,
+    } as ForgeEvent);
+    journal.close();
+    expect(row.seq).toBe(1);
+    expect(row.version).toBe(1);
+  });
+
+  it('appendOnce stamps seq and version too, continuing from what is already on disk', () => {
+    const first = appendOnce(path, { event: 'gotcha', actor: 'runner' });
+    const second = appendOnce(path, { event: 'gotcha', actor: 'runner' });
+    expect(first.seq).toBe(1);
+    expect(second.seq).toBe(2);
+    expect(first.version).toBe(1);
   });
 });
 

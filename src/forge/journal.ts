@@ -30,8 +30,14 @@ export interface Usage {
 export interface ForgeEvent {
   /** Unique per event, and what `cause` points at. */
   id: string;
+  /** Position in this journal file, 1-based and stamped on append. Lets a reader ask
+   *  for "the tail since seq N" without re-parsing everything before it. */
+  seq: number;
   /** Milliseconds since the epoch, stamped on append. */
   at: number;
+  /** The envelope's schema version, stamped on append. A row with no `seq`/`version`
+   *  predates this field and is read as version 0, never quarantined for lacking it. */
+  version: number;
   /** What happened: run.started, turn.end, run.handoff, ask.raised, usage, and so on. */
   event: string;
   /** Who says so: runner, worker, warden, console, master. */
@@ -84,6 +90,23 @@ export interface FleetState {
   unknownModels: string[];
 }
 
+/** The highest `seq` already on disk, or 0 for a file with none (empty, missing, or
+ *  written before this field existed). The next row's seq is always one past this. */
+function maxSeqOnDisk(path: string): number {
+  if (!existsSync(path)) return 0;
+  let max = 0;
+  for (const line of readFileSync(path, 'utf8').split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const row = JSON.parse(line) as { seq?: unknown };
+      if (typeof row.seq === 'number' && row.seq > max) max = row.seq;
+    } catch {
+      // A torn or corrupt line carries no usable seq; it does not move the count.
+    }
+  }
+  return max;
+}
+
 /**
  * A writer that fsyncs each line.
  *
@@ -93,6 +116,11 @@ export interface FleetState {
  */
 export class Journal {
   private fd: number | undefined;
+
+  /** Cached once per instance, from whatever the file already holds, so a fresh
+   *  `Journal` opened on an existing file keeps counting forward rather than
+   *  restarting at 1 and colliding with rows already on disk. */
+  private lastSeq: number | undefined;
 
   constructor(private readonly path: string) {}
 
@@ -120,12 +148,18 @@ export class Journal {
   }
 
   append(event: Partial<ForgeEvent>): ForgeEvent {
+    if (this.lastSeq === undefined) this.lastSeq = maxSeqOnDisk(this.path);
+    this.lastSeq += 1;
     const row: ForgeEvent = {
       id: randomUUID(),
       at: Date.now(),
       event: 'note',
       actor: 'runner',
       ...event,
+      // Stamped last, and unconditionally: a caller cannot buy its way past the
+      // monotonic count by passing its own seq or version in `event`.
+      seq: this.lastSeq,
+      version: 1,
     } as ForgeEvent;
     const fd = this.handle();
     writeSync(fd, JSON.stringify(row) + '\n');
@@ -141,10 +175,15 @@ export class Journal {
   }
 }
 
-/** Append one event without holding a handle. For callers that write rarely. */
+/** Append one event without holding a handle. For callers that write rarely. Re-reads
+ *  the file to find the next seq each time, which is fine at the call rate this is used
+ *  for (see `gotcha.ts`) and keeps this free of the instance state `Journal` needs for
+ *  its hot path. */
 export function appendOnce(path: string, event: Partial<ForgeEvent>): ForgeEvent {
   const row: ForgeEvent = {
     id: randomUUID(), at: Date.now(), event: 'note', actor: 'runner', ...event,
+    seq: maxSeqOnDisk(path) + 1,
+    version: 1,
   } as ForgeEvent;
   appendFileSync(path, JSON.stringify(row) + '\n', 'utf8');
   return row;
