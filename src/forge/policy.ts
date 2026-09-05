@@ -14,11 +14,33 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+/**
+ * Which side reasons a class: `codex` for the runtime master and planner (the
+ * 2026-09-04 13:20 astra decision), `claude` for everything else. A class this file
+ * does not name defaults to `claude` in `providerFor` below, which is every class the
+ * policy shipped with today except `master` and `plan`.
+ */
+export type Provider = 'codex' | 'claude';
+
 export interface ClassSpec {
   model: string;
   effort: 'low' | 'medium' | 'high';
   maxContext: number;
   maxTurns: number;
+  /** Data-driven per P3.2. Missing on an older policy fixture reads as `claude`. */
+  provider?: Provider;
+}
+
+/**
+ * Aaron-set budgets the Governor queues against and never silently exceeds. Missing
+ * entirely (an older fixture, or a policy file this stream's field has not reached yet)
+ * reads as no cap at all, which is the same "unset means unlimited" shape `priceFor`
+ * already uses for a tier nobody priced -- a guess wearing the policy's authority is
+ * worse than an honest absence.
+ */
+export interface GovernorBudget {
+  dailyUsd: number;
+  usdPerRun: Record<string, number>;
 }
 
 export interface Price {
@@ -38,6 +60,7 @@ export interface Policy {
   classes: Record<string, ClassSpec>;
   brief_tiers: Record<string, string>;
   subagents: Record<string, string>;
+  governor?: GovernorBudget;
 }
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -145,6 +168,24 @@ export function fallbackFor(alias: string, path?: string): string[] {
 export function classForSubagent(subagentType: string, path?: string): string {
   const table = loadPolicy(path).subagents;
   return table[subagentType] ?? table['default'] ?? 'research';
+}
+
+/**
+ * Which provider a class reasons on, read from the file rather than a map hardcoded in
+ * TypeScript (P3.2). A name nobody declared throws, same as `classFor`: guessing a
+ * provider would carry the policy's authority for a class the policy never named.
+ */
+export function providerFor(name: string, path?: string): Provider {
+  return classFor(name, path).provider ?? 'claude';
+}
+
+/**
+ * The Governor's budget block: an Aaron-set daily fleet cap and per-class ceilings. A
+ * policy file that carries no `governor` block reads as no cap at all, so an older
+ * fixture keeps behaving exactly as it did before this field existed.
+ */
+export function governorBudget(path?: string): GovernorBudget {
+  return loadPolicy(path).governor ?? { dailyUsd: Number.POSITIVE_INFINITY, usdPerRun: {} };
 }
 
 /**
