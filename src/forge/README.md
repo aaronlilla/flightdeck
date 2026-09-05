@@ -10,7 +10,7 @@ The successor's environment is the parent's, minus a fixed set. `worker.ts` copi
 
 ## What the launcher refuses before a run starts
 
-A brief with an empty condition never launches: "the condition is empty, so the goal has no way to end." Neither does one over the 4000 character limit, which would otherwise get silently truncated instead of failing loudly. A launch is also refused while a `claude login` is in flight on the account, since "starting now races the credential this worker is about to use," and while the kill switch is engaged. A brief that opens a websocket Monitor is refused outright too: "a queued event kills a `-p` process mid tool call and a worker has no console to watch."
+`checkLaunch` refuses an empty condition: "the condition is empty, so the goal has no way to end." In practice `forge run` never hits that branch, since it substitutes a default condition text before calling `checkLaunch`; the check only fires when something calls `checkLaunch` directly. A condition over the 4000 character limit is refused for real, so it can't get silently truncated instead of failing loudly. A launch is also refused while a `claude login` is in flight on the account, since "starting now races the credential this worker is about to use," and while the kill switch is engaged. A brief that opens a websocket Monitor is refused outright too: "a queued event kills a `-p` process mid tool call and a worker has no console to watch." `forge run` also refuses before any of this, at argument parsing, when `maxContext` or `maxTurns` doesn't parse: a NaN ceiling never fires.
 
 ## The kill switch
 
@@ -18,7 +18,7 @@ A brief with an empty condition never launches: "the condition is empty, so the 
 
 ## How a worker is spoken to
 
-Two channels exist for two situations. An ordinary message to a running worker gets queued in a per-run inbox and rides along as `additionalContext` on that worker's next tool call. It is never delivered by interrupting the worker, and never denied, "because turning it into a refusal would make telling a worker something an act of stopping it." A message sent while the worker is idle between tool calls just waits for the next one.
+Two channels exist for two situations. An ordinary message to a running worker gets queued in a per-run inbox and rides along as `additionalContext` on that worker's next tool call. It is never delivered by interrupting the worker, and never denied: "a message is information, and turning it into a refusal would make telling a worker something an act of stopping it." A message sent while the worker is idle between tool calls just waits for the next one.
 
 A question works differently. A worker cannot block on a prompt, so when one is raised, it is intercepted before it renders, written to a keyed inbox entry, and the run parks with its work committed and its lane released. An ordinary question, the kind `forge_ask` raises, is keyed on its goal, run, and action target together, so it gets its own entry even when another run asks the same words. A `blocker` ask, the kind `drift.ts` raises when a branch can no longer merge cleanly against its base or its mergeable state cannot be read at all, is keyed on wording alone, so every run stuck behind the same base shares one entry instead of one each. Answering an entry queues the resume text into the goal's own inbox (falling back to the run's, when an ask recorded no goal) and, when the same process still holds the live session, resumes it in place.
 
