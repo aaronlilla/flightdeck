@@ -184,6 +184,11 @@ export const FORGE_EVENT_NAMES = [
   // `warden.parked`'s model-mismatch park even though both use the same `run.parked`
   // liveness fold, so a reader can tell a cap from a mismatch without inspecting `reason`.
   'result.usage', 'burn.mismatch', 'governor.parked',
+  // P4.7/I4: the Council rules library's own verdict, once wired into the worker's
+  // PreToolUse hook -- a Bash or Edit/Write call the rules library refused, distinct
+  // from `permission.denied` (a park or the context ceiling) so a reader can tell a
+  // policy refusal from a liveness one without inspecting `reason`.
+  'rule.denied',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];

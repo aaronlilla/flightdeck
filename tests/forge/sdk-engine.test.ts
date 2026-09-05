@@ -1124,3 +1124,67 @@ describe('F5: forge_done wins over a ceiling reached on its own closing message'
       .toBe(true);
   });
 });
+
+describe('P4.7/I4: the Council rules library runs on every Bash and Edit/Write PreToolUse call', () => {
+  it('denies a git push to main in a controlled repo, with the gitflow reason, and journals rule.denied', async () => {
+    const parked = new Map<string, string>();
+    const journal = new Journal(journalPath);
+    const inbox = new Inbox(join(home, 'inbox-rules-gitflow'));
+    const hook = buildPreToolUseHook({
+      run: 'r1', goal: 'r1', parked, journal, inbox, deliverVia: 'hook',
+      repoContext: { branch: 'main', controlled: true },
+    });
+
+    const verdict = await hook({ toolName: 'Bash', input: { command: 'git push origin main' }, toolUseId: 'tu-1' });
+
+    expect(verdict.decision).toBe('deny');
+    expect(verdict.reason).toMatch(/controlled-code repo/i);
+    journal.close();
+    const state = replay(journalPath);
+    expect(state.events.some((e) => e.event === 'rule.denied' && e.run === 'r1'
+      && e['rule'] === 'gitflow')).toBe(true);
+  });
+
+  it('denies an Edit whose written text carries a Co-Authored-By: Claude trailer, with the authorship reason', async () => {
+    const parked = new Map<string, string>();
+    const journal = new Journal(journalPath);
+    const inbox = new Inbox(join(home, 'inbox-rules-authorship'));
+    const hook = buildPreToolUseHook({ run: 'r2', goal: 'r2', parked, journal, inbox, deliverVia: 'hook' });
+
+    const verdict = await hook({
+      toolName: 'Edit',
+      input: { file_path: '/tmp/COMMIT_EDITMSG', new_string: 'fix the thing\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n' },
+      toolUseId: 'tu-2',
+    });
+
+    expect(verdict.decision).toBe('deny');
+    expect(verdict.reason).toMatch(/authorship/i);
+    journal.close();
+    const state = replay(journalPath);
+    expect(state.events.some((e) => e.event === 'rule.denied' && e.run === 'r2'
+      && e['rule'] === 'authorship')).toBe(true);
+  });
+
+  it('allows an ordinary read-only Bash call through unchanged', async () => {
+    const parked = new Map<string, string>();
+    const journal = new Journal(journalPath);
+    const inbox = new Inbox(join(home, 'inbox-rules-allow'));
+    const hook = buildPreToolUseHook({ run: 'r3', goal: 'r3', parked, journal, inbox, deliverVia: 'hook' });
+
+    const verdict = await hook({ toolName: 'Bash', input: { command: 'npm test' }, toolUseId: 'tu-3' });
+
+    expect(verdict.decision).toBeUndefined();
+  });
+
+  it('a park in force still denies first -- the rules check never overrides an existing park', async () => {
+    const parked = new Map<string, string>([['r4', 'some-key']]);
+    const journal = new Journal(journalPath);
+    const inbox = new Inbox(join(home, 'inbox-rules-park-priority'));
+    const hook = buildPreToolUseHook({ run: 'r4', goal: 'r4', parked, journal, inbox, deliverVia: 'hook' });
+
+    const verdict = await hook({ toolName: 'Bash', input: { command: 'npm test' }, toolUseId: 'tu-4' });
+
+    expect(verdict.decision).toBe('deny');
+    expect(verdict.reason).toContain('some-key');
+  });
+});
