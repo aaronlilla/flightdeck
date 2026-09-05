@@ -123,6 +123,22 @@ describe('forge council', () => {
     expect(state.events.some((e) => e.event === 'council.attested')).toBe(true);
   });
 
+  it('accepts --cwd (and --base) alongside --repo/--pr without breaking a passing round', async () => {
+    process.env['FORGE_COUNCIL_REPOS'] = REPO;
+    const reasonerQueryFn = fakeQueryByModel({
+      [LENS_MODEL]: JSON.stringify({ findings: [] }),
+      [JUDGE_MODEL]: JSON.stringify({ verdict: 'PASS', decidingFindings: [] }),
+    });
+
+    const result = await forge(
+      ['council', '--repo', REPO, '--pr', String(PR), '--cwd', '/checkout', '--base', 'develop'],
+      { councilGh: fakeGh([smallSnapshot(), smallSnapshot()]), reasonerQueryFn },
+    );
+
+    expect(result.code).toBe(0);
+    expect(result.lines.join(' ')).toMatch(/verdict: PASS/);
+  });
+
   it('a judge FIX FIRST yields exit 1 and no attestation file', async () => {
     process.env['FORGE_COUNCIL_REPOS'] = REPO;
     const reasonerQueryFn = fakeQueryByModel({
