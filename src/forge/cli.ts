@@ -35,6 +35,8 @@ import { readLoginLock } from './credential-horizon.js';
 import { buildBurnLedger, checkBudget } from './governor.js';
 import { reconcileBurnOnce } from './burn-reconcile.js';
 import { planIntakeWrites } from './intake/dryRun.js';
+import { createJiraFeed, createJiraWriteClient, probeJira, type JiraWriteClient } from './intake/jira.js';
+import { runJiraHandoff } from './intake/jiraHandoff.js';
 import { runIntakeOnce } from './intake/once.js';
 import type { FakePollFeed } from './intake/poller.js';
 import { planFromPacket } from './intake/planner.js';
@@ -94,12 +96,27 @@ export interface ForgeDeps {
   /** Overrides `forge council`/`forge gate`'s own `gh` reader and writer. Every specimen
    *  injects a fake here; production leaves this unset and gets `REAL_GH`. */
   councilGh?: GhReader & GhWriter;
+  /** Forge Jira stream: overrides the `fetch` every real Jira call (J1, J3, J4) is built
+   *  on. Every specimen injects a fake here; production leaves this unset and gets the
+   *  global `fetch` Node already provides. */
+  fetchFn?: typeof fetch;
+  /** Overrides `forge gate --merge`'s Jira write client (J3). Production builds one from
+   *  `FORGE_JIRA_SITE`/`FORGE_JIRA_EMAIL`/`FORGE_JIRA_TOKEN` when all three are set;
+   *  every specimen injects a fake here instead. */
+  jiraWrite?: JiraWriteClient;
 }
 
 /** Item 4, 2026-09-05: how old a lane's own file has to be, with no live registry row
  *  behind it, before `forge clear --stale` deletes it and `forge status` stops showing
  *  it by default. */
 const STALE_LANE_MS = 24 * 3_600_000;
+
+/**
+ * Forge Jira stream: the three variables a real Jira poll or probe needs, all or
+ * nothing. `FORGE_JIRA_JQL`, `FORGE_JIRA_QA_ACCOUNT` and `FORGE_JIRA_QA_TRANSITION` are
+ * each optional on their own and read where they are used, never here.
+ */
+const JIRA_ENV_VARS = ['FORGE_JIRA_SITE', 'FORGE_JIRA_EMAIL', 'FORGE_JIRA_TOKEN'] as const;
 
 /**
  * The fleet's process table for `status` and `up`, read through `deps.processes` when a
@@ -866,13 +883,42 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
     }
 
     case 'intake': {
+      // J4: the cheapest possible proof a Jira credential works, run the moment it
+      // exists. Prints exactly displayName and accountId on success; on failure, the
+      // HTTP status and nothing else.
+      if (rest.includes('--probe-jira')) {
+        const missing = JIRA_ENV_VARS.filter((name) => !process.env[name]);
+        if (missing.length) {
+          return { code: 1, lines: [`probe failed: missing ${missing.join(', ')}`] };
+        }
+        const probe = await probeJira({
+          site: process.env['FORGE_JIRA_SITE']!, email: process.env['FORGE_JIRA_EMAIL']!,
+          token: process.env['FORGE_JIRA_TOKEN']!, fetchFn: deps.fetchFn,
+        });
+        if (!probe.ok) return { code: 1, lines: [`probe failed: ${probe.status}`] };
+        return { code: 0, lines: [probe.displayName ?? '', probe.accountId ?? ''] };
+      }
+
       if (rest.includes('--once')) {
         // P4.7/I5: `forge intake --once`, exported so the console's router (cut 2) calls
-        // the same function rather than a second copy of this wiring. Production passes
-        // no feeds -- no real per-source client exists yet, decision 1's Jira token
-        // included -- so a real run polls zero sources and says so, honestly, rather
-        // than fabricating a client this codebase has not built.
-        const feeds = deps.intakeFeeds ?? [];
+        // the same function rather than a second copy of this wiring. J1 wires a real
+        // Jira feed once FORGE_JIRA_SITE/EMAIL/TOKEN are all set; every other source
+        // still has no real client, so a real run without a specimen's `intakeFeeds`
+        // override polls Jira alone, or nothing at all, and says so honestly rather than
+        // fabricating a client this codebase has not built.
+        let missingJiraLine: string | undefined;
+        const feeds = deps.intakeFeeds ?? (() => {
+          const missing = JIRA_ENV_VARS.filter((name) => !process.env[name]);
+          if (missing.length) {
+            missingJiraLine = `jira not configured: missing ${missing.join(', ')}`;
+            return [];
+          }
+          return [createJiraFeed({
+            site: process.env['FORGE_JIRA_SITE']!, email: process.env['FORGE_JIRA_EMAIL']!,
+            token: process.env['FORGE_JIRA_TOKEN']!, jql: process.env['FORGE_JIRA_JQL'],
+            fetchFn: deps.fetchFn,
+          })];
+        })();
         const intakeJournal = new Journal(journalPath());
         let result: Awaited<ReturnType<typeof runIntakeOnce>>;
         let plannedLine: string | undefined;
@@ -918,6 +964,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
               + `${result.sourcesPolled.join(', ') || '(none configured)'}`,
             `observed ${result.observed}, wrote ${result.packetsWritten} packet(s), `
               + `raised ${result.intentsRaised} external intent(s)`,
+            ...(missingJiraLine ? [missingJiraLine] : []),
             ...(plannedLine ? [plannedLine] : []),
           ],
         };
@@ -1220,12 +1267,41 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           ...(write.state === 'unknown' ? { exitCode: mergeResult.returncode, stderr: mergeStderr } : {}),
         });
 
-        return {
-          code: write.state === 'complete' ? 0 : 1,
-          lines: [write.state === 'complete'
-            ? `merge ${write.state}: ${repo}#${pr}`
-            : `merge ${write.state}: ${repo}#${pr} (exit ${mergeResult.returncode}): ${mergeStderr}`],
-        };
+        const lines = [write.state === 'complete'
+          ? `merge ${write.state}: ${repo}#${pr}`
+          : `merge ${write.state}: ${repo}#${pr} (exit ${mergeResult.returncode}): ${mergeStderr}`];
+
+        // J3: once the merge itself is complete and the handoff names a ticket, post
+        // the QA handoff to Jira. A Jira failure never fails the merge -- the row above
+        // already stands as `complete` -- so every branch here only ever adds lines and
+        // journal rows, never changes `code`.
+        if (write.state === 'complete' && haiping.ticket) {
+          const missingJira = JIRA_ENV_VARS.filter((name) => !process.env[name]);
+          if (missingJira.length) {
+            gateJournal.append({
+              event: 'jira.skipped', actor: 'council', ticket: haiping.ticket,
+              reason: `missing ${missingJira.join(', ')}`,
+            });
+            lines.push(`jira skipped: missing ${missingJira.join(', ')}`);
+          } else {
+            const jiraClient = deps.jiraWrite ?? createJiraWriteClient({
+              site: process.env['FORGE_JIRA_SITE']!, email: process.env['FORGE_JIRA_EMAIL']!,
+              token: process.env['FORGE_JIRA_TOKEN']!, fetchFn: deps.fetchFn,
+            });
+            const prUrl = `https://github.com/${repo}/pull/${pr}`;
+            const jiraLines = await runJiraHandoff(
+              jiraClient, haiping, snapshot.headSha, prUrl,
+              {
+                qaAccountId: process.env['FORGE_JIRA_QA_ACCOUNT'],
+                qaTransitionId: process.env['FORGE_JIRA_QA_TRANSITION'],
+              },
+              (event) => gateJournal.append({ actor: 'council', ...event }),
+            );
+            lines.push(...jiraLines);
+          }
+        }
+
+        return { code: write.state === 'complete' ? 0 : 1, lines };
       } finally {
         gateJournal.close();
       }

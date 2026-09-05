@@ -22,6 +22,9 @@ beforeEach(() => {
   process.env['FORGE_HOME'] = home;
   delete process.env['FORGE_COUNCIL_REPOS'];
   delete process.env['FORGE_COUNCIL_AUTOMERGE'];
+  for (const name of ['FORGE_JIRA_SITE', 'FORGE_JIRA_EMAIL', 'FORGE_JIRA_TOKEN', 'FORGE_JIRA_QA_ACCOUNT', 'FORGE_JIRA_QA_TRANSITION']) {
+    delete process.env[name];
+  }
 });
 
 const REPO = 'acme/widgets';
@@ -423,5 +426,89 @@ describe('forge gate: base moved also refuses', () => {
       councilGh: fakeGh([smallSnapshot({ body: bodyWithHandoff(), baseSha: 'base-2' })]),
     });
     expect(result.code).toBe(1);
+  });
+});
+
+describe('Forge Jira stream: J3, the handoff writes at forge gate --merge', () => {
+  it('without FORGE_JIRA_* set, journals one jira.skipped row naming the missing variables and stays exit 0', async () => {
+    await attestPass();
+    process.env['FORGE_COUNCIL_AUTOMERGE'] = REPO;
+    const result = await forge(['gate', '--repo', REPO, '--pr', String(PR), '--merge'], {
+      councilGh: fakeGh([smallSnapshot({ body: bodyWithHandoff() })], {
+        async viewPrState() { return { prState: 'MERGED' }; },
+      }),
+    });
+
+    expect(result.code).toBe(0);
+    expect(result.lines.join(' ')).toMatch(/jira skipped/);
+    const state = replay(join(home, 'fleet.jsonl'));
+    const skipped = state.events.find((e) => e.event === 'jira.skipped');
+    expect(skipped).toBeTruthy();
+    expect(String(skipped?.['reason'])).toContain('FORGE_JIRA_SITE');
+  });
+
+  it('with the environment present, runs the three handoff writes in order after the merge completes', async () => {
+    await attestPass();
+    process.env['FORGE_COUNCIL_AUTOMERGE'] = REPO;
+    process.env['FORGE_JIRA_SITE'] = 'https://acme.atlassian.net';
+    process.env['FORGE_JIRA_EMAIL'] = 'bot@acme.test';
+    process.env['FORGE_JIRA_TOKEN'] = 'a-real-looking-secret-token-value-123456';
+    process.env['FORGE_JIRA_QA_ACCOUNT'] = 'acc-1';
+    process.env['FORGE_JIRA_QA_TRANSITION'] = '31';
+
+    const calls: string[] = [];
+    const result = await forge(['gate', '--repo', REPO, '--pr', String(PR), '--merge'], {
+      councilGh: fakeGh([smallSnapshot({ body: bodyWithHandoff() })], {
+        async viewPrState() { return { prState: 'MERGED' }; },
+      }),
+      jiraWrite: {
+        async comment(key) { calls.push(`comment:${key}`); return { ok: true }; },
+        async assign(key, accountId) { calls.push(`assign:${key}:${accountId}`); return { ok: true }; },
+        async transition(key, transitionId) { calls.push(`transition:${key}:${transitionId}`); return { ok: true }; },
+      },
+    });
+
+    expect(result.code).toBe(0);
+    expect(calls).toEqual(['comment:BBZ-1', 'assign:BBZ-1:acc-1', 'transition:BBZ-1:31']);
+
+    const state = replay(join(home, 'fleet.jsonl'));
+    const rows = state.events.filter((e) => e.event.startsWith('external.'));
+    expect(rows.filter((e) => e['kind'] === 'jira-comment').map((e) => e.event))
+      .toEqual(['external.intent', 'external.call', 'external.complete']);
+    expect(rows.filter((e) => e['kind'] === 'jira-assign').map((e) => e.event))
+      .toEqual(['external.intent', 'external.call', 'external.complete']);
+    expect(rows.filter((e) => e['kind'] === 'jira-transition').map((e) => e.event))
+      .toEqual(['external.intent', 'external.call', 'external.complete']);
+    const mergeRows = rows.filter((e) => e['kind'] === 'pr-merge').map((e) => e.event);
+    expect(mergeRows).toEqual(['external.intent', 'external.call', 'external.complete']);
+  });
+
+  it('a failing comment call never fails the merge: the merge row stays complete and exit stays 0', async () => {
+    await attestPass();
+    process.env['FORGE_COUNCIL_AUTOMERGE'] = REPO;
+    process.env['FORGE_JIRA_SITE'] = 'https://acme.atlassian.net';
+    process.env['FORGE_JIRA_EMAIL'] = 'bot@acme.test';
+    process.env['FORGE_JIRA_TOKEN'] = 'a-real-looking-secret-token-value-123456';
+
+    const result = await forge(['gate', '--repo', REPO, '--pr', String(PR), '--merge'], {
+      councilGh: fakeGh([smallSnapshot({ body: bodyWithHandoff() })], {
+        async viewPrState() { return { prState: 'MERGED' }; },
+      }),
+      jiraWrite: {
+        async comment() { return { ok: false, status: 500, body: 'server error' }; },
+        async assign() { return { ok: true }; },
+        async transition() { return { ok: true }; },
+      },
+    });
+
+    expect(result.code).toBe(0);
+    expect(result.lines.join(' ')).toMatch(/merge complete/);
+    expect(result.lines.join(' ')).toMatch(/jira-comment: unknown/);
+
+    const state = replay(join(home, 'fleet.jsonl'));
+    const mergeRows = state.events.filter((e) => e.event.startsWith('external.') && e['kind'] === 'pr-merge');
+    expect(mergeRows.at(-1)?.event).toBe('external.complete');
+    const commentRows = state.events.filter((e) => e.event.startsWith('external.') && e['kind'] === 'jira-comment');
+    expect(commentRows.at(-1)?.event).toBe('external.unknown');
   });
 });
