@@ -857,6 +857,52 @@ describe('B.3.3: the ceiling fires inside the turn', () => {
   });
 });
 
+describe('P4.7/I8: the kill switch denies a tool call, riding the handoff request', () => {
+  it('denies with the handoff request as additionalContext, journaling why', async () => {
+    const parked = new Map<string, string>();
+    const journal = new Journal(journalPath);
+    const inbox = new Inbox(join(home, 'inbox-killswitch'));
+    const hook = buildPreToolUseHook({
+      run: 'kill-run', goal: 'kill-run', parked, journal, inbox, deliverVia: 'hook',
+      killSwitchHit: () => true,
+    });
+
+    const verdict = await hook({ toolName: 'Bash', input: { command: 'npm test' }, toolUseId: 'tu-1' });
+
+    expect(verdict.decision).toBe('deny');
+    expect(verdict.additionalContext).toContain('CONTEXT CEILING REACHED');
+    journal.close();
+    const state = replay(journalPath);
+    expect(state.events.some((e) => e.event === 'permission.denied' && e.run === 'kill-run'
+      && String(e['reason'] ?? '').includes('kill switch'))).toBe(true);
+  });
+
+  it('the falsifier: an unengaged kill switch denies nothing on its own', async () => {
+    const parked = new Map<string, string>();
+    const journal = new Journal(journalPath);
+    const inbox = new Inbox(join(home, 'inbox-killswitch-off'));
+    const hook = buildPreToolUseHook({
+      run: 'ordinary-run', goal: 'ordinary-run', parked, journal, inbox, deliverVia: 'hook',
+      killSwitchHit: () => false,
+    });
+    const verdict = await hook({ toolName: 'Bash', input: {}, toolUseId: 'tu-1' });
+    expect(verdict.decision).toBeUndefined();
+  });
+
+  it('a park already in force still wins over an engaged kill switch', async () => {
+    const parked = new Map<string, string>([['both-run', 'some-key']]);
+    const journal = new Journal(journalPath);
+    const inbox = new Inbox(join(home, 'inbox-killswitch-park'));
+    const hook = buildPreToolUseHook({
+      run: 'both-run', goal: 'both-run', parked, journal, inbox, deliverVia: 'hook',
+      killSwitchHit: () => true,
+    });
+    const verdict = await hook({ toolName: 'Bash', input: {}, toolUseId: 'tu-1' });
+    expect(verdict.reason).toContain('some-key');
+    expect(verdict.reason).not.toContain('kill switch');
+  });
+});
+
 describe('journaling a tool call as it happens', () => {
   it('writes tool.start and tool.end so a run\'s currentTool can be read back from the journal', async () => {
     const { fn } = fakeQuery([

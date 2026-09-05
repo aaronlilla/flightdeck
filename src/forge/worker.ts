@@ -160,10 +160,11 @@ export interface WorkerConfig {
    *  never engaged. `forge run`'s own wiring in cli.ts passes the real kill switch in; a
    *  specimen that does not care about it needs no fake. */
   killSwitch?: () => boolean;
-  /** P4.7/I3: the Governor's per-turn conformance check parks through this. Undefined
-   *  means no actuator is wired -- a mismatch is still journaled by `checkConformance`'s
-   *  own event, but nothing acts on it, the same "correct unit, no caller" gap the
-   *  Governor's own Status named. */
+  /** P4.7/I3, wired live by P4.7/I9: the Governor's per-turn conformance check parks
+   *  through this. `forge run` always builds a real `WardenActuator` and passes it here;
+   *  undefined only in a specimen with nothing to say about parking. Either way a
+   *  mismatch is journaled by `checkConformance`'s own event -- an actuator only decides
+   *  whether anything acts on it. */
   actuator?: Actuator;
   /** P4.7/I3: pass one gate to share it across more than one run launched in the same
    *  process; a `Worker` with none injected builds its own. Either way the gate is
@@ -345,7 +346,12 @@ export class Worker {
         let ceilingHit = false;
         let finished = false;
         let parkedWithoutAnswer = false;
+        let killedWhileParked = false;
         let conformanceMismatch = false;
+        // P4.7/I8: true once the kill switch is seen mid-segment, so the chain parks with
+        // a packet and exits 2 rather than treating the segment as a plain stop or
+        // continuing to a successor the way an ordinary ceiling hit would.
+        let killedMidTurn = false;
         let pendingTurns = session.turns;
         // A segment that ends with neither `done` nor the ceiling hit is not necessarily a
         // stop: the model may have hit an `AskUserQuestion` or `forge_ask` and parked (F1).
@@ -389,8 +395,17 @@ export class Worker {
               ceilingHit = true;
               break;
             }
+            // P4.7/I8: checked after done and the ceiling, so a turn that already
+            // finished or already needs a handoff for its own reason is not relabelled a
+            // kill; checked every turn, not only once, since `forge stop --all` can land
+            // between any two turns of a long segment.
+            if (this.config.killSwitch?.()) {
+              killedMidTurn = true;
+              break;
+            }
           }
           if (conformanceMismatch) break;
+          if (killedMidTurn) break;
           if (finished || ceilingHit) break;
 
           const key = this.engine.parkedOn?.(runName);
@@ -399,6 +414,7 @@ export class Worker {
           const outcome = await this.waitForAnswer(key);
           if (outcome !== 'answered') {
             parkedWithoutAnswer = true;
+            killedWhileParked = outcome === 'killed';
             break;
           }
           this.engine.clearPark?.(runName);
@@ -417,6 +433,29 @@ export class Worker {
         }
 
         if (parkedWithoutAnswer) {
+          // P4.7/I8: a park whose wait ended because `forge stop --all` engaged the kill
+          // switch, rather than an answer or a SIGINT, is asked for a packet exactly as a
+          // ceiling handoff is, and journals its own `run.parked` carrying it -- never
+          // just the bare `run.finished` a plain unanswered park leaves behind, which is
+          // silent on whether anything survives the stop.
+          if (killedWhileParked) {
+            const packet = await this.requestHandoff(runName, session, journal);
+            journal.append({
+              event: 'run.parked', run: runName, actor: 'runner',
+              reason: 'kill switch engaged while parked', packet,
+            });
+          }
+          journal.append({ event: 'run.finished', run: runName, actor: 'runner', verdict: 'parked' });
+          verdict = 'parked';
+          break;
+        }
+
+        if (killedMidTurn) {
+          const packet = await this.requestHandoff(runName, session, journal);
+          journal.append({
+            event: 'run.parked', run: runName, actor: 'runner',
+            reason: 'kill switch engaged', packet,
+          });
           journal.append({ event: 'run.finished', run: runName, actor: 'runner', verdict: 'parked' });
           verdict = 'parked';
           break;

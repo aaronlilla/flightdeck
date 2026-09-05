@@ -217,7 +217,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
 
       const sharedJournalCache = new JournalCache();
       const server = new ForgeServer({
-        lanes, inbox, journalPath: journalPath(), journalCache: sharedJournalCache,
+        lanes, inbox, journalPath: journalPath(), journalCache: sharedJournalCache, registry,
         stuck: () => liveness.stuck(),
         fleet: () => {
           const read = watchedProcesses();
@@ -408,6 +408,16 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       lanes.put(slug, { column: 'forge', started: Date.now(), owner: 'forge' });
       const engine = deps.engine ?? new SdkEngine({
         journalPath: journalPath(), inboxDir: inboxDir(), gotchasDir: gotchasDir(),
+        killSwitch: () => readKillSwitch(killSwitchPath()).engaged,
+      });
+      // P4.7/I9: the real actuator, so a model-mismatch turn actually parks (writes the
+      // park record the PreToolUse hook checks on this run's own next tool call) rather
+      // than only journaling `governor.parked`/`warden.parked` with nothing acting on it.
+      // Built unconditionally, including under a fake engine a specimen injects: I9's own
+      // falsifier is a specimen that gets this wiring only by passing an actuator itself.
+      const actuatorJournal = new Journal(journalPath());
+      const actuator = new WardenActuator({
+        journal: actuatorJournal, journalPath: journalPath(), registry, lanes,
       });
       const worker = new Worker({
         run: slug,
@@ -416,6 +426,11 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         cwd: process.cwd(),
         journalPath: journalPath(),
         engine,
+        actuator,
+        // P4.7/I8: the same kill switch `forge stop --all` engages, consulted on every
+        // poll of a run parked on an ask (F1) so a stop reaches a run waiting on a
+        // person, not only one still taking turns.
+        killSwitch: () => readKillSwitch(killSwitchPath()).engaged,
         onSessionStarted: (_run, sessionId, model) => registry.setSession(slug, sessionId, model),
         ...(deps.exec ? { exec: deps.exec } : {}),
         ...(maxContext !== undefined ? { maxContext } : {}),
@@ -429,6 +444,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         // engine's SDK child process is exactly the cleanup this process must not exit
         // ahead of, or the child outlives the `forge run` that opened it.
         await engine.close?.();
+        actuatorJournal.close();
         registry.remove(slug);
       }
       const started = result.sessions[0];
@@ -509,10 +525,13 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         return { code: 2, lines: ['forge stop --all is the only form; it parks everything'] };
       }
       const reason = rest.filter((word) => word !== '--all').join(' ') || 'stopped by hand';
-      const stopped = await new Fleet(lanes, journalPath(), killSwitchPath()).stopAll(reason);
+      const stopRegistry = new Registry(registryDir());
+      const { stopped, stale } = await new Fleet(
+        lanes, stopRegistry, journalPath(), killSwitchPath(),
+      ).stopAll(reason);
       const killSwitchLine = 'the kill switch is set: no new launch starts until '
         + 'forge clear --all';
-      if (!stopped.length) {
+      if (!stopped.length && !stale.length) {
         return { code: 0, lines: ['nothing was running', killSwitchLine] };
       }
       const reachedCount = stopped.filter((lane) => lane.reached).length;
@@ -520,8 +539,10 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         code: 0,
         lines: [
           `parked ${stopped.length} run(s) with a handoff; reached ${reachedCount}, `
-            + `unreachable ${stopped.length - reachedCount}; ${killSwitchLine}`,
+            + `unreachable ${stopped.length - reachedCount}`
+            + `${stale.length ? `, ${stale.length} stale` : ''}; ${killSwitchLine}`,
           ...stopped.map((lane) => `  ${lane.reached ? 'reached' : 'unreachable'}  ${lane.slug}`),
+          ...stale.map((goal) => `  stale       ${goal}`),
         ],
       };
     }

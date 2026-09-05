@@ -327,6 +327,14 @@ export interface PreToolUseHookDeps {
    * model does not need a whole extra turn just to be told to write the packet.
    */
   ceilingHit?: () => boolean;
+  /**
+   * P4.7/I8: true once `forge stop --all` has engaged the kill switch. Checked right
+   * after the park and before the context ceiling, since an operator-initiated stop is a
+   * harder wall than a ceiling the run itself is approaching. Undefined means no caller
+   * wired it -- a real `forge run` always does; a specimen with no stopping concern needs
+   * no fake.
+   */
+  killSwitchHit?: () => boolean;
   deliverVia: 'hook' | 'stream';
   onDelivered?: (ids: string[], text: string) => void;
   /**
@@ -390,6 +398,17 @@ export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
       return {
         decision: 'deny',
         reason: `parked on ${key}: this run takes no further tool call until that question is answered`,
+      };
+    }
+    if (deps.killSwitchHit?.()) {
+      deps.journal.append({
+        event: 'permission.denied', run: deps.run, actor: 'runner', tool: call.toolName,
+        reason: 'the fleet kill switch is engaged',
+      });
+      return {
+        decision: 'deny',
+        reason: 'forge stop --all engaged the kill switch: write the handoff packet instead of another tool call',
+        additionalContext: HANDOFF_REQUEST,
       };
     }
     if (deps.ceilingHit?.()) {
@@ -561,6 +580,12 @@ export interface SdkEngineDeps {
    * overrides this rather than the exec call underneath it.
    */
   checkDrift?: (cwd: string) => Promise<Mergeable>;
+  /**
+   * P4.7/I8: read fresh on every tool call by the PreToolUse hook. Undefined means no
+   * caller wired the kill switch to this engine -- `forge run` always does; a specimen
+   * with nothing to say about stopping needs no fake.
+   */
+  killSwitch?: () => boolean;
 }
 
 async function ghDriftCheck(cwd: string): Promise<Mergeable> {
@@ -689,6 +714,7 @@ export class SdkEngine implements EngineLike {
       onToolCall: buildPreToolUseHook({
         run: request.run, goal, journal, parked: this.parked, inbox, deliverVia: this.deliverVia,
         ceilingHit: () => ceilingHit,
+        killSwitchHit: this.deps.killSwitch,
         onDelivered: (ids, text) => { pendingAck = { ids, text }; },
       }),
     };

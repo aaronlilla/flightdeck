@@ -16,6 +16,7 @@ import { forge } from '../../src/forge/cli.js';
 import { Inbox } from '../../src/forge/inbox.js';
 import { replayEvents } from '../../src/forge/contracts.js';
 import { replay } from '../../src/forge/journal.js';
+import { Registry } from '../../src/forge/registry.js';
 import { RunInbox } from '../../src/forge/runinbox.js';
 import { Lanes } from '../../src/forge/supervisor.js';
 import type { SessionRequest } from '../../src/forge/worker.js';
@@ -33,11 +34,24 @@ beforeEach(() => {
 
 const lanes = () => new Lanes(join(home, 'lanes'));
 const journal = () => join(home, 'fleet.jsonl');
+const registry = () => new Registry(join(home, 'registry'));
+
+/** Admits a live registry row for `goal`, backed by this test process's own pid: what
+ *  `forge stop --all` (P4.7/I8) actually reads to decide a run is live, never a lane
+ *  record's own verdict. Each goal gets its own cwd, since the registry refuses a second
+ *  live admission sharing a working tree. */
+function admitLive(goal: string): void {
+  registry().admit({
+    goal, cwd: join(home, goal), briefPath: join(home, `${goal}.md`), pid: process.pid,
+  });
+}
 
 describe('forge stop --all', () => {
-  it('parks every run and names the count, without claiming a live session was stopped', async () => {
+  it('parks every live run and names the count, without claiming a live session was stopped', async () => {
     lanes().put('alpha', { column: 'c', session_id: 's1', started: Date.now() });
     lanes().put('beta', { column: 'd', session_id: 's2', started: Date.now() });
+    admitLive('alpha');
+    admitLive('beta');
 
     const result = await forge(['stop', '--all']);
 
@@ -46,24 +60,43 @@ describe('forge stop --all', () => {
     // The falsifier this closes: no wording may claim spend already stopped while a
     // session could still be mid-turn.
     expect(result.lines.join(' ')).not.toMatch(/all spend has stopped/);
-    // B.3.2: this process holds no live session for either lane (a separate `forge stop`
-    // invocation never does), so both must be named unreachable, never reached.
-    expect(result.lines[0]).toMatch(/reached 0, unreachable 2/);
-    expect(result.lines.join(' ')).toMatch(/unreachable {2}alpha/);
-    expect(result.lines.join(' ')).toMatch(/unreachable {2}beta/);
+    // B.3.2/P4.7/I8: this process holds no live session for either run (a separate
+    // `forge stop` invocation never does), so each is contacted through its own
+    // goal-scoped inbox rather than directly. `reached` names whether that write
+    // succeeded, which it does here, not whether the run has actually parked yet.
+    expect(result.lines[0]).toMatch(/reached 2, unreachable 0/);
+    expect(result.lines.join(' ')).toMatch(/reached {2}alpha/);
+    expect(result.lines.join(' ')).toMatch(/reached {2}beta/);
     expect(result.lines.join(' ')).toMatch(/kill switch/i);
-    expect(lanes().get('alpha')?.verdict).toBe('parked');
+  });
+
+  it('P4.7/I8: selects from the registry\'s live rows, never a lane record\'s own verdict', async () => {
+    // The 2026-09-04 C1b failure: a lane file left from a finished chain still says
+    // `verdict: 'done'`, but the goal is genuinely live right now (this test process's own
+    // pid). `forge stop --all` must still reach it, and must list a stale registry row
+    // (a dead pid, no live process behind it any more) separately, never as parked.
+    lanes().put('forge-live-probe', { column: 'forge', verdict: 'done', ended: 1 });
+    admitLive('forge-live-probe');
+    registry().admit({
+      goal: 'morning-run', cwd: join(home, 'morning-run'), briefPath: join(home, 'm.md'), pid: 999_999,
+    });
+
+    const result = await forge(['stop', '--all']);
+
+    expect(result.lines[0]).toMatch(/parked 1 run\(s\)/);
+    expect(result.lines[0]).toMatch(/1 stale/);
+    expect(result.lines.join(' ')).toMatch(/reached {2}forge-live-probe/);
+    expect(result.lines.join(' ')).toMatch(/stale {7}morning-run/);
   });
 
   it('is safe to run twice', async () => {
-    lanes().put('alpha', { column: 'c', session_id: 's1' });
+    admitLive('alpha');
     await forge(['stop', '--all']);
     const again = await forge(['stop', '--all']);
     expect(again.code).toBe(0);
-    expect(again.lines).toEqual([
-      'nothing was running',
-      'the kill switch is set: no new launch starts until forge clear --all',
-    ]);
+    // The registry row survives a stop (only the run itself removes it, on exit), so a
+    // second stop still reaches it rather than reporting nothing was running.
+    expect(again.lines[0]).toMatch(/parked 1 run\(s\)/);
   });
 
   it('says plainly when there was nothing to stop', async () => {
@@ -76,14 +109,14 @@ describe('forge stop --all', () => {
   });
 
   it('refuses a bare stop, so nothing is half-stopped by a typo', async () => {
-    lanes().put('alpha', { column: 'c', session_id: 's1' });
+    admitLive('alpha');
     const result = await forge(['stop']);
     expect(result.code).toBe(2);
-    expect(lanes().get('alpha')?.verdict).toBeNull();
+    expect(replay(journal()).events.some((e) => e.event === 'run.parked')).toBe(false);
   });
 
-  it('journals a handoff request for every run it parked', async () => {
-    lanes().put('alpha', { column: 'c', session_id: 's1' });
+  it('journals a handoff request for every live run it parked', async () => {
+    admitLive('alpha');
     await forge(['stop', '--all']);
     const parked = replay(journal()).events.filter((e) => e.event === 'run.parked');
     expect(parked).toHaveLength(1);
@@ -91,9 +124,10 @@ describe('forge stop --all', () => {
   });
 
   it('carries the reason into the record', async () => {
-    lanes().put('alpha', { column: 'c', session_id: 's1' });
+    admitLive('alpha');
     await forge(['stop', '--all', 'the', 'window', 'is', 'nearly', 'spent']);
-    expect(String(lanes().get('alpha')?.note)).toMatch(/window is nearly spent/);
+    const parked = replay(journal()).events.find((e) => e.event === 'run.parked');
+    expect(String(parked?.['reason'])).toMatch(/window is nearly spent/);
   });
 });
 
@@ -533,6 +567,32 @@ describe('P4.7/I2: CredentialHorizon consulted before every launch', () => {
     const result = await forge(['run', brief], { engine });
 
     expect(result.code).toBe(0);
+  });
+});
+
+describe('P4.7/I9: the conformance park is live on forge run', () => {
+  it('parks and journals when the served model does not match the class, with no actuator injected by the test', async () => {
+    const brief = join(home, 'ok.md');
+    writeFileSync(brief, '# Goal\n\nDo the thing.\n', 'utf8');
+    const engine = {
+      started: [] as SessionRequest[],
+      async run(config: SessionRequest) {
+        engine.started.push(config);
+        // A model this run's class does not ask for: worker.ts's own conformance check
+        // fires on the very turn a served model stops matching, never after N turns.
+        return { sessionId: 's', turns: [{ text: 'first turn', context: 10, model: 'claude-opus-5' }] };
+      },
+    };
+
+    // I9's own falsifier: no `actuator` field exists on ForgeDeps, so this specimen has
+    // no way to inject one -- the park has to come from cli.ts's own wiring or not at all.
+    const result = await forge(['run', brief], { engine });
+
+    expect(result.code).toBe(2);
+    const { events } = replayEvents(readFileSync(journal(), 'utf8'));
+    const parked = events.find((e) => e.event === 'warden.parked' || e.event === 'governor.parked');
+    expect(parked).toBeTruthy();
+    expect(result.lines.join(' ')).toMatch(/parked/);
   });
 });
 

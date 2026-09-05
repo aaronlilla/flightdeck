@@ -29,14 +29,37 @@ import {
   readKillSwitch,
 } from '../../src/forge/supervisor.js';
 import { replay } from '../../src/forge/journal.js';
+import { Registry } from '../../src/forge/registry.js';
+import { RunInbox } from '../../src/forge/runinbox.js';
+import { HANDOFF_REQUEST } from '../../src/forge/worker.js';
 
 let dir: string;
 let lanes: Lanes;
+let registry: Registry;
+
+// A pid this process's own `processAlive` reads as dead, without signalling anything: a
+// pid unlikely to exist reads the same way `processAlive` does for a genuinely finished
+// process, without a real dead process to point at.
+const DEAD_PID = 999_999;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'forge-lanes-'));
+  // `RunInbox` and other paths.ts helpers read FORGE_HOME directly; without this every
+  // specimen that touches a run's own directory would reach this machine's real ~/.forge.
+  process.env['FORGE_HOME'] = dir;
   lanes = new Lanes(join(dir, 'lanes'));
+  registry = new Registry(join(dir, 'registry'));
 });
+
+/** Admits a live registry row for `goal`, backed by this test process's own pid so
+ *  `processAlive` reads it as running. Each goal gets its own `cwd`: the registry refuses
+ *  a second live admission sharing a working tree, and two independent goals in the same
+ *  specimen are not that. */
+function admitLive(goal: string): void {
+  registry.admit({
+    goal, cwd: join(dir, goal), briefPath: join(dir, `${goal}.md`), pid: process.pid,
+  });
+}
 
 describe('the lane record', () => {
   it('carries every field the readers of these files expect', () => {
@@ -177,23 +200,49 @@ describe('the kill switch', () => {
    * Its job is to end all spend, and to end it in a way the work survives: every run
    * parks with a handoff packet, so restarting continues rather than starting over.
    */
-  it('parks every running lane', async () => {
-    lanes.put('alpha', { column: 'c', session_id: 's1' });
-    lanes.put('beta', { column: 'd', session_id: 's2' });
-    const fleet = new Fleet(lanes, join(dir, 'fleet.jsonl'));
+  it('reaches every live run', async () => {
+    admitLive('alpha');
+    admitLive('beta');
+    const fleet = new Fleet(lanes, registry, join(dir, 'fleet.jsonl'));
 
-    const stopped = await fleet.stopAll('kill switch');
+    const { stopped } = await fleet.stopAll('kill switch');
 
     expect(stopped.map((row) => row.slug).sort()).toEqual(['alpha', 'beta']);
-    expect(lanes.get('alpha')?.verdict).toBe('parked');
-    expect(lanes.get('beta')?.verdict).toBe('parked');
+    expect(stopped.every((row) => row.reached)).toBe(true);
   });
 
-  it('asks each run for a handoff, so restarting continues rather than starts over', async () => {
-    lanes.put('alpha', { column: 'c', session_id: 's1' });
-    const fleet = new Fleet(lanes, join(dir, 'fleet.jsonl'));
+  it('P4.7/I8: selects targets from the registry\'s live rows, never a lane record\'s own verdict', async () => {
+    // The 2026-09-04 C1b failure, reproduced: a lane file left over from a finished chain
+    // still says `verdict: 'done'`, but the registry says this exact goal is live right
+    // now (this test process's own pid). The old lane-record filter (`!row.ended &&
+    // !row.verdict`) would have read this as long since finished and never touched it.
+    lanes.put('forge-live-probe', { column: 'forge', verdict: 'done', ended: 1 });
+    admitLive('forge-live-probe');
+    const fleet = new Fleet(lanes, registry, join(dir, 'fleet.jsonl'));
+
+    const { stopped, stale } = await fleet.stopAll('kill switch');
+
+    expect(stopped.map((row) => row.slug)).toEqual(['forge-live-probe']);
+    expect(stopped[0]?.reached).toBe(true);
+    expect(stale).toEqual([]);
+  });
+
+  it('lists a dead registry row as stale, never as parked', async () => {
+    registry.admit({ goal: 'morning-run', cwd: dir, briefPath: join(dir, 'x.md'), pid: 999_999 });
+    const fleet = new Fleet(lanes, registry, join(dir, 'fleet.jsonl'));
+
+    const { stopped, stale } = await fleet.stopAll('kill switch');
+
+    expect(stopped).toEqual([]);
+    expect(stale).toEqual(['morning-run']);
+  });
+
+  it('queues a handoff request into the run\'s own inbox, so restarting continues rather than starts over', async () => {
+    admitLive('alpha');
+    const fleet = new Fleet(lanes, registry, join(dir, 'fleet.jsonl'));
     await fleet.stopAll('kill switch');
 
+    expect(new RunInbox('alpha').all().map((m) => m.text)).toContain(HANDOFF_REQUEST);
     const state = replay(join(dir, 'fleet.jsonl'));
     const parked = state.events.filter((event) => event.event === 'run.parked');
     expect(parked).toHaveLength(1);
@@ -201,8 +250,8 @@ describe('the kill switch', () => {
   });
 
   it('journals why, so the stop is not a mystery afterwards', async () => {
-    lanes.put('alpha', { column: 'c', session_id: 's1' });
-    const fleet = new Fleet(lanes, join(dir, 'fleet.jsonl'));
+    admitLive('alpha');
+    const fleet = new Fleet(lanes, registry, join(dir, 'fleet.jsonl'));
     await fleet.stopAll('the window is nearly spent');
 
     const state = replay(join(dir, 'fleet.jsonl'));
@@ -210,34 +259,43 @@ describe('the kill switch', () => {
       .toBe(true);
   });
 
-  it('leaves a lane that had already finished alone', async () => {
+  it('leaves a run whose registry row is already gone alone', async () => {
     lanes.put('done', { column: 'c', verdict: 'done', ended: 1 });
-    const fleet = new Fleet(lanes, join(dir, 'fleet.jsonl'));
+    const fleet = new Fleet(lanes, registry, join(dir, 'fleet.jsonl'));
 
-    expect(await fleet.stopAll('kill switch')).toHaveLength(0);
+    const { stopped } = await fleet.stopAll('kill switch');
+    expect(stopped).toHaveLength(0);
     expect(lanes.get('done')?.verdict).toBe('done');
   });
 
   it('is safe to run twice', async () => {
-    lanes.put('alpha', { column: 'c', session_id: 's1' });
-    const fleet = new Fleet(lanes, join(dir, 'fleet.jsonl'));
+    admitLive('alpha');
+    const fleet = new Fleet(lanes, registry, join(dir, 'fleet.jsonl'));
     await fleet.stopAll('once');
-    expect(await fleet.stopAll('twice')).toHaveLength(0);
+    // The registry row is still there (`stopAll` never removes it; only the run itself
+    // does, on its own exit), so a second call reaches it again rather than finding
+    // nothing -- which is the right answer for "is it safe to run twice."
+    const second = await fleet.stopAll('twice');
+    expect(second.stopped.map((row) => row.slug)).toEqual(['alpha']);
   });
 
   it('reports nothing to stop rather than failing when the fleet is idle', async () => {
-    const fleet = new Fleet(lanes, join(dir, 'fleet.jsonl'));
-    expect(await fleet.stopAll('kill switch')).toEqual([]);
+    const fleet = new Fleet(lanes, registry, join(dir, 'fleet.jsonl'));
+    const { stopped, stale } = await fleet.stopAll('kill switch');
+    expect(stopped).toEqual([]);
+    expect(stale).toEqual([]);
   });
 
-  it('counts a lane the breaker has flagged as stopped too', async () => {
+  it('counts a run the breaker has flagged as stopped too, as long as its pid is live', async () => {
     lanes.put('flappy', { column: 'c', session_id: 's1', needs_aaron: 'three bad starts' });
-    const fleet = new Fleet(lanes, join(dir, 'fleet.jsonl'));
-    expect((await fleet.stopAll('kill switch')).map((row) => row.slug)).toEqual(['flappy']);
+    admitLive('flappy');
+    const fleet = new Fleet(lanes, registry, join(dir, 'fleet.jsonl'));
+    const { stopped } = await fleet.stopAll('kill switch');
+    expect(stopped.map((row) => row.slug)).toEqual(['flappy']);
   });
 
-  it('B.3.2: reaches a lane whose session this process holds directly', async () => {
-    lanes.put('alpha', { column: 'c', session_id: 's1' });
+  it('B.3.2: reaches a run whose session this process holds directly', async () => {
+    admitLive('alpha');
     const sends: string[] = [];
     let stopCalls = 0;
     const live = {
@@ -245,10 +303,10 @@ describe('the kill switch', () => {
       stop: async () => { stopCalls += 1; },
     };
     const fleet = new Fleet(
-      lanes, join(dir, 'fleet.jsonl'), undefined, new Map([['alpha', live]]),
+      lanes, registry, join(dir, 'fleet.jsonl'), undefined, new Map([['alpha', live]]),
     );
 
-    const stopped = await fleet.stopAll('kill switch');
+    const { stopped } = await fleet.stopAll('kill switch');
 
     expect(sends).toHaveLength(1);
     expect(stopCalls).toBe(1);
@@ -258,33 +316,24 @@ describe('the kill switch', () => {
     expect(parked?.['packet']).toBe('left off at src/x.ts:42');
   });
 
-  it('B.3.2: marks a lane with no live session unreachable rather than silently parked', async () => {
-    lanes.put('beta', { column: 'd', session_id: 's2' });
-    const fleet = new Fleet(lanes, join(dir, 'fleet.jsonl'));
+  it('B.3.2: marks a run unreachable when its inbox cannot be written', async () => {
+    admitLive('beta');
+    const fleet = new Fleet(lanes, registry, join(dir, 'fleet.jsonl'));
+    // A plain file where the run's inbox directory belongs: RunInbox's own
+    // `mkdirSync(this.dir, { recursive: true })` throws against it, which is exactly the
+    // "the write failed" case `reached: false` exists to name honestly.
+    const { runDir } = await import('../../src/forge/paths.js');
+    const { mkdirSync: mkdir, writeFileSync: writeFile } = await import('node:fs');
+    mkdir(runDir('beta'), { recursive: true });
+    writeFile(join(runDir('beta'), 'inbox'), 'not a directory', 'utf8');
 
-    const stopped = await fleet.stopAll('kill switch');
-
-    expect(stopped[0]?.reached).toBe(false);
-  });
-
-  it('B.3.2: the falsifier -- a lane the code never contacted still counts as unreachable, not reached', async () => {
-    lanes.put('gamma', { column: 'e', session_id: 's3' });
-    const neverResponds = {
-      send: () => new Promise<unknown>(() => {}),
-      stop: async () => {},
-    };
-    const fleet = new Fleet(
-      lanes, join(dir, 'fleet.jsonl'), undefined, new Map([['gamma', neverResponds]]),
-    );
-
-    const stopped = await fleet.stopAll('kill switch', 10);
-
+    const { stopped } = await fleet.stopAll('kill switch');
     expect(stopped[0]?.reached).toBe(false);
   });
 
   it('code-review finding: a rejected send on one live session does not abort the rest of the loop', async () => {
-    lanes.put('alpha', { column: 'c', session_id: 's1' });
-    lanes.put('beta', { column: 'd', session_id: 's2' });
+    admitLive('alpha');
+    admitLive('beta');
     const rejecting = { send: async () => { throw new Error('the subprocess is gone'); }, stop: async () => {} };
     const betaStops: string[] = [];
     const healthy = {
@@ -292,13 +341,13 @@ describe('the kill switch', () => {
       stop: async () => { betaStops.push('beta'); },
     };
     const fleet = new Fleet(
-      lanes, join(dir, 'fleet.jsonl'), undefined,
+      lanes, registry, join(dir, 'fleet.jsonl'), undefined,
       new Map([['alpha', rejecting], ['beta', healthy]]),
     );
 
-    const stopped = await fleet.stopAll('kill switch');
+    const { stopped } = await fleet.stopAll('kill switch');
 
-    // Both lanes were actually looked at, not just the first one before the throw.
+    // Both runs were actually looked at, not just the first one before the throw.
     expect(stopped.map((row) => row.slug).sort()).toEqual(['alpha', 'beta']);
     expect(stopped.find((row) => row.slug === 'alpha')?.reached).toBe(false);
     expect(stopped.find((row) => row.slug === 'beta')?.reached).toBe(true);
@@ -327,9 +376,9 @@ describe('the kill switch file', () => {
     expect(readKillSwitch(path)).toEqual({ engaged: false });
   });
 
-  it('Fleet.stopAll engages it, whether or not any lane was running', async () => {
+  it('Fleet.stopAll engages it, whether or not any run was live', async () => {
     const path = join(dir, 'kill-switch.json');
-    const fleet = new Fleet(lanes, join(dir, 'fleet.jsonl'), path);
+    const fleet = new Fleet(lanes, registry, join(dir, 'fleet.jsonl'), path);
     await fleet.stopAll('stopped by hand');
     expect(readKillSwitch(path).engaged).toBe(true);
   });
