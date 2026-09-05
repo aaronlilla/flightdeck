@@ -46,5 +46,13 @@ export function categoryOf(lane: LaneRecord): LaneCategory {
   if (lane.needs_aaron) return 'blocked';
   if (lane.column === 'blocked') return 'blocked';
   if (lane.column === 'done') return 'done';
+  // Item 2, 2026-09-05: a lane with no live `run_state` has no run in flight, whatever
+  // `column` says -- in practice `column` is always the literal `'forge'` a real lane is
+  // written with, so without this check every finished chain fell through to the same
+  // `return 'running'` a genuinely idle, never-yet-run lane needs. A worker's own verdict
+  // (`done`, `exhausted`, `parked`, `unverified`, `failed`) is the one place that finished
+  // state survives once the process exits, so it decides the bucket instead.
+  if (lane.verdict === 'done') return 'done';
+  if (lane.verdict) return 'blocked';
   return 'running';
 }
