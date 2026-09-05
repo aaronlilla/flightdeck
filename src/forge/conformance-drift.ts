@@ -8,6 +8,7 @@
  * carried verbatim -- once two `no`s land back to back. A single `no` is a run correcting
  * itself mid-turn, not drift; only two in a row is.
  */
+import { conformanceDriftKey } from './drift-blockers.js';
 import type { Journal } from './journal.js';
 import type { Reasoner } from './contracts.js';
 
@@ -86,7 +87,8 @@ export class ConformanceDrift {
 
     await this.deps.actuator.park(run, 'conformance drift: two consecutive off-task verdicts');
     this.deps.journal.append({
-      event: 'warden.parked', run, actor: 'warden', signal: 'drift', verdicts: kept,
+      event: 'warden.parked', run, actor: 'warden', signal: 'drift',
+      key: conformanceDriftKey(run), verdicts: kept,
     });
     this.history.set(run, []);
     return { onTask: false, parked: true };
