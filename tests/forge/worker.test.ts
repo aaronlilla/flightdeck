@@ -22,6 +22,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { INHERITED, Worker, workerEnv, type FakeTurn } from '../../src/forge/worker.js';
 import { replay } from '../../src/forge/journal.js';
+import { Inbox } from '../../src/forge/inbox.js';
 
 let dir: string;
 let journalPath: string;
@@ -54,7 +55,10 @@ function makeWorker(script: FakeTurn[][], overrides: Record<string, unknown> = {
   } as never);
   // The concrete fake, not the interface: the specimens assert on what it recorded,
   // and EngineLike deliberately does not expose that.
-  return worker as unknown as { run: () => Promise<{ handoffs: number }>; engine: FakeEngine };
+  return worker as unknown as {
+    run: () => Promise<{ handoffs: number; verdict: string }>;
+    engine: FakeEngine;
+  };
 }
 
 /**
@@ -218,5 +222,339 @@ describe('the environment a worker is spawned with', () => {
     expect(spawned['CLAUDECODE']).toBeUndefined();
     expect(spawned['CLAUDE_PID']).toBeUndefined();
     expect(spawned['PATH']).toBe('/usr/bin');
+  });
+});
+
+describe('B.3.4: done is verified', () => {
+  it('yields unverified, never done, when the brief has no Verification block', async () => {
+    const worker = makeWorker([[{ text: 'shipped', context: 10, done: true }]]);
+    const result = await worker.run();
+
+    expect(result.verdict).toBe('unverified');
+    const finished = replay(journalPath).events
+      .find((e) => e.event === 'run.finished' && e.run === 'alpha');
+    expect(finished?.['verdict']).toBe('unverified');
+  });
+
+  it('runs the declared verification command and only marks done once it passes', async () => {
+    const brief = '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnode -e process.exit(0)\n```\n';
+    const calls: string[] = [];
+    const exec = async (request: { argv: string[] }) => {
+      calls.push(request.argv.join(' '));
+      return {
+        ok: true, tail: '', returncode: 0, argv: request.argv, owner: 'alpha',
+        startedAt: 0, durationMs: 1,
+      };
+    };
+    const worker = makeWorker([[{ text: 'shipped', context: 10, done: true }]], { brief, exec });
+
+    const result = await worker.run();
+
+    expect(result.verdict).toBe('done');
+    expect(calls).toEqual(['node -e process.exit(0)']);
+  });
+
+  it('bounces a failing verification command three times, then parks', async () => {
+    const brief = '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnpm run verify\n```\n';
+    let execCalls = 0;
+    const exec = async (request: { argv: string[] }) => {
+      execCalls += 1;
+      return {
+        ok: false, tail: 'FAIL', returncode: 1, argv: request.argv, owner: 'alpha',
+        startedAt: 0, durationMs: 1,
+      };
+    };
+    const worker = makeWorker([[{ text: 'shipped', context: 10, done: true }]], { brief, exec });
+
+    const result = await worker.run();
+
+    expect(result.verdict).toBe('parked');
+    expect(execCalls).toBe(3);
+    const bounces = replay(journalPath).events.filter((e) => e.event === 'run.verify-failed');
+    expect(bounces).toHaveLength(3);
+  });
+
+  it('journals the usage from a bounce reply, so a verification retry is not free', async () => {
+    const brief = '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnpm run verify\n```\n';
+    let execCalls = 0;
+    const exec = async (request: { argv: string[] }) => {
+      execCalls += 1;
+      return {
+        ok: execCalls > 1, tail: execCalls > 1 ? '' : 'FAIL', returncode: execCalls > 1 ? 0 : 1,
+        argv: request.argv, owner: 'alpha', startedAt: 0, durationMs: 1,
+      };
+    };
+    const bounceUsage = { input: 500, cacheRead: 0, cacheCreation: 0, output: 20 };
+    const engine = {
+      async run() {
+        return {
+          sessionId: 'session-bounce',
+          turns: [{ text: 'shipped', context: 10, done: true }],
+          async send() {
+            return [{ text: 'retrying', context: 15, usage: bounceUsage }];
+          },
+        };
+      },
+    };
+    const worker = new Worker({
+      run: 'alpha', brief, briefPath: join(dir, 'brief.md'), cwd: dir, journalPath,
+      engine, exec,
+    } as never) as unknown as { run: () => Promise<{ verdict: string }> };
+
+    const result = await worker.run();
+
+    expect(result.verdict).toBe('done');
+    const turnEnds = replay(journalPath).events.filter((e) => e.event === 'turn.end');
+    expect(turnEnds.some((e) => JSON.stringify(e['usage']) === JSON.stringify(bounceUsage))).toBe(true);
+  });
+
+  it('the falsifier: done is never reachable without exec having actually run', async () => {
+    const brief = '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnode -e process.exit(0)\n```\n';
+    const order: string[] = [];
+    const exec = async (request: { argv: string[] }) => {
+      order.push('exec');
+      return {
+        ok: true, tail: '', returncode: 0, argv: request.argv, owner: 'alpha',
+        startedAt: 0, durationMs: 1,
+      };
+    };
+    const worker = makeWorker([[{ text: 'shipped', context: 10, done: true }]], { brief, exec });
+
+    const result = await worker.run();
+
+    expect(result.verdict).toBe('done');
+    expect(order).toEqual(['exec']);
+  });
+});
+
+describe('B.3.6: honest recording', () => {
+  it('sentence 6: a throw from engine.run becomes run.paused with the verbatim error, not an uncaught rejection', async () => {
+    const throwingEngine = {
+      started: [] as unknown[],
+      async run(): Promise<never> {
+        throw new Error('the SDK subprocess exited with code 1');
+      },
+    };
+    const worker = new Worker({
+      run: 'throwing-run', brief: '# Goal\n\nDo the thing.\n', briefPath: join(dir, 'brief.md'),
+      cwd: dir, journalPath, engine: throwingEngine as never,
+    });
+
+    const result = await worker.run();
+
+    expect(result.verdict).not.toBe('done');
+    const state = replay(journalPath);
+    const paused = state.events.find((e) => e.event === 'run.paused' && e.run === 'throwing-run');
+    expect(paused?.['reason']).toBe('the SDK subprocess exited with code 1');
+  });
+
+  it('sentence 7: no phantom handoff on the last permitted session', async () => {
+    // maxSessions: 1 -- this session's own ceiling hit has nowhere to hand off to.
+    const worker = makeWorker([climbing(30_000, 4)], { maxContext: 60_000, maxSessions: 1 });
+    const result = await worker.run();
+
+    expect(result.handoffs).toBe(0);
+    expect(worker.engine.started).toHaveLength(1);
+    const state = replay(journalPath);
+    expect(state.events.some((e) => e.event === 'run.handoff')).toBe(false);
+  });
+
+  it('sentence 8: the handoff reply\'s own usage is journaled, not discarded once its text is read', async () => {
+    let sendCalls = 0;
+    const engine = {
+      started: [] as { model: string; prompt: string; env: NodeJS.ProcessEnv }[],
+      async run(config: { model: string; prompt: string; env: NodeJS.ProcessEnv }) {
+        this.started.push(config);
+        return {
+          sessionId: 'session-1',
+          turns: climbing(30_000, 4),
+          async send(_prompt: string) {
+            sendCalls += 1;
+            return [{
+              text: 'packet', context: 5_000,
+              usage: { input: 5_000, cacheRead: 0, cacheCreation: 0, output: 20 },
+            }];
+          },
+        };
+      },
+    };
+    const worker = new Worker({
+      run: 'handoff-usage-run', brief: '# Goal\n\nDo the thing.\n', briefPath: join(dir, 'brief.md'),
+      cwd: dir, journalPath, engine: engine as never, maxContext: 60_000, maxSessions: 2,
+    });
+    await worker.run();
+
+    expect(sendCalls).toBe(1);
+    const state = replay(journalPath);
+    const handoffTurn = state.events.find((e) => e.event === 'turn.end' && e.run === 'handoff-usage-run'
+      && (e['usage'] as { input: number } | undefined)?.input === 5_000);
+    expect(handoffTurn).toBeDefined();
+  });
+});
+
+describe('B.3.8: no caps on implementation', () => {
+  it('carries no maxTurns for an implement-class run', async () => {
+    // The default brief (no `tier:` line) resolves to the implement class.
+    const worker = makeWorker([[{ text: 'ok', context: 10 }]]);
+    await worker.run();
+    expect(worker.engine.started[0]).not.toHaveProperty('maxTurns');
+  });
+
+  it('the falsifier: a large number is not an omission', async () => {
+    const worker = makeWorker([[{ text: 'ok', context: 10 }]]);
+    await worker.run();
+    const started = worker.engine.started[0] as { maxTurns?: number };
+    expect(started.maxTurns).not.toBe(Number.MAX_SAFE_INTEGER);
+    expect(started.maxTurns).toBeUndefined();
+  });
+
+  it('three sessions with no commit park the run with a report naming the three', async () => {
+    // Each session hits the ceiling, so the chain would otherwise hand off forever with
+    // no session cap (B.3.8 removes it for implement classes): the stuck rule is what
+    // has to stop it instead.
+    const worker = makeWorker([
+      climbing(30_000, 4), climbing(30_000, 4), climbing(30_000, 4), climbing(30_000, 4),
+    ], { maxContext: 60_000 });
+
+    const result = await worker.run();
+
+    expect(result.verdict).toBe('parked');
+    // Exactly three sessions ran, not a fourth: the stuck rule fired the moment the third
+    // one closed without a commit, before any successor could start.
+    expect(worker.engine.started).toHaveLength(3);
+    const state = replay(journalPath);
+    const parked = state.events.find((e) => e.event === 'run.finished' && e['verdict'] === 'parked');
+    expect(parked?.['report']).toBe('three sessions without a commit: alpha, alpha-2, alpha-3');
+  });
+
+  it('a session that commits resets the count, so the chain is not stuck', async () => {
+    let index = 0;
+    const engine = {
+      started: [] as { model: string; prompt: string; env: NodeJS.ProcessEnv }[],
+      async run(config: { model: string; prompt: string; env: NodeJS.ProcessEnv }) {
+        index += 1;
+        this.started.push(config);
+        return {
+          sessionId: `session-${index}`,
+          turns: climbing(30_000, 4),
+          committed: index === 2,
+          async send(_prompt: string) {
+            return [{ text: 'packet', context: 0 }];
+          },
+        };
+      },
+    };
+    const worker = new Worker({
+      run: 'alpha', brief: '# Goal\n\nDo the thing.\n', briefPath: join(dir, 'brief.md'),
+      cwd: dir, journalPath, engine: engine as never, maxContext: 60_000,
+      // Bounded so the specimen terminates: climbing() never sets done, and with no
+      // session cap (the very thing B.3.8 removes) an always-committed-false chain would
+      // otherwise run forever. Session 2 commits, which is the thing under test.
+      maxSessions: 4,
+    });
+
+    const result = await worker.run();
+
+    // Session 2 committed, resetting the count to zero; sessions 3 and 4 bring it back to
+    // two, still under three by the time the chain runs out of its own bounded budget --
+    // it stops for running out of sessions, not because the stuck rule fired.
+    expect(result.verdict).not.toBe('parked');
+    expect(engine.started).toHaveLength(4);
+  });
+});
+
+describe('F1: a segment that ends while parked keeps waiting, not stopped', () => {
+  it('resumes the same session once a second Inbox instance writes the answer, and ends done', async () => {
+    const inboxDir = join(dir, 'inbox');
+    const inbox = new Inbox(inboxDir);
+    let key: string | undefined;
+    let resumedPrompt: string | undefined;
+
+    // The model asked, `canUseTool` denied it, and the segment ended with zero turns: the
+    // exact shape a real park leaves for worker.ts to find, with no live SDK involved.
+    const engine = {
+      started: [] as unknown[],
+      inbox,
+      async run(config: { run: string }) {
+        this.started.push(config);
+        const entry = inbox.raise({
+          run: config.run, goal: config.run, actionTarget: 'AskUserQuestion',
+          question: 'dev or prod?', options: ['dev', 'prod'], kind: 'question',
+        });
+        key = entry.key;
+        return {
+          sessionId: 'session-1',
+          turns: [],
+          async send(prompt: string) {
+            resumedPrompt = prompt;
+            return [{ text: 'shipped', context: 10, done: true }];
+          },
+        };
+      },
+      parkedOn(run: string) {
+        return run === 'alpha' ? key : undefined;
+      },
+      clearPark() {
+        key = undefined;
+      },
+    };
+
+    // A second `Inbox` instance on the same directory, standing in for a separate `forge
+    // answer` process: it never calls the engine or the worker directly, only the file.
+    const answerFromAnotherProcess = () => {
+      const outside = new Inbox(inboxDir);
+      const waiting = outside.open()[0];
+      if (waiting) outside.answer(waiting.key, 'go with dev');
+    };
+
+    const brief = '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnode -e process.exit(0)\n```\n';
+    const exec = async (request: { argv: string[] }) => ({
+      ok: true, tail: '', returncode: 0, argv: request.argv, owner: 'alpha', startedAt: 0, durationMs: 1,
+    });
+
+    const worker = new Worker({
+      run: 'alpha', brief, briefPath: join(dir, 'brief.md'), cwd: dir, journalPath,
+      engine: engine as never, exec, pollIntervalMs: 10,
+    } as never) as unknown as {
+      run: () => Promise<{ verdict: string; sessions: string[]; handoffs: number }>;
+    };
+
+    // Answered after the worker has already polled once and found nothing, so the round
+    // trip only succeeds if the wait is a real poll rather than a single check.
+    setTimeout(answerFromAnotherProcess, 15);
+
+    const result = await worker.run();
+
+    expect(result.verdict).toBe('done');
+    expect(result.sessions).toHaveLength(1);
+    expect(result.handoffs).toBe(0);
+    expect(resumedPrompt).toContain('go with dev');
+
+    const state = replay(journalPath);
+    expect(state.events.some((e) => e.event === 'run.resumed' && e.run === 'alpha')).toBe(true);
+    // The falsifier this closes: a run that ever reports stopped or exhausted while it was
+    // genuinely parked defeats the point, whatever its final verdict turns out to be.
+    expect(state.events.some((e) => e.event === 'run.finished'
+      && (e['verdict'] === 'stopped' || e['verdict'] === 'exhausted'))).toBe(false);
+  });
+
+  it('the falsifier: with no parkedOn on the engine, a zero-turn segment still reads as a plain stop', async () => {
+    // Same shape (zero turns, nothing done), but the engine never says the run is parked.
+    // This has to keep behaving exactly as it did before F1, proving the new wait only
+    // fires because the engine names a park key, never merely because turns came back empty.
+    const engine = {
+      started: [] as unknown[],
+      async run(config: { run: string }) {
+        this.started.push(config);
+        return { sessionId: 'session-1', turns: [] };
+      },
+    };
+    const worker = new Worker({
+      run: 'alpha', brief: '# Goal\n\nDo the thing.\n', briefPath: join(dir, 'brief.md'),
+      cwd: dir, journalPath, engine: engine as never,
+    } as never) as unknown as { run: () => Promise<{ verdict: string }> };
+
+    const result = await worker.run();
+    expect(['exhausted', 'parked']).toContain(result.verdict);
   });
 });

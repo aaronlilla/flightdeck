@@ -15,6 +15,8 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, wri
 import { join } from 'node:path';
 
 import { Journal } from './journal.js';
+import { RunInbox } from './runinbox.js';
+import { HANDOFF_REQUEST } from './worker.js';
 
 /**
  * Every field a lane record carries.
@@ -237,13 +239,41 @@ export function clearKillSwitch(path: string): void {
   if (existsSync(path)) rmSync(path);
 }
 
+/**
+ * A session `Fleet.stopAll` can reach directly, because this same process holds it.
+ *
+ * `send` mirrors `SessionResult.send`: it resolves with whatever the session wrote back
+ * (the handoff packet, when it wrote one), which is how `stopAll` tells "reached" from
+ * "unreachable" without guessing.
+ */
+export interface LiveSession {
+  send(text: string): Promise<unknown>;
+  stop(): Promise<void>;
+}
+
+/** A stopped lane, with whether this process actually contacted its session. */
+export type StopOutcome = LaneRecord & { reached: boolean };
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    (timer as unknown as { unref?: () => void }).unref?.();
+  });
+}
+
 export class Fleet {
+  /** How long `stopAll` waits for a live session to answer before giving up on it. */
+  static readonly IDLE_BUDGET_MS = 30_000;
+
   private readonly journal: Journal;
 
   constructor(
     private readonly lanes: Lanes,
     journalPath: string,
     private readonly killSwitchFile?: string,
+    /** Sessions this process holds directly, keyed by lane slug. Empty in production: a
+     *  `forge stop` invocation is its own process and never holds another run's session. */
+    private readonly liveSessions: Map<string, LiveSession> = new Map(),
   ) {
     this.journal = new Journal(journalPath);
   }
@@ -261,25 +291,63 @@ export class Fleet {
    * acted on, which is empty when there was nothing to park. An empty list is the honest
    * answer to a stop on an idle fleet; raising there would make the control feel broken at
    * the moment it is most needed.
+   *
+   * A lane this process holds a `LiveSession` for is contacted directly: the handoff
+   * request goes in through `send()`, raced against `idleBudgetMs`, then the session is
+   * stopped either way. A lane with no live session (the normal case for `forge stop`,
+   * a separate process from whatever `forge run` is doing) gets its handoff request queued
+   * into the run's own inbox, where the PreToolUse hook delivers it on that run's next
+   * tool call -- but this process has no way to confirm that happened, so it is marked
+   * `reached: false` rather than assumed parked.
    */
-  stopAll(reason: string): LaneRecord[] {
+  async stopAll(reason: string, idleBudgetMs: number = Fleet.IDLE_BUDGET_MS): Promise<StopOutcome[]> {
     if (this.killSwitchFile) engageKillSwitch(this.killSwitchFile, reason);
-    const stopped: LaneRecord[] = [];
+    const stopped: StopOutcome[] = [];
     try {
       for (const lane of this.running()) {
+        const live = this.liveSessions.get(lane.slug);
+        let reached = false;
+        let packet: string | undefined;
+
+        if (live) {
+          // A rejected send must not take the rest of this loop down with it: the lane
+          // that threw is unreachable, not a reason for every lane after it in the
+          // iteration order to never be looked at during the one control that has to work
+          // when something is already going wrong.
+          const outcome = await Promise.race([
+            live.send(HANDOFF_REQUEST)
+              .then((value) => ({ kind: 'sent' as const, value }))
+              .catch(() => ({ kind: 'errored' as const, value: undefined })),
+            sleep(idleBudgetMs).then(() => ({ kind: 'timeout' as const, value: undefined })),
+          ]);
+          try {
+            await live.stop();
+          } catch {
+            // Already gone, or never willing to stop cleanly; either way there is nothing
+            // further this loop can do to it, and the lane is already unreachable.
+          }
+          reached = outcome.kind === 'sent';
+          if (reached && typeof outcome.value === 'string') packet = outcome.value;
+        } else {
+          new RunInbox(lane.slug).send(HANDOFF_REQUEST, 'console');
+        }
+
         this.journal.append({
           event: 'run.parked',
           run: lane.slug,
           actor: 'console',
-          reason,
+          reason: reached ? reason : `${reason}; not confirmed inside the idle budget`,
           verdict: 'parked',
           handoffRequested: true,
+          reached,
+          ...(packet ? { packet } : {}),
         });
-        stopped.push(this.lanes.put(lane.slug, {
+        const record = this.lanes.put(lane.slug, {
           verdict: 'parked',
           ended: Date.now(),
-          note: `stopped: ${reason}`,
-        }));
+          note: reached ? `stopped: ${reason}` : `stopped: ${reason}; unreachable, queued to inbox`,
+        });
+        stopped.push({ ...record, reached });
       }
     } finally {
       this.journal.close();

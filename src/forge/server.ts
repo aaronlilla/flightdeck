@@ -14,14 +14,28 @@
  * dependency in a repository whose dependency policy is not mine to set costs more than
  * eighty lines.
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import type { Duplex } from 'node:stream';
 
 import type { Inbox } from './inbox.js';
-import { replay } from './journal.js';
+import { JournalCache, type RangeReader } from './journal.js';
 import type { StuckSignal } from './liveness.js';
+import { serverTokenPath } from './paths.js';
+import { deliverAnswer } from './runinbox.js';
 import type { LaneRecord, Lanes } from './supervisor.js';
+
+/** Reads the server's own bearer token, minting one on first use. */
+export function ensureServerToken(path: string = serverTokenPath()): string {
+  if (existsSync(path)) return readFileSync(path, 'utf8').trim();
+  const token = randomBytes(24).toString('hex');
+  writeFileSync(path, token, 'utf8');
+  return token;
+}
+
+/** The maximum a request body may be before it is refused outright. */
+export const MAX_BODY_BYTES = 64 * 1024;
 
 export const FORGE_PORT = 4120;
 
@@ -43,6 +57,15 @@ export interface ForgeServerOptions {
    * from "here is a process record" instead of field-sniffing an entry with no `pid`.
    */
   fleet?: () => Array<Record<string, unknown>> | { ok: false; reason: string };
+  /** Overrides the token minted from `serverTokenPath()`. A specimen only. */
+  token?: string;
+  /** Overrides how the journal cache reads bytes off disk. A specimen only: it is how a
+   *  test counts exactly what a second /state read actually touched. */
+  journalRangeReader?: RangeReader;
+  /** Shares an already-built cache with a caller reading the same journal (the 30-second
+   *  liveness tick in `cli.ts`), instead of each keeping its own offset and re-folding
+   *  bytes the other has already read. Takes precedence over `journalRangeReader`. */
+  journalCache?: JournalCache;
 }
 
 export class ForgeServer {
@@ -50,9 +73,14 @@ export class ForgeServer {
 
   readonly inbox: Inbox;
 
+  /** The bearer token `/answer` requires, in the `X-Forge-Token` header. */
+  readonly token: string;
+
   private readonly lanes: Lanes;
 
   private readonly journalPath: string;
+
+  private readonly journalCache: JournalCache;
 
   private readonly wanted: number;
 
@@ -79,10 +107,12 @@ export class ForgeServer {
     this.lanes = options.lanes;
     this.inbox = options.inbox;
     this.journalPath = options.journalPath;
+    this.journalCache = options.journalCache ?? new JournalCache(options.journalRangeReader);
     this.wanted = options.port ?? FORGE_PORT;
     this.host = options.host ?? '127.0.0.1';
     this.stuckFn = options.stuck ?? (() => []);
     this.fleetFn = options.fleet ?? (() => []);
+    this.token = options.token ?? ensureServerToken();
   }
 
   get listeners(): number {
@@ -128,7 +158,7 @@ export class ForgeServer {
    * as a whole is only as current as its stalest lane.
    */
   state(): Record<string, unknown> {
-    const fleet = replay(this.journalPath);
+    const fleet = this.journalCache.read(this.journalPath);
     const now = Date.now();
 
     const lanes = this.lanes.all().map((lane) => {
@@ -149,15 +179,23 @@ export class ForgeServer {
       };
     });
 
+    // Everything the journal backs is stamped from the journal file's own mtime, a real
+    // source read, never Date.now(): a verified_at that only ever equals "now" is not a
+    // freshness claim, it is the request time wearing one. stuck and fleet have no file
+    // behind them at all -- they are computed fresh on every call from a live process
+    // scan -- so they carry observed_at instead, honestly naming what they are: seen just
+    // now, not read from something that was written down.
+    const journalMtime = existsSync(this.journalPath) ? statSync(this.journalPath).mtimeMs : now;
+
     return {
       at: now,
       lanes: { value: lanes, verified_at: now },
-      burn: { value: fleet.burn, verified_at: now },
-      handoffs: { value: fleet.handoffs, verified_at: now },
-      torn: { value: fleet.torn, verified_at: now },
+      burn: { value: fleet.burn, verified_at: journalMtime },
+      handoffs: { value: fleet.handoffs, verified_at: journalMtime },
+      torn: { value: fleet.torn, verified_at: journalMtime },
       inbox_open: { value: this.inbox.open().length, verified_at: this.inbox.mtime() ?? now },
-      stuck: { value: this.stuckFn(), verified_at: now },
-      fleet: { value: this.fleetFn(), verified_at: now },
+      stuck: { value: this.stuckFn(), observed_at: now },
+      fleet: { value: this.fleetFn(), observed_at: now },
     };
   }
 
@@ -192,30 +230,69 @@ export class ForgeServer {
     return json(response, 404, { error: `nothing serves ${path}` });
   }
 
+  /**
+   * A request's Origin, allowed only when it names this server itself or is absent
+   * entirely (a `curl`, a script, `forge answer` itself -- none of which set one). Any
+   * other Origin is a browser tab on some other page reaching for a local port, which is
+   * exactly the CSRF this control exists to refuse.
+   */
+  private originAllowed(request: IncomingMessage): boolean {
+    const origin = request.headers.origin;
+    if (!origin) return true;
+    return origin === `http://${this.host}:${this.port}` || origin === `http://127.0.0.1:${this.port}`;
+  }
+
   private answer(request: IncomingMessage, response: ServerResponse): void {
+    if (!this.originAllowed(request)) {
+      json(response, 403, { error: 'that origin is not this server' });
+      return;
+    }
+    const presented = request.headers['x-forge-token'];
+    if (presented !== this.token) {
+      json(response, 401, { error: 'missing or wrong X-Forge-Token' });
+      return;
+    }
+
     let body = '';
-    request.on('data', (chunk) => { body += chunk; });
+    let overLimit = false;
+    request.on('data', (chunk: Buffer) => {
+      if (overLimit) return;
+      body += chunk;
+      if (Buffer.byteLength(body) > MAX_BODY_BYTES) {
+        overLimit = true;
+        json(response, 413, { error: `body over ${MAX_BODY_BYTES} bytes` });
+        request.destroy();
+      }
+    });
     request.on('end', () => {
-      let parsed: { key?: string; answer?: string };
-      try {
-        parsed = JSON.parse(body) as { key?: string; answer?: string };
-      } catch {
-        // A body that will not parse is not an answer. Guessing what was meant here
-        // would resume a run on a decision nobody made.
-        json(response, 400, { error: 'the body was not JSON' });
-        return;
-      }
-      if (!parsed.key || parsed.answer === undefined) {
-        json(response, 400, { error: 'an answer needs a key and an answer' });
-        return;
-      }
-      const answered = this.inbox.answer(parsed.key, parsed.answer);
-      if (!answered) {
-        json(response, 404, { error: `nothing asked ${parsed.key}` });
-        return;
-      }
-      this.publish({ event: 'ask.answered', key: answered.key, runs: answered.runs });
-      json(response, 200, answered);
+      void (async () => {
+        if (overLimit) return;
+        let parsed: { key?: string; answer?: string } | null;
+        try {
+          parsed = body ? JSON.parse(body) as { key?: string; answer?: string } : null;
+        } catch {
+          // A body that will not parse is not an answer. Guessing what was meant here
+          // would resume a run on a decision nobody made.
+          json(response, 400, { error: 'the body was not JSON' });
+          return;
+        }
+        if (!parsed || !parsed.key || parsed.answer === undefined) {
+          json(response, 400, { error: 'an answer needs a key and an answer' });
+          return;
+        }
+        const answered = this.inbox.answer(parsed.key, parsed.answer);
+        if (!answered) {
+          json(response, 404, { error: `nothing asked ${parsed.key}` });
+          return;
+        }
+        // Same delivery cli.ts's `forge answer` uses: writing the inbox entry alone does
+        // not resume anything. This process holds no live SdkEngine to answer in place
+        // (that path is the CLI's, when it happens to share a process with the run), so
+        // this always rides the cross-process inbox queue.
+        await deliverAnswer(answered, parsed.key, parsed.answer);
+        this.publish({ event: 'ask.answered', key: answered.key, runs: answered.runs });
+        json(response, 200, answered);
+      })();
     });
   }
 

@@ -45,7 +45,11 @@ describe('forge stop --all', () => {
     // The falsifier this closes: no wording may claim spend already stopped while a
     // session could still be mid-turn.
     expect(result.lines.join(' ')).not.toMatch(/all spend has stopped/);
-    expect(result.lines.join(' ')).toMatch(/not contacted/);
+    // B.3.2: this process holds no live session for either lane (a separate `forge stop`
+    // invocation never does), so both must be named unreachable, never reached.
+    expect(result.lines[0]).toMatch(/reached 0, unreachable 2/);
+    expect(result.lines.join(' ')).toMatch(/unreachable {2}alpha/);
+    expect(result.lines.join(' ')).toMatch(/unreachable {2}beta/);
     expect(result.lines.join(' ')).toMatch(/kill switch/i);
     expect(lanes().get('alpha')?.verdict).toBe('parked');
   });
@@ -135,6 +139,25 @@ describe('forge answer', () => {
 });
 
 describe('forge run', () => {
+  it('B.3.9: refuses a non-numeric --max-context rather than launching with a NaN ceiling', async () => {
+    const brief = join(home, 'ok.md');
+    writeFileSync(brief, '# Goal\n\nDo the thing.\n', 'utf8');
+    const result = await forge(['run', brief, '--max-context', 'abc']);
+    expect(result.code).toBe(2);
+    expect(result.lines.join(' ')).toMatch(/--max-context needs a number/);
+    expect(lanes().get('ok')).toBeUndefined();
+  });
+
+  it('B.3.9: refuses a --max-turns with no value at all', async () => {
+    const brief = join(home, 'ok.md');
+    writeFileSync(brief, '# Goal\n\nDo the thing.\n', 'utf8');
+    const result = await forge(['run', brief, '--max-turns']);
+    expect(result.code).toBe(2);
+    expect(result.lines.join(' ')).toMatch(/--max-turns needs a number/);
+  });
+});
+
+describe('forge run', () => {
   it('refuses a brief that opens a websocket Monitor', async () => {
     const brief = join(home, 'bad.md');
     writeFileSync(brief, 'Open Monitor({ws:{url:"ws://127.0.0.1:4100"}}) first.\n', 'utf8');
@@ -180,7 +203,8 @@ describe('forge run', () => {
 
   it('with the fake engine injected, calls it once with the brief\'s content', async () => {
     const brief = join(home, 'ok.md');
-    writeFileSync(brief, '# Goal\n\nDo the thing.\n', 'utf8');
+    const briefText = '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnode -e process.exit(0)\n```\n';
+    writeFileSync(brief, briefText, 'utf8');
 
     const started: SessionRequest[] = [];
     const engine = {
@@ -194,7 +218,7 @@ describe('forge run', () => {
     const result = await forge(['run', brief], { engine });
 
     expect(started).toHaveLength(1);
-    expect((started[0] as { prompt: string }).prompt).toBe('# Goal\n\nDo the thing.\n');
+    expect((started[0] as { prompt: string }).prompt).toBe(briefText);
     expect(result.code).toBe(0);
   });
 
@@ -224,7 +248,8 @@ describe('forge run', () => {
 
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const result = await forge(['run', brief], { engine: zeroTurnEngine });
-      expect(result.code).toBe(0);
+      // A zero-turn start never ran forge_done, so it parks: exit 2, per B.3.4.
+      expect(result.code).toBe(2);
     }
     const fourth = await forge(['run', brief], { engine: zeroTurnEngine });
 
@@ -248,7 +273,9 @@ describe('forge run', () => {
     }
     await forge(['clear', 'ok']);
     const result = await forge(['run', brief], { engine: zeroTurnEngine });
-    expect(result.code).toBe(0);
+    // The clear let it launch again; it still parks with no turns, so exit 2, not a
+    // refusal (1) and not done (0).
+    expect(result.code).toBe(2);
   });
 
   it('refuses once forge stop --all has engaged the kill switch', async () => {
@@ -264,7 +291,7 @@ describe('forge run', () => {
 
   it('starts again once forge clear --all has cleared the kill switch', async () => {
     const brief = join(home, 'ok.md');
-    writeFileSync(brief, '# Goal\n\nDo the thing.\n', 'utf8');
+    writeFileSync(brief, '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnode -e process.exit(0)\n```\n', 'utf8');
     const started: SessionRequest[] = [];
     const engine = {
       started,
@@ -280,6 +307,27 @@ describe('forge run', () => {
 
     expect(result.code).toBe(0);
     expect(started).toHaveLength(1);
+  });
+
+  it('B.3.4: exits 2 when verification never passes and the run parks', async () => {
+    const brief = join(home, 'ok.md');
+    writeFileSync(brief, '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnpm run verify\n```\n', 'utf8');
+    const engine = {
+      started: [] as SessionRequest[],
+      async run(config: SessionRequest) {
+        this.started.push(config);
+        return { sessionId: 'fake-session', turns: [{ text: 'done', context: 10, done: true }] };
+      },
+    };
+    const exec = async () => ({
+      ok: false, tail: 'FAIL', returncode: 1, argv: ['npm', 'run', 'verify'], owner: 'ok',
+      startedAt: 0, durationMs: 1,
+    });
+
+    const result = await forge(['run', brief], { engine, exec });
+
+    expect(result.code).toBe(2);
+    expect(result.lines[0]).toMatch(/parked/);
   });
 });
 
@@ -325,5 +373,59 @@ describe('an unknown command', () => {
     expect(result.code).toBe(2);
     expect(result.lines[0]).toMatch(/stop --all/);
     expect(result.lines.join(' ')).toContain('4120');
+  });
+});
+
+describe('F4: forge run releases what the engine held before it returns', () => {
+  it('awaits the engine close() before forge() itself resolves', async () => {
+    const brief = join(home, 'ok.md');
+    writeFileSync(brief, '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnode -e process.exit(0)\n```\n', 'utf8');
+
+    let closed = false;
+    let closedBeforeReturn = false;
+    const engine = {
+      started: [] as SessionRequest[],
+      async run(config: SessionRequest) {
+        this.started.push(config);
+        return { sessionId: 'fake-session', turns: [{ text: 'shipped', context: 10, done: true }] };
+      },
+      async close() {
+        // A resolved microtask delay: proves `forge()` genuinely awaits this rather than
+        // firing it and moving on, which is exactly what let the SDK child outlive the
+        // process in the live probe.
+        await Promise.resolve();
+        closed = true;
+      },
+    };
+
+    const resultPromise = forge(['run', brief], { engine });
+    closedBeforeReturn = closed;
+    await resultPromise;
+
+    expect(closedBeforeReturn).toBe(false);
+    expect(closed).toBe(true);
+  });
+
+  it('the falsifier: a close() that is fired without awaiting would still read as done', async () => {
+    // Same brief and engine shape, but this proves the specimen above is actually checking
+    // something: an engine whose close() never resolves must make forge() hang rather than
+    // silently return, or the await above is not being honoured at all.
+    const brief = join(home, 'ok2.md');
+    writeFileSync(brief, '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnode -e process.exit(0)\n```\n', 'utf8');
+
+    const engine = {
+      started: [] as SessionRequest[],
+      async run(config: SessionRequest) {
+        this.started.push(config);
+        return { sessionId: 'fake-session', turns: [{ text: 'shipped', context: 10, done: true }] };
+      },
+      close: () => new Promise<void>(() => {}), // never resolves
+    };
+
+    const raced = await Promise.race([
+      forge(['run', brief], { engine }).then(() => 'resolved' as const),
+      new Promise<'timed-out'>((resolve) => setTimeout(() => resolve('timed-out'), 200)),
+    ]);
+    expect(raced).toBe('timed-out');
   });
 });

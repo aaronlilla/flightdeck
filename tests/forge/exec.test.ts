@@ -26,9 +26,9 @@ beforeEach(() => {
 });
 
 describe('budgets', () => {
-  it('carries the five classes Phase 1 settled on', () => {
+  it('carries the class budgets: the five from Phase 1 plus B.3.4 verify', () => {
     expect(Object.keys(CLASS_BUDGETS).sort())
-      .toEqual(['build', 'goal', 'install', 'script', 'test']);
+      .toEqual(['build', 'goal', 'install', 'script', 'test', 'verify']);
   });
 
   it('gives every class a wall and an idle budget', () => {
@@ -115,6 +115,49 @@ describe('budgets that run out', () => {
     const dump = readFileSync(result.dumpPath!, 'utf8');
     expect(dump).toContain('before the hang');
     expect(dump).toMatch(/wall/);
+  }, 20_000);
+});
+
+describe('B.3.9: redact() reaches the dump and the tail, even split across chunks', () => {
+  it('a synthetic token split across two writes never survives whole in the dump', async () => {
+    const secret = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    const half = Math.floor(secret.length / 2);
+    // Two separate stdout writes with no newline between them, spaced 300ms apart so
+    // they land in different 'data' events rather than one chunk: the falsifier this
+    // closes is a redaction that only ever sees each chunk whole and never reassembles
+    // the token that spans the split.
+    const script = `process.stdout.write(${JSON.stringify(secret.slice(0, half))}); `
+      + `setTimeout(() => process.stdout.write(${JSON.stringify(secret.slice(half))}), 300); `
+      + 'setInterval(() => {}, 1000);';
+
+    const result = await run({
+      argv: ['node', '-e', script], cwd: dir, owner: 'r1', wall: 1, idle: 60, logDir: dir,
+    });
+
+    expect(result.tail).not.toContain(secret);
+    const dump = readFileSync(result.dumpPath!, 'utf8');
+    expect(dump).not.toContain(secret);
+    expect(dump).toContain('[REDACTED]');
+  }, 20_000);
+});
+
+describe('B.3.9: killTree is latched, not fired every tick', () => {
+  it('calls killFn twice (one attempt, one retry), never once per 250ms tick', async () => {
+    const calls: number[] = [];
+    const donePromise = run({
+      argv: ['node', '-e', 'setInterval(() => {}, 1000)'],
+      cwd: dir, owner: 'r1', wall: 1, idle: 60,
+      killFn: (pid) => { calls.push(pid); },
+    });
+    // The fake killFn never actually ends the process, so the budget stays tripped and
+    // the tick keeps firing well past the point a real kill would have landed -- which is
+    // exactly what proves the latch: without it, calls would keep growing here.
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    expect(calls).toHaveLength(2);
+    expect(new Set(calls).size).toBe(1);
+
+    killTree(calls[0]!);
+    await donePromise;
   }, 20_000);
 });
 

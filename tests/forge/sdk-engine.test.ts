@@ -19,8 +19,11 @@ import { INHERITED, Worker } from '../../src/forge/worker.js';
 import { replay } from '../../src/forge/journal.js';
 import { RunInbox } from '../../src/forge/runinbox.js';
 import { Inbox } from '../../src/forge/inbox.js';
-import { buildCanUseTool, deliverViaStream, SdkEngine } from '../../src/forge/sdkengine.js';
+import {
+  buildCanUseTool, buildForgeToolHandlers, buildPreToolUseHook, deliverViaStream, SdkEngine,
+} from '../../src/forge/sdkengine.js';
 import { Journal } from '../../src/forge/journal.js';
+import { Gotchas } from '../../src/forge/gotcha.js';
 
 let home: string;
 let journalPath: string;
@@ -162,6 +165,22 @@ describe('the options the production engine opens with', () => {
     await engine.run({ ...REQUEST, env: { PATH: '/usr/bin' } });
     expect(engine.started).toHaveLength(1);
     expect(engine.started[0]?.prompt).toBe(REQUEST.prompt);
+  });
+});
+
+describe('B.3.9: the class effort reaches the engine options', () => {
+  it('carries the effort from the session request through to the SDK options', async () => {
+    const { fn, calls } = fakeQuery([[{ text: 'ok' }]]);
+    const engine = engineFor(fn);
+    await engine.run({ ...REQUEST, env: { PATH: '/usr/bin' }, effort: 'high' } as never);
+    expect((calls[0]!.options as unknown as { effort?: string }).effort).toBe('high');
+  });
+
+  it('the falsifier: no effort on the request means none reaches the options', async () => {
+    const { fn, calls } = fakeQuery([[{ text: 'ok' }]]);
+    const engine = engineFor(fn);
+    await engine.run({ ...REQUEST, env: { PATH: '/usr/bin' } });
+    expect((calls[0]!.options as unknown as { effort?: string }).effort).toBeUndefined();
   });
 });
 
@@ -310,7 +329,7 @@ describe('the PreToolUse inbox hook, wired into a real run', () => {
     const journal = new Journal(journalPath);
     const options = buildOptions({
       cwd: home, canUseTool: (async () => ({ behavior: 'deny', message: 'x' })) as never,
-      onToolCall: buildInboxHook({ run: REQUEST.run, journal }),
+      onToolCall: buildInboxHook({ run: REQUEST.run, goal: REQUEST.run, journal }),
     });
     const hook = options.hooks!['PreToolUse']![0]!.hooks[0]!;
 
@@ -332,6 +351,75 @@ describe('the PreToolUse inbox hook, wired into a real run', () => {
     journal.close();
     const state = replay(journalPath);
     expect(state.events.some((e) => e.event === 'inbox.delivered' && e.via === 'hook')).toBe(true);
+  });
+});
+
+describe('B.3.7: the inbox survives a handoff', () => {
+  it('a message sent to the goal id reaches the successor, which runs under goal-2', async () => {
+    const sent = new RunInbox('goal-run').send('the PR conflicts with main', 'console');
+    const { fn } = fakeQuery([
+      [{ text: 'working', usage: { input: 65_000, cacheRead: 0, cacheCreation: 0, output: 10 } }],
+      [{ text: 'packet', usage: { input: 100, cacheRead: 0, cacheCreation: 0, output: 10 } }],
+      [{ text: 'ok', usage: { input: 100, cacheRead: 0, cacheCreation: 0, output: 10 } }],
+    ]);
+    const engine = engineFor(fn);
+    const worker = new Worker({
+      run: 'goal-run', brief: '# Goal\n\nDo the thing.\n', briefPath: join(home, 'brief.md'),
+      cwd: home, journalPath, engine: engine as never, maxContext: 60_000,
+    });
+    await worker.run();
+
+    // The falsifier this closes: if the successor were given the original run name
+    // ("goal-run") rather than actually running under "goal-run-2" scoped by a separate
+    // stable goal id, this would pass for the wrong reason -- so this pins both: the
+    // successor's own segment name, and the goal id that still names the pre-handoff run.
+    expect(engine.started[1]?.run).toBe('goal-run-2');
+    expect(engine.started[1]?.goal).toBe('goal-run');
+    // The message was never marked read: nothing in this run consumed it under
+    // "goal-run-2" (fakeQuery never drives a real PreToolUse hook), which is exactly why
+    // it is still sitting there, addressable only by the goal id it was sent to.
+    expect(new RunInbox('goal-run').unread().map((message) => message.id)).toContain(sent.id);
+  });
+
+  it('inbox.acknowledged names the message id once the delivered text appears in the next assistant message', async () => {
+    const sent = new RunInbox('ack-run').send('the PR conflicts with main', 'console');
+    const fn = ((params: { prompt: string | AsyncIterable<unknown>; options?: Options }) => {
+      const hookEntry = (params.options as unknown as {
+        hooks?: { PreToolUse?: Array<{ hooks: Array<(input: unknown, id: string, ctx: unknown) =>
+          Promise<{ hookSpecificOutput?: { additionalContext?: string } }>> }> };
+      }).hooks?.['PreToolUse']?.[0]?.hooks[0];
+      const promptIter = params.prompt as AsyncIterable<unknown>;
+      async function* generate() {
+        yield {
+          type: 'system', subtype: 'init', session_id: 's', model: '', cwd: '', tools: [],
+          slash_commands: [],
+        };
+        for await (const _pushed of promptIter) {
+          // The tool call the hook rides on -- ordinary Bash, denied by canUseTool but
+          // that is irrelevant here: onToolCall (not canUseTool) is what delivers.
+          await hookEntry?.(
+            { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: {} }, 'tu-1', {},
+          );
+          yield {
+            type: 'assistant', session_id: 's',
+            message: {
+              model: '', content: [{ type: 'text', text: 'Read it: the PR conflicts with main. Rebasing now.' }],
+              usage: { input_tokens: 10, output_tokens: 1 },
+            },
+          };
+          yield { type: 'result', subtype: 'success', is_error: false, duration_ms: 1 };
+          return;
+        }
+      }
+      return generate() as unknown as Query;
+    }) as unknown as QueryFn;
+
+    const engine = engineFor(fn);
+    await engine.run({ ...REQUEST, run: 'ack-run', env: { PATH: '/usr/bin' } });
+
+    const state = replay(journalPath);
+    const acknowledged = state.events.find((e) => e.event === 'inbox.acknowledged' && e.run === 'ack-run');
+    expect(acknowledged?.['messageId']).toBe(sent.id);
   });
 });
 
@@ -389,7 +477,7 @@ describe('canUseTool, invoked directly', () => {
   it('denies an arbitrary tool and journals permission.denied', async () => {
     const inbox = new Inbox(join(home, 'inbox2'));
     const journal = new (await import('../../src/forge/journal.js')).Journal(journalPath);
-    const canUseTool = buildCanUseTool({ run: 'r2', inbox, journal });
+    const canUseTool = buildCanUseTool({ run: 'r2', goal: 'r2', inbox, journal, parked: new Map() });
 
     const verdict = await canUseTool('Bash', { command: 'rm -rf /' });
     expect(verdict.behavior).toBe('deny');
@@ -403,7 +491,7 @@ describe('canUseTool, invoked directly', () => {
     const inboxDir = join(home, 'inbox3');
     const inbox = new Inbox(inboxDir);
     const journal = new (await import('../../src/forge/journal.js')).Journal(journalPath);
-    const canUseTool = buildCanUseTool({ run: 'r3', inbox, journal });
+    const canUseTool = buildCanUseTool({ run: 'r3', goal: 'r3', inbox, journal, parked: new Map() });
 
     const askInput = {
       questions: [{ question: 'dev or prod?', header: 'env',
@@ -418,6 +506,354 @@ describe('canUseTool, invoked directly', () => {
     expect(inbox.all()).toHaveLength(1);
     expect(inbox.all()[0]?.asked).toBe(2);
     void second;
+  });
+
+  it('B.3.9: a two-question AskUserQuestion parks both, naming the count in the reason', async () => {
+    const inbox = new Inbox(join(home, 'inbox-multi'));
+    const journal = new (await import('../../src/forge/journal.js')).Journal(journalPath);
+    const canUseTool = buildCanUseTool({ run: 'r4', goal: 'r4', inbox, journal, parked: new Map() });
+
+    const askInput = {
+      questions: [
+        { question: 'dev or prod?', options: [{ label: 'dev' }, { label: 'prod' }] },
+        { question: 'now or later?', options: [{ label: 'now' }, { label: 'later' }] },
+      ],
+    };
+    const verdict = await canUseTool('AskUserQuestion', askInput);
+    journal.close();
+
+    const entry = inbox.all()[0];
+    expect(entry?.question).toMatch(/2 questions/);
+    expect(entry?.question).toContain('dev or prod?');
+    expect(entry?.question).toContain('now or later?');
+    expect(entry?.options.sort()).toEqual(['dev', 'later', 'now', 'prod'].sort());
+    expect((verdict as { message: string }).message).toMatch(/2 questions/);
+  });
+});
+
+describe('B.3.6: honest recording', () => {
+  it('sentence 3, already on main at a4c9c40: a non-fatal engine error is journaled, not dropped', async () => {
+    const fn = ((params: { prompt: string | AsyncIterable<unknown>; options?: Options }) => {
+      const promptIter = params.prompt as AsyncIterable<unknown>;
+      async function* generate() {
+        yield {
+          type: 'system', subtype: 'init', session_id: 's', model: '', cwd: '', tools: [],
+          slash_commands: [],
+        };
+        for await (const _pushed of promptIter) {
+          yield {
+            type: 'assistant', session_id: 's',
+            message: { model: '', content: [{ type: 'text', text: 'retrying' }] },
+            error: 'rate_limited',
+          };
+          yield { type: 'result', subtype: 'success', is_error: false, duration_ms: 1 };
+          return;
+        }
+      }
+      return generate() as unknown as Query;
+    }) as unknown as QueryFn;
+
+    const engine = engineFor(fn);
+    await engine.run({ ...REQUEST, run: 'error-run', env: { PATH: '/usr/bin' } });
+
+    const state = replay(journalPath);
+    const errorRow = state.events.find((e) => e.event === 'engine.error' && e.run === 'error-run');
+    expect(errorRow?.['message']).toContain('rate_limited');
+    expect(errorRow?.['fatal']).toBe(false);
+  });
+
+  // Sentence 5 ("one Journal per engine, closed with it") is also already on main at
+  // a4c9c40: SdkEngine's constructor opens exactly one Journal, reused by every session
+  // run() starts and closed once by close(). No new specimen needed -- "the journal
+  // handle across a chain" describe block above already proves state.torn stays 0 across
+  // a two-session chain, which a leaked-and-reopened handle on Windows would not survive.
+
+  it('sentence 2: journals the message\'s own serving model on turn.end, not just the class-selected one', async () => {
+    const { fn } = fakeQuery([[{
+      text: 'shipped', usage: { input: 10, cacheRead: 0, cacheCreation: 0, output: 1 },
+      toolUse: { name: 'mcp__forge__forge_done', input: { evidence: 'shipped' } },
+    }]]);
+    // The fake reports whatever model the SDK options carried; a real fallback reroute
+    // would report something different from what was asked for, which is the whole point.
+    // turn.end is journaled by Worker, which is what this drives through rather than
+    // SdkEngine.run() directly.
+    const engine = engineFor(fn);
+    const worker = new Worker({
+      run: 'model-run', brief: '# Goal\n\nDo the thing.\n', briefPath: join(home, 'brief.md'),
+      cwd: home, journalPath, engine: engine as never, maxContext: 60_000,
+    });
+    await worker.run();
+
+    const state = replay(journalPath);
+    const turnEnd = state.events.find((e) => e.event === 'turn.end' && e.run === 'model-run');
+    expect(turnEnd?.['messageModel']).toBe('claude-sonnet-5');
+  });
+
+  it('sentence 4: a subagent message (parent_tool_use_id set) is skipped for context and counted for cost', async () => {
+    const fn = ((params: { prompt: string | AsyncIterable<unknown>; options?: Options }) => {
+      const promptIter = params.prompt as AsyncIterable<unknown>;
+      async function* generate() {
+        yield {
+          type: 'system', subtype: 'init', session_id: 's', model: '', cwd: '', tools: [],
+          slash_commands: [],
+        };
+        for await (const _pushed of promptIter) {
+          yield {
+            type: 'assistant', session_id: 's', parent_tool_use_id: 'tu-agent',
+            message: {
+              model: 'claude-sonnet-5', content: [{ type: 'text', text: 'subagent working' }],
+              usage: {
+                input_tokens: 200_000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0,
+                output_tokens: 10,
+              },
+            },
+          };
+          yield {
+            type: 'assistant', session_id: 's',
+            message: {
+              model: 'claude-sonnet-5', content: [{ type: 'text', text: 'main loop' }],
+              usage: {
+                input_tokens: 100, cache_read_input_tokens: 0, cache_creation_input_tokens: 0,
+                output_tokens: 1,
+              },
+            },
+          };
+          yield { type: 'result', subtype: 'success', is_error: false, duration_ms: 1 };
+          return;
+        }
+      }
+      return generate() as unknown as Query;
+    }) as unknown as QueryFn;
+
+    const engine = engineFor(fn);
+    // request.ceiling is set below the subagent's 200,000 tokens but above the main
+    // loop's 100: if the subagent's usage were not skipped, the single turn SdkEngine
+    // hands back would carry a context at or past the ceiling. It must not, because none
+    // of that 200,000 belongs to the main loop this ceiling governs.
+    const { turns } = await engine.run({
+      ...REQUEST, run: 'subagent-run', env: { PATH: '/usr/bin' }, ceiling: 60_000,
+    });
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.context).toBe(100);
+    // Isolated from the main loop's own 100-token turn: this asserts the subagent's own
+    // 200,000 tokens were journaled for cost under their own row, not merely that some
+    // burn exists (which the main loop's turn.end would produce on its own either way).
+    const state = replay(journalPath);
+    const subagentRow = state.events.find((e) => e.event === 'subagent.usage' && e.run === 'subagent-run');
+    expect((subagentRow?.['usage'] as { input: number } | undefined)?.input).toBe(200_000);
+    expect(state.burn['sonnet']).toBeGreaterThan(0.5);
+  });
+});
+
+describe('B.3.1: park is a state', () => {
+  it('canUseTool parks the run and the pretool hook denies every tool call until answered', async () => {
+    const parked = new Map<string, string>();
+    const inbox = new Inbox(join(home, 'inbox-park'));
+    const journal = new Journal(journalPath);
+    const canUseTool = buildCanUseTool({ run: 'park-run', goal: 'park-run', inbox, journal, parked });
+
+    const askInput = {
+      questions: [{ question: 'dev or prod?', header: 'env',
+        options: [{ label: 'dev', description: '' }, { label: 'prod', description: '' }] }],
+    };
+    await canUseTool('AskUserQuestion', askInput);
+    const key = parked.get('park-run');
+    expect(key).toBeTruthy();
+
+    const hook = buildPreToolUseHook({ run: 'park-run', goal: 'park-run', parked, journal, inbox, deliverVia: 'hook' });
+    const denied = await hook({ toolName: 'Bash', input: { command: 'npm test' }, toolUseId: 'tu-1' });
+    expect(denied.decision).toBe('deny');
+    expect(denied.reason).toContain(key);
+
+    journal.close();
+    const state = replay(journalPath);
+    expect(state.events.some((e) => e.event === 'permission.denied' && e.run === 'park-run'
+      && String(e['reason'] ?? '').includes(key!))).toBe(true);
+  });
+
+  it('the falsifier: a tool call after the ask still executes if the guard is skipped', async () => {
+    // Same setup as above, but with an empty `parked` map, to prove the hook only denies
+    // because the map says the run is parked, never unconditionally.
+    const parked = new Map<string, string>();
+    const journal = new Journal(journalPath);
+    const inbox = new Inbox(join(home, 'inbox-unparked'));
+    const hook = buildPreToolUseHook({
+      run: 'unparked-run', goal: 'unparked-run', parked, journal, inbox, deliverVia: 'hook',
+    });
+    const verdict = await hook({ toolName: 'Bash', input: {}, toolUseId: 'tu-1' });
+    expect(verdict.decision).toBeUndefined();
+  });
+
+  it('forge answer clears the park and delivers the answer verbatim as the next user message', async () => {
+    let seenPrompts: string[] = [];
+    const fn = ((params: { prompt: string | AsyncIterable<unknown>; options?: Options }) => {
+      const promptIter = params.prompt as AsyncIterable<{ message: { content: string } }>;
+      async function* generate() {
+        yield {
+          type: 'system', subtype: 'init', session_id: 's', model: '', cwd: '', tools: [],
+          slash_commands: [],
+        };
+        for await (const pushed of promptIter) {
+          seenPrompts.push(pushed.message.content);
+          yield {
+            type: 'assistant', session_id: 's',
+            message: { model: '', content: [{ type: 'text', text: 'ack' }],
+              usage: { input_tokens: 1, output_tokens: 1 } },
+          };
+          yield { type: 'result', subtype: 'success', is_error: false, duration_ms: 1 };
+        }
+      }
+      return generate() as unknown as Query;
+    }) as unknown as QueryFn;
+
+    const parked = new Map<string, string>([['answer-run', 'abc123']]);
+    const engine = new SdkEngine({
+      journalPath, inboxDir: join(home, 'inbox-park2'), gotchasDir: join(home, 'gotchas-park'),
+      queryFn: fn, parked,
+    });
+    await engine.run({ ...REQUEST, run: 'answer-run', env: { PATH: '/usr/bin' } });
+
+    const result = await engine.answer('answer-run', 'abc123', 'go with dev');
+    expect(result.delivered).toBe(true);
+    expect(seenPrompts).toContain('go with dev');
+    expect(parked.has('answer-run')).toBe(false);
+
+    const state = replay(journalPath);
+    expect(state.events.some((e) => e.event === 'run.resumed' && e.run === 'answer-run')).toBe(true);
+  });
+
+  it('the falsifier: answering the wrong key delivers nothing', async () => {
+    const { fn } = fakeQuery([[{ text: 'ok' }]]);
+    const parked = new Map<string, string>([['wrong-key-run', 'real-key']]);
+    const engine = new SdkEngine({
+      journalPath, inboxDir: join(home, 'inbox-park3'), gotchasDir: join(home, 'gotchas-park3'),
+      queryFn: fn, parked,
+    });
+    await engine.run({ ...REQUEST, run: 'wrong-key-run', env: { PATH: '/usr/bin' } });
+
+    const result = await engine.answer('wrong-key-run', 'nope', 'go with dev');
+    expect(result.delivered).toBe(false);
+    expect(parked.get('wrong-key-run')).toBe('real-key');
+  });
+});
+
+describe('F2: the hook consults the shared answer while parked', () => {
+  it('allows the call and resumes once a separate Inbox instance writes the answer', async () => {
+    const parked = new Map<string, string>();
+    const inbox = new Inbox(join(home, 'inbox-f2'));
+    const journal = new Journal(journalPath);
+    const canUseTool = buildCanUseTool({ run: 'f2-run', goal: 'f2-run', inbox, journal, parked });
+    await canUseTool('AskUserQuestion', {
+      questions: [{ question: 'dev or prod?', options: [{ label: 'dev' }, { label: 'prod' }] }],
+    });
+    const key = parked.get('f2-run');
+    expect(key).toBeTruthy();
+
+    // A second `Inbox` instance on the same directory, standing in for a separate `forge
+    // answer` process. This never touches `SdkEngine.answer()`, which only ever reaches a
+    // session the process holding it still has open.
+    new Inbox(join(home, 'inbox-f2')).answer(key!, 'go with dev');
+
+    const hook = buildPreToolUseHook({
+      run: 'f2-run', goal: 'f2-run', parked, journal, inbox, deliverVia: 'hook',
+    });
+    const verdict = await hook({ toolName: 'Bash', input: { command: 'npm test' }, toolUseId: 'tu-1' });
+
+    expect(verdict.decision).toBeUndefined();
+    expect(verdict.additionalContext).toContain('go with dev');
+    expect(parked.has('f2-run')).toBe(false);
+
+    journal.close();
+    const state = replay(journalPath);
+    expect(state.events.some((e) => e.event === 'run.resumed' && e.run === 'f2-run')).toBe(true);
+  });
+
+  it('the falsifier: still denies while parked with no answer written', async () => {
+    const parked = new Map<string, string>([['f2-deny-run', 'some-key']]);
+    const inbox = new Inbox(join(home, 'inbox-f2-deny'));
+    const journal = new Journal(journalPath);
+    const hook = buildPreToolUseHook({
+      run: 'f2-deny-run', goal: 'f2-deny-run', parked, journal, inbox, deliverVia: 'hook',
+    });
+    const verdict = await hook({ toolName: 'Bash', input: {}, toolUseId: 'tu-1' });
+    expect(verdict.decision).toBe('deny');
+    expect(parked.has('f2-deny-run')).toBe(true);
+  });
+});
+
+describe('B.3.3: the ceiling fires inside the turn', () => {
+  it('denies a tool call inside the same turn once usage crosses the ceiling, before the segment resolves', async () => {
+    const executed: string[] = [];
+    const fn = ((params: { prompt: string | AsyncIterable<unknown>; options?: Options }) => {
+      const hookEntry = (params.options as unknown as {
+        hooks?: { PreToolUse?: Array<{ hooks: Array<(input: unknown, id: string, ctx: unknown) =>
+          Promise<{ continue: boolean }>> }> };
+      }).hooks?.['PreToolUse']?.[0]?.hooks[0];
+      const promptIter = params.prompt as AsyncIterable<unknown>;
+      const steps = [
+        { usage: { input: 1_000, cacheRead: 0, cacheCreation: 0, output: 1 }, toolName: 'Bash' },
+        { usage: { input: 65_000, cacheRead: 0, cacheCreation: 0, output: 1 }, toolName: 'Bash' },
+        { toolName: 'Bash' },
+      ];
+      async function* generate() {
+        yield {
+          type: 'system', subtype: 'init', session_id: 'gated', model: '', cwd: '', tools: [],
+          slash_commands: [],
+        };
+        for await (const _pushed of promptIter) {
+          for (const step of steps) {
+            if (step.usage) {
+              yield {
+                type: 'assistant', session_id: 'gated',
+                message: {
+                  model: '', content: [],
+                  usage: {
+                    input_tokens: step.usage.input, cache_read_input_tokens: step.usage.cacheRead,
+                    cache_creation_input_tokens: step.usage.cacheCreation,
+                    output_tokens: step.usage.output,
+                  },
+                },
+              };
+            }
+            const toolUseId = `tu-${executed.length}`;
+            const verdict = hookEntry
+              ? await hookEntry(
+                { hook_event_name: 'PreToolUse', tool_name: step.toolName, tool_input: {} },
+                toolUseId, {},
+              )
+              : { continue: true };
+            if (verdict.continue === false) continue;
+            executed.push(step.toolName);
+            yield {
+              type: 'assistant', session_id: 'gated',
+              message: { model: '', content: [{ type: 'tool_use', id: toolUseId, name: step.toolName, input: {} }] },
+            };
+            yield {
+              type: 'user', session_id: 'gated',
+              message: { content: [{ type: 'tool_result', tool_use_id: toolUseId, is_error: false, content: 'ok' }] },
+            };
+          }
+          yield { type: 'result', subtype: 'success', is_error: false, duration_ms: 1 };
+          return;
+        }
+      }
+      return generate() as unknown as Query;
+    }) as unknown as QueryFn;
+
+    const engine = engineFor(fn);
+    await engine.run({ ...REQUEST, run: 'gated-run', env: { PATH: '/usr/bin' }, ceiling: 60_000 } as never);
+
+    // The falsifier this closes: a deny that only ever happens after the segment's
+    // result row would let every scripted tool call run first. Here the third (and, on
+    // this implementation, the second) never executes, proven by counting what the fake
+    // stream actually let through rather than trusting a return value.
+    expect(executed).toEqual(['Bash']);
+
+    const state = replay(journalPath);
+    const denies = state.events.filter((e) => e.event === 'permission.denied' && e.run === 'gated-run'
+      && String(e['reason'] ?? '').includes('ceiling'));
+    expect(denies.length).toBeGreaterThan(0);
   });
 });
 
@@ -438,5 +874,253 @@ describe('journaling a tool call as it happens', () => {
     // No matching tool-result was emitted, so the run's currentTool stays open --
     // which is exactly the case liveness's tool-budget signal exists to catch.
     expect(state.runs['tool-run']?.currentTool?.name).toBe('Bash');
+  });
+});
+
+describe('B.3.9: a report row redacts a secret before it is journaled', () => {
+  it('redactFields scrubs a token-shaped run out of every string field, leaving non-strings alone', async () => {
+    const { redactFields } = await import('../../src/forge/redact.js');
+    const secret = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    const cleaned = redactFields({
+      outcome: 'done', done: `pushed with token ${secret}`, cost: 3.5,
+    });
+    expect(cleaned['done']).not.toContain(secret);
+    expect(cleaned['done']).toContain('[REDACTED]');
+    expect(cleaned['cost']).toBe(3.5);
+  });
+
+});
+
+describe('B.3.9: drift raised after a push', () => {
+  it('a conflicting mergeable state after git push raises a blocker', async () => {
+    const { fn } = fakeQuery([[{
+      text: 'pushed', usage: { input: 10, cacheRead: 0, cacheCreation: 0, output: 1 },
+      toolUse: { name: 'Bash', input: { command: 'git push' } },
+    }]]);
+    const engine = new SdkEngine({
+      journalPath, inboxDir: join(home, 'inbox-drift'), gotchasDir: join(home, 'gotchas-drift'),
+      queryFn: fn, checkDrift: async () => 'CONFLICTING',
+    });
+    await engine.run({ ...REQUEST, run: 'drift-run', env: { PATH: '/usr/bin' } });
+    // The check is fire-and-forget from the tool-result handler; give its microtask a
+    // turn to settle before reading what it did.
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const inbox = new Inbox(join(home, 'inbox-drift'));
+    expect(inbox.open()).toHaveLength(1);
+    expect(inbox.open()[0]?.question).toMatch(/conflicts/);
+    const state = replay(journalPath);
+    expect(state.events.some((e) => e.event === 'run.blocked' && e.run === 'drift-run')).toBe(true);
+  });
+
+  it('the falsifier: the check is called but a MERGEABLE result raises nothing', async () => {
+    const { fn } = fakeQuery([[{
+      text: 'pushed', usage: { input: 10, cacheRead: 0, cacheCreation: 0, output: 1 },
+      toolUse: { name: 'Bash', input: { command: 'git push origin feature/x' } },
+    }]]);
+    let called = false;
+    const engine = new SdkEngine({
+      journalPath, inboxDir: join(home, 'inbox-drift2'), gotchasDir: join(home, 'gotchas-drift2'),
+      queryFn: fn, checkDrift: async () => { called = true; return 'MERGEABLE'; },
+    });
+    await engine.run({ ...REQUEST, run: 'drift-run-2', env: { PATH: '/usr/bin' } });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(called).toBe(true);
+    const inbox = new Inbox(join(home, 'inbox-drift2'));
+    expect(inbox.open()).toHaveLength(0);
+  });
+
+  it('a command that only mentions "git push" in an argument does not fire the drift check', async () => {
+    const { fn } = fakeQuery([[{
+      text: 'searched', usage: { input: 10, cacheRead: 0, cacheCreation: 0, output: 1 },
+      toolUse: { name: 'Bash', input: { command: 'git log --grep "git push"' } },
+    }]]);
+    let called = false;
+    const engine = new SdkEngine({
+      journalPath, inboxDir: join(home, 'inbox-drift3'), gotchasDir: join(home, 'gotchas-drift3'),
+      queryFn: fn, checkDrift: async () => { called = true; return 'MERGEABLE'; },
+    });
+    await engine.run({ ...REQUEST, run: 'drift-run-3', env: { PATH: '/usr/bin' } });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(called).toBe(false);
+  });
+});
+
+describe('B.3.8: `committed` reflects an actual git commit, not just the phrase appearing', () => {
+  it('sets committed when the session ran git commit', async () => {
+    const { fn } = fakeQuery([[{
+      text: 'committed', usage: { input: 10, cacheRead: 0, cacheCreation: 0, output: 1 },
+      toolUse: { name: 'Bash', input: { command: 'git commit -m "fix"' } },
+    }]]);
+    const engine = new SdkEngine({
+      journalPath, inboxDir: join(home, 'inbox-commit'), gotchasDir: join(home, 'gotchas-commit'),
+      queryFn: fn,
+    });
+    const result = await engine.run({ ...REQUEST, run: 'commit-run', env: { PATH: '/usr/bin' } });
+    expect(result.committed).toBe(true);
+  });
+
+  it('the falsifier: a command that only mentions "git commit" in an argument leaves committed false', async () => {
+    const { fn } = fakeQuery([[{
+      text: 'searched', usage: { input: 10, cacheRead: 0, cacheCreation: 0, output: 1 },
+      toolUse: { name: 'Bash', input: { command: 'git log --grep "git commit"' } },
+    }]]);
+    const engine = new SdkEngine({
+      journalPath, inboxDir: join(home, 'inbox-commit2'), gotchasDir: join(home, 'gotchas-commit2'),
+      queryFn: fn,
+    });
+    const result = await engine.run({ ...REQUEST, run: 'commit-run-2', env: { PATH: '/usr/bin' } });
+    expect(result.committed).toBe(false);
+  });
+});
+
+describe('F3: forge_ask parks', () => {
+  it('parks the run and journals run.parked with the key, exactly as AskUserQuestion does', () => {
+    const parked = new Map<string, string>();
+    const inbox = new Inbox(join(home, 'inbox-f3'));
+    const journal = new Journal(journalPath);
+    const gotchas = new Gotchas(join(home, 'gotchas-f3'), journalPath);
+    const handlers = buildForgeToolHandlers({
+      run: 'f3-run', goal: 'f3-run', inbox, journal, parked, gotchas,
+    });
+
+    handlers.onAsk({ question: 'dev or prod?', options: ['dev', 'prod'], kind: 'question' });
+
+    const key = parked.get('f3-run');
+    expect(key).toBeTruthy();
+
+    journal.close();
+    const state = replay(journalPath);
+    expect(state.events.some((e) => e.event === 'run.parked' && e.run === 'f3-run' && e['key'] === key))
+      .toBe(true);
+
+    // The next tool call is denied naming it, the same PreToolUse guard AskUserQuestion's
+    // park relies on.
+    const hookJournal = new Journal(journalPath);
+    const hook = buildPreToolUseHook({
+      run: 'f3-run', goal: 'f3-run', parked, journal: hookJournal, inbox, deliverVia: 'hook',
+    });
+    return hook({ toolName: 'Bash', input: {}, toolUseId: 'tu-1' }).then((verdict) => {
+      hookJournal.close();
+      expect(verdict.decision).toBe('deny');
+      expect(verdict.reason).toContain(key);
+    });
+  });
+
+  it('the falsifier: only asserting the AskUserQuestion path never proves forge_ask parks anything', () => {
+    // Baseline forge_ask (before F3) raised the inbox entry and journaled forge.ask but
+    // never touched `parked` at all: a specimen that only exercises AskUserQuestion, as the
+    // B.3.1 suite above does, would stay green through that regression. This one calls
+    // forge_ask's own handler directly and fails unless it parks too.
+    const parked = new Map<string, string>();
+    const inbox = new Inbox(join(home, 'inbox-f3-falsifier'));
+    const journal = new Journal(journalPath);
+    const gotchas = new Gotchas(join(home, 'gotchas-f3-falsifier'), journalPath);
+    const handlers = buildForgeToolHandlers({
+      run: 'f3-falsifier-run', goal: 'f3-falsifier-run', inbox, journal, parked, gotchas,
+    });
+
+    handlers.onAsk({ question: 'staging or prod?' });
+
+    expect(parked.has('f3-falsifier-run')).toBe(true);
+  });
+});
+
+describe('F4: close() stops every live engine, not just forgetting about it', () => {
+  it('tells the underlying session to stop once the whole chain is done', async () => {
+    // A real async generator, standing in for the SDK's own session stream: calling
+    // `.return()` on it (which is what `Engine.stop()` does to its handle) runs this
+    // `finally`, the same way ending a live SDK session would. No live SDK anywhere here.
+    let stopped = false;
+    const fn = ((params: { prompt: string | AsyncIterable<unknown>; options?: Options }) => {
+      const promptIter = params.prompt as AsyncIterable<unknown>;
+      async function* generate() {
+        try {
+          yield {
+            type: 'system', subtype: 'init', session_id: 'sdk-fake-session',
+            model: params.options?.model ?? '', cwd: params.options?.cwd ?? '',
+            tools: [], slash_commands: [],
+          };
+          for await (const _pushed of promptIter) {
+            yield {
+              type: 'assistant', session_id: 'sdk-fake-session',
+              message: {
+                model: params.options?.model ?? '',
+                content: [
+                  { type: 'text', text: 'shipped' },
+                  { type: 'tool_use', id: 'tu-1', name: 'mcp__forge__forge_done', input: { evidence: 'shipped' } },
+                ],
+                usage: { input_tokens: 10, output_tokens: 1 },
+              },
+            };
+            yield {
+              type: 'user', session_id: 'sdk-fake-session',
+              message: { content: [{ type: 'tool_result', tool_use_id: 'tu-1', is_error: false, content: 'ok' }] },
+            };
+            yield { type: 'result', subtype: 'success', is_error: false, duration_ms: 1 };
+            // No `return` here: a real session stays open for the next prompt, and only
+            // `Engine.stop()` (calling `.return()` on this generator from outside) ends it.
+          }
+        } finally {
+          stopped = true;
+        }
+      }
+      return generate() as unknown as Query;
+    }) as unknown as QueryFn;
+
+    const engine = new SdkEngine({
+      journalPath, inboxDir: join(home, 'inbox-f4'), gotchasDir: join(home, 'gotchas-f4'), queryFn: fn,
+    });
+    await engine.run({ ...REQUEST, run: 'f4-run', env: { PATH: '/usr/bin' } });
+
+    expect(stopped).toBe(false);
+
+    await engine.close();
+
+    expect(stopped).toBe(true);
+  });
+});
+
+describe('F5: forge_done wins over a ceiling reached on its own closing message', () => {
+  it('ends done, with one exec call and zero handoffs, when the tool result and the ceiling-crossing usage share one turn', async () => {
+    // The real order: the SDK reports a message's usage together with its content, so a
+    // message that carries the forge_done tool call also carries the usage that produced
+    // it -- including, when the session is near its ceiling, usage that has already
+    // reached it. The tool result arrives after, in the following message. Worker.ts sees
+    // both `done` and the ceiling on the same turn and has to pick one: done has to win,
+    // or a session that finishes right at its own ceiling would hand off to a successor
+    // that has nothing left to do.
+    const { fn } = fakeQuery([[{
+      text: 'shipped', usage: { input: 60_000, cacheRead: 0, cacheCreation: 0, output: 1 },
+      toolUse: { name: 'mcp__forge__forge_done', input: { evidence: 'shipped' } },
+    }]]);
+    let execCalls = 0;
+    const engine = new SdkEngine({
+      journalPath, inboxDir: join(home, 'inbox-f5'), gotchasDir: join(home, 'gotchas-f5'), queryFn: fn,
+    });
+    const exec = async (request: { argv: string[] }) => {
+      execCalls += 1;
+      return {
+        ok: true, tail: '', returncode: 0, argv: request.argv, owner: 'f5-run', startedAt: 0, durationMs: 1,
+      };
+    };
+    const worker = new Worker({
+      run: 'f5-run',
+      brief: '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnpm run verify\n```\n',
+      briefPath: join(home, 'brief.md'), cwd: home, journalPath, engine, exec, maxContext: 60_000,
+    });
+
+    const result = await worker.run();
+
+    expect(result.verdict).toBe('done');
+    expect(result.handoffs).toBe(0);
+    expect(result.sessions).toHaveLength(1);
+    expect(execCalls).toBe(1);
+    const state = replay(journalPath);
+    expect(state.events.some((e) => e.event === 'run.handoff' && e.run === 'f5-run')).toBe(false);
+    expect(state.events.some((e) => e.event === 'run.finished' && e.run === 'f5-run' && e['verdict'] === 'done'))
+      .toBe(true);
   });
 });

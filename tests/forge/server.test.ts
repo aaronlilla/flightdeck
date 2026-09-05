@@ -9,7 +9,7 @@
  * Bound to loopback. This serves the fleet's state and takes answers that resume runs, so
  * a wrong bind address is a control surface on the network.
  */
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -26,6 +26,10 @@ let base: string;
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'forge-server-'));
+  // ensureServerToken() falls back to serverTokenPath(), which resolves through
+  // forgeHome(): without this every specimen here would mint (or read) a token from this
+  // machine's real ~/.forge rather than the test's own temp directory.
+  process.env['FORGE_HOME'] = dir;
   const lanes = new Lanes(join(dir, 'lanes'));
   lanes.put('alpha', {
     column: 'c', model: 'claude-sonnet-5', context: 42_000, cost_usd: 1.25,
@@ -104,6 +108,84 @@ describe('GET /state', () => {
     expect(state['fleet']).toHaveProperty('value');
   });
 
+  it('B.3.6 sentence 1: stuck and fleet carry observed_at, not verified_at -- neither is backed by a source read', async () => {
+    const state = await (await fetch(`${base}/state`)).json() as Record<string, unknown>;
+    expect(state['stuck']).toHaveProperty('observed_at');
+    expect(state['stuck']).not.toHaveProperty('verified_at');
+    expect(state['fleet']).toHaveProperty('observed_at');
+    expect(state['fleet']).not.toHaveProperty('verified_at');
+  });
+
+  it('B.3.6 sentence 1: burn, handoffs and torn carry verified_at from the journal file\'s own mtime', async () => {
+    const state = await (await fetch(`${base}/state`)).json() as Record<string, unknown>;
+    const burn = state['burn'] as { verified_at: number };
+    // Read fresh from the file the journal actually is, not from Date.now() at request
+    // time: the falsifier this closes is a verified_at that only ever equals "now".
+    const mtime = statSync(join(dir, 'fleet.jsonl')).mtimeMs;
+    expect(burn.verified_at).toBe(mtime);
+  });
+
+  it('B.3.9: a second /state read only parses the bytes appended since the first', async () => {
+    let bytesRead = 0;
+    const countingReader = {
+      size: (path: string) => statSync(path).size,
+      readRange: (path: string, start: number, end: number) => {
+        bytesRead += end - start;
+        return readFileSync(path, 'utf8').slice(start, end);
+      },
+    };
+    const journalPath = join(dir, 'fleet.jsonl');
+    for (let index = 0; index < 50; index += 1) {
+      new Journal(journalPath).append({ event: 'turn.end', run: 'alpha', actor: 'worker', context: index });
+    }
+    const countingServer = new ForgeServer({
+      lanes: new Lanes(join(dir, 'lanes')), inbox: new Inbox(join(dir, 'inbox')),
+      journalPath, port: 0, journalRangeReader: countingReader,
+    });
+    const countingBase = `http://127.0.0.1:${await countingServer.listen()}`;
+    try {
+      await fetch(`${countingBase}/state`);
+      const afterFirst = bytesRead;
+      expect(afterFirst).toBeGreaterThan(0);
+
+      new Journal(journalPath).append({ event: 'turn.end', run: 'alpha', actor: 'worker', context: 999 });
+      await fetch(`${countingBase}/state`);
+      const onSecondRead = bytesRead - afterFirst;
+      expect(onSecondRead).toBeGreaterThan(0);
+      expect(onSecondRead).toBeLessThan(afterFirst / 10);
+    } finally {
+      await countingServer.close();
+    }
+  });
+
+  it('B.3.9 code review: a caller-supplied JournalCache is the one /state actually reads '
+    + 'from, so a liveness tick sharing it with the server pays for one fold, not two', async () => {
+    const journalPath = join(dir, 'fleet-shared.jsonl');
+    new Journal(journalPath).append({ event: 'turn.end', run: 'alpha', actor: 'worker', context: 1 });
+
+    const { JournalCache } = await import('../../src/forge/journal.js');
+    const sharedCache = new JournalCache();
+    // Priming the shared cache directly, the way cli.ts's liveness tick would between
+    // ticks: if the server built its own cache instead of using this one, its first read
+    // would still have to fold from byte zero and this assertion would fail.
+    sharedCache.read(journalPath);
+    let readCalls = 0;
+    const originalRead = sharedCache.read.bind(sharedCache);
+    sharedCache.read = (path: string) => { readCalls += 1; return originalRead(path); };
+
+    const sharedServer = new ForgeServer({
+      lanes: new Lanes(join(dir, 'lanes-shared')), inbox: new Inbox(join(dir, 'inbox-shared')),
+      journalPath, port: 0, journalCache: sharedCache,
+    });
+    const sharedBase = `http://127.0.0.1:${await sharedServer.listen()}`;
+    try {
+      await fetch(`${sharedBase}/state`);
+      expect(readCalls).toBe(1);
+    } finally {
+      await sharedServer.close();
+    }
+  });
+
   it('carries a failed fleet probe as its own shape, not folded into the array', async () => {
     const failingServer = new ForgeServer({
       lanes: new Lanes(join(dir, 'lanes')),
@@ -158,7 +240,7 @@ describe('POST /answer', () => {
     const entry = server.inbox.raise({ run: 'alpha', question: 'Which environment?' });
     const response = await fetch(`${base}/answer`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', 'x-forge-token': server.token },
       body: JSON.stringify({ key: entry.key, answer: 'staging' }),
     });
 
@@ -170,7 +252,7 @@ describe('POST /answer', () => {
   it('refuses an answer to a key nobody asked', async () => {
     const response = await fetch(`${base}/answer`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', 'x-forge-token': server.token },
       body: JSON.stringify({ key: 'not-a-key', answer: 'yes' }),
     });
     expect(response.status).toBe(404);
@@ -179,7 +261,7 @@ describe('POST /answer', () => {
   it('refuses a body it cannot read rather than guessing', async () => {
     const response = await fetch(`${base}/answer`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', 'x-forge-token': server.token },
       body: 'not json',
     });
     expect(response.status).toBe(400);
@@ -187,6 +269,60 @@ describe('POST /answer', () => {
 
   it('refuses a GET, because answering is not a safe method', async () => {
     expect((await fetch(`${base}/answer`)).status).toBe(405);
+  });
+
+  it('B.3.9: refuses a request with no token', async () => {
+    const entry = server.inbox.raise({ run: 'alpha', question: 'Which environment?' });
+    const response = await fetch(`${base}/answer`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ key: entry.key, answer: 'staging' }),
+    });
+    expect(response.status).toBe(401);
+    expect(server.inbox.entry(entry.key)?.answer).toBeUndefined();
+  });
+
+  it('B.3.9: refuses a request with the wrong token', async () => {
+    const entry = server.inbox.raise({ run: 'alpha', question: 'Which environment?' });
+    const response = await fetch(`${base}/answer`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forge-token': 'not-the-token' },
+      body: JSON.stringify({ key: entry.key, answer: 'staging' }),
+    });
+    expect(response.status).toBe(401);
+    expect(server.inbox.entry(entry.key)?.answer).toBeUndefined();
+  });
+
+  it('B.3.9: refuses a request from a different Origin', async () => {
+    const entry = server.inbox.raise({ run: 'alpha', question: 'Which environment?' });
+    const response = await fetch(`${base}/answer`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json', 'x-forge-token': server.token, origin: 'http://evil.example',
+      },
+      body: JSON.stringify({ key: entry.key, answer: 'staging' }),
+    });
+    expect(response.status).toBe(403);
+    expect(server.inbox.entry(entry.key)?.answer).toBeUndefined();
+  });
+
+  it('B.3.9: refuses a null body', async () => {
+    const response = await fetch(`${base}/answer`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forge-token': server.token },
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it('B.3.9: refuses an oversized body', async () => {
+    const entry = server.inbox.raise({ run: 'alpha', question: 'Which environment?' });
+    const response = await fetch(`${base}/answer`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forge-token': server.token },
+      body: JSON.stringify({ key: entry.key, answer: 'x'.repeat(100_000) }),
+    });
+    expect(response.status).toBe(413);
+    expect(server.inbox.entry(entry.key)?.answer).toBeUndefined();
   });
 });
 

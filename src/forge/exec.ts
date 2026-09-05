@@ -15,6 +15,8 @@ import { execFileSync, spawn } from 'node:child_process';
 import { createWriteStream, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { redact } from './redact.js';
+
 export interface Budget {
   /** Seconds of total run time. */
   wall: number;
@@ -35,6 +37,8 @@ export const CLASS_BUDGETS: Record<string, Budget> = {
   build: { wall: 1800, idle: 600 },
   script: { wall: 120, idle: 60 },
   goal: { wall: 7200, idle: 900 },
+  /** A brief's `## Verification` commands, run by `forge_done` before it honours a claim. */
+  verify: { wall: 900, idle: 300 },
 };
 
 export const DEFAULT_CLASS = 'script';
@@ -114,6 +118,8 @@ export interface RunRequest {
   env?: NodeJS.ProcessEnv;
   /** Where the log and dump go. Omitted means memory only. */
   logDir?: string;
+  /** Overrides `killTree`. A specimen counts calls instead of touching a real process. */
+  killFn?: (pid: number) => void;
 }
 
 export interface RunResult {
@@ -186,11 +192,19 @@ export async function run(request: RunRequest): Promise<RunResult> {
 
     // One timer for both budgets. A separate idle timer reset on every chunk would fire
     // thousands of times a second on a chatty build.
+    // Latched, not fired every tick: a process that ignores the first SIGKILL is not
+    // going to die from getting it forty times, and re-issuing it every 250ms this way
+    // spun on a process taskkill had already asked to end. One attempt, one retry.
+    let killAttempts = 0;
+    const killFn = request.killFn ?? killTree;
     const tick = setInterval(() => {
       const now = Date.now();
       if (now - startedAt > budget.wall * 1000) killed = 'wall';
       else if (now - lastActivity > budget.idle * 1000) killed = 'idle';
-      if (killed && child.pid) killTree(child.pid);
+      if (killed && child.pid && killAttempts < 2) {
+        killFn(child.pid);
+        killAttempts += 1;
+      }
     }, 250);
 
     const finish = (returncode: number | null) => {
@@ -200,6 +214,9 @@ export async function run(request: RunRequest): Promise<RunResult> {
       log?.end();
 
       const durationMs = Date.now() - startedAt;
+      // Redacted on the whole accumulated buffer, never per chunk: a token split across
+      // two stdout reads would survive a redaction applied to each chunk on its own.
+      const tail = redact(buffer);
       if (killed && dumpPath) {
         writeFileSync(dumpPath, [
           `owner: ${request.owner}`,
@@ -209,7 +226,7 @@ export async function run(request: RunRequest): Promise<RunResult> {
           `ran for: ${Math.round(durationMs / 1000)}s`,
           '',
           '--- last output ---',
-          buffer,
+          tail,
         ].join('\n'), 'utf8');
       }
 
@@ -221,7 +238,7 @@ export async function run(request: RunRequest): Promise<RunResult> {
         ...(killed ? { killed } : {}),
         ...(logPath ? { logPath } : {}),
         ...(killed && dumpPath ? { dumpPath } : {}),
-        tail: buffer,
+        tail,
         startedAt,
         durationMs,
         ok: !killed && returncode === 0,

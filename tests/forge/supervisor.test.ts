@@ -177,22 +177,22 @@ describe('the kill switch', () => {
    * Its job is to end all spend, and to end it in a way the work survives: every run
    * parks with a handoff packet, so restarting continues rather than starting over.
    */
-  it('parks every running lane', () => {
+  it('parks every running lane', async () => {
     lanes.put('alpha', { column: 'c', session_id: 's1' });
     lanes.put('beta', { column: 'd', session_id: 's2' });
     const fleet = new Fleet(lanes, join(dir, 'fleet.jsonl'));
 
-    const stopped = fleet.stopAll('kill switch');
+    const stopped = await fleet.stopAll('kill switch');
 
     expect(stopped.map((row) => row.slug).sort()).toEqual(['alpha', 'beta']);
     expect(lanes.get('alpha')?.verdict).toBe('parked');
     expect(lanes.get('beta')?.verdict).toBe('parked');
   });
 
-  it('asks each run for a handoff, so restarting continues rather than starts over', () => {
+  it('asks each run for a handoff, so restarting continues rather than starts over', async () => {
     lanes.put('alpha', { column: 'c', session_id: 's1' });
     const fleet = new Fleet(lanes, join(dir, 'fleet.jsonl'));
-    fleet.stopAll('kill switch');
+    await fleet.stopAll('kill switch');
 
     const state = replay(join(dir, 'fleet.jsonl'));
     const parked = state.events.filter((event) => event.event === 'run.parked');
@@ -200,40 +200,109 @@ describe('the kill switch', () => {
     expect(parked[0]?.['handoffRequested']).toBe(true);
   });
 
-  it('journals why, so the stop is not a mystery afterwards', () => {
+  it('journals why, so the stop is not a mystery afterwards', async () => {
     lanes.put('alpha', { column: 'c', session_id: 's1' });
     const fleet = new Fleet(lanes, join(dir, 'fleet.jsonl'));
-    fleet.stopAll('the window is nearly spent');
+    await fleet.stopAll('the window is nearly spent');
 
     const state = replay(join(dir, 'fleet.jsonl'));
     expect(state.events.some((event) => String(event['reason'] ?? '').includes('window')))
       .toBe(true);
   });
 
-  it('leaves a lane that had already finished alone', () => {
+  it('leaves a lane that had already finished alone', async () => {
     lanes.put('done', { column: 'c', verdict: 'done', ended: 1 });
     const fleet = new Fleet(lanes, join(dir, 'fleet.jsonl'));
 
-    expect(fleet.stopAll('kill switch')).toHaveLength(0);
+    expect(await fleet.stopAll('kill switch')).toHaveLength(0);
     expect(lanes.get('done')?.verdict).toBe('done');
   });
 
-  it('is safe to run twice', () => {
+  it('is safe to run twice', async () => {
     lanes.put('alpha', { column: 'c', session_id: 's1' });
     const fleet = new Fleet(lanes, join(dir, 'fleet.jsonl'));
-    fleet.stopAll('once');
-    expect(fleet.stopAll('twice')).toHaveLength(0);
+    await fleet.stopAll('once');
+    expect(await fleet.stopAll('twice')).toHaveLength(0);
   });
 
-  it('reports nothing to stop rather than failing when the fleet is idle', () => {
+  it('reports nothing to stop rather than failing when the fleet is idle', async () => {
     const fleet = new Fleet(lanes, join(dir, 'fleet.jsonl'));
-    expect(fleet.stopAll('kill switch')).toEqual([]);
+    expect(await fleet.stopAll('kill switch')).toEqual([]);
   });
 
-  it('counts a lane the breaker has flagged as stopped too', () => {
+  it('counts a lane the breaker has flagged as stopped too', async () => {
     lanes.put('flappy', { column: 'c', session_id: 's1', needs_aaron: 'three bad starts' });
     const fleet = new Fleet(lanes, join(dir, 'fleet.jsonl'));
-    expect(fleet.stopAll('kill switch').map((row) => row.slug)).toEqual(['flappy']);
+    expect((await fleet.stopAll('kill switch')).map((row) => row.slug)).toEqual(['flappy']);
+  });
+
+  it('B.3.2: reaches a lane whose session this process holds directly', async () => {
+    lanes.put('alpha', { column: 'c', session_id: 's1' });
+    const sends: string[] = [];
+    let stopCalls = 0;
+    const live = {
+      send: async (text: string) => { sends.push(text); return 'left off at src/x.ts:42'; },
+      stop: async () => { stopCalls += 1; },
+    };
+    const fleet = new Fleet(
+      lanes, join(dir, 'fleet.jsonl'), undefined, new Map([['alpha', live]]),
+    );
+
+    const stopped = await fleet.stopAll('kill switch');
+
+    expect(sends).toHaveLength(1);
+    expect(stopCalls).toBe(1);
+    expect(stopped[0]?.reached).toBe(true);
+    const state = replay(join(dir, 'fleet.jsonl'));
+    const parked = state.events.find((event) => event.event === 'run.parked' && event.run === 'alpha');
+    expect(parked?.['packet']).toBe('left off at src/x.ts:42');
+  });
+
+  it('B.3.2: marks a lane with no live session unreachable rather than silently parked', async () => {
+    lanes.put('beta', { column: 'd', session_id: 's2' });
+    const fleet = new Fleet(lanes, join(dir, 'fleet.jsonl'));
+
+    const stopped = await fleet.stopAll('kill switch');
+
+    expect(stopped[0]?.reached).toBe(false);
+  });
+
+  it('B.3.2: the falsifier -- a lane the code never contacted still counts as unreachable, not reached', async () => {
+    lanes.put('gamma', { column: 'e', session_id: 's3' });
+    const neverResponds = {
+      send: () => new Promise<unknown>(() => {}),
+      stop: async () => {},
+    };
+    const fleet = new Fleet(
+      lanes, join(dir, 'fleet.jsonl'), undefined, new Map([['gamma', neverResponds]]),
+    );
+
+    const stopped = await fleet.stopAll('kill switch', 10);
+
+    expect(stopped[0]?.reached).toBe(false);
+  });
+
+  it('code-review finding: a rejected send on one live session does not abort the rest of the loop', async () => {
+    lanes.put('alpha', { column: 'c', session_id: 's1' });
+    lanes.put('beta', { column: 'd', session_id: 's2' });
+    const rejecting = { send: async () => { throw new Error('the subprocess is gone'); }, stop: async () => {} };
+    const betaStops: string[] = [];
+    const healthy = {
+      send: async () => 'packet from beta',
+      stop: async () => { betaStops.push('beta'); },
+    };
+    const fleet = new Fleet(
+      lanes, join(dir, 'fleet.jsonl'), undefined,
+      new Map([['alpha', rejecting], ['beta', healthy]]),
+    );
+
+    const stopped = await fleet.stopAll('kill switch');
+
+    // Both lanes were actually looked at, not just the first one before the throw.
+    expect(stopped.map((row) => row.slug).sort()).toEqual(['alpha', 'beta']);
+    expect(stopped.find((row) => row.slug === 'alpha')?.reached).toBe(false);
+    expect(stopped.find((row) => row.slug === 'beta')?.reached).toBe(true);
+    expect(betaStops).toEqual(['beta']);
   });
 });
 
@@ -258,10 +327,10 @@ describe('the kill switch file', () => {
     expect(readKillSwitch(path)).toEqual({ engaged: false });
   });
 
-  it('Fleet.stopAll engages it, whether or not any lane was running', () => {
+  it('Fleet.stopAll engages it, whether or not any lane was running', async () => {
     const path = join(dir, 'kill-switch.json');
     const fleet = new Fleet(lanes, join(dir, 'fleet.jsonl'), path);
-    fleet.stopAll('stopped by hand');
+    await fleet.stopAll('stopped by hand');
     expect(readKillSwitch(path).engaged).toBe(true);
   });
 });

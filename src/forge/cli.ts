@@ -21,18 +21,19 @@ import { runCutover } from './cutover.js';
 import { readProcessList, watchedProcesses } from './fleetwatch.js';
 import { Gotchas } from './gotcha.js';
 import { Inbox } from './inbox.js';
-import { replay, Journal } from './journal.js';
+import { replay, Journal, JournalCache } from './journal.js';
 import { checkLaunch, launchEnv, loginInFlight, pinnedRuntime, runtimeVersion } from './launcher.js';
 import { assess, LivenessSupervisor } from './liveness.js';
 import {
   ensureHome, fleetConfigDirChoice, forgeHome, gotchasDir, inboxDir, journalPath, killSwitchPath,
-  lanesDir,
+  lanesDir, registryDir,
 } from './paths.js';
-import { RunInbox } from './runinbox.js';
+import { reconcileRegistry, Registry } from './registry.js';
+import { deliverAnswer, RunInbox } from './runinbox.js';
 import { SdkEngine } from './sdkengine.js';
 import { FORGE_PORT, ForgeServer } from './server.js';
 import { Breaker, clearKillSwitch, Fleet, Lanes, readKillSwitch } from './supervisor.js';
-import { Worker, type EngineLike } from './worker.js';
+import { Worker, type EngineLike, type WorkerConfig } from './worker.js';
 
 export interface CliResult {
   code: number;
@@ -42,6 +43,8 @@ export interface CliResult {
 export interface ForgeDeps {
   /** Overrides the production engine. Every specimen injects a fake here; nothing else may. */
   engine?: EngineLike;
+  /** Overrides the verification commands' executor. Same rule: fakes only. */
+  exec?: WorkerConfig['exec'];
 }
 
 /**
@@ -71,23 +74,37 @@ function snapshotRuns(state: ReturnType<typeof replay>): Array<{
  * `--max-turns N`, and whatever words are left over become the condition.
  */
 function parseRunArgs(rest: string[]): {
-  dryRun: boolean; maxContext?: number; maxTurns?: number; condition: string;
+  dryRun: boolean; maxContext?: number; maxTurns?: number; condition: string; invalid?: string;
 } {
   let dryRun = false;
   let maxContext: number | undefined;
   let maxTurns: number | undefined;
+  let invalid: string | undefined;
   const words: string[] = [];
   for (let index = 0; index < rest.length; index += 1) {
     const token = rest[index]!;
     if (token === '--dry-run') { dryRun = true; continue; }
-    if (token === '--max-context') { maxContext = Number(rest[index += 1]); continue; }
-    if (token === '--max-turns') { maxTurns = Number(rest[index += 1]); continue; }
+    if (token === '--max-context') {
+      const raw = rest[index += 1];
+      const value = Number(raw);
+      if (!Number.isFinite(value)) invalid ??= `--max-context needs a number, got ${raw ?? '(nothing)'}`;
+      maxContext = value;
+      continue;
+    }
+    if (token === '--max-turns') {
+      const raw = rest[index += 1];
+      const value = Number(raw);
+      if (!Number.isFinite(value)) invalid ??= `--max-turns needs a number, got ${raw ?? '(nothing)'}`;
+      maxTurns = value;
+      continue;
+    }
     words.push(token);
   }
   return {
     dryRun, condition: words.join(' '),
     ...(maxContext !== undefined ? { maxContext } : {}),
     ...(maxTurns !== undefined ? { maxTurns } : {}),
+    ...(invalid ? { invalid } : {}),
   };
 }
 
@@ -135,8 +152,30 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
 
     case 'up': {
       const state = replay(journalPath());
+
+      // Before anything else starts: pick up whatever the registry says crashed. A row
+      // with a live pid is left alone (some other process still owns it); a row with a
+      // dead pid and a session id gets exactly one resume attempt; a row with no session
+      // id at all cannot be resumed and is only reported.
+      const registry = new Registry(registryDir());
+      const reconcileEngine = deps.engine ?? new SdkEngine({
+        journalPath: journalPath(), inboxDir: inboxDir(), gotchasDir: gotchasDir(),
+      });
+      const reconcileJournal = new Journal(journalPath());
+      let reconciled: Awaited<ReturnType<typeof reconcileRegistry>>;
+      try {
+        reconciled = await reconcileRegistry(registry, reconcileEngine, reconcileJournal);
+      } finally {
+        reconcileJournal.close();
+        await reconcileEngine.close?.();
+      }
+      const reconcileLines = reconciled.map((outcome) => (outcome.ok
+        ? `reconciled ${outcome.goal}: resumed by session id`
+        : `could not reconcile ${outcome.goal}: ${outcome.reason}`));
+
+      const sharedJournalCache = new JournalCache();
       const server = new ForgeServer({
-        lanes, inbox, journalPath: journalPath(),
+        lanes, inbox, journalPath: journalPath(), journalCache: sharedJournalCache,
         stuck: () => liveness.stuck(),
         fleet: () => {
           const read = watchedProcesses();
@@ -147,7 +186,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       const liveness = new LivenessSupervisor(
         () => ({
           now: Date.now(),
-          runs: snapshotRuns(replay(journalPath())),
+          runs: snapshotRuns(sharedJournalCache.read(journalPath())),
           fleet: watchedProcesses(),
         }),
         livenessJournal,
@@ -162,6 +201,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           `forge ${runtimeVersion()} up on http://127.0.0.1:${port}`,
           `replayed ${state.events.length} events, ${Object.keys(state.runs).length} run(s)`,
           state.torn ? `${state.torn} torn journal line(s) survived and were skipped` : '',
+          ...reconcileLines,
           `inbox: ${inbox.open().length} waiting`,
         ].filter(Boolean),
       };
@@ -176,7 +216,12 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       } catch (error) {
         return { code: 2, lines: [`cannot read ${briefPath}: ${(error as Error).message}`] };
       }
-      const { dryRun, maxContext, maxTurns, condition } = parseRunArgs(rest.slice(1));
+      const { dryRun, maxContext, maxTurns, condition, invalid } = parseRunArgs(rest.slice(1));
+      if (invalid) {
+        // Refused before checkLaunch and before any lane is written: a NaN ceiling never
+        // fires, which is the exact silent-unbounded-run this check exists to close.
+        return { code: 2, lines: [`refusing to start: ${invalid}`] };
+      }
       const verdict = checkLaunch({
         brief,
         condition: condition || 'Work the brief to completion.',
@@ -214,6 +259,14 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         };
       }
 
+      const registry = new Registry(registryDir());
+      const admission = registry.admit({
+        goal: slug, cwd: process.cwd(), briefPath, pid: process.pid,
+      });
+      if (!admission.ok) {
+        return { code: 1, lines: [`refusing to start ${slug}: ${admission.reason}`] };
+      }
+
       lanes.put(slug, { column: 'forge', started: Date.now(), owner: 'forge' });
       const engine = deps.engine ?? new SdkEngine({
         journalPath: journalPath(), inboxDir: inboxDir(), gotchasDir: gotchasDir(),
@@ -225,6 +278,8 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         cwd: process.cwd(),
         journalPath: journalPath(),
         engine,
+        onSessionStarted: (_run, sessionId, model) => registry.setSession(slug, sessionId, model),
+        ...(deps.exec ? { exec: deps.exec } : {}),
         ...(maxContext !== undefined ? { maxContext } : {}),
         ...(maxTurns !== undefined ? { maxTurns } : {}),
       });
@@ -232,7 +287,11 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       try {
         result = await worker.run();
       } finally {
-        if (engine instanceof SdkEngine) engine.close();
+        // Awaited rather than fired-and-forgotten (F4): a `close()` that stops a live
+        // engine's SDK child process is exactly the cleanup this process must not exit
+        // ahead of, or the child outlives the `forge run` that opened it.
+        await engine.close?.();
+        registry.remove(slug);
       }
       const started = result.sessions[0];
       // A session that opened and closed without a single turn is a failed start, not a
@@ -247,8 +306,13 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         column: 'forge', owner: 'forge', model: result.model, context: result.context,
         verdict: result.verdict, ...(started ? { session_id: started } : {}),
       });
+      // 0 done, 1 refused (handled above, before a worker ever ran), 2 parked, 3
+      // exhausted, stopped or unverified: every one of those is "not proven done," and a
+      // caller scripting off the exit code should never have to parse a verdict string to
+      // tell them apart from 0.
+      const exitCode = result.verdict === 'done' ? 0 : result.verdict === 'parked' ? 2 : 3;
       return {
-        code: 0,
+        code: exitCode,
         lines: [
           `${slug} ${result.verdict} on ${result.model}, ${result.turns} turn(s), `
             + `${result.sessions.length} session(s), ${result.handoffs} handoff(s)`,
@@ -269,9 +333,24 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       if (!key || !answer.length) {
         return { code: 2, lines: ['forge answer needs a key and an answer'] };
       }
-      const answered = inbox.answer(key, answer.join(' '));
+      const answerText = answer.join(' ');
+      const answered = inbox.answer(key, answerText);
       if (!answered) return { code: 1, lines: [`nothing asked ${key}`] };
-      return { code: 0, lines: [`answered ${key}; ${answered.runs.join(', ')} can resume`] };
+      // A run this process itself holds the live session for (deps.engine, injected by a
+      // specimen or by `forge run` calling straight through) is answered in place. Every
+      // run also gets its answer queued through the inbox, which is what reaches a run
+      // this process cannot see directly: another `forge run` process, or a segment that
+      // has already ended.
+      const { delivered } = await deliverAnswer(
+        answered, key, answerText, deps.engine instanceof SdkEngine ? deps.engine : undefined,
+      );
+      return {
+        code: 0,
+        lines: [
+          `answered ${key}; ${answered.runs.join(', ')} can resume`,
+          delivered.length ? `delivered in place to: ${delivered.join(', ')}` : 'queued for pickup on next tool call',
+        ],
+      };
     }
 
     case 'stop': {
@@ -279,18 +358,19 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         return { code: 2, lines: ['forge stop --all is the only form; it parks everything'] };
       }
       const reason = rest.filter((word) => word !== '--all').join(' ') || 'stopped by hand';
-      const stopped = new Fleet(lanes, journalPath(), killSwitchPath()).stopAll(reason);
+      const stopped = await new Fleet(lanes, journalPath(), killSwitchPath()).stopAll(reason);
       const killSwitchLine = 'the kill switch is set: no new launch starts until '
         + 'forge clear --all';
       if (!stopped.length) {
         return { code: 0, lines: ['nothing was running', killSwitchLine] };
       }
+      const reachedCount = stopped.filter((lane) => lane.reached).length;
       return {
         code: 0,
         lines: [
-          `parked ${stopped.length} run(s) with a handoff; ${killSwitchLine}; `
-            + 'a live session finishes its current turn and was not contacted',
-          ...stopped.map((lane) => `  ${lane.slug}`),
+          `parked ${stopped.length} run(s) with a handoff; reached ${reachedCount}, `
+            + `unreachable ${stopped.length - reachedCount}; ${killSwitchLine}`,
+          ...stopped.map((lane) => `  ${lane.reached ? 'reached' : 'unreachable'}  ${lane.slug}`),
         ],
       };
     }

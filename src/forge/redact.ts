@@ -1,0 +1,23 @@
+/**
+ * One scrub, applied before anything a person or a fix lane reads: a gotcha file, an
+ * exec dump, a report row.
+ *
+ * Verbatim errors are the whole point of a gotcha (paraphrasing makes it unsearchable),
+ * but verbatim also means whatever a command printed alongside the error: a token in a
+ * URL, a key a misconfigured tool echoed back. This runs on the whole accumulated buffer,
+ * never per chunk -- a token split across two stdout reads is still a token, and checking
+ * each chunk alone would let half of it through on either side of the split.
+ */
+const SECRET_PATTERN = /[A-Za-z0-9_-]{24,}/g;
+
+export function redact(text: string): string {
+  if (!text) return text;
+  return text.replace(SECRET_PATTERN, '[REDACTED]');
+}
+
+/** `redact()` applied to every string value in a record, other types left alone. */
+export function redactFields<T extends Record<string, unknown>>(input: T): T {
+  return Object.fromEntries(
+    Object.entries(input).map(([key, value]) => [key, typeof value === 'string' ? redact(value) : value]),
+  ) as T;
+}

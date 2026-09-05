@@ -15,8 +15,10 @@
  * The engine is injected. Every specimen runs against a fake stream, so the suite spends
  * nothing and still exercises the loop that decides the money.
  */
-import { tierOfBrief, contextFor, modelFor, modelIdFor, turnsFor } from './policy.js';
+import { tierOfBrief, contextFor, effortFor, modelFor, modelIdFor, turnsFor } from './policy.js';
 import { Journal } from './journal.js';
+import { run as execRun, type RunRequest, type RunResult } from './exec.js';
+import type { Inbox } from './inbox.js';
 
 /**
  * Markers a session inherits from the session that spawned it.
@@ -59,17 +61,32 @@ export interface FakeTurn {
   usage?: { input: number; cacheRead: number; cacheCreation: number; output: number };
   /** Set when the session called forge_done. */
   done?: boolean;
+  /** The model that actually served this message, which a fallback reroute can make
+   *  different from the one the class asked for. */
+  model?: string;
 }
 
 export interface SessionRequest {
-  /** The run this session belongs to. Scopes the inbox and the journal rows it writes. */
+  /** This segment's own name: `goal` for the first session, `goal-2`, `goal-3` ... for
+   *  every successor a handoff starts. Scopes the journal rows this segment writes. */
   run: string;
+  /** The goal's own stable id, unchanged across every handoff in the chain. Scopes the
+   *  inbox, so a message sent to the goal id reaches whichever segment is live. Falls
+   *  back to `run` when omitted, which is what a first session (run === goal) needs. */
+  goal?: string;
   model: string;
   prompt: string;
   env: NodeJS.ProcessEnv;
   cwd: string;
   resume?: string;
-  maxTurns: number;
+  /** Omitted for the implement classes (B.3.8, the 2026-09-04 12:58 decision): the class
+   *  ceiling and the stuck rule are what bound an implement run, not a turn count. */
+  maxTurns?: number;
+  /** The class ceiling. Below this, a turn's own tool calls run; at or past it, every
+   *  tool call on this session denies until a successor starts (see B.3.3). */
+  ceiling?: number;
+  /** How much effort the class asks the model to spend, from model-policy.json. */
+  effort?: string;
 }
 
 export interface SessionResult {
@@ -83,11 +100,35 @@ export interface SessionResult {
    * and would double the spawn count behind a suite that still looked green.
    */
   send?(prompt: string): Promise<FakeTurn[]>;
+  /** True when this session ran a `git commit`. What the stuck rule (B.3.8) watches for:
+   *  three sessions in a row with none is a chain going nowhere, not just a slow one. */
+  committed?: boolean;
 }
 
 export interface EngineLike {
   started: SessionRequest[];
   run(config: SessionRequest): Promise<SessionResult>;
+  /**
+   * The ask key this run is parked on, if the engine tracks park state (F1/F3). `SdkEngine`
+   * implements this. A fake with no park concept can leave it out, and the worker falls
+   * back to treating a segment that ended with no `done` and no ceiling as a plain stop.
+   */
+  parkedOn?(run: string): string | undefined;
+  /**
+   * Clears this run's park state once the worker has resumed it in-process (F1). Separate
+   * from `SdkEngine.answer()`, which is for a different `forge answer` process to call: the
+   * worker never calls `answer()` on its own engine. It resumes the session directly through
+   * `SessionResult.send` and only then clears the park it was waiting on.
+   */
+  clearPark?(run: string): void;
+  /**
+   * The shared `Inbox` this engine writes park entries into, so the worker can poll the
+   * same file a separate `forge answer` process writes the answer into (F1).
+   */
+  inbox?: Inbox;
+  /** Shuts down whatever this engine's sessions are still holding open, mainly the SDK
+   *  child process behind a live session (F4). Every caller awaits it before returning. */
+  close?(): Promise<void> | void;
 }
 
 export interface WorkerConfig {
@@ -104,6 +145,19 @@ export interface WorkerConfig {
   maxSessions?: number;
   parentEnv?: NodeJS.ProcessEnv;
   ticket?: string;
+  /** Runs a brief's declared verification commands. Overridable so a specimen can record
+   *  calls instead of spawning a real process; defaults to `exec.ts`'s own `run`. */
+  exec?: (request: RunRequest) => Promise<RunResult>;
+  /** Called the moment a session in this chain has opened, so a caller (the registry, in
+   *  cli.ts's `run`) can persist the session id before a crash could ever lose it. */
+  onSessionStarted?: (run: string, sessionId: string, model: string) => void;
+  /** How often to re-check a park while waiting for an answer (F1). Defaults to 2,000ms; a
+   *  specimen overrides this so a park-and-answer round trip does not cost real seconds. */
+  pollIntervalMs?: number;
+  /** Read fresh on every poll while parked; `true` ends the wait with no answer. Defaults to
+   *  never engaged. `forge run`'s own wiring in cli.ts passes the real kill switch in; a
+   *  specimen that does not care about it needs no fake. */
+  killSwitch?: () => boolean;
 }
 
 export interface WorkerResult {
@@ -114,7 +168,40 @@ export interface WorkerResult {
   handoffs: number;
   turns: number;
   context: number;
-  verdict: 'done' | 'exhausted' | 'parked';
+  /**
+   * `unverified` is what `forge_done` alone used to be treated as `done`: a brief with no
+   * `## Verification` block never earns `done`, however clean the tool call looked.
+   */
+  verdict: 'done' | 'exhausted' | 'parked' | 'unverified';
+}
+
+/**
+ * The commands a brief declares under a `## Verification` heading, one per line inside a
+ * single fenced block. Missing entirely, or an empty block, both read as "nothing
+ * declared" -- there is no default command to fall back to, because guessing one would be
+ * exactly the unproven `done` this item exists to close off.
+ */
+export function verificationCommands(brief: string): string[] | undefined {
+  const match = /^##[ \t]+Verification[ \t]*\r?\n+```[^\n]*\r?\n([\s\S]*?)```/m.exec(brief);
+  if (!match) return undefined;
+  const lines = match[1]!.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  return lines.length ? lines : undefined;
+}
+
+/** A verification command, run and reported as pass or fail with what it printed. */
+interface VerificationOutcome {
+  command: string;
+  ok: boolean;
+  tail: string;
+}
+
+function bounceMessage(failures: VerificationOutcome[]): string {
+  return [
+    'forge_done was accepted for verification, and it failed. Fix the problem and call',
+    'forge_done again; the same commands run again before this run is honoured as done.',
+    '',
+    ...failures.flatMap((failure) => [`$ ${failure.command}`, failure.tail, '']),
+  ].join('\n');
 }
 
 /**
@@ -167,9 +254,15 @@ export class Worker {
   async run(): Promise<WorkerResult> {
     const className = tierOfBrief(this.config.brief);
     const model = modelIdFor(modelFor(className));
+    const effort = effortFor(className);
     const ceiling = this.config.maxContext ?? contextFor(className);
-    const maxTurns = this.config.maxTurns ?? turnsFor(className);
-    const maxSessions = this.config.maxSessions ?? 10;
+    // No turn cap on an implement run (B.3.8, the 2026-09-04 12:58 decision): the class
+    // ceiling and the stuck rule below are what bound it, not a count of turns that has
+    // no relationship to how much a goal actually needs.
+    const isImplementClass = className === 'implement' || className === 'implement-hard';
+    const maxTurns = this.config.maxTurns
+      ?? (isImplementClass ? undefined : turnsFor(className));
+    const maxSessions = this.config.maxSessions ?? (isImplementClass ? Number.POSITIVE_INFINITY : 10);
     const env = workerEnv(this.config.parentEnv ?? process.env);
 
     const journal = new Journal(this.config.journalPath);
@@ -181,6 +274,10 @@ export class Worker {
     let runName = this.config.run;
     let prompt = this.config.brief;
     let predecessor: string | undefined;
+    // The stuck rule, replacing a bare session cap (B.3.8): a chain that keeps handing
+    // off or stopping without ever committing is going nowhere, whatever its budget says.
+    let sessionsSinceCommit = 0;
+    const staleSessions: string[] = [];
 
     try {
       for (let index = 0; index < maxSessions; index += 1) {
@@ -195,37 +292,100 @@ export class Worker {
           ...(predecessor ? { predecessor } : {}),
         });
 
-        const session = await this.engine.run({
-          run: runName, model, prompt, env, cwd: this.config.cwd, maxTurns,
-        });
+        let session: SessionResult;
+        try {
+          session = await this.engine.run({
+            run: runName, goal: this.config.run, model, prompt, env, cwd: this.config.cwd,
+            ...(maxTurns !== undefined ? { maxTurns } : {}),
+            ceiling, effort,
+          });
+        } catch (error) {
+          // An engine that throws (the subprocess exited, a fatal engine-error) must not
+          // take this call down with it: the run is paused, honestly, with the error that
+          // actually happened, rather than an uncaught rejection nothing downstream can
+          // read as a run outcome at all.
+          const message = error instanceof Error ? error.message : String(error);
+          journal.append({ event: 'run.paused', run: runName, actor: 'runner', reason: message });
+          verdict = 'exhausted';
+          break;
+        }
         sessions.push(session.sessionId);
+        this.config.onSessionStarted?.(this.config.run, session.sessionId, model);
 
         let ceilingHit = false;
         let finished = false;
-        for (const turn of session.turns) {
-          turns += 1;
-          context = turn.context;
-          journal.append({
-            event: 'turn.end',
-            run: runName,
-            actor: 'worker',
-            context: turn.context,
-            model,
-            ...(turn.usage ? { usage: turn.usage } : {}),
-          });
-          if (turn.done) {
-            finished = true;
+        let parkedWithoutAnswer = false;
+        let pendingTurns = session.turns;
+        // A segment that ends with neither `done` nor the ceiling hit is not necessarily a
+        // stop: the model may have hit an `AskUserQuestion` or `forge_ask` and parked (F1).
+        // That is not this segment failing to finish, it is this segment waiting on a
+        // person, so the loop below waits for the answer and keeps going on the SAME open
+        // session rather than reporting `stopped` the moment the model's own turn ends.
+        for (;;) {
+          for (const turn of pendingTurns) {
+            turns += 1;
+            context = turn.context;
+            journal.append({
+              event: 'turn.end',
+              run: runName,
+              actor: 'worker',
+              context: turn.context,
+              model,
+              // `model` above is the class-selected model this run was asked to open on;
+              // `messageModel` is what the SDK actually reported serving this specific
+              // message with, which a fallback reroute can make different.
+              ...(turn.model ? { messageModel: turn.model } : {}),
+              ...(turn.usage ? { usage: turn.usage } : {}),
+            });
+            if (turn.done) {
+              finished = true;
+              break;
+            }
+            if (turn.context >= ceiling) {
+              ceilingHit = true;
+              break;
+            }
+          }
+          if (finished || ceilingHit) break;
+
+          const key = this.engine.parkedOn?.(runName);
+          if (!key) break;
+
+          const outcome = await this.waitForAnswer(key);
+          if (outcome !== 'answered') {
+            parkedWithoutAnswer = true;
             break;
           }
-          if (turn.context >= ceiling) {
-            ceilingHit = true;
-            break;
-          }
+          this.engine.clearPark?.(runName);
+          journal.append({ event: 'run.resumed', run: runName, actor: 'console', key });
+          if (!session.send) break;
+          pendingTurns = await session.send(this.engine.inbox?.resumePrompt(key) ?? '');
+        }
+
+        if (parkedWithoutAnswer) {
+          journal.append({ event: 'run.finished', run: runName, actor: 'runner', verdict: 'parked' });
+          verdict = 'parked';
+          break;
         }
 
         if (finished) {
-          journal.append({ event: 'run.finished', run: runName, actor: 'runner', verdict: 'done' });
-          verdict = 'done';
+          verdict = await this.verifyDone(runName, session, journal, model);
+          break;
+        }
+
+        if (session.committed) {
+          sessionsSinceCommit = 0;
+          staleSessions.length = 0;
+        } else {
+          sessionsSinceCommit += 1;
+          staleSessions.push(runName);
+        }
+        if (sessionsSinceCommit >= 3) {
+          const report = `three sessions without a commit: ${staleSessions.join(', ')}`;
+          journal.append({
+            event: 'run.finished', run: runName, actor: 'runner', verdict: 'parked', report,
+          });
+          verdict = 'parked';
           break;
         }
 
@@ -237,9 +397,21 @@ export class Worker {
           break;
         }
 
-        // The ceiling. Ask for the packet, then continue as a new run on the same model.
+        if (index === maxSessions - 1) {
+          // The ceiling was hit on the last session this chain is allowed. A handoff
+          // packet with no successor to seed is a phantom: journaling run.handoff here
+          // would claim a continuation that never starts. This is exhausted, plainly.
+          journal.append({
+            event: 'run.finished', run: runName, actor: 'runner', verdict: 'exhausted',
+          });
+          verdict = 'exhausted';
+          break;
+        }
+
+        // The ceiling, with sessions left in the budget. Ask for the packet, then
+        // continue as a new run on the same model.
         const successor = `${this.config.run}-${index + 2}`;
-        const packet = await this.requestHandoff(runName, session);
+        const packet = await this.requestHandoff(runName, session, journal);
         journal.append({
           event: 'run.handoff',
           run: runName,
@@ -260,6 +432,104 @@ export class Worker {
   }
 
   /**
+   * `forge_done` was called and its result came back clean. This is what earns it a
+   * `done` verdict instead of just taking the claim: a brief's `## Verification` commands
+   * run for real, under `exec.ts`'s own budgets, and the run only counts as done once
+   * they all come back green.
+   *
+   * A brief with no `## Verification` block has nothing to run and is `unverified`, never
+   * `done`: guessing a command would be exactly the unproven claim this exists to close
+   * off. A failing command goes back into the session as a message and the run bounces --
+   * up to three verification attempts total, whether or not the model calls `forge_done`
+   * again in between -- before it parks rather than continuing to spend on its own.
+   */
+  private async verifyDone(
+    runName: string, session: SessionResult, journal: Journal, model: string,
+  ): Promise<'done' | 'unverified' | 'parked'> {
+    const commands = verificationCommands(this.config.brief);
+    if (!commands) {
+      journal.append({ event: 'run.finished', run: runName, actor: 'runner', verdict: 'unverified' });
+      return 'unverified';
+    }
+
+    const exec = this.config.exec ?? execRun;
+    const attempts = 3;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      const outcomes: VerificationOutcome[] = [];
+      for (const command of commands) {
+        const result = await exec({
+          argv: command.split(/\s+/).filter(Boolean), cwd: this.config.cwd, owner: runName, cls: 'verify',
+        });
+        outcomes.push({ command, ok: result.ok, tail: result.tail });
+      }
+      const failed = outcomes.filter((outcome) => !outcome.ok);
+      if (!failed.length) {
+        journal.append({ event: 'run.finished', run: runName, actor: 'runner', verdict: 'done' });
+        return 'done';
+      }
+      journal.append({
+        event: 'run.verify-failed', run: runName, actor: 'runner', attempt,
+        commands: failed.map((outcome) => outcome.command),
+      });
+      if (attempt === attempts || !session.send) break;
+      const reply = await session.send(bounceMessage(failed));
+      // The bounce is a real turn against the model and costs real tokens: skipping this
+      // would undercount a run's spend by exactly the retries verification itself caused.
+      for (const turn of reply) {
+        journal.append({
+          event: 'turn.end', run: runName, actor: 'worker', context: turn.context, model,
+          ...(turn.model ? { messageModel: turn.model } : {}),
+          ...(turn.usage ? { usage: turn.usage } : {}),
+        });
+      }
+    }
+    journal.append({ event: 'run.finished', run: runName, actor: 'runner', verdict: 'parked' });
+    return 'parked';
+  }
+
+  /**
+   * Waits for a park to be answered (F1), polling the engine's shared `Inbox` on the
+   * interval `pollIntervalMs` sets, with no overall timeout: a park waits for a person, for
+   * as long as it takes. This never calls the engine's own `answer()` -- that path is for a
+   * separate `forge answer` process, and the falsifier here is exactly a specimen that used
+   * it instead of a second `Inbox` instance writing the file this one reads.
+   *
+   * Two things end the wait early, and both stop the run rather than the process: the kill
+   * switch (`forge stop --all`, checked via `killSwitch` on the same interval) and a
+   * `SIGINT`. Either resolves `'killed'` or `'interrupted'`, which the caller journals as a
+   * clean `parked` verdict, exit 2.
+   */
+  private waitForAnswer(key: string): Promise<'answered' | 'killed' | 'interrupted'> {
+    const inbox = this.engine.inbox;
+    const pollIntervalMs = this.config.pollIntervalMs ?? 2000;
+    const killSwitch = this.config.killSwitch ?? (() => false);
+    return new Promise((resolve) => {
+      let settled = false;
+      const onSigint = () => finish('interrupted');
+      const finish = (outcome: 'answered' | 'killed' | 'interrupted') => {
+        if (settled) return;
+        settled = true;
+        process.off('SIGINT', onSigint);
+        resolve(outcome);
+      };
+      process.once('SIGINT', onSigint);
+      const poll = () => {
+        if (settled) return;
+        if (killSwitch()) {
+          finish('killed');
+          return;
+        }
+        if (inbox?.entry(key)?.answer !== undefined) {
+          finish('answered');
+          return;
+        }
+        setTimeout(poll, pollIntervalMs);
+      };
+      poll();
+    });
+  }
+
+  /**
    * Ask the session at its ceiling for the packet.
    *
    * Asked of the session that holds the context, because that is the only place the
@@ -267,11 +537,20 @@ export class Worker {
    * the successor is told plainly that it is starting blind rather than being handed a
    * confident-looking empty packet.
    */
-  private async requestHandoff(run: string, session: SessionResult): Promise<string> {
+  private async requestHandoff(run: string, session: SessionResult, journal: Journal): Promise<string> {
     if (!session.send) {
       return `(this engine cannot resume a session; run ${run} continues without a packet)`;
     }
     const reply = await session.send(HANDOFF_REQUEST);
+    // The packet costs tokens too, and a reply this loop never journals is spend nothing
+    // else will ever see: replay's cost fold only sees a usage field on an event it reads.
+    for (const turn of reply) {
+      if (!turn.usage) continue;
+      journal.append({
+        event: 'turn.end', run, actor: 'worker', context: turn.context,
+        ...(turn.model ? { messageModel: turn.model } : {}), usage: turn.usage,
+      });
+    }
     const text = reply.map((turn) => turn.text).join('\n').trim();
     return text || `(the session at its ceiling wrote no packet; run ${run} continues blind)`;
   }

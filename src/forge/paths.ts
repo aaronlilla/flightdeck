@@ -41,6 +41,16 @@ export function runsDir(): string {
   return join(forgeHome(), 'runs');
 }
 
+/** One record per live goal, admitted atomically. See registry.ts. */
+export function registryDir(): string {
+  return join(forgeHome(), 'registry');
+}
+
+/** The 4120 server's own bearer token, read fresh on every request (B.3.9). */
+export function serverTokenPath(): string {
+  return join(forgeHome(), 'server-token');
+}
+
 /** The per-run directory: logs, dumps, and the run's own inbox. */
 export function runDir(run: string): string {
   return join(runsDir(), run.replace(/[^A-Za-z0-9._-]/g, '_'));
@@ -54,19 +64,16 @@ export function gotchasDir(): string {
  * The config directory a worker's Claude Code process uses, and which of the three
  * reasons picked it.
  *
- * `FORGE_CONFIG_DIR` wins outright when set. Otherwise this prefers a dedicated fleet
- * login at `~/.forge/fleet-claude` over `~/.forge/claude`, where nothing has ever logged
- * in: a built `forge` run that defaulted to the empty directory pointed at a login that
- * does not exist.
+ * `FORGE_CONFIG_DIR` wins outright when set. Otherwise this prefers `~/.claude-fleet`,
+ * the account every worker already launches with (`CLAUDE_CONFIG_DIR` on every launch
+ * line), falling back to `~/.forge/claude` when it is absent.
  *
- * `~/.forge/fleet-claude` on purpose, not `~/.claude-fleet` as an earlier version of this
- * function used: `~/.claude-fleet` is confirmed live on the machine this shipped from as
- * Aaron's own account-wide Claude Code config directory (this very session's CLAUDE.md
- * loads from it), not something reserved for forge workers. Defaulting there would have
- * pointed every worker's `CLAUDE_CONFIG_DIR` at the interactive session store the
- * docstring on `fleetConfigDir` below already warns against sharing. Nothing under
- * `forgeHome()` is machine-wide, so a directory forge itself owns cannot collide with it;
- * a real fleet login has to be deliberately provisioned there.
+ * An earlier version of this function preferred `~/.forge/fleet-claude` over
+ * `~/.claude-fleet` on the premise that `~/.claude-fleet` was Aaron's own interactive
+ * config directory and so off-limits to a worker. That premise was wrong: `~/.claude-fleet`
+ * is the fleet account (Aaron's own directory is `~/.claude`), so preferring the
+ * forge-owned candidate instead pointed a built `forge` run at a login that was never
+ * provisioned, on a machine where the real fleet login sat one directory over unused.
  *
  * `exists` is a parameter rather than a bare `existsSync` call so a specimen can pin both
  * branches without depending on whether this machine happens to have a fleet login on it.
@@ -76,7 +83,7 @@ export function fleetConfigDirChoice(exists: (path: string) => boolean = existsS
 } {
   const override = process.env['FORGE_CONFIG_DIR'];
   if (override) return { dir: override, source: 'override' };
-  const fleetDir = join(forgeHome(), 'fleet-claude');
+  const fleetDir = join(homedir(), '.claude-fleet');
   if (exists(fleetDir)) return { dir: fleetDir, source: 'fleet' };
   return { dir: join(forgeHome(), 'claude'), source: 'forge' };
 }
@@ -93,7 +100,7 @@ export function fleetConfigDir(exists: (path: string) => boolean = existsSync): 
 /** Create every directory Forge writes to. Called once at startup, safe to repeat. */
 export function ensureHome(): string {
   const root = forgeHome();
-  for (const dir of [root, lanesDir(), inboxDir(), packetsDir(), runsDir(), gotchasDir()]) {
+  for (const dir of [root, lanesDir(), inboxDir(), packetsDir(), runsDir(), gotchasDir(), registryDir()]) {
     mkdirSync(dir, { recursive: true });
   }
   return root;

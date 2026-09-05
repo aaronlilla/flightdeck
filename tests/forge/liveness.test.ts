@@ -228,3 +228,86 @@ describe('the supervisor', () => {
     expect(supervisor.stuck()).toHaveLength(0);
   });
 });
+
+describe('B.3.10: the minimal actuator', () => {
+  it('parks the stuck run, flags its lane, and journals warden.parked with the evidence', async () => {
+    const { buildPreToolUseHook } = await import('../../src/forge/sdkengine.js');
+    const { Journal } = await import('../../src/forge/journal.js');
+    const { Inbox } = await import('../../src/forge/inbox.js');
+    const { mkdtempSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+
+    const home = mkdtempSync(join(tmpdir(), 'forge-warden-'));
+    const journalPath = join(home, 'fleet.jsonl');
+    const inbox = new Inbox(join(home, 'inbox'));
+    const journaled: Record<string, unknown>[] = [];
+    const laneWrites: Array<{ slug: string; fields: Record<string, unknown> }> = [];
+    const parked = new Map<string, string>();
+
+    const supervisor = new LivenessSupervisor(
+      () => baseInput({
+        runs: [{ run: 'stuck-run', className: 'implement', lastEventAt: NOW - DEFAULT_THRESHOLDS.idleMs, context: 0 }],
+      }),
+      { append: (e) => journaled.push(e as Record<string, unknown>) },
+      () => {},
+      DEFAULT_THRESHOLDS,
+      { parked, lanes: { put: (slug, fields) => laneWrites.push({ slug, fields }) } },
+    );
+
+    supervisor.evaluate();
+
+    const warden = journaled.find((e) => e['event'] === 'warden.parked');
+    expect(warden?.['run']).toBe('stuck-run');
+    expect((warden?.['evidence'] as { signal: string } | undefined)?.signal).toBe('idle');
+    expect(laneWrites.some((w) => w.slug === 'stuck-run' && w.fields['needs_aaron'])).toBe(true);
+
+    // The falsifier this closes: asserting the journal row alone proves nothing about
+    // whether the run is actually blocked. This drives the same PreToolUse guard B.3.1
+    // built, sharing the same parked map, and shows the next tool call really is denied.
+    const journal = new Journal(journalPath);
+    const hook = buildPreToolUseHook({
+      run: 'stuck-run', goal: 'stuck-run', parked, journal, inbox, deliverVia: 'hook',
+    });
+    const verdict = await hook({ toolName: 'Bash', input: {}, toolUseId: 'tu-1' });
+    journal.close();
+
+    expect(verdict.decision).toBe('deny');
+    expect(verdict.reason).toContain('warden:stuck-run:idle');
+  });
+
+  it('never signals a process: the actuator has no kill call anywhere in its path', () => {
+    // No process handle, no pid, no kill function reaches WardenActuator at all -- there
+    // is nothing here that could signal one. This is proven structurally: the actuator's
+    // own type carries only `parked` and `lanes`, neither of which can touch a process.
+    const parked = new Map<string, string>();
+    const laneWrites: Array<{ slug: string; fields: Record<string, unknown> }> = [];
+    const journaled: Record<string, unknown>[] = [];
+    const supervisor = new LivenessSupervisor(
+      () => baseInput({
+        runs: [{ run: 'stuck-run-2', className: 'implement', lastEventAt: NOW - DEFAULT_THRESHOLDS.idleMs, context: 0 }],
+      }),
+      { append: (e) => journaled.push(e as Record<string, unknown>) },
+      () => {},
+      DEFAULT_THRESHOLDS,
+      { parked, lanes: { put: (slug, fields) => laneWrites.push({ slug, fields }) } },
+    );
+    supervisor.evaluate();
+    expect(journaled.some((e) => e['event'] === 'warden.parked')).toBe(true);
+  });
+
+  it('a pid-keyed fleet signal is not parked, since it names a process rather than a run', () => {
+    const parked = new Map<string, string>();
+    const journaled: Record<string, unknown>[] = [];
+    const supervisor = new LivenessSupervisor(
+      () => baseInput({ fleet: { ok: false, reason: 'powershell timed out' } }),
+      { append: (e) => journaled.push(e as Record<string, unknown>) },
+      () => {},
+      DEFAULT_THRESHOLDS,
+      { parked, lanes: { put: () => {} } },
+    );
+    supervisor.evaluate();
+    expect(journaled.some((e) => e['event'] === 'warden.parked')).toBe(false);
+    expect(parked.size).toBe(0);
+  });
+});

@@ -38,12 +38,29 @@ export interface Survey {
  * not replace, and a glob that swept those up would be an installer deleting files it
  * was never asked about.
  */
-const OLD_RUNTIME = [
+export const OLD_RUNTIME = [
   /^conductor.*\.(py|cmd|json)$/i,
   /^go\.py$/i,
   /^terminals\.py$/i,
   /^tile.*\.(ps1|vbs|cmd)$/i,
 ];
+
+/** Every name in `dir` that matches one of `patterns`. The one scan both the survey and
+ *  the cutover manifest (cutover.ts) are built from, so they can never drift apart.
+ *  Includes anything on `NEVER_REMOVE` too -- this reports what is there, informationally;
+ *  a caller that acts on the result (`planUninstall`, `runCutover`) is the one that must
+ *  filter `NEVER_REMOVE` back out before touching anything. */
+export function filesMatching(dir: string, patterns: RegExp[] = OLD_RUNTIME): string[] {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir).filter((name) => patterns.some((pattern) => pattern.test(name))).sort();
+}
+
+/** Whether `name` is one of the files nothing may ever propose removing. Exported so
+ *  every actor over `filesMatching`'s result (`planUninstall`, `runCutover`) filters
+ *  through the same list rather than each re-deciding what is safe. */
+export function isNeverRemove(name: string): boolean {
+  return NEVER_REMOVE.some((pattern) => pattern.test(name));
+}
 
 /** What replaces each of them, so the plan says what is lost as well as what goes. */
 const REPLACED_BY: Record<string, string> = {
@@ -83,11 +100,7 @@ const NEVER_REMOVE = [
 
 export function surveyOldRuntime(home: string): Survey {
   const coordination = join(home, '.claude', 'coordination');
-  if (!existsSync(coordination)) return { present: false, found: [], coordination };
-  const found = readdirSync(coordination)
-    .filter((name) => OLD_RUNTIME.some((pattern) => pattern.test(name)))
-    .sort()
-    .map((name) => ({ name, path: join(coordination, name) }));
+  const found = filesMatching(coordination).map((name) => ({ name, path: join(coordination, name) }));
   return { present: found.length > 0, found, coordination };
 }
 
@@ -111,7 +124,7 @@ export interface UninstallPlan {
 export function planUninstall(home: string, writeTo?: string): UninstallPlan {
   const survey = surveyOldRuntime(home);
   const remove = survey.found
-    .filter((file) => !NEVER_REMOVE.some((pattern) => pattern.test(file.path)))
+    .filter((file) => !isNeverRemove(file.name))
     .map((file) => ({
       ...file,
       replacedBy: REPLACED_BY[file.name] ?? 'nothing yet; this one needs a decision',

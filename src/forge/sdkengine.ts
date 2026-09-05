@@ -17,20 +17,29 @@
  * exactly how a session reached 543,000 tokens with nothing noticing.
  */
 import { Engine, buildForgeMcpServer, type EngineConfig, type ForgeToolHandlers, type PreToolVerdict, type QueryFn } from '../adapter/engine.js';
+import { driftBlocker, readMergeable, type Mergeable } from './drift.js';
+import { run as execRun } from './exec.js';
 import { Gotchas } from './gotcha.js';
-import { Inbox } from './inbox.js';
+import { redactFields } from './redact.js';
+import { Inbox, type InboxEntry } from './inbox.js';
 import { Journal } from './journal.js';
 import { fleetConfigDir } from './paths.js';
 import { injectMessages, RunInbox } from './runinbox.js';
-import { workerEnv, type EngineLike, type FakeTurn, type SessionRequest, type SessionResult } from './worker.js';
+import {
+  HANDOFF_REQUEST, workerEnv, type EngineLike, type FakeTurn, type SessionRequest,
+  type SessionResult,
+} from './worker.js';
 
 export interface WorkerRequest {
   model: string;
   prompt: string;
   cwd: string;
-  maxTurns: number;
+  /** Omitted for an implement-class run (B.3.8): no maxTurns reaches the SDK at all. */
+  maxTurns?: number;
   env: NodeJS.ProcessEnv;
   resume?: string;
+  /** The class's own effort, from model-policy.json. */
+  effort?: string;
 }
 
 export interface McpServerSpec {
@@ -41,22 +50,29 @@ export interface WorkerOptions {
   model: string;
   prompt: string;
   cwd: string;
-  maxTurns: number;
+  maxTurns?: number;
   permissionMode: 'bypassPermissions';
   settingSources: ('user' | 'project')[];
   env: NodeJS.ProcessEnv;
   mcpServers: Record<string, McpServerSpec>;
   resume?: string;
+  effort?: string;
 }
 
 /**
  * The tools a worker uses to talk back to the supervisor.
  *
- * Four, and each exists because the alternative is text parsing: a handoff, a completion
+ * Five, matching buildForgeMcpServer's own registration exactly: a handoff, a completion
  * claim the supervisor then verifies by running commands, a question that parks the run,
- * and a trap filed the moment it is hit.
+ * a trap filed the moment it is hit, and the end-of-goal report. This list had drifted to
+ * four (missing forge_report) while nothing in production read it at all: SdkEngine.run()
+ * always registered the real handlers straight from buildForgeMcpServer, and toEngineConfig
+ * (which does read this list, for its own name-only mcpServers field) never ran in
+ * production either. toEngineConfig is now called from SdkEngine.run() for the rest of its
+ * mapping (env, maxTurns, effort, resume), which is what makes it worth keeping this list
+ * correct rather than merely documented.
  */
-export const WORKER_TOOLS = ['forge_handoff', 'forge_done', 'forge_ask', 'forge_gotcha'];
+export const WORKER_TOOLS = ['forge_handoff', 'forge_done', 'forge_ask', 'forge_gotcha', 'forge_report'];
 
 /**
  * The two tool-call names the run loop itself has to recognise, qualified the way the SDK
@@ -80,7 +96,7 @@ export function buildWorkerOptions(
     model: request.model,
     prompt: request.prompt,
     cwd: request.cwd,
-    maxTurns: request.maxTurns,
+    ...(request.maxTurns !== undefined ? { maxTurns: request.maxTurns } : {}),
     permissionMode: 'bypassPermissions',
     // user and project, never local: local settings belong to one machine and a worker
     // that picked them up would behave differently depending on where it ran.
@@ -89,6 +105,7 @@ export function buildWorkerOptions(
     mcpServers: { forge: { tools: [...WORKER_TOOLS] } },
   };
   if (request.resume) options.resume = request.resume;
+  if (request.effort) options.effort = request.effort;
   return options;
 }
 
@@ -140,24 +157,81 @@ export function toEngineConfig(options: WorkerOptions): EngineConfig {
     }) as never,
   };
   if (options.resume) config.resume = options.resume;
+  if (options.effort) config.effort = options.effort as never;
   return config;
+}
+
+/**
+ * Whether one of a shell command's top-level segments actually invokes `program subcommand`
+ * as its first two words, rather than merely mentioning that text.
+ *
+ * A bare `/\bgit\s+commit\b/` regex also fires on `git log --grep "git commit"` or an echoed
+ * string, which is not a commit: splitting on the shell's own separators first and checking
+ * the first two words of each segment is what tells "ran it" apart from "said it".
+ */
+function invokesCommand(command: string, program: string, ...subcommand: string[]): boolean {
+  return command
+    .split(/&&|\|\||[;|\n]/)
+    .some((segment) => {
+      const words = segment.trim().split(/\s+/);
+      return words[0] === program && subcommand.every((word, index) => words[index + 1] === word);
+    });
 }
 
 /** The park key an AskUserQuestion is denied on, and the options it offered. */
 function extractAskQuestion(input: Record<string, unknown>): { question: string; options: string[] } {
   const questions = (input['questions']
     ?? []) as Array<{ question?: string; options?: Array<{ label?: string }> }>;
-  const first = questions[0];
+  if (questions.length <= 1) {
+    const first = questions[0];
+    return {
+      question: first?.question ?? 'a worker is asking a question',
+      options: (first?.options ?? []).map((option) => option.label ?? '').filter(Boolean),
+    };
+  }
+  // A multi-question AskUserQuestion parks on all of them, named by count, rather than
+  // silently dropping every question after the first.
+  const combined = questions
+    .map((question, index) => `Q${index + 1}: ${question.question ?? '(no question text)'}`)
+    .join('\n');
   return {
-    question: first?.question ?? 'a worker is asking a question',
-    options: (first?.options ?? []).map((option) => option.label ?? '').filter(Boolean),
+    question: `${questions.length} questions asked together:\n${combined}`,
+    options: questions.flatMap((question) => (question.options ?? []).map((option) => option.label ?? ''))
+      .filter(Boolean),
   };
 }
 
 export interface CanUseToolDeps {
   run: string;
+  /** The stable goal id, part of the ask key alongside run and action target: B.3.7. */
+  goal: string;
   inbox: Inbox;
   journal: Journal;
+  /**
+   * The park state: run name to the ask key it is parked on. Shared with the PreToolUse
+   * hook (`buildPreToolUseHook`) built for the same run, so a deny here is what makes
+   * every later tool call on this run deny too, until `SdkEngine.answer` clears it.
+   */
+  parked: Map<string, string>;
+}
+
+/**
+ * Records a park against a run: sets `parked`, and journals `run.parked` with the key.
+ *
+ * The one place both walls a run can hit go through: `AskUserQuestion`, denied at
+ * `canUseTool`, and `forge_ask`, which calls it from its own tool handler (F3). Before F3,
+ * `forge_ask` raised the inbox entry and journaled `forge.ask` but never called this, so a
+ * run that asked through the tool rather than through `AskUserQuestion` parked nothing: the
+ * next tool call went straight through, and no other process had a park key to answer.
+ */
+export function parkRun(
+  deps: { parked: Map<string, string>; journal: Journal }, run: string, entry: InboxEntry,
+): void {
+  deps.parked.set(run, entry.key);
+  deps.journal.append({
+    event: 'run.parked', run, actor: 'runner', key: entry.key,
+    reason: `parking on ${entry.key}: ${entry.question}`,
+  });
 }
 
 /**
@@ -167,19 +241,23 @@ export interface CanUseToolDeps {
  * and every allowed-tools rule let through still lands here if nothing else answered it,
  * and a headless run has nobody at the terminal to answer a prompt. `AskUserQuestion` gets
  * a named park key in the inbox on top of the deny, because a worker that hits it is
- * asking something a person has to decide, not something the run can route around.
+ * asking something a person has to decide, not something the run can route around. It also
+ * sets the run's entry in `parked`, which is what turns "this one call was denied" into
+ * "nothing on this run moves again until a person answers."
  */
 export function buildCanUseTool(deps: CanUseToolDeps) {
   return async (toolName: string, input: Record<string, unknown>) => {
     if (toolName === 'AskUserQuestion') {
       const asked = extractAskQuestion(input);
       const entry = deps.inbox.raise({
-        run: deps.run, question: asked.question, options: asked.options, kind: 'question',
+        run: deps.run, goal: deps.goal, actionTarget: 'AskUserQuestion',
+        question: asked.question, options: asked.options, kind: 'question',
       });
       deps.journal.append({
         event: 'permission.denied', run: deps.run, actor: 'runner', tool: toolName,
         reason: `parking on ${entry.key}`,
       });
+      parkRun(deps, deps.run, entry);
       return {
         behavior: 'deny' as const,
         message: `this run is parking on ${entry.key}: ${asked.question}`,
@@ -194,8 +272,16 @@ export function buildCanUseTool(deps: CanUseToolDeps) {
 }
 
 export interface InboxHookDeps {
+  /** This segment's own name, for the journal rows this writes. */
   run: string;
+  /** The goal's stable id, for the inbox itself: B.3.7. A message sent to the goal id
+   *  must reach whichever segment is live, not only the one whose exact name it was sent
+   *  under, which stops existing the moment a handoff renames the run. */
+  goal: string;
   journal: Journal;
+  /** Called with the delivered message ids and their raw text, when something was
+   *  delivered, so the caller can watch for it to be acknowledged: B.3.7. */
+  onDelivered?: (ids: string[], text: string) => void;
 }
 
 /**
@@ -205,12 +291,146 @@ export interface InboxHookDeps {
 export function buildInboxHook(deps: InboxHookDeps) {
   return async (call: { toolName: string; input: Record<string, unknown>; toolUseId: string }):
     Promise<PreToolVerdict> => {
-    const delivered = await injectMessages(deps.run, call.input);
+    const delivered = await injectMessages(deps.goal, call.input);
     const additionalContext = delivered?.hookSpecificOutput?.additionalContext;
     if (additionalContext) {
       deps.journal.append({ event: 'inbox.delivered', run: deps.run, actor: 'runner', via: 'hook' });
+      if (delivered?.messageIds?.length) deps.onDelivered?.(delivered.messageIds, delivered.rawText ?? '');
     }
     return { decision: undefined, ...(additionalContext ? { additionalContext } : {}) };
+  };
+}
+
+export interface PreToolUseHookDeps {
+  run: string;
+  /** The goal's stable id, for the inbox: B.3.7. */
+  goal: string;
+  journal: Journal;
+  /** Shared with `buildCanUseTool`: run name to the ask key it is parked on. */
+  parked: Map<string, string>;
+  /**
+   * The same `Inbox` `canUseTool` and `forge_ask` write park entries into. Read here on
+   * every parked call (F2) so an answer written by a separate `forge answer` process is
+   * seen the moment it lands, not only by `SdkEngine.answer()`, which only ever reaches a
+   * session this same process still holds open.
+   */
+  inbox: Inbox;
+  /**
+   * True once this run's latest usage has reached its class ceiling. Checked after park,
+   * before inbox delivery, so a session past its ceiling gets no further tool call: only
+   * the handoff prompt, riding along as `additionalContext` on the deny itself, so the
+   * model does not need a whole extra turn just to be told to write the packet.
+   */
+  ceilingHit?: () => boolean;
+  deliverVia: 'hook' | 'stream';
+  onDelivered?: (ids: string[], text: string) => void;
+}
+
+/**
+ * The PreToolUse hook a live run's engine is opened with. It sees every tool call, not
+ * only the ones a permission rule would otherwise route to `canUseTool`, which is what
+ * makes it the place a park, and the context ceiling, actually hold: a deny here happens
+ * before the tool runs, on every call, for as long as `parked` names this run or
+ * `ceilingHit()` says so.
+ *
+ * The park check runs first, then the ceiling, and both short-circuit: neither gets inbox
+ * delivery either, because there is nothing left for either to act on until it clears.
+ *
+ * While parked, this reads the shared `Inbox` entry for the key before denying (F2): if it
+ * already carries an answer, the park clears here, `run.resumed` is journaled, and the call
+ * is allowed with the resume prompt riding along as `additionalContext`, so a model that
+ * kept calling tools after the deny can be resumed from a separate `forge answer` process
+ * too, not only through `SdkEngine.answer()` on the process that still holds the session.
+ */
+export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
+  const inboxHook = deps.deliverVia === 'hook'
+    ? buildInboxHook({
+      run: deps.run, goal: deps.goal, journal: deps.journal, onDelivered: deps.onDelivered,
+    })
+    : undefined;
+  return async (call: { toolName: string; input: Record<string, unknown>; toolUseId: string }):
+    Promise<PreToolVerdict> => {
+    const key = deps.parked.get(deps.run);
+    if (key) {
+      const entry = deps.inbox.entry(key);
+      if (entry?.answer !== undefined) {
+        deps.parked.delete(deps.run);
+        deps.journal.append({ event: 'run.resumed', run: deps.run, actor: 'console', key });
+        return { decision: undefined, additionalContext: deps.inbox.resumePrompt(key) };
+      }
+      deps.journal.append({
+        event: 'permission.denied', run: deps.run, actor: 'runner', tool: call.toolName,
+        reason: `parked on ${key}`,
+      });
+      return {
+        decision: 'deny',
+        reason: `parked on ${key}: this run takes no further tool call until that question is answered`,
+      };
+    }
+    if (deps.ceilingHit?.()) {
+      deps.journal.append({
+        event: 'permission.denied', run: deps.run, actor: 'runner', tool: call.toolName,
+        reason: 'context ceiling reached',
+      });
+      return {
+        decision: 'deny',
+        reason: 'context ceiling reached: write the handoff packet instead of another tool call',
+        additionalContext: HANDOFF_REQUEST,
+      };
+    }
+    if (inboxHook) return inboxHook(call);
+    return { decision: undefined };
+  };
+}
+
+export interface ForgeHandlerDeps {
+  run: string;
+  /** The stable goal id, for `forge_ask`'s inbox entry: B.3.7. */
+  goal: string;
+  inbox: Inbox;
+  journal: Journal;
+  /** Shared with `buildCanUseTool` and the PreToolUse hook: run name to the ask key it is
+   *  parked on. `forge_ask` sets this itself (F3), the same way `AskUserQuestion` does. */
+  parked: Map<string, string>;
+  gotchas: Gotchas;
+}
+
+/**
+ * The five tool handlers a worker's session talks back through, built as their own
+ * function so a specimen can call `onAsk` directly with no SDK, no live session, and no MCP
+ * server involved (F3): `buildForgeMcpServer` wires these into the SDK's own in-process
+ * tool server, and a fake `queryFn`-driven stream never actually invokes it, only the
+ * tool-use/tool-result messages that server would have produced.
+ *
+ * `forge_ask` parks the run through `parkRun`, exactly as `AskUserQuestion` does. Before
+ * F3, it raised the inbox entry and journaled `forge.ask` but never called `parkRun`, so a
+ * run that asked through the tool rather than the SDK's own permission prompt parked
+ * nothing: the next tool call went straight through.
+ */
+export function buildForgeToolHandlers(deps: ForgeHandlerDeps): ForgeToolHandlers {
+  return {
+    onDone: (input) => {
+      deps.journal.append({ event: 'forge.done', run: deps.run, actor: 'worker', evidence: input.evidence });
+    },
+    onHandoff: (input) => {
+      deps.journal.append({ event: 'forge.handoff', run: deps.run, actor: 'worker', packet: input.packet });
+    },
+    onAsk: (input) => {
+      const entry = deps.inbox.raise({
+        run: deps.run, goal: deps.goal, actionTarget: 'forge_ask',
+        question: input.question, options: input.options, kind: input.kind,
+      });
+      parkRun(deps, deps.run, entry);
+      deps.journal.append({
+        event: 'forge.ask', run: deps.run, actor: 'worker', question: input.question,
+      });
+    },
+    onGotcha: (input) => {
+      deps.gotchas.file({ run: deps.run, ...input });
+    },
+    onReport: (input) => {
+      deps.journal.append({ event: 'forge.report', run: deps.run, actor: 'worker', ...redactFields(input) });
+    },
   };
 }
 
@@ -267,6 +487,22 @@ export interface SdkEngineDeps {
    */
   deliverVia?: 'hook' | 'stream';
   queryFn?: QueryFn;
+  /**
+   * Run name to the ask key it is parked on. Defaults to a fresh map: production has one
+   * `SdkEngine` per `forge run` process, so nothing outside a specimen needs to share it.
+   */
+  parked?: Map<string, string>;
+  /**
+   * Reads whether the branch in `cwd` still applies to its base, after a push or a PR
+   * open (B.3.9). Defaults to running `gh pr view --json mergeable` for real; a specimen
+   * overrides this rather than the exec call underneath it.
+   */
+  checkDrift?: (cwd: string) => Promise<Mergeable>;
+}
+
+async function ghDriftCheck(cwd: string): Promise<Mergeable> {
+  const result = await execRun({ argv: ['gh', 'pr', 'view', '--json', 'mergeable'], cwd, owner: 'drift', cls: 'script' });
+  return readMergeable(result.tail);
 }
 
 /**
@@ -293,13 +529,52 @@ export class SdkEngine implements EngineLike {
    */
   private readonly journal: Journal;
 
+  /** Run name to the ask key it is parked on. Shared by `canUseTool` and the PreToolUse hook. */
+  private readonly parked: Map<string, string>;
+
+  /**
+   * The one `Inbox` this instance ever writes park entries into or reads them back from.
+   * Shared across every `run()` call on this instance (F1), not recreated per call: the
+   * worker's own poll for an answer (`EngineLike.inbox`) has to see the exact same on-disk
+   * directory `canUseTool`, `forge_ask` and the PreToolUse hook already write into.
+   */
+  private readonly sharedInbox: Inbox;
+
+  /**
+   * The live `Engine` for each run this instance has started, kept for the life of this
+   * `SdkEngine` so `answer()` can push into a session that is still open. Cleared by
+   * `close()`, which is called once per whole chain, matching the journal handle above.
+   */
+  private readonly liveEngines = new Map<string, Engine>();
+
   constructor(private readonly deps: SdkEngineDeps) {
     this.deliverVia = deps.deliverVia ?? 'hook';
     this.journal = new Journal(deps.journalPath);
+    this.parked = deps.parked ?? new Map();
+    this.sharedInbox = new Inbox(deps.inboxDir);
+  }
+
+  /** The ask key this run is parked on, per `EngineLike.parkedOn` (F1). */
+  parkedOn(run: string): string | undefined {
+    return this.parked.get(run);
+  }
+
+  /** Clears this run's park state, per `EngineLike.clearPark` (F1): for the worker's own
+   *  in-process resume, never for a separate `forge answer` process, which goes through
+   *  `answer()` instead. */
+  clearPark(run: string): void {
+    this.parked.delete(run);
+  }
+
+  /** The shared `Inbox`, per `EngineLike.inbox` (F1): the same directory `canUseTool`,
+   *  `forge_ask` and the PreToolUse hook read and write park entries into. */
+  get inbox(): Inbox {
+    return this.sharedInbox;
   }
 
   async run(request: SessionRequest): Promise<SessionResult> {
     this.started.push(request);
+    const goal = request.goal ?? request.run;
 
     const workerOptions = buildWorkerOptions({
       model: request.model,
@@ -308,52 +583,16 @@ export class SdkEngine implements EngineLike {
       maxTurns: request.maxTurns,
       env: request.env,
       ...(request.resume ? { resume: request.resume } : {}),
+      ...(request.effort ? { effort: request.effort } : {}),
     });
 
     const journal = this.journal;
-    const inbox = new Inbox(this.deps.inboxDir);
+    const inbox = this.sharedInbox;
     const gotchas = new Gotchas(this.deps.gotchasDir, this.deps.journalPath);
 
-    const handlers: ForgeToolHandlers = {
-      onDone: (input) => {
-        journal.append({ event: 'forge.done', run: request.run, actor: 'worker', evidence: input.evidence });
-      },
-      onHandoff: (input) => {
-        journal.append({ event: 'forge.handoff', run: request.run, actor: 'worker', packet: input.packet });
-      },
-      onAsk: (input) => {
-        inbox.raise({
-          run: request.run, question: input.question, options: input.options, kind: input.kind,
-        });
-        journal.append({
-          event: 'forge.ask', run: request.run, actor: 'worker', question: input.question,
-        });
-      },
-      onGotcha: (input) => {
-        gotchas.file({ run: request.run, ...input });
-      },
-      onReport: (input) => {
-        journal.append({ event: 'forge.report', run: request.run, actor: 'worker', ...input });
-      },
-    };
-
-    const engineConfig: EngineConfig = {
-      cwd: workerOptions.cwd,
-      model: workerOptions.model,
-      permissionMode: workerOptions.permissionMode,
-      settingSources: workerOptions.settingSources,
-      env: workerOptions.env,
-      maxTurns: workerOptions.maxTurns,
-      mcpServers: { forge: buildForgeMcpServer(handlers) },
-      canUseTool: buildCanUseTool({ run: request.run, inbox, journal }) as never,
-      ...(this.deliverVia === 'hook'
-        ? { onToolCall: buildInboxHook({ run: request.run, journal }) }
-        : {}),
-      ...(workerOptions.resume ? { resume: workerOptions.resume } : {}),
-    };
-
-    const engine = new Engine(this.deps.queryFn);
-    engine.start(engineConfig);
+    const handlers = buildForgeToolHandlers({
+      run: request.run, goal, inbox, journal, parked: this.parked, gotchas,
+    });
 
     // Each assistant message's usage already carries the whole context of that turn --
     // uncached input plus cache read plus cache creation is the entire prompt that turn
@@ -364,10 +603,42 @@ export class SdkEngine implements EngineLike {
     // separately, per turn, from each turn's own `usage` (see journal.ts's `costOf`),
     // so it never needs a cumulative context total either.
     let latestContext = 0;
+    // Sticky once true: set by a usage event at or past request.ceiling, checked by the
+    // PreToolUse hook below. This is what makes the deny happen inside the turn a tool
+    // call arrives in, rather than only after Worker sees the whole segment's result.
+    let ceilingHit = false;
+    // What the inbox hook just delivered, watched for one assistant message to see
+    // whether it was acknowledged (B.3.7). Cleared after that one check either way: this
+    // is a one-shot window on "the next assistant message", not an open-ended watch.
+    let pendingAck: { ids: string[]; text: string } | undefined;
+    // True once any Bash call in this session ran `git commit`: the stuck rule (B.3.8)
+    // watches this across the whole session, not per turn or per segment.
+    let committed = false;
+
+    // toEngineConfig carries the mapping every specimen in sdkengine.test.ts already
+    // pins (env, maxTurns, effort, resume); the three fields below are the ones a real
+    // run needs beyond that base, which toEngineConfig alone cannot build because they
+    // close over this request's own journal, inbox and park state.
+    const engineConfig: EngineConfig = {
+      ...toEngineConfig(workerOptions),
+      mcpServers: { forge: buildForgeMcpServer(handlers) },
+      canUseTool: buildCanUseTool({ run: request.run, goal, inbox, journal, parked: this.parked }) as never,
+      onToolCall: buildPreToolUseHook({
+        run: request.run, goal, journal, parked: this.parked, inbox, deliverVia: this.deliverVia,
+        ceilingHit: () => ceilingHit,
+        onDelivered: (ids, text) => { pendingAck = { ids, text }; },
+      }),
+    };
+
+    const engine = new Engine(this.deps.queryFn);
+    engine.start(engineConfig);
+    this.liveEngines.set(request.run, engine);
     // Named per call id rather than per segment: a tool's result event carries only the
     // id it answers, not the tool's name, so the name has to be remembered from the
     // matching tool-use to journal a tool.end a reader can act on.
     const toolNameById = new Map<string, string>();
+    const bashCommandById = new Map<string, string>();
+    const checkDrift = this.deps.checkDrift ?? ghDriftCheck;
 
     const runSegment = (promptText: string): Promise<FakeTurn[]> => new Promise((resolve, reject) => {
       const turns: FakeTurn[] = [];
@@ -381,11 +652,27 @@ export class SdkEngine implements EngineLike {
       const off = engine.onEvent((event) => {
         switch (event.type) {
           case 'usage':
+            // A subagent's own Task-tool conversation, not the main loop this ceiling and
+            // this turn stream belong to: its tokens are real spend (journaled below, so
+            // replay's cost fold still counts them) but not context the main loop is
+            // carrying, and it is not a turn of the main loop's own stream either.
+            if (event.parentToolUseId) {
+              journal.append({
+                event: 'subagent.usage', run: request.run, actor: 'worker', model: event.model,
+                usage: {
+                  input: event.input, cacheRead: event.cacheRead,
+                  cacheCreation: event.cacheCreation, output: event.output,
+                },
+              });
+              break;
+            }
             flush();
             latestContext = event.input + event.cacheRead + event.cacheCreation;
+            if (request.ceiling !== undefined && latestContext >= request.ceiling) ceilingHit = true;
             pending = {
               text: '',
               context: latestContext,
+              model: event.model,
               usage: {
                 input: event.input, cacheRead: event.cacheRead,
                 cacheCreation: event.cacheCreation, output: event.output,
@@ -394,10 +681,27 @@ export class SdkEngine implements EngineLike {
             break;
           case 'assistant-text':
             if (pending) pending.text += event.text;
+            if (pendingAck) {
+              // The one-shot window: whether this message (the next one after delivery)
+              // echoed the delivered text, checked once and then closed regardless.
+              if (pending && pendingAck.text && pending.text.includes(pendingAck.text)) {
+                for (const id of pendingAck.ids) {
+                  journal.append({
+                    event: 'inbox.acknowledged', run: request.run, actor: 'worker', messageId: id,
+                  });
+                }
+              }
+              pendingAck = undefined;
+            }
             break;
           case 'tool-use':
             toolNameById.set(event.id, event.name);
             journal.append({ event: 'tool.start', run: request.run, actor: 'worker', tool: event.name });
+            if (event.name === 'Bash' && typeof event.input['command'] === 'string') {
+              const command = event.input['command'];
+              bashCommandById.set(event.id, command);
+              if (invokesCommand(command, 'git', 'commit')) committed = true;
+            }
             // The SDK's usage field is required on every real assistant message, so
             // `pending` should already exist; a defensive turn is opened here rather than
             // dropped, so a forge_done or forge_handoff call can never go unrecognised on
@@ -414,7 +718,7 @@ export class SdkEngine implements EngineLike {
               if (typeof packet === 'string') pending.text += packet;
             }
             break;
-          case 'tool-result':
+          case 'tool-result': {
             journal.append({
               event: 'tool.end', run: request.run, actor: 'worker',
               tool: toolNameById.get(event.id) ?? '', isError: event.isError,
@@ -425,7 +729,28 @@ export class SdkEngine implements EngineLike {
             if (toolNameById.get(event.id) === FORGE_DONE_TOOL && !event.isError && pending) {
               pending.done = true;
             }
+            const bashCommand = bashCommandById.get(event.id);
+            if (bashCommand && !event.isError
+              && (invokesCommand(bashCommand, 'git', 'push') || invokesCommand(bashCommand, 'gh', 'pr', 'create'))) {
+              // Fire-and-forget: drift is checked after the push or PR open resolves, but
+              // nothing in the turn stream waits on it. A conflict raises a blocker in the
+              // inbox for a person, the same channel every other wall in this run uses.
+              void checkDrift(request.cwd).then((state) => {
+                const blocker = driftBlocker(request.run, state);
+                if (!blocker) return;
+                inbox.raise(blocker);
+                journal.append({
+                  event: 'run.blocked', run: request.run, actor: 'runner', reason: blocker.question,
+                });
+              }).catch((error) => {
+                journal.append({
+                  event: 'engine.error', run: request.run, actor: 'runner',
+                  message: `drift check failed: ${(error as Error).message}`, fatal: false,
+                });
+              });
+            }
             break;
+          }
           case 'turn-complete':
             flush();
             off();
@@ -450,7 +775,7 @@ export class SdkEngine implements EngineLike {
       });
 
       if (this.deliverVia === 'stream') {
-        deliverViaStream(engine, request.run, promptText, journal);
+        deliverViaStream(engine, goal, promptText, journal);
       } else {
         engine.send(promptText);
       }
@@ -463,11 +788,55 @@ export class SdkEngine implements EngineLike {
       sessionId,
       turns,
       send: (prompt: string) => runSegment(prompt),
+      get committed() { return committed; },
     };
   }
 
-  /** Releases the journal handle. Call once the whole chain, not one session, is done. */
-  close(): void {
+  /**
+   * `forge answer KEY TEXT`, for a run this instance itself has a live session for.
+   *
+   * Only delivers when both hold: the run is actually parked on this exact key (answering
+   * a stale or wrong key does nothing, on purpose -- a park exists so a decision made for
+   * a different question can never be mistaken for this one), and this process still holds
+   * that run's live engine. The second condition fails across a process boundary (a
+   * separate `forge answer` invocation against a run some other `forge run` process owns),
+   * which is what `RunInbox`-based delivery and session-id resume exist to cover instead.
+   */
+  async answer(run: string, key: string, text: string): Promise<{ delivered: boolean }> {
+    if (this.parked.get(run) !== key) return { delivered: false };
+    this.parked.delete(run);
+    this.journal.append({ event: 'run.resumed', run, actor: 'console', key });
+    const engine = this.liveEngines.get(run);
+    if (!engine) return { delivered: false };
+    await new Promise<void>((resolve) => {
+      const off = engine.onEvent((event) => {
+        if (event.type === 'turn-complete') {
+          off();
+          resolve();
+        }
+      });
+      engine.send(text);
+    });
+    return { delivered: true };
+  }
+
+  /**
+   * Releases the journal handle and stops every live `Engine` this instance still holds
+   * (F4). Call once the whole chain, not one session, is done.
+   *
+   * Before F4 this cleared `liveEngines` without ever calling `.stop()` on what it held, so
+   * the SDK child process behind each one outlived the chain that opened it: the live probe
+   * that found this saw `claude.exe`'s count go up by one and stay there after `forge run`
+   * printed its verdict and the process never exited. The journal and the park map are
+   * still cleared synchronously, so an immediate `replay()` right after this call, as the
+   * existing suite does, sees the file closed whether or not the returned promise is
+   * awaited; only stopping the engines themselves is asynchronous.
+   */
+  close(): Promise<void> {
     this.journal.close();
+    const engines = [...this.liveEngines.values()];
+    this.liveEngines.clear();
+    this.parked.clear();
+    return Promise.all(engines.map((engine) => engine.stop())).then(() => undefined);
   }
 }

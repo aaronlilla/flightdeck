@@ -174,6 +174,32 @@ describe('the version a worker is pinned to', () => {
   it('has a version at all, which is what makes the pin mean anything', () => {
     expect(runtimeVersion()).toMatch(/\S/);
   });
+
+  it('B.3.9: pins flightdeck\'s own HEAD even when called from a foreign cwd', async () => {
+    const { execFileSync } = await import('node:child_process');
+    const flightdeckHead = execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
+      encoding: 'utf8', cwd: process.cwd(),
+    }).trim();
+
+    // A directory with no git repo of its own: if runtimeVersion() ran `git rev-parse`
+    // in the caller's cwd instead of flightdeck's own source, it would find nothing here
+    // and fall back to "unversioned" rather than flightdeck's real revision.
+    const foreignCwd = mkdtempSync(join(tmpdir(), 'forge-foreign-cwd-'));
+    const originalCwd = process.cwd();
+    process.chdir(foreignCwd);
+    let version: string;
+    try {
+      const { vi } = await import('vitest');
+      vi.resetModules();
+      const fresh = await import('../../src/forge/launcher.js');
+      version = fresh.runtimeVersion();
+    } finally {
+      process.chdir(originalCwd);
+    }
+
+    expect(version).toBe(flightdeckHead);
+    expect(version).not.toBe('unversioned');
+  });
 });
 
 describe('what a refusal says', () => {

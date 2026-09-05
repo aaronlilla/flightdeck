@@ -67,6 +67,9 @@ export interface EngineConfig {
   mcpServers?: Options['mcpServers'];
   /** When set, the only tools the session may use. */
   allowedTools?: string[];
+  /** How much effort the model puts into its response: the class's own choice, not the
+   *  SDK's per-model default. */
+  effort?: Options['effort'];
 }
 
 /** One earlier session, reduced to what a picker needs to show. */
@@ -143,6 +146,7 @@ export function buildOptions(
   if (config.maxTurns !== undefined) options.maxTurns = config.maxTurns;
   if (config.mcpServers) options.mcpServers = config.mcpServers;
   if (config.allowedTools) options.allowedTools = config.allowedTools;
+  if (config.effort) options.effort = config.effort;
 
   const inspect = config.onToolCall;
   if (inspect) {
@@ -282,6 +286,7 @@ export class Engine {
               ? usage.cache_creation_input_tokens
               : 0,
             output: usage.output_tokens ?? 0,
+            parentToolUseId: (message as { parent_tool_use_id?: string | null }).parent_tool_use_id ?? null,
           });
         }
         for (const block of message.message.content) {

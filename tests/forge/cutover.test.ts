@@ -71,14 +71,41 @@ describe('a clean cutover', () => {
     expect(journaled.slice(0, completedIndex).every((e) => e['event'] === 'cutover.moved')).toBe(true);
   });
 
-  it('cutover.completed lists both moved and missing files', () => {
+  it('B.3.9: a file absent before the cutover starts is simply not in the manifest at all', () => {
+    // The manifest is now scanned from what is actually present (filesMatching), not
+    // compared against a fixed expected list, so there is no "missing" to report: a file
+    // that was never there was never part of this cutover's work.
     rmSync(join(from, 'terminals.py'));
     runCutover({ from, retiredDir, processList: [] }, journal);
     const event = journaled.find((e) => e['event'] === 'cutover.completed');
     expect((event?.['files'] as string[]).sort()).toEqual(
       CUTOVER_FILES.filter((name) => name !== 'terminals.py').sort(),
     );
-    expect(event?.['missing']).toEqual(['terminals.py']);
+    expect(event?.['missing']).toBeUndefined();
+  });
+
+  it('B.3.9: the manifest is derived from install.ts\'s detection list, not a hardcoded four', () => {
+    // A fifth file the fixed CUTOVER_FILES array never named, but which install.ts's own
+    // OLD_RUNTIME patterns match (a second tile script): if the manifest were still the
+    // hardcoded four, this would be left behind.
+    writeFileSync(join(from, 'tile-watch-2.cmd'), '# extra\n', 'utf8');
+    const result = runCutover({ from, retiredDir, processList: [] }, journal);
+    expect(result.moved).toContain('tile-watch-2.cmd');
+    expect(existsSync(join(retiredDir, 'tile-watch-2.cmd'))).toBe(true);
+  });
+
+  it('code-review finding: never moves conductor_hooks.py or the model policy, even though OLD_RUNTIME matches them', () => {
+    // The falsifier this closes: a broadened manifest (B.3.9's own fix, above) that
+    // matches more than the fixed four also has to keep excluding NEVER_REMOVE, or the
+    // widening reintroduces exactly the guard-removed-mid-flight failure NEVER_REMOVE
+    // exists to prevent.
+    writeFileSync(join(from, 'conductor_hooks.py'), '# hooks\n', 'utf8');
+    writeFileSync(join(from, 'model-policy.json'), '{}', 'utf8');
+    const result = runCutover({ from, retiredDir, processList: [] }, journal);
+    expect(result.moved).not.toContain('conductor_hooks.py');
+    expect(result.moved).not.toContain('model-policy.json');
+    expect(existsSync(join(from, 'conductor_hooks.py'))).toBe(true);
+    expect(existsSync(join(from, 'model-policy.json'))).toBe(true);
   });
 });
 

@@ -38,6 +38,45 @@ const TRAP = {
   prevention: 'add [CmdletBinding()] so an unknown flag is an error rather than $args',
 };
 
+describe('B.3.9: a gotcha redacts a secret before it is ever written', () => {
+  it('scrubs a token-shaped run out of the error before writing the file or the journal', () => {
+    const secret = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    const filed = gotchas.file({ ...TRAP, error: `auth failed: ${secret}` });
+
+    expect(filed.error).not.toContain(secret);
+    const onDisk = JSON.parse(readFileSync(join(dir, 'gotchas', `${filed.id}.json`), 'utf8')) as { error: string };
+    expect(onDisk.error).not.toContain(secret);
+    const state = replay(journalPath);
+    expect(JSON.stringify(state.events)).not.toContain(secret);
+  });
+
+  it('scrubs a secret out of "what" and "prevention" too, not just error and where', () => {
+    const secret = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    const filed = gotchas.file({
+      ...TRAP,
+      what: `hit this while holding ${secret}`,
+      prevention: `never log ${secret} again`,
+    });
+
+    expect(filed.what).not.toContain(secret);
+    expect(filed.prevention).not.toContain(secret);
+    const onDisk = JSON.parse(readFileSync(join(dir, 'gotchas', `${filed.id}.json`), 'utf8')) as {
+      what: string; prevention: string;
+    };
+    expect(onDisk.what).not.toContain(secret);
+    expect(onDisk.prevention).not.toContain(secret);
+  });
+
+  it('keys identity off the verbatim error, so two failures differing only in an embedded '
+    + 'secret stay two gotchas rather than colliding into one after redaction', () => {
+    const first = gotchas.file({ ...TRAP, error: 'auth failed: ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' });
+    const second = gotchas.file({ ...TRAP, error: 'auth failed: ghp_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB' });
+
+    expect(second.id).not.toBe(first.id);
+    expect(gotchas.all()).toHaveLength(2);
+  });
+});
+
 describe('filing a gotcha', () => {
   it('records it and hands back an id', () => {
     const filed = gotchas.file(TRAP);

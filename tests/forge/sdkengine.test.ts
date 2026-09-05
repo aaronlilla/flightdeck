@@ -84,10 +84,10 @@ describe('the options a worker runs under', () => {
     expect(Object.keys(buildWorkerOptions(REQUEST).mcpServers ?? {})).toEqual(['forge']);
   });
 
-  it('offers the three tools a worker needs to talk back', () => {
+  it('B.3.9: offers the five tools a worker needs to talk back, matching buildForgeMcpServer', () => {
     const forge = buildWorkerOptions(REQUEST).mcpServers?.['forge'];
     expect(forge?.tools.sort())
-      .toEqual(['forge_ask', 'forge_done', 'forge_gotcha', 'forge_handoff'].sort());
+      .toEqual(['forge_ask', 'forge_done', 'forge_gotcha', 'forge_handoff', 'forge_report'].sort());
   });
 
   it('resumes rather than starting fresh when given a session', () => {

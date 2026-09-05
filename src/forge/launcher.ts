@@ -15,7 +15,8 @@
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { readProcessList } from './fleetwatch.js';
 import { fleetConfigDir, forgeHome, runDir } from './paths.js';
@@ -134,6 +135,9 @@ let cachedVersion: string | undefined;
  * stable within a process and different across a change, because its whole job is to let
  * a run say which code it started under.
  */
+/** Flightdeck's own source directory, whatever a worker's cwd happens to be. */
+const FLIGHTDECK_SRC = dirname(fileURLToPath(import.meta.url));
+
 export function runtimeVersion(): string {
   if (cachedVersion) return cachedVersion;
   if (process.env['FORGE_RUNTIME']) {
@@ -141,8 +145,11 @@ export function runtimeVersion(): string {
     return cachedVersion;
   }
   try {
+    // cwd pinned to flightdeck's own source, never the caller's directory: a worker
+    // whose brief works in some other repository must still record flightdeck's own
+    // revision here, not that repository's.
     cachedVersion = execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
-      encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
+      encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'], cwd: FLIGHTDECK_SRC,
     }).trim();
   } catch {
     cachedVersion = '';

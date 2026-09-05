@@ -61,10 +61,27 @@ describe('raising a question', () => {
     expect(inbox.open()).toHaveLength(2);
   });
 
-  it('treats the same question from another run as the same wall', () => {
-    // Two runs blocked on one decision is one decision to make, not two.
+  it('B.3.7: the same question from another run is a different wall', () => {
+    // Reversed from the pre-B.3.7 design ("two runs blocked on one decision is one
+    // decision to make"): a successor after a handoff is a different run asking the same
+    // words, and merging it with whatever the predecessor already asked would hide that
+    // it happened again. The key now scopes by run (and goal, and action target)
+    // alongside wording, so two runs asking identically get two keys.
     expect(askKey({ ...QUESTION, run: 'alpha' }))
-      .toBe(askKey({ ...QUESTION, run: 'beta' }));
+      .not.toBe(askKey({ ...QUESTION, run: 'beta' }));
+  });
+
+  it('B.3.7: the same run asking the same words twice is still one wall', () => {
+    expect(askKey({ ...QUESTION, run: 'alpha' }))
+      .toBe(askKey({ ...QUESTION, run: 'alpha' }));
+  });
+
+  it('code-review finding: a blocker keeps the pre-B.3.7 cross-run merge, unlike a question', () => {
+    // driftBlocker (drift.ts) never sets goal or actionTarget and relies on every run
+    // behind the same base sharing one key, one answer releasing all of them. The B.3.7
+    // scoping above is for question/forge_ask asks specifically, not blockers.
+    const blocker = { ...QUESTION, kind: 'blocker' as const };
+    expect(askKey({ ...blocker, run: 'alpha' })).toBe(askKey({ ...blocker, run: 'beta' }));
   });
 
   it('is unmoved by whitespace and case in the wording', () => {
@@ -86,10 +103,18 @@ describe('answering', () => {
     expect(inbox.entry(entry.key)?.answer).toBe('staging');
   });
 
-  it('lists every run that was waiting on it', () => {
+  it('B.3.7: a repeat ask from the same run does not duplicate itself in runs', () => {
     inbox.raise(QUESTION);
+    const second = inbox.raise(QUESTION);
+    expect(second.runs).toEqual(['alpha']);
+    expect(second.asked).toBe(2);
+  });
+
+  it('B.3.7: a different run asking identically gets its own entry, not a shared one', () => {
+    const first = inbox.raise(QUESTION);
     const second = inbox.raise({ ...QUESTION, run: 'beta' });
-    expect(second.runs.sort()).toEqual(['alpha', 'beta']);
+    expect(second.key).not.toBe(first.key);
+    expect(second.runs).toEqual(['beta']);
   });
 
   it('reopens if the same question is asked after an answer', () => {
@@ -130,5 +155,32 @@ describe('what a blocked worker does', () => {
     const resume = inbox.resumePrompt(entry.key);
     expect(resume).toMatch(/staging/);
     expect(resume).toMatch(/Which environment/);
+  });
+});
+
+describe('code-review finding: deliverAnswer targets the goal id, not the segment name', () => {
+  it('queues the resume message under the goal, which a handoff never renames', async () => {
+    const { deliverAnswer } = await import('../../src/forge/runinbox.js');
+    const { RunInbox } = await import('../../src/forge/runinbox.js');
+    process.env['FORGE_HOME'] = dir;
+
+    const entry = inbox.raise({ ...QUESTION, run: 'goal-3', goal: 'goal' });
+    await deliverAnswer(entry, entry.key, 'staging');
+
+    // The falsifier this closes: queuing under 'goal-3' (the segment answered.runs would
+    // give you without this fix) would leave the live session -- which only polls its
+    // stable goal id's inbox -- with nothing to read.
+    expect(new RunInbox('goal').unread()).toHaveLength(1);
+    expect(new RunInbox('goal-3').unread()).toHaveLength(0);
+  });
+
+  it('falls back to the run name when no ask ever recorded a goal', async () => {
+    const { deliverAnswer, RunInbox } = await import('../../src/forge/runinbox.js');
+    process.env['FORGE_HOME'] = dir;
+
+    const entry = inbox.raise({ ...QUESTION, run: 'no-goal-run' });
+    await deliverAnswer(entry, entry.key, 'staging');
+
+    expect(new RunInbox('no-goal-run').unread()).toHaveLength(1);
   });
 });
