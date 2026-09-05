@@ -19,6 +19,7 @@ import { join } from 'node:path';
 
 import { Journal } from './journal.js';
 import { DEFAULT_THRESHOLDS } from './liveness.js';
+import { clearParkRecord } from './parkrecord.js';
 import { modelFor, modelIdFor, tierOfBrief, turnsFor } from './policy.js';
 import type { EngineLike } from './worker.js';
 
@@ -197,6 +198,9 @@ export async function reconcileRegistry(
         run: record.goal, model, prompt: RESUME_PROMPT, env: process.env, cwd: record.cwd,
         maxTurns: turnsFor(className), resume: record.sessionId,
       });
+      // I13: whatever a Warden wrote for the crashed segment is over with it; the
+      // resumed run gets a clean park state, not one it never asked to be under.
+      clearParkRecord(record.goal);
       journal.append({
         event: 'run.resumed', run: record.goal, actor: 'runner', reason: 'reconciled by forge up',
       });

@@ -143,6 +143,29 @@ describe('WardenTick.run', () => {
     expect(readParkRecord('r1')?.reason).toBe('run r1 has produced no event for 200s');
   });
 
+  it('I13: never parks on a context trip -- the worker owns its own ceiling', async () => {
+    const tick = new WardenTick({
+      journal, actuator, blockers: new BlockerBoard({ journal, actuator }),
+      now: () => Date.now(),
+      // The exact shape C2 run 4 hit: a context trip at the class ceiling, keyed on a
+      // registered run. Even a fresh run genuinely at its own ceiling must never be
+      // parked a second time by the tick -- the worker's own handoff already owns it.
+      stuck: () => [makeStuck({
+        key: 'r1', signal: 'context', threshold: 150_000, observed: 150_200,
+        hint: 'run r1 is at 150200 tokens against its implement class ceiling of 150000',
+      })],
+      liveRuns: () => [],
+      reportFleetHealth: () => 0,
+    });
+
+    await tick.run();
+
+    const state = replay(journalPath);
+    expect(state.events.some((e) => e.event === 'warden.parked')).toBe(false);
+    expect(state.events.some((e) => e.event === 'run.parked')).toBe(false);
+    expect(readParkRecord('r1')).toBeUndefined();
+  });
+
   it('never acts on a fleet-unknown trip -- reportFleetHealth is the only thing that ever sees it', async () => {
     const tick = new WardenTick({
       journal, actuator, blockers: new BlockerBoard({ journal, actuator }),

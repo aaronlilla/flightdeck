@@ -23,6 +23,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { INHERITED, Worker, workerEnv, type FakeTurn } from '../../src/forge/worker.js';
 import { replay } from '../../src/forge/journal.js';
 import { Inbox } from '../../src/forge/inbox.js';
+import { readParkRecord, writeParkRecord } from '../../src/forge/parkrecord.js';
 import { Registry } from '../../src/forge/registry.js';
 import {
   clearKillSwitch, engageKillSwitch, Fleet, Lanes, readKillSwitch,
@@ -34,6 +35,11 @@ let journalPath: string;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'forge-worker-'));
   journalPath = join(dir, 'fleet.jsonl');
+  // I13: `Worker.run()` now clears a run's park record (`parkrecord.ts`, under
+  // `runDir()`) at every terminal transition. `runDir()` resolves through `forgeHome()`,
+  // which falls back to this machine's real `~/.forge` when unset -- pinned here so that
+  // clear (a real filesystem call) never reaches outside this test's own temp directory.
+  process.env['FORGE_HOME'] = dir;
 });
 
 /** A stream of turns whose context climbs by `step` each turn. */
@@ -125,6 +131,72 @@ describe('the context ceiling', () => {
     // thing that needs the conversation about to be thrown away.
     expect(worker.engine.sent[0]?.sessionId).toBe('session-1');
     expect(worker.engine.sent[0]?.prompt).toMatch(/CONTEXT CEILING REACHED/);
+  });
+});
+
+describe('I13: a park record does not outlive its run', () => {
+  it('is gone once the run hands off to a successor', async () => {
+    writeParkRecord('alpha', { key: 'warden:alpha', reason: 'idle for 300s', at: Date.now() });
+    const worker = makeWorker([climbing(30_000, 8)], { maxContext: 60_000 });
+
+    await worker.run();
+
+    expect(readParkRecord('alpha')).toBeUndefined();
+  });
+
+  it('is gone once the run finishes, whatever the verdict', async () => {
+    writeParkRecord('alpha', { key: 'warden:alpha', reason: 'idle for 300s', at: Date.now() });
+    const worker = makeWorker([climbing(1_000, 5)], { maxContext: 60_000 });
+
+    const result = await worker.run();
+
+    expect(['stopped', 'exhausted', 'parked']).toContain(result.verdict);
+    expect(readParkRecord('alpha')).toBeUndefined();
+  });
+
+  it('is gone once a mid-loop park is answered and the run resumes', async () => {
+    writeParkRecord('alpha', { key: 'warden:alpha', reason: 'idle for 300s', at: Date.now() });
+    const inboxDir = join(dir, 'inbox');
+    const inbox = new Inbox(inboxDir);
+    let key: string | undefined;
+
+    const engine = {
+      started: [] as unknown[],
+      inbox,
+      async run(config: { run: string }) {
+        this.started.push(config);
+        const entry = inbox.raise({
+          run: config.run, goal: config.run, actionTarget: 'AskUserQuestion',
+          question: 'dev or prod?', options: ['dev', 'prod'], kind: 'question',
+        });
+        key = entry.key;
+        return {
+          sessionId: 'session-1', turns: [],
+          async send() { return [{ text: 'shipped', context: 10, done: true }]; },
+        };
+      },
+      parkedOn(run: string) { return run === 'alpha' ? key : undefined; },
+      clearPark() { key = undefined; },
+    };
+
+    const brief = '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnode -e process.exit(0)\n```\n';
+    const exec = async (request: { argv: string[] }) => ({
+      ok: true, tail: '', returncode: 0, argv: request.argv, owner: 'alpha', startedAt: 0, durationMs: 1,
+    });
+    const worker = new Worker({
+      run: 'alpha', brief, briefPath: join(dir, 'brief.md'), cwd: dir, journalPath,
+      engine: engine as never, exec, pollIntervalMs: 10,
+    } as never) as unknown as { run: () => Promise<{ verdict: string }> };
+
+    setTimeout(() => {
+      const outside = new Inbox(inboxDir);
+      const waiting = outside.open()[0];
+      if (waiting) outside.answer(waiting.key, 'go with dev');
+    }, 15);
+
+    await worker.run();
+
+    expect(readParkRecord('alpha')).toBeUndefined();
   });
 });
 

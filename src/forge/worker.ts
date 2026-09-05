@@ -21,6 +21,7 @@ import { run as execRun, type RunRequest, type RunResult } from './exec.js';
 import type { Inbox } from './inbox.js';
 import { asRunId, type Actuator } from './contracts.js';
 import { checkConformance, isRateLimitMessage, WindowGate } from './governor.js';
+import { clearParkRecord } from './parkrecord.js';
 
 /**
  * Markers a session inherits from the session that spawned it.
@@ -297,6 +298,14 @@ export class Worker {
     // off or stopping without ever committing is going nowhere, whatever its budget says.
     let sessionsSinceCommit = 0;
     const staleSessions: string[] = [];
+    // I13: a park record is cross-process ownership of `runs/<run>/park.json`, keyed by
+    // name -- it has to be cleared here, the moment the name it names is done with, or a
+    // resume of the same goal (`reconcileRegistry`) or a mid-loop answer-resume inherits
+    // whatever a Warden wrote for a turn that is already over.
+    const finishRun = (fields: Record<string, unknown>): void => {
+      clearParkRecord(runName);
+      journal.append({ event: 'run.finished', run: runName, actor: 'runner', ...fields });
+    };
 
     try {
       for (let index = 0; index < maxSessions; index += 1) {
@@ -418,16 +427,14 @@ export class Worker {
             break;
           }
           this.engine.clearPark?.(runName);
+          clearParkRecord(runName);
           journal.append({ event: 'run.resumed', run: runName, actor: 'console', key });
           if (!session.send) break;
           pendingTurns = await session.send(this.engine.inbox?.resumePrompt(key) ?? '');
         }
 
         if (conformanceMismatch) {
-          journal.append({
-            event: 'run.finished', run: runName, actor: 'runner', verdict: 'parked',
-            reason: 'model-mismatch',
-          });
+          finishRun({ verdict: 'parked', reason: 'model-mismatch' });
           verdict = 'parked';
           break;
         }
@@ -445,7 +452,7 @@ export class Worker {
               reason: 'kill switch engaged while parked', packet,
             });
           }
-          journal.append({ event: 'run.finished', run: runName, actor: 'runner', verdict: 'parked' });
+          finishRun({ verdict: 'parked' });
           verdict = 'parked';
           break;
         }
@@ -456,7 +463,7 @@ export class Worker {
             event: 'run.parked', run: runName, actor: 'runner',
             reason: 'kill switch engaged', packet,
           });
-          journal.append({ event: 'run.finished', run: runName, actor: 'runner', verdict: 'parked' });
+          finishRun({ verdict: 'parked' });
           verdict = 'parked';
           break;
         }
@@ -475,17 +482,13 @@ export class Worker {
         }
         if (sessionsSinceCommit >= 3) {
           const report = `three sessions without a commit: ${staleSessions.join(', ')}`;
-          journal.append({
-            event: 'run.finished', run: runName, actor: 'runner', verdict: 'parked', report,
-          });
+          finishRun({ verdict: 'parked', report });
           verdict = 'parked';
           break;
         }
 
         if (!ceilingHit) {
-          journal.append({
-            event: 'run.finished', run: runName, actor: 'runner', verdict: 'stopped',
-          });
+          finishRun({ verdict: 'stopped' });
           verdict = sessions.length === 1 && turns === 0 ? 'parked' : 'exhausted';
           break;
         }
@@ -494,17 +497,19 @@ export class Worker {
           // The ceiling was hit on the last session this chain is allowed. A handoff
           // packet with no successor to seed is a phantom: journaling run.handoff here
           // would claim a continuation that never starts. This is exhausted, plainly.
-          journal.append({
-            event: 'run.finished', run: runName, actor: 'runner', verdict: 'exhausted',
-          });
+          finishRun({ verdict: 'exhausted' });
           verdict = 'exhausted';
           break;
         }
 
         // The ceiling, with sessions left in the budget. Ask for the packet, then
-        // continue as a new run on the same model.
+        // continue as a new run on the same model. The successor is a fresh name
+        // (I13: never this one), so it starts with no park record of its own regardless
+        // -- clearing this run's is still worth doing, since the same name can still
+        // come back through a crash-resume later (`reconcileRegistry`).
         const successor = `${this.config.run}-${index + 2}`;
         const packet = await this.requestHandoff(runName, session, journal);
+        clearParkRecord(runName);
         journal.append({
           event: 'run.handoff',
           run: runName,
@@ -541,6 +546,7 @@ export class Worker {
   ): Promise<'done' | 'unverified' | 'parked'> {
     const commands = verificationCommands(this.config.brief);
     if (!commands) {
+      clearParkRecord(runName);
       journal.append({ event: 'run.finished', run: runName, actor: 'runner', verdict: 'unverified' });
       return 'unverified';
     }
@@ -557,6 +563,7 @@ export class Worker {
       }
       const failed = outcomes.filter((outcome) => !outcome.ok);
       if (!failed.length) {
+        clearParkRecord(runName);
         journal.append({ event: 'run.finished', run: runName, actor: 'runner', verdict: 'done' });
         return 'done';
       }
@@ -576,6 +583,7 @@ export class Worker {
         });
       }
     }
+    clearParkRecord(runName);
     journal.append({ event: 'run.finished', run: runName, actor: 'runner', verdict: 'parked' });
     return 'parked';
   }

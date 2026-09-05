@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { Journal, replay } from '../../src/forge/journal.js';
+import { readParkRecord, writeParkRecord } from '../../src/forge/parkrecord.js';
 import { processAlive, reconcileRegistry, Registry } from '../../src/forge/registry.js';
 import type { EngineLike, SessionRequest } from '../../src/forge/worker.js';
 
@@ -20,6 +21,10 @@ let journalPath: string;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'forge-registry-'));
   journalPath = join(dir, 'fleet.jsonl');
+  // I13: `reconcileRegistry` now clears a resumed row's park record, which resolves
+  // through `forgeHome()`'s real `~/.forge` fallback when unset -- pinned to this
+  // test's own temp directory so that clear never reaches outside it.
+  process.env['FORGE_HOME'] = dir;
 });
 
 describe('admission', () => {
@@ -111,6 +116,22 @@ describe('B.3.5: forge up reconciles a dead pid', () => {
     expect(registry.get('crashed')).toBeUndefined();
     const state = replay(journalPath);
     expect(state.events.some((e) => e.event === 'run.resumed' && e.run === 'crashed')).toBe(true);
+  });
+
+  it('I13: clears a stale park record when resuming a crashed run under the same name', async () => {
+    const briefPath = join(dir, 'was-parked.md');
+    writeFileSync(briefPath, '# Goal\n\nDo the thing.\n', 'utf8');
+    const registry = new Registry(join(dir, 'registry'));
+    registry.admit({ goal: 'was-parked', cwd: dir, briefPath, pid: 999_999 });
+    registry.setSession('was-parked', 'sess-before-crash', 'claude-sonnet-5');
+    writeParkRecord('was-parked', { key: 'warden:was-parked', reason: 'idle for 300s', at: Date.now() });
+
+    const engine = fakeEngine();
+    const journal = new Journal(journalPath);
+    await reconcileRegistry(registry, engine, journal);
+    journal.close();
+
+    expect(readParkRecord('was-parked')).toBeUndefined();
   });
 
   it('leaves a row with a live pid alone', async () => {

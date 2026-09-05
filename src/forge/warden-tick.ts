@@ -71,9 +71,15 @@ export interface WardenTickDeps {
  *  `fleet-unknown` names the probe, not a run (`reportFleetHealth`'s own job, never
  *  acted on); `drift` and `blocker` already parked themselves the moment they were
  *  raised (`ConformanceDrift.check`, `BlockerBoard.raise`), so parking them again here
- *  would be a second, redundant park record for the same trip. */
+ *  would be a second, redundant park record for the same trip. `context` is excluded on
+ *  purpose (I13): the worker owns its own ceiling and already hands off or parks on it
+ *  (B.3.3), so a second actuator acting on the same number is redundant at best, and
+ *  wrong at worst -- a finished chain's last `turn.end` leaves `RunState.context` sitting
+ *  at its old high-water mark until a new run under the same name records its own first
+ *  turn, since `run.started` never resets it, so a fresh attempt of the same goal can
+ *  read as already over the ceiling before it has made a single tool call. */
 const GENERIC_PARK_SIGNALS = new Set([
-  'idle', 'tool-budget', 'context', 'stale-session', 'login-stuck',
+  'idle', 'tool-budget', 'stale-session', 'login-stuck',
 ]);
 
 async function guarded(
