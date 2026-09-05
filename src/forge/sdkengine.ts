@@ -21,7 +21,7 @@ import { driftBlocker, readMergeable, type Mergeable } from './drift.js';
 import { run as execRun } from './exec.js';
 import { Gotchas } from './gotcha.js';
 import { redactFields } from './redact.js';
-import { Inbox } from './inbox.js';
+import { Inbox, type InboxEntry } from './inbox.js';
 import { Journal } from './journal.js';
 import { fleetConfigDir } from './paths.js';
 import { injectMessages, RunInbox } from './runinbox.js';
@@ -216,6 +216,25 @@ export interface CanUseToolDeps {
 }
 
 /**
+ * Records a park against a run: sets `parked`, and journals `run.parked` with the key.
+ *
+ * The one place both walls a run can hit go through: `AskUserQuestion`, denied at
+ * `canUseTool`, and `forge_ask`, which calls it from its own tool handler (F3). Before F3,
+ * `forge_ask` raised the inbox entry and journaled `forge.ask` but never called this, so a
+ * run that asked through the tool rather than through `AskUserQuestion` parked nothing: the
+ * next tool call went straight through, and no other process had a park key to answer.
+ */
+export function parkRun(
+  deps: { parked: Map<string, string>; journal: Journal }, run: string, entry: InboxEntry,
+): void {
+  deps.parked.set(run, entry.key);
+  deps.journal.append({
+    event: 'run.parked', run, actor: 'runner', key: entry.key,
+    reason: `parking on ${entry.key}: ${entry.question}`,
+  });
+}
+
+/**
  * Denies every tool that reaches it, and journals why.
  *
  * `canUseTool` is the door of last resort: whatever `permissionMode: bypassPermissions`
@@ -234,15 +253,11 @@ export function buildCanUseTool(deps: CanUseToolDeps) {
         run: deps.run, goal: deps.goal, actionTarget: 'AskUserQuestion',
         question: asked.question, options: asked.options, kind: 'question',
       });
-      deps.parked.set(deps.run, entry.key);
       deps.journal.append({
         event: 'permission.denied', run: deps.run, actor: 'runner', tool: toolName,
         reason: `parking on ${entry.key}`,
       });
-      deps.journal.append({
-        event: 'run.parked', run: deps.run, actor: 'runner', key: entry.key,
-        reason: `parking on ${entry.key}: ${asked.question}`,
-      });
+      parkRun(deps, deps.run, entry);
       return {
         behavior: 'deny' as const,
         message: `this run is parking on ${entry.key}: ${asked.question}`,
@@ -365,6 +380,57 @@ export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
     }
     if (inboxHook) return inboxHook(call);
     return { decision: undefined };
+  };
+}
+
+export interface ForgeHandlerDeps {
+  run: string;
+  /** The stable goal id, for `forge_ask`'s inbox entry: B.3.7. */
+  goal: string;
+  inbox: Inbox;
+  journal: Journal;
+  /** Shared with `buildCanUseTool` and the PreToolUse hook: run name to the ask key it is
+   *  parked on. `forge_ask` sets this itself (F3), the same way `AskUserQuestion` does. */
+  parked: Map<string, string>;
+  gotchas: Gotchas;
+}
+
+/**
+ * The five tool handlers a worker's session talks back through, built as their own
+ * function so a specimen can call `onAsk` directly with no SDK, no live session, and no MCP
+ * server involved (F3): `buildForgeMcpServer` wires these into the SDK's own in-process
+ * tool server, and a fake `queryFn`-driven stream never actually invokes it, only the
+ * tool-use/tool-result messages that server would have produced.
+ *
+ * `forge_ask` parks the run through `parkRun`, exactly as `AskUserQuestion` does. Before
+ * F3, it raised the inbox entry and journaled `forge.ask` but never called `parkRun`, so a
+ * run that asked through the tool rather than the SDK's own permission prompt parked
+ * nothing: the next tool call went straight through.
+ */
+export function buildForgeToolHandlers(deps: ForgeHandlerDeps): ForgeToolHandlers {
+  return {
+    onDone: (input) => {
+      deps.journal.append({ event: 'forge.done', run: deps.run, actor: 'worker', evidence: input.evidence });
+    },
+    onHandoff: (input) => {
+      deps.journal.append({ event: 'forge.handoff', run: deps.run, actor: 'worker', packet: input.packet });
+    },
+    onAsk: (input) => {
+      const entry = deps.inbox.raise({
+        run: deps.run, goal: deps.goal, actionTarget: 'forge_ask',
+        question: input.question, options: input.options, kind: input.kind,
+      });
+      parkRun(deps, deps.run, entry);
+      deps.journal.append({
+        event: 'forge.ask', run: deps.run, actor: 'worker', question: input.question,
+      });
+    },
+    onGotcha: (input) => {
+      deps.gotchas.file({ run: deps.run, ...input });
+    },
+    onReport: (input) => {
+      deps.journal.append({ event: 'forge.report', run: deps.run, actor: 'worker', ...redactFields(input) });
+    },
   };
 }
 
@@ -524,29 +590,9 @@ export class SdkEngine implements EngineLike {
     const inbox = this.sharedInbox;
     const gotchas = new Gotchas(this.deps.gotchasDir, this.deps.journalPath);
 
-    const handlers: ForgeToolHandlers = {
-      onDone: (input) => {
-        journal.append({ event: 'forge.done', run: request.run, actor: 'worker', evidence: input.evidence });
-      },
-      onHandoff: (input) => {
-        journal.append({ event: 'forge.handoff', run: request.run, actor: 'worker', packet: input.packet });
-      },
-      onAsk: (input) => {
-        inbox.raise({
-          run: request.run, goal, actionTarget: 'forge_ask',
-          question: input.question, options: input.options, kind: input.kind,
-        });
-        journal.append({
-          event: 'forge.ask', run: request.run, actor: 'worker', question: input.question,
-        });
-      },
-      onGotcha: (input) => {
-        gotchas.file({ run: request.run, ...input });
-      },
-      onReport: (input) => {
-        journal.append({ event: 'forge.report', run: request.run, actor: 'worker', ...redactFields(input) });
-      },
-    };
+    const handlers = buildForgeToolHandlers({
+      run: request.run, goal, inbox, journal, parked: this.parked, gotchas,
+    });
 
     // Each assistant message's usage already carries the whole context of that turn --
     // uncached input plus cache read plus cache creation is the entire prompt that turn

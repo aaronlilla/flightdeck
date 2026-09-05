@@ -19,8 +19,11 @@ import { INHERITED, Worker } from '../../src/forge/worker.js';
 import { replay } from '../../src/forge/journal.js';
 import { RunInbox } from '../../src/forge/runinbox.js';
 import { Inbox } from '../../src/forge/inbox.js';
-import { buildCanUseTool, buildPreToolUseHook, deliverViaStream, SdkEngine } from '../../src/forge/sdkengine.js';
+import {
+  buildCanUseTool, buildForgeToolHandlers, buildPreToolUseHook, deliverViaStream, SdkEngine,
+} from '../../src/forge/sdkengine.js';
 import { Journal } from '../../src/forge/journal.js';
+import { Gotchas } from '../../src/forge/gotcha.js';
 
 let home: string;
 let journalPath: string;
@@ -970,5 +973,57 @@ describe('B.3.8: `committed` reflects an actual git commit, not just the phrase 
     });
     const result = await engine.run({ ...REQUEST, run: 'commit-run-2', env: { PATH: '/usr/bin' } });
     expect(result.committed).toBe(false);
+  });
+});
+
+describe('F3: forge_ask parks', () => {
+  it('parks the run and journals run.parked with the key, exactly as AskUserQuestion does', () => {
+    const parked = new Map<string, string>();
+    const inbox = new Inbox(join(home, 'inbox-f3'));
+    const journal = new Journal(journalPath);
+    const gotchas = new Gotchas(join(home, 'gotchas-f3'), journalPath);
+    const handlers = buildForgeToolHandlers({
+      run: 'f3-run', goal: 'f3-run', inbox, journal, parked, gotchas,
+    });
+
+    handlers.onAsk({ question: 'dev or prod?', options: ['dev', 'prod'], kind: 'question' });
+
+    const key = parked.get('f3-run');
+    expect(key).toBeTruthy();
+
+    journal.close();
+    const state = replay(journalPath);
+    expect(state.events.some((e) => e.event === 'run.parked' && e.run === 'f3-run' && e['key'] === key))
+      .toBe(true);
+
+    // The next tool call is denied naming it, the same PreToolUse guard AskUserQuestion's
+    // park relies on.
+    const hookJournal = new Journal(journalPath);
+    const hook = buildPreToolUseHook({
+      run: 'f3-run', goal: 'f3-run', parked, journal: hookJournal, inbox, deliverVia: 'hook',
+    });
+    return hook({ toolName: 'Bash', input: {}, toolUseId: 'tu-1' }).then((verdict) => {
+      hookJournal.close();
+      expect(verdict.decision).toBe('deny');
+      expect(verdict.reason).toContain(key);
+    });
+  });
+
+  it('the falsifier: only asserting the AskUserQuestion path never proves forge_ask parks anything', () => {
+    // Baseline forge_ask (before F3) raised the inbox entry and journaled forge.ask but
+    // never touched `parked` at all: a specimen that only exercises AskUserQuestion, as the
+    // B.3.1 suite above does, would stay green through that regression. This one calls
+    // forge_ask's own handler directly and fails unless it parks too.
+    const parked = new Map<string, string>();
+    const inbox = new Inbox(join(home, 'inbox-f3-falsifier'));
+    const journal = new Journal(journalPath);
+    const gotchas = new Gotchas(join(home, 'gotchas-f3-falsifier'), journalPath);
+    const handlers = buildForgeToolHandlers({
+      run: 'f3-falsifier-run', goal: 'f3-falsifier-run', inbox, journal, parked, gotchas,
+    });
+
+    handlers.onAsk({ question: 'staging or prod?' });
+
+    expect(parked.has('f3-falsifier-run')).toBe(true);
   });
 });
