@@ -1,35 +1,73 @@
 /*
- * Forge console, cut 1: light-glass palette, 24px radius, the type scale.
- * The blur budget (backdrop-filter, grain) is cut 2 — surfaces here are flat
- * and opaque on purpose.
+ * Forge console, cut 2: the full glass system, captured from egonex.ai
+ * 2026-09-04 with green substitutes (the forge-spine-sdk-workers build-out
+ * doc, Section 6's visual-system bullet). Cut 1 shipped this palette flat,
+ * without the blur, to get state/inbox/lifecycle in front of the real
+ * server first; this pass adds the `backdrop-filter` glass, the static
+ * grain, and the type scale and motion timings the source names.
  *
- * The vernacular is a flight strip board: every lane tile reads like a strip
- * on a runway rack, identifiers set in a mono face because they are data
- * (a callsign, a ticket key), everything else in Inter.
+ * The vernacular stays a flight strip board: every lane tile reads like a
+ * strip on a runway rack, identifiers set in a mono face because they are
+ * data (a callsign, a ticket key), everything else in Inter as the Mazzard H
+ * stand-in the source calls for.
+ *
+ * Blur budget: `backdrop-filter` is expensive per layer, and the source caps
+ * it at roughly 12 concurrent surfaces. This page's own ceiling on that
+ * count: the command bar (1), the inbox rail (1), the ticket sheet when open
+ * (1), and the lanes grid, which fits at most 8-9 tiles in a 1440-wide
+ * viewport before scrolling -- 11-12 layers at once, worst case, never
+ * unbounded.
  */
 
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap');
 
 :root {
-  --gd-ground: #eef3ee;
-  --gd-ground-wash: #e2ece1;
+  /* Ground and washes: spec line 154-155. The wash colors render as
+     radial-gradient layers on `body`, below; these three custom properties
+     are their source values, kept named rather than inlined so a future
+     surface can reuse exactly the source's sky/mint/lime rather than a
+     close guess at them. */
+  --gd-ground: rgb(248, 250, 252);
+  --gd-ground-wash-sky: rgba(186, 230, 253, .32);
+  --gd-ground-wash-mint: rgba(190, 242, 220, .35);
+  --gd-ground-wash-lime: rgba(224, 247, 196, .24);
+
   --gd-surface: #ffffff;
   --gd-surface-sunken: #f4f8f3;
   --gd-border: #cfdccb;
   --gd-border-strong: #a9c0a2;
-  --gd-ink: #16241a;
-  --gd-ink-muted: #56695b;
+
+  /* Text: spec line 156. */
+  --gd-ink: rgb(8, 36, 24);
+  --gd-ink-muted: rgb(94, 112, 100);
   --gd-ink-faint: #82927f;
 
-  --gd-accent: #1f7a4d;
-  --gd-accent-strong: #0f5c37;
+  /* Accent gradient: spec line 157. Used on the primary button and the
+     progress fill, the two places a solid accent color reads as one flat
+     tone rather than the intended gradient. */
+  --gd-accent-grad-start: #0F5C33;
+  --gd-accent-grad-mid: #1A9B54;
+  --gd-accent-grad-end: #34C97A;
+  --gd-accent: var(--gd-accent-grad-mid);
+  --gd-accent-strong: var(--gd-accent-grad-start);
   --gd-accent-soft: #d9efe0;
-  --gd-verified: #1f7a4d;
+  --gd-verified: var(--gd-accent-grad-start);
   --gd-observed: #a4770c;
   --gd-observed-soft: #f6ecd2;
   --gd-danger: #a3352b;
   --gd-danger-soft: #f4dcd9;
   --gd-info: #2c5f8a;
+
+  /* Glass card: spec lines 157-159. */
+  --gd-glass-grad: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, .74),
+    var(--gd-ground-wash-mint) 55%,
+    var(--gd-ground-wash-lime) 100%
+  );
+  --gd-glass-border: 1px solid rgba(255, 255, 255, .6);
+  --gd-glass-sheen: inset 0 1px 0 rgba(255, 255, 255, .92);
+  --gd-glass-blur: blur(40px);
 
   --gd-radius: 24px;
   --gd-radius-sm: 12px;
@@ -37,13 +75,41 @@
   --gd-font-body: 'Inter', system-ui, sans-serif;
   --gd-font-mono: 'JetBrains Mono', ui-monospace, monospace;
 
+  /* Type scale: spec lines 159-160 ("Inter as the Mazzard H stand-in"). The
+     dashboard's own working sizes for dense UI text (labels, tiles) stay
+     unchanged below this block -- the source's body size of 18.5px is a
+     landing-page reading size, and setting every lane tile row to it would
+     make the busiest screen in the console less scannable, not more true
+     to the brief. `--gd-type-hero` is used once, on the command bar's own
+     running-lane count, which is the one number in this layout that plays
+     the "hero stat" role the source's count-up-stats note describes. */
+  --gd-type-hero: 500 64px/1.05 var(--gd-font-body);
+  --gd-type-hero-tracking: -1.28px;
+  --gd-type-h2: 500 20px/1.3 var(--gd-font-body);
+  --gd-type-body: 400 18.5px/1.65 var(--gd-font-body);
+
   --gd-size-label: 0.8125rem;
   --gd-size-body: 0.9375rem;
   --gd-size-title: 1.125rem;
   --gd-size-heading: 1.5rem;
   --gd-size-hero: 2rem;
 
+  /* Motion: spec line 161. Hovers land quick and settle; the one entrance
+     this page orchestrates (the lanes grid's first paint, below) is slower
+     and only ever plays once per mount, never per card. */
+  --gd-motion-hover: 260ms;
+  --gd-motion-hover-ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --gd-motion-entrance: 700ms;
+  --gd-motion-entrance-ease: cubic-bezier(0.16, 1, 0.3, 1);
+
   color-scheme: light;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --gd-motion-hover: 0ms;
+    --gd-motion-entrance: 0ms;
+  }
 }
 
 * {
@@ -57,12 +123,39 @@ body,
 }
 
 body {
+  position: relative;
   margin: 0;
-  background: radial-gradient(circle at 15% -10%, var(--gd-ground-wash), var(--gd-ground) 55%);
+  background:
+    radial-gradient(circle at 12% -8%, var(--gd-ground-wash-sky), transparent 45%),
+    radial-gradient(circle at 88% 6%, var(--gd-ground-wash-mint), transparent 50%),
+    radial-gradient(circle at 50% 100%, var(--gd-ground-wash-lime), transparent 60%),
+    var(--gd-ground);
   color: var(--gd-ink);
   font-family: var(--gd-font-body);
   font-size: var(--gd-size-body);
   line-height: 1.45;
+}
+
+/*
+ * Static grain, spec line 159 ("static grain instead of a canvas"): a fixed
+ * SVG turbulence tile, not an animated or JS-driven canvas, so it costs one
+ * paint rather than a redraw loop. `mix-blend-mode: overlay` at a low
+ * opacity keeps it a texture on the wash rather than visible noise.
+ */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.035;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+.forge-app {
+  position: relative;
+  z-index: 1;
 }
 
 button {
@@ -82,8 +175,11 @@ button {
   align-items: center;
   gap: 1.5rem;
   padding: 0.875rem 1.5rem;
-  background: var(--gd-surface);
-  border-bottom: 1px solid var(--gd-border);
+  background: var(--gd-glass-grad);
+  -webkit-backdrop-filter: var(--gd-glass-blur);
+  backdrop-filter: var(--gd-glass-blur);
+  border-bottom: var(--gd-glass-border);
+  box-shadow: var(--gd-glass-sheen);
 }
 
 .command-bar__title {
@@ -91,6 +187,14 @@ button {
   font-weight: 600;
   letter-spacing: -0.01em;
   margin: 0;
+}
+
+/* The one "hero stat" this layout has room for, per the source's count-up
+   note: the running-lane count, in the command bar's own type-hero size. */
+.stat-chip--hero .stat-chip__value {
+  font: var(--gd-type-hero);
+  letter-spacing: var(--gd-type-hero-tracking);
+  font-size: clamp(1.5rem, 4vw, 2.5rem);
 }
 
 .command-bar__stats {
@@ -134,6 +238,7 @@ button {
   font-size: var(--gd-size-body);
   font-weight: 500;
   cursor: pointer;
+  transition: background var(--gd-motion-hover) var(--gd-motion-hover-ease);
 }
 
 .btn:hover:not(:disabled) {
@@ -151,7 +256,7 @@ button {
 }
 
 .btn--primary {
-  background: var(--gd-accent);
+  background: linear-gradient(135deg, var(--gd-accent-grad-start), var(--gd-accent-grad-mid), var(--gd-accent-grad-end));
   border-color: var(--gd-accent-strong);
   color: #fff;
 }
@@ -191,6 +296,24 @@ button {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   gap: 1rem;
+  /* The one orchestrated entrance this page plays: the grid fades and
+     settles as a whole on first paint, once, never per card on every
+     re-render (a per-tile fade on every 5s poll would be the generic
+     "fade-and-slide-up on every section" tell the design skill warns
+     against). Skipped entirely under prefers-reduced-motion via the
+     var falling to 0ms above. */
+  animation: forge-settle var(--gd-motion-entrance) var(--gd-motion-entrance-ease) both;
+}
+
+@keyframes forge-settle {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .lanes-empty {
@@ -205,13 +328,23 @@ button {
 /* -- Lane tile (flight strip) --------------------------------------------- */
 
 .lane-tile {
-  background: var(--gd-surface);
-  border: 1px solid var(--gd-border);
+  background: var(--gd-glass-grad);
+  -webkit-backdrop-filter: var(--gd-glass-blur);
+  backdrop-filter: var(--gd-glass-blur);
+  border: var(--gd-glass-border);
+  box-shadow: var(--gd-glass-sheen);
   border-radius: var(--gd-radius);
   padding: 1rem;
   display: flex;
   flex-direction: column;
   gap: 0.6rem;
+  transition: box-shadow var(--gd-motion-hover) var(--gd-motion-hover-ease),
+    transform var(--gd-motion-hover) var(--gd-motion-hover-ease);
+}
+
+.lane-tile:hover {
+  box-shadow: var(--gd-glass-sheen), 0 8px 24px -12px rgba(15, 92, 51, .35);
+  transform: translateY(-2px);
 }
 
 .lane-tile__head {
@@ -311,8 +444,11 @@ button {
 
 .inbox-rail {
   width: 300px;
-  background: var(--gd-surface);
-  border: 1px solid var(--gd-border);
+  background: var(--gd-glass-grad);
+  -webkit-backdrop-filter: var(--gd-glass-blur);
+  backdrop-filter: var(--gd-glass-blur);
+  border: var(--gd-glass-border);
+  box-shadow: var(--gd-glass-sheen);
   border-radius: var(--gd-radius);
   padding: 1rem;
   display: flex;

@@ -24,7 +24,7 @@ export function CommandBar({ state, disabledReason, onStop, stopping, now }: Com
     <header className="command-bar">
       <h1 className="command-bar__title">Forge fleet</h1>
       <div className="command-bar__stats">
-        <span className="stat-chip">
+        <span className="stat-chip stat-chip--hero">
           <span className="stat-chip__value">{running}</span>
           <span className="stat-chip__label">running</span>
         </span>
