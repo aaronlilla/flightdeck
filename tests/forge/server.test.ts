@@ -229,6 +229,45 @@ describe('GET /state', () => {
 
     expect(secondAt).toBeGreaterThan(firstAt);
   });
+
+  // X1: a lane can carry a stale verdict from an earlier chain (parked, or otherwise
+  // finished) while a fresh run for the same slug is genuinely live. A tile driven off
+  // the lane record alone would show the dead chain's verdict beside a running tool; the
+  // live run has to win.
+  it('X1: a live run for a lane overrides that lane\'s stale verdict, class, model and cost', async () => {
+    const lanes = new Lanes(join(dir, 'lanes-x1'));
+    lanes.put('beta', {
+      column: 'blocked', verdict: 'parked', model: 'claude-fable-5', context: 5_000, cost_usd: 0.01,
+    });
+    const journalPath = join(dir, 'fleet-x1.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'beta', actor: 'worker', model: 'claude-sonnet-5', className: 'implement-hard' });
+    journal.append({
+      event: 'turn.end', run: 'beta', actor: 'worker', context: 91_000, model: 'claude-sonnet-5',
+      usage: { input: 1_000_000, cacheRead: 0, cacheCreation: 0, output: 0 },
+    });
+    journal.append({ event: 'tool.start', run: 'beta', actor: 'worker', tool: 'Bash' });
+    journal.close();
+
+    const x1Server = new ForgeServer({
+      lanes, inbox: new Inbox(join(dir, 'inbox-x1')), journalPath, port: 0,
+    });
+    const x1Base = `http://127.0.0.1:${await x1Server.listen()}`;
+    try {
+      const state = await (await fetch(`${x1Base}/state`)).json() as Record<string, unknown>;
+      const lane = (state['lanes'] as Wrapped<Record<string, unknown>[]>).value[0]!;
+      expect(lane['run_state']).toBe('started');
+      expect(lane['className']).toBe('implement-hard');
+      expect(lane['model']).toBe('claude-sonnet-5');
+      expect(lane['cost_usd']).toBeGreaterThan(0.01);
+      expect(lane['current_tool']).toMatchObject({ name: 'Bash' });
+      const runs = state['runs'] as Record<string, { state: string; className?: string }>;
+      expect(runs['beta']?.state).toBe('started');
+      expect(runs['beta']?.className).toBe('implement-hard');
+    } finally {
+      await x1Server.close();
+    }
+  });
 });
 
 describe('GET /inbox', () => {

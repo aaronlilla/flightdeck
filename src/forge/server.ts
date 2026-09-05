@@ -219,14 +219,24 @@ export class ForgeServer {
       const mtime = this.lanes.mtimeOf(lane.slug) ?? now;
       const run = fleet.runs[lane.slug];
       const lastEventAt = run?.lastEventAt || mtime;
+      // The journal is updated on every turn; the lane file only at the end of a session
+      // chain (and, for model/className, at admission). Once a run has taken at least one
+      // turn, everything the journal tracks for it -- context, spend, class, model, and
+      // its own lifecycle state -- is the fresher answer. Before that, the run's own
+      // defaults would incorrectly overwrite whatever the lane file still remembers from
+      // an earlier chain, which is exactly the bug a parked verdict sitting beside a live
+      // "running Bash" tile came from: the tile was reading the lane's stale verdict
+      // instead of the live run underneath it.
+      const live = Boolean(run && run.turns > 0);
+      const cost_usd = live ? run!.costUsd : lane.cost_usd;
       return {
         ...lane,
-        // The journal is updated on every turn; the lane file only at the end of a
-        // session chain. Once a run has taken at least one turn, its journaled context is
-        // the fresher number; before that, the run's own default (0) would incorrectly
-        // overwrite whatever the lane file still remembers from an earlier session.
-        context: run && run.turns > 0 ? run.context : lane.context,
-        usd_per_hour: usdPerHour(lane),
+        context: live ? run!.context : lane.context,
+        cost_usd,
+        className: run?.className ?? lane.className ?? null,
+        model: run?.model ?? lane.model,
+        run_state: run?.state,
+        usd_per_hour: usdPerHour({ ...lane, cost_usd }),
         verified_at: mtime,
         last_event_age_s: Math.max(0, Math.round((now - lastEventAt) / 1000)),
         current_tool: run?.currentTool ?? null,
@@ -250,6 +260,11 @@ export class ForgeServer {
       inbox_open: { value: this.inbox.open().length, verified_at: this.inbox.mtime() ?? now },
       stuck: { value: this.stuckFn(), observed_at: now },
       fleet: { value: this.fleetFn(), observed_at: now },
+      // The contracts' own `ForgeStateSnapshot.runs`: the journal's live view of every
+      // run it has ever seen a line for, keyed by run (today, one run per lane slug).
+      // Not filtered to "still running" -- a finished or handed-off run stays visible so
+      // a tile can tell a live run apart from a lane record with nothing under it.
+      runs: fleet.runs,
     };
   }
 

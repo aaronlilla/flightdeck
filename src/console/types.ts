@@ -57,6 +57,28 @@ export interface LaneRecord {
   goal?: string;
   className?: string;
   provider?: string;
+  /** X1: the live run's own lifecycle state (`RunState['state']` in `journal.ts`), present
+   *  only when a run for this slug has taken at least one turn. A tile prefers this over
+   *  `verdict`/`column`, which describe whatever chain last finished, not what is running
+   *  now -- the falsifier this closes is a parked chain's verdict rendering beside a run
+   *  that is genuinely live. */
+  run_state?: 'started' | 'finished' | 'handed-off' | 'paused' | 'parked';
+}
+
+/** One run's slice of `/state`, keyed by run (today, the lane's own slug). Mirrors
+ *  `journal.ts`'s `RunState` on the fields the console reads. */
+export interface ConsoleRunView {
+  run: string;
+  state: 'started' | 'finished' | 'handed-off' | 'paused' | 'parked';
+  className?: string;
+  model?: string;
+  context: number;
+  costUsd: number;
+  currentTool?: { name: string; startedAt: number };
+  lastEventAt: number;
+  parkKey?: string;
+  successor?: string;
+  predecessor?: string;
 }
 
 export interface ForgeState {
@@ -68,6 +90,9 @@ export interface ForgeState {
   inbox_open: VerifiedField<number>;
   stuck: VerifiedField<unknown[]>;
   fleet: VerifiedField<Array<Record<string, unknown>> | { ok: false; reason: string }>;
+  /** The contracts' `ForgeStateSnapshot.runs`: the journal's live view of every run,
+   *  keyed by run. Optional so a fixture built before this field existed still typechecks. */
+  runs?: Record<string, ConsoleRunView>;
 }
 
 export interface InboxEntry {
