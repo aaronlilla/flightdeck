@@ -66,7 +66,7 @@ describe('nudge and resume', () => {
 describe('kill without a decision id', () => {
   it('is rejected: the process is left alone and the refusal is journaled', async () => {
     let killed = false;
-    registry.admit({ goal: 'r1', cwd: 'C:/nowhere', briefPath: 'C:/nowhere/brief.md', pid: 999999 });
+    registry.admit({ goal: 'r1', cwd: 'nowhere', briefPath: 'nowhere/brief.md', pid: 999999 });
     const actuator = new WardenActuator({
       journal, journalPath, registry, lanes, killProcess: () => { killed = true; },
     });
@@ -81,7 +81,7 @@ describe('kill without a decision id', () => {
 
 describe('kill with a valid decision', () => {
   it('kills the registered pid once, journals the evidence and the decision id', async () => {
-    registry.admit({ goal: 'r1', cwd: 'C:/nowhere', briefPath: 'C:/nowhere/brief.md', pid: 424242 });
+    registry.admit({ goal: 'r1', cwd: 'nowhere', briefPath: 'nowhere/brief.md', pid: 424242 });
     const decision = journal.append({
       event: 'decision.made', run: 'r1', actor: 'aaron', action: 'kill', reason: 'stuck for an hour',
     });
@@ -101,7 +101,7 @@ describe('kill with a valid decision', () => {
   });
 
   it('a decisionId naming a different run is refused', async () => {
-    registry.admit({ goal: 'r1', cwd: 'C:/nowhere', briefPath: 'C:/nowhere/brief.md', pid: 111111 });
+    registry.admit({ goal: 'r1', cwd: 'nowhere', briefPath: 'nowhere/brief.md', pid: 111111 });
     const decision = journal.append({
       event: 'decision.made', run: 'r2', actor: 'aaron', action: 'kill', reason: 'wrong run',
     });
