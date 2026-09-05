@@ -109,8 +109,10 @@ describe('codexLaneFor', () => {
     expect(result.findings).toEqual([]);
   });
 
-  it('refuses loudly when council.codex is on, since no Codex lane is implemented here', async () => {
+  it('wires the real lane when council.codex is on, which refuses to run without cwd/baseRef', async () => {
     const lane = codexLaneFor({ smallMaxLines: 100, largeMinLines: 500, riskyPaths: [], codex: 'on', allowedRepos: [], autoMerge: [] });
-    await expect(lane.run({ brief: 'b', diffSummary: 'd' })).rejects.toThrow(/codex_call\.py/);
+    const result = await lane.run({ brief: 'b', diffSummary: 'd' });
+    expect(result.ran).toBe(false);
+    expect(result.reason).toMatch(/cwd/);
   });
 });
