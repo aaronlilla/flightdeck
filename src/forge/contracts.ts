@@ -913,3 +913,93 @@ export const CLI_EXIT_CODES = {
 } as const;
 
 export type CliExitCode = (typeof CLI_EXIT_CODES)[keyof typeof CLI_EXIT_CODES];
+
+// ---------------------------------------------------------------------------------------
+// Intake (P4.3): PollSource, Watermark, Packet — additive only, per decision 4 of the
+// 2026-09-04 Intake brief. Nothing above this section changes; every export below is new.
+// ---------------------------------------------------------------------------------------
+
+/**
+ * The five sources the spine spec names for Intake to poll (Section 2, bullet 1). Closed
+ * on purpose, the same reasoning as `FORGE_EVENT_NAMES`: a caller that wants a sixth
+ * source adds it here first.
+ */
+export const POLL_SOURCE_NAMES = ['jira', 'sentry', 'cloudwatch', 'slack', 'github'] as const;
+
+export type PollSourceName = (typeof POLL_SOURCE_NAMES)[number];
+
+/**
+ * One item read off a poll: which source it came from, that source's own id for it
+ * (a Jira key, a Sentry short id, a CloudWatch query result row's fingerprint, a Slack
+ * message ts, a GitHub comment id), and the `updated` timestamp the watermark advances
+ * on. `source + id + updated` is exactly the key requirement 8 asks `source.observed` to
+ * carry, so this shape is what that event's payload is built from.
+ */
+export interface PollSource {
+  name: PollSourceName;
+  id: string;
+  updated: number;
+}
+
+export const PollSourceSchema = z.object({
+  name: z.enum(POLL_SOURCE_NAMES),
+  id: z.string().min(1),
+  updated: z.number(),
+});
+
+/**
+ * The durable-commit half of watermark semantics (requirement 1): the last `updated`
+ * value a poll has fully processed, plus every id it saw AT that exact value.
+ *
+ * The ids-at-committed-at list is what makes equal timestamps safe: a page boundary
+ * that lands mid-tie (two Jira issues sharing one `updated` millisecond) is resolved by
+ * checking id membership at the tie value, not by re-processing everything at or after
+ * it. A crash before this is written leaves the previous commit in force, which is what
+ * makes "durable commit after a full scan" (roadmap:113) an atomic swap rather than a
+ * value updated as pages stream in.
+ */
+export interface Watermark {
+  source: PollSourceName;
+  committedAt: number;
+  idsAtCommittedAt: string[];
+}
+
+export const WatermarkSchema = z.object({
+  source: z.enum(POLL_SOURCE_NAMES),
+  committedAt: z.number(),
+  idsAtCommittedAt: z.array(z.string()),
+});
+
+export const PACKET_CONFIDENCE = ['low', 'medium', 'high'] as const;
+
+export type PacketConfidence = (typeof PACKET_CONFIDENCE)[number];
+
+/**
+ * A findings packet, typed for the first time (it was informal in the spec: "what, where,
+ * evidence, confidence, repo, blocked-by" — spine spec Section 2, bullet 2). One packet
+ * per ticket/issue, written by a bounded triangulation run; nothing downstream re-derives
+ * it, so its shape has to carry everything the planner and the Jira projection both need.
+ */
+export interface Packet {
+  id: string;
+  ticket: string;
+  what: string;
+  where: string;
+  evidence: string[];
+  confidence: PacketConfidence;
+  repo: string;
+  blockedBy: string[];
+  at: number;
+}
+
+export const PacketSchema = z.object({
+  id: z.string().min(1),
+  ticket: z.string().min(1),
+  what: z.string().min(1),
+  where: z.string().min(1),
+  evidence: z.array(z.string()),
+  confidence: z.enum(PACKET_CONFIDENCE),
+  repo: z.string().min(1),
+  blockedBy: z.array(z.string()),
+  at: z.number(),
+});

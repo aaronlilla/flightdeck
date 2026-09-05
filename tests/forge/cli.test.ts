@@ -377,6 +377,19 @@ describe('an unknown command', () => {
   });
 });
 
+describe('forge intake --dry-run', () => {
+  it('prints the writes it would make and performs none of them', async () => {
+    const result = await forge(['intake', '--dry-run']);
+    expect(result.code).toBe(0);
+  });
+
+  it('refuses any form other than --dry-run: no live-write mode ships in this stream', async () => {
+    const result = await forge(['intake']);
+    expect(result.code).toBe(2);
+    expect(result.lines.join(' ')).toMatch(/--dry-run/);
+  });
+});
+
 describe('F4: forge run releases what the engine held before it returns', () => {
   it('awaits the engine close() before forge() itself resolves', async () => {
     const brief = join(home, 'ok.md');

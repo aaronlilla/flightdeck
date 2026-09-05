@@ -110,5 +110,13 @@
     "contextHigh": 300000,
     "cacheReadRatio": 0.9,
     "turnsWithoutWrite": 30
-  }
+  },
+  "_reasoner_comment": [
+    "Added for Forge Intake (P4.3). astra: off is the shipped default -- the Intake",
+    "planner's plan seam always resolves to claude while this is off. Only",
+    "planning-only turns astra on, per the 2026-09-04 16:40 amendment (Aaron: limit",
+    "astra to what absolutely matters). No stream build, test, lens or review calls",
+    "astra regardless of this flag."
+  ],
+  "reasoner": { "astra": "off" }
 }
