@@ -118,5 +118,10 @@
     "astra to what absolutely matters). No stream build, test, lens or review calls",
     "astra regardless of this flag."
   ],
-  "reasoner": { "astra": "off" }
+  "reasoner": { "astra": "off" },
+  "council": {
+    "smallMaxLines": 100,
+    "largeMinLines": 500,
+    "riskyPaths": ["**/features/wallet/**", "**/features/auth/**", "**/Financial/**"]
+  }
 }

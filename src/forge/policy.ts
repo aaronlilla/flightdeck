@@ -77,6 +77,9 @@ export interface Policy {
    * every reader here treats identically to `{ astra: 'off' }`.
    */
   reasoner?: { astra: 'off' | 'planning-only' };
+  /** Council's diff-risk thresholds (roadmap P4.4, decision 5). Optional: a file written
+   * before this stream has none, and `council/risk.ts` falls back to its own defaults. */
+  council?: { smallMaxLines: number; largeMinLines: number; riskyPaths: string[] };
 }
 
 /** The spec's own illustrative numbers, used when a policy file predates this field. */
