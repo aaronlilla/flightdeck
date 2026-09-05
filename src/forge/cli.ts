@@ -875,10 +875,14 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         const ruleVerdict = evaluateAction({
           kind: 'pr', op: 'merge', repo, title: snapshot.title, body: snapshot.body, cwd: process.cwd(),
         });
+        // Item 7, 2026-09-05: the PR this round is reasoning about, so a reasoner spend
+        // for either role attributes back to it rather than showing up as unattributed
+        // cost on the fleet's burn ledger.
+        const councilRun = `${repo}#${pr}`;
         const roles = {
-          lensRunner: reasonerLensRunner(reasoner, [ruleVerdict]),
+          lensRunner: reasonerLensRunner(reasoner, [ruleVerdict], councilRun),
           codexLane: codexLaneFor(policy),
-          judge: reasonerJudge(reasoner),
+          judge: reasonerJudge(reasoner, councilRun),
         };
 
         // I19: a lens's own reply failure (unparseable JSON, prose, or anything else

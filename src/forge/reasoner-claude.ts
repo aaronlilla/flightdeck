@@ -121,9 +121,9 @@ export class ClaudeReasoner implements Reasoner {
   constructor(private readonly deps: ClaudeReasonerDeps) {}
 
   async call(
-    input: { className: string; prompt: string; replyShape?: 'object' | 'array' },
+    input: { className: string; prompt: string; replyShape?: 'object' | 'array'; run?: string },
   ): Promise<{ text: string }> {
-    const { className, prompt } = input;
+    const { className, prompt, run } = input;
     const { policyPath } = this.deps;
     const model = modelIdFor(modelFor(className, policyPath), policyPath);
     const timeoutMs = reasonerTimeoutMs(policyPath);
@@ -228,6 +228,7 @@ export class ClaudeReasoner implements Reasoner {
         event: 'reasoner.call', actor: 'reasoner', provider: this.provider,
         class: className, model: servingModel ?? model, usage,
         durationMs: now() - startedAt, parsed: true, raw: truncatedRaw(text),
+        ...(run ? { run } : {}),
       });
       return result;
     } catch (error) {
@@ -236,18 +237,21 @@ export class ClaudeReasoner implements Reasoner {
         this.deps.journal.append({
           event: 'reasoner.timeout', actor: 'reasoner', provider: this.provider,
           class: className, model, durationMs, timeoutMs,
+          ...(run ? { run } : {}),
         });
       } else if (error instanceof ReasonerParseError) {
         this.deps.journal.append({
           event: 'reasoner.call', actor: 'reasoner', provider: this.provider,
           class: className, model: servingModel ?? model, usage, durationMs,
           parsed: false, raw: truncatedRaw(error.raw),
+          ...(run ? { run } : {}),
         });
       } else {
         this.deps.journal.append({
           event: 'reasoner.call', actor: 'reasoner', provider: this.provider,
           class: className, model: servingModel ?? model, usage, durationMs,
           parsed: false, error: error instanceof Error ? error.message : String(error),
+          ...(run ? { run } : {}),
         });
       }
       throw error;

@@ -116,6 +116,32 @@ describe('ClaudeReasoner', () => {
     expect(row?.['parsed']).toBe(true);
   });
 
+  it('carries the run on the journal row when the caller knows one, item 7 of 2026-09-05', async () => {
+    const { fn } = fakeQuery('{"text": "yes, on task"}');
+    const journal = new Journal(journalPath);
+    const reasoner = new ClaudeReasoner({ journal, queryFn: fn, existsConfigDir: () => false });
+
+    await reasoner.call({ className: 'evaluate', prompt: 'still on task?', run: 'card-network-glow' });
+    journal.close();
+
+    const state = replay(journalPath);
+    const row = state.events.find((event) => event.event === 'reasoner.call');
+    expect(row?.['run']).toBe('card-network-glow');
+  });
+
+  it('leaves run off the journal row when the caller has none to name', async () => {
+    const { fn } = fakeQuery('{"text": "yes, on task"}');
+    const journal = new Journal(journalPath);
+    const reasoner = new ClaudeReasoner({ journal, queryFn: fn, existsConfigDir: () => false });
+
+    await reasoner.call({ className: 'evaluate', prompt: 'still on task?' });
+    journal.close();
+
+    const state = replay(journalPath);
+    const row = state.events.find((event) => event.event === 'reasoner.call');
+    expect(row?.['run']).toBeUndefined();
+  });
+
   it('rejects with a typed parse error and journals parsed: false, on an invalid JSON reply', async () => {
     const { fn } = fakeQuery('not json at all');
     const journal = new Journal(journalPath);

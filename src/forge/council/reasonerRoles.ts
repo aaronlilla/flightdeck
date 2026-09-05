@@ -78,13 +78,15 @@ export function buildLensPrompt(input: LensInput & { ruleVerdicts: RuleVerdict[]
  * getting fewer packets than it was told to expect, and `forge council`'s per-lens journal
  * row can say which lens failed and show the raw reply that did not parse.
  */
-export function reasonerLensRunner(reasoner: Reasoner, ruleVerdicts: RuleVerdict[] = []): LensRunner {
+export function reasonerLensRunner(
+  reasoner: Reasoner, ruleVerdicts: RuleVerdict[] = [], run?: string,
+): LensRunner {
   return {
     async run(input) {
       const prompt = buildLensPrompt({ ...input, ruleVerdicts });
       let result: { text: string };
       try {
-        result = await reasoner.call({ className: 'audit-lens', prompt, replyShape: 'array' });
+        result = await reasoner.call({ className: 'audit-lens', prompt, replyShape: 'array', run });
       } catch (error) {
         const raw = error instanceof ReasonerParseError
           ? error.raw
@@ -155,11 +157,11 @@ function parseJudgeReply(text: string): { verdict: CouncilVerdict; decidingFindi
   return { verdict: 'FIX FIRST', decidingFindings: [] };
 }
 
-export function reasonerJudge(reasoner: Reasoner): Judge {
+export function reasonerJudge(reasoner: Reasoner, run?: string): Judge {
   return {
     async decide(input) {
       const prompt = buildJudgePrompt(input);
-      const result = await reasoner.call({ className: 'audit-judge', prompt });
+      const result = await reasoner.call({ className: 'audit-judge', prompt, run });
       return parseJudgeReply(result.text);
     },
   };

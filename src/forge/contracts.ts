@@ -803,7 +803,16 @@ export interface Reasoner {
    * unwrapped rather than inside `{"text": ...}`. Leave it unset, or pass `'object'`, and
    * every other class keeps the original object-only behavior.
    */
-  call(input: { className: string; prompt: string; replyShape?: 'object' | 'array' }): Promise<{ text: string }>;
+  /**
+   * `run` is optional: only a caller that already knows which run or PR it is reasoning
+   * about (`ConformanceDrift.check`, the council's lens and judge roles) can pass one,
+   * and it exists purely so the journal row for the call carries it -- `Reasoner` itself
+   * does nothing differently whether it is present or not. Item 7, 2026-09-05: without
+   * it, a reasoner spend had no way to be attributed to the run or PR that caused it.
+   */
+  call(
+    input: { className: string; prompt: string; replyShape?: 'object' | 'array'; run?: string },
+  ): Promise<{ text: string }>;
 }
 
 // ---------------------------------------------------------------------------------------
