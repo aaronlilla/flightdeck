@@ -1042,6 +1042,112 @@ describe('B.3.9: drift raised after a push', () => {
   });
 });
 
+describe('I16: the post-push drift check retries an UNKNOWN read before raising', () => {
+  /** Advances its own virtual clock on `sleep` instead of waiting for real -- the
+   *  item's own falsifier is a specimen that sleeps for real. */
+  function fakeDriftClock(): { now: () => number; sleep: (ms: number) => Promise<void> } {
+    let now = 0;
+    return { now: () => now, sleep: async (ms) => { now += ms; } };
+  }
+
+  it('unknown twice then mergeable raises nothing, after retrying through the injected clock', async () => {
+    const { fn } = fakeQuery([[{
+      text: 'pushed', usage: { input: 10, cacheRead: 0, cacheCreation: 0, output: 1 },
+      toolUse: { name: 'Bash', input: { command: 'git push' } },
+    }]]);
+    const reads = ['UNKNOWN', 'UNKNOWN', 'MERGEABLE'] as const;
+    let calls = 0;
+    const engine = new SdkEngine({
+      journalPath, inboxDir: join(home, 'inbox-drift-i16-1'), gotchasDir: join(home, 'gotchas-drift-i16-1'),
+      queryFn: fn, checkDrift: async () => reads[calls++]!, driftClock: fakeDriftClock(),
+    });
+    await engine.run({ ...REQUEST, run: 'drift-run-i16-1', env: { PATH: '/usr/bin' } });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(calls).toBe(3);
+    const inbox = new Inbox(join(home, 'inbox-drift-i16-1'));
+    expect(inbox.open()).toHaveLength(0);
+  });
+
+  it('unknown for the whole 90s window raises once', async () => {
+    const { fn } = fakeQuery([[{
+      text: 'pushed', usage: { input: 10, cacheRead: 0, cacheCreation: 0, output: 1 },
+      toolUse: { name: 'Bash', input: { command: 'git push' } },
+    }]]);
+    let calls = 0;
+    const engine = new SdkEngine({
+      journalPath, inboxDir: join(home, 'inbox-drift-i16-2'), gotchasDir: join(home, 'gotchas-drift-i16-2'),
+      queryFn: fn, checkDrift: async () => { calls++; return 'UNKNOWN'; }, driftClock: fakeDriftClock(),
+    });
+    await engine.run({ ...REQUEST, run: 'drift-run-i16-2', env: { PATH: '/usr/bin' } });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(calls).toBe(10);
+    const inbox = new Inbox(join(home, 'inbox-drift-i16-2'));
+    expect(inbox.open()).toHaveLength(1);
+    expect(inbox.open()[0]?.question).toMatch(/could not be read, and unknown is not passing/);
+  });
+
+  it('a confirmed conflict raises at once, with no retry', async () => {
+    const { fn } = fakeQuery([[{
+      text: 'pushed', usage: { input: 10, cacheRead: 0, cacheCreation: 0, output: 1 },
+      toolUse: { name: 'Bash', input: { command: 'git push' } },
+    }]]);
+    let calls = 0;
+    const engine = new SdkEngine({
+      journalPath, inboxDir: join(home, 'inbox-drift-i16-3'), gotchasDir: join(home, 'gotchas-drift-i16-3'),
+      queryFn: fn, checkDrift: async () => { calls++; return 'CONFLICTING'; }, driftClock: fakeDriftClock(),
+    });
+    await engine.run({ ...REQUEST, run: 'drift-run-i16-3', env: { PATH: '/usr/bin' } });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(calls).toBe(1);
+    const inbox = new Inbox(join(home, 'inbox-drift-i16-3'));
+    expect(inbox.open()).toHaveLength(1);
+    expect(inbox.open()[0]?.question).toMatch(/conflicts/);
+  });
+
+  it('a later push that reads mergeable clears a blocker this run raised earlier', async () => {
+    const { fn } = fakeQuery([
+      [{
+        text: 'pushed', usage: { input: 10, cacheRead: 0, cacheCreation: 0, output: 1 },
+        toolUse: { name: 'Bash', input: { command: 'git push' } },
+      }],
+    ]);
+    let reads: Array<'CONFLICTING' | 'MERGEABLE'> = ['CONFLICTING'];
+    let calls = 0;
+    const engine = new SdkEngine({
+      journalPath, inboxDir: join(home, 'inbox-drift-i16-4'), gotchasDir: join(home, 'gotchas-drift-i16-4'),
+      queryFn: fn, checkDrift: async () => reads[calls++]!, driftClock: fakeDriftClock(),
+    });
+    await engine.run({ ...REQUEST, run: 'drift-run-i16-4', env: { PATH: '/usr/bin' } });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const inbox = new Inbox(join(home, 'inbox-drift-i16-4'));
+    expect(inbox.open()).toHaveLength(1);
+
+    reads = ['MERGEABLE'];
+    calls = 0;
+    // Trigger the second push's drift check the same way the first one fired: a fresh
+    // Bash `git push` tool-result, this time through a fresh `SdkEngine` pointed at the
+    // same inbox and journal, the way a successor session after a rebase would be.
+    const { fn: fn2 } = fakeQuery([[{
+      text: 'pushed again', usage: { input: 10, cacheRead: 0, cacheCreation: 0, output: 1 },
+      toolUse: { name: 'Bash', input: { command: 'git push' } },
+    }]]);
+    const engine2 = new SdkEngine({
+      journalPath, inboxDir: join(home, 'inbox-drift-i16-4'), gotchasDir: join(home, 'gotchas-drift-i16-4'),
+      queryFn: fn2, checkDrift: async () => reads[calls++]!, driftClock: fakeDriftClock(),
+    });
+    await engine2.run({ ...REQUEST, run: 'drift-run-i16-4', env: { PATH: '/usr/bin' } });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(inbox.open()).toHaveLength(0);
+    const state = replay(journalPath);
+    expect(state.events.some((e) => e.event === 'run.unblocked' && e.run === 'drift-run-i16-4')).toBe(true);
+  });
+});
+
 describe('B.3.8: `committed` reflects an actual git commit, not just the phrase appearing', () => {
   it('sets committed when the session ran git commit', async () => {
     const { fn } = fakeQuery([[{

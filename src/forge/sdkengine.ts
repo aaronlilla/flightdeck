@@ -18,11 +18,11 @@
  */
 import { Engine, buildForgeMcpServer, type EngineConfig, type ForgeToolHandlers, type PreToolVerdict, type QueryFn } from '../adapter/engine.js';
 import { FORGE_TOOL_NAMES } from './contracts.js';
-import { driftBlocker, readMergeable, type Mergeable } from './drift.js';
+import { driftBlocker, readMergeable, resolveMergeable, type DriftClock, type Mergeable } from './drift.js';
 import { run as execRun } from './exec.js';
 import { Gotchas } from './gotcha.js';
 import { redactFields } from './redact.js';
-import { Inbox, type InboxEntry } from './inbox.js';
+import { askKey, Inbox, type InboxEntry } from './inbox.js';
 import { Journal } from './journal.js';
 import { fleetConfigDir } from './paths.js';
 import { readParkRecord } from './parkrecord.js';
@@ -680,6 +680,12 @@ export interface SdkEngineDeps {
    */
   checkDrift?: (cwd: string) => Promise<Mergeable>;
   /**
+   * I16: the clock `resolveMergeable` retries an UNKNOWN read against. Defaults to a
+   * real 10s-interval, 90s-window wait; a specimen overrides this with a virtual clock
+   * so a retry never sleeps for real (the item's own falsifier).
+   */
+  driftClock?: DriftClock;
+  /**
    * P4.7/I8: read fresh on every tool call by the PreToolUse hook. Undefined means no
    * caller wired the kill switch to this engine -- `forge run` always does; a specimen
    * with nothing to say about stopping needs no fake.
@@ -937,11 +943,29 @@ export class SdkEngine implements EngineLike {
             if (bashCommand && !event.isError
               && (invokesCommand(bashCommand, 'git', 'push') || invokesCommand(bashCommand, 'gh', 'pr', 'create'))) {
               // Fire-and-forget: drift is checked after the push or PR open resolves, but
-              // nothing in the turn stream waits on it. A conflict raises a blocker in the
-              // inbox for a person, the same channel every other wall in this run uses.
-              void checkDrift(request.cwd).then((state) => {
+              // nothing in the turn stream waits on it. GitHub computes a PR's mergeable
+              // state asynchronously, so the read right after a push or a PR open is
+              // routinely UNKNOWN for a branch that is only seconds old (I16); resolveMergeable
+              // retries that read every 10s for up to 90s before treating it as an answer.
+              // A confirmed conflict raises at once -- there is nothing to wait for. A
+              // MERGEABLE result clears any drift blocker this run raised earlier, whichever
+              // wording (CONFLICTING or a since-exhausted UNKNOWN window) it carried.
+              void resolveMergeable(() => checkDrift(request.cwd), this.deps.driftClock).then((state) => {
                 const blocker = driftBlocker(request.run, state);
-                if (!blocker) return;
+                if (!blocker) {
+                  for (const priorState of ['CONFLICTING', 'UNKNOWN'] as const) {
+                    const prior = driftBlocker(request.run, priorState);
+                    if (!prior) continue;
+                    const key = askKey(prior);
+                    const entry = inbox.entry(key);
+                    if (!entry || entry.answer !== undefined) continue;
+                    inbox.answer(key, 'cleared: a later read found the branch mergeable');
+                    journal.append({
+                      event: 'run.unblocked', run: request.run, actor: 'runner', reason: prior.question,
+                    });
+                  }
+                  return;
+                }
                 inbox.raise(blocker);
                 journal.append({
                   event: 'run.blocked', run: request.run, actor: 'runner', reason: blocker.question,

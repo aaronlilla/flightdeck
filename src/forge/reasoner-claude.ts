@@ -24,12 +24,38 @@ import { modelFor, modelIdFor, reasonerTimeoutMs } from './policy.js';
 import { fleetConfigDir } from './paths.js';
 import { workerEnv } from './worker.js';
 
-/** The one JSON shape a `claude` reasoner call is ever allowed to answer with. There is
+/** The preferred JSON shape a `claude` reasoner call is asked to answer with. There is
  *  no caller-supplied schema today: every seam that calls `Reasoner.call` reads a plain
- *  `text` back (`conformance-drift.ts`, `router.ts`), so this is the schema the
+ *  `text` back (`conformance-drift.ts`, `router.ts`), so this is the shape the
  *  `Reasoner` contract itself already commits to via its `Promise<{ text: string }>`
- *  return type, not a second one invented here. */
+ *  return type. It is a preference, not the only shape accepted: I17 found a live reply
+ *  that answered the question correctly as a well-formed JSON object in a different
+ *  shape (`{"ok": true, "word": "surge"}`), and a reasoner that rejects a correct answer
+ *  for missing a `text` key is a worse failure than one that accepts it and derives
+ *  `text` from the whole object. */
 const REPLY_SCHEMA = z.object({ text: z.string() });
+
+/** A parsed reply that the caller can use: `parsed.data.text` if the object has a
+ *  string `text` field, otherwise the whole object re-stringified so nothing the model
+ *  said is silently dropped. Returns `undefined` for anything that is not a plain JSON
+ *  object (an array, a bare string, a number, `null`) -- those still count as a parse
+ *  failure, because there is no reasonable `text` to derive from them. */
+function textFromReply(parsedJson: unknown): string | undefined {
+  const direct = REPLY_SCHEMA.safeParse(parsedJson);
+  if (direct.success) return direct.data.text;
+  const isPlainObject = typeof parsedJson === 'object' && parsedJson !== null && !Array.isArray(parsedJson);
+  return isPlainObject ? JSON.stringify(parsedJson) : undefined;
+}
+
+/** I17's acceptance: the model's raw reply is always kept in the journal row, parsed or
+ *  not, so a wrong-shape-but-correct answer (or any other parse escape) is diagnosable
+ *  from the journal alone instead of needing a repro. Capped at 2,000 characters -- a
+ *  reasoning reply is a short verdict, not a transcript, and the journal is not the
+ *  place for an unbounded blob. */
+const RAW_MAX_CHARS = 2000;
+function truncatedRaw(text: string): string {
+  return text.length > RAW_MAX_CHARS ? text.slice(0, RAW_MAX_CHARS) : text;
+}
 
 const SYSTEM_INSTRUCTIONS = [
   'Respond with exactly one JSON object and nothing else: no prose before it, no prose',
@@ -124,12 +150,12 @@ export class ClaudeReasoner implements Reasoner {
               reject(new ReasonerParseError(text));
               return;
             }
-            const parsed = REPLY_SCHEMA.safeParse(parsedJson);
-            if (!parsed.success) {
+            const replyText = textFromReply(parsedJson);
+            if (replyText === undefined) {
               reject(new ReasonerParseError(text));
               return;
             }
-            resolve({ text: parsed.data.text });
+            resolve({ text: replyText });
             break;
           }
           case 'engine-error':
@@ -151,12 +177,13 @@ export class ClaudeReasoner implements Reasoner {
       allowedTools: [],
       maxTurns: 1,
       settingSources: [],
+      systemPrompt: SYSTEM_INSTRUCTIONS,
       env,
       canUseTool: async () => ({
         behavior: 'deny', message: 'the reasoner uses no tools',
       }) as never,
     });
-    engine.send(`${SYSTEM_INSTRUCTIONS}\n\n${prompt}`);
+    engine.send(prompt);
 
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_, reject) => {
@@ -170,7 +197,7 @@ export class ClaudeReasoner implements Reasoner {
       this.deps.journal.append({
         event: 'reasoner.call', actor: 'reasoner', provider: this.provider,
         class: className, model: servingModel ?? model, usage,
-        durationMs: now() - startedAt, parsed: true,
+        durationMs: now() - startedAt, parsed: true, raw: truncatedRaw(text),
       });
       return result;
     } catch (error) {
@@ -184,7 +211,7 @@ export class ClaudeReasoner implements Reasoner {
         this.deps.journal.append({
           event: 'reasoner.call', actor: 'reasoner', provider: this.provider,
           class: className, model: servingModel ?? model, usage, durationMs,
-          parsed: false, raw: error.raw,
+          parsed: false, raw: truncatedRaw(error.raw),
         });
       } else {
         this.deps.journal.append({
