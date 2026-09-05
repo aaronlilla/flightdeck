@@ -54,7 +54,7 @@ export interface Gotcha extends GotchaInput {
  * on the same list for the same reason: it is the file that decides what everything costs,
  * and an automated change to it is an automated change to the budget.
  */
-const AARON_ONLY = [
+export const AARON_ONLY = [
   /(^|[\\/])hooks[\\/][A-Za-z0-9_]*\.py$/i,
   /_guard\.py$/i,
   /model-policy\.json$/i,

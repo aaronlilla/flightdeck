@@ -84,6 +84,16 @@ export interface Policy {
    *  `router` key at all (every fixture written before this field existed) reads the
    *  same as `{ enabled: false }`, never as an error. */
   router?: { enabled: boolean };
+  /**
+   * The protected-capability classifier's own config (roadmap P4.6, decision 6): file
+   * globs and, where a path alone will not tell, an added-text pattern to search a
+   * diff for. Optional -- a policy file written before this stream has none, and
+   * `self-iteration/classify.ts` falls back to its own hardcoded defaults, the same
+   * pattern `council/risk.ts` already uses for its own thresholds.
+   */
+  selfIteration?: {
+    protected: Record<string, { filePatterns: string[]; symbolPatterns?: string[] }>;
+  };
 }
 
 /** The spec's own illustrative numbers, used when a policy file predates this field. */

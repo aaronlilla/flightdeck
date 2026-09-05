@@ -664,9 +664,9 @@ describe('CLI_COMMANDS and EVENT_BUS_ROLES', () => {
     }
   });
 
-  it('names the six roles Section 1 of the spec lists as subscribed to the bus', () => {
+  it('names the six roles Section 1 of the spec lists as subscribed to the bus, plus self-iteration\'s own seventh (decision 4)', () => {
     expect([...EVENT_BUS_ROLES].sort()).toEqual(
-      ['console', 'council', 'governor', 'intake', 'runner', 'warden'].sort(),
+      ['console', 'council', 'governor', 'intake', 'runner', 'self-iteration', 'warden'].sort(),
     );
   });
 

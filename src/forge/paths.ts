@@ -60,6 +60,18 @@ export function gotchasDir(): string {
   return join(forgeHome(), 'gotchas');
 }
 
+/**
+ * Where the probe briefs the regression corpus references by basename actually live.
+ *
+ * No default: unlike `forgeHome`, there is no machine-agnostic fallback for "the goals
+ * log directory" that would not itself be a drive-rooted path written into source. An
+ * unset `FORGE_PROBE_DIR` means a probe entry in the corpus manifest cannot resolve, and
+ * that is reported as a missing entry rather than guessed at.
+ */
+export function probeDir(): string | undefined {
+  return process.env['FORGE_PROBE_DIR'];
+}
+
 /** Single-flight login locks, one file per account: `<account>.lock` holding whoever's
  *  browser flow is in flight for it (`credential-horizon.ts`). */
 export function loginsDir(): string {

@@ -194,6 +194,14 @@ export const FORGE_EVENT_NAMES = [
   // a suggestion rather than a bug report (`gotcha` above already covers the other
   // reading of that same class).
   'intake.requested', 'proposal',
+  // The Self-iteration stream's own (roadmap P4.6): `gotcha.clustered` marks a group of
+  // gotchas folded into one root cause; `proposal.opened` is a draft pull request filed
+  // for one cluster, never a merge; `proposal.reverted-requested` is a revert PR asked
+  // for after a merged proposal's canary failed, always opened by this code and always
+  // merged by a person; `self-iteration.activated` is the one row `Activation`
+  // (`self-iteration/decision.ts`) ever writes, and only once a `decision.made` row
+  // naming the target and `activate` already exists.
+  'gotcha.clustered', 'proposal.opened', 'proposal.reverted-requested', 'self-iteration.activated',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];
@@ -700,7 +708,15 @@ export const OwnershipSchema = z.object({
  * are modules subscribed to it: `intake`, `governor`, `runner`, `warden`, `council`,
  * `console`." Roles publish facts and intents; none calls another directly.
  */
-export const EVENT_BUS_ROLES = ['intake', 'governor', 'runner', 'warden', 'council', 'console'] as const;
+/**
+ * A seventh role, additive (decision 4, `2026-09-04-forge-self-iteration.md`): the
+ * Self-iteration stream clusters gotchas and drafts pull requests, and neither task
+ * belongs to any of the original six. Nothing about the original six changes here --
+ * `intake` still means intake, `runner` still means runner.
+ */
+export const EVENT_BUS_ROLES = [
+  'intake', 'governor', 'runner', 'warden', 'council', 'console', 'self-iteration',
+] as const;
 
 export type EventBusRole = (typeof EVENT_BUS_ROLES)[number];
 
