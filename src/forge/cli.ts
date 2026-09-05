@@ -18,6 +18,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { runCutover } from './cutover.js';
+import { planIntakeWrites } from './intake/dryRun.js';
 import { readProcessList, watchedProcesses } from './fleetwatch.js';
 import { Gotchas } from './gotcha.js';
 import { Inbox } from './inbox.js';
@@ -423,12 +424,27 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       };
     }
 
+    case 'intake': {
+      if (!rest.includes('--dry-run')) {
+        return {
+          code: 2,
+          lines: [
+            'forge intake --dry-run is the only form today: decision 1\'s Jira token '
+              + 'does not exist yet, so nothing here ever performs a live write',
+          ],
+        };
+      }
+      // No fixture wired to the CLI yet (P4.7 integration point): an empty run is an
+      // honest "nothing to do" rather than a fabricated example write.
+      return { code: 0, lines: planIntakeWrites([]) };
+    }
+
     default:
       return {
         code: 2,
         lines: [
           'forge up | status | run BRIEF | send RUN TEXT | answer KEY ANSWER | stop --all '
-            + '| gotchas | clear LANE | cutover [--from DIR]',
+            + '| gotchas | clear LANE | cutover [--from DIR] | intake --dry-run',
           `the server listens on ${FORGE_PORT}`,
         ],
       };

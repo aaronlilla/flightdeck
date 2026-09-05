@@ -38,6 +38,15 @@ export interface Policy {
   classes: Record<string, ClassSpec>;
   brief_tiers: Record<string, string>;
   subagents: Record<string, string>;
+  /**
+   * Optional: added for Forge Intake (P4.3), read by nothing else today. `astra` gates
+   * whether the Intake planner may reach gpt-6-astra through Codex at all; `'off'`
+   * (the shipped default) means the planner's `plan` seam always resolves to `claude`,
+   * and only `'planning-only'` turns astra on, per the 2026-09-04 16:40 amendment. A
+   * policy file written before this field existed has no `reasoner` key at all, which
+   * every reader here treats identically to `{ astra: 'off' }`.
+   */
+  reasoner?: { astra: 'off' | 'planning-only' };
 }
 
 const HERE = dirname(fileURLToPath(import.meta.url));
