@@ -117,6 +117,20 @@ describe('GET /state', () => {
     expect(state['fleet']).toHaveProperty('value');
   });
 
+  it('I11: runs lists a real, registered run but never a warden.parked row for a fleet pid', async () => {
+    const journal = new Journal(join(dir, 'fleet.jsonl'));
+    // A `warden.parked` row a pre-fix Warden tick wrote for a fleet process id, never a
+    // registered run -- this is exactly what folded into `fleet.runs['pid:1234']` before
+    // I11 and surfaced on the board as a phantom parked run.
+    journal.append({ event: 'warden.parked', run: 'pid:1234', actor: 'warden', signal: 'stale-session' });
+    journal.close();
+
+    const state = await (await fetch(`${base}/state`)).json() as Record<string, unknown>;
+    const runs = state['runs'] as Record<string, unknown>;
+    expect(runs).toHaveProperty('alpha');
+    expect(runs).not.toHaveProperty('pid:1234');
+  });
+
   it('B.3.6 sentence 1: stuck and fleet carry observed_at, not verified_at -- neither is backed by a source read', async () => {
     const state = await (await fetch(`${base}/state`)).json() as Record<string, unknown>;
     expect(state['stuck']).toHaveProperty('observed_at');

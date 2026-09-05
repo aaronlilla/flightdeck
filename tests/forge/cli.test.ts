@@ -6,7 +6,7 @@
  * argument it could get wrong, it is safe to run twice, it says plainly when there was
  * nothing to stop, and it parks rather than kills so the work survives.
  */
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -337,6 +337,36 @@ describe('forge run', () => {
     // The clear let it launch again; it still parks with no turns, so exit 2, not a
     // refusal (1) and not done (0).
     expect(result.code).toBe(2);
+  });
+
+  it('I11: forge clear --phantoms removes a pid_N run directory with no registry row, journals the count, and leaves a real run alone', async () => {
+    const runsPath = join(home, 'runs');
+    mkdirSync(join(runsPath, 'pid_9999'), { recursive: true });
+    writeFileSync(
+      join(runsPath, 'pid_9999', 'park.json'),
+      JSON.stringify({ key: 'warden:pid:9999', reason: 'stale session', at: Date.now() }),
+      'utf8',
+    );
+    admitLive('r1');
+    mkdirSync(join(runsPath, 'r1'), { recursive: true });
+
+    const result = await forge(['clear', '--phantoms']);
+
+    expect(result.code).toBe(0);
+    expect(result.lines.join(' ')).toMatch(/removed 1 phantom/);
+    expect(existsSync(join(runsPath, 'pid_9999'))).toBe(false);
+    expect(existsSync(join(runsPath, 'r1'))).toBe(true);
+
+    const state = replay(journal());
+    const rows = state.events.filter((e) => e.event === 'phantoms.cleared');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!['count']).toBe(1);
+  });
+
+  it('I11: forge clear --phantoms says plainly when there is nothing to clear', async () => {
+    const result = await forge(['clear', '--phantoms']);
+    expect(result.code).toBe(0);
+    expect(result.lines.join(' ')).toMatch(/no phantom/);
   });
 
   it('refuses once forge stop --all has engaged the kill switch', async () => {

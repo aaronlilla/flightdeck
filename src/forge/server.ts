@@ -222,6 +222,15 @@ export class ForgeServer {
     this.http = undefined;
   }
 
+  /** Keeps only the entries a registry row or a lane file backs (I11). A journal fold
+   *  creates an entry for any key an event names `run`, including a fleet pid a Warden
+   *  tick only ever meant to report on; this is what keeps one of those off the board. */
+  private registeredRunsOnly(runs: Record<string, unknown>): Record<string, unknown> {
+    return Object.fromEntries(
+      Object.entries(runs).filter(([key]) => Boolean(this.registry.get(key)) || Boolean(this.lanes.get(key))),
+    );
+  }
+
   /**
    * The fleet as it is now.
    *
@@ -285,8 +294,12 @@ export class ForgeServer {
       // The contracts' own `ForgeStateSnapshot.runs`: the journal's live view of every
       // run it has ever seen a line for, keyed by run (today, one run per lane slug).
       // Not filtered to "still running" -- a finished or handed-off run stays visible so
-      // a tile can tell a live run apart from a lane record with nothing under it.
-      runs: fleet.runs,
+      // a tile can tell a live run apart from a lane record with nothing under it. It is
+      // filtered to a registry row or a lane file, though (I11): a fleet pid the Warden
+      // reported on and nothing else is not a run, and a journal line naming it (a
+      // `warden.health` row, or an older `warden.parked` one from before this fix) must
+      // never surface here as one.
+      runs: this.registeredRunsOnly(fleet.runs),
       // X4: read fresh on every call rather than cached at construction, so flipping
       // `router.enabled` in the policy file takes effect on the console's next poll
       // without restarting the server.

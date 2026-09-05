@@ -202,6 +202,16 @@ export const FORGE_EVENT_NAMES = [
   // (`self-iteration/decision.ts`) ever writes, and only once a `decision.made` row
   // naming the target and `activate` already exists.
   'gotcha.clustered', 'proposal.opened', 'proposal.reverted-requested', 'self-iteration.activated',
+  // I11: `forge clear --phantoms` removing `runs/pid_N/` directories the Warden wrote
+  // for a fleet process id that was never a registered run.
+  'phantoms.cleared',
+  // I12: `reconcileRegistry` dropping a dead-pid row with no session id, once it is old
+  // enough to be a crash rather than a race against its own admission.
+  'registry.abandoned',
+  // I14: a continuation prompt the worker sends on its own open session when a segment
+  // ends with no `forge_done`, no ceiling hit, no park and no kill -- before it gives up
+  // and calls the run `stopped`.
+  'run.nudged',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];

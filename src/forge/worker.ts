@@ -16,11 +16,12 @@
  * nothing and still exercises the loop that decides the money.
  */
 import { tierOfBrief, contextFor, effortFor, modelFor, modelIdFor, turnsFor } from './policy.js';
-import { Journal } from './journal.js';
+import { Journal, replay } from './journal.js';
 import { run as execRun, type RunRequest, type RunResult } from './exec.js';
 import type { Inbox } from './inbox.js';
 import { asRunId, type Actuator } from './contracts.js';
 import { checkConformance, isRateLimitMessage, WindowGate } from './governor.js';
+import { clearParkRecord } from './parkrecord.js';
 
 /**
  * Markers a session inherits from the session that spawned it.
@@ -235,6 +236,23 @@ export const HANDOFF_REQUEST = [
   'Everything you leave out, it repeats.',
 ].join('\n');
 
+/**
+ * I14: a segment that ends with none of done, ceiling, park or kill is not necessarily
+ * stuck -- three cases tonight ended a turn on "wait" for a background agent, or right
+ * after a tool call the rules library denied, and the runner called each `stopped`
+ * without ever asking the model to carry on. This is that ask, on the same open session
+ * rather than a fresh one, at most `NUDGE_LIMIT` times before `run.finished stopped`
+ * still applies.
+ */
+export const NUDGE_LIMIT = 2;
+
+export const NUDGE_REASON = [
+  'You ended your turn without calling forge_done. The run is not over. If the goal is',
+  'complete, call forge_done with the evidence; if a tool call was denied, fix what the',
+  'reason says and retry; if you are waiting on an agent, block on it with TaskOutput;',
+  'otherwise continue.',
+].join(' ');
+
 export function successorPrompt(packet: string, brief: string): string {
   return [
     'You are continuing a goal a previous session started. This is its handoff packet.',
@@ -297,6 +315,14 @@ export class Worker {
     // off or stopping without ever committing is going nowhere, whatever its budget says.
     let sessionsSinceCommit = 0;
     const staleSessions: string[] = [];
+    // I13: a park record is cross-process ownership of `runs/<run>/park.json`, keyed by
+    // name -- it has to be cleared here, the moment the name it names is done with, or a
+    // resume of the same goal (`reconcileRegistry`) or a mid-loop answer-resume inherits
+    // whatever a Warden wrote for a turn that is already over.
+    const finishRun = (fields: Record<string, unknown>): void => {
+      clearParkRecord(runName);
+      journal.append({ event: 'run.finished', run: runName, actor: 'runner', ...fields });
+    };
 
     try {
       for (let index = 0; index < maxSessions; index += 1) {
@@ -353,6 +379,9 @@ export class Worker {
         // continuing to a successor the way an ordinary ceiling hit would.
         let killedMidTurn = false;
         let pendingTurns = session.turns;
+        // I14: per session (this outer loop's own iteration), not per run -- a successor
+        // opened after a handoff gets its own fresh count, the same as a resumed one.
+        let nudges = 0;
         // A segment that ends with neither `done` nor the ceiling hit is not necessarily a
         // stop: the model may have hit an `AskUserQuestion` or `forge_ask` and parked (F1).
         // That is not this segment failing to finish, it is this segment waiting on a
@@ -409,7 +438,29 @@ export class Worker {
           if (finished || ceilingHit) break;
 
           const key = this.engine.parkedOn?.(runName);
-          if (!key) break;
+          if (!key) {
+            if (nudges < NUDGE_LIMIT && session.send) {
+              nudges += 1;
+              // A denied tool call is very rarely the literal last row: the turn it
+              // happened in still ends normally and journals its own `turn.end` right
+              // after. So this looks for the most recent `rule.denied` anywhere in the
+              // CURRENT segment (since this run's own `run.started`), not only the
+              // single last event.
+              const state = replay(this.config.journalPath);
+              const runEvents = state.events.filter((event) => event.run === runName);
+              const sinceStart = runEvents.slice(
+                runEvents.map((event) => event.event).lastIndexOf('run.started') + 1,
+              );
+              const lastDenial = [...sinceStart].reverse().find((event) => event.event === 'rule.denied');
+              const reason = lastDenial
+                ? `${NUDGE_REASON} The last tool call was denied for: "${String(lastDenial['reason'] ?? '')}".`
+                : NUDGE_REASON;
+              journal.append({ event: 'run.nudged', run: runName, actor: 'runner', reason, attempt: nudges });
+              pendingTurns = await session.send(reason);
+              continue;
+            }
+            break;
+          }
 
           const outcome = await this.waitForAnswer(key);
           if (outcome !== 'answered') {
@@ -418,16 +469,14 @@ export class Worker {
             break;
           }
           this.engine.clearPark?.(runName);
+          clearParkRecord(runName);
           journal.append({ event: 'run.resumed', run: runName, actor: 'console', key });
           if (!session.send) break;
           pendingTurns = await session.send(this.engine.inbox?.resumePrompt(key) ?? '');
         }
 
         if (conformanceMismatch) {
-          journal.append({
-            event: 'run.finished', run: runName, actor: 'runner', verdict: 'parked',
-            reason: 'model-mismatch',
-          });
+          finishRun({ verdict: 'parked', reason: 'model-mismatch' });
           verdict = 'parked';
           break;
         }
@@ -445,7 +494,7 @@ export class Worker {
               reason: 'kill switch engaged while parked', packet,
             });
           }
-          journal.append({ event: 'run.finished', run: runName, actor: 'runner', verdict: 'parked' });
+          finishRun({ verdict: 'parked' });
           verdict = 'parked';
           break;
         }
@@ -456,7 +505,7 @@ export class Worker {
             event: 'run.parked', run: runName, actor: 'runner',
             reason: 'kill switch engaged', packet,
           });
-          journal.append({ event: 'run.finished', run: runName, actor: 'runner', verdict: 'parked' });
+          finishRun({ verdict: 'parked' });
           verdict = 'parked';
           break;
         }
@@ -475,17 +524,13 @@ export class Worker {
         }
         if (sessionsSinceCommit >= 3) {
           const report = `three sessions without a commit: ${staleSessions.join(', ')}`;
-          journal.append({
-            event: 'run.finished', run: runName, actor: 'runner', verdict: 'parked', report,
-          });
+          finishRun({ verdict: 'parked', report });
           verdict = 'parked';
           break;
         }
 
         if (!ceilingHit) {
-          journal.append({
-            event: 'run.finished', run: runName, actor: 'runner', verdict: 'stopped',
-          });
+          finishRun({ verdict: 'stopped' });
           verdict = sessions.length === 1 && turns === 0 ? 'parked' : 'exhausted';
           break;
         }
@@ -494,17 +539,19 @@ export class Worker {
           // The ceiling was hit on the last session this chain is allowed. A handoff
           // packet with no successor to seed is a phantom: journaling run.handoff here
           // would claim a continuation that never starts. This is exhausted, plainly.
-          journal.append({
-            event: 'run.finished', run: runName, actor: 'runner', verdict: 'exhausted',
-          });
+          finishRun({ verdict: 'exhausted' });
           verdict = 'exhausted';
           break;
         }
 
         // The ceiling, with sessions left in the budget. Ask for the packet, then
-        // continue as a new run on the same model.
+        // continue as a new run on the same model. The successor is a fresh name
+        // (I13: never this one), so it starts with no park record of its own regardless
+        // -- clearing this run's is still worth doing, since the same name can still
+        // come back through a crash-resume later (`reconcileRegistry`).
         const successor = `${this.config.run}-${index + 2}`;
         const packet = await this.requestHandoff(runName, session, journal);
+        clearParkRecord(runName);
         journal.append({
           event: 'run.handoff',
           run: runName,
@@ -541,6 +588,7 @@ export class Worker {
   ): Promise<'done' | 'unverified' | 'parked'> {
     const commands = verificationCommands(this.config.brief);
     if (!commands) {
+      clearParkRecord(runName);
       journal.append({ event: 'run.finished', run: runName, actor: 'runner', verdict: 'unverified' });
       return 'unverified';
     }
@@ -557,6 +605,7 @@ export class Worker {
       }
       const failed = outcomes.filter((outcome) => !outcome.ok);
       if (!failed.length) {
+        clearParkRecord(runName);
         journal.append({ event: 'run.finished', run: runName, actor: 'runner', verdict: 'done' });
         return 'done';
       }
@@ -576,6 +625,7 @@ export class Worker {
         });
       }
     }
+    clearParkRecord(runName);
     journal.append({ event: 'run.finished', run: runName, actor: 'runner', verdict: 'parked' });
     return 'parked';
   }

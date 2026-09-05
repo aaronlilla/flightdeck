@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { Journal, replay } from '../../src/forge/journal.js';
+import { readParkRecord, writeParkRecord } from '../../src/forge/parkrecord.js';
 import { processAlive, reconcileRegistry, Registry } from '../../src/forge/registry.js';
 import type { EngineLike, SessionRequest } from '../../src/forge/worker.js';
 
@@ -20,6 +21,10 @@ let journalPath: string;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'forge-registry-'));
   journalPath = join(dir, 'fleet.jsonl');
+  // I13: `reconcileRegistry` now clears a resumed row's park record, which resolves
+  // through `forgeHome()`'s real `~/.forge` fallback when unset -- pinned to this
+  // test's own temp directory so that clear never reaches outside it.
+  process.env['FORGE_HOME'] = dir;
 });
 
 describe('admission', () => {
@@ -113,6 +118,22 @@ describe('B.3.5: forge up reconciles a dead pid', () => {
     expect(state.events.some((e) => e.event === 'run.resumed' && e.run === 'crashed')).toBe(true);
   });
 
+  it('I13: clears a stale park record when resuming a crashed run under the same name', async () => {
+    const briefPath = join(dir, 'was-parked.md');
+    writeFileSync(briefPath, '# Goal\n\nDo the thing.\n', 'utf8');
+    const registry = new Registry(join(dir, 'registry'));
+    registry.admit({ goal: 'was-parked', cwd: dir, briefPath, pid: 999_999 });
+    registry.setSession('was-parked', 'sess-before-crash', 'claude-sonnet-5');
+    writeParkRecord('was-parked', { key: 'warden:was-parked', reason: 'idle for 300s', at: Date.now() });
+
+    const engine = fakeEngine();
+    const journal = new Journal(journalPath);
+    await reconcileRegistry(registry, engine, journal);
+    journal.close();
+
+    expect(readParkRecord('was-parked')).toBeUndefined();
+  });
+
   it('leaves a row with a live pid alone', async () => {
     const briefPath = join(dir, 'alive.md');
     writeFileSync(briefPath, '# Goal\n\nDo the thing.\n', 'utf8');
@@ -143,5 +164,42 @@ describe('B.3.5: forge up reconciles a dead pid', () => {
 
     expect(outcomes).toEqual([{ goal: 'no-session', ok: false, reason: expect.stringContaining('session id') }]);
     expect(registry.get('no-session')).toBeUndefined();
+  });
+
+  it('I12: a dead row with no session id older than the idle budget is journaled registry.abandoned and dropped', async () => {
+    const briefPath = join(dir, 'abandoned.md');
+    writeFileSync(briefPath, '# Goal\n\nDo the thing.\n', 'utf8');
+    const registry = new Registry(join(dir, 'registry'));
+    registry.admit({ goal: 'abandoned', cwd: dir, briefPath, pid: 999_999 });
+
+    const engine = fakeEngine();
+    const journal = new Journal(journalPath);
+    // `abandonAfterMs: 0` puts every row past the budget the instant it is admitted --
+    // the fixture stands in for a row old enough to be a genuine crash, since this
+    // registry row has no way to control its own `startedAt` other than waiting.
+    const outcomes = await reconcileRegistry(registry, engine, journal, undefined, 0);
+    journal.close();
+
+    expect(outcomes).toEqual([{ goal: 'abandoned', ok: false, reason: expect.stringContaining('session id') }]);
+    expect(registry.get('abandoned')).toBeUndefined();
+    const state = replay(journalPath);
+    const rows = state.events.filter((e) => e.event === 'registry.abandoned' && e.run === 'abandoned');
+    expect(rows).toHaveLength(1);
+  });
+
+  it('I12: a dead row with no session id, younger than the idle budget, is reported but not journaled as abandoned', async () => {
+    const briefPath = join(dir, 'young.md');
+    writeFileSync(briefPath, '# Goal\n\nDo the thing.\n', 'utf8');
+    const registry = new Registry(join(dir, 'registry'));
+    registry.admit({ goal: 'young', cwd: dir, briefPath, pid: 999_999 });
+
+    const engine = fakeEngine();
+    const journal = new Journal(journalPath);
+    const outcomes = await reconcileRegistry(registry, engine, journal, undefined, 60 * 60_000);
+    journal.close();
+
+    expect(outcomes).toEqual([{ goal: 'young', ok: false, reason: expect.stringContaining('session id') }]);
+    const state = replay(journalPath);
+    expect(state.events.some((e) => e.event === 'registry.abandoned')).toBe(false);
   });
 });

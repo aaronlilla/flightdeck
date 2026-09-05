@@ -47,6 +47,13 @@ export interface WardenTickDeps {
   now: () => number;
   stuck: () => ExtendedStuckSignal[];
   liveRuns: () => WardenTickRun[];
+  /** Whether `key` names a real run: a registry row, or a lane with a live run. A
+   *  `stale-session` or `login-stuck` trip keys on a fleet pid (`pid:N`), which is never
+   *  a run name; asking this before parking is what stops the tick from parking someone
+   *  else's process (I11). Defaults to always true, so a caller with no registry or lane
+   *  wired up yet keeps today's behavior rather than silently downgrading every park to
+   *  a health row. */
+  isRegisteredRun?: (key: string) => boolean;
   reasoner?: Reasoner;
   /** Injected so a specimen can force a throw without touching a real process list;
    *  defaults to the real `reportFleetHealth`. */
@@ -64,9 +71,15 @@ export interface WardenTickDeps {
  *  `fleet-unknown` names the probe, not a run (`reportFleetHealth`'s own job, never
  *  acted on); `drift` and `blocker` already parked themselves the moment they were
  *  raised (`ConformanceDrift.check`, `BlockerBoard.raise`), so parking them again here
- *  would be a second, redundant park record for the same trip. */
+ *  would be a second, redundant park record for the same trip. `context` is excluded on
+ *  purpose (I13): the worker owns its own ceiling and already hands off or parks on it
+ *  (B.3.3), so a second actuator acting on the same number is redundant at best, and
+ *  wrong at worst -- a finished chain's last `turn.end` leaves `RunState.context` sitting
+ *  at its old high-water mark until a new run under the same name records its own first
+ *  turn, since `run.started` never resets it, so a fresh attempt of the same goal can
+ *  read as already over the ceiling before it has made a single tool call. */
 const GENERIC_PARK_SIGNALS = new Set([
-  'idle', 'tool-budget', 'context', 'stale-session', 'login-stuck',
+  'idle', 'tool-budget', 'stale-session', 'login-stuck',
 ]);
 
 async function guarded(
@@ -110,12 +123,27 @@ export class WardenTick {
   }
 
   private async parkGenericTrips(onError?: (label: string, error: unknown) => void): Promise<void> {
+    const isRegistered = this.deps.isRegisteredRun ?? (() => true);
     const open = this.deps.stuck().filter((trip) => GENERIC_PARK_SIGNALS.has(trip.signal));
     const openIds = new Set(open.map((trip) => `${trip.key}:${trip.signal}`));
 
     for (const trip of open) {
       const id = `${trip.key}:${trip.signal}`;
       if (this.parkedTrips.has(id)) continue;
+
+      if (!isRegistered(trip.key)) {
+        // `trip.key` names no registry row and no lane: a fleet pid the tick was never
+        // meant to act on, per the same trip it would otherwise have parked (I11). Report
+        // it and stop -- the actuator never sees it, so it can never create a run
+        // directory or a lane for a process that is not a run.
+        await guarded(`health:${id}`, () => {
+          this.deps.journal.append({
+            event: 'warden.health', actor: 'warden', key: trip.key, signal: trip.signal, evidence: trip,
+          });
+        }, onError);
+        continue;
+      }
+
       await guarded(`park:${id}`, async () => {
         await this.deps.actuator.park(trip.key, trip.hint);
         this.deps.journal.append({

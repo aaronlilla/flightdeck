@@ -15,7 +15,7 @@
  * nothing to stop. It parks rather than kills: the work survives and `forge up` continues
  * it. A stop that lost an afternoon is a stop nobody dares press.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { BlockerBoard } from './blockers.js';
@@ -35,7 +35,7 @@ import { checkLaunch, launchEnv, loginInFlight, pinnedRuntime, runtimeVersion } 
 import { assess, LivenessSupervisor } from './liveness.js';
 import {
   ensureHome, fleetConfigDirChoice, forgeHome, gotchasDir, inboxDir, journalPath, killSwitchPath,
-  lanesDir, registryDir,
+  lanesDir, registryDir, runsDir,
 } from './paths.js';
 import { modelFor, modelIdFor, tierOfBrief } from './policy.js';
 import { processAlive, reconcileRegistry, Registry } from './registry.js';
@@ -272,6 +272,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         blockers: wardenBlockers,
         now: () => Date.now(),
         stuck: () => liveness.stuck(),
+        isRegisteredRun: (key: string) => Boolean(registry.get(key)) || Boolean(lanes.get(key)),
         liveRuns: (): WardenTickRun[] => {
           const fleetState = sharedJournalCache.read(journalPath());
           return Object.values(fleetState.runs)
@@ -439,6 +440,13 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       const engine = deps.engine ?? new SdkEngine({
         journalPath: journalPath(), inboxDir: inboxDir(), gotchasDir: gotchasDir(),
         killSwitch: () => readKillSwitch(killSwitchPath()).engaged,
+        // I12: written the moment the SDK's init message names the session, not after
+        // the first turn resolves -- a process killed mid-segment still leaves a
+        // registry row and a lane `reconcileRegistry` can resume.
+        onSessionStarted: (_run, sessionId, model) => {
+          registry.setSession(slug, sessionId, model);
+          lanes.put(slug, { session_id: sessionId });
+        },
       });
       // P4.7/I9: the real actuator, so a model-mismatch turn actually parks (writes the
       // park record the PreToolUse hook checks on this run's own next tool call) rather
@@ -593,6 +601,37 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       if (slug === '--all') {
         clearKillSwitch(killSwitchPath());
         return { code: 0, lines: ['kill switch cleared; forge run may start again'] };
+      }
+      if (slug === '--phantoms') {
+        // I11: `runs/pid_N/` directories the Warden used to write for a fleet process
+        // that was never a registered run. A live pid never reaches this -- only names
+        // matching `pid_<digits>` with no matching registry row are removed.
+        const phantomRegistry = new Registry(registryDir());
+        const dir = runsDir();
+        let removed = 0;
+        if (existsSync(dir)) {
+          for (const name of readdirSync(dir)) {
+            const match = /^pid_(\d+)$/.exec(name);
+            if (!match) continue;
+            if (phantomRegistry.get(`pid:${match[1]}`)) continue;
+            rmSync(join(dir, name), { recursive: true, force: true });
+            removed += 1;
+          }
+        }
+        if (removed > 0) {
+          const clearJournal = new Journal(journalPath());
+          try {
+            clearJournal.append({ event: 'phantoms.cleared', actor: 'warden', count: removed });
+          } finally {
+            clearJournal.close();
+          }
+        }
+        return {
+          code: 0,
+          lines: [removed
+            ? `removed ${removed} phantom run director${removed === 1 ? 'y' : 'ies'}`
+            : 'no phantom run directories found'],
+        };
       }
       new Breaker(lanes).clear(slug);
       return { code: 0, lines: [`${slug} may be relaunched again`] };
