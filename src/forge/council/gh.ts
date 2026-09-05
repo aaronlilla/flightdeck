@@ -117,12 +117,12 @@ export const REAL_GH: GhReader & GhWriter = {
         'gh', 'pr', 'view', String(pr), '--repo', repo, '--json',
         'headRefOid,baseRefOid,title,body,files,statusCheckRollup,isDraft',
       ],
-      cwd: process.cwd(), owner: 'council', cls: 'script',
+      cwd: process.cwd(), owner: 'council', cls: 'script', fullOutput: true,
     });
-    const parsed = JSON.parse(view.tail) as RawPrView;
+    const parsed = JSON.parse(view.full ?? view.tail) as RawPrView;
     const diff = await execRun({
       argv: ['gh', 'pr', 'diff', String(pr), '--repo', repo],
-      cwd: process.cwd(), owner: 'council', cls: 'script',
+      cwd: process.cwd(), owner: 'council', cls: 'script', fullOutput: true,
     });
     return {
       repo,
@@ -132,8 +132,8 @@ export const REAL_GH: GhReader & GhWriter = {
       title: parsed.title,
       body: parsed.body ?? '',
       files: (parsed.files ?? []).map((entry) => entry.path),
-      diffText: diff.tail,
-      changedLines: countChangedLines(diff.tail),
+      diffText: diff.full ?? diff.tail,
+      changedLines: countChangedLines(diff.full ?? diff.tail),
       checks: {
         runId: `${repo}#${pr}@${parsed.headRefOid}`,
         headSha: parsed.headRefOid,
@@ -165,9 +165,9 @@ export const REAL_GH: GhReader & GhWriter = {
   async viewPrState(repo, pr) {
     const view = await execRun({
       argv: ['gh', 'pr', 'view', String(pr), '--repo', repo, '--json', 'state,mergeCommit'],
-      cwd: process.cwd(), owner: 'council', cls: 'script',
+      cwd: process.cwd(), owner: 'council', cls: 'script', fullOutput: true,
     });
-    const parsed = JSON.parse(view.tail) as { state?: string; mergeCommit?: { oid?: string } | null };
+    const parsed = JSON.parse(view.full ?? view.tail) as { state?: string; mergeCommit?: { oid?: string } | null };
     const prState = parsed.state === 'MERGED' ? 'MERGED' : parsed.state === 'CLOSED' ? 'CLOSED' : 'OPEN';
     return { prState, ...(parsed.mergeCommit?.oid ? { mergeCommitOid: parsed.mergeCommit.oid } : {}) };
   },
