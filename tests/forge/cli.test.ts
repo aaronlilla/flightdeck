@@ -17,7 +17,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { forge } from '../../src/forge/cli.js';
 import { Inbox } from '../../src/forge/inbox.js';
 import { replayEvents } from '../../src/forge/contracts.js';
-import { replay } from '../../src/forge/journal.js';
+import { Journal, replay } from '../../src/forge/journal.js';
 import { Registry } from '../../src/forge/registry.js';
 import { RunInbox } from '../../src/forge/runinbox.js';
 import { Lanes } from '../../src/forge/supervisor.js';
@@ -851,6 +851,53 @@ describe('forge decide', () => {
     expect(decision?.['action']).toBe('kill');
     expect(decision?.['reason']).toBe('stuck for an hour');
     expect(result.lines.join(' ')).toMatch(new RegExp(`decision ${decision?.id} recorded: kill r1`));
+  });
+});
+
+describe('C2: forge chain', () => {
+  function seedBlockedPacket(): void {
+    const j = new Journal(journal());
+    j.append({ event: 'intake.planned', actor: 'intake', packetId: 'p1', ticket: 'ABC-1', repo: 'owner/name', briefPath: 'C:/briefs/p1.md' });
+    j.append({ event: 'chain.blocked', actor: 'chain', packetId: 'p1', hop: 'provision', reason: 'spawn npm ENOENT' });
+    j.close();
+  }
+
+  it('with no packet id, prints the same chain rows forge status shows', async () => {
+    seedBlockedPacket();
+    const result = await forge(['chain']);
+    expect(result.code).toBe(0);
+    expect(result.lines.join(' ')).toContain('ABC-1');
+  });
+
+  it('retry journals chain.unblocked with the packet id and an optional reason', async () => {
+    seedBlockedPacket();
+    const result = await forge(['chain', 'retry', 'p1', '--reason', 'shell fix landed']);
+    expect(result.code).toBe(0);
+
+    const { events } = replayEvents(readFileSync(journal(), 'utf8'));
+    const unblocked = events.find((event) => event.event === 'chain.unblocked');
+    expect(unblocked?.['packetId']).toBe('p1');
+    expect(unblocked?.['reason']).toBe('shell fix landed');
+  });
+
+  it('retry folds as not blocked and the row no longer shows the old reason', async () => {
+    seedBlockedPacket();
+    await forge(['chain', 'retry', 'p1']);
+
+    const statusResult = await forge(['status']);
+    const chainLine = statusResult.lines.find((line) => line.includes('ABC-1'));
+    expect(chainLine).toBeDefined();
+    expect(chainLine).not.toContain('ENOENT');
+  });
+
+  it('retry on an unknown packet id is refused with exit 2', async () => {
+    const result = await forge(['chain', 'retry', 'no-such-packet']);
+    expect(result.code).toBe(2);
+  });
+
+  it('retry with no packet id is refused with exit 2', async () => {
+    const result = await forge(['chain', 'retry']);
+    expect(result.code).toBe(2);
   });
 });
 

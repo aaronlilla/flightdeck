@@ -191,6 +191,14 @@ export function foldChainState(events: ChainEventLike[]): Map<string, ChainPacke
       case 'chain.blocked':
         row.blocked = { hop: raw['hop'] as ChainHop, reason: String(raw['reason'] ?? '') };
         break;
+      case 'chain.unblocked':
+        // C2: `forge chain retry` -- clears the packet's blocked state so the next tick
+        // is no longer terminal for it and runs the hop it stopped at again. Nothing
+        // else about the row changes: a provisioned worktree stays provisioned, a
+        // launched run stays launched, so re-advancing only re-does the step that
+        // actually failed.
+        delete row.blocked;
+        break;
       case 'chain.provisioned':
         row.provisioned = {
           worktreePath: String(raw['worktreePath'] ?? ''), branch: String(raw['branch'] ?? ''),

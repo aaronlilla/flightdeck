@@ -1363,6 +1363,39 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       }
     }
 
+    case 'chain': {
+      const [sub, ...chainArgs] = rest;
+
+      if (!sub) {
+        const state = foldChainState(replay(journalPath()).events);
+        const chainRows = chainStatusLines(state);
+        return { code: 0, lines: chainRows.length ? chainRows : ['no packets in the chain'] };
+      }
+
+      if (sub === 'retry') {
+        const [packetId, ...reasonArgs] = chainArgs;
+        if (!packetId) return { code: 2, lines: ['forge chain retry needs a packet id'] };
+
+        const state = foldChainState(replay(journalPath()).events);
+        if (!state.has(packetId)) return { code: 2, lines: [`unknown packet ${packetId}`] };
+
+        const reasonFlag = reasonArgs.indexOf('--reason');
+        const reason = reasonFlag >= 0 ? reasonArgs.slice(reasonFlag + 1).join(' ') : undefined;
+
+        const chainJournal = new Journal(journalPath());
+        try {
+          chainJournal.append({
+            event: 'chain.unblocked', actor: 'aaron', packetId, ...(reason ? { reason } : {}),
+          });
+        } finally {
+          chainJournal.close();
+        }
+        return { code: 0, lines: [`unblocked ${packetId}`] };
+      }
+
+      return { code: 2, lines: [`forge chain [retry PACKET [--reason "<why>"]] -- unknown subcommand ${sub}`] };
+    }
+
     case 'reason': {
       // The cheapest possible proof that the `claude` provider reaches a real model:
       // `forge reason --class evaluate '<question>'` prints the JSON answer and the
@@ -1418,7 +1451,8 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         lines: [
           'forge up | status | run BRIEF | send RUN TEXT | answer KEY ANSWER | stop --all '
             + '| gotchas | clear LANE | cutover [--from DIR] | intake --dry-run | reason --class CLASS '
-            + '| council --repo O/N --pr N | gate --repo O/N --pr N [--merge] [--handoff FILE]',
+            + '| council --repo O/N --pr N | gate --repo O/N --pr N [--merge] [--handoff FILE] '
+            + '| chain [retry PACKET [--reason "<why>"]]',
           `the server listens on ${FORGE_PORT}`,
         ],
       };

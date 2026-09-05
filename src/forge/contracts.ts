@@ -247,6 +247,10 @@ export const FORGE_EVENT_NAMES = [
   // ended, and `chain.tick-error` for a tick that threw before any of those.
   'chain.blocked', 'chain.provisioned', 'chain.launched', 'chain.gated', 'chain.merged',
   'chain.stopped', 'chain.tick-error',
+  // C2: `forge chain retry PACKET` -- clears a blocked packet's state so the next
+  // tick runs the hop it stopped at again, the only way a `chain.blocked` packet ever
+  // moves again once a person has looked at why.
+  'chain.unblocked',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];
