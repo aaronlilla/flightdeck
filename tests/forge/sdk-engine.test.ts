@@ -1081,5 +1081,46 @@ describe('F4: close() stops every live engine, not just forgetting about it', ()
 
     expect(stopped).toBe(true);
   });
+});
 
+describe('F5: forge_done wins over a ceiling reached on its own closing message', () => {
+  it('ends done, with one exec call and zero handoffs, when the tool result and the ceiling-crossing usage share one turn', async () => {
+    // The real order: the SDK reports a message's usage together with its content, so a
+    // message that carries the forge_done tool call also carries the usage that produced
+    // it -- including, when the session is near its ceiling, usage that has already
+    // reached it. The tool result arrives after, in the following message. Worker.ts sees
+    // both `done` and the ceiling on the same turn and has to pick one: done has to win,
+    // or a session that finishes right at its own ceiling would hand off to a successor
+    // that has nothing left to do.
+    const { fn } = fakeQuery([[{
+      text: 'shipped', usage: { input: 60_000, cacheRead: 0, cacheCreation: 0, output: 1 },
+      toolUse: { name: 'mcp__forge__forge_done', input: { evidence: 'shipped' } },
+    }]]);
+    let execCalls = 0;
+    const engine = new SdkEngine({
+      journalPath, inboxDir: join(home, 'inbox-f5'), gotchasDir: join(home, 'gotchas-f5'), queryFn: fn,
+    });
+    const exec = async (request: { argv: string[] }) => {
+      execCalls += 1;
+      return {
+        ok: true, tail: '', returncode: 0, argv: request.argv, owner: 'f5-run', startedAt: 0, durationMs: 1,
+      };
+    };
+    const worker = new Worker({
+      run: 'f5-run',
+      brief: '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnpm run verify\n```\n',
+      briefPath: join(home, 'brief.md'), cwd: home, journalPath, engine, exec, maxContext: 60_000,
+    });
+
+    const result = await worker.run();
+
+    expect(result.verdict).toBe('done');
+    expect(result.handoffs).toBe(0);
+    expect(result.sessions).toHaveLength(1);
+    expect(execCalls).toBe(1);
+    const state = replay(journalPath);
+    expect(state.events.some((e) => e.event === 'run.handoff' && e.run === 'f5-run')).toBe(false);
+    expect(state.events.some((e) => e.event === 'run.finished' && e.run === 'f5-run' && e['verdict'] === 'done'))
+      .toBe(true);
+  });
 });
