@@ -20,6 +20,16 @@ import { join } from 'node:path';
 
 import type { QueryFn } from '../adapter/engine.js';
 import { BlockerBoard } from './blockers.js';
+import { readAttestation, writeAttestation } from './council/attest.js';
+import { buildSquashMergeCall } from './council/gate.js';
+import { planMergeIntent, recordMergeCall, reconcileMerge } from './council/externalize.js';
+import { REAL_GH, type GhReader, type GhWriter } from './council/gh.js';
+import { findHaipingHandoff } from './council/handoffScan.js';
+import { runCouncilRound } from './council/orchestrate.js';
+import { codexLaneFor, reasonerJudge, reasonerLensRunner } from './council/reasonerRoles.js';
+import { autoMergeAllowed, councilPolicy, repoAllowedForCouncil } from './council/risk.js';
+import { redactPrBody } from './council/redact-sinks.js';
+import { SEVERITY_RANK } from './council/synthesis.js';
 import { runCutover } from './cutover.js';
 import { readLoginLock } from './credential-horizon.js';
 import { buildBurnLedger, checkBudget } from './governor.js';
@@ -27,6 +37,8 @@ import { reconcileBurnOnce } from './burn-reconcile.js';
 import { planIntakeWrites } from './intake/dryRun.js';
 import { runIntakeOnce } from './intake/once.js';
 import type { FakePollFeed } from './intake/poller.js';
+import { planFromPacket } from './intake/planner.js';
+import { resolvePlanProvider } from './intake/reasoner.js';
 import { initialWatermark } from './intake/watermark.js';
 import { readProcessList, watchedProcesses } from './fleetwatch.js';
 import { Gotchas } from './gotcha.js';
@@ -35,11 +47,13 @@ import { replay, Journal, JournalCache } from './journal.js';
 import { checkLaunch, launchEnv, loginInFlight, pinnedRuntime, runtimeVersion } from './launcher.js';
 import { assess, LivenessSupervisor } from './liveness.js';
 import {
-  ensureHome, fleetConfigDirChoice, forgeHome, gotchasDir, inboxDir, journalPath, killSwitchPath,
-  lanesDir, registryDir, runsDir,
+  ensureHome, fleetConfigDirChoice, forgeHome, gotchasDir, inboxDir, intakeBriefsDir, journalPath,
+  killSwitchPath, lanesDir, registryDir, runsDir,
 } from './paths.js';
-import { modelFor, modelIdFor, tierOfBrief } from './policy.js';
-import { providerFor } from './contracts.js';
+import { loadPolicy, modelFor, modelIdFor, tierOfBrief } from './policy.js';
+import { attestationCoversHead, checkHandoff, providerFor, verified } from './contracts.js';
+import type { CouncilAttestation, HaipingHandoff, JoeHandoff } from './contracts.js';
+import { evaluateAction } from './rules/index.js';
 import { processAlive, reconcileRegistry, Registry } from './registry.js';
 import { reasonerFor } from './reasoner-claude.js';
 import { deliverAnswer, RunInbox } from './runinbox.js';
@@ -77,6 +91,9 @@ export interface ForgeDeps {
   /** Overrides the `claude` provider's own SDK `query`. Every specimen injects a fake
    *  here; nothing else may -- production leaves this unset and gets the real SDK. */
   reasonerQueryFn?: QueryFn;
+  /** Overrides `forge council`/`forge gate`'s own `gh` reader and writer. Every specimen
+   *  injects a fake here; production leaves this unset and gets `REAL_GH`. */
+  councilGh?: GhReader & GhWriter;
 }
 
 /**
@@ -712,6 +729,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         const feeds = deps.intakeFeeds ?? [];
         const intakeJournal = new Journal(journalPath());
         let result: Awaited<ReturnType<typeof runIntakeOnce>>;
+        let plannedLine: string | undefined;
         try {
           result = await runIntakeOnce(
             feeds,
@@ -721,6 +739,29 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
             },
             (event) => intakeJournal.append({ actor: 'intake', ...event }),
           );
+          // forge-council-live, work item 3: one queued packet through the planner,
+          // best-effort. A Reasoner failure here must not turn an honest zero-feed or
+          // fixture-only poll into a crash for the whole `--once` run.
+          if (result.writtenPackets.length) {
+            const packet = result.writtenPackets[0]!;
+            const provider = resolvePlanProvider(loadPolicy().reasoner);
+            const plannerReasoner = reasonerFor(provider, { journal: intakeJournal, queryFn: deps.reasonerQueryFn });
+            try {
+              const planned = await planFromPacket(packet, plannerReasoner);
+              const briefsDir = intakeBriefsDir();
+              mkdirSync(briefsDir, { recursive: true });
+              const briefPath = join(briefsDir, `${planned.packetId.replace(/[^A-Za-z0-9._-]/g, '_')}.md`);
+              writeFileSync(briefPath, planned.text, 'utf8');
+              intakeJournal.append({
+                event: 'intake.planned', actor: 'intake', ticket: planned.ticket,
+                packetId: planned.packetId, briefPath,
+              });
+              plannedLine = `planned a brief for ${planned.ticket}: ${briefPath}`;
+            } catch (error) {
+              plannedLine = `planning failed for ${packet.ticket}: `
+                + `${error instanceof Error ? error.message : String(error)}`;
+            }
+          }
         } finally {
           intakeJournal.close();
         }
@@ -731,6 +772,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
               + `${result.sourcesPolled.join(', ') || '(none configured)'}`,
             `observed ${result.observed}, wrote ${result.packetsWritten} packet(s), `
               + `raised ${result.intentsRaised} external intent(s)`,
+            ...(plannedLine ? [plannedLine] : []),
           ],
         };
       }
@@ -746,6 +788,233 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       // No fixture wired to the CLI yet (P4.7 integration point): an empty run is an
       // honest "nothing to do" rather than a fabricated example write.
       return { code: 0, lines: planIntakeWrites([]) };
+    }
+
+    case 'council': {
+      const repoFlag = rest.indexOf('--repo');
+      const prFlag = rest.indexOf('--pr');
+      const repo = repoFlag >= 0 ? rest[repoFlag + 1] : undefined;
+      const prRaw = prFlag >= 0 ? rest[prFlag + 1] : undefined;
+      const pr = prRaw ? Number.parseInt(prRaw, 10) : NaN;
+      if (!repo || !Number.isFinite(pr)) {
+        return { code: 2, lines: ['forge council --repo OWNER/NAME --pr N [--base BRANCH]'] };
+      }
+
+      const policy = councilPolicy();
+      if (!repoAllowedForCouncil(repo, policy)) {
+        return {
+          code: 2,
+          lines: [`refused: ${repo} is not on council's review allow-list -- set `
+            + 'FORGE_COUNCIL_REPOS (comma-separated) or model-policy.json\'s council.allowedRepos'],
+        };
+      }
+
+      const gh = deps.councilGh ?? REAL_GH;
+      const snapshot = await gh.viewPr(repo, pr);
+
+      if (snapshot.checks.conclusion !== 'success') {
+        return {
+          code: 2,
+          lines: [`refused: checks are ${snapshot.checks.conclusion} on head `
+            + `${snapshot.headSha}, not green`],
+        };
+      }
+
+      const councilJournal = new Journal(journalPath());
+      try {
+        const reasoner = reasonerFor('claude', { journal: councilJournal, queryFn: deps.reasonerQueryFn });
+        const ruleVerdict = evaluateAction({
+          kind: 'pr', op: 'merge', repo, title: snapshot.title, body: snapshot.body, cwd: process.cwd(),
+        });
+        const roles = {
+          lensRunner: reasonerLensRunner(reasoner, [ruleVerdict]),
+          codexLane: codexLaneFor(policy),
+          judge: reasonerJudge(reasoner),
+        };
+
+        const round = await runCouncilRound(
+          {
+            brief: snapshot.body, diffSummary: snapshot.diffText, changedLines: snapshot.changedLines,
+            paths: snapshot.files, ci: { runId: snapshot.checks.runId, headSha: snapshot.checks.headSha },
+          },
+          roles,
+        );
+
+        for (const report of round.lensReports) {
+          councilJournal.append({
+            event: 'council.lens', actor: 'council', repo, pr, lens: report.lens,
+            findings: report.findings.length,
+          });
+        }
+        councilJournal.append({ event: 'council.judge', actor: 'council', repo, pr, verdict: round.verdict });
+
+        // A round can take real model time. Re-read the head right before the
+        // attestation is written -- a head that moved mid-round must never be
+        // attested against (acceptance specimen: a moved head yields exit 2).
+        const confirm = await gh.viewPr(repo, pr);
+        if (confirm.headSha !== snapshot.headSha) {
+          return {
+            code: 2,
+            lines: [`refused: head moved from ${snapshot.headSha} to ${confirm.headSha} `
+              + 'while the council was running'],
+          };
+        }
+
+        const findingLines = [...round.decidingFindings]
+          .sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity])
+          .map((f) => `  [${f.severity}/${f.confidence}] ${f.file}:${f.line} -- ${f.claim}`);
+
+        // FIX FIRST re-enters the worker (`rounds.ts`'s own state machine) rather than
+        // clearing the gate; an attestation exists only for a verdict that could ever
+        // clear it, so a FIX FIRST round writes none (acceptance specimen: exit 1, no
+        // attestation file).
+        if (round.verdict === 'FIX FIRST') {
+          return {
+            code: 1,
+            lines: [
+              `verdict: ${round.verdict}`,
+              ...(findingLines.length ? findingLines : ['no deciding findings']),
+            ],
+          };
+        }
+
+        const attestation: CouncilAttestation = {
+          repo, pr, head: snapshot.headSha, base: snapshot.baseSha, round: 1,
+          verdict: round.verdict, decidingFindings: round.decidingFindings, lenses: round.lensReports,
+          ...(round.codexRan ? { codex: { ran: true, findings: round.codexOnly } } : {}),
+          judge: { model: modelIdFor(modelFor('audit-judge')), verdict: round.verdict },
+          ci: { runId: snapshot.checks.runId, headSha: snapshot.checks.headSha },
+          at: verified(Date.now(), 'gh pr view'),
+        };
+        const attPath = writeAttestation(attestation);
+        councilJournal.append({
+          event: 'council.attested', actor: 'council', repo, pr, head: snapshot.headSha,
+          verdict: round.verdict, path: attPath,
+        });
+
+        return {
+          code: 0,
+          lines: [
+            `verdict: ${round.verdict}`,
+            ...(findingLines.length ? findingLines : ['no deciding findings']),
+            `attestation: ${attPath}`,
+          ],
+        };
+      } finally {
+        councilJournal.close();
+      }
+    }
+
+    case 'gate': {
+      const repoFlag = rest.indexOf('--repo');
+      const prFlag = rest.indexOf('--pr');
+      const handoffFlag = rest.indexOf('--handoff');
+      const merge = rest.includes('--merge');
+      const repo = repoFlag >= 0 ? rest[repoFlag + 1] : undefined;
+      const prRaw = prFlag >= 0 ? rest[prFlag + 1] : undefined;
+      const pr = prRaw ? Number.parseInt(prRaw, 10) : NaN;
+      if (!repo || !Number.isFinite(pr)) {
+        return { code: 2, lines: ['forge gate --repo OWNER/NAME --pr N [--merge] [--handoff FILE]'] };
+      }
+
+      const gh = deps.councilGh ?? REAL_GH;
+      const snapshot = await gh.viewPr(repo, pr);
+      const attestation = readAttestation(repo, pr, snapshot.headSha);
+
+      if (!attestation) {
+        return {
+          code: 1,
+          lines: [`refused: no attestation for ${repo}#${pr} at head ${snapshot.headSha} -- `
+            + 'run forge council first'],
+        };
+      }
+      if (!attestationCoversHead(attestation, { head: snapshot.headSha, base: snapshot.baseSha })) {
+        return {
+          code: 1,
+          lines: [`refused: the attestation is for head ${attestation.head}/base ${attestation.base}, `
+            + `the PR's current head/base is ${snapshot.headSha}/${snapshot.baseSha}`],
+        };
+      }
+      if (attestation.verdict === 'FIX FIRST') {
+        return { code: 1, lines: [`refused: the attestation's verdict is ${attestation.verdict}`] };
+      }
+      if (snapshot.checks.headSha !== snapshot.headSha || snapshot.checks.conclusion !== 'success') {
+        return {
+          code: 1,
+          lines: [`refused: checks are ${snapshot.checks.conclusion} on head ${snapshot.checks.headSha}`],
+        };
+      }
+
+      let haiping: HaipingHandoff | undefined;
+      const handoffFile = handoffFlag >= 0 ? rest[handoffFlag + 1] : undefined;
+      if (handoffFile) {
+        try {
+          const parsed = JSON.parse(readFileSync(handoffFile, 'utf8'));
+          haiping = checkHandoff('haiping', parsed).complete ? (parsed as HaipingHandoff) : undefined;
+        } catch {
+          haiping = undefined;
+        }
+      } else {
+        haiping = findHaipingHandoff(snapshot.body);
+      }
+
+      if (!haiping) {
+        return {
+          code: 1,
+          lines: ['refused: no complete Haiping handoff found in the PR body or --handoff file'],
+        };
+      }
+
+      if (!merge) {
+        return {
+          code: 0,
+          lines: [`gate: PASS -- ${repo}#${pr} at ${snapshot.headSha} clears (${attestation.verdict})`],
+        };
+      }
+
+      const policy = councilPolicy();
+      if (!autoMergeAllowed(repo, policy)) {
+        const joe: JoeHandoff = {
+          ticket: `${repo}#${pr}`, draftPr: `${repo}#${pr}`, packets: attestation.lenses,
+          howToRun: 'see the PR body for verification commands', couldNotRun: [],
+        };
+        return {
+          code: 3,
+          lines: [`${repo} is not on council.autoMerge: leaving the draft PR for Joe`, JSON.stringify(joe)],
+        };
+      }
+
+      const gateJournal = new Journal(journalPath());
+      try {
+        const subject = `${snapshot.title} (#${pr})`;
+        const body = redactPrBody(snapshot.body);
+        const call = buildSquashMergeCall({ commits: [], subject, body });
+
+        let write = planMergeIntent({ repo, pr, headSha: snapshot.headSha });
+        gateJournal.append({
+          event: 'external.intent', actor: 'council', kind: write.kind, idempotencyKey: write.idempotencyKey,
+        });
+
+        write = recordMergeCall(write);
+        gateJournal.append({
+          event: 'external.call', actor: 'council', kind: write.kind, idempotencyKey: write.idempotencyKey,
+        });
+        await gh.mergePr(repo, pr, call.subject, call.body);
+
+        const view = await gh.viewPrState(repo, pr);
+        write = reconcileMerge(write, view);
+        gateJournal.append({
+          event: write.state === 'complete' ? 'external.complete' : 'external.unknown',
+          actor: 'council', kind: write.kind, idempotencyKey: write.idempotencyKey, state: write.state,
+        });
+
+        return {
+          code: write.state === 'complete' ? 0 : 1,
+          lines: [`merge ${write.state}: ${repo}#${pr}`],
+        };
+      } finally {
+        gateJournal.close();
+      }
     }
 
     case 'reason': {
@@ -802,7 +1071,8 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         code: 2,
         lines: [
           'forge up | status | run BRIEF | send RUN TEXT | answer KEY ANSWER | stop --all '
-            + '| gotchas | clear LANE | cutover [--from DIR] | intake --dry-run | reason --class CLASS',
+            + '| gotchas | clear LANE | cutover [--from DIR] | intake --dry-run | reason --class CLASS '
+            + '| council --repo O/N --pr N | gate --repo O/N --pr N [--merge] [--handoff FILE]',
           `the server listens on ${FORGE_PORT}`,
         ],
       };
