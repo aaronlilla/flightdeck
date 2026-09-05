@@ -1022,11 +1022,15 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
     case 'council': {
       const repoFlag = rest.indexOf('--repo');
       const prFlag = rest.indexOf('--pr');
+      const cwdFlag = rest.indexOf('--cwd');
+      const baseFlag = rest.indexOf('--base');
       const repo = repoFlag >= 0 ? rest[repoFlag + 1] : undefined;
       const prRaw = prFlag >= 0 ? rest[prFlag + 1] : undefined;
       const pr = prRaw ? Number.parseInt(prRaw, 10) : NaN;
+      const councilCwd = cwdFlag >= 0 ? rest[cwdFlag + 1] : undefined;
+      const councilBaseRef = baseFlag >= 0 ? rest[baseFlag + 1] : undefined;
       if (!repo || !Number.isFinite(pr)) {
-        return { code: 2, lines: ['forge council --repo OWNER/NAME --pr N [--base BRANCH]'] };
+        return { code: 2, lines: ['forge council --repo OWNER/NAME --pr N [--base BRANCH] [--cwd PATH]'] };
       }
 
       const policy = councilPolicy();
@@ -1061,7 +1065,10 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         const councilRun = `${repo}#${pr}`;
         const roles = {
           lensRunner: reasonerLensRunner(reasoner, [ruleVerdict], councilRun),
-          codexLane: codexLaneFor(deps.forceCodexLane ? { ...policy, codex: 'on' } : policy),
+          codexLane: codexLaneFor(
+            deps.forceCodexLane ? { ...policy, codex: 'on' } : policy,
+            { journal: councilJournal, run: councilRun },
+          ),
           judge: reasonerJudge(reasoner, councilRun),
         };
 
@@ -1078,6 +1085,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
             {
               brief: snapshot.body, diffSummary: snapshot.diffText, changedLines: snapshot.changedLines,
               paths: snapshot.files, ci: { runId: snapshot.checks.runId, headSha: snapshot.checks.headSha },
+              cwd: councilCwd, baseRef: councilBaseRef,
               ...(deps.forceCodexLane ? { forceCodex: true } : {}),
             },
             roles,

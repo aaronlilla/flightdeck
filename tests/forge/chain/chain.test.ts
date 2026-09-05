@@ -33,7 +33,10 @@ function buildFixture(overrides: Partial<{
     intake: async () => overrides.planned ?? [],
     launcher: {
       provision: async ({ ticket }) => (
-        { worktreePath: `C:/worktrees/repo--${ticket.toLowerCase()}`, branch: `feature/${ticket.toLowerCase()}` }
+        {
+          worktreePath: `C:/worktrees/repo--${ticket.toLowerCase()}`, branch: `feature/${ticket.toLowerCase()}`,
+          base: 'develop',
+        }
       ),
       launch: async ({ ticket }) => ({ runKey: ticket.toLowerCase() }),
       status: async (): Promise<ChainRunStatus> => ({ finished: false }),
@@ -88,6 +91,34 @@ describe('runChainTick', () => {
     expect(merged?.['mergeSha']).toBe('deadbeef');
   });
 
+  it('the council call carries cwd and baseRef from the provisioned row', async () => {
+    const planned: ChainPlannedPacket[] = [{ packetId: 'p1', ticket: 'ABC-1', repo: 'owner/name', briefPath: 'C:/briefs/p1.md' }];
+    let statusCalls = 0;
+    let councilInput: Record<string, unknown> | undefined;
+    const fixture = buildFixture({
+      planned,
+      launcher: {
+        provision: async () => ({ worktreePath: 'C:/worktrees/repo--abc-1', branch: 'feature/abc-1', base: 'develop' }),
+        status: async () => {
+          statusCalls += 1;
+          return statusCalls < 2
+            ? { finished: false }
+            : { finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/42' };
+        },
+      },
+      council: async (input) => { councilInput = input; return { verdict: 'PASS' }; },
+    });
+
+    await runChainTick(fixture.deps, fixture.state);
+    await runChainTick(fixture.deps, foldChainState(fixture.events));
+    await runChainTick(fixture.deps, foldChainState(fixture.events));
+
+    expect(councilInput).toMatchObject({
+      repo: 'owner/name', pr: 42, forceCodex: true,
+      cwd: 'C:/worktrees/repo--abc-1', baseRef: 'develop',
+    });
+  });
+
   it('blocks an unrouted packet once and a second poll does not repeat the row', async () => {
     const planned: ChainPlannedPacket[] = [{ packetId: 'p1', ticket: 'ABC-1', repo: 'unknown', briefPath: 'C:/briefs/p1.md' }];
     const fixture = buildFixture({ planned });
@@ -108,7 +139,10 @@ describe('runChainTick', () => {
     const fixture = buildFixture({
       planned,
       launcher: {
-        provision: async () => { provisionCalls += 1; return { worktreePath: 'C:/wt', branch: 'feature/abc-1' }; },
+        provision: async () => {
+          provisionCalls += 1;
+          return { worktreePath: 'C:/wt', branch: 'feature/abc-1', base: 'develop' };
+        },
         launch: async () => { launchCalls += 1; return { runKey: 'abc-1' }; },
         status: async () => ({ finished: false }),
       },

@@ -21,6 +21,8 @@ import type { RuleVerdict } from '../rules/types.ts';
 import type { CodexLane, Judge, LensRunner, LensInput } from './roles.ts';
 import type { JudgeInput } from './gate.ts';
 import { councilPolicy, type CouncilPolicy } from './risk.ts';
+import { makeCodexLane } from './codexLane.ts';
+import type { Journal } from '../journal.ts';
 
 const FINDINGS_ARRAY_SCHEMA = z.array(CouncilFindingSchema);
 
@@ -169,22 +171,18 @@ export function reasonerJudge(reasoner: Reasoner, run?: string): Judge {
 
 /**
  * Aaron 2026-09-04 16:40: the Codex lane stays off unless `council.codex` is `'on'` in
- * the policy file. Even `'on'` never runs anything real in this stream -- the only
- * sanctioned route to Codex is `dev-harness/tools/codex_call.py` (`codex-side-agent`
- * memory note), out of scope here -- so the flag gates a documented refusal rather than
- * silently doing nothing, which is how the flag stays provably load-bearing instead of
- * a comment nobody's code path can actually disprove.
+ * the policy file. When it is on, `codexLane.ts`'s `makeCodexLane` is the real
+ * implementation -- a read-only call through `dev-harness/tools/codex_call.py`
+ * (`codex-side-agent` memory note) -- wired here with the round's own journal and label
+ * (`run`, the same `${repo}#${pr}` string `reasonerJudge` and `reasonerLensRunner`
+ * already take).
  */
-export function codexLaneFor(policy: CouncilPolicy = councilPolicy()): CodexLane {
+export function codexLaneFor(
+  policy: CouncilPolicy = councilPolicy(),
+  deps: { journal?: Journal; run?: string } = {},
+): CodexLane {
   if (policy.codex !== 'on') {
     return { async run() { return { ran: false, findings: [] }; } };
   }
-  return {
-    async run() {
-      throw new Error(
-        'council.codex is "on" but this stream implements no Codex lane: the only '
-        + 'sanctioned route to Codex is dev-harness/tools/codex_call.py',
-      );
-    },
-  };
+  return makeCodexLane({ journal: deps.journal, run: deps.run });
 }

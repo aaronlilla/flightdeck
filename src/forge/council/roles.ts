@@ -21,17 +21,26 @@ export interface LensRunner {
 export interface CodexLaneResult {
   ran: boolean;
   findings: CouncilFinding[];
+  /** Set whenever `ran` is `false`, so a caller can say why the lane never started rather
+   *  than reading absence as silence. */
+  reason?: string;
 }
 
 export interface CodexLaneInput {
   brief: string;
   diffSummary: string;
+  /** A checkout whose HEAD is the PR head. Without this and `baseRef`, the lane never
+   *  runs -- it returns `ran: false` with a reason instead of throwing. */
+  cwd?: string;
+  /** The PR's base branch. */
+  baseRef?: string;
 }
 
 /**
- * Read-only, same rubric as the Sonnet lenses. The real implementation is a call through
- * `dev-harness/tools/codex_call.py` (`codex-side-agent` memory note); this interface is
- * what lets Council's gate stay ignorant of that mechanics entirely.
+ * Read-only, same rubric as the Sonnet lenses. The real implementation
+ * (`codexLane.ts`) calls through `dev-harness/tools/codex_call.py`
+ * (`codex-side-agent` memory note); this interface keeps Council's gate ignorant of
+ * that mechanism entirely.
  */
 export interface CodexLane {
   run(input: CodexLaneInput): Promise<CodexLaneResult>;
