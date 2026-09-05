@@ -73,9 +73,28 @@ export interface RunState {
   lastEventAt: number;
   /** The ask key this run is parked on, while `state` is `'parked'`. */
   parkKey?: string;
+  /** When a `run.paused` row (the Governor's window pause) names one: milliseconds since
+   *  the epoch, the earliest this run may be admitted again. */
+  resumeAt?: number;
   /** The tool call in flight, when the last event named one and none has closed it since. */
   currentTool?: { name: string; startedAt: number };
+  /** Cumulative `usage.cacheRead` across every turn, for the Warden's cost-shape check
+   *  (P4.7/I2). Zero for a run that has journaled no usage yet, never undefined. */
+  cacheReadTokens: number;
+  /** Cumulative `usage.input + usage.cacheRead` across every turn, the denominator for
+   *  the cache-read ratio `assessCostShape` compares against `WardenConfig.cacheReadRatio`. */
+  totalReadTokens: number;
+  /** Turns since the last Edit/Write/NotebookEdit tool call closed, for `assessCostShape`'s
+   *  "no write tool call in a long while" leg. A run that has taken no turn yet reads 0. */
+  turnsSinceWrite: number;
 }
+
+/** Tool names `turnsSinceWrite` treats as a write: the ones the roadmap's cost-shape
+ *  example means by "a write tool call" (a file actually changed on disk). `Bash` is
+ *  deliberately excluded -- it is as often a read (`git status`, a test run) as a write,
+ *  and guessing from its command text would be exactly the kind of fragile classifier
+ *  order 6 warns against for a signal this consequential. */
+const WRITE_TOOL_NAMES = new Set(['Edit', 'Write', 'NotebookEdit']);
 
 export interface FleetState {
   events: ForgeEvent[];
@@ -202,6 +221,7 @@ function runOf(state: FleetState, name: string): RunState {
   if (found) return found;
   const created: RunState = {
     run: name, state: 'started', turns: 0, context: 0, costUsd: 0, lastEventAt: 0,
+    cacheReadTokens: 0, totalReadTokens: 0, turnsSinceWrite: 0,
   };
   state.runs[name] = created;
   return created;
@@ -209,6 +229,28 @@ function runOf(state: FleetState, name: string): RunState {
 
 function emptyState(): FleetState {
   return { events: [], runs: {}, burn: {}, handoffs: 0, torn: 0, unknownModels: [] };
+}
+
+/** Per-run "a write tool call closed since the last turn ended" flag, kept off `RunState`
+ *  itself (which is public and replayed wholesale by callers) rather than as a field
+ *  everyone reading a `RunState` would otherwise have to know to ignore. Keyed by the
+ *  `FleetState` instance so two folds in the same process never share bookkeeping. */
+const wroteSinceLastTurn = new WeakMap<FleetState, Set<string>>();
+
+function markWrote(state: FleetState, run: string): void {
+  let set = wroteSinceLastTurn.get(state);
+  if (!set) {
+    set = new Set();
+    wroteSinceLastTurn.set(state, set);
+  }
+  set.add(run);
+}
+
+function consumeWrote(state: FleetState, run: string): boolean {
+  const set = wroteSinceLastTurn.get(state);
+  if (!set || !set.has(run)) return false;
+  set.delete(run);
+  return true;
 }
 
 /** One line folded into `state`. Shared by `replay()` and `JournalCache`, so a full parse
@@ -234,7 +276,12 @@ function foldLine(state: FleetState, line: string): void {
     } else {
       const spent = costOf(row.usage, alias);
       state.burn[alias] = (state.burn[alias] ?? 0) + spent;
-      if (row.run) runOf(state, row.run).costUsd += spent;
+      if (row.run) {
+        const run = runOf(state, row.run);
+        run.costUsd += spent;
+        run.cacheReadTokens += row.usage.cacheRead;
+        run.totalReadTokens += row.usage.input + row.usage.cacheRead;
+      }
     }
   }
   if (!row.run) return;
@@ -251,6 +298,7 @@ function foldLine(state: FleetState, line: string): void {
         break;
       case 'turn.end':
         run.turns += 1;
+        run.turnsSinceWrite = consumeWrote(state, row.run) ? 0 : run.turnsSinceWrite + 1;
         if (typeof row.context === 'number') run.context = row.context;
         delete run.currentTool;
         break;
@@ -267,9 +315,20 @@ function foldLine(state: FleetState, line: string): void {
         break;
       case 'run.paused':
         run.state = 'paused';
+        // The Governor's window pause (P4.2, `governor.ts`'s `WindowGate`) stamps a
+        // resume time so a reader (the console, or a resume check) knows when to try
+        // this run again without re-deriving the reset window itself.
+        if (typeof row['resumeAt'] === 'number') run.resumeAt = row['resumeAt'];
         delete run.currentTool;
         break;
       case 'run.parked':
+      // The Governor's own two park kinds (P4.2, `governor.ts`): `warden.parked` for a
+      // per-turn model-mismatch (the Warden actuator path) and `governor.parked` for a
+      // budget-cap refusal. Both fold exactly like `run.parked` so a reader sees the park
+      // immediately either way; `reason` (carried on the row, not read here) is what
+      // tells the two apart.
+      case 'warden.parked':
+      case 'governor.parked':
         run.state = 'parked';
         if (row.verdict) run.verdict = row.verdict;
         if (typeof row['key'] === 'string') run.parkKey = row['key'];
@@ -279,9 +338,12 @@ function foldLine(state: FleetState, line: string): void {
         run.state = 'started';
         delete run.parkKey;
         break;
-      case 'tool.start':
-        run.currentTool = { name: String(row['tool'] ?? ''), startedAt: row.at };
+      case 'tool.start': {
+        const toolName = String(row['tool'] ?? '');
+        run.currentTool = { name: toolName, startedAt: row.at };
+        if (WRITE_TOOL_NAMES.has(toolName)) markWrote(state, row.run);
         break;
+      }
       case 'tool.end':
         delete run.currentTool;
         break;

@@ -25,6 +25,7 @@ import type { GotchaInput } from './gotcha.js';
 import { CLASS_BUDGETS, DEFAULT_CLASS } from './exec.js';
 import type { FleetProcess, LivenessSignal, StuckSignal } from './liveness.js';
 import { LANE_FIELDS, type LaneRecord as BaseLaneRecord } from './supervisor.js';
+import { providerFor as policyProviderFor } from './policy.js';
 import type { RegistryRecord } from './registry.js';
 
 export { LANE_FIELDS };
@@ -172,6 +173,22 @@ export const FORGE_EVENT_NAMES = [
   'inbox.queued', 'inbox.offered', 'stuck', 'cleared', 'blocker.raised', 'blocker.cleared',
   'external.intent', 'external.complete', 'external.unknown', 'decision.made',
   'source.observed', 'packet.written', 'policy.unknown-model',
+  // Warden's own additions (roadmap P4.1): a kill Actuator.kill actually carried out,
+  // a kill it refused for lack of a decision, and a fleet-probe health note that is never
+  // acted on (liveness.ts's fleet-unknown, surfaced but not treated as a run's own fault).
+  'run.killed', 'warden.refused', 'warden.health',
+  // The Governor stream's own (roadmap P4.2, `src/forge/governor.ts`): `result.usage`
+  // carries the SDK result message's own `modelUsage` map, journaled by the engine on a
+  // segment's end row; `burn.mismatch` is the reconciliation between that sum and B.3.6's
+  // per-message sum; `governor.parked` is a budget-cap park, kept apart from
+  // `warden.parked`'s model-mismatch park even though both use the same `run.parked`
+  // liveness fold, so a reader can tell a cap from a mismatch without inspecting `reason`.
+  'result.usage', 'burn.mismatch', 'governor.parked',
+  // P4.7/I4: the Council rules library's own verdict, once wired into the worker's
+  // PreToolUse hook -- a Bash or Edit/Write call the rules library refused, distinct
+  // from `permission.denied` (a park or the context ceiling) so a reader can tell a
+  // policy refusal from a liveness one without inspecting `reason`.
+  'rule.denied',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];
@@ -320,7 +337,7 @@ export function replayEvents(text: string, options: { sinceSeq?: number } = {}):
 // StuckSignal, extended with drift and a blocker record
 // ---------------------------------------------------------------------------------------
 
-export type ExtendedLivenessSignal = LivenessSignal | 'drift' | 'blocker';
+export type ExtendedLivenessSignal = LivenessSignal | 'drift' | 'blocker' | 'cost-shape';
 
 /** A blocker's own identity, so Warden can build on `liveness.ts` rather than beside it. */
 export interface BlockerRecord {
@@ -336,7 +353,10 @@ export interface ExtendedStuckSignal extends Omit<StuckSignal, 'signal'> {
 
 export const ExtendedStuckSignalSchema = z.object({
   key: z.string().min(1),
-  signal: z.enum(['idle', 'tool-budget', 'context', 'stale-session', 'login-stuck', 'fleet-unknown', 'drift', 'blocker']),
+  signal: z.enum([
+    'idle', 'tool-budget', 'context', 'stale-session', 'login-stuck', 'fleet-unknown', 'drift',
+    'blocker', 'cost-shape',
+  ]),
   threshold: z.number(),
   observed: z.number(),
   since: z.number(),
@@ -694,16 +714,25 @@ export type Provider = 'codex' | 'claude';
  * Which provider a model-policy class reasons on, per the 2026-09-04 13:20 decision: the
  * runtime master and planner run on gpt-6-astra through Codex, read-only, with Claude as
  * fallback and critic; everything that implements, verifies, researches, audits or
- * evaluates runs on Claude. A class this map does not name defaults to `claude`, which is
- * every class today except `master` and `plan`, the two the 13:20 decision named.
+ * evaluates runs on Claude.
+ *
+ * P4.7/I3: this used to be its own hardcoded `CLASS_PROVIDERS` map, a second copy of
+ * exactly the fact `policy.ts`'s data-driven `providerFor` already reads out of
+ * `model-policy.json` for the Governor stream (P3.2). Two copies of one fact is the
+ * failure this integration exists to close (order 17's own $6,250 lesson), so this
+ * delegates to the file rather than carrying its own frozen snapshot of it. A class the
+ * loaded policy has never heard of still reads as `claude` here -- `policy.ts`'s own
+ * `providerFor` throws for that case, by design, since guessing a provider for a class
+ * nobody declared would carry the policy's authority for a fact it never stated; this
+ * wrapper is the one place that guess is made instead, for every caller that expects a
+ * graceful default rather than a thrown class-not-found.
  */
-export const CLASS_PROVIDERS: Record<string, Provider> = {
-  master: 'codex',
-  plan: 'codex',
-};
-
 export function providerFor(className: string): Provider {
-  return CLASS_PROVIDERS[className] ?? 'claude';
+  try {
+    return policyProviderFor(className);
+  } catch {
+    return 'claude';
+  }
 }
 
 export interface Reasoner {
@@ -899,3 +928,280 @@ export const CLI_EXIT_CODES = {
 } as const;
 
 export type CliExitCode = (typeof CLI_EXIT_CODES)[keyof typeof CLI_EXIT_CODES];
+
+// ---------------------------------------------------------------------------------------
+// Intake (P4.3): PollSource, Watermark, Packet — additive only, per decision 4 of the
+// 2026-09-04 Intake brief. Nothing above this section changes; every export below is new.
+// ---------------------------------------------------------------------------------------
+
+/**
+ * The five sources the spine spec names for Intake to poll (Section 2, bullet 1). Closed
+ * on purpose, the same reasoning as `FORGE_EVENT_NAMES`: a caller that wants a sixth
+ * source adds it here first.
+ */
+export const POLL_SOURCE_NAMES = ['jira', 'sentry', 'cloudwatch', 'slack', 'github'] as const;
+
+export type PollSourceName = (typeof POLL_SOURCE_NAMES)[number];
+
+/**
+ * One item read off a poll: which source it came from, that source's own id for it
+ * (a Jira key, a Sentry short id, a CloudWatch query result row's fingerprint, a Slack
+ * message ts, a GitHub comment id), and the `updated` timestamp the watermark advances
+ * on. `source + id + updated` is exactly the key requirement 8 asks `source.observed` to
+ * carry, so this shape is what that event's payload is built from.
+ */
+export interface PollSource {
+  name: PollSourceName;
+  id: string;
+  updated: number;
+}
+
+export const PollSourceSchema = z.object({
+  name: z.enum(POLL_SOURCE_NAMES),
+  id: z.string().min(1),
+  updated: z.number(),
+});
+
+/**
+ * The durable-commit half of watermark semantics (requirement 1): the last `updated`
+ * value a poll has fully processed, plus every id it saw AT that exact value.
+ *
+ * The ids-at-committed-at list is what makes equal timestamps safe: a page boundary
+ * that lands mid-tie (two Jira issues sharing one `updated` millisecond) is resolved by
+ * checking id membership at the tie value, not by re-processing everything at or after
+ * it. A crash before this is written leaves the previous commit in force, which is what
+ * makes "durable commit after a full scan" (roadmap:113) an atomic swap rather than a
+ * value updated as pages stream in.
+ */
+export interface Watermark {
+  source: PollSourceName;
+  committedAt: number;
+  idsAtCommittedAt: string[];
+}
+
+export const WatermarkSchema = z.object({
+  source: z.enum(POLL_SOURCE_NAMES),
+  committedAt: z.number(),
+  idsAtCommittedAt: z.array(z.string()),
+});
+
+export const PACKET_CONFIDENCE = ['low', 'medium', 'high'] as const;
+
+export type PacketConfidence = (typeof PACKET_CONFIDENCE)[number];
+
+/**
+ * A findings packet, typed for the first time (it was informal in the spec: "what, where,
+ * evidence, confidence, repo, blocked-by" — spine spec Section 2, bullet 2). One packet
+ * per ticket/issue, written by a bounded triangulation run; nothing downstream re-derives
+ * it, so its shape has to carry everything the planner and the Jira projection both need.
+ */
+export interface Packet {
+  id: string;
+  ticket: string;
+  what: string;
+  where: string;
+  evidence: string[];
+  confidence: PacketConfidence;
+  repo: string;
+  blockedBy: string[];
+  at: number;
+}
+
+export const PacketSchema = z.object({
+  id: z.string().min(1),
+  ticket: z.string().min(1),
+  what: z.string().min(1),
+  where: z.string().min(1),
+  evidence: z.array(z.string()),
+  confidence: z.enum(PACKET_CONFIDENCE),
+  repo: z.string().min(1),
+  blockedBy: z.array(z.string()),
+  at: z.number(),
+});
+
+// ---------------------------------------------------------------------------------------
+// Council: verdicts, findings, and the attestation that binds a verdict to a commit pair
+// ---------------------------------------------------------------------------------------
+
+/**
+ * Roadmap P4.4. The judge's three answers, per the spec's Section 5
+ * (`2026-09-04-forge-spine-sdk-workers.md:143-145`): `FIX FIRST` re-enters the worker,
+ * `PASS` and `PASS WITH NOTES` both clear the gate.
+ */
+export const COUNCIL_VERDICTS = ['PASS', 'PASS WITH NOTES', 'FIX FIRST'] as const;
+
+export type CouncilVerdict = (typeof COUNCIL_VERDICTS)[number];
+
+export const CouncilVerdictSchema = z.enum(COUNCIL_VERDICTS);
+
+/**
+ * One finding, in the shape `.claude/skills/council/council-workflow.js`'s own
+ * `FINDINGS_SCHEMA` and `goal-forge-review.js`'s `FINDINGS` schema already use (file, line,
+ * claim, failure scenario, severity, confidence), plus `member` so a synthesis can tell
+ * which lens or which Codex run raised it.
+ */
+export interface CouncilFinding {
+  member: string;
+  file: string;
+  line: number;
+  claim: string;
+  failureScenario: string;
+  severity: 'critical' | 'high' | 'medium' | 'low';
+  confidence: 'low' | 'medium' | 'high';
+  /** Set when a Codex-only finding is contested rather than folded into the verdict. */
+  contested?: { by: string; reason: string };
+}
+
+export const CouncilFindingSchema = z.object({
+  member: z.string().min(1),
+  file: z.string().min(1),
+  line: z.number().int().nonnegative(),
+  claim: z.string().min(1),
+  failureScenario: z.string().min(1),
+  severity: z.enum(['critical', 'high', 'medium', 'low']),
+  confidence: z.enum(['low', 'medium', 'high']),
+  contested: z.object({ by: z.string().min(1), reason: z.string().min(1) }).optional(),
+});
+
+/** One lens's isolated packet: cites only, never another lens's findings (Section 5). */
+export interface CouncilLensReport {
+  lens: string;
+  findings: CouncilFinding[];
+}
+
+export const CouncilLensReportSchema = z.object({
+  lens: z.string().min(1),
+  findings: z.array(CouncilFindingSchema),
+});
+
+/**
+ * Attestation, P4.4's own deliverable (F25, `2026-09-04-forge-spine-sdk-workers.md:999-1004`):
+ * nothing before this bound a council verdict to the commit pair it was actually about, so a
+ * re-run against a moved head could be mistaken for the verdict that gated the merge.
+ *
+ * `head`/`base` are the two shas the merge gate compares against the PR's *current* shas
+ * before trusting a stored attestation (decision 4): either moving invalidates it.
+ * `at` carries the `VerifiedField` discipline the `/state` shapes use, so a stamped
+ * timestamp with no read behind it is a distinct shape from one backed by a source read.
+ */
+export interface CouncilAttestation {
+  repo: string;
+  pr: number;
+  head: string;
+  base: string;
+  round: number;
+  verdict: CouncilVerdict;
+  decidingFindings: CouncilFinding[];
+  lenses: CouncilLensReport[];
+  codex?: { ran: boolean; findings: CouncilFinding[] };
+  judge: { model: string; verdict: CouncilVerdict };
+  ci: { runId: string; headSha: string };
+  at: VerifiedField<number>;
+}
+
+export const CouncilAttestationSchema = z.object({
+  repo: z.string().min(1),
+  pr: z.number().int().positive(),
+  head: z.string().min(1),
+  base: z.string().min(1),
+  round: z.number().int().positive(),
+  verdict: CouncilVerdictSchema,
+  decidingFindings: z.array(CouncilFindingSchema),
+  lenses: z.array(CouncilLensReportSchema),
+  codex: z.object({ ran: z.boolean(), findings: z.array(CouncilFindingSchema) }).optional(),
+  judge: z.object({ model: z.string().min(1), verdict: CouncilVerdictSchema }),
+  ci: z.object({ runId: z.string().min(1), headSha: z.string().min(1) }),
+  at: VerifiedFieldSchema(z.number()),
+});
+
+/**
+ * Where an attestation persists (decision 4). Declared here, not merely in the runner that
+ * writes it, so a reader who only has `contracts.ts` open still knows the on-disk shape.
+ * No drive letter: callers join this against whatever root they resolve `~/.forge` to.
+ */
+export function attestationRelPath(repo: string, pr: number, head: string): string {
+  return `attestations/${repo}/${pr}/${head}.json`;
+}
+
+/**
+ * An attestation is current for a PR only if both shas still match what it was written
+ * against (decision 4's own rule, and acceptance specimen 7's falsifier: nothing in the
+ * stored shape may leave the two head shas indistinguishable).
+ */
+export function attestationCoversHead(
+  attestation: CouncilAttestation,
+  current: { head: string; base: string },
+): boolean {
+  return attestation.head === current.head && attestation.base === current.base;
+}
+
+// ---------------------------------------------------------------------------------------
+// Typed human handoffs (decision 7): an incomplete one fails the gate
+// ---------------------------------------------------------------------------------------
+
+/** Haiping (QA): the visual test plan a merged RN change hands him. */
+export interface HaipingHandoff {
+  ticket: string;
+  pr: string;
+  deployKind: 'ota' | 'rebuild';
+  perPlatform: { android: string; ios: string };
+  steps: string[];
+  notVisuallyVerified: string[];
+}
+
+export const HaipingHandoffSchema = z.object({
+  ticket: z.string().min(1),
+  pr: z.string().min(1),
+  deployKind: z.enum(['ota', 'rebuild']),
+  perPlatform: z.object({ android: z.string().min(1), ios: z.string().min(1) }),
+  steps: z.array(z.string().min(1)).min(1),
+  notVisuallyVerified: z.array(z.string()),
+});
+
+/** Joe: the backend draft-PR ping, since the gitflow guard makes a merge impossible. */
+export interface JoeHandoff {
+  ticket: string;
+  draftPr: string;
+  packets: CouncilLensReport[];
+  howToRun: string;
+  couldNotRun: string[];
+}
+
+export const JoeHandoffSchema = z.object({
+  ticket: z.string().min(1),
+  draftPr: z.string().min(1),
+  packets: z.array(CouncilLensReportSchema).min(1),
+  howToRun: z.string().min(1),
+  couldNotRun: z.array(z.string()),
+});
+
+/** Harrison (PM): a proposal that needs a person's decision, never a merge itself. */
+export interface HarrisonHandoff {
+  ticket: string;
+  summaryInAaronsVoice: string;
+  decisionNeeded?: string;
+}
+
+export const HarrisonHandoffSchema = z.object({
+  ticket: z.string().min(1),
+  summaryInAaronsVoice: z.string().min(1),
+  decisionNeeded: z.string().optional(),
+});
+
+export type HandoffKind = 'haiping' | 'joe' | 'harrison';
+
+/**
+ * Validate a handoff against its schema and report the field(s) missing rather than a bare
+ * boolean, so the gate that refuses an incomplete handoff can say what is incomplete about
+ * it (requirement: "an incomplete one fails the gate").
+ */
+export function checkHandoff(
+  kind: HandoffKind,
+  candidate: unknown,
+): { complete: true } | { complete: false; missing: string[] } {
+  const schema = kind === 'haiping' ? HaipingHandoffSchema : kind === 'joe' ? JoeHandoffSchema : HarrisonHandoffSchema;
+  const result = schema.safeParse(candidate);
+  if (result.success) return { complete: true };
+  const missing = result.error.issues.map((issue) => issue.path.join('.') || '(root)');
+  return { complete: false, missing };
+}

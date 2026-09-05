@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { Inbox } from '../../src/forge/inbox.js';
 import { Journal } from '../../src/forge/journal.js';
+import { Registry } from '../../src/forge/registry.js';
 import { RunInbox } from '../../src/forge/runinbox.js';
 import { Breaker, readKillSwitch, Lanes } from '../../src/forge/supervisor.js';
 import { ForgeServer, FORGE_PORT } from '../../src/forge/server.js';
@@ -40,10 +41,17 @@ beforeEach(async () => {
   journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
   journal.close();
 
+  // P4.7/I8: `/stop` selects targets from the registry's live rows, never from lane
+  // records, so a run this test wants treated as live needs an admitted row backed by
+  // this process's own (genuinely alive) pid.
+  const registry = new Registry(join(dir, 'registry'));
+  registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+
   server = new ForgeServer({
     lanes,
     inbox: new Inbox(join(dir, 'inbox')),
     journalPath: join(dir, 'fleet.jsonl'),
+    registry,
     port: 0,
   });
   base = `http://127.0.0.1:${await server.listen()}`;

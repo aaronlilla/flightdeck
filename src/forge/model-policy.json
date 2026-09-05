@@ -40,18 +40,48 @@
     "sonnet": {"input": 3.0, "cacheRead": 0.3, "cacheWrite": 3.75, "output": 15.0},
     "haiku": {"input": 1.0, "cacheRead": 0.1, "cacheWrite": 1.25, "output": 5.0}
   },
+  "_provider_comment": [
+    "P3.2: which side reasons a class, added 2026-09-04 for the Governor stream. The",
+    "runtime master and planner run on gpt-6-astra through Codex, read-only, per the",
+    "13:20 decision; everything that implements, verifies, researches, audits or",
+    "evaluates runs on Claude. A class with no provider field defaults to claude in",
+    "policy.ts's providerFor()."
+  ],
   "classes": {
-    "triage": {"model": "sonnet", "effort": "low", "maxContext": 60000, "maxTurns": 20},
-    "plan": {"model": "fable", "effort": "high", "maxContext": 200000, "maxTurns": 60},
-    "master": {"model": "fable", "effort": "medium", "maxContext": 30000, "maxTurns": 40},
-    "implement": {"model": "sonnet", "effort": "medium", "maxContext": 150000, "maxTurns": 120},
-    "implement-hard": {"model": "opus", "effort": "high", "maxContext": 150000, "maxTurns": 120},
-    "verify": {"model": "sonnet", "effort": "medium", "maxContext": 120000, "maxTurns": 40},
-    "audit-lens": {"model": "sonnet", "effort": "medium", "maxContext": 120000, "maxTurns": 40},
-    "audit-judge": {"model": "opus", "effort": "high", "maxContext": 150000, "maxTurns": 30},
-    "research": {"model": "sonnet", "effort": "medium", "maxContext": 150000, "maxTurns": 40},
-    "evaluate": {"model": "haiku", "effort": "low", "maxContext": 30000, "maxTurns": 6},
-    "sweep": {"model": "sonnet", "effort": "low", "maxContext": 80000, "maxTurns": 20}
+    "triage": {"model": "sonnet", "effort": "low", "maxContext": 60000, "maxTurns": 20, "provider": "claude"},
+    "plan": {"model": "fable", "effort": "high", "maxContext": 200000, "maxTurns": 60, "provider": "codex"},
+    "master": {"model": "fable", "effort": "medium", "maxContext": 30000, "maxTurns": 40, "provider": "codex"},
+    "implement": {"model": "sonnet", "effort": "medium", "maxContext": 150000, "maxTurns": 120, "provider": "claude"},
+    "implement-hard": {"model": "opus", "effort": "high", "maxContext": 150000, "maxTurns": 120, "provider": "claude"},
+    "verify": {"model": "sonnet", "effort": "medium", "maxContext": 120000, "maxTurns": 40, "provider": "claude"},
+    "audit-lens": {"model": "sonnet", "effort": "medium", "maxContext": 120000, "maxTurns": 40, "provider": "claude"},
+    "audit-judge": {"model": "opus", "effort": "high", "maxContext": 150000, "maxTurns": 30, "provider": "claude"},
+    "research": {"model": "sonnet", "effort": "medium", "maxContext": 150000, "maxTurns": 40, "provider": "claude"},
+    "evaluate": {"model": "haiku", "effort": "low", "maxContext": 30000, "maxTurns": 6, "provider": "claude"},
+    "sweep": {"model": "sonnet", "effort": "low", "maxContext": 80000, "maxTurns": 20, "provider": "claude"}
+  },
+  "_governor_comment": [
+    "P4.2: budgets Aaron sets, that the Governor queues against and never silently",
+    "exceeds. Generous on purpose -- these are a backstop against a run that would",
+    "otherwise spend unbounded, not a throttle on ordinary work. Exceeding one parks",
+    "the run (governor.parked evidence on a run.parked event), never kills it, and",
+    "never escalates a tier."
+  ],
+  "governor": {
+    "dailyUsd": 500,
+    "usdPerRun": {
+      "triage": 5,
+      "plan": 20,
+      "master": 10,
+      "implement": 30,
+      "implement-hard": 75,
+      "verify": 15,
+      "audit-lens": 15,
+      "audit-judge": 25,
+      "research": 15,
+      "evaluate": 3,
+      "sweep": 10
+    }
   },
   "brief_tiers": {
     "opus": "implement-hard",
@@ -67,5 +97,31 @@
     "claude-code-guide": "research",
     "statusline-setup": "research"
   },
-  "fanout_classes": ["research", "audit-lens", "triage", "sweep", "evaluate"]
+  "fanout_classes": ["research", "audit-lens", "triage", "sweep", "evaluate"],
+  "_warden_comment": [
+    "Cost-shape thresholds: a session can be technically fine (under its context ceiling,",
+    "no error) and still be alive and wasting money -- high context, almost all of it a",
+    "cache re-read, and no write tool call in a long while. These numbers are the spec's",
+    "own illustrative example (2026-09-04-forge-spine-sdk-workers.md:534-535), not yet",
+    "tuned against a real run; Warden treats them as configuration precisely so they can",
+    "move without a code change."
+  ],
+  "warden": {
+    "contextHigh": 300000,
+    "cacheReadRatio": 0.9,
+    "turnsWithoutWrite": 30
+  },
+  "_reasoner_comment": [
+    "Added for Forge Intake (P4.3). astra: off is the shipped default -- the Intake",
+    "planner's plan seam always resolves to claude while this is off. Only",
+    "planning-only turns astra on, per the 2026-09-04 16:40 amendment (Aaron: limit",
+    "astra to what absolutely matters). No stream build, test, lens or review calls",
+    "astra regardless of this flag."
+  ],
+  "reasoner": { "astra": "off" },
+  "council": {
+    "smallMaxLines": 100,
+    "largeMinLines": 500,
+    "riskyPaths": ["**/features/wallet/**", "**/features/auth/**", "**/Financial/**"]
+  }
 }

@@ -24,7 +24,8 @@ import { fileURLToPath } from 'node:url';
 import type { Inbox } from './inbox.js';
 import { JournalCache, type RangeReader } from './journal.js';
 import type { StuckSignal } from './liveness.js';
-import { killSwitchPath as defaultKillSwitchPath, serverTokenPath } from './paths.js';
+import { killSwitchPath as defaultKillSwitchPath, registryDir, serverTokenPath } from './paths.js';
+import { Registry } from './registry.js';
 import { RunInbox, deliverAnswer } from './runinbox.js';
 import { Breaker, clearKillSwitch, Fleet, type LaneRecord, type Lanes } from './supervisor.js';
 
@@ -102,6 +103,10 @@ export interface ForgeServerOptions {
   /** Overrides where `/stop` and `/clear --all` read and write the kill switch. Defaults
    *  to `killSwitchPath()`, which itself follows `FORGE_HOME`. A specimen only. */
   killSwitchFile?: string;
+  /** What `/stop` reads to find a live run (P4.7/I8: registry rows, never lane records).
+   *  Defaults to a fresh `Registry` over `registryDir()`, which itself follows
+   *  `FORGE_HOME`. A specimen overrides this to admit its own fixture rows. */
+  registry?: Registry;
   /** Overrides where `/` serves the built console from. Defaults to `dist/console/`
    *  found by walking up to the repo root. A specimen only. */
   consoleDistDir?: string;
@@ -123,6 +128,8 @@ export class ForgeServer {
   private readonly journalCache: JournalCache;
 
   private readonly killSwitchFile: string;
+
+  private readonly registry: Registry;
 
   private readonly consoleDistDir: string;
 
@@ -158,6 +165,7 @@ export class ForgeServer {
     this.fleetFn = options.fleet ?? (() => []);
     this.token = options.token ?? ensureServerToken();
     this.killSwitchFile = options.killSwitchFile ?? defaultKillSwitchPath();
+    this.registry = options.registry ?? new Registry(registryDir());
     this.consoleDistDir = options.consoleDistDir ?? defaultConsoleDistDir();
   }
 
@@ -391,11 +399,13 @@ export class ForgeServer {
     this.readJson<{ reason?: string }>(request, response, (parsed) => {
       void (async () => {
         const reason = parsed?.reason || 'stopped from the console';
-        const outcomes = await new Fleet(this.lanes, this.journalPath, this.killSwitchFile).stopAll(reason);
-        for (const outcome of outcomes) {
+        const { stopped, stale } = await new Fleet(
+          this.lanes, this.registry, this.journalPath, this.killSwitchFile,
+        ).stopAll(reason);
+        for (const outcome of stopped) {
           this.publish({ event: 'run.parked', run: outcome.slug, actor: 'console', reached: outcome.reached });
         }
-        json(response, 200, { stopped: outcomes.map((outcome) => outcome.slug) });
+        json(response, 200, { stopped: stopped.map((outcome) => outcome.slug), stale });
       })();
     });
   }

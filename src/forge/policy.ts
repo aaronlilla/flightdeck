@@ -14,11 +14,33 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+/**
+ * Which side reasons a class: `codex` for the runtime master and planner (the
+ * 2026-09-04 13:20 astra decision), `claude` for everything else. A class this file
+ * does not name defaults to `claude` in `providerFor` below, which is every class the
+ * policy shipped with today except `master` and `plan`.
+ */
+export type Provider = 'codex' | 'claude';
+
 export interface ClassSpec {
   model: string;
   effort: 'low' | 'medium' | 'high';
   maxContext: number;
   maxTurns: number;
+  /** Data-driven per P3.2. Missing on an older policy fixture reads as `claude`. */
+  provider?: Provider;
+}
+
+/**
+ * Aaron-set budgets the Governor queues against and never silently exceeds. Missing
+ * entirely (an older fixture, or a policy file this stream's field has not reached yet)
+ * reads as no cap at all, which is the same "unset means unlimited" shape `priceFor`
+ * already uses for a tier nobody priced -- a guess wearing the policy's authority is
+ * worse than an honest absence.
+ */
+export interface GovernorBudget {
+  dailyUsd: number;
+  usdPerRun: Record<string, number>;
 }
 
 export interface Price {
@@ -26,6 +48,12 @@ export interface Price {
   cacheRead: number;
   cacheWrite: number;
   output: number;
+}
+
+export interface WardenConfig {
+  contextHigh: number;
+  cacheReadRatio: number;
+  turnsWithoutWrite: number;
 }
 
 export interface Policy {
@@ -38,7 +66,28 @@ export interface Policy {
   classes: Record<string, ClassSpec>;
   brief_tiers: Record<string, string>;
   subagents: Record<string, string>;
+  warden?: WardenConfig;
+  governor?: GovernorBudget;
+  /**
+   * Optional: added for Forge Intake (P4.3), read by nothing else today. `astra` gates
+   * whether the Intake planner may reach gpt-6-astra through Codex at all; `'off'`
+   * (the shipped default) means the planner's `plan` seam always resolves to `claude`,
+   * and only `'planning-only'` turns astra on, per the 2026-09-04 16:40 amendment. A
+   * policy file written before this field existed has no `reasoner` key at all, which
+   * every reader here treats identically to `{ astra: 'off' }`.
+   */
+  reasoner?: { astra: 'off' | 'planning-only' };
+  /** Council's diff-risk thresholds (roadmap P4.4, decision 5). Optional: a file written
+   * before this stream has none, and `council/risk.ts` falls back to its own defaults. */
+  council?: { smallMaxLines: number; largeMinLines: number; riskyPaths: string[] };
 }
+
+/** The spec's own illustrative numbers, used when a policy file predates this field. */
+export const DEFAULT_WARDEN_CONFIG: WardenConfig = {
+  contextHigh: 300_000,
+  cacheReadRatio: 0.9,
+  turnsWithoutWrite: 30,
+};
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -148,6 +197,24 @@ export function classForSubagent(subagentType: string, path?: string): string {
 }
 
 /**
+ * Which provider a class reasons on, read from the file rather than a map hardcoded in
+ * TypeScript (P3.2). A name nobody declared throws, same as `classFor`: guessing a
+ * provider would carry the policy's authority for a class the policy never named.
+ */
+export function providerFor(name: string, path?: string): Provider {
+  return classFor(name, path).provider ?? 'claude';
+}
+
+/**
+ * The Governor's budget block: an Aaron-set daily fleet cap and per-class ceilings. A
+ * policy file that carries no `governor` block reads as no cap at all, so an older
+ * fixture keeps behaving exactly as it did before this field existed.
+ */
+export function governorBudget(path?: string): GovernorBudget {
+  return loadPolicy(path).governor ?? { dailyUsd: Number.POSITIVE_INFINITY, usdPerRun: {} };
+}
+
+/**
  * `tier: opus` has to be a line of its own.
  *
  * A brief that argues about Opus in a sentence is discussing the question, not answering
@@ -162,6 +229,10 @@ const TIER_LINE = /^[ \t]*(?:-[ \t]*)?tier[ \t]*:[ \t]*([A-Za-z0-9_-]+)[ \t]*$/i
  * makes "nothing escalates by retry" a property of the code rather than a promise in a
  * comment.
  */
+export function wardenConfig(path?: string): WardenConfig {
+  return loadPolicy(path).warden ?? DEFAULT_WARDEN_CONFIG;
+}
+
 export function tierOfBrief(briefText: string, path?: string): string {
   const table = loadPolicy(path).brief_tiers;
   const fallback = table['default'] ?? 'implement';

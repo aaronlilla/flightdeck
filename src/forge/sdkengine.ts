@@ -25,6 +25,8 @@ import { redactFields } from './redact.js';
 import { Inbox, type InboxEntry } from './inbox.js';
 import { Journal } from './journal.js';
 import { fleetConfigDir } from './paths.js';
+import { readParkRecord } from './parkrecord.js';
+import { evaluateAction, type ProposedAction } from './rules/index.js';
 import { injectMessages, RunInbox } from './runinbox.js';
 import {
   HANDOFF_REQUEST, workerEnv, type EngineLike, type FakeTurn, type SessionRequest,
@@ -325,8 +327,25 @@ export interface PreToolUseHookDeps {
    * model does not need a whole extra turn just to be told to write the packet.
    */
   ceilingHit?: () => boolean;
+  /**
+   * P4.7/I8: true once `forge stop --all` has engaged the kill switch. Checked right
+   * after the park and before the context ceiling, since an operator-initiated stop is a
+   * harder wall than a ceiling the run itself is approaching. Undefined means no caller
+   * wired it -- a real `forge run` always does; a specimen with no stopping concern needs
+   * no fake.
+   */
+  killSwitchHit?: () => boolean;
   deliverVia: 'hook' | 'stream';
   onDelivered?: (ids: string[], text: string) => void;
+  /**
+   * P4.7/I4: the branch this run's checkout is on, and whether that repo is controlled
+   * code, so the ported `gitflow` rule (which is a pure function -- decision 1 of the
+   * Council brief -- and takes both rather than shelling out to `git` itself) has what
+   * it needs. Neither is discovered here: nothing in `sdkengine.ts` reads a repo registry
+   * or runs `git`, so a caller that supplies neither gets `gitflow`'s permissive default
+   * (every branch reads as safe, every repo as uncontrolled) rather than a guess.
+   */
+  repoContext?: { branch?: string; controlled?: boolean };
 }
 
 /**
@@ -353,6 +372,17 @@ export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
     : undefined;
   return async (call: { toolName: string; input: Record<string, unknown>; toolUseId: string }):
     Promise<PreToolVerdict> => {
+    const parkRecord = readParkRecord(deps.run);
+    if (parkRecord) {
+      deps.journal.append({
+        event: 'permission.denied', run: deps.run, actor: 'runner', tool: call.toolName,
+        reason: `parked by warden: ${parkRecord.key}`,
+      });
+      return {
+        decision: 'deny',
+        reason: `parked by warden: ${parkRecord.reason}`,
+      };
+    }
     const key = deps.parked.get(deps.run);
     if (key) {
       const entry = deps.inbox.entry(key);
@@ -370,6 +400,17 @@ export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
         reason: `parked on ${key}: this run takes no further tool call until that question is answered`,
       };
     }
+    if (deps.killSwitchHit?.()) {
+      deps.journal.append({
+        event: 'permission.denied', run: deps.run, actor: 'runner', tool: call.toolName,
+        reason: 'the fleet kill switch is engaged',
+      });
+      return {
+        decision: 'deny',
+        reason: 'forge stop --all engaged the kill switch: write the handoff packet instead of another tool call',
+        additionalContext: HANDOFF_REQUEST,
+      };
+    }
     if (deps.ceilingHit?.()) {
       deps.journal.append({
         event: 'permission.denied', run: deps.run, actor: 'runner', tool: call.toolName,
@@ -381,9 +422,47 @@ export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
         additionalContext: HANDOFF_REQUEST,
       };
     }
+    // P4.7/I4: the Council's rules library, on every Bash and Edit/Write call -- the
+    // wiring `rules/index.ts`'s own doc comment named as "once P4.7's follow-up commit
+    // wires it in." A denial here journals `rule.denied` and stops the call the same way
+    // a park does; every other tool name (Read, Grep, the forge_* MCP tools) is untouched.
+    const action = proposedActionFor(call.toolName, call.input, deps.repoContext);
+    if (action) {
+      const verdict = evaluateAction(action);
+      if (!verdict.allow) {
+        deps.journal.append({
+          event: 'rule.denied', run: deps.run, actor: 'runner', tool: call.toolName,
+          rule: verdict.rule, reason: verdict.reason,
+        });
+        return { decision: 'deny', reason: `${verdict.rule}: ${verdict.reason}` };
+      }
+    }
     if (inboxHook) return inboxHook(call);
     return { decision: undefined };
   };
+}
+
+/**
+ * A `PreToolUse` call's own toolName/input, translated to the rules library's
+ * `ProposedAction` shape. `undefined` for every tool the library has no opinion on
+ * (Read, Grep, the `forge_*` MCP tools), so the caller skips `evaluateAction` entirely
+ * rather than asking it to judge a shape it was never built to see.
+ */
+function proposedActionFor(
+  toolName: string, input: Record<string, unknown>, repoContext?: { branch?: string; controlled?: boolean },
+): ProposedAction | undefined {
+  if (toolName === 'Bash') {
+    return {
+      kind: 'bash', command: String(input['command'] ?? ''), cwd: process.cwd(),
+      ...(repoContext?.branch !== undefined ? { branch: repoContext.branch } : {}),
+      ...(repoContext?.controlled !== undefined ? { controlled: repoContext.controlled } : {}),
+    };
+  }
+  if (toolName === 'Edit' || toolName === 'Write' || toolName === 'NotebookEdit') {
+    const text = String(input['new_string'] ?? input['content'] ?? '');
+    return { kind: 'edit', path: String(input['file_path'] ?? input['path'] ?? ''), text };
+  }
+  return undefined;
 }
 
 export interface ForgeHandlerDeps {
@@ -501,6 +580,12 @@ export interface SdkEngineDeps {
    * overrides this rather than the exec call underneath it.
    */
   checkDrift?: (cwd: string) => Promise<Mergeable>;
+  /**
+   * P4.7/I8: read fresh on every tool call by the PreToolUse hook. Undefined means no
+   * caller wired the kill switch to this engine -- `forge run` always does; a specimen
+   * with nothing to say about stopping needs no fake.
+   */
+  killSwitch?: () => boolean;
 }
 
 async function ghDriftCheck(cwd: string): Promise<Mergeable> {
@@ -629,6 +714,7 @@ export class SdkEngine implements EngineLike {
       onToolCall: buildPreToolUseHook({
         run: request.run, goal, journal, parked: this.parked, inbox, deliverVia: this.deliverVia,
         ceilingHit: () => ceilingHit,
+        killSwitchHit: this.deps.killSwitch,
         onDelivered: (ids, text) => { pendingAck = { ids, text }; },
       }),
     };
@@ -754,6 +840,13 @@ export class SdkEngine implements EngineLike {
             }
             break;
           }
+          case 'result-usage':
+            // The SDK result message's own per-model totals, journaled on this
+            // segment's end row for the Governor's burn ledger (P4.2, `governor.ts`'s
+            // `buildBurnLedger`). Emitted before `turn-complete` by the adapter, so this
+            // case always runs while the listener below is still attached.
+            journal.append({ event: 'result.usage', run: request.run, actor: 'worker', modelUsage: event.modelUsage });
+            break;
           case 'turn-complete':
             flush();
             off();

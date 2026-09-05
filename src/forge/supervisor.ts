@@ -15,6 +15,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, wri
 import { join } from 'node:path';
 
 import { Journal } from './journal.js';
+import { processAlive, type Registry, type RegistryRecord } from './registry.js';
 import { RunInbox } from './runinbox.js';
 import { HANDOFF_REQUEST } from './worker.js';
 
@@ -201,16 +202,25 @@ export class Breaker {
 /**
  * The whole fleet, and the one control that has to work when nothing else does.
  *
- * `forge stop --all` marks every running lane parked and blocks every new launch behind
- * the kill switch below. It does not reach a live session: a worker mid-turn keeps
- * running until that turn ends, because nothing here contacts the process. Everything
- * about it is shaped by the fact that it will be reached for when something is going
- * wrong: it takes no arguments it could get wrong, it is safe to run twice, and it never
- * fails because a lane was already finished.
+ * `forge stop --all` queues a handoff request for every genuinely live run and blocks
+ * every new launch behind the kill switch below. It does not reach a live session on the
+ * spot: a worker mid-turn keeps running until its own PreToolUse hook sees the kill
+ * switch on its next tool call and parks itself, because nothing here contacts the
+ * process directly. It takes no arguments it could get wrong, it is safe to run twice,
+ * and it never fails because a lane was already finished, which is what a control still
+ * has to do when something is going wrong.
  *
- * Parking rather than killing, because the work has to survive. Every run is asked for a
- * handoff packet as it stops, so `forge up` continues rather than starting over. A stop
- * that lost an afternoon of work would be a stop nobody dares press.
+ * Targets come from the registry's live rows, a pid `processAlive` still confirms, never
+ * from lane records. A lane file is written once at launch and again only when a chain
+ * finishes, and a fresh `forge run` of the same slug never clears the previous chain's
+ * `verdict`/`ended` before the process is genuinely live again. So a lane-record filter
+ * reads a live run as long since done. That is what happened on 2026-09-04 (C1b): `forge
+ * stop --all` against a live probe run selected a dead lane left over from a morning run
+ * instead, reported `reached 0`, and the live session ran on untouched.
+ *
+ * Parking rather than killing, because the work has to survive. Every live run is asked
+ * for a handoff packet as it stops, so `forge up` continues rather than starting over. A
+ * stop that lost an afternoon of work would be a stop nobody dares press.
  */
 export interface KillSwitchState {
   engaged: boolean;
@@ -251,8 +261,19 @@ export interface LiveSession {
   stop(): Promise<void>;
 }
 
-/** A stopped lane, with whether this process actually contacted its session. */
+/** A stopped run, with whether this process actually contacted it. */
 export type StopOutcome = LaneRecord & { reached: boolean };
+
+export interface StopAllResult {
+  /** Every registry row whose pid was alive when `stopAll` looked. */
+  stopped: StopOutcome[];
+  /**
+   * A registry row whose pid was already dead. Its goal is not counted as parked and no
+   * handoff request is queued for it: nothing here is watching it any more, and a lane
+   * record left over from that run is not evidence it is still live.
+   */
+  stale: string[];
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -269,49 +290,52 @@ export class Fleet {
 
   constructor(
     private readonly lanes: Lanes,
+    private readonly registry: Registry,
     journalPath: string,
     private readonly killSwitchFile?: string,
-    /** Sessions this process holds directly, keyed by lane slug. Empty in production: a
+    /** Sessions this process holds directly, keyed by goal id. Empty in production: a
      *  `forge stop` invocation is its own process and never holds another run's session. */
     private readonly liveSessions: Map<string, LiveSession> = new Map(),
   ) {
     this.journal = new Journal(journalPath);
   }
 
-  /** Lanes that are still doing something, and so still costing something. */
-  running(): LaneRecord[] {
-    return this.lanes.all().filter((row) => !row.ended && !row.verdict);
-  }
-
   /**
-   * Park every running lane, engage the kill switch, and say what was stopped.
+   * Park every live run, engage the kill switch, and say what was stopped.
    *
-   * The kill switch engages every time this runs, whether or not a lane was running: a
-   * stop on an idle fleet still means "block whatever launches next." Returns the lanes it
-   * acted on, which is empty when there was nothing to park. An empty list is the honest
-   * answer to a stop on an idle fleet; raising there would make the control feel broken at
-   * the moment it is most needed.
+   * The kill switch engages every time this runs, whether or not anything was live: a
+   * stop on an idle fleet still means "block whatever launches next." "Live" is read from
+   * the registry's own rows with `processAlive`, never from a lane record -- a lane file
+   * is a worker's own last word about itself, and a fresh `forge run` of the same slug
+   * never clears the previous chain's `verdict`/`ended` before the new process is
+   * genuinely running, so a lane-record filter reads a live run as long since done (the
+   * 2026-09-04 C1b failure this exists to close).
    *
-   * A lane this process holds a `LiveSession` for is contacted directly: the handoff
-   * request goes in through `send()`, raced against `idleBudgetMs`, then the session is
-   * stopped either way. A lane with no live session (the normal case for `forge stop`,
-   * a separate process from whatever `forge run` is doing) gets its handoff request queued
-   * into the run's own inbox, where the PreToolUse hook delivers it on that run's next
-   * tool call -- but this process has no way to confirm that happened, so it is marked
-   * `reached: false` rather than assumed parked.
+   * A run this process holds a `LiveSession` for is contacted directly: the handoff
+   * request goes in through `send()`, raced against `idleBudgetMs`, and the session is
+   * stopped either way, exactly as before. A run with no live session (the normal case
+   * for `forge stop`, a separate process from whatever `forge run` is doing) gets its
+   * handoff request queued into its goal-scoped inbox instead, where the run's own
+   * PreToolUse hook delivers it on the next tool call and the run parks itself; this
+   * process only confirms the inbox write, so `reached` means the request was queued, not
+   * that the run has actually parked yet.
    */
-  async stopAll(reason: string, idleBudgetMs: number = Fleet.IDLE_BUDGET_MS): Promise<StopOutcome[]> {
+  async stopAll(reason: string, idleBudgetMs: number = Fleet.IDLE_BUDGET_MS): Promise<StopAllResult> {
     if (this.killSwitchFile) engageKillSwitch(this.killSwitchFile, reason);
+    const rows = this.registry.all();
+    const liveRows = rows.filter((row) => processAlive(row.pid));
+    const stale = rows.filter((row) => !processAlive(row.pid)).map((row) => row.goal);
     const stopped: StopOutcome[] = [];
     try {
-      for (const lane of this.running()) {
-        const live = this.liveSessions.get(lane.slug);
+      for (const row of liveRows) {
+        const goal = row.goal;
+        const live = this.liveSessions.get(goal);
         let reached = false;
         let packet: string | undefined;
 
         if (live) {
-          // A rejected send must not take the rest of this loop down with it: the lane
-          // that threw is unreachable, not a reason for every lane after it in the
+          // A rejected send must not take the rest of this loop down with it: the run
+          // that threw is unreachable, not a reason for every run after it in the
           // iteration order to never be looked at during the one control that has to work
           // when something is already going wrong.
           const outcome = await Promise.race([
@@ -324,34 +348,51 @@ export class Fleet {
             await live.stop();
           } catch {
             // Already gone, or never willing to stop cleanly; either way there is nothing
-            // further this loop can do to it, and the lane is already unreachable.
+            // further this loop can do to it, and the run is already unreachable.
           }
           reached = outcome.kind === 'sent';
           if (reached && typeof outcome.value === 'string') packet = outcome.value;
         } else {
-          new RunInbox(lane.slug).send(HANDOFF_REQUEST, 'console');
+          try {
+            new RunInbox(goal).send(HANDOFF_REQUEST, 'console');
+            reached = true;
+          } catch {
+            reached = false;
+          }
         }
 
         this.journal.append({
           event: 'run.parked',
-          run: lane.slug,
+          run: goal,
           actor: 'console',
-          reason: reached ? reason : `${reason}; not confirmed inside the idle budget`,
-          verdict: 'parked',
+          reason: reached
+            ? (live ? reason : `${reason}; queued to the run's inbox, not yet confirmed parked`)
+            : `${reason}; the run could not be reached`,
+          verdict: live ? 'parked' : 'requested',
           handoffRequested: true,
           reached,
           ...(packet ? { packet } : {}),
         });
-        const record = this.lanes.put(lane.slug, {
-          verdict: 'parked',
-          ended: Date.now(),
-          note: reached ? `stopped: ${reason}` : `stopped: ${reason}; unreachable, queued to inbox`,
-        });
+
+        const fields = live
+          ? {
+            verdict: 'parked',
+            ended: Date.now(),
+            note: reached ? `stopped: ${reason}` : `stopped: ${reason}; unreachable, queued to inbox`,
+          }
+          : {
+            note: reached
+              ? `stop requested: ${reason}; waiting for the run's own park`
+              : `stop requested: ${reason}; the inbox write failed`,
+          };
+        const record = this.lanes.get(goal)
+          ? this.lanes.put(goal, fields)
+          : laneRecord({ slug: goal, column: 'forge', ...fields });
         stopped.push({ ...record, reached });
       }
     } finally {
       this.journal.close();
     }
-    return stopped;
+    return { stopped, stale };
   }
 }

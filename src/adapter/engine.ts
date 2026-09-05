@@ -339,6 +339,30 @@ export class Engine {
           typeof (message as { total_cost_usd?: unknown }).total_cost_usd === 'number'
             ? (message as { total_cost_usd: number }).total_cost_usd
             : null;
+        const rawModelUsage = (message as {
+          modelUsage?: Record<string, {
+            inputTokens?: number; cacheReadInputTokens?: number;
+            cacheCreationInputTokens?: number; outputTokens?: number; costUSD?: number;
+          }>;
+        }).modelUsage;
+        if (rawModelUsage && Object.keys(rawModelUsage).length > 0) {
+          const modelUsage: Record<string, {
+            input: number; cacheRead: number; cacheCreation: number; output: number; costUsd: number;
+          }> = {};
+          for (const [modelId, usage] of Object.entries(rawModelUsage)) {
+            modelUsage[modelId] = {
+              input: usage.inputTokens ?? 0,
+              cacheRead: usage.cacheReadInputTokens ?? 0,
+              cacheCreation: usage.cacheCreationInputTokens ?? 0,
+              output: usage.outputTokens ?? 0,
+              costUsd: usage.costUSD ?? 0,
+            };
+          }
+          // Emitted before turn-complete, on purpose: sdkengine.ts's segment listener
+          // unregisters itself on turn-complete, so this has to land while it is still
+          // attached.
+          this.emit({ type: 'result-usage', modelUsage });
+        }
         this.emit({
           type: 'turn-complete',
           subtype: message.subtype,

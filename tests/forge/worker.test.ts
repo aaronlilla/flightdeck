@@ -23,6 +23,10 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { INHERITED, Worker, workerEnv, type FakeTurn } from '../../src/forge/worker.js';
 import { replay } from '../../src/forge/journal.js';
 import { Inbox } from '../../src/forge/inbox.js';
+import { Registry } from '../../src/forge/registry.js';
+import {
+  clearKillSwitch, engageKillSwitch, Fleet, Lanes, readKillSwitch,
+} from '../../src/forge/supervisor.js';
 
 let dir: string;
 let journalPath: string;
@@ -556,5 +560,241 @@ describe('F1: a segment that ends while parked keeps waiting, not stopped', () =
 
     const result = await worker.run();
     expect(['exhausted', 'parked']).toContain(result.verdict);
+  });
+});
+
+describe('P4.7/I8: forge stop --all must reach a live run from another process', () => {
+  it('a kill switch seen mid-turn parks the chain with a packet, never continuing to a successor', async () => {
+    const worker = makeWorker([climbing(1_000, 5)], { maxContext: 60_000, killSwitch: () => true });
+
+    const result = await worker.run();
+
+    expect(result.verdict).toBe('parked');
+    expect(worker.engine.started).toHaveLength(1);
+    expect(worker.engine.sent).toHaveLength(1);
+    expect(worker.engine.sent[0]?.prompt).toContain('CONTEXT CEILING REACHED');
+    const state = replay(journalPath);
+    const parked = state.events.find((e) => e.event === 'run.parked' && e.run === 'alpha');
+    expect(parked?.['reason']).toBe('kill switch engaged');
+    expect(parked?.['packet']).toBe('packet for session-1');
+  });
+
+  it('leaves an ordinary chain alone when the kill switch is never engaged', async () => {
+    const worker = makeWorker([climbing(1_000, 5)], { maxContext: 60_000 });
+    const result = await worker.run();
+    expect(result.verdict).not.toBe('parked');
+  });
+
+  it('a run parked on an ask ends its wait, parked, with a packet, when the kill switch appears', async () => {
+    const inboxDir = join(dir, 'inbox');
+    const inbox = new Inbox(inboxDir);
+    let key: string | undefined;
+
+    const engine = {
+      started: [] as unknown[],
+      inbox,
+      async run(config: { run: string }) {
+        this.started.push(config);
+        const entry = inbox.raise({
+          run: config.run, goal: config.run, actionTarget: 'AskUserQuestion',
+          question: 'dev or prod?', options: ['dev', 'prod'], kind: 'question',
+        });
+        key = entry.key;
+        return {
+          sessionId: 'session-1',
+          turns: [],
+          async send(prompt: string) {
+            return [{ text: `packet: ${prompt.slice(0, 10)}`, context: 0 }];
+          },
+        };
+      },
+      parkedOn(run: string) {
+        return run === 'alpha' ? key : undefined;
+      },
+      clearPark() { key = undefined; },
+    };
+
+    const worker = new Worker({
+      run: 'alpha', brief: '# Goal\n\nDo the thing.\n', briefPath: join(dir, 'brief.md'),
+      cwd: dir, journalPath, engine: engine as never, pollIntervalMs: 10,
+      // Engaged from the very first poll: this run is never answered, only stopped.
+      killSwitch: () => true,
+    } as never) as unknown as { run: () => Promise<{ verdict: string }> };
+
+    const result = await worker.run();
+
+    expect(result.verdict).toBe('parked');
+    const state = replay(journalPath);
+    const parked = state.events.find((e) => e.event === 'run.parked'
+      && e.run === 'alpha' && e['reason'] === 'kill switch engaged while parked');
+    expect(parked).toBeTruthy();
+    expect(parked?.['packet']).toBeTruthy();
+    // The falsifier this closes: a run stopped while parked must never sit silent behind
+    // only the bare `run.finished` a plain unanswered park already left.
+    expect(state.events.some((e) => e.event === 'run.finished' && e['verdict'] === 'parked')).toBe(true);
+  });
+
+  it('P4.7/I8 regression: stop --all then clear --all then a park still resumes on a real answer', async () => {
+    // Reproduces the 2026-09-04 sequence a dispatcher review found: a stop that never
+    // reaches a run, a clear, a park, and then an answer from a second process. The kill
+    // switch must be off again by the time the park starts, so the wait ends on the
+    // answer, not on a stale kill switch.
+    const home = mkdtempSync(join(tmpdir(), 'forge-home-'));
+    const killSwitchFile = join(home, 'kill-switch.json');
+    const inboxDir = join(dir, 'inbox');
+    const inbox = new Inbox(inboxDir);
+    let key: string | undefined;
+    let resumedPrompt: string | undefined;
+
+    const engine = {
+      started: [] as unknown[],
+      inbox,
+      async run(config: { run: string }) {
+        this.started.push(config);
+        const entry = inbox.raise({
+          run: config.run, goal: config.run, actionTarget: 'AskUserQuestion',
+          question: 'dev or prod?', options: ['dev', 'prod'], kind: 'question',
+        });
+        key = entry.key;
+        return {
+          sessionId: 'session-1',
+          turns: [],
+          async send(prompt: string) {
+            resumedPrompt = prompt;
+            return [{ text: 'shipped', context: 10, done: true }];
+          },
+        };
+      },
+      parkedOn(run: string) { return run === 'alpha' ? key : undefined; },
+      clearPark() { key = undefined; },
+    };
+
+    // A `forge stop --all` from another process, before this run ever parks: no live
+    // registry row exists for it yet, so it reaches nothing and is a no-op here, exactly
+    // as the incident's own timeline had it (stop, then clear, then the park).
+    const registry = new Registry(join(home, 'registry'));
+    const lanes = new Lanes(join(home, 'lanes'));
+    await new Fleet(lanes, registry, join(home, 'fleet.jsonl'), killSwitchFile).stopAll('probe');
+    expect(readKillSwitch(killSwitchFile).engaged).toBe(true);
+    clearKillSwitch(killSwitchFile);
+    expect(readKillSwitch(killSwitchFile).engaged).toBe(false);
+
+    const brief = '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnode -e process.exit(0)\n```\n';
+    const exec = async (request: { argv: string[] }) => ({
+      ok: true, tail: '', returncode: 0, argv: request.argv, owner: 'alpha', startedAt: 0, durationMs: 1,
+    });
+
+    const worker = new Worker({
+      run: 'alpha', brief, briefPath: join(dir, 'brief.md'), cwd: dir, journalPath,
+      engine: engine as never, exec, pollIntervalMs: 10,
+      killSwitch: () => readKillSwitch(killSwitchFile).engaged,
+    } as never) as unknown as { run: () => Promise<{ verdict: string }> };
+
+    const answerFromAnotherProcess = () => {
+      const outside = new Inbox(inboxDir);
+      const waiting = outside.open()[0];
+      if (waiting) outside.answer(waiting.key, 'go with dev');
+    };
+    setTimeout(answerFromAnotherProcess, 15);
+
+    const result = await worker.run();
+
+    expect(result.verdict).toBe('done');
+    expect(resumedPrompt).toContain('go with dev');
+    const state = replay(journalPath);
+    expect(state.events.some((e) => e.event === 'run.finished'
+      && (e['verdict'] === 'stopped' || e['verdict'] === 'exhausted'))).toBe(false);
+  });
+});
+
+describe('P4.7/I3: the Governor checks a run does not drift on every turn', () => {
+  it('parks the run in the very turn a served model does not match its class, through the Warden actuator', async () => {
+    const parked: Array<{ run: string; reason: string }> = [];
+    const actuator = {
+      park: async (run: string, reason: string) => { parked.push({ run, reason }); },
+      nudge: async () => {},
+      resume: async () => {},
+      kill: async () => {},
+    };
+    const engine = fakeEngine([[
+      { text: 'first turn', context: 100, model: 'claude-opus-5' },
+      { text: 'second turn, never reached', context: 200 },
+    ]]);
+    const worker = new Worker({
+      run: 'alpha', brief: '# Goal\n\nDo the thing.\n', briefPath: join(dir, 'brief.md'),
+      cwd: dir, journalPath, engine, actuator,
+    } as never) as unknown as { run: () => Promise<{ verdict: string }> };
+
+    const result = await worker.run();
+
+    expect(parked).toHaveLength(1);
+    expect(parked[0]!.run).toBe('alpha');
+    expect(result.verdict).toBe('parked');
+    const state = replay(journalPath);
+    const row = state.events.find((event) => event.event === 'warden.parked' && event.run === 'alpha');
+    expect(row).toBeTruthy();
+    expect(row?.['actualModel']).toBe('claude-opus-5');
+    // Only the first, mismatched turn is journaled; the loop stops before a second turn
+    // the model would otherwise have taken on the wrong tier.
+    expect(state.events.filter((event) => event.event === 'turn.end' && event.run === 'alpha')).toHaveLength(1);
+  });
+
+  it('never parks a run whose served model matches its class', async () => {
+    const parked: string[] = [];
+    const actuator = {
+      park: async (run: string) => { parked.push(run); },
+      nudge: async () => {}, resume: async () => {}, kill: async () => {},
+    };
+    const engine = fakeEngine([[{ text: 'on task', context: 100, model: 'claude-sonnet-5', done: true }]]);
+    const worker = new Worker({
+      run: 'alpha', brief: '# Goal\n\nDo the thing.\n', briefPath: join(dir, 'brief.md'),
+      cwd: dir, journalPath, engine, actuator,
+    } as never) as unknown as { run: () => Promise<{ verdict: string }> };
+
+    await worker.run();
+    expect(parked).toHaveLength(0);
+  });
+});
+
+describe('P4.7/I3: a rate-limit engine.error pauses through the Governor\'s WindowGate', () => {
+  it('journals run.paused with the resolved resumeAt, for a rate-limit-shaped error', async () => {
+    const engine = {
+      started: [] as unknown[],
+      async run(config: { run: string }) {
+        this.started.push(config);
+        throw new Error('429 too many requests, try again later');
+      },
+    };
+    const worker = new Worker({
+      run: 'alpha', brief: '# Goal\n\nDo the thing.\n', briefPath: join(dir, 'brief.md'),
+      cwd: dir, journalPath, engine: engine as never,
+    } as never) as unknown as { run: () => Promise<{ verdict: string }> };
+
+    const result = await worker.run();
+    expect(result.verdict).toBe('exhausted');
+    const state = replay(journalPath);
+    const row = state.events.find((event) => event.event === 'run.paused' && event.run === 'alpha');
+    expect(row).toBeTruthy();
+    expect(typeof row?.['resumeAt']).toBe('number');
+    expect(row?.['resumeAt'] as number).toBeGreaterThan(Date.now());
+  });
+
+  it('an ordinary engine error carries no resumeAt', async () => {
+    const engine = {
+      started: [] as unknown[],
+      async run(config: { run: string }) {
+        this.started.push(config);
+        throw new Error('the child process exited with code 1');
+      },
+    };
+    const worker = new Worker({
+      run: 'alpha', brief: '# Goal\n\nDo the thing.\n', briefPath: join(dir, 'brief.md'),
+      cwd: dir, journalPath, engine: engine as never,
+    } as never) as unknown as { run: () => Promise<{ verdict: string }> };
+
+    await worker.run();
+    const state = replay(journalPath);
+    const row = state.events.find((event) => event.event === 'run.paused' && event.run === 'alpha');
+    expect(row?.['resumeAt']).toBeUndefined();
   });
 });

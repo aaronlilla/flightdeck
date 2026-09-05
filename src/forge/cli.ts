@@ -7,6 +7,7 @@
  *   forge run BRIEF           launch a goal, refusing the four launch mistakes
  *   forge send RUN TEXT       queue a message for a run already in flight
  *   forge answer KEY ANSWER   answer a question a worker parked on
+ *   forge decide RUN kill R   the only way a kill decision id gets made
  *   forge stop --all          park every run with a handoff and end all spend
  *
  * `stop --all` is the control that has to work when nothing else does, so it takes no
@@ -14,10 +15,18 @@
  * nothing to stop. It parks rather than kills: the work survives and `forge up` continues
  * it. A stop that lost an afternoon is a stop nobody dares press.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { BlockerBoard } from './blockers.js';
 import { runCutover } from './cutover.js';
+import { readLoginLock } from './credential-horizon.js';
+import { buildBurnLedger, checkBudget } from './governor.js';
+import { reconcileBurnOnce } from './burn-reconcile.js';
+import { planIntakeWrites } from './intake/dryRun.js';
+import { runIntakeOnce } from './intake/once.js';
+import type { FakePollFeed } from './intake/poller.js';
+import { initialWatermark } from './intake/watermark.js';
 import { readProcessList, watchedProcesses } from './fleetwatch.js';
 import { Gotchas } from './gotcha.js';
 import { Inbox } from './inbox.js';
@@ -28,11 +37,14 @@ import {
   ensureHome, fleetConfigDirChoice, forgeHome, gotchasDir, inboxDir, journalPath, killSwitchPath,
   lanesDir, registryDir,
 } from './paths.js';
-import { reconcileRegistry, Registry } from './registry.js';
+import { tierOfBrief } from './policy.js';
+import { processAlive, reconcileRegistry, Registry } from './registry.js';
 import { deliverAnswer, RunInbox } from './runinbox.js';
 import { SdkEngine } from './sdkengine.js';
 import { FORGE_PORT, ForgeServer } from './server.js';
 import { Breaker, clearKillSwitch, Fleet, Lanes, readKillSwitch } from './supervisor.js';
+import { WardenActuator } from './warden.js';
+import { WardenTick, type WardenTickRun } from './warden-tick.js';
 import { Worker, type EngineLike, type WorkerConfig } from './worker.js';
 
 export interface CliResult {
@@ -45,6 +57,11 @@ export interface ForgeDeps {
   engine?: EngineLike;
   /** Overrides the verification commands' executor. Same rule: fakes only. */
   exec?: WorkerConfig['exec'];
+  /** P4.7/I5: overrides `forge intake --once`'s feeds. Every specimen injects fixtures
+   *  here; production passes none, since no real per-source client exists yet (decision
+   *  1's Jira token is still unset), so a real `--once` run polls zero sources and says
+   *  so honestly rather than fabricating a client. */
+  intakeFeeds?: FakePollFeed[];
 }
 
 /**
@@ -53,6 +70,31 @@ export interface ForgeDeps {
  * Shared by `status` and `up` so there is exactly one place that reads a run's model-policy
  * class off `RunState` rather than assuming `implement` for every run.
  */
+/**
+ * P4.7/I5: `forge intake --once`'s watermark, persisted as one small JSON file per
+ * source under `~/.forge/intake/`, so a second CLI invocation does not re-observe
+ * everything the first one already saw. No stream before this integration built any
+ * on-disk store for it (every specimen kept its watermark in memory for the one call
+ * under test), so this is the first place it survives a process exit.
+ */
+function watermarkPath(source: string): string {
+  return join(forgeHome(), 'intake', `${source}.watermark.json`);
+}
+
+function readWatermark(source: Parameters<typeof initialWatermark>[0]): ReturnType<typeof initialWatermark> {
+  try {
+    return JSON.parse(readFileSync(watermarkPath(source), 'utf8'));
+  } catch {
+    return initialWatermark(source);
+  }
+}
+
+function writeWatermark(source: string, mark: ReturnType<typeof initialWatermark>): void {
+  const dir = join(forgeHome(), 'intake');
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(watermarkPath(source), JSON.stringify(mark), 'utf8');
+}
+
 function snapshotRuns(state: ReturnType<typeof replay>): Array<{
   run: string; className: string; lastEventAt: number; context: number;
   currentTool?: { name: string; startedAt: number };
@@ -175,7 +217,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
 
       const sharedJournalCache = new JournalCache();
       const server = new ForgeServer({
-        lanes, inbox, journalPath: journalPath(), journalCache: sharedJournalCache,
+        lanes, inbox, journalPath: journalPath(), journalCache: sharedJournalCache, registry,
         stuck: () => liveness.stuck(),
         fleet: () => {
           const read = watchedProcesses();
@@ -192,8 +234,69 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         livenessJournal,
         (event) => server.publish(event),
       );
+      // P4.7/I2: the Warden tick, wiring reportFleetHealth, assessCostShape,
+      // ConformanceDrift (only once a real Reasoner is constructed here -- none is yet,
+      // so drift checks are a no-op today, named in the Status rather than silently
+      // skipped) and the actuator's park onto the same 30s cadence liveness already
+      // runs on. No `reasoner` is passed: nothing in this codebase implements one against
+      // a live model yet, so this tick's drift leg stays dormant until one exists.
+      const wardenJournal = new Journal(journalPath());
+      const wardenActuator = new WardenActuator({
+        journal: wardenJournal, journalPath: journalPath(), registry, lanes,
+      });
+      const wardenBlockers = new BlockerBoard({ journal: wardenJournal, actuator: wardenActuator });
+      const wardenTick = new WardenTick({
+        journal: wardenJournal,
+        actuator: wardenActuator,
+        blockers: wardenBlockers,
+        now: () => Date.now(),
+        stuck: () => liveness.stuck(),
+        liveRuns: (): WardenTickRun[] => {
+          const fleetState = sharedJournalCache.read(journalPath());
+          return Object.values(fleetState.runs)
+            .filter((run) => run.state === 'started')
+            .map((run) => {
+              const admitted = registry.get(run.run);
+              let brief: string | undefined;
+              try {
+                brief = admitted ? readFileSync(admitted.briefPath, 'utf8') : undefined;
+              } catch {
+                brief = undefined;
+              }
+              const recentToolCalls = fleetState.events
+                .filter((event) => event.run === run.run && event.event === 'tool.start')
+                .slice(-5)
+                .map((event) => String(event['tool'] ?? ''));
+              return {
+                run: run.run,
+                ...(brief !== undefined ? { brief } : {}),
+                recentToolCalls,
+                costShape: {
+                  run: run.run, context: run.context, cacheReadTokens: run.cacheReadTokens,
+                  totalReadTokens: run.totalReadTokens, turnsSinceWrite: run.turnsSinceWrite,
+                },
+              };
+            });
+        },
+      });
+
+      // P4.7/I3: the Governor's burn reconciliation, on the same cadence, deduped per run
+      // for this process's lifetime so an unresolved mismatch is journaled once.
+      const burnReported = new Set<string>();
+      const burnJournal = new Journal(journalPath());
+
       const port = await server.listen();
-      const tick = setInterval(() => liveness.evaluate(), 30_000);
+      const tick = setInterval(() => {
+        liveness.evaluate();
+        void wardenTick.run();
+        try {
+          const fleetState = sharedJournalCache.read(journalPath());
+          for (const event of reconcileBurnOnce(fleetState, burnReported)) burnJournal.append(event);
+        } catch {
+          // Guarded the same as every other tick step: one bad read never stops liveness
+          // or the Warden tick that already ran this cycle.
+        }
+      }, 30_000);
       tick.unref();
       return {
         code: 0,
@@ -259,6 +362,41 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         };
       }
 
+      // P4.7/I2: CredentialHorizon is consulted before every launch. The fleet's config
+      // dir IS the account this run authenticates as, so a login flow already in flight
+      // for it (another `forge run` process's `onLapse` holding `~/.forge/logins/*.lock`)
+      // means this launch would open a second, racing login on the same account rather
+      // than parking behind the one already running. A lock whose pid is no longer alive
+      // is stale, per `credential-horizon.ts`'s own rule, and never blocks a launch.
+      const lockHolder = readLoginLock(configDir.dir);
+      if (lockHolder && processAlive(lockHolder.pid)) {
+        return {
+          code: 1,
+          lines: [
+            `refusing to start ${slug}: credential horizon has a login flow already in `
+              + `flight for ${configDir.dir} (pid ${lockHolder.pid})`,
+          ],
+        };
+      }
+
+      // P4.7/I3: checkBudget at admission. What this run "would spend" is unknowable
+      // before it opens a session, so this is a daily-cap gate in practice: today's
+      // burn (summed off every result.usage row already on the journal) plus zero more
+      // against the fleet's daily ceiling. A class whose own per-run cap is 0 would also
+      // be caught; enforcing the per-run cap for real needs a cost estimate this
+      // integration does not build, named here rather than pretended.
+      const launchClass = tierOfBrief(brief);
+      const spentTodayUsd = Object.values(
+        buildBurnLedger(replay(journalPath()).events).byRun,
+      ).reduce((sum, usd) => sum + usd, 0);
+      const budgetDecision = checkBudget(slug, launchClass, 0, spentTodayUsd);
+      if (!budgetDecision.allowed) {
+        return {
+          code: 1,
+          lines: [`refusing to start ${slug}: budget cap (${String(budgetDecision.event?.['reason'])})`],
+        };
+      }
+
       const registry = new Registry(registryDir());
       const admission = registry.admit({
         goal: slug, cwd: process.cwd(), briefPath, pid: process.pid,
@@ -270,6 +408,16 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       lanes.put(slug, { column: 'forge', started: Date.now(), owner: 'forge' });
       const engine = deps.engine ?? new SdkEngine({
         journalPath: journalPath(), inboxDir: inboxDir(), gotchasDir: gotchasDir(),
+        killSwitch: () => readKillSwitch(killSwitchPath()).engaged,
+      });
+      // P4.7/I9: the real actuator, so a model-mismatch turn actually parks (writes the
+      // park record the PreToolUse hook checks on this run's own next tool call) rather
+      // than only journaling `governor.parked`/`warden.parked` with nothing acting on it.
+      // Built unconditionally, including under a fake engine a specimen injects: I9's own
+      // falsifier is a specimen that gets this wiring only by passing an actuator itself.
+      const actuatorJournal = new Journal(journalPath());
+      const actuator = new WardenActuator({
+        journal: actuatorJournal, journalPath: journalPath(), registry, lanes,
       });
       const worker = new Worker({
         run: slug,
@@ -278,6 +426,11 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         cwd: process.cwd(),
         journalPath: journalPath(),
         engine,
+        actuator,
+        // P4.7/I8: the same kill switch `forge stop --all` engages, consulted on every
+        // poll of a run parked on an ask (F1) so a stop reaches a run waiting on a
+        // person, not only one still taking turns.
+        killSwitch: () => readKillSwitch(killSwitchPath()).engaged,
         onSessionStarted: (_run, sessionId, model) => registry.setSession(slug, sessionId, model),
         ...(deps.exec ? { exec: deps.exec } : {}),
         ...(maxContext !== undefined ? { maxContext } : {}),
@@ -291,6 +444,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         // engine's SDK child process is exactly the cleanup this process must not exit
         // ahead of, or the child outlives the `forge run` that opened it.
         await engine.close?.();
+        actuatorJournal.close();
         registry.remove(slug);
       }
       const started = result.sessions[0];
@@ -353,15 +507,31 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       };
     }
 
+    case 'decide': {
+      const [run, action, ...reasonWords] = rest;
+      if (!run || action !== 'kill' || !reasonWords.length) {
+        return { code: 2, lines: ['forge decide RUN kill "<reason>" is the only form'] };
+      }
+      const journal = new Journal(journalPath());
+      const decision = journal.append({
+        event: 'decision.made', run, actor: 'aaron', action, reason: reasonWords.join(' '),
+      });
+      journal.close();
+      return { code: 0, lines: [`decision ${decision.id} recorded: kill ${run}`] };
+    }
+
     case 'stop': {
       if (!rest.includes('--all')) {
         return { code: 2, lines: ['forge stop --all is the only form; it parks everything'] };
       }
       const reason = rest.filter((word) => word !== '--all').join(' ') || 'stopped by hand';
-      const stopped = await new Fleet(lanes, journalPath(), killSwitchPath()).stopAll(reason);
+      const stopRegistry = new Registry(registryDir());
+      const { stopped, stale } = await new Fleet(
+        lanes, stopRegistry, journalPath(), killSwitchPath(),
+      ).stopAll(reason);
       const killSwitchLine = 'the kill switch is set: no new launch starts until '
         + 'forge clear --all';
-      if (!stopped.length) {
+      if (!stopped.length && !stale.length) {
         return { code: 0, lines: ['nothing was running', killSwitchLine] };
       }
       const reachedCount = stopped.filter((lane) => lane.reached).length;
@@ -369,8 +539,10 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         code: 0,
         lines: [
           `parked ${stopped.length} run(s) with a handoff; reached ${reachedCount}, `
-            + `unreachable ${stopped.length - reachedCount}; ${killSwitchLine}`,
+            + `unreachable ${stopped.length - reachedCount}`
+            + `${stale.length ? `, ${stale.length} stale` : ''}; ${killSwitchLine}`,
           ...stopped.map((lane) => `  ${lane.reached ? 'reached' : 'unreachable'}  ${lane.slug}`),
+          ...stale.map((goal) => `  stale       ${goal}`),
         ],
       };
     }
@@ -423,12 +595,58 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       };
     }
 
+    case 'intake': {
+      if (rest.includes('--once')) {
+        // P4.7/I5: `forge intake --once`, exported so the console's router (cut 2) calls
+        // the same function rather than a second copy of this wiring. Production passes
+        // no feeds -- no real per-source client exists yet, decision 1's Jira token
+        // included -- so a real run polls zero sources and says so, honestly, rather
+        // than fabricating a client this codebase has not built.
+        const feeds = deps.intakeFeeds ?? [];
+        const intakeJournal = new Journal(journalPath());
+        let result: Awaited<ReturnType<typeof runIntakeOnce>>;
+        try {
+          result = await runIntakeOnce(
+            feeds,
+            {
+              get: (source) => readWatermark(source),
+              set: (source, mark) => writeWatermark(source, mark),
+            },
+            (event) => intakeJournal.append({ actor: 'intake', ...event }),
+          );
+        } finally {
+          intakeJournal.close();
+        }
+        return {
+          code: 0,
+          lines: [
+            `polled ${result.sourcesPolled.length} source(s): `
+              + `${result.sourcesPolled.join(', ') || '(none configured)'}`,
+            `observed ${result.observed}, wrote ${result.packetsWritten} packet(s), `
+              + `raised ${result.intentsRaised} external intent(s)`,
+          ],
+        };
+      }
+      if (!rest.includes('--dry-run')) {
+        return {
+          code: 2,
+          lines: [
+            'forge intake --dry-run | --once are the only forms today: decision 1\'s '
+              + 'Jira token does not exist yet, so nothing here ever performs a live write',
+          ],
+        };
+      }
+      // No fixture wired to the CLI yet (P4.7 integration point): an empty run is an
+      // honest "nothing to do" rather than a fabricated example write.
+      return { code: 0, lines: planIntakeWrites([]) };
+    }
+
     default:
       return {
         code: 2,
         lines: [
           'forge up | status | run BRIEF | send RUN TEXT | answer KEY ANSWER | stop --all '
-            + '| gotchas | clear LANE | cutover [--from DIR]',
+            + '| gotchas | clear LANE | cutover [--from DIR] | intake --dry-run',
           `the server listens on ${FORGE_PORT}`,
         ],
       };

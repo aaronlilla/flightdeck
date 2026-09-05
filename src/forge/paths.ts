@@ -60,6 +60,12 @@ export function gotchasDir(): string {
   return join(forgeHome(), 'gotchas');
 }
 
+/** Single-flight login locks, one file per account: `<account>.lock` holding whoever's
+ *  browser flow is in flight for it (`credential-horizon.ts`). */
+export function loginsDir(): string {
+  return join(forgeHome(), 'logins');
+}
+
 /**
  * The config directory a worker's Claude Code process uses, and which of the three
  * reasons picked it.
