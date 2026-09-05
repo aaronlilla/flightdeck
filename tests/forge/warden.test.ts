@@ -38,9 +38,27 @@ afterEach(() => {
 
 describe('park', () => {
   it('writes a park record the run reads back, not only a journal row', async () => {
+    registry.admit({ goal: 'r1', cwd: 'nowhere', briefPath: 'nowhere/brief.md', pid: 1 });
     const actuator = new WardenActuator({ journal, journalPath, registry, lanes });
     await actuator.park('r1', 'idle for 300s');
     expect(readParkRecord('r1')?.reason).toBe('idle for 300s');
+  });
+
+  it('refuses a run id with no registry row and no lane, journals warden.refused, writes nothing', async () => {
+    const actuator = new WardenActuator({ journal, journalPath, registry, lanes });
+    await actuator.park('pid:1', 'fleet pid 1\'s session file has not updated in 6 minutes');
+
+    expect(readParkRecord('pid:1')).toBeUndefined();
+    const { events } = replayEvents(readFileSync(journalPath, 'utf8'));
+    expect(events.some((e) => e.event === 'warden.refused' && e.run === 'pid:1' && e['action'] === 'park')).toBe(true);
+    expect(events.some((e) => e.event === 'run.parked')).toBe(false);
+  });
+
+  it('parks a run id backed only by a lane file, with no registry row', async () => {
+    lanes.put('lane-only', { column: 'active' });
+    const actuator = new WardenActuator({ journal, journalPath, registry, lanes });
+    await actuator.park('lane-only', 'idle for 300s');
+    expect(readParkRecord('lane-only')?.reason).toBe('idle for 300s');
   });
 });
 
@@ -54,6 +72,7 @@ describe('nudge and resume', () => {
   });
 
   it('resume clears the park record and delivers the input', async () => {
+    registry.admit({ goal: 'r1', cwd: 'nowhere', briefPath: 'nowhere/brief.md', pid: 1 });
     const actuator = new WardenActuator({ journal, journalPath, registry, lanes });
     await actuator.park('r1', 'idle');
     await actuator.resume('r1', 'go ahead');

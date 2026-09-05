@@ -68,7 +68,29 @@ export function findDecision(
 export class WardenActuator implements Actuator {
   constructor(private readonly deps: WardenActuatorDeps) {}
 
+  /**
+   * A run id with no registry row and no lane file is not a run. It is a fleet process
+   * id, or some other string a caller mistook for one (I11). This is the one check
+   * `park`'s park record and lane put both sit behind.
+   */
+  private isRegistered(run: string): boolean {
+    return Boolean(this.deps.registry.get(run)) || Boolean(this.deps.lanes?.get(run));
+  }
+
+  /**
+   * A run id with no registry row and no lane gets `warden.refused` in the journal and
+   * nothing written to disk. This is the backstop behind the tick's own registration
+   * check (`warden-tick.ts`): whatever else calls this actuator directly still cannot
+   * park a phantom.
+   */
   async park(run: string, reason: string): Promise<void> {
+    if (!this.isRegistered(run)) {
+      this.deps.journal.append({
+        event: 'warden.refused', run, actor: 'warden', action: 'park',
+        reason: 'no registry row and no lane names this run',
+      });
+      return;
+    }
     const at = Date.now();
     writeParkRecord(run, { key: `warden:${run}`, reason, at });
     this.deps.lanes?.put(run, { needs_aaron: reason });

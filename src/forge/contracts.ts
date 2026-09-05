@@ -202,6 +202,9 @@ export const FORGE_EVENT_NAMES = [
   // (`self-iteration/decision.ts`) ever writes, and only once a `decision.made` row
   // naming the target and `activate` already exists.
   'gotcha.clustered', 'proposal.opened', 'proposal.reverted-requested', 'self-iteration.activated',
+  // I11: `forge clear --phantoms` removing `runs/pid_N/` directories the Warden wrote
+  // for a fleet process id that was never a registered run.
+  'phantoms.cleared',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];
