@@ -506,3 +506,35 @@ describe('P4.7/I2: CredentialHorizon consulted before every launch', () => {
     expect(result.code).toBe(0);
   });
 });
+
+describe('P4.7/I3: checkBudget at admission', () => {
+  it('refuses to launch when today\'s burn is already at or over the daily cap', async () => {
+    const { Journal } = await import('../../src/forge/journal.js');
+    const j = new Journal(journal());
+    j.append({
+      event: 'run.started', run: 'prior', actor: 'runner', model: 'claude-sonnet-5', className: 'triage',
+    });
+    j.append({
+      event: 'result.usage', run: 'prior', actor: 'runner', model: 'claude-sonnet-5',
+      modelUsage: { 'claude-sonnet-5': { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUsd: 100_000 } },
+    });
+    j.close();
+
+    const brief = join(home, 'ok.md');
+    writeFileSync(brief, '# Goal\n\nDo the thing.\n', 'utf8');
+    const result = await forge(['run', brief]);
+
+    expect(result.code).toBe(1);
+    expect(result.lines.join(' ')).toMatch(/budget|daily/i);
+  });
+
+  it('launches normally when nothing has been spent yet', async () => {
+    const brief = join(home, 'ok.md');
+    const briefText = '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnode -e process.exit(0)\n```\n';
+    writeFileSync(brief, briefText, 'utf8');
+    const engine = { started: [] as SessionRequest[], async run(config: SessionRequest) { engine.started.push(config); return { sessionId: 's', turns: [{ text: 'done', context: 10, done: true }] }; } };
+
+    const result = await forge(['run', brief], { engine });
+    expect(result.code).toBe(0);
+  });
+});

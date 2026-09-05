@@ -558,3 +558,95 @@ describe('F1: a segment that ends while parked keeps waiting, not stopped', () =
     expect(['exhausted', 'parked']).toContain(result.verdict);
   });
 });
+
+describe('P4.7/I3: the Governor checks a run does not drift on every turn', () => {
+  it('parks the run in the very turn a served model does not match its class, through the Warden actuator', async () => {
+    const parked: Array<{ run: string; reason: string }> = [];
+    const actuator = {
+      park: async (run: string, reason: string) => { parked.push({ run, reason }); },
+      nudge: async () => {},
+      resume: async () => {},
+      kill: async () => {},
+    };
+    const engine = fakeEngine([[
+      { text: 'first turn', context: 100, model: 'claude-opus-5' },
+      { text: 'second turn, never reached', context: 200 },
+    ]]);
+    const worker = new Worker({
+      run: 'alpha', brief: '# Goal\n\nDo the thing.\n', briefPath: join(dir, 'brief.md'),
+      cwd: dir, journalPath, engine, actuator,
+    } as never) as unknown as { run: () => Promise<{ verdict: string }> };
+
+    const result = await worker.run();
+
+    expect(parked).toHaveLength(1);
+    expect(parked[0]!.run).toBe('alpha');
+    expect(result.verdict).toBe('parked');
+    const state = replay(journalPath);
+    const row = state.events.find((event) => event.event === 'warden.parked' && event.run === 'alpha');
+    expect(row).toBeTruthy();
+    expect(row?.['actualModel']).toBe('claude-opus-5');
+    // Only the first, mismatched turn is journaled; the loop stops before a second turn
+    // the model would otherwise have taken on the wrong tier.
+    expect(state.events.filter((event) => event.event === 'turn.end' && event.run === 'alpha')).toHaveLength(1);
+  });
+
+  it('never parks a run whose served model matches its class', async () => {
+    const parked: string[] = [];
+    const actuator = {
+      park: async (run: string) => { parked.push(run); },
+      nudge: async () => {}, resume: async () => {}, kill: async () => {},
+    };
+    const engine = fakeEngine([[{ text: 'on task', context: 100, model: 'claude-sonnet-5', done: true }]]);
+    const worker = new Worker({
+      run: 'alpha', brief: '# Goal\n\nDo the thing.\n', briefPath: join(dir, 'brief.md'),
+      cwd: dir, journalPath, engine, actuator,
+    } as never) as unknown as { run: () => Promise<{ verdict: string }> };
+
+    await worker.run();
+    expect(parked).toHaveLength(0);
+  });
+});
+
+describe('P4.7/I3: a rate-limit engine.error pauses through the Governor\'s WindowGate', () => {
+  it('journals run.paused with the resolved resumeAt, for a rate-limit-shaped error', async () => {
+    const engine = {
+      started: [] as unknown[],
+      async run(config: { run: string }) {
+        this.started.push(config);
+        throw new Error('429 too many requests, try again later');
+      },
+    };
+    const worker = new Worker({
+      run: 'alpha', brief: '# Goal\n\nDo the thing.\n', briefPath: join(dir, 'brief.md'),
+      cwd: dir, journalPath, engine: engine as never,
+    } as never) as unknown as { run: () => Promise<{ verdict: string }> };
+
+    const result = await worker.run();
+    expect(result.verdict).toBe('exhausted');
+    const state = replay(journalPath);
+    const row = state.events.find((event) => event.event === 'run.paused' && event.run === 'alpha');
+    expect(row).toBeTruthy();
+    expect(typeof row?.['resumeAt']).toBe('number');
+    expect(row?.['resumeAt'] as number).toBeGreaterThan(Date.now());
+  });
+
+  it('an ordinary engine error carries no resumeAt', async () => {
+    const engine = {
+      started: [] as unknown[],
+      async run(config: { run: string }) {
+        this.started.push(config);
+        throw new Error('the child process exited with code 1');
+      },
+    };
+    const worker = new Worker({
+      run: 'alpha', brief: '# Goal\n\nDo the thing.\n', briefPath: join(dir, 'brief.md'),
+      cwd: dir, journalPath, engine: engine as never,
+    } as never) as unknown as { run: () => Promise<{ verdict: string }> };
+
+    await worker.run();
+    const state = replay(journalPath);
+    const row = state.events.find((event) => event.event === 'run.paused' && event.run === 'alpha');
+    expect(row?.['resumeAt']).toBeUndefined();
+  });
+});

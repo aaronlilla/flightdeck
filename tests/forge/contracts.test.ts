@@ -757,3 +757,34 @@ describe('real-session-sample.jsonl', () => {
     expect(text).not.toMatch(/\bC:[\\/]dev\b/i);
   });
 });
+
+describe('P4.7/I3: providerFor reads model-policy.json through policy.ts, not a second hardcoded map', () => {
+  it('agrees with policy.ts\'s own providerFor for every declared class', async () => {
+    const { classNames, providerFor: policyProviderFor } = await import('../../src/forge/policy.js');
+    for (const name of classNames()) {
+      expect(providerFor(name)).toBe(policyProviderFor(name));
+    }
+  });
+
+  it('a class the policy file declares with an explicit provider is read from the file, not from a copy in contracts.ts', async () => {
+    // council is declared claude in model-policy.json; flip its provider in a fixture
+    // and confirm contracts.ts's providerFor moves with the file rather than a frozen copy.
+    const { writeFileSync, mkdtempSync, readFileSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'forge-contracts-provider-'));
+    const path = join(dir, 'model-policy.json');
+    const base = JSON.parse(readFileSync(new URL('../../src/forge/model-policy.json', import.meta.url), 'utf8'));
+    base.classes['implement'].provider = 'codex';
+    writeFileSync(path, JSON.stringify(base), 'utf8');
+
+    const prior = process.env['FORGE_POLICY_PATH'];
+    process.env['FORGE_POLICY_PATH'] = path;
+    try {
+      expect(providerFor('implement')).toBe('codex');
+    } finally {
+      if (prior === undefined) delete process.env['FORGE_POLICY_PATH'];
+      else process.env['FORGE_POLICY_PATH'] = prior;
+    }
+  });
+});

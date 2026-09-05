@@ -21,6 +21,8 @@ import { join } from 'node:path';
 import { BlockerBoard } from './blockers.js';
 import { runCutover } from './cutover.js';
 import { readLoginLock } from './credential-horizon.js';
+import { buildBurnLedger, checkBudget } from './governor.js';
+import { reconcileBurnOnce } from './burn-reconcile.js';
 import { planIntakeWrites } from './intake/dryRun.js';
 import { readProcessList, watchedProcesses } from './fleetwatch.js';
 import { Gotchas } from './gotcha.js';
@@ -32,6 +34,7 @@ import {
   ensureHome, fleetConfigDirChoice, forgeHome, gotchasDir, inboxDir, journalPath, killSwitchPath,
   lanesDir, registryDir,
 } from './paths.js';
+import { tierOfBrief } from './policy.js';
 import { processAlive, reconcileRegistry, Registry } from './registry.js';
 import { deliverAnswer, RunInbox } from './runinbox.js';
 import { SdkEngine } from './sdkengine.js';
@@ -244,10 +247,22 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         },
       });
 
+      // P4.7/I3: the Governor's burn reconciliation, on the same cadence, deduped per run
+      // for this process's lifetime so an unresolved mismatch is journaled once.
+      const burnReported = new Set<string>();
+      const burnJournal = new Journal(journalPath());
+
       const port = await server.listen();
       const tick = setInterval(() => {
         liveness.evaluate();
         void wardenTick.run();
+        try {
+          const fleetState = sharedJournalCache.read(journalPath());
+          for (const event of reconcileBurnOnce(fleetState, burnReported)) burnJournal.append(event);
+        } catch {
+          // Guarded the same as every other tick step: one bad read never stops liveness
+          // or the Warden tick that already ran this cycle.
+        }
       }, 30_000);
       tick.unref();
       return {
@@ -328,6 +343,24 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
             `refusing to start ${slug}: credential horizon has a login flow already in `
               + `flight for ${configDir.dir} (pid ${lockHolder.pid})`,
           ],
+        };
+      }
+
+      // P4.7/I3: checkBudget at admission. What this run "would spend" is unknowable
+      // before it opens a session, so this is a daily-cap gate in practice: today's
+      // burn (summed off every result.usage row already on the journal) plus zero more
+      // against the fleet's daily ceiling. A class whose own per-run cap is 0 would also
+      // be caught; enforcing the per-run cap for real needs a cost estimate this
+      // integration does not build, named here rather than pretended.
+      const launchClass = tierOfBrief(brief);
+      const spentTodayUsd = Object.values(
+        buildBurnLedger(replay(journalPath()).events).byRun,
+      ).reduce((sum, usd) => sum + usd, 0);
+      const budgetDecision = checkBudget(slug, launchClass, 0, spentTodayUsd);
+      if (!budgetDecision.allowed) {
+        return {
+          code: 1,
+          lines: [`refusing to start ${slug}: budget cap (${String(budgetDecision.event?.['reason'])})`],
         };
       }
 

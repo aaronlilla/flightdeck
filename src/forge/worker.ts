@@ -19,6 +19,8 @@ import { tierOfBrief, contextFor, effortFor, modelFor, modelIdFor, turnsFor } fr
 import { Journal } from './journal.js';
 import { run as execRun, type RunRequest, type RunResult } from './exec.js';
 import type { Inbox } from './inbox.js';
+import { asRunId, type Actuator } from './contracts.js';
+import { checkConformance, isRateLimitMessage, WindowGate } from './governor.js';
 
 /**
  * Markers a session inherits from the session that spawned it.
@@ -158,6 +160,16 @@ export interface WorkerConfig {
    *  never engaged. `forge run`'s own wiring in cli.ts passes the real kill switch in; a
    *  specimen that does not care about it needs no fake. */
   killSwitch?: () => boolean;
+  /** P4.7/I3: the Governor's per-turn conformance check parks through this. Undefined
+   *  means no actuator is wired -- a mismatch is still journaled by `checkConformance`'s
+   *  own event, but nothing acts on it, the same "correct unit, no caller" gap the
+   *  Governor's own Status named. */
+  actuator?: Actuator;
+  /** P4.7/I3: pass one gate to share it across more than one run launched in the same
+   *  process; a `Worker` with none injected builds its own. Either way the gate is
+   *  in-memory and per-process -- a pause never crosses a `forge run` process boundary,
+   *  which is this wiring's own named limitation. */
+  windowGate?: WindowGate;
 }
 
 export interface WorkerResult {
@@ -239,9 +251,15 @@ export class Worker {
 
   private readonly config: WorkerConfig;
 
+  /** P4.7/I3: a fresh gate when the caller injects none, so a rate-limit pause still
+   *  resolves a `resumeAt` for this run's own chain even with no scheduler wiring one
+   *  shared gate across launches. */
+  private readonly windowGate: WindowGate;
+
   constructor(config: WorkerConfig) {
     this.config = config;
     this.engine = config.engine;
+    this.windowGate = config.windowGate ?? new WindowGate();
   }
 
   /**
@@ -305,7 +323,19 @@ export class Worker {
           // actually happened, rather than an uncaught rejection nothing downstream can
           // read as a run outcome at all.
           const message = error instanceof Error ? error.message : String(error);
-          journal.append({ event: 'run.paused', run: runName, actor: 'runner', reason: message });
+          journal.append({
+            event: 'engine.error', run: runName, actor: 'runner', message,
+          });
+          // P4.7/I3: the Governor's WindowGate, consulted on every rate-limit-shaped
+          // engine error. Undefined `windowGate` (no scheduler wired one up) pauses this
+          // run with a plain reason and no resumeAt, exactly as it did before this item.
+          const resumeAt = isRateLimitMessage(message)
+            ? this.windowGate.onRateLimitEvent(className, message, Date.now()).resumeAt
+            : undefined;
+          journal.append({
+            event: 'run.paused', run: runName, actor: 'runner', reason: message,
+            ...(resumeAt !== undefined ? { resumeAt } : {}),
+          });
           verdict = 'exhausted';
           break;
         }
@@ -315,6 +345,7 @@ export class Worker {
         let ceilingHit = false;
         let finished = false;
         let parkedWithoutAnswer = false;
+        let conformanceMismatch = false;
         let pendingTurns = session.turns;
         // A segment that ends with neither `done` nor the ceiling hit is not necessarily a
         // stop: the model may have hit an `AskUserQuestion` or `forge_ask` and parked (F1).
@@ -337,6 +368,19 @@ export class Worker {
               ...(turn.model ? { messageModel: turn.model } : {}),
               ...(turn.usage ? { usage: turn.usage } : {}),
             });
+            // P4.7/I3: the Governor's per-turn conformance check, in the very turn a
+            // served model stops matching this run's class -- never after N turns.
+            // Undefined `turn.model` (a fake with no messageModel, or a fallback the SDK
+            // never reports) skips the check rather than comparing against nothing.
+            if (turn.model && this.config.actuator) {
+              const verdict = checkConformance(runName, className, turn.model);
+              if (!verdict.conforms) {
+                await this.config.actuator.park(asRunId(runName), 'model-mismatch');
+                journal.append(verdict.event!);
+                conformanceMismatch = true;
+                break;
+              }
+            }
             if (turn.done) {
               finished = true;
               break;
@@ -346,6 +390,7 @@ export class Worker {
               break;
             }
           }
+          if (conformanceMismatch) break;
           if (finished || ceilingHit) break;
 
           const key = this.engine.parkedOn?.(runName);
@@ -360,6 +405,15 @@ export class Worker {
           journal.append({ event: 'run.resumed', run: runName, actor: 'console', key });
           if (!session.send) break;
           pendingTurns = await session.send(this.engine.inbox?.resumePrompt(key) ?? '');
+        }
+
+        if (conformanceMismatch) {
+          journal.append({
+            event: 'run.finished', run: runName, actor: 'runner', verdict: 'parked',
+            reason: 'model-mismatch',
+          });
+          verdict = 'parked';
+          break;
         }
 
         if (parkedWithoutAnswer) {

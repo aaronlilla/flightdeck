@@ -25,6 +25,7 @@ import type { GotchaInput } from './gotcha.js';
 import { CLASS_BUDGETS, DEFAULT_CLASS } from './exec.js';
 import type { FleetProcess, LivenessSignal, StuckSignal } from './liveness.js';
 import { LANE_FIELDS, type LaneRecord as BaseLaneRecord } from './supervisor.js';
+import { providerFor as policyProviderFor } from './policy.js';
 import type { RegistryRecord } from './registry.js';
 
 export { LANE_FIELDS };
@@ -708,16 +709,25 @@ export type Provider = 'codex' | 'claude';
  * Which provider a model-policy class reasons on, per the 2026-09-04 13:20 decision: the
  * runtime master and planner run on gpt-6-astra through Codex, read-only, with Claude as
  * fallback and critic; everything that implements, verifies, researches, audits or
- * evaluates runs on Claude. A class this map does not name defaults to `claude`, which is
- * every class today except `master` and `plan`, the two the 13:20 decision named.
+ * evaluates runs on Claude.
+ *
+ * P4.7/I3: this used to be its own hardcoded `CLASS_PROVIDERS` map, a second copy of
+ * exactly the fact `policy.ts`'s data-driven `providerFor` already reads out of
+ * `model-policy.json` for the Governor stream (P3.2). Two copies of one fact is the
+ * failure this integration exists to close (order 17's own $6,250 lesson), so this
+ * delegates to the file rather than carrying its own frozen snapshot of it. A class the
+ * loaded policy has never heard of still reads as `claude` here -- `policy.ts`'s own
+ * `providerFor` throws for that case, by design, since guessing a provider for a class
+ * nobody declared would carry the policy's authority for a fact it never stated; this
+ * wrapper is the one place that guess is made instead, for every caller that expects a
+ * graceful default rather than a thrown class-not-found.
  */
-export const CLASS_PROVIDERS: Record<string, Provider> = {
-  master: 'codex',
-  plan: 'codex',
-};
-
 export function providerFor(className: string): Provider {
-  return CLASS_PROVIDERS[className] ?? 'claude';
+  try {
+    return policyProviderFor(className);
+  } catch {
+    return 'claude';
+  }
 }
 
 export interface Reasoner {
