@@ -6,9 +6,18 @@ import { describe, expect, it } from 'vitest';
 import type { Reasoner } from '../../../src/forge/contracts.ts';
 import { buildJudgeInput } from '../../../src/forge/council/gate.ts';
 import { codexLaneFor, reasonerJudge, reasonerLensRunner } from '../../../src/forge/council/reasonerRoles.ts';
+import { ReasonerParseError } from '../../../src/forge/reasoner-claude.ts';
 
 function fakeReasoner(reply: string): Reasoner {
   return { provider: 'claude', async call() { return { text: reply }; } };
+}
+
+/** The real `ClaudeReasoner` rejects rather than resolving when a reply cannot be
+ *  parsed at all (a prose answer, for instance) -- this is that behavior, faked, so
+ *  `reasonerLensRunner` is exercised against the same failure mode production hits
+ *  rather than only ever seeing a resolved (if garbled) `.text`. */
+function rejectingReasoner(raw: string): Reasoner {
+  return { provider: 'claude', async call() { throw new ReasonerParseError(raw); } };
 }
 
 describe('reasonerLensRunner', () => {
@@ -27,6 +36,31 @@ describe('reasonerLensRunner', () => {
     const runner = reasonerLensRunner(fakeReasoner('not json'));
     const report = await runner.run({ lens: 'correctness', brief: 'b', diffSummary: 'd' });
     expect(report.findings).toEqual([]);
+  });
+
+  // I19: a live run had this exact rejection propagate uncaught through
+  // `Promise.all` in `orchestrate.ts` and take the process down. `run()` must resolve,
+  // never reject, whatever the reasoner does.
+  it('a reply that rejects entirely (prose, or any unparseable text) resolves to a failed lens report, never a rejected promise', async () => {
+    const runner = reasonerLensRunner(rejectingReasoner('sorry, nothing concrete to report here'));
+    const report = await runner.run({ lens: 'correctness', brief: 'b', diffSummary: 'd' });
+
+    expect(report.lens).toBe('correctness');
+    expect(report.failed).toBe(true);
+    expect(report.rawReply).toBe('sorry, nothing concrete to report here');
+    expect(report.findings).toHaveLength(1);
+    expect(report.findings[0]?.severity).toBe('medium');
+    expect(report.findings[0]?.claim).toMatch(/correctness.*unparseable reply/);
+  });
+
+  it('asks the reasoner for an array reply shape, since a lens\'s whole answer is a findings array', async () => {
+    let seenShape: string | undefined;
+    const runner = reasonerLensRunner({
+      provider: 'claude',
+      async call(input) { seenShape = input.replyShape; return { text: '[]' }; },
+    });
+    await runner.run({ lens: 'correctness', brief: 'b', diffSummary: 'd' });
+    expect(seenShape).toBe('array');
   });
 
   it('a reply shaped as {findings: [...]} is also accepted', async () => {

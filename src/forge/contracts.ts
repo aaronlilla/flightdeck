@@ -792,7 +792,15 @@ export function providerFor(className: string): Provider {
 
 export interface Reasoner {
   provider: Provider;
-  call(input: { className: string; prompt: string }): Promise<{ text: string }>;
+  /**
+   * `replyShape` says what the caller can already accept back, beyond the default
+   * JSON-object reply every class required before I19. Pass `'array'` for a lens, whose
+   * whole answer is a findings array (`reasonerRoles.ts`'s own prompt asks for one): a bare
+   * JSON array, fenced or not, then parses instead of being rejected just for arriving
+   * unwrapped rather than inside `{"text": ...}`. Leave it unset, or pass `'object'`, and
+   * every other class keeps the original object-only behavior.
+   */
+  call(input: { className: string; prompt: string; replyShape?: 'object' | 'array' }): Promise<{ text: string }>;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1122,11 +1130,21 @@ export const CouncilFindingSchema = z.object({
 export interface CouncilLensReport {
   lens: string;
   findings: CouncilFinding[];
+  /** I19: set when this lens's reply could not be parsed at all, distinguishing "found
+   *  nothing" from "could not answer". `findings` still carries one medium-severity
+   *  finding describing the failure, so the judge and the attestation both see it even
+   *  without reading this flag. */
+  failed?: boolean;
+  /** The raw reply that failed to parse, kept only when `failed` is true so the failure
+   *  is diagnosable from the journal row without a repro. */
+  rawReply?: string;
 }
 
 export const CouncilLensReportSchema = z.object({
   lens: z.string().min(1),
   findings: z.array(CouncilFindingSchema),
+  failed: z.boolean().optional(),
+  rawReply: z.string().optional(),
 });
 
 /**

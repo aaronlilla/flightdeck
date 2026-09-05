@@ -57,6 +57,18 @@ function truncatedRaw(text: string): string {
   return text.length > RAW_MAX_CHARS ? text.slice(0, RAW_MAX_CHARS) : text;
 }
 
+/** Strips one leading and trailing markdown code fence (```json, ```JSON, plain ```,
+ *  etc.) when the fence wraps the *entire* trimmed reply, and only then. Anchored at
+ *  both ends on purpose (I19's falsifier): a fence that does not span the whole reply
+ *  is left alone rather than stripped by a regex loose enough to eat real content, such
+ *  as a code block quoted inside a finding's own claim text. */
+const FENCE_RE = /^```[a-zA-Z0-9_-]*\r?\n([\s\S]*?)\r?\n?```$/;
+
+function stripFence(raw: string): string {
+  const match = FENCE_RE.exec(raw);
+  return match ? (match[1] ?? raw) : raw;
+}
+
 const SYSTEM_INSTRUCTIONS = [
   'Respond with exactly one JSON object and nothing else: no prose before it, no prose',
   'after it, no markdown fence. The object must be exactly this shape:',
@@ -108,7 +120,9 @@ export class ClaudeReasoner implements Reasoner {
 
   constructor(private readonly deps: ClaudeReasonerDeps) {}
 
-  async call(input: { className: string; prompt: string }): Promise<{ text: string }> {
+  async call(
+    input: { className: string; prompt: string; replyShape?: 'object' | 'array' },
+  ): Promise<{ text: string }> {
     const { className, prompt } = input;
     const { policyPath } = this.deps;
     const model = modelIdFor(modelFor(className, policyPath), policyPath);
@@ -143,12 +157,28 @@ export class ClaudeReasoner implements Reasoner {
             break;
           case 'turn-complete': {
             off();
+            const trimmed = text.trim();
             let parsedJson: unknown;
             try {
-              parsedJson = JSON.parse(text.trim());
+              parsedJson = JSON.parse(stripFence(trimmed));
             } catch {
               reject(new ReasonerParseError(text));
               return;
+            }
+            if (Array.isArray(parsedJson)) {
+              // I19: a lens's whole reply is a findings array by its own prompt
+              // (`reasonerRoles.ts`'s `buildLensPrompt`), fenced or not, so a caller
+              // that declared `replyShape: 'array'` gets it back as-is (re-stringified,
+              // for its own JSON.parse downstream) instead of a rejection for never
+              // having arrived wrapped in `{"text": ...}`. Every other class keeps the
+              // original fail-closed behavior: an array reply it never asked for is
+              // still not a plain object, so it still cannot supply a `text`.
+              if (input.replyShape === 'array') {
+                resolve({ text: JSON.stringify(parsedJson) });
+              } else {
+                reject(new ReasonerParseError(text));
+              }
+              break;
             }
             const replyText = textFromReply(parsedJson);
             if (replyText === undefined) {

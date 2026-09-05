@@ -17,9 +17,16 @@ function redactFinding(finding: CouncilFinding): CouncilFinding {
   };
 }
 
-/** Sink 1: a lens's own packet, before it is written or handed to the judge. */
+/** Sink 1: a lens's own packet, before it is written or handed to the judge. `rawReply`
+ *  (I19) only exists on a lens that failed to parse, and it is the model's own raw text,
+ *  so it goes through the same redaction as everything else here before it can reach
+ *  disk. */
 export function redactLensReport(report: CouncilLensReport): CouncilLensReport {
-  return { ...report, findings: report.findings.map(redactFinding) };
+  return {
+    ...report,
+    findings: report.findings.map(redactFinding),
+    ...(report.rawReply !== undefined ? { rawReply: redact(report.rawReply) } : {}),
+  };
 }
 
 /** Sink 2: an attestation, before it becomes a journal row on disk. */

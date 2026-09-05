@@ -16,6 +16,7 @@ import { z } from 'zod';
 import type { Reasoner } from '../contracts.ts';
 import { CouncilFindingSchema } from '../contracts.ts';
 import type { CouncilFinding, CouncilVerdict } from '../contracts.ts';
+import { ReasonerParseError } from '../reasoner-claude.ts';
 import type { RuleVerdict } from '../rules/types.ts';
 import type { CodexLane, Judge, LensRunner, LensInput } from './roles.ts';
 import type { JudgeInput } from './gate.ts';
@@ -66,11 +67,43 @@ export function buildLensPrompt(input: LensInput & { ruleVerdicts: RuleVerdict[]
   ].join('\n');
 }
 
+/**
+ * I19: a live lens replied with a JSON array wrapped in a markdown fence, and
+ * `reasoner.call` (`reasoner-claude.ts`) threw a `ReasonerParseError` the caller never
+ * caught -- the rejection ran uncaught all the way to `cli.ts`'s top-level `.then()` and
+ * took the process down. `reasonerLensRunner.run` never propagates a reply failure now,
+ * whatever shape it takes: it always resolves to a `CouncilLensReport`, `failed: true`
+ * marking the ones that could not be parsed. That report still carries one medium-severity
+ * finding naming the failure, so the judge sees the gap in coverage instead of silently
+ * getting fewer packets than it was told to expect, and `forge council`'s per-lens journal
+ * row can say which lens failed and show the raw reply that did not parse.
+ */
 export function reasonerLensRunner(reasoner: Reasoner, ruleVerdicts: RuleVerdict[] = []): LensRunner {
   return {
     async run(input) {
       const prompt = buildLensPrompt({ ...input, ruleVerdicts });
-      const result = await reasoner.call({ className: 'audit-lens', prompt });
+      let result: { text: string };
+      try {
+        result = await reasoner.call({ className: 'audit-lens', prompt, replyShape: 'array' });
+      } catch (error) {
+        const raw = error instanceof ReasonerParseError
+          ? error.raw
+          : error instanceof Error ? error.message : String(error);
+        return {
+          lens: input.lens,
+          failed: true,
+          rawReply: raw,
+          findings: [{
+            member: input.lens,
+            file: '(lens)',
+            line: 0,
+            claim: `lens ${input.lens} returned an unparseable reply`,
+            failureScenario: 'this lens contributed no findings for the round; its coverage is missing',
+            severity: 'medium',
+            confidence: 'low',
+          }],
+        };
+      }
       return { lens: input.lens, findings: parseFindings(result.text) };
     },
   };
