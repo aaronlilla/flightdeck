@@ -32,7 +32,7 @@ import {
 } from './rules/index.js';
 import { injectMessages, RunInbox } from './runinbox.js';
 import {
-  HANDOFF_REQUEST, workerEnv, type EngineLike, type FakeTurn, type SessionRequest,
+  HANDOFF_REQUEST, STOP_HANDOFF_REQUEST, workerEnv, type EngineLike, type FakeTurn, type SessionRequest,
   type SessionResult,
 } from './worker.js';
 
@@ -417,7 +417,7 @@ export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
       return {
         decision: 'deny',
         reason: 'forge stop --all engaged the kill switch: write the handoff packet instead of another tool call',
-        additionalContext: HANDOFF_REQUEST,
+        additionalContext: STOP_HANDOFF_REQUEST,
       };
     }
     if (deps.ceilingHit?.()) {

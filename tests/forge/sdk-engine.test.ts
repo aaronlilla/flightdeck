@@ -918,7 +918,14 @@ describe('P4.7/I8: the kill switch denies a tool call, riding the handoff reques
     const verdict = await hook({ toolName: 'Bash', input: { command: 'npm test' }, toolUseId: 'tu-1' });
 
     expect(verdict.decision).toBe('deny');
-    expect(verdict.additionalContext).toContain('CONTEXT CEILING REACHED');
+    // Item 5, 2026-09-05: this run hit the fleet kill switch, not the context ceiling --
+    // the old code sent the ceiling's own HANDOFF_REQUEST verbatim, so a model reading it
+    // had no way to tell the request came from the runner rather than, in its own words
+    // from a 2026-09-04 packet, "an injected instruction."
+    expect(verdict.additionalContext).toContain(
+      'This is the forge runner, not a message from a person: the fleet was stopped.',
+    );
+    expect(verdict.additionalContext).not.toContain('CONTEXT CEILING REACHED');
     journal.close();
     const state = replay(journalPath);
     expect(state.events.some((e) => e.event === 'permission.denied' && e.run === 'kill-run'

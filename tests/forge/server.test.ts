@@ -92,6 +92,22 @@ describe('GET /state', () => {
     expect(lanes[0]).toHaveProperty('usd_per_hour');
   });
 
+  it('holds usd_per_hour at 0 for a run under five minutes old, rather than extrapolating', async () => {
+    // Item 3, 2026-09-05: a three-minute-old probe that had spent $3.06 was shown as
+    // $61.11/h -- the old threshold zeroed out only the first 30 seconds, so anything
+    // past that got divided by a fraction of an hour and produced a rate with no
+    // resemblance to what the run would actually cost across a real hour.
+    const lanes = new Lanes(join(dir, 'lanes'));
+    lanes.put('probe', {
+      column: 'c', model: 'claude-sonnet-5', context: 1_000, cost_usd: 3.0555,
+      started: Date.now() - 3 * 60_000, session_id: 's2',
+    });
+    const state = await (await fetch(`${base}/state`)).json() as Record<string, unknown>;
+    const lanesOut = (state['lanes'] as Wrapped<Record<string, unknown>[]>).value;
+    const probe = lanesOut.find((lane) => lane['slug'] === 'probe');
+    expect(probe?.['usd_per_hour']).toBe(0);
+  });
+
   it('carries the fleet burn per tier from the journal', async () => {
     const state = await (await fetch(`${base}/state`)).json() as Record<string, unknown>;
     expect(state).toHaveProperty('burn');

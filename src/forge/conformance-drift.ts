@@ -72,7 +72,7 @@ export class ConformanceDrift {
     run: string, dod: string, recentToolCalls: string[],
   ): Promise<{ onTask: boolean; parked: boolean }> {
     const result = await this.deps.reasoner.call({
-      className: 'evaluate', prompt: buildPrompt(dod, recentToolCalls),
+      className: 'evaluate', prompt: buildPrompt(dod, recentToolCalls), run,
     });
     const onTask = isOnTask(result.text);
 

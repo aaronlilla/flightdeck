@@ -96,6 +96,11 @@ export interface ForgeDeps {
   councilGh?: GhReader & GhWriter;
 }
 
+/** Item 4, 2026-09-05: how old a lane's own file has to be, with no live registry row
+ *  behind it, before `forge clear --stale` deletes it and `forge status` stops showing
+ *  it by default. */
+const STALE_LANE_MS = 24 * 3_600_000;
+
 /**
  * The fleet's process table for `status` and `up`, read through `deps.processes` when a
  * specimen supplies one. `watchedProcesses`'s own parameter defaults to a real
@@ -174,16 +179,34 @@ function snapshotRuns(
 }
 
 /**
+ * Item 8, 2026-09-05: whether `briefPath` opens under a goals directory (any path
+ * segment literally named `goals`) somewhere other than that directory's own `logs/`
+ * subdirectory. `.claude/goals/logs/` is where probe and smoke briefs live and get
+ * cleaned up; `.claude/goals/` itself is where a real goal brief -- one whose outcome a
+ * person actually reads -- lives. A path with no `goals` segment at all (a specimen's
+ * temp directory, an ad hoc brief elsewhere) is never a real goal brief either, so it
+ * reads as allowed, the same as `logs/`.
+ */
+function briefUnderRealGoalsDir(briefPath: string): boolean {
+  const parts = briefPath.split(/[\\/]/);
+  const goalsIndex = parts.findIndex((part) => part.toLowerCase() === 'goals');
+  if (goalsIndex === -1) return false;
+  return parts[goalsIndex + 1]?.toLowerCase() !== 'logs';
+}
+
+/**
  * `forge run`'s arguments past the brief path: `--dry-run`, `--max-context N`,
  * `--max-turns N`, and whatever words are left over become the condition.
  */
 function parseRunArgs(rest: string[]): {
   dryRun: boolean; maxContext?: number; maxTurns?: number; condition: string; invalid?: string;
+  autoAnswer?: string;
 } {
   let dryRun = false;
   let maxContext: number | undefined;
   let maxTurns: number | undefined;
   let invalid: string | undefined;
+  let autoAnswer: string | undefined;
   const words: string[] = [];
   for (let index = 0; index < rest.length; index += 1) {
     const token = rest[index]!;
@@ -202,12 +225,19 @@ function parseRunArgs(rest: string[]): {
       maxTurns = value;
       continue;
     }
+    if (token === '--auto-answer') {
+      const raw = rest[index += 1];
+      if (raw === undefined) invalid ??= '--auto-answer needs the text to answer every ask with';
+      autoAnswer = raw;
+      continue;
+    }
     words.push(token);
   }
   return {
     dryRun, condition: words.join(' '),
     ...(maxContext !== undefined ? { maxContext } : {}),
     ...(maxTurns !== undefined ? { maxTurns } : {}),
+    ...(autoAnswer !== undefined ? { autoAnswer } : {}),
     ...(invalid ? { invalid } : {}),
   };
 }
@@ -239,7 +269,18 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       })
         .filter((trip) => trip.signal !== 'registry-abandoned')
         .map((trip) => `STUCK  ${trip.key.padEnd(24)} ${trip.signal.padEnd(14)} ${trip.hint}`);
-      const rows = lanes.all().map((lane) => [
+      // Item 4, 2026-09-05: a lane's file survives long after its chain finished, so a
+      // fleet that ran for weeks accumulates one row per goal ever launched. `--all`
+      // still shows every one of them; the default view hides anything untouched for
+      // longer than STALE_LANE_MS, the same threshold `forge clear --stale` deletes by.
+      const showAll = rest.includes('--all');
+      const rows = lanes.all()
+        .filter((lane) => {
+          if (showAll) return true;
+          const mtime = lanes.mtimeOf(lane.slug);
+          return mtime === undefined || Date.now() - mtime < STALE_LANE_MS;
+        })
+        .map((lane) => [
         lane.slug.padEnd(28),
         (lane.model ?? '-').padEnd(18),
         `ctx ${String(lane.context ?? 0).padStart(7)}`,
@@ -396,11 +437,23 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       } catch (error) {
         return { code: 2, lines: [`cannot read ${briefPath}: ${(error as Error).message}`] };
       }
-      const { dryRun, maxContext, maxTurns, condition, invalid } = parseRunArgs(rest.slice(1));
+      const { dryRun, maxContext, maxTurns, condition, invalid, autoAnswer } = parseRunArgs(rest.slice(1));
       if (invalid) {
         // Refused before checkLaunch and before any lane is written: a NaN ceiling never
         // fires, which is the exact silent-unbounded-run this check exists to close.
         return { code: 2, lines: [`refusing to start: ${invalid}`] };
+      }
+      // Item 8, 2026-09-05: --auto-answer is for a probe or smoke run only -- a brief
+      // that opens under a real goals directory (`.claude/goals/`, outside its own
+      // `logs/` subdirectory, where probes and smoke briefs live) never gets it, since
+      // nothing should silently answer its own questions on a run someone will actually
+      // read the outcome of.
+      if (autoAnswer !== undefined && briefUnderRealGoalsDir(briefPath)) {
+        return {
+          code: 2,
+          lines: ['refusing to start: --auto-answer is for a probe or smoke run under a '
+            + 'goals directory\'s own logs/ subdirectory, never for a real goal brief'],
+        };
       }
       const verdict = checkLaunch({
         brief,
@@ -528,6 +581,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         ...(deps.exec ? { exec: deps.exec } : {}),
         ...(maxContext !== undefined ? { maxContext } : {}),
         ...(maxTurns !== undefined ? { maxTurns } : {}),
+        ...(autoAnswer !== undefined ? { autoAnswer } : {}),
       });
       let result: Awaited<ReturnType<Worker['run']>>;
       try {
@@ -656,6 +710,39 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       if (slug === '--all') {
         clearKillSwitch(killSwitchPath());
         return { code: 0, lines: ['kill switch cleared; forge run may start again'] };
+      }
+      if (slug === '--stale') {
+        // Item 4, 2026-09-05: a lane file outlives the chain it describes -- `forge run`
+        // writes it once at admission and again when the chain finishes, and nothing
+        // ever removes it after that. A lane whose chain finished (it carries a
+        // `verdict`) more than a day ago, and whose registry row is gone (so nothing is
+        // still tracking it as live or crashed-and-resumable), is stale and safe to
+        // delete outright.
+        const staleRegistry = new Registry(registryDir());
+        const staleLanes = new Lanes(lanesDir());
+        let removed = 0;
+        for (const lane of staleLanes.all()) {
+          if (!lane.verdict) continue;
+          if (staleRegistry.get(lane.slug)) continue;
+          const mtime = staleLanes.mtimeOf(lane.slug);
+          if (mtime === undefined || Date.now() - mtime < STALE_LANE_MS) continue;
+          staleLanes.remove(lane.slug);
+          removed += 1;
+        }
+        if (removed > 0) {
+          const clearJournal = new Journal(journalPath());
+          try {
+            clearJournal.append({ event: 'lanes.cleared', actor: 'forge', count: removed });
+          } finally {
+            clearJournal.close();
+          }
+        }
+        return {
+          code: 0,
+          lines: [removed
+            ? `removed ${removed} stale lane${removed === 1 ? '' : 's'}`
+            : 'no stale lanes found'],
+        };
       }
       if (slug === '--phantoms') {
         // I11: `runs/pid_N/` directories the Warden used to write for a fleet process
@@ -826,10 +913,14 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         const ruleVerdict = evaluateAction({
           kind: 'pr', op: 'merge', repo, title: snapshot.title, body: snapshot.body, cwd: process.cwd(),
         });
+        // Item 7, 2026-09-05: the PR this round is reasoning about, so a reasoner spend
+        // for either role attributes back to it rather than showing up as unattributed
+        // cost on the fleet's burn ledger.
+        const councilRun = `${repo}#${pr}`;
         const roles = {
-          lensRunner: reasonerLensRunner(reasoner, [ruleVerdict]),
+          lensRunner: reasonerLensRunner(reasoner, [ruleVerdict], councilRun),
           codexLane: codexLaneFor(policy),
-          judge: reasonerJudge(reasoner),
+          judge: reasonerJudge(reasoner, councilRun),
         };
 
         // I19: a lens's own reply failure (unparseable JSON, prose, or anything else

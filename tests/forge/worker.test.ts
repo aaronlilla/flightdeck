@@ -20,7 +20,9 @@ import { join } from 'node:path';
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { INHERITED, Worker, workerEnv, type FakeTurn } from '../../src/forge/worker.js';
+import {
+  INHERITED, Worker, workerEnv, verificationCommands, type FakeTurn,
+} from '../../src/forge/worker.js';
 import { Journal, replay } from '../../src/forge/journal.js';
 import { Inbox } from '../../src/forge/inbox.js';
 import { readParkRecord, writeParkRecord } from '../../src/forge/parkrecord.js';
@@ -298,6 +300,52 @@ describe('the environment a worker is spawned with', () => {
     expect(spawned['CLAUDECODE']).toBeUndefined();
     expect(spawned['CLAUDE_PID']).toBeUndefined();
     expect(spawned['PATH']).toBe('/usr/bin');
+  });
+});
+
+describe('verificationCommands', () => {
+  it('accepts prose between the heading and its fence, as the C2 brief had it', () => {
+    const brief = [
+      '## Verification',
+      '',
+      'Run from the worktree root after `npm ci`:',
+      '',
+      '```bash',
+      'npx jest src/features/home/components/Tutorial/__tests__/Card.operator.test.tsx --colors=false',
+      'npm test',
+      'npx tsc --noEmit',
+      'npm run lint',
+      '```',
+      '',
+      'All four exit 0. If baseline counts are non-zero, paste before/after numbers.',
+      '',
+      '## Status',
+      '',
+      'nothing here yet',
+    ].join('\n');
+
+    expect(verificationCommands(brief)).toEqual([
+      'npx jest src/features/home/components/Tutorial/__tests__/Card.operator.test.tsx --colors=false',
+      'npm test',
+      'npx tsc --noEmit',
+      'npm run lint',
+    ]);
+  });
+
+  it('finds the first fenced block after the heading, never one from a later heading', () => {
+    const brief = [
+      '## Verification',
+      '',
+      'no fence here at all before the next heading',
+      '',
+      '## Status',
+      '',
+      '```bash',
+      'this belongs to Status, not Verification',
+      '```',
+    ].join('\n');
+
+    expect(verificationCommands(brief)).toBeUndefined();
   });
 });
 
@@ -612,6 +660,64 @@ describe('F1: a segment that ends while parked keeps waiting, not stopped', () =
     // genuinely parked defeats the point, whatever its final verdict turns out to be.
     expect(state.events.some((e) => e.event === 'run.finished'
       && (e['verdict'] === 'stopped' || e['verdict'] === 'exhausted'))).toBe(false);
+  });
+
+  it('item 8, 2026-09-05: --auto-answer resumes an ask in-process, with no second Inbox', async () => {
+    const inboxDir = join(dir, 'inbox');
+    const inbox = new Inbox(inboxDir);
+    let key: string | undefined;
+    let resumedPrompt: string | undefined;
+
+    const engine = {
+      started: [] as unknown[],
+      inbox,
+      async run(config: { run: string }) {
+        this.started.push(config);
+        const entry = inbox.raise({
+          run: config.run, goal: config.run, actionTarget: 'AskUserQuestion',
+          question: 'dev or prod?', options: ['dev', 'prod'], kind: 'question',
+        });
+        key = entry.key;
+        return {
+          sessionId: 'session-1',
+          turns: [],
+          async send(prompt: string) {
+            resumedPrompt = prompt;
+            return [{ text: 'shipped', context: 10, done: true }];
+          },
+        };
+      },
+      parkedOn(run: string) {
+        return run === 'alpha' ? key : undefined;
+      },
+      clearPark() {
+        key = undefined;
+      },
+    };
+
+    const brief = '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnode -e process.exit(0)\n```\n';
+    const exec = async (request: { argv: string[] }) => ({
+      ok: true, tail: '', returncode: 0, argv: request.argv, owner: 'alpha', startedAt: 0, durationMs: 1,
+    });
+
+    const worker = new Worker({
+      run: 'alpha', brief, briefPath: join(dir, 'brief.md'), cwd: dir, journalPath,
+      engine: engine as never, exec, pollIntervalMs: 10, autoAnswer: 'yes',
+    } as never) as unknown as {
+      run: () => Promise<{ verdict: string; sessions: string[]; handoffs: number }>;
+    };
+
+    const result = await worker.run();
+
+    expect(result.verdict).toBe('done');
+    expect(result.sessions).toHaveLength(1);
+    expect(resumedPrompt).toContain('yes');
+
+    const state = replay(journalPath);
+    expect(state.events.some((e) => e.event === 'run.resumed' && e.run === 'alpha')).toBe(true);
+    const autoAnswered = state.events.find((e) => e.event === 'ask.auto-answered' && e.run === 'alpha');
+    expect(autoAnswered).toBeDefined();
+    expect(autoAnswered?.['answer']).toBe('yes');
   });
 
   it('the falsifier: with no parkedOn on the engine, a zero-turn segment still reads as a plain stop', async () => {

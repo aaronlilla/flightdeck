@@ -17,7 +17,7 @@ import { join } from 'node:path';
 import { Journal } from './journal.js';
 import { processAlive, type Registry, type RegistryRecord } from './registry.js';
 import { RunInbox } from './runinbox.js';
-import { HANDOFF_REQUEST } from './worker.js';
+import { STOP_HANDOFF_REQUEST } from './worker.js';
 
 /**
  * Every field a lane record carries.
@@ -136,6 +136,13 @@ export class Lanes {
       .filter((name) => name.endsWith('.json'))
       .map((name) => this.get(name.slice(0, -'.json'.length)))
       .filter((row): row is LaneRecord => Boolean(row));
+  }
+
+  /** Deletes a lane's file outright. Used by `forge clear --stale`, never by anything
+   *  that just wants to reset a lane's fields -- `put` is that path. */
+  remove(slug: string): void {
+    const path = this.pathFor(slug);
+    if (existsSync(path)) rmSync(path);
   }
 }
 
@@ -343,7 +350,7 @@ export class Fleet {
           // iteration order to never be looked at during the one control that has to work
           // when something is already going wrong.
           const outcome = await Promise.race([
-            live.send(HANDOFF_REQUEST)
+            live.send(STOP_HANDOFF_REQUEST)
               .then((value) => ({ kind: 'sent' as const, value }))
               .catch(() => ({ kind: 'errored' as const, value: undefined })),
             sleep(idleBudgetMs).then(() => ({ kind: 'timeout' as const, value: undefined })),
@@ -358,7 +365,7 @@ export class Fleet {
           if (reached && typeof outcome.value === 'string') packet = outcome.value;
         } else {
           try {
-            new RunInbox(goal).send(HANDOFF_REQUEST, 'console');
+            new RunInbox(goal).send(STOP_HANDOFF_REQUEST, 'console');
             reached = true;
           } catch {
             reached = false;

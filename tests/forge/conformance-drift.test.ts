@@ -60,6 +60,27 @@ function fakeReasoner(responses: string[]) {
   };
 }
 
+describe('item 7 of 2026-09-05: the reasoner call carries the run it was called for', () => {
+  it('passes the run through to reasoner.call, so the journal row can attribute the spend', async () => {
+    const calls: Array<{ run?: string }> = [];
+    const checker = new ConformanceDrift({
+      reasoner: {
+        provider: 'claude' as const,
+        call: async (input: { run?: string }) => {
+          calls.push({ run: input.run });
+          return { text: 'yes, still on task' };
+        },
+      },
+      journal,
+      actuator: { park: async (run) => { parked.push(run); return true; } },
+    });
+
+    await checker.check('card-network-glow', '- do the thing', []);
+
+    expect(calls).toEqual([{ run: 'card-network-glow' }]);
+  });
+});
+
 describe('a single off-task verdict', () => {
   it('does not park: drift needs two in a row', async () => {
     const checker = new ConformanceDrift({

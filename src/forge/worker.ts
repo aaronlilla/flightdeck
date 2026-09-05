@@ -161,6 +161,11 @@ export interface WorkerConfig {
    *  never engaged. `forge run`'s own wiring in cli.ts passes the real kill switch in; a
    *  specimen that does not care about it needs no fake. */
   killSwitch?: () => boolean;
+  /** Item 8, 2026-09-05: for a probe or smoke run only (`cli.ts`'s `run` command refuses
+   *  the flag for any brief under a real goals directory), answers every ask this run
+   *  raises with this exact text, in-process, the moment it is raised -- no second
+   *  process, no person, no poll. Journals `ask.auto-answered` with the text used. */
+  autoAnswer?: string;
   /** P4.7/I3, wired live by P4.7/I9: the Governor's per-turn conformance check parks
    *  through this. `forge run` always builds a real `WardenActuator` and passes it here;
    *  undefined only in a specimen with nothing to say about parking. Either way a
@@ -191,14 +196,24 @@ export interface WorkerResult {
 
 /**
  * The commands a brief declares under a `## Verification` heading, one per line inside a
- * single fenced block. Missing entirely, or an empty block, both read as "nothing
- * declared" -- there is no default command to fall back to, because guessing one would be
- * exactly the unproven `done` this item exists to close off.
+ * single fenced block. The block is the first fenced block that appears after the
+ * heading and before the next heading -- prose between the heading and the fence (a
+ * sentence of instructions, a "run this from the worktree root" line) is allowed, and
+ * skipped, rather than treated as a missing block. A fence that only appears after the
+ * next `##` heading belongs to that section, not this one, and does not count. Missing
+ * entirely, or an empty block, both read as "nothing declared" -- there is no default
+ * command to fall back to, because guessing one would be exactly the unproven `done`
+ * this item exists to close off.
  */
 export function verificationCommands(brief: string): string[] | undefined {
-  const match = /^##[ \t]+Verification[ \t]*\r?\n+```[^\n]*\r?\n([\s\S]*?)```/m.exec(brief);
-  if (!match) return undefined;
-  const lines = match[1]!.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const headingMatch = /^##[ \t]+Verification[ \t]*$/m.exec(brief);
+  if (!headingMatch) return undefined;
+  const afterHeading = brief.slice(headingMatch.index + headingMatch[0].length);
+  const nextHeadingMatch = /^##[ \t]+\S/m.exec(afterHeading);
+  const section = nextHeadingMatch ? afterHeading.slice(0, nextHeadingMatch.index) : afterHeading;
+  const fenceMatch = /```[^\n]*\r?\n([\s\S]*?)```/.exec(section);
+  if (!fenceMatch) return undefined;
+  const lines = fenceMatch[1]!.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   return lines.length ? lines : undefined;
 }
 
@@ -227,6 +242,27 @@ function bounceMessage(failures: VerificationOutcome[]): string {
  */
 export const HANDOFF_REQUEST = [
   'CONTEXT CEILING REACHED. Write a handoff packet now and do no further work.',
+  '',
+  'A successor session takes over from your packet, on the same model, with none of this',
+  'conversation. Write down what it cannot rediscover cheaply: what you were doing, what',
+  'you have already ruled out and why, the exact files and line numbers you were in, the',
+  'commands you ran and what they said, and the single next action.',
+  '',
+  'Everything you leave out, it repeats.',
+].join('\n');
+
+/**
+ * The handoff request sent to a run stopped by `forge stop --all` or its kill switch,
+ * never by the context ceiling. Item 5, 2026-09-05: the stop path used to send
+ * `HANDOFF_REQUEST` verbatim, whose first line reads "CONTEXT CEILING REACHED" -- a
+ * model receiving it on a run that never approached its ceiling had no way to tell the
+ * request came from this runner at all. One packet on 2026-09-04 called it "an injected
+ * instruction." This opens by naming its own sender and the reason before asking for the
+ * same packet `HANDOFF_REQUEST` asks for.
+ */
+export const STOP_HANDOFF_REQUEST = [
+  'This is the forge runner, not a message from a person: the fleet was stopped.',
+  'Write a handoff packet now and do no further work.',
   '',
   'A successor session takes over from your packet, on the same model, with none of this',
   'conversation. Write down what it cannot rediscover cheaply: what you were doing, what',
@@ -460,6 +496,18 @@ export class Worker {
               continue;
             }
             break;
+          }
+
+          // Item 8, 2026-09-05: a probe or smoke run answers its own ask, in-process,
+          // rather than waiting on a second process polling the same shared inbox. The
+          // answer is written before the wait even starts, so `waitForAnswer`'s first
+          // poll already finds it and there is never an actual wait.
+          if (this.config.autoAnswer !== undefined) {
+            this.engine.inbox?.answer(key, this.config.autoAnswer);
+            journal.append({
+              event: 'ask.auto-answered', run: runName, actor: 'runner',
+              key, answer: this.config.autoAnswer,
+            });
           }
 
           const outcome = await this.waitForAnswer(key);
