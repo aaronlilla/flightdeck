@@ -25,6 +25,7 @@ import type { GotchaInput } from './gotcha.js';
 import { CLASS_BUDGETS, DEFAULT_CLASS } from './exec.js';
 import type { FleetProcess, LivenessSignal, StuckSignal } from './liveness.js';
 import { LANE_FIELDS, type LaneRecord as BaseLaneRecord } from './supervisor.js';
+import type { RegistryRecord } from './registry.js';
 
 export { LANE_FIELDS };
 
@@ -125,6 +126,25 @@ export const LaneRecordSchema = z.object({
   provider: z.enum(['codex', 'claude']),
 }).passthrough();
 
+/**
+ * `registry.ts`'s own `RegistryRecord`, re-typed here so `forge up`'s admission and
+ * reconciliation rows have a runtime check where they cross a process boundary (the
+ * JSON file `Registry.admit`/`setSession` write and `Registry.get` parses back). The
+ * type is imported rather than copied: a field `registry.ts` renames breaks this
+ * schema's callers instead of drifting silently from it.
+ */
+export type RegistryRow = RegistryRecord;
+
+export const RegistryRowSchema = z.object({
+  goal: z.string().min(1),
+  cwd: z.string().min(1),
+  briefPath: z.string().min(1),
+  pid: z.number().int().positive(),
+  startedAt: z.number().int().positive(),
+  sessionId: z.string().min(1).optional(),
+  model: z.string().min(1).optional(),
+}) satisfies z.ZodType<RegistryRow>;
+
 // ---------------------------------------------------------------------------------------
 // Events, and the replay contract
 // ---------------------------------------------------------------------------------------
@@ -136,19 +156,22 @@ export const LaneRecordSchema = z.object({
  * over a bare `string`.
  */
 export const FORGE_EVENT_NAMES = [
-  // Today, on main.
+  // Written today, confirmed by the scan specimen below over src/forge/**. Includes
+  // B.3's own rows (`run.resumed`, `inbox.acknowledged`, `warden.parked`), which are on
+  // `main` as of PR #3 (5385179) and are no longer merely proposed.
   'ask.answered', 'ask.raised', 'cutover.completed', 'cutover.moved', 'engine.error',
-  'forge.ask', 'forge.done', 'forge.handoff', 'forge.report', 'gotcha', 'inbox.delivered',
-  'liveness.cleared', 'liveness.stuck', 'note', 'permission.denied', 'run.finished',
-  'run.handoff', 'run.parked', 'run.paused', 'run.started', 'tool.end', 'tool.start',
-  'turn.end',
+  'forge.ask', 'forge.done', 'forge.handoff', 'forge.report', 'gotcha', 'inbox.acknowledged',
+  'inbox.delivered', 'liveness.cleared', 'liveness.stuck', 'note', 'permission.denied',
+  'run.blocked', 'run.finished', 'run.handoff', 'run.parked', 'run.paused', 'run.resumed',
+  'run.started', 'run.verify-failed', 'subagent.usage', 'tool.end', 'tool.start', 'turn.end',
+  'warden.parked',
   // The spec's additions (the "Contracts" paragraph of the 2026-09-04 13:45 refined
-  // build-out plan).
-  'run.resumed', 'inbox.queued', 'inbox.offered', 'inbox.acknowledged', 'stuck', 'cleared',
-  'blocker.raised', 'blocker.cleared', 'external.intent', 'external.complete',
-  'external.unknown', 'decision.made', 'source.observed', 'packet.written',
-  // B.3's own new rows (B.3.9, B.3.10).
-  'warden.parked', 'policy.unknown-model',
+  // build-out plan) that nothing writes yet. `policy.unknown-model` is B.3.9's own,
+  // named in the brief but not yet emitted: `journal.ts` tracks unpriced models in
+  // `FleetState.unknownModels` today rather than journaling a row.
+  'inbox.queued', 'inbox.offered', 'stuck', 'cleared', 'blocker.raised', 'blocker.cleared',
+  'external.intent', 'external.complete', 'external.unknown', 'decision.made',
+  'source.observed', 'packet.written', 'policy.unknown-model',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];
@@ -163,12 +186,12 @@ export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];
  * written under, so a future field rename can tell an old row from a new one instead of
  * guessing from which fields happen to be present.
  *
- * `seq` and `version` are required here because the spec asks for them, and today's
- * `journal.ts` writes neither: `Journal.append`/`appendOnce` on `main` stamp `id, at,
- * event, actor` and nothing else. `replayEvents` below will quarantine every row of a
- * real `main` journal until the writer that emits these envelopes exists (B.3's own
- * work, or the reconcile pass after it). This file states the target shape; it does not
- * claim today's journal already writes it.
+ * `seq` and `version` are required here because the spec asks for them. `Journal.append`
+ * and `appendOnce` (`journal.ts`) stamp both on every row as of the reconcile pass that
+ * closed this gap: `seq` monotonic per journal file, `version: 1`, neither overridable
+ * by a caller's own event fields. A journal written before that change carries rows with
+ * neither field; `replayEvents` reads those as `version: 0` with a locally-assigned
+ * `seq`, rather than quarantining every pre-existing line the day this shipped.
  */
 export interface ForgeEventEnvelope {
   id: string;
@@ -250,6 +273,11 @@ export function replayEvents(text: string, options: { sinceSeq?: number } = {}):
   const events: ForgeEventEnvelope[] = [];
   let tornTail = false;
   let quarantined = 0;
+  // Rows written before `Journal.append` stamped `seq`/`version` (pre-B.3 history) carry
+  // neither field. The schema stays strict -- it still requires both -- so a legacy row
+  // is backfilled with a locally-assigned seq and `version: 0` before validation, rather
+  // than the schema being loosened to make the fields optional for everyone.
+  let legacySeq = -1;
 
   lines.forEach((line, index) => {
     if (!line.trim()) return;
@@ -260,6 +288,14 @@ export function replayEvents(text: string, options: { sinceSeq?: number } = {}):
       if (index === lines.length - 1) tornTail = true;
       else quarantined += 1;
       return;
+    }
+    if (row && typeof row === 'object' && !Array.isArray(row)) {
+      const record = row as Record<string, unknown>;
+      if (typeof record.seq !== 'number') {
+        legacySeq += 1;
+        record.seq = legacySeq;
+      }
+      if (typeof record.version !== 'number') record.version = 0;
     }
     const parsed = ForgeEventSchema.safeParse(row);
     if (!parsed.success) {

@@ -6,7 +6,7 @@
  * built with no-op handlers (see `contracts.ts`'s `registeredToolNames`), and the two
  * fixtures under `tests/forge/fixtures/` are static JSON, never a live transcript.
  */
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -42,6 +42,7 @@ import {
   observed,
   OwnershipSchema,
   providerFor,
+  RegistryRowSchema,
   redact,
   replayEvents,
   RUN_STATES,
@@ -111,6 +112,33 @@ describe('LaneRecordSchema', () => {
   });
 });
 
+describe('RegistryRowSchema', () => {
+  const valid = {
+    goal: 'forge-contracts', cwd: '<cwd>', briefPath: '<cwd>/brief.md', pid: 1234,
+    startedAt: 1_725_000_000_000,
+  };
+
+  it('accepts a row shaped like registry.ts\'s own RegistryRecord, admission fields only', () => {
+    expect(RegistryRowSchema.safeParse(valid).success).toBe(true);
+  });
+
+  it('accepts the optional sessionId and model registry.ts\'s setSession adds later', () => {
+    expect(RegistryRowSchema.safeParse({
+      ...valid, sessionId: 'sess-1', model: 'claude-sonnet-5',
+    }).success).toBe(true);
+  });
+
+  it('rejects a row missing pid: nothing to test liveness against', () => {
+    const { pid: _pid, ...withoutPid } = valid;
+    expect(RegistryRowSchema.safeParse(withoutPid).success).toBe(false);
+  });
+
+  it('rejects a row missing goal: nothing to key admission on', () => {
+    const { goal: _goal, ...withoutGoal } = valid;
+    expect(RegistryRowSchema.safeParse(withoutGoal).success).toBe(false);
+  });
+});
+
 // ---------------------------------------------------------------------------------------
 // Events and replay
 // ---------------------------------------------------------------------------------------
@@ -140,6 +168,25 @@ describe('ForgeEventSchema', () => {
       'blocker.raised', 'blocker.cleared', 'policy.unknown-model',
     ]) {
       expect(FORGE_EVENT_NAMES).toContain(name);
+    }
+  });
+
+  it('every event literal actually written under src/forge is in the closed union', () => {
+    const forgeDir = fileURLToPath(new URL('../../src/forge/', import.meta.url));
+    const files = readdirSync(forgeDir).filter((name) => name.endsWith('.ts'));
+    const literal = /event:\s*'([^']+)'/g;
+    const found = new Set<string>();
+    for (const name of files) {
+      const text = readFileSync(join(forgeDir, name), 'utf8');
+      for (const match of text.matchAll(literal)) {
+        const name = match[1];
+        if (name) found.add(name);
+      }
+    }
+    // A scan that found nothing proves nothing, so check the sensor before trusting it.
+    expect(found.size).toBeGreaterThan(0);
+    for (const name of found) {
+      expect(FORGE_EVENT_NAMES, `event literal '${name}' found in src/forge/**`).toContain(name);
     }
   });
 });
@@ -192,6 +239,22 @@ describe('replayEvents', () => {
     ].join('\n');
     const result = replayEvents(text, { sinceSeq: 2 });
     expect(result.events.map((event) => event.id)).toEqual(['c']);
+  });
+
+  it('reads a pre-B.3 fixture journal with no seq or version as version 0, quarantining nothing', () => {
+    const fixturePath = fileURLToPath(
+      new URL('./fixtures/legacy-journal.jsonl', import.meta.url),
+    );
+    const text = readFileSync(fixturePath, 'utf8');
+    const result = replayEvents(text);
+    expect(result.quarantined).toBe(0);
+    expect(result.tornTail).toBe(false);
+    expect(result.events.map((event) => event.id)).toEqual(['legacy-1', 'legacy-2', 'legacy-3']);
+    expect(result.events.every((event) => event.version === 0)).toBe(true);
+    // A file with no seq at all still gets a usable, increasing seq per row: the
+    // "snapshot plus tail" contract has to hold for history written before this field
+    // existed, not only for journals B.3's writer produced.
+    expect(result.events.map((event) => event.seq)).toEqual([0, 1, 2]);
   });
 });
 
@@ -321,12 +384,18 @@ describe('FORGE_TOOLS', () => {
     expect(FORGE_TOOLS.sort()).toEqual(registered.sort());
   });
 
-  it('carries all five tools, including forge_report, which sdkengine.ts\'s WORKER_TOOLS drops', () => {
+  it('carries all five tools, including forge_report', () => {
     expect(FORGE_TOOLS).toEqual(expect.arrayContaining([
       'mcp__forge__forge_done', 'mcp__forge__forge_handoff', 'mcp__forge__forge_ask',
       'mcp__forge__forge_gotcha', 'mcp__forge__forge_report',
     ]));
     expect(FORGE_TOOLS).toHaveLength(5);
+  });
+
+  it('sdkengine.ts\'s WORKER_TOOLS names the same tools, sourced from FORGE_TOOL_NAMES rather than a second copied list', async () => {
+    const { WORKER_TOOLS } = await import('../../src/forge/sdkengine.js');
+    const { FORGE_TOOL_NAMES } = await import('../../src/forge/contracts.js');
+    expect([...WORKER_TOOLS].sort()).toEqual([...FORGE_TOOL_NAMES].sort());
   });
 });
 

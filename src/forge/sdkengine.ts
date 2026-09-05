@@ -17,6 +17,7 @@
  * exactly how a session reached 543,000 tokens with nothing noticing.
  */
 import { Engine, buildForgeMcpServer, type EngineConfig, type ForgeToolHandlers, type PreToolVerdict, type QueryFn } from '../adapter/engine.js';
+import { FORGE_TOOL_NAMES } from './contracts.js';
 import { driftBlocker, readMergeable, type Mergeable } from './drift.js';
 import { run as execRun } from './exec.js';
 import { Gotchas } from './gotcha.js';
@@ -62,17 +63,19 @@ export interface WorkerOptions {
 /**
  * The tools a worker uses to talk back to the supervisor.
  *
- * Five, matching buildForgeMcpServer's own registration exactly: a handoff, a completion
- * claim the supervisor then verifies by running commands, a question that parks the run,
- * a trap filed the moment it is hit, and the end-of-goal report. This list had drifted to
- * four (missing forge_report) while nothing in production read it at all: SdkEngine.run()
- * always registered the real handlers straight from buildForgeMcpServer, and toEngineConfig
- * (which does read this list, for its own name-only mcpServers field) never ran in
- * production either. toEngineConfig is now called from SdkEngine.run() for the rest of its
- * mapping (env, maxTurns, effort, resume), which is what makes it worth keeping this list
- * correct rather than merely documented.
+ * Sourced from `contracts.ts`'s `FORGE_TOOL_NAMES`, which is itself read off a live
+ * `buildForgeMcpServer` instance (see that file), rather than typed out here a second
+ * time: a handoff, a completion claim the supervisor then verifies by running commands,
+ * a question that parks the run, a trap filed the moment it is hit, and the end-of-goal
+ * report. A hand-typed copy of this list drifted to four names (missing `forge_report`)
+ * while nothing in production read it at all: `SdkEngine.run()` always registered the
+ * real handlers straight from `buildForgeMcpServer`, and `toEngineConfig` (which does
+ * read this list, for its own name-only `mcpServers` field) never ran in production
+ * either. `toEngineConfig` is now called from `SdkEngine.run()` for the rest of its
+ * mapping (env, maxTurns, effort, resume), which is what makes it worth this list being
+ * unable to drift again rather than merely re-typed correctly once.
  */
-export const WORKER_TOOLS = ['forge_handoff', 'forge_done', 'forge_ask', 'forge_gotcha', 'forge_report'];
+export const WORKER_TOOLS: readonly string[] = FORGE_TOOL_NAMES;
 
 /**
  * The two tool-call names the run loop itself has to recognise, qualified the way the SDK
