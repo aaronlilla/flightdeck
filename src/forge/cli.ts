@@ -114,6 +114,24 @@ function fleetSnapshot(deps: ForgeDeps): ReturnType<typeof watchedProcesses> {
 }
 
 /**
+ * The 2026-09-05 fix, at the one command that ever printed the bug: one quiet line for
+ * every fleet process `assess` never watches (an interactive terminal, the Chrome
+ * extension's native host), instead of the three false `STUCK stale-session` rows those
+ * kinds used to produce. `undefined` when there is nothing of the kind to report, so a
+ * clean fleet stays silent about it.
+ */
+function fleetNoticeLine(fleet: Awaited<ReturnType<typeof watchedProcesses>>): string | undefined {
+  if (!Array.isArray(fleet)) return undefined;
+  const interactive = fleet.filter((proc) => proc.kind === 'interactive').length;
+  const nativeHost = fleet.filter((proc) => proc.kind === 'native-host').length;
+  if (!interactive && !nativeHost) return undefined;
+  const parts: string[] = [];
+  if (interactive) parts.push(`${interactive} interactive claude session${interactive === 1 ? '' : 's'}`);
+  if (nativeHost) parts.push(`${nativeHost} native host${nativeHost === 1 ? '' : 's'}`);
+  return `${parts.join(' and ')}, not fleet, not watched`;
+}
+
+/**
  * A fleet snapshot's runs, from the journal's own replayed state.
  *
  * Shared by `status` and `up` so there is exactly one place that reads a run's model-policy
@@ -262,13 +280,15 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
     case 'status': {
       const state = replay(journalPath());
       const statusRegistry = new Registry(registryDir());
+      const fleet = fleetSnapshot(deps);
       const stuckRows = assess({
         now: Date.now(),
         runs: snapshotRuns(state, statusRegistry, deps.alive),
-        fleet: fleetSnapshot(deps),
+        fleet,
       })
         .filter((trip) => trip.signal !== 'registry-abandoned')
         .map((trip) => `STUCK  ${trip.key.padEnd(24)} ${trip.signal.padEnd(14)} ${trip.hint}`);
+      const fleetNotice = fleetNoticeLine(fleet);
       // Item 4, 2026-09-05: a lane's file survives long after its chain finished, so a
       // fleet that ran for weeks accumulates one row per goal ever launched. `--all`
       // still shows every one of them; the default view hides anything untouched for
@@ -298,13 +318,14 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       ).length;
       // An idle fleet says one thing and stops. Appending "inbox: 0 waiting" to it made
       // "nothing is running" impossible to say, which is the answer a person most wants.
-      if (!rows.length && !waiting && !state.torn && !stuckRows.length) {
+      if (!rows.length && !waiting && !state.torn && !stuckRows.length && !fleetNotice) {
         return { code: 0, lines: ['nothing is running'] };
       }
       if (state.torn) {
         rows.push(`journal: ${state.torn} torn line(s), which is a crash somebody should read`);
       }
       rows.push(`inbox: ${waiting} waiting${stale ? ` (${stale} stale)` : ''}`);
+      if (fleetNotice) rows.push(fleetNotice);
       return { code: 0, lines: [...stuckRows, ...rows] };
     }
 

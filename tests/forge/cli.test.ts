@@ -179,6 +179,55 @@ describe('forge status', () => {
     expect(calls).toBe(1);
     expect(result.lines.join('\n')).toContain('claude-sonnet-5');
   });
+
+  /**
+   * The 2026-09-05 escape, at the command that actually printed it: `forge status`
+   * opened with three `STUCK stale-session` rows for pids that were never fleet
+   * workers -- two of Aaron's own interactive terminals and the Chrome extension's
+   * native host. Genericised from the real 2026-09-05 lines (`fleetwatch.test.ts`
+   * carries the same three, plus a real SDK worker and a `claude login` for
+   * comparison). None of the three should ever appear as STUCK; the two kinds status
+   * still watches get exactly one row each, and everything else collapses into one
+   * quiet line.
+   */
+  it('never reports an interactive terminal or the Chrome native host as STUCK, and says so in one line', async () => {
+    const result = await forge(['status'], {
+      processes: () => [
+        '35256 C:\\Users\\<user>\\.local\\bin\\claude.exe --dangerously-skip-permissions',
+        '50664 "C:\\Users\\<user>\\.local\\bin\\claude.exe"  "--chrome-native-host"',
+        '31120 C:\\Users\\<user>\\.local\\bin\\claude.exe --dangerously-skip-permissions',
+      ],
+    });
+    const text = result.lines.join('\n');
+    expect(text).not.toContain('STUCK');
+    expect(text).toContain('2 interactive claude sessions and 1 native host, not fleet, not watched');
+  });
+
+  it('still reports a real worker as STUCK stale-session, unaffected by the native-host quiet line', async () => {
+    // A stale fleet session file, planted directly under this test's own FORGE_CONFIG_DIR
+    // (set in beforeEach) -- what makes `watchedProcesses` read a real worker's
+    // sessionFileMtime as more than staleSessionMs old.
+    const account = process.env['FORGE_CONFIG_DIR']!;
+    const sessionsDir = join(account, 'projects');
+    mkdirSync(sessionsDir, { recursive: true });
+    const sessionFile = join(sessionsDir, 'session.json');
+    writeFileSync(sessionFile, '{}', 'utf8');
+    const staleAt = new Date(Date.now() - 6 * 60_000);
+    utimesSync(sessionFile, staleAt, staleAt);
+
+    const result = await forge(['status'], {
+      processes: () => [
+        '40200 "C:\\Users\\<user>\\.local\\bin\\claude.exe" --output-format stream-json '
+          + '--verbose --input-format stream-json',
+        '50664 "C:\\Users\\<user>\\.local\\bin\\claude.exe"  "--chrome-native-host"',
+      ],
+    });
+    const text = result.lines.join('\n');
+    expect(text).toContain('STUCK  pid:40200');
+    expect(text).toContain('stale-session');
+    expect(text).not.toContain('interactive claude session');
+    expect(text).toContain('1 native host, not fleet, not watched');
+  });
 });
 
 describe('forge answer', () => {
