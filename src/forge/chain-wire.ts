@@ -128,7 +128,7 @@ export function chainLauncher(chainEnv: ChainEnv, fleetConfigDir: string): Chain
         if (!setupResult.ok) throw new Error(tailOfCommand(setupResult.tail));
       }
 
-      return { worktreePath, branch };
+      return { worktreePath, branch, base };
     },
 
     async launch({ ticket, repo, briefPath, worktreePath, branch }) {
@@ -193,9 +193,13 @@ export function chainGh(): ChainGh {
  *  of their logic -- `forge()`'s own `data` field (P5.7) is what lets a programmatic
  *  caller read the verdict and the merge outcome without parsing `lines`. */
 export function chainCouncil(deps: ForgeDeps): ChainCouncilFn {
-  return async ({ repo, pr, forceCodex }) => {
+  return async ({ repo, pr, forceCodex, cwd, baseRef }) => {
     const result: CliResult = await forge(
-      ['council', '--repo', repo, '--pr', String(pr)],
+      [
+        'council', '--repo', repo, '--pr', String(pr),
+        ...(cwd ? ['--cwd', cwd] : []),
+        ...(baseRef ? ['--base', baseRef] : []),
+      ],
       { ...deps, ...(forceCodex ? { forceCodexLane: true } : {}) },
     );
     const verdict = (result.data?.['verdict'] as string | undefined) ?? result.lines[0] ?? 'unavailable';

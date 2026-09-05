@@ -61,6 +61,9 @@ export interface ChainPlannedPacket {
 export interface ChainProvisionResult {
   worktreePath: string;
   branch: string;
+  /** H4: the branch's base, carried forward so the gate hop can pass it to the Codex
+   *  lane as `baseRef` without re-deriving it from `chain-env.ts`. */
+  base: string;
 }
 
 export interface ChainLaunchResult {
@@ -105,7 +108,13 @@ export interface ChainCouncilResult {
   attestationPath?: string;
 }
 
-export type ChainCouncilFn = (input: { repo: string; pr: number; forceCodex: boolean }) => Promise<ChainCouncilResult>;
+export type ChainCouncilFn = (input: {
+  repo: string; pr: number; forceCodex: boolean;
+  /** H4 (Codex lane wiring): the worker's own checkout, from the packet's provisioned
+   *  row, and the repository's base branch. The Codex lane needs both before it will run
+   *  at all. Omitted only for a packet whose provisioned row predates this field. */
+  cwd?: string; baseRef?: string;
+}) => Promise<ChainCouncilResult>;
 
 export interface ChainGateResult {
   merged: boolean;
@@ -137,7 +146,9 @@ export interface ChainPacketState {
   repo?: string;
   briefPath?: string;
   blocked?: { hop: ChainHop; reason: string };
-  provisioned?: { worktreePath: string; branch: string };
+  /** `base` is optional here only because a journal row written before H4 landed never
+   *  carried it; every row `advancePacket` writes going forward has one. */
+  provisioned?: { worktreePath: string; branch: string; base?: string };
   launched?: { runKey: string };
   gated?: { verdict: string; attestationPath?: string };
   merged?: { mergeSha?: string };
@@ -183,6 +194,7 @@ export function foldChainState(events: ChainEventLike[]): Map<string, ChainPacke
       case 'chain.provisioned':
         row.provisioned = {
           worktreePath: String(raw['worktreePath'] ?? ''), branch: String(raw['branch'] ?? ''),
+          ...(typeof raw['base'] === 'string' ? { base: raw['base'] } : {}),
         };
         break;
       case 'chain.launched':
@@ -249,7 +261,7 @@ async function advancePacket(row: ChainPacketState, deps: ChainDeps): Promise<vo
         provisioned = result;
         deps.append({
           event: 'chain.provisioned', actor: 'chain', packetId: row.packetId,
-          worktreePath: result.worktreePath, branch: result.branch,
+          worktreePath: result.worktreePath, branch: result.branch, base: result.base,
         });
       } catch (error) {
         deps.append({
@@ -311,7 +323,10 @@ async function advancePacket(row: ChainPacketState, deps: ChainDeps): Promise<vo
     return;
   }
 
-  const council = await deps.council({ repo: row.repo!, pr: pr.number, forceCodex: true });
+  const council = await deps.council({
+    repo: row.repo!, pr: pr.number, forceCodex: true,
+    cwd: row.provisioned?.worktreePath, baseRef: row.provisioned?.base,
+  });
   deps.append({
     event: 'chain.gated', actor: 'chain', packetId: row.packetId, verdict: council.verdict,
     ...(council.attestationPath ? { attestationPath: council.attestationPath } : {}),
