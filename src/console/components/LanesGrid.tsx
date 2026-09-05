@@ -8,9 +8,10 @@ export interface LanesGridProps {
   disabledReason?: string;
   onSend: (run: string, text: string) => Promise<void>;
   onClear: (lane: string) => Promise<void>;
+  onOpen?: (slug: string) => void;
 }
 
-export function LanesGrid({ lanes, now, disabledReason, onSend, onClear }: LanesGridProps): JSX.Element {
+export function LanesGrid({ lanes, now, disabledReason, onSend, onClear, onOpen }: LanesGridProps): JSX.Element {
   if (lanes.length === 0) {
     return (
       <div className="lanes-grid">
@@ -29,6 +30,7 @@ export function LanesGrid({ lanes, now, disabledReason, onSend, onClear }: Lanes
           disabledReason={disabledReason}
           onSend={onSend}
           onClear={onClear}
+          {...(onOpen ? { onOpen } : {})}
         />
       ))}
     </div>

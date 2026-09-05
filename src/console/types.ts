@@ -114,6 +114,21 @@ export interface InboxState {
   all: InboxEntry[];
 }
 
+/** `GET /run/:id`'s shape (X3). `plan`, `prUrl`, `council` and `comments` are
+ *  named explicitly as `null` rather than omitted so the ticket sheet can say
+ *  "not wired" for a field nothing in the fleet writes yet, distinct from a
+ *  field that failed to load. */
+export interface RunDetail {
+  run: string;
+  packet: string | null;
+  plan: string | null;
+  prUrl: string | null;
+  council: string | null;
+  comments: string | null;
+  provenance: { predecessor: string | null; successor: string | null };
+  state: ConsoleRunView | null;
+}
+
 export interface ForgeEvent {
   id?: string;
   seq?: number;

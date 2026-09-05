@@ -24,7 +24,10 @@ import { fileURLToPath } from 'node:url';
 import type { Inbox } from './inbox.js';
 import { JournalCache, type RangeReader } from './journal.js';
 import type { StuckSignal } from './liveness.js';
-import { killSwitchPath as defaultKillSwitchPath, registryDir, serverTokenPath } from './paths.js';
+import {
+  killSwitchPath as defaultKillSwitchPath, packetsDir as defaultPacketsDir, registryDir,
+  serverTokenPath,
+} from './paths.js';
 import { Registry } from './registry.js';
 import { RunInbox, deliverAnswer } from './runinbox.js';
 import { Breaker, clearKillSwitch, Fleet, type LaneRecord, type Lanes } from './supervisor.js';
@@ -110,6 +113,9 @@ export interface ForgeServerOptions {
   /** Overrides where `/` serves the built console from. Defaults to `dist/console/`
    *  found by walking up to the repo root. A specimen only. */
   consoleDistDir?: string;
+  /** Overrides where `GET /run/:id` reads a handoff packet from. Defaults to
+   *  `packetsDir()`, which itself follows `FORGE_HOME`. A specimen only. */
+  packetsDir?: string;
 }
 
 export class ForgeServer {
@@ -132,6 +138,8 @@ export class ForgeServer {
   private readonly registry: Registry;
 
   private readonly consoleDistDir: string;
+
+  private readonly packetsDirPath: string;
 
   private readonly wanted: number;
 
@@ -167,6 +175,7 @@ export class ForgeServer {
     this.killSwitchFile = options.killSwitchFile ?? defaultKillSwitchPath();
     this.registry = options.registry ?? new Registry(registryDir());
     this.consoleDistDir = options.consoleDistDir ?? defaultConsoleDistDir();
+    this.packetsDirPath = options.packetsDir ?? defaultPacketsDir();
   }
 
   get listeners(): number {
@@ -289,6 +298,9 @@ export class ForgeServer {
     }
     if (path === '/inbox' && request.method === 'GET') {
       return json(response, 200, { open: this.inbox.open(), all: this.inbox.all() });
+    }
+    if (path.startsWith('/run/') && request.method === 'GET') {
+      return this.runDetail(request, response, decodeURIComponent(path.slice('/run/'.length)));
     }
     if (path === '/answer') {
       if (request.method !== 'POST') {
@@ -459,6 +471,42 @@ export class ForgeServer {
       }
       new Breaker(this.lanes).clear(parsed.lane);
       json(response, 200, { ok: true });
+    });
+  }
+
+  /**
+   * `GET /run/:id`: the ticket sheet's own read, behind the token like every other write
+   * on this server -- a packet, a provenance chain and a run's journal state are not
+   * public the way `/state`'s aggregate counts are, since a packet can carry whatever a
+   * worker wrote about the goal it was on.
+   *
+   * A run this server has never heard of, or one with no packet on disk yet, is not an
+   * error: `packet: null` and an empty provenance chain are the honest answer for a run
+   * that has not handed off, and the ticket sheet renders "not available" rather than a
+   * 404 for either. `plan`, `prUrl`, `council` and `comments` are not wired yet (no code
+   * anywhere in this repository writes them for a run today); they are named explicitly
+   * as `null` rather than omitted, so the sheet can say "not wired" instead of leaving a
+   * silently missing field indistinguishable from one that failed to load.
+   */
+  private runDetail(request: IncomingMessage, response: ServerResponse, id: string): void {
+    if (!this.authorized(request, response)) return;
+    if (!id) {
+      json(response, 400, { error: 'a run id is required' });
+      return;
+    }
+    const fleet = this.journalCache.read(this.journalPath);
+    const run = fleet.runs[id];
+    const packetFile = join(this.packetsDirPath, `${id}.md`);
+    const packet = existsSync(packetFile) ? readFileSync(packetFile, 'utf8') : null;
+    json(response, 200, {
+      run: id,
+      packet,
+      plan: null,
+      prUrl: null,
+      council: null,
+      comments: null,
+      provenance: { predecessor: run?.predecessor ?? null, successor: run?.successor ?? null },
+      state: run ?? null,
     });
   }
 

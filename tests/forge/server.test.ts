@@ -283,6 +283,58 @@ describe('GET /inbox', () => {
   });
 });
 
+describe('GET /run/:id', () => {
+  // X3: the ticket sheet's own read. Behind the token like every write on this server,
+  // since a packet can carry whatever a worker wrote about the goal it was on.
+  it('X3: refuses without a token', async () => {
+    const response = await fetch(`${base}/run/alpha`);
+    expect(response.status).toBe(401);
+  });
+
+  it('X3: refuses a different Origin', async () => {
+    const response = await fetch(`${base}/run/alpha`, {
+      headers: { 'x-forge-token': server.token, origin: 'http://evil.example' },
+    });
+    expect(response.status).toBe(403);
+  });
+
+  it('X3: a run with a packet on disk returns its text and provenance', async () => {
+    const journal = new Journal(join(dir, 'fleet.jsonl'));
+    journal.append({
+      event: 'run.handoff', run: 'alpha', actor: 'worker', successor: 'alpha-2',
+    });
+    journal.close();
+    mkdirSync(join(dir, 'packets'), { recursive: true });
+    writeFileSync(join(dir, 'packets', 'alpha.md'), '# what alpha found\n', 'utf8');
+    const withPackets = new ForgeServer({
+      lanes: new Lanes(join(dir, 'lanes')), inbox: new Inbox(join(dir, 'inbox')),
+      journalPath: join(dir, 'fleet.jsonl'), port: 0, packetsDir: join(dir, 'packets'),
+    });
+    const withPacketsBase = `http://127.0.0.1:${await withPackets.listen()}`;
+    try {
+      const response = await fetch(`${withPacketsBase}/run/alpha`, {
+        headers: { 'x-forge-token': withPackets.token },
+      });
+      const body = await response.json() as Record<string, unknown>;
+      expect(body['packet']).toBe('# what alpha found\n');
+      expect(body['provenance']).toMatchObject({ successor: 'alpha-2' });
+    } finally {
+      await withPackets.close();
+    }
+  });
+
+  it('X3: a run with no packet answers null rather than 404', async () => {
+    const response = await fetch(`${base}/run/nothing-ever-ran-here`, {
+      headers: { 'x-forge-token': server.token },
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json() as Record<string, unknown>;
+    expect(body['packet']).toBeNull();
+    expect(body['plan']).toBeNull();
+    expect(body['prUrl']).toBeNull();
+  });
+});
+
 describe('POST /answer', () => {
   it('answers an open question and closes it', async () => {
     const entry = server.inbox.raise({ run: 'alpha', question: 'Which environment?' });

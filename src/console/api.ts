@@ -5,7 +5,7 @@
  * goal brief: "all of that lives behind one `api.ts`").
  */
 import { redactErrorBody } from './redact.js';
-import type { ForgeState, InboxEntry, InboxState } from './types.js';
+import type { ForgeState, InboxEntry, InboxState, RunDetail } from './types.js';
 
 export class ApiError extends Error {
   constructor(readonly status: number, message: string) {
@@ -62,4 +62,10 @@ export function sendToRun(run: string, text: string): Promise<{ ok: boolean }> {
 export function clearLane(target: string): Promise<{ ok: boolean }> {
   const body = target === 'all' ? { all: true } : { lane: target };
   return call<{ ok: boolean }>('/clear', { method: 'POST', body: JSON.stringify(body) });
+}
+
+/** X3: the ticket sheet's own read -- packet, provenance, and the not-yet-wired
+ *  plan/PR/council/comment fields, all `null` rather than omitted. */
+export function getRun(id: string): Promise<RunDetail> {
+  return call<RunDetail>(`/run/${encodeURIComponent(id)}`);
 }

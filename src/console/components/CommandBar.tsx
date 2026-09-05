@@ -45,8 +45,22 @@ export function CommandBar({ state, disabledReason, onStop, stopping, now }: Com
             <Freshness verifiedAt={state.burn.verified_at} observedAt={state.burn.observed_at} now={now} />
           </span>
         ) : null}
+        {/* X3: fleet capacity per tier against the five-hour window. Nothing in
+            this repository computes that yet (no Governor exists), so this
+            says so plainly rather than showing a number nobody backs. */}
+        <span className="stat-chip stat-chip--unwired">
+          <span className="stat-chip__label">capacity: not wired</span>
+        </span>
       </div>
       <div className="command-bar__actions">
+        <button
+          type="button"
+          className="btn"
+          disabled
+          title="forge up is the process serving this page; it is already running"
+        >
+          Start
+        </button>
         <button
           type="button"
           className="btn btn--danger"
