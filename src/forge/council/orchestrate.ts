@@ -23,6 +23,10 @@ export interface CouncilRoundInput {
    *  itself still runs (or no-ops) per `codexLaneFor`'s own policy check -- this only
    *  overrides whether the round asks it to run at all. */
   forceCodex?: boolean;
+  /** Forwarded to the Codex lane verbatim (`roles.ts`'s `CodexLaneInput`). Omitted for a
+   *  round that never supplies them, which the lane itself reads as `ran: false`. */
+  cwd?: string;
+  baseRef?: string;
 }
 
 export interface CouncilRoles {
@@ -49,24 +53,49 @@ export async function runCouncilRound(input: CouncilRoundInput, roles: CouncilRo
   );
 
   const codexResult = (input.forceCodex || risk.needsCodex)
-    ? await roles.codexLane.run({ brief: input.brief, diffSummary: input.diffSummary })
+    ? await roles.codexLane.run({
+        brief: input.brief, diffSummary: input.diffSummary, cwd: input.cwd, baseRef: input.baseRef,
+      })
     : { ran: false, findings: [] };
+
+  // A round the chain forced Codex onto (`FORGE_COUNCIL_CODEX=always`) where the lane
+  // never actually ran is a silent gap, not a clean pass: three Sonnet lenses agreeing
+  // proves nothing about the read-only rubric Codex was supposed to add. One uncovered
+  // finding goes into the packet the judge reads, and the verdict is forced regardless
+  // of what comes back, so a forced round can never clear on a lane that stayed silent.
+  const codexRequiredButMissing = Boolean(input.forceCodex) && !('ran' in codexResult && codexResult.ran);
+  const gapFinding: CouncilFinding | undefined = codexRequiredButMissing
+    ? {
+        member: 'codex',
+        file: '(codex)',
+        line: 0,
+        claim: `Codex lane did not run: ${(codexResult as { reason?: string }).reason ?? 'no reason given'}`,
+        failureScenario: 'the round required the Codex lane but it never ran, so this diff has no Codex '
+          + 'coverage at all',
+        severity: 'critical',
+        confidence: 'high',
+      }
+    : undefined;
+
+  const judgeLensReports = gapFinding ? [...lensReports, { lens: 'codex', findings: [gapFinding] }] : lensReports;
 
   const synthesis = synthesizeFindings(lensReports, codexResult.findings);
 
   const judgeInput = buildJudgeInput({
-    lenses: lensReports,
+    lenses: judgeLensReports,
     brief: input.brief,
     ci: input.ci,
     diff: input.diffSummary,
   });
   const judgment = await roles.judge.decide(judgeInput);
 
+  const decidingFindings = judgment.decidingFindings.length ? judgment.decidingFindings : synthesis.decidingFindings;
+
   return {
     lensReports,
     codexRan: codexResult.ran,
-    decidingFindings: judgment.decidingFindings.length ? judgment.decidingFindings : synthesis.decidingFindings,
+    decidingFindings: gapFinding ? [...decidingFindings, gapFinding] : decidingFindings,
     codexOnly: synthesis.codexOnly,
-    verdict: judgment.verdict,
+    verdict: gapFinding ? 'FIX FIRST' : judgment.verdict,
   };
 }
