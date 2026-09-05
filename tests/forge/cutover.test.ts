@@ -199,4 +199,30 @@ describe('F4: a running manifest file refuses the cutover, warden or no warden',
     const event = journaled.find((e) => e['event'] === 'cutover.completed');
     expect(event?.['processesChecked']).toBe(processList.length);
   });
+
+  /**
+   * A short manifest name (`go.py`) is a substring of an unrelated process's own name
+   * (`mongo.py`, `cargo.py`), so a plain `line.includes(name)` refused a cutover over a
+   * process that had nothing to do with it. The name has to appear as its own token.
+   */
+  it('a short manifest name inside an unrelated process name never refuses', () => {
+    writeFileSync(join(from, 'go.py'), '# go.py\n', 'utf8');
+    const result = runCutover({
+      from, retiredDir,
+      processList: ['5000 "C:\\tools\\mongo.py" --port 27017'],
+    }, journal);
+    expect(result.ok).toBe(true);
+    expect(result.moved).toContain('go.py');
+  });
+
+  it('the same manifest name as its own token still refuses', () => {
+    writeFileSync(join(from, 'go.py'), '# go.py\n', 'utf8');
+    const result = runCutover({
+      from, retiredDir,
+      processList: ['5001 "C:\\tools\\go.py" --warden'],
+    }, journal);
+    expect(result.ok).toBe(false);
+    expect(result.refusal).toMatch(/go\.py/);
+    expect(result.refusal).toMatch(/5001/);
+  });
 });

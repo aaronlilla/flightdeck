@@ -65,11 +65,28 @@ function findWardenLine(processList: string[]): string | undefined {
  * others; this covers every process naming a file the manifest is about to move, the
  * tiler included.
  */
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * A manifest name as its own token on a process line, not a substring of a longer one.
+ *
+ * `line.includes(name)` matched `go.py` inside `mongo.py` and `cargo.py` -- a real
+ * process nowhere near the manifest, refusing a cutover it had nothing to do with. The
+ * name has to be preceded by the start of the line, whitespace, a quote or a path
+ * separator, and followed by the end of the line, whitespace or a quote.
+ */
+function containsManifestName(line: string, name: string): boolean {
+  const boundary = new RegExp(`(?:^|[\\s"'/\\\\])${escapeRegExp(name)}(?:$|[\\s"'])`);
+  return boundary.test(line);
+}
+
 function findManifestProcessLine(
   processList: string[], manifest: string[],
 ): { line: string; file: string; pid?: string } | undefined {
   for (const line of processList) {
-    const file = manifest.find((name) => line.includes(name));
+    const file = manifest.find((name) => containsManifestName(line, name));
     if (file) return { line, file, pid: /^\s*(\d+)/.exec(line)?.[1] };
   }
   return undefined;
