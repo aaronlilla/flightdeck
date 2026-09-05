@@ -921,6 +921,55 @@ describe('C2: forge chain', () => {
   });
 });
 
+describe('E3: forge chain retry on a launch that never registered', () => {
+  function seedLaunchedPacket(): void {
+    const j = new Journal(journal());
+    j.append({ event: 'intake.planned', actor: 'intake', packetId: 'p1', ticket: 'ABC-1', repo: 'owner/name', briefPath: 'C:/briefs/p1.md' });
+    j.append({ event: 'chain.provisioned', actor: 'chain', packetId: 'p1', worktreePath: 'C:/wt', branch: 'feature/abc-1', base: 'develop' });
+    j.append({ event: 'chain.launched', actor: 'chain', packetId: 'p1', runKey: 'abc-1' });
+    j.close();
+  }
+
+  it('with no registry row and no run.started row, journals chain.unblocked (hop launch) and folds back to provisioned', async () => {
+    seedLaunchedPacket();
+    const result = await forge(['chain', 'retry', 'p1']);
+    expect(result.code).toBe(0);
+
+    const { events } = replayEvents(readFileSync(journal(), 'utf8'));
+    const unblocked = events.find((event) => event.event === 'chain.unblocked');
+    expect(unblocked?.['packetId']).toBe('p1');
+    expect(unblocked?.['hop']).toBe('launch');
+    expect(unblocked?.['reason']).toBe('launch never registered');
+
+    const statusResult = await forge(['chain']);
+    const row = statusResult.lines.find((line) => line.includes('ABC-1'));
+    expect(row).toContain('provisioned');
+  });
+
+  it('with a run.started row for the packet\'s run, retry is refused: exit 2, points at forge stop', async () => {
+    seedLaunchedPacket();
+    const j = new Journal(journal());
+    j.append({ event: 'run.started', run: 'abc-1', actor: 'runner', model: 'sonnet', className: 'implement' });
+    j.close();
+
+    const result = await forge(['chain', 'retry', 'p1']);
+    expect(result.code).toBe(2);
+    expect(result.lines.join(' ')).toMatch(/forge stop/);
+
+    const { events } = replayEvents(readFileSync(journal(), 'utf8'));
+    expect(events.find((event) => event.event === 'chain.unblocked')).toBeUndefined();
+  });
+
+  it('with a live registry row for the packet\'s run (no run.started yet), retry is refused: exit 2', async () => {
+    seedLaunchedPacket();
+    admitLive('abc-1');
+
+    const result = await forge(['chain', 'retry', 'p1']);
+    expect(result.code).toBe(2);
+    expect(result.lines.join(' ')).toMatch(/forge stop/);
+  });
+});
+
 describe('D2: forge chain skip', () => {
   function seedPlannedPacket(): void {
     const j = new Journal(journal());

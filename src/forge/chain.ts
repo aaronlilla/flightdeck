@@ -202,6 +202,11 @@ export function foldChainState(events: ChainEventLike[]): Map<string, ChainPacke
         // launched run stays launched, so re-advancing only re-does the step that
         // actually failed.
         delete row.blocked;
+        // E3, 2026-09-05: `hop: 'launch'` is `forge chain retry` on a packet whose run
+        // never registered -- the fold returns it to `provisioned` (rather than leaving
+        // `launched` set) so the next tick re-runs the launch hop instead of polling a
+        // run that was never actually started.
+        if (raw['hop'] === 'launch') delete row.launched;
         break;
       case 'chain.provisioned':
         row.provisioned = {
