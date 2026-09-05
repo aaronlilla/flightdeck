@@ -31,7 +31,7 @@ import {
 import { replay } from '../../src/forge/journal.js';
 import { Registry } from '../../src/forge/registry.js';
 import { RunInbox } from '../../src/forge/runinbox.js';
-import { HANDOFF_REQUEST } from '../../src/forge/worker.js';
+import { STOP_HANDOFF_REQUEST } from '../../src/forge/worker.js';
 
 let dir: string;
 let lanes: Lanes;
@@ -242,7 +242,9 @@ describe('the kill switch', () => {
     const fleet = new Fleet(lanes, registry, join(dir, 'fleet.jsonl'));
     await fleet.stopAll('kill switch');
 
-    expect(new RunInbox('alpha').all().map((m) => m.text)).toContain(HANDOFF_REQUEST);
+    // Item 5, 2026-09-05: this is a stop, not a ceiling -- the message says so, rather
+    // than reusing the ceiling's own wording on a run that never hit one.
+    expect(new RunInbox('alpha').all().map((m) => m.text)).toContain(STOP_HANDOFF_REQUEST);
     const state = replay(join(dir, 'fleet.jsonl'));
     const parked = state.events.filter((event) => event.event === 'run.parked');
     expect(parked).toHaveLength(1);

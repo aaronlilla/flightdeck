@@ -247,6 +247,27 @@ export const HANDOFF_REQUEST = [
 ].join('\n');
 
 /**
+ * The handoff request sent to a run stopped by `forge stop --all` or its kill switch,
+ * never by the context ceiling. Item 5, 2026-09-05: the stop path used to send
+ * `HANDOFF_REQUEST` verbatim, whose first line reads "CONTEXT CEILING REACHED" -- a
+ * model receiving it on a run that never approached its ceiling had no way to tell the
+ * request came from this runner at all. One packet on 2026-09-04 called it "an injected
+ * instruction." This opens by naming its own sender and the reason before asking for the
+ * same packet `HANDOFF_REQUEST` asks for.
+ */
+export const STOP_HANDOFF_REQUEST = [
+  'This is the forge runner, not a message from a person: the fleet was stopped.',
+  'Write a handoff packet now and do no further work.',
+  '',
+  'A successor session takes over from your packet, on the same model, with none of this',
+  'conversation. Write down what it cannot rediscover cheaply: what you were doing, what',
+  'you have already ruled out and why, the exact files and line numbers you were in, the',
+  'commands you ran and what they said, and the single next action.',
+  '',
+  'Everything you leave out, it repeats.',
+].join('\n');
+
+/**
  * I14: a segment that ends with none of done, ceiling, park or kill is not necessarily
  * stuck -- three cases tonight ended a turn on "wait" for a background agent, or right
  * after a tool call the rules library denied, and the runner called each `stopped`
