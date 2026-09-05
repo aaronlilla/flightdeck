@@ -15,6 +15,7 @@ import {
   classFor,
   classNames,
   contextFor,
+  DEFAULT_REASONER_TIMEOUT_MS,
   effortFor,
   governorBudget,
   loadPolicy,
@@ -22,9 +23,14 @@ import {
   modelIdFor,
   priceFor,
   providerFor,
+  reasonerTimeoutMs,
   tierOfBrief,
   turnsFor,
 } from '../../src/forge/policy.js';
+import { writeFileSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 describe('the policy file', () => {
   it('declares every class the Spine names', () => {
@@ -167,5 +173,27 @@ describe('the governor budget block', () => {
   it('never parks a run on the file this stream ships, since a real cap is set', () => {
     const budget = governorBudget();
     expect(Object.keys(budget.usdPerRun).length).toBeGreaterThan(0);
+  });
+});
+
+describe('reasonerTimeoutMs', () => {
+  it('reads the checked-in policy file\'s own 120s budget', () => {
+    expect(reasonerTimeoutMs()).toBe(120_000);
+  });
+
+  it('falls back to the default when a policy file names none', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'forge-policy-'));
+    const fixture = join(dir, 'model-policy.json');
+    const withoutTimeout = { ...loadPolicy(), reasoner: { astra: 'off' as const } };
+    writeFileSync(fixture, JSON.stringify(withoutTimeout));
+    expect(reasonerTimeoutMs(fixture)).toBe(DEFAULT_REASONER_TIMEOUT_MS);
+  });
+
+  it('honours an override the policy file sets', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'forge-policy-'));
+    const fixture = join(dir, 'model-policy.json');
+    const withOverride = { ...loadPolicy(), reasoner: { astra: 'off' as const, timeoutMs: 5000 } };
+    writeFileSync(fixture, JSON.stringify(withOverride));
+    expect(reasonerTimeoutMs(fixture)).toBe(5000);
   });
 });
