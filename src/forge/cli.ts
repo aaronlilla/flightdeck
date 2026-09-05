@@ -440,6 +440,13 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       const engine = deps.engine ?? new SdkEngine({
         journalPath: journalPath(), inboxDir: inboxDir(), gotchasDir: gotchasDir(),
         killSwitch: () => readKillSwitch(killSwitchPath()).engaged,
+        // I12: written the moment the SDK's init message names the session, not after
+        // the first turn resolves -- a process killed mid-segment still leaves a
+        // registry row and a lane `reconcileRegistry` can resume.
+        onSessionStarted: (_run, sessionId, model) => {
+          registry.setSession(slug, sessionId, model);
+          lanes.put(slug, { session_id: sessionId });
+        },
       });
       // P4.7/I9: the real actuator, so a model-mismatch turn actually parks (writes the
       // park record the PreToolUse hook checks on this run's own next tool call) rather

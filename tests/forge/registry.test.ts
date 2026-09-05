@@ -144,4 +144,41 @@ describe('B.3.5: forge up reconciles a dead pid', () => {
     expect(outcomes).toEqual([{ goal: 'no-session', ok: false, reason: expect.stringContaining('session id') }]);
     expect(registry.get('no-session')).toBeUndefined();
   });
+
+  it('I12: a dead row with no session id older than the idle budget is journaled registry.abandoned and dropped', async () => {
+    const briefPath = join(dir, 'abandoned.md');
+    writeFileSync(briefPath, '# Goal\n\nDo the thing.\n', 'utf8');
+    const registry = new Registry(join(dir, 'registry'));
+    registry.admit({ goal: 'abandoned', cwd: dir, briefPath, pid: 999_999 });
+
+    const engine = fakeEngine();
+    const journal = new Journal(journalPath);
+    // `abandonAfterMs: 0` puts every row past the budget the instant it is admitted --
+    // the fixture stands in for a row old enough to be a genuine crash, since this
+    // registry row has no way to control its own `startedAt` other than waiting.
+    const outcomes = await reconcileRegistry(registry, engine, journal, undefined, 0);
+    journal.close();
+
+    expect(outcomes).toEqual([{ goal: 'abandoned', ok: false, reason: expect.stringContaining('session id') }]);
+    expect(registry.get('abandoned')).toBeUndefined();
+    const state = replay(journalPath);
+    const rows = state.events.filter((e) => e.event === 'registry.abandoned' && e.run === 'abandoned');
+    expect(rows).toHaveLength(1);
+  });
+
+  it('I12: a dead row with no session id, younger than the idle budget, is reported but not journaled as abandoned', async () => {
+    const briefPath = join(dir, 'young.md');
+    writeFileSync(briefPath, '# Goal\n\nDo the thing.\n', 'utf8');
+    const registry = new Registry(join(dir, 'registry'));
+    registry.admit({ goal: 'young', cwd: dir, briefPath, pid: 999_999 });
+
+    const engine = fakeEngine();
+    const journal = new Journal(journalPath);
+    const outcomes = await reconcileRegistry(registry, engine, journal, undefined, 60 * 60_000);
+    journal.close();
+
+    expect(outcomes).toEqual([{ goal: 'young', ok: false, reason: expect.stringContaining('session id') }]);
+    const state = replay(journalPath);
+    expect(state.events.some((e) => e.event === 'registry.abandoned')).toBe(false);
+  });
 });

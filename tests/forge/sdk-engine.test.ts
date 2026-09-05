@@ -168,6 +168,41 @@ describe('the options the production engine opens with', () => {
   });
 });
 
+describe('I12: the session id is captured on the SDK init message', () => {
+  it('calls onSessionStarted with the run, session id and model, not only after the segment resolves', async () => {
+    const { fn } = fakeQuery([[{ text: 'ok', usage: { input: 1, cacheRead: 0, cacheCreation: 0, output: 1 } }]]);
+    const started: Array<{ run: string; sessionId: string; model: string }> = [];
+    const engine = new SdkEngine({
+      journalPath, inboxDir: join(home, 'inbox-session'), gotchasDir: join(home, 'gotchas-session'),
+      queryFn: fn,
+      onSessionStarted: (run, sessionId, model) => { started.push({ run, sessionId, model }); },
+    });
+
+    await engine.run({ ...REQUEST, env: { PATH: '/usr/bin' } });
+
+    // `fakeQuery`'s generator yields the `system`/`init` message before it ever reads a
+    // pushed prompt (see the fixture above), the same order the real SDK opens a
+    // session in -- so this call has already happened by the time any tool call or the
+    // segment's own result could arrive.
+    expect(started).toEqual([{ run: 'r1', sessionId: 'sdk-fake-session', model: 'claude-sonnet-5' }]);
+  });
+
+  it('fires once per session, not again on a chain\'s later segment', async () => {
+    const { fn } = fakeQuery([[{ text: 'first' }], [{ text: 'second' }]]);
+    const started: string[] = [];
+    const engine = new SdkEngine({
+      journalPath, inboxDir: join(home, 'inbox-session2'), gotchasDir: join(home, 'gotchas-session2'),
+      queryFn: fn,
+      onSessionStarted: (_run, sessionId) => { started.push(sessionId); },
+    });
+
+    const session = await engine.run({ ...REQUEST, env: { PATH: '/usr/bin' } });
+    await session.send?.('go on');
+
+    expect(started).toEqual(['sdk-fake-session']);
+  });
+});
+
 describe('B.3.9: the class effort reaches the engine options', () => {
   it('carries the effort from the session request through to the SDK options', async () => {
     const { fn, calls } = fakeQuery([[{ text: 'ok' }]]);

@@ -18,6 +18,7 @@ import {
 import { join } from 'node:path';
 
 import { Journal } from './journal.js';
+import { DEFAULT_THRESHOLDS } from './liveness.js';
 import { modelFor, modelIdFor, tierOfBrief, turnsFor } from './policy.js';
 import type { EngineLike } from './worker.js';
 
@@ -162,18 +163,28 @@ const RESUME_PROMPT = [
  * would be the same two-supervisor race `owner: "forge"` already exists to prevent
  * elsewhere. A dead pid with no recorded session id cannot be resumed at all -- there is
  * nothing to resume by, so it is reported and dropped rather than silently retried
- * forever. Everything else gets exactly one resume attempt, success or failure, and its
- * row is cleared either way: this is reconciliation, not a retry loop.
+ * forever; one old enough to have crashed rather than raced its own admission (I12: past
+ * `abandonAfterMs`) is journaled as `registry.abandoned` on the way out, so the removal
+ * that already happened here is visible, not just inferred from its absence. Everything
+ * else gets exactly one resume attempt, success or failure, and its row is cleared either
+ * way: this is reconciliation, not a retry loop.
  */
 export async function reconcileRegistry(
   registry: Registry, engine: EngineLike, journal: Journal, alive: (pid: number) => boolean = processAlive,
+  abandonAfterMs: number = DEFAULT_THRESHOLDS.idleMs,
 ): Promise<ReconcileOutcome[]> {
   const outcomes: ReconcileOutcome[] = [];
+  const now = Date.now();
   for (const record of registry.all()) {
     if (alive(record.pid)) continue;
 
     if (!record.sessionId) {
-      outcomes.push({ goal: record.goal, ok: false, reason: 'no session id was recorded before it stopped' });
+      const age = now - record.startedAt;
+      const reason = `no session id was recorded before it stopped (${Math.round(age / 1000)}s old)`;
+      if (age >= abandonAfterMs) {
+        journal.append({ event: 'registry.abandoned', run: record.goal, actor: 'runner', reason, age });
+      }
+      outcomes.push({ goal: record.goal, ok: false, reason });
       registry.remove(record.goal);
       continue;
     }

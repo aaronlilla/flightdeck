@@ -651,6 +651,14 @@ export interface SdkEngineDeps {
    * with nothing to say about stopping needs no fake.
    */
   killSwitch?: () => boolean;
+  /**
+   * I12: called the moment the SDK's `system`/`init` message names this session, not
+   * after the segment's first turn finishes. `Worker`'s own `onSessionStarted` fires
+   * only once `run()` resolves, which is too late for a process killed mid-segment: the
+   * registry row and the lane never learn the session id, and `reconcileRegistry` can
+   * only report that none was recorded rather than resume the run on it.
+   */
+  onSessionStarted?: (run: string, sessionId: string, model: string) => void;
 }
 
 async function ghDriftCheck(cwd: string): Promise<Mergeable> {
@@ -805,6 +813,13 @@ export class SdkEngine implements EngineLike {
       };
       const off = engine.onEvent((event) => {
         switch (event.type) {
+          case 'session-started':
+            // I12: the registry row and the lane learn the session id right here, on the
+            // SDK's own init message, rather than after `runSegment` resolves. A process
+            // killed mid-segment (P5.5: 47s after `run.started`) still leaves a row
+            // `reconcileRegistry` can resume, instead of one it can only report on.
+            this.deps.onSessionStarted?.(request.run, event.sessionId, event.model);
+            break;
           case 'usage':
             // A subagent's own Task-tool conversation, not the main loop this ceiling and
             // this turn stream belong to: its tokens are real spend (journaled below, so
