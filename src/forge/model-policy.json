@@ -67,5 +67,10 @@
     "claude-code-guide": "research",
     "statusline-setup": "research"
   },
-  "fanout_classes": ["research", "audit-lens", "triage", "sweep", "evaluate"]
+  "fanout_classes": ["research", "audit-lens", "triage", "sweep", "evaluate"],
+  "council": {
+    "smallMaxLines": 100,
+    "largeMinLines": 500,
+    "riskyPaths": ["**/features/wallet/**", "**/features/auth/**", "**/Financial/**"]
+  }
 }

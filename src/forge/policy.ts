@@ -38,6 +38,9 @@ export interface Policy {
   classes: Record<string, ClassSpec>;
   brief_tiers: Record<string, string>;
   subagents: Record<string, string>;
+  /** Council's diff-risk thresholds (roadmap P4.4, decision 5). Optional: a file written
+   * before this stream has none, and `council/risk.ts` falls back to its own defaults. */
+  council?: { smallMaxLines: number; largeMinLines: number; riskyPaths: string[] };
 }
 
 const HERE = dirname(fileURLToPath(import.meta.url));
