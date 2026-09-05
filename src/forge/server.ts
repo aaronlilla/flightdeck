@@ -30,6 +30,7 @@ import {
   serverTokenPath,
 } from './paths.js';
 import { routerEnabled } from './policy.js';
+import { chainStatusRows, foldChainState } from './chain.js';
 import { Registry } from './registry.js';
 import { route as routeMessage } from './router.js';
 import { RunInbox, deliverAnswer } from './runinbox.js';
@@ -338,6 +339,10 @@ export class ForgeServer {
       // `router.enabled` in the policy file takes effect on the console's next poll
       // without restarting the server.
       router_enabled: routerEnabled(),
+      // P5.7: the same rows `forge status` prints, folded fresh off the journal on
+      // every call -- present whether or not FORGE_CHAIN is on, since a packet already
+      // in flight still belongs on the console.
+      chain: { value: chainStatusRows(foldChainState(fleet.events)), verified_at: journalMtime },
     };
   }
 

@@ -241,6 +241,12 @@ export const FORGE_EVENT_NAMES = [
   // named a ticket, but FORGE_JIRA_SITE/EMAIL/TOKEN were not all set, so none of the
   // three handoff writes were attempted.
   'jira.skipped',
+  // P5.7: the chain's own hop rows, one per packet -- `chain.blocked` when a hop cannot
+  // proceed, `chain.provisioned`/`chain.launched` for H2/H3, `chain.gated` for the
+  // council verdict H4 read, `chain.merged`/`chain.stopped` for how a gated packet
+  // ended, and `chain.tick-error` for a tick that threw before any of those.
+  'chain.blocked', 'chain.provisioned', 'chain.launched', 'chain.gated', 'chain.merged',
+  'chain.stopped', 'chain.tick-error',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];
