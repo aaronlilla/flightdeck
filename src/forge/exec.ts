@@ -11,7 +11,7 @@
  * spawns `java`, and killing the process the supervisor started leaves those running: the
  * budget looks enforced while the machine stays busy. `taskkill /F /T` takes the tree.
  */
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { createWriteStream, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -120,6 +120,17 @@ export interface RunRequest {
   logDir?: string;
   /** Overrides `killTree`. A specimen counts calls instead of touching a real process. */
   killFn?: (pid: number) => void;
+  /** C1: run `argv.join(' ')` through a shell instead of exec'ing `argv` directly.
+   *  Omitted keeps today's behavior (`shell: false`, `argv` exec'd as given -- needed
+   *  because `argv` may itself carry a shell operator like `&&`, which a direct exec
+   *  passes through as a literal argument rather than a chain). An array is a shell
+   *  binary plus its flags (e.g. a bash path and `-c`): the whole command travels as
+   *  that prefix's last argument. `true` asks Node's own `shell: true`, which spawns the
+   *  platform's default shell (`cmd.exe` on Windows, `/bin/sh` elsewhere). */
+  shell?: boolean | string[];
+  /** Overrides `child_process.spawn`. A specimen records what it was called with and
+   *  resolves the run itself, rather than starting a real process. */
+  spawnFn?: (command: string, args: string[], options: SpawnOptions) => ChildProcess;
 }
 
 export interface RunResult {
@@ -165,11 +176,30 @@ export async function run(request: RunRequest): Promise<RunResult> {
   }
   const log = logPath ? createWriteStream(logPath, { flags: 'a' }) : undefined;
 
-  const [command, ...args] = request.argv;
-  const child = spawn(command!, args, {
+  let spawnCommand: string;
+  let spawnArgs: string[];
+  let spawnShell: boolean;
+  if (Array.isArray(request.shell)) {
+    const [prefixCommand, ...prefixArgs] = request.shell;
+    spawnCommand = prefixCommand!;
+    spawnArgs = [...prefixArgs, request.argv.join(' ')];
+    spawnShell = false;
+  } else if (request.shell) {
+    spawnCommand = request.argv.join(' ');
+    spawnArgs = [];
+    spawnShell = true;
+  } else {
+    const [command, ...args] = request.argv;
+    spawnCommand = command!;
+    spawnArgs = args;
+    spawnShell = false;
+  }
+
+  const spawnFn = request.spawnFn ?? spawn;
+  const child = spawnFn(spawnCommand, spawnArgs, {
     cwd: request.cwd,
     env: request.env ?? process.env,
-    shell: false,
+    shell: spawnShell,
     // Its own group, so the negative-pid kill on POSIX has a group to take. On Windows
     // taskkill walks the tree from the pid and needs nothing here.
     detached: process.platform !== 'win32',

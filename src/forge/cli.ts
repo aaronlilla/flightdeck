@@ -331,9 +331,17 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       const stale = openAsks.filter(
         (entry) => isAskStale(entry, (run) => Boolean(statusRegistry.get(run))),
       ).length;
+      // P5.7: one row per packet the chain has ever seen, alongside the lane rows --
+      // present whether or not FORGE_CHAIN is on today, since a packet already in
+      // flight from an earlier `forge up` still deserves to show here. Computed before
+      // the "nothing is running" check below: the 2026-09-05 CI failure was this line
+      // sitting after that check, so a chain packet on an otherwise clean fleet (no
+      // lanes, no waiting asks, no fleet notice -- exactly what a fresh CI runner looks
+      // like) got the packet folded and then thrown away unread.
+      const chainRows = chainStatusLines(foldChainState(state.events));
       // An idle fleet says one thing and stops. Appending "inbox: 0 waiting" to it made
       // "nothing is running" impossible to say, which is the answer a person most wants.
-      if (!rows.length && !waiting && !state.torn && !stuckRows.length && !fleetNotice) {
+      if (!rows.length && !waiting && !state.torn && !stuckRows.length && !fleetNotice && !chainRows.length) {
         return { code: 0, lines: ['nothing is running'] };
       }
       if (state.torn) {
@@ -341,10 +349,6 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       }
       rows.push(`inbox: ${waiting} waiting${stale ? ` (${stale} stale)` : ''}`);
       if (fleetNotice) rows.push(fleetNotice);
-      // P5.7: one row per packet the chain has ever seen, alongside the lane rows --
-      // present whether or not FORGE_CHAIN is on today, since a packet already in
-      // flight from an earlier `forge up` still deserves to show here.
-      const chainRows = chainStatusLines(foldChainState(state.events));
       return { code: 0, lines: [...stuckRows, ...rows, ...chainRows] };
     }
 
@@ -1363,6 +1367,39 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       }
     }
 
+    case 'chain': {
+      const [sub, ...chainArgs] = rest;
+
+      if (!sub) {
+        const state = foldChainState(replay(journalPath()).events);
+        const chainRows = chainStatusLines(state);
+        return { code: 0, lines: chainRows.length ? chainRows : ['no packets in the chain'] };
+      }
+
+      if (sub === 'retry') {
+        const [packetId, ...reasonArgs] = chainArgs;
+        if (!packetId) return { code: 2, lines: ['forge chain retry needs a packet id'] };
+
+        const state = foldChainState(replay(journalPath()).events);
+        if (!state.has(packetId)) return { code: 2, lines: [`unknown packet ${packetId}`] };
+
+        const reasonFlag = reasonArgs.indexOf('--reason');
+        const reason = reasonFlag >= 0 ? reasonArgs.slice(reasonFlag + 1).join(' ') : undefined;
+
+        const chainJournal = new Journal(journalPath());
+        try {
+          chainJournal.append({
+            event: 'chain.unblocked', actor: 'aaron', packetId, ...(reason ? { reason } : {}),
+          });
+        } finally {
+          chainJournal.close();
+        }
+        return { code: 0, lines: [`unblocked ${packetId}`] };
+      }
+
+      return { code: 2, lines: [`forge chain [retry PACKET [--reason "<why>"]] -- unknown subcommand ${sub}`] };
+    }
+
     case 'reason': {
       // The cheapest possible proof that the `claude` provider reaches a real model:
       // `forge reason --class evaluate '<question>'` prints the JSON answer and the
@@ -1418,7 +1455,8 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         lines: [
           'forge up | status | run BRIEF | send RUN TEXT | answer KEY ANSWER | stop --all '
             + '| gotchas | clear LANE | cutover [--from DIR] | intake --dry-run | reason --class CLASS '
-            + '| council --repo O/N --pr N | gate --repo O/N --pr N [--merge] [--handoff FILE]',
+            + '| council --repo O/N --pr N | gate --repo O/N --pr N [--merge] [--handoff FILE] '
+            + '| chain [retry PACKET [--reason "<why>"]]',
           `the server listens on ${FORGE_PORT}`,
         ],
       };

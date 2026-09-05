@@ -241,6 +241,79 @@ describe('runChainTick', () => {
   });
 });
 
+describe('C2: chain.unblocked', () => {
+  it('clears a blocked packet\'s state, so the next tick runs the hop it stopped at again', async () => {
+    const planned: ChainPlannedPacket[] = [{ packetId: 'p1', ticket: 'ABC-1', repo: 'owner/name', briefPath: 'C:/briefs/p1.md' }];
+    let provisionCalls = 0;
+    const fixture = buildFixture({
+      planned,
+      launcher: {
+        provision: async () => {
+          provisionCalls += 1;
+          if (provisionCalls === 1) throw new Error('spawn npm ENOENT');
+          return { worktreePath: 'C:/wt', branch: 'feature/abc-1', base: 'develop' };
+        },
+      },
+    });
+
+    await runChainTick(fixture.deps, fixture.state);
+    expect(eventNames(fixture.events)).toEqual(['intake.planned', 'chain.blocked']);
+    let state = foldChainState(fixture.events);
+    expect(state.get('p1')?.blocked?.hop).toBe('provision');
+
+    // A second tick while still blocked never retries on its own.
+    await runChainTick(fixture.deps, state);
+    expect(provisionCalls).toBe(1);
+
+    fixture.deps.append({ event: 'chain.unblocked', actor: 'aaron', packetId: 'p1', reason: 'shell fix landed' });
+    state = foldChainState(fixture.events);
+    expect(state.get('p1')?.blocked).toBeUndefined();
+
+    await runChainTick(fixture.deps, state);
+    expect(provisionCalls).toBe(2);
+    expect(eventNames(fixture.events)).toEqual([
+      'intake.planned', 'chain.blocked', 'chain.unblocked', 'chain.provisioned', 'chain.launched',
+    ]);
+  });
+
+  it('reuses an already-provisioned worktree rather than provisioning again', async () => {
+    const planned: ChainPlannedPacket[] = [{ packetId: 'p1', ticket: 'ABC-1', repo: 'owner/name', briefPath: 'C:/briefs/p1.md' }];
+    let provisionCalls = 0;
+    let launchCalls = 0;
+    const fixture = buildFixture({
+      planned,
+      launcher: {
+        provision: async () => { provisionCalls += 1; return { worktreePath: 'C:/wt', branch: 'feature/abc-1', base: 'develop' }; },
+        launch: async () => { launchCalls += 1; throw new Error('spawn ENOENT'); },
+      },
+    });
+
+    await runChainTick(fixture.deps, fixture.state);
+    let state = foldChainState(fixture.events);
+    expect(state.get('p1')?.blocked?.hop).toBe('launch');
+    expect(provisionCalls).toBe(1);
+
+    fixture.deps.append({ event: 'chain.unblocked', actor: 'aaron', packetId: 'p1' });
+    state = foldChainState(fixture.events);
+    await runChainTick(fixture.deps, state);
+
+    expect(provisionCalls).toBe(1);
+    expect(launchCalls).toBe(2);
+  });
+});
+
+describe('chainStatusLines', () => {
+  it('shows a row unblocked and re-provisioning, not stuck on the old blocked reason', () => {
+    const events: Record<string, unknown>[] = [
+      { event: 'intake.planned', packetId: 'p1', ticket: 'ABC-1', repo: 'owner/name', briefPath: 'x' },
+      { event: 'chain.blocked', packetId: 'p1', hop: 'provision', reason: 'spawn npm ENOENT' },
+      { event: 'chain.unblocked', packetId: 'p1', reason: 'shell fix landed' },
+    ];
+    const lines = chainStatusLines(foldChainState(events));
+    expect(lines.find((line) => line.includes('ABC-1'))).not.toContain('ENOENT');
+  });
+});
+
 describe('chainStatusLines', () => {
   it('prints one row per packet with its ticket, hop and state', () => {
     const events: Record<string, unknown>[] = [
