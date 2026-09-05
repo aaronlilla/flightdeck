@@ -1,0 +1,18 @@
+{
+  "fixtures": [
+    "fake-sdk-stream.json",
+    "legacy-journal.jsonl",
+    "real-session-sample.jsonl"
+  ],
+  "specimens": [
+    "authorship.ts",
+    "gitflow.ts",
+    "humanizer.ts",
+    "sycophancy.ts",
+    "vagueness.ts"
+  ],
+  "probes": [
+    "forge-live-probe.md",
+    "forge-live-probe-b3.md"
+  ]
+}
