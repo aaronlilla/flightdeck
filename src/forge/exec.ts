@@ -128,6 +128,12 @@ export interface RunRequest {
    *  that prefix's last argument. `true` asks Node's own `shell: true`, which spawns the
    *  platform's default shell (`cmd.exe` on Windows, `/bin/sh` elsewhere). */
   shell?: boolean | string[];
+  /** Keep the whole stdout+stderr, not just the last `TAIL_BYTES`, and return it as
+   *  `full`. A caller that must parse the entire output -- `gh pr view --json` for the
+   *  gate, where a real PR body runs well past 4000 bytes and a truncated tail is not
+   *  valid JSON -- sets this; everything else stays tail-bounded so a runaway command
+   *  cannot grow this buffer without limit. */
+  fullOutput?: boolean;
   /** Overrides `child_process.spawn`. A specimen records what it was called with and
    *  resolves the run itself, rather than starting a real process. */
   spawnFn?: (command: string, args: string[], options: SpawnOptions) => ChildProcess;
@@ -143,6 +149,8 @@ export interface RunResult {
   logPath?: string;
   dumpPath?: string;
   tail: string;
+  /** The whole output, present only when the request set `fullOutput`. */
+  full?: string;
   startedAt: number;
   durationMs: number;
   ok: boolean;
@@ -206,11 +214,13 @@ export async function run(request: RunRequest): Promise<RunResult> {
   });
 
   let buffer = '';
+  let fullBuffer = '';
   let lastActivity = Date.now();
   const collect = (chunk: Buffer | string) => {
     const text = String(chunk);
     lastActivity = Date.now();
     buffer = (buffer + text).slice(-TAIL_BYTES);
+    if (request.fullOutput) fullBuffer += text;
     log?.write(text);
   };
   child.stdout?.on('data', collect);
@@ -247,6 +257,7 @@ export async function run(request: RunRequest): Promise<RunResult> {
       // Redacted on the whole accumulated buffer, never per chunk: a token split across
       // two stdout reads would survive a redaction applied to each chunk on its own.
       const tail = redact(buffer);
+      const full = request.fullOutput ? redact(fullBuffer) : undefined;
       if (killed && dumpPath) {
         writeFileSync(dumpPath, [
           `owner: ${request.owner}`,
@@ -269,6 +280,7 @@ export async function run(request: RunRequest): Promise<RunResult> {
         ...(logPath ? { logPath } : {}),
         ...(killed && dumpPath ? { dumpPath } : {}),
         tail,
+        ...(full !== undefined ? { full } : {}),
         startedAt,
         durationMs,
         ok: !killed && returncode === 0,

@@ -13,13 +13,13 @@
  */
 import type { ChildProcess, SpawnOptions } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { CLASS_BUDGETS, budgetsFor, killTree, run } from '../../src/forge/exec.js';
+import { CLASS_BUDGETS, TAIL_BYTES, budgetsFor, killTree, run } from '../../src/forge/exec.js';
 
 let dir: string;
 
@@ -266,3 +266,40 @@ function isAlive(pid: number): boolean {
     return (error as NodeJS.ErrnoException).code === 'EPERM';
   }
 }
+
+describe('fullOutput: the whole output, for a caller that must parse all of it', () => {
+  // The script is written to a file and run as `node <file>` so no braces or quotes travel
+  // through argv, where Windows would mangle them. The body is ordinary spaced words, not a
+  // single long token, so the redactor leaves it alone -- a real `gh pr view --json` body is
+  // structured text of exactly this shape, and one of its own strings ("access-denied") is
+  // what the truncated tail was cut through when this crashed the gate.
+  function bigJsonScript(tag: string): string {
+    const scriptPath = join(dir, `big-${tag}.js`);
+    writeFileSync(
+      scriptPath,
+      'const s = "access-denied ".repeat(600); process.stdout.write(JSON.stringify({ body: s }));',
+      'utf8',
+    );
+    return scriptPath;
+  }
+
+  it('returns the complete stdout as full, valid JSON past the tail cap', async () => {
+    const result = await run({
+      argv: ['node', bigJsonScript('a')], cwd: dir, owner: 'r1', fullOutput: true,
+    });
+    expect(result.full).toBeDefined();
+    const parsed = JSON.parse(result.full as string) as { body: string };
+    expect(parsed.body.length).toBeGreaterThan(TAIL_BYTES);
+    // The tail is still capped and, on its own, is not valid JSON.
+    expect(result.tail.length).toBeLessThanOrEqual(TAIL_BYTES);
+    expect(() => JSON.parse(result.tail)).toThrow();
+  });
+
+  it('without fullOutput, full is absent and the capped tail cannot be parsed', async () => {
+    const result = await run({
+      argv: ['node', bigJsonScript('b')], cwd: dir, owner: 'r1',
+    });
+    expect(result.full).toBeUndefined();
+    expect(() => JSON.parse(result.tail)).toThrow();
+  });
+});
