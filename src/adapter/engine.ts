@@ -70,6 +70,14 @@ export interface EngineConfig {
   /** How much effort the model puts into its response: the class's own choice, not the
    *  SDK's per-model default. */
   effort?: Options['effort'];
+  /**
+   * Overrides the SDK's default `claude_code` system-prompt preset (which loads
+   * CLAUDE.md, skills and hooks context) with a plain string of the caller's own.
+   * Left unset, every session up to now has taken the default preset; a bounded,
+   * isolated call (the reasoner seam) sets this so it never pays for, or gets steered
+   * by, an agent system prompt it did not ask for.
+   */
+  systemPrompt?: Options['systemPrompt'];
 }
 
 /** One earlier session, reduced to what a picker needs to show. */
@@ -147,6 +155,7 @@ export function buildOptions(
   if (config.mcpServers) options.mcpServers = config.mcpServers;
   if (config.allowedTools) options.allowedTools = config.allowedTools;
   if (config.effort) options.effort = config.effort;
+  if (config.systemPrompt !== undefined) options.systemPrompt = config.systemPrompt;
 
   const inspect = config.onToolCall;
   if (inspect) {

@@ -131,13 +131,67 @@ describe('ClaudeReasoner', () => {
     expect(row?.['raw']).toBe('not json at all');
   });
 
-  it('rejects with a typed parse error when the JSON is valid but the shape is wrong', async () => {
+  it('accepts any well-formed JSON object, deriving text from a "text" field when one is present', async () => {
     const { fn } = fakeQuery('{"answer": "wrong key"}');
     const journal = new Journal(journalPath);
     const reasoner = new ClaudeReasoner({ journal, queryFn: fn, existsConfigDir: () => false });
 
-    await expect(reasoner.call({ className: 'evaluate', prompt: 'still on task?' }))
-      .rejects.toBeInstanceOf(ReasonerParseError);
+    const result = await reasoner.call({ className: 'evaluate', prompt: 'still on task?' });
+    journal.close();
+
+    expect(result).toEqual({ text: '{"answer":"wrong key"}' });
+    const state = replay(journalPath);
+    const row = state.events.find((event) => event.event === 'reasoner.call');
+    expect(row?.['parsed']).toBe(true);
+  });
+
+  // I17 correction: a live check against a real Haiku produced this exact raw string, a
+  // valid JSON object answering the question asked. The old fixed `{text: string}` schema
+  // rejected it anyway (parsed: false), though nothing about the reply was malformed. A
+  // `Reasoner.call` seam that only ever reads a plain `.text` back has to accept whatever
+  // well-formed object shape the model actually returns, deriving `text` from the whole
+  // object when no `text` field is present.
+  it('parses the exact raw reply from the I17 live-check escape ({"ok": true, "word": "surge"})', async () => {
+    const { fn } = fakeQuery('{"ok": true, "word": "surge"}');
+    const journal = new Journal(journalPath);
+    const reasoner = new ClaudeReasoner({ journal, queryFn: fn, existsConfigDir: () => false });
+
+    const result = await reasoner.call({ className: 'evaluate', prompt: 'does "surge" appear?' });
+    journal.close();
+
+    expect(result.text).toContain('surge');
+    const state = replay(journalPath);
+    const row = state.events.find((event) => event.event === 'reasoner.call');
+    expect(row?.['parsed']).toBe(true);
+    expect(row?.['raw']).toBe('{"ok": true, "word": "surge"}');
+  });
+
+  // I17's acceptance: the raw reply is kept in the journal row whether or not it parsed,
+  // capped at 2,000 characters.
+  it('keeps the raw reply in the journal row on a successful parse too, capped at 2,000 characters', async () => {
+    const longWord = 'x'.repeat(3000);
+    const { fn } = fakeQuery(`{"text": "${longWord}"}`);
+    const journal = new Journal(journalPath);
+    const reasoner = new ClaudeReasoner({ journal, queryFn: fn, existsConfigDir: () => false });
+
+    await reasoner.call({ className: 'evaluate', prompt: 'x' });
+    journal.close();
+
+    const state = replay(journalPath);
+    const row = state.events.find((event) => event.event === 'reasoner.call');
+    expect(row?.['parsed']).toBe(true);
+    expect(typeof row?.['raw']).toBe('string');
+    expect((row?.['raw'] as string).length).toBe(2000);
+  });
+
+  it('still rejects a JSON reply that is not an object (an array or a bare primitive)', async () => {
+    const journal = new Journal(journalPath);
+    for (const raw of ['["not", "an", "object"]', '"just a string"', '42', 'null']) {
+      const { fn } = fakeQuery(raw);
+      const reasoner = new ClaudeReasoner({ journal, queryFn: fn, existsConfigDir: () => false });
+      await expect(reasoner.call({ className: 'evaluate', prompt: 'x' }))
+        .rejects.toBeInstanceOf(ReasonerParseError);
+    }
     journal.close();
   });
 
@@ -180,6 +234,26 @@ describe('ClaudeReasoner', () => {
     expect(calls[0]?.options.allowedTools).toEqual([]);
     expect(calls[0]?.options.maxTurns).toBe(1);
     expect(calls[0]?.options.permissionMode).toBe('bypassPermissions');
+  });
+
+  // I17: a live check against a real Haiku showed a 23,261-token cache creation on a
+  // one-line question, meaning the session opened on the SDK's default `claude_code`
+  // preset (which loads CLAUDE.md, skills and hooks) rather than a small prompt of this
+  // provider's own. `settingSources: []` alone did not stop that: the default preset is
+  // chosen whenever `systemPrompt` is left unset, independent of settingSources.
+  it('opens on its own system prompt, not the default preset, with no hooks and no MCP servers', async () => {
+    const { fn, calls } = fakeQuery('{"text": "ok"}');
+    const journal = new Journal(journalPath);
+    const reasoner = new ClaudeReasoner({ journal, queryFn: fn, existsConfigDir: () => false });
+    await reasoner.call({ className: 'evaluate', prompt: 'x' });
+    journal.close();
+
+    const options = calls[0]?.options;
+    expect(typeof options?.systemPrompt).toBe('string');
+    expect(options?.systemPrompt).toMatch(/json/i);
+    expect(options?.settingSources).toEqual([]);
+    expect(options?.hooks).toBeUndefined();
+    expect(options?.mcpServers).toBeUndefined();
   });
 
   it('strips the nine inherited names and ANTHROPIC_API_KEY, and pins CLAUDE_CONFIG_DIR', async () => {
