@@ -106,3 +106,28 @@ describe('the tier a brief asks for', () => {
     expect(tierOfBrief('')).toBe('implement');
   });
 });
+
+describe('wardenConfig', () => {
+  it('reads the cost-shape thresholds off the real policy file', async () => {
+    const { wardenConfig } = await import('../../src/forge/policy.js');
+    const config = wardenConfig();
+    expect(config.contextHigh).toBeGreaterThan(0);
+    expect(config.cacheReadRatio).toBeGreaterThan(0);
+    expect(config.turnsWithoutWrite).toBeGreaterThan(0);
+  });
+
+  it('falls back to the spec defaults for a policy file with no warden block', async () => {
+    const { writeFileSync, mkdtempSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'forge-policy-nowarden-'));
+    const path = join(dir, 'model-policy.json');
+    writeFileSync(path, JSON.stringify({
+      version: 1, escalation: 'never-by-retry', fallback: {}, aliases: {},
+      interactive: { warnContext: 1 }, prices: {}, classes: { evaluate: { model: 'haiku', effort: 'low', maxContext: 1, maxTurns: 1 } },
+      brief_tiers: {}, subagents: {},
+    }), 'utf8');
+    const { wardenConfig, DEFAULT_WARDEN_CONFIG } = await import('../../src/forge/policy.js');
+    expect(wardenConfig(path)).toEqual(DEFAULT_WARDEN_CONFIG);
+  });
+});

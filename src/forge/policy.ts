@@ -28,6 +28,12 @@ export interface Price {
   output: number;
 }
 
+export interface WardenConfig {
+  contextHigh: number;
+  cacheReadRatio: number;
+  turnsWithoutWrite: number;
+}
+
 export interface Policy {
   version: number;
   escalation: string;
@@ -38,7 +44,15 @@ export interface Policy {
   classes: Record<string, ClassSpec>;
   brief_tiers: Record<string, string>;
   subagents: Record<string, string>;
+  warden?: WardenConfig;
 }
+
+/** The spec's own illustrative numbers, used when a policy file predates this field. */
+export const DEFAULT_WARDEN_CONFIG: WardenConfig = {
+  contextHigh: 300_000,
+  cacheReadRatio: 0.9,
+  turnsWithoutWrite: 30,
+};
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -162,6 +176,10 @@ const TIER_LINE = /^[ \t]*(?:-[ \t]*)?tier[ \t]*:[ \t]*([A-Za-z0-9_-]+)[ \t]*$/i
  * makes "nothing escalates by retry" a property of the code rather than a promise in a
  * comment.
  */
+export function wardenConfig(path?: string): WardenConfig {
+  return loadPolicy(path).warden ?? DEFAULT_WARDEN_CONFIG;
+}
+
 export function tierOfBrief(briefText: string, path?: string): string {
   const table = loadPolicy(path).brief_tiers;
   const fallback = table['default'] ?? 'implement';
