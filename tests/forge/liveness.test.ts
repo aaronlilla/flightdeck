@@ -90,6 +90,104 @@ describe('the context signal', () => {
   });
 });
 
+describe('I15: admission ignores a dead run\'s dangling tool call', () => {
+  it('never trips tool-budget for a run whose registry row is absent', () => {
+    const trips = assess(baseInput({
+      runs: [{
+        run: 'forge-live-probe-b3', className: 'implement', lastEventAt: NOW,
+        currentTool: { name: 'Bash', startedAt: NOW - 900_000, cls: 'test' },
+        context: 0, registryLive: false,
+      }],
+    }));
+    expect(trips.some((t) => t.signal === 'tool-budget')).toBe(false);
+    // No row remains (registryRowRemains not set), so there is nothing to record either.
+    expect(trips.some((t) => t.signal === 'registry-abandoned')).toBe(false);
+  });
+
+  it('records registry-abandoned once, instead of a tool-budget trip, when a dead row remains', () => {
+    const trips = assess(baseInput({
+      runs: [{
+        run: 'forge-live-probe-b3', className: 'implement', lastEventAt: NOW,
+        currentTool: { name: 'Bash', startedAt: NOW - 900_000, cls: 'test' },
+        context: 0, registryLive: false, registryRowRemains: true,
+      }],
+    }));
+    expect(trips.some((t) => t.signal === 'tool-budget')).toBe(false);
+    const trip = trips.find((t) => t.signal === 'registry-abandoned');
+    expect(trip).toBeTruthy();
+    expect(trip?.key).toBe('forge-live-probe-b3');
+  });
+
+  it('still trips tool-budget when the registry says the pid is alive', () => {
+    const trips = assess(baseInput({
+      runs: [{
+        run: 'forge-live-probe-b3', className: 'implement', lastEventAt: NOW,
+        currentTool: { name: 'Bash', startedAt: NOW - 900_000, cls: 'test' },
+        context: 0, registryLive: true,
+      }],
+    }));
+    expect(trips.some((t) => t.signal === 'tool-budget')).toBe(true);
+  });
+
+  it('the supervisor never parks or flags a lane for a dead run\'s dangling tool call, '
+    + 'but does journal registry.abandoned exactly once across ticks', () => {
+    const journaled: Record<string, unknown>[] = [];
+    const laneWrites: Array<{ slug: string; fields: Record<string, unknown> }> = [];
+    const parked = new Map<string, string>();
+    let now = NOW;
+    const supervisor = new LivenessSupervisor(
+      () => baseInput({
+        now,
+        runs: [{
+          run: 'forge-live-probe-b3', className: 'implement', lastEventAt: now - 3_000_000,
+          currentTool: { name: 'Bash', startedAt: now - 900_000, cls: 'test' },
+          context: 0, registryLive: false, registryRowRemains: true,
+        }],
+      }),
+      { append: (e) => journaled.push(e as Record<string, unknown>) },
+      () => {},
+      DEFAULT_THRESHOLDS,
+      { parked, lanes: { put: (slug, fields) => laneWrites.push({ slug, fields }) } },
+    );
+
+    supervisor.evaluate();
+    now += 1000;
+    supervisor.evaluate();
+
+    expect(journaled.some((e) => e['event'] === 'warden.parked')).toBe(false);
+    expect(laneWrites.some((w) => w.fields['needs_aaron'])).toBe(false);
+    expect(parked.size).toBe(0);
+    const abandoned = journaled.filter((e) => e['event'] === 'registry.abandoned');
+    expect(abandoned).toHaveLength(1);
+    expect(abandoned[0]?.['run']).toBe('forge-live-probe-b3');
+  });
+
+  it('the supervisor parks and flags the lane when the same dangling tool call is backed by a live pid', () => {
+    const journaled: Record<string, unknown>[] = [];
+    const laneWrites: Array<{ slug: string; fields: Record<string, unknown> }> = [];
+    const parked = new Map<string, string>();
+    const supervisor = new LivenessSupervisor(
+      () => baseInput({
+        runs: [{
+          run: 'forge-live-probe-b3', className: 'implement', lastEventAt: NOW - 3_000_000,
+          currentTool: { name: 'Bash', startedAt: NOW - 900_000, cls: 'test' },
+          context: 0, registryLive: true,
+        }],
+      }),
+      { append: (e) => journaled.push(e as Record<string, unknown>) },
+      () => {},
+      DEFAULT_THRESHOLDS,
+      { parked, lanes: { put: (slug, fields) => laneWrites.push({ slug, fields }) } },
+    );
+
+    supervisor.evaluate();
+
+    expect(journaled.some((e) => e['event'] === 'warden.parked')).toBe(true);
+    expect(laneWrites.some((w) => w.slug === 'forge-live-probe-b3' && w.fields['needs_aaron'])).toBe(true);
+    expect(parked.get('forge-live-probe-b3')).toBeTruthy();
+  });
+});
+
 describe('the stale-session signal', () => {
   it('is silent one second inside the threshold', () => {
     const trips = assess(baseInput({

@@ -15,7 +15,8 @@ import { CLASS_BUDGETS, DEFAULT_CLASS } from './exec.js';
 import { contextFor } from './policy.js';
 
 export type LivenessSignal =
-  | 'idle' | 'tool-budget' | 'context' | 'stale-session' | 'login-stuck' | 'fleet-unknown';
+  | 'idle' | 'tool-budget' | 'context' | 'stale-session' | 'login-stuck' | 'fleet-unknown'
+  | 'registry-abandoned';
 
 export interface StuckSignal {
   /** The run name, or `pid:N` for a fleet-process signal. */
@@ -42,6 +43,25 @@ export interface RunSnapshot {
   currentTool?: { name: string; startedAt: number; cls?: string };
   /** The run's current context, compared against its class ceiling. */
   context: number;
+  /**
+   * I15: whether a registry row currently backs this run with a live pid. The caller
+   * reads this off the registry; the journal fold that builds the rest of this snapshot
+   * knows nothing about processes. `undefined` means the caller never consulted the
+   * registry (every snapshot built before this field existed), so it is read as live and
+   * nothing changes for a caller that has not opted in. `false` is the I15 fix: a run
+   * whose process died mid-tool-call leaves a `tool.start` row with no matching
+   * `tool.end`, which replays forever as a tool still in flight no matter how long the
+   * process has actually been dead. Admission must never act on that stale fold once the
+   * registry says the process is gone.
+   */
+  registryLive?: boolean;
+  /**
+   * Only meaningful when `registryLive` is `false`. `true` means a registry row still
+   * exists for a pid that is no longer alive, worth one `registry-abandoned` record so
+   * the leftover row does not go unnoticed. `false` or absent means there was no row at
+   * all (already cleaned up, or never registered) and there is nothing left to record.
+   */
+  registryRowRemains?: boolean;
 }
 
 export interface FleetProcess {
@@ -91,6 +111,25 @@ export function assess(input: LivenessInput, thresholds: LivenessThresholds = DE
   const trips: StuckSignal[] = [];
 
   for (const run of input.runs) {
+    // I15: a run the caller has confirmed is not backed by a live registry pid never
+    // trips idle/tool-budget/context. Every field behind those signals comes from the
+    // journal's replayed fold, which keeps a dead run's last-known state (including a
+    // `tool.start` with no matching `tool.end`) exactly as it was the instant the process
+    // died. Admission must never act on that stale reading. When a registry row still
+    // exists for the dead pid, one `registry-abandoned` trip records it; when there is no
+    // row at all, there is nothing left to say.
+    if (run.registryLive === false) {
+      if (run.registryRowRemains) {
+        trips.push({
+          key: run.run, signal: 'registry-abandoned', threshold: 0, observed: 0,
+          since: run.lastEventAt,
+          hint: `run ${run.run} has a registry row from a process that is no longer alive; `
+            + 'its dangling tool call is history, never a reason to refuse the next launch',
+        });
+      }
+      continue;
+    }
+
     const idleFor = input.now - run.lastEventAt;
     if (idleFor >= thresholds.idleMs) {
       trips.push({
@@ -232,7 +271,13 @@ export class LivenessSupervisor {
       const id = `${trip.key}:${trip.signal}`;
       const existing = this.open.get(id);
       if (!existing) {
-        const event = { event: 'liveness.stuck', ...trip };
+        // I15: a dead run's dangling tool call is a fact worth one line, never a reason to
+        // park anything. Journaled under the same name `reconcileRegistry` already uses
+        // for the same idea (a registry row nobody cleaned up), rather than as another
+        // `liveness.stuck` a reader would expect the actuator to act on.
+        const event = trip.signal === 'registry-abandoned'
+          ? { event: 'registry.abandoned', run: trip.key, actor: 'warden', reason: trip.hint }
+          : { event: 'liveness.stuck', ...trip };
         this.journal.append(event);
         this.publish(event);
         this.actOnStuck(trip, id);
