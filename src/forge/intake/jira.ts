@@ -70,6 +70,8 @@ interface JiraSearchIssue {
     updated?: string;
     issuetype?: { name?: string };
     priority?: { name?: string };
+    labels?: string[];
+    components?: { name?: string }[];
   };
   renderedFields?: { description?: string };
 }
@@ -88,6 +90,9 @@ function detailFor(issue: JiraSearchIssue): PollItemDetail {
     status: issue.fields.status?.name ?? '',
     issuetype: issue.fields.issuetype?.name ?? '',
     priority: issue.fields.priority?.name ?? '',
+    // R1: what the repository router matches labels and components against.
+    labels: issue.fields.labels ?? [],
+    components: (issue.fields.components ?? []).map((c) => c.name ?? '').filter((name) => name.length > 0),
   };
 }
 
@@ -114,7 +119,7 @@ export function createJiraFeed(config: JiraConfig): FakePollFeed {
           headers: { 'content-type': 'application/json', authorization: auth },
           body: JSON.stringify({
             jql: config.jql ?? DEFAULT_JIRA_JQL,
-            fields: ['summary', 'description', 'status', 'updated', 'issuetype', 'priority', 'labels'],
+            fields: ['summary', 'description', 'status', 'updated', 'issuetype', 'priority', 'labels', 'components'],
             maxResults: 50,
             ...(nextPageToken ? { nextPageToken } : {}),
           }),
@@ -186,6 +191,31 @@ async function callResultFor(response: Response): Promise<JiraCallResult> {
   return { ok: false, status: response.status, body: redact(body.slice(0, 300)) };
 }
 
+interface AdfTextNode { type: 'text'; text: string }
+interface AdfHardBreak { type: 'hardBreak' }
+interface AdfParagraph { type: 'paragraph'; content: (AdfTextNode | AdfHardBreak)[] }
+export interface AdfDocument { type: 'doc'; version: 1; content: AdfParagraph[] }
+
+/**
+ * R2: `POST /rest/api/3/issue/{key}/comment` requires an Atlassian Document Format body
+ * (a plain string gets `400 {"errors":{"comment":"Comment body is not valid!"}}`). One
+ * paragraph per blank-line-separated block, each line inside a block as a `text` node
+ * joined by `hardBreak` nodes, no marks.
+ */
+export function adfFromText(text: string): AdfDocument {
+  const blocks = text.split(/\n{2,}/).filter((block) => block.length > 0);
+  const content: AdfParagraph[] = blocks.map((block) => {
+    const lines = block.split('\n');
+    const paragraphContent: (AdfTextNode | AdfHardBreak)[] = [];
+    lines.forEach((line, index) => {
+      if (index > 0) paragraphContent.push({ type: 'hardBreak' });
+      paragraphContent.push({ type: 'text', text: line });
+    });
+    return { type: 'paragraph', content: paragraphContent };
+  });
+  return { type: 'doc', version: 1, content };
+}
+
 export function createJiraWriteClient(config: Pick<JiraConfig, 'site' | 'email' | 'token' | 'fetchFn'>): JiraWriteClient {
   const fetchFn = config.fetchFn ?? fetch;
   const auth = basicAuth(config.email, config.token);
@@ -194,7 +224,7 @@ export function createJiraWriteClient(config: Pick<JiraConfig, 'site' | 'email' 
   return {
     async comment(key, body) {
       const response = await fetchFn(`${config.site}/rest/api/3/issue/${key}/comment`, {
-        method: 'POST', headers, body: JSON.stringify({ body }),
+        method: 'POST', headers, body: JSON.stringify({ body: adfFromText(body) }),
       });
       return callResultFor(response);
     },

@@ -96,4 +96,61 @@ describe('runIntakeOnce', () => {
     const result = await runIntakeOnce(feeds, memoryWatermarks(), () => {});
     expect(result.sourcesPolled).toEqual(['jira', 'sentry', 'github']);
   });
+
+  it('R1: a matching repo rule routes the packet instead of leaving it unknown', async () => {
+    const feed = {
+      name: 'jira' as PollSourceName,
+      fetchSince: async () => [{
+        id: 'BBZ-1', updated: 100,
+        detail: {
+          summary: 'x', description: '', status: 'Open', issuetype: 'Bug', priority: 'High',
+          labels: ['mobile'], components: [],
+        },
+      }],
+    };
+    const result = await runIntakeOnce(
+      [feed], memoryWatermarks(), () => {}, undefined,
+      [{ kind: 'label', value: 'mobile', repo: 'owner/frontend' }],
+    );
+    expect(result.writtenPackets[0]?.repo).toBe('owner/frontend');
+    expect(result.unrouted).toEqual([]);
+  });
+
+  it('R1: no map or no match leaves the packet unknown and records it as unrouted, '
+    + 'labels and components included', async () => {
+    const feed = {
+      name: 'jira' as PollSourceName,
+      fetchSince: async () => [{
+        id: 'BBZ-2', updated: 100,
+        detail: {
+          summary: 'x', description: '', status: 'Open', issuetype: 'Bug', priority: 'High',
+          labels: ['other'], components: ['api'],
+        },
+      }],
+    };
+    const result = await runIntakeOnce([feed], memoryWatermarks(), () => {});
+    expect(result.writtenPackets[0]?.repo).toBe('unknown');
+    expect(result.unrouted).toEqual([{ ticket: 'BBZ-2', labels: ['other'], components: ['api'] }]);
+  });
+
+  it('R1: order matters, the first matching rule wins', async () => {
+    const feed = {
+      name: 'jira' as PollSourceName,
+      fetchSince: async () => [{
+        id: 'BBZ-3', updated: 100,
+        detail: {
+          summary: 'x', description: '', status: 'Open', issuetype: 'Bug', priority: 'High',
+          labels: ['mobile'], components: ['api'],
+        },
+      }],
+    };
+    const result = await runIntakeOnce(
+      [feed], memoryWatermarks(), () => {}, undefined,
+      [
+        { kind: 'label', value: 'mobile', repo: 'owner/frontend' },
+        { kind: 'component', value: 'api', repo: 'owner/backend' },
+      ],
+    );
+    expect(result.writtenPackets[0]?.repo).toBe('owner/frontend');
+  });
 });
