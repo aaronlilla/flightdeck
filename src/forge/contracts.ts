@@ -212,6 +212,11 @@ export const FORGE_EVENT_NAMES = [
   // ends with no `forge_done`, no ceiling hit, no park and no kill -- before it gives up
   // and calls the run `stopped`.
   'run.nudged',
+  // P4.7/I4: the `claude` provider (`reasoner-claude.ts`) behind the `Reasoner` seam.
+  // `reasoner.call` covers both a parsed reply (`parsed: true`) and one that failed to
+  // parse (`parsed: false`, with the raw text); `reasoner.timeout` is a call that
+  // outran `reasoner.timeoutMs` and was abandoned rather than awaited further.
+  'reasoner.call', 'reasoner.timeout',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];

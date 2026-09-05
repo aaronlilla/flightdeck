@@ -116,9 +116,10 @@
     "planner's plan seam always resolves to claude while this is off. Only",
     "planning-only turns astra on, per the 2026-09-04 16:40 amendment (Aaron: limit",
     "astra to what absolutely matters). No stream build, test, lens or review calls",
-    "astra regardless of this flag."
+    "astra regardless of this flag. timeoutMs bounds one Reasoner.call (P4.7/I4);",
+    "a call that outruns it is journaled as reasoner.timeout rather than left hanging."
   ],
-  "reasoner": { "astra": "off" },
+  "reasoner": { "astra": "off", "timeoutMs": 120000 },
   "council": {
     "smallMaxLines": 100,
     "largeMinLines": 500,

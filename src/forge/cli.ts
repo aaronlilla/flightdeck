@@ -18,6 +18,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import type { QueryFn } from '../adapter/engine.js';
 import { BlockerBoard } from './blockers.js';
 import { runCutover } from './cutover.js';
 import { readLoginLock } from './credential-horizon.js';
@@ -38,7 +39,9 @@ import {
   lanesDir, registryDir, runsDir,
 } from './paths.js';
 import { modelFor, modelIdFor, tierOfBrief } from './policy.js';
+import { providerFor } from './contracts.js';
 import { processAlive, reconcileRegistry, Registry } from './registry.js';
+import { reasonerFor } from './reasoner-claude.js';
 import { deliverAnswer, RunInbox } from './runinbox.js';
 import { SdkEngine } from './sdkengine.js';
 import { FORGE_PORT, ForgeServer } from './server.js';
@@ -71,6 +74,9 @@ export interface ForgeDeps {
   /** Overrides the pid-liveness check `up`'s registry reconcile reads. Production
    *  default: `processAlive` (a `process.kill(pid, 0)` signal probe). */
   alive?: (pid: number) => boolean;
+  /** Overrides the `claude` provider's own SDK `query`. Every specimen injects a fake
+   *  here; nothing else may -- production leaves this unset and gets the real SDK. */
+  reasonerQueryFn?: QueryFn;
 }
 
 /**
@@ -259,10 +265,20 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         ? `reconciled ${outcome.goal}: resumed by session id`
         : `could not reconcile ${outcome.goal}: ${outcome.reason}`));
 
+      // P4.7/I4: the `claude` provider behind every `Reasoner` seam this process wires
+      // up below -- the router here and the Warden tick's conformance drift further
+      // down. `deps.reasonerQueryFn` is the only override, for specimens; every real
+      // run gets the SDK's own `query` (`Engine`'s default).
+      const reasonerJournal = new Journal(journalPath());
+      const reasoner = reasonerFor('claude', {
+        journal: reasonerJournal, queryFn: deps.reasonerQueryFn,
+      });
+
       const sharedJournalCache = new JournalCache();
       const server = new ForgeServer({
         lanes, inbox, journalPath: journalPath(), journalCache: sharedJournalCache, registry,
         stuck: () => liveness.stuck(),
+        reasoner,
         fleet: () => {
           const read = fleetSnapshot(deps);
           return Array.isArray(read) ? read.map((proc) => ({ ...proc })) : read;
@@ -278,12 +294,10 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         livenessJournal,
         (event) => server.publish(event),
       );
-      // P4.7/I2: the Warden tick, wiring reportFleetHealth, assessCostShape,
-      // ConformanceDrift (only once a real Reasoner is constructed here -- none is yet,
-      // so drift checks are a no-op today, named in the Status rather than silently
-      // skipped) and the actuator's park onto the same 30s cadence liveness already
-      // runs on. No `reasoner` is passed: nothing in this codebase implements one against
-      // a live model yet, so this tick's drift leg stays dormant until one exists.
+      // P4.7/I2, wired live by P4.7/I4: the Warden tick, wiring reportFleetHealth,
+      // assessCostShape, ConformanceDrift (a real `reasoner` below, so drift checks
+      // fire an actual `evaluate`-class call rather than staying dormant) and the
+      // actuator's park onto the same 30s cadence liveness already runs on.
       const wardenJournal = new Journal(journalPath());
       const wardenActuator = new WardenActuator({
         journal: wardenJournal, journalPath: journalPath(), registry, lanes,
@@ -293,6 +307,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         journal: wardenJournal,
         actuator: wardenActuator,
         blockers: wardenBlockers,
+        reasoner,
         now: () => Date.now(),
         stuck: () => liveness.stuck(),
         isRegisteredRun: (key: string) => Boolean(registry.get(key)) || Boolean(lanes.get(key)),
@@ -733,12 +748,61 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       return { code: 0, lines: planIntakeWrites([]) };
     }
 
+    case 'reason': {
+      // The cheapest possible proof that the `claude` provider reaches a real model:
+      // `forge reason --class evaluate '<question>'` prints the JSON answer and the
+      // journal row id, on whichever provider `model-policy.json` names for CLASS.
+      const classFlag = rest.indexOf('--class');
+      const className = classFlag >= 0 ? rest[classFlag + 1] : undefined;
+      const prompt = rest
+        .filter((_, index) => index !== classFlag && index !== classFlag + 1)
+        .join(' ')
+        .trim();
+      if (!className || !prompt) {
+        return {
+          code: 2,
+          lines: ['forge reason --class CLASS "question" -- CLASS names a model-policy '
+            + 'class (evaluate, audit-lens, audit-judge, ...)'],
+        };
+      }
+      const reasonJournalPath = journalPath();
+      const reasonJournal = new Journal(reasonJournalPath);
+      try {
+        const provider = providerFor(className);
+        const liveReasoner = reasonerFor(provider, {
+          journal: reasonJournal, queryFn: deps.reasonerQueryFn,
+        });
+        try {
+          const result = await liveReasoner.call({ className, prompt });
+          const state = replay(reasonJournalPath);
+          const row = [...state.events].reverse().find((event) => event.event === 'reasoner.call');
+          return {
+            code: 0,
+            lines: [JSON.stringify({ text: result.text }), `journal row: ${row?.id ?? '(not found)'}`],
+          };
+        } catch (error) {
+          const state = replay(reasonJournalPath);
+          const row = [...state.events].reverse()
+            .find((event) => event.event === 'reasoner.call' || event.event === 'reasoner.timeout');
+          return {
+            code: 1,
+            lines: [
+              `forge reason failed: ${error instanceof Error ? error.message : String(error)}`,
+              `journal row: ${row?.id ?? '(not found)'}`,
+            ],
+          };
+        }
+      } finally {
+        reasonJournal.close();
+      }
+    }
+
     default:
       return {
         code: 2,
         lines: [
           'forge up | status | run BRIEF | send RUN TEXT | answer KEY ANSWER | stop --all '
-            + '| gotchas | clear LANE | cutover [--from DIR] | intake --dry-run',
+            + '| gotchas | clear LANE | cutover [--from DIR] | intake --dry-run | reason --class CLASS',
           `the server listens on ${FORGE_PORT}`,
         ],
       };

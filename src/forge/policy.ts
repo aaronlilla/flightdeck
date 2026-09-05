@@ -76,7 +76,14 @@ export interface Policy {
    * policy file written before this field existed has no `reasoner` key at all, which
    * every reader here treats identically to `{ astra: 'off' }`.
    */
-  reasoner?: { astra: 'off' | 'planning-only' };
+  reasoner?: {
+    astra: 'off' | 'planning-only';
+    /** How long a single `Reasoner.call` may run before it times out and gets journaled
+     *  as `reasoner.timeout`, in milliseconds. A policy file written before this field
+     *  existed, or one that leaves it out on purpose, falls back to the 120s default
+     *  below. */
+    timeoutMs?: number;
+  };
   /** Council's diff-risk thresholds (roadmap P4.4, decision 5). Optional: a file written
    * before this stream has none, and `council/risk.ts` falls back to its own defaults. */
   council?: { smallMaxLines: number; largeMinLines: number; riskyPaths: string[] };
@@ -224,6 +231,17 @@ export function routerEnabled(path?: string): boolean {
  */
 export function providerFor(name: string, path?: string): Provider {
   return classFor(name, path).provider ?? 'claude';
+}
+
+/** The default when a policy file names no `reasoner.timeoutMs` of its own. */
+export const DEFAULT_REASONER_TIMEOUT_MS = 120_000;
+
+/** How long the `claude` provider gives a single `Reasoner.call` before it times out
+ *  and journals `reasoner.timeout`, per `reasoner.timeoutMs`. Missing entirely -- a
+ *  policy file written before this field existed, or one that omits it on purpose --
+ *  reads as `DEFAULT_REASONER_TIMEOUT_MS`, never as an error. */
+export function reasonerTimeoutMs(path?: string): number {
+  return loadPolicy(path).reasoner?.timeoutMs ?? DEFAULT_REASONER_TIMEOUT_MS;
 }
 
 /**

@@ -683,3 +683,61 @@ describe('P4.7/I3: checkBudget at admission', () => {
     expect(result.code).toBe(0);
   });
 });
+
+describe('forge reason', () => {
+  /** A fake `query`: one assistant message answering the pushed prompt, then a
+   *  `result`. Matches `ClaudeReasoner`'s own single-turn shape. */
+  function fakeQuery(text: string) {
+    const fn = ((params: { prompt: string | AsyncIterable<unknown>; options?: { model?: string; cwd?: string } }) => {
+      const promptIter = params.prompt as AsyncIterable<unknown>;
+      async function* generate() {
+        yield {
+          type: 'system', subtype: 'init', session_id: 'reason-cli-session',
+          model: params.options?.model ?? '', cwd: params.options?.cwd ?? '', tools: [], slash_commands: [],
+        };
+        for await (const _pushed of promptIter) {
+          yield {
+            type: 'assistant', session_id: 'reason-cli-session',
+            message: {
+              model: params.options?.model ?? '',
+              content: [{ type: 'text', text }],
+              usage: { input_tokens: 3, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 2 },
+            },
+          };
+          yield { type: 'result', subtype: 'success', is_error: false, duration_ms: 1, total_cost_usd: 0 };
+          return;
+        }
+      }
+      return generate() as never;
+    }) as never;
+    return fn;
+  }
+
+  it('prints the JSON answer and a journal row id on a valid reply', async () => {
+    const result = await forge(
+      ['reason', '--class', 'evaluate', 'still', 'on', 'task?'],
+      { reasonerQueryFn: fakeQuery('{"text": "yes"}') },
+    );
+    expect(result.code).toBe(0);
+    expect(result.lines[0]).toBe(JSON.stringify({ text: 'yes' }));
+    expect(result.lines[1]).toMatch(/^journal row: /);
+    expect(result.lines[1]).not.toMatch(/not found/);
+  });
+
+  it('fails with the row id on an invalid reply, and refuses to spawn a real query', async () => {
+    const result = await forge(
+      ['reason', '--class', 'evaluate', 'not', 'valid', 'json'],
+      { reasonerQueryFn: fakeQuery('not json') },
+    );
+    expect(result.code).toBe(1);
+    expect(result.lines[0]).toMatch(/reply was not the required JSON object/);
+    expect(result.lines[1]).toMatch(/^journal row: /);
+    expect(result.lines[1]).not.toMatch(/not found/);
+  });
+
+  it('refuses with a usage line when --class or the prompt is missing', async () => {
+    const result = await forge(['reason', '--class', 'evaluate']);
+    expect(result.code).toBe(2);
+    expect(result.lines.join(' ')).toMatch(/forge reason --class CLASS/);
+  });
+});
