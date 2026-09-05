@@ -37,7 +37,7 @@ export function buildHandoffComment(haiping: HaipingHandoff, prUrl: string): str
   lines.push(
     haiping.notVisuallyVerified.length
       ? `Not visually verified: ${haiping.notVisuallyVerified.join(', ')}`
-      : 'Looked at it before merging, nothing left unverified visually.',
+      : 'The handoff lists no visual gaps.',
   );
   return lines.join('\n');
 }

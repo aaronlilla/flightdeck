@@ -36,6 +36,12 @@ describe('buildHandoffComment', () => {
     expect(body).not.toContain('**');
     expect(body).not.toMatch(/—|--/);
   });
+
+  it('an empty notVisuallyVerified list states that plainly, never claims a look that never happened', () => {
+    const body = buildHandoffComment({ ...HAIPING, notVisuallyVerified: [] }, 'https://github.com/acme/widgets/pull/105');
+    expect(body).toContain('The handoff lists no visual gaps.');
+    expect(body).not.toContain('Looked');
+  });
 });
 
 describe('runJiraHandoff — the three writes, in order', () => {
