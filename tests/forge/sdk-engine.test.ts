@@ -1234,3 +1234,107 @@ describe('P4.7/I4: the Council rules library runs on every Bash and Edit/Write P
     expect(verdict.reason).toContain('some-key');
   });
 });
+
+describe('P4.7/I10: the prose rules never judge source code', () => {
+  it('a Write of src/x.ts carrying a decrement and a CLI double-dash flag passes every rule', async () => {
+    const parked = new Map<string, string>();
+    const journal = new Journal(journalPath);
+    const inbox = new Inbox(join(home, 'inbox-i10-code'));
+    const hook = buildPreToolUseHook({ run: 'i10a', goal: 'i10a', parked, journal, inbox, deliverVia: 'hook' });
+
+    const verdict = await hook({
+      toolName: 'Write',
+      input: {
+        file_path: '/repo/src/x.ts',
+        // The exact shape that tripped the incident: a CLI argv separator (" -- ") plus
+        // a bare decrement, both of which the humanizer's EM_DASH regex matches on raw
+        // content -- proof this passes only because the sink is now scoped by path, not
+        // because the content happens to dodge the pattern.
+        content: 'let i = 3;\ni--;\n// pass extra flags after -- to the child process\nrun("build", "--colors=false");\n',
+      },
+      toolUseId: 'tu-i10a',
+    });
+
+    expect(verdict.decision).toBeUndefined();
+  });
+
+  it('a Write of docs/x.md carrying an em dash is denied by the humanizer, with the path in the reason', async () => {
+    const parked = new Map<string, string>();
+    const journal = new Journal(journalPath);
+    const inbox = new Inbox(join(home, 'inbox-i10-docs'));
+    const hook = buildPreToolUseHook({ run: 'i10b', goal: 'i10b', parked, journal, inbox, deliverVia: 'hook' });
+
+    const verdict = await hook({
+      toolName: 'Write',
+      input: { file_path: '/repo/docs/x.md', content: 'This is fine -- trust me.' },
+      toolUseId: 'tu-i10b',
+    });
+
+    expect(verdict.decision).toBe('deny');
+    expect(verdict.reason).toMatch(/humanizer/i);
+    expect(verdict.reason).toContain('/repo/docs/x.md');
+    journal.close();
+    const state = replay(journalPath);
+    const denied = state.events.find((e) => e.event === 'rule.denied' && e.run === 'i10b');
+    expect(denied?.['rule']).toBe('humanizer');
+    expect(denied?.['sink']).toBe('edit');
+    expect(denied?.['path']).toBe('/repo/docs/x.md');
+  });
+
+  it('a gh pr create --body carrying a co-author trailer is denied by authorship', async () => {
+    const parked = new Map<string, string>();
+    const journal = new Journal(journalPath);
+    const inbox = new Inbox(join(home, 'inbox-i10-pr'));
+    const hook = buildPreToolUseHook({ run: 'i10c', goal: 'i10c', parked, journal, inbox, deliverVia: 'hook' });
+
+    const trailer = ['Co-Authored', '-By', ': Claude <no', 'reply@anthropic', '.com>'].join('');
+    const verdict = await hook({
+      toolName: 'Bash',
+      input: {
+        command: `gh pr create --title "fix" --body "fix the thing\n\n${trailer}"`,
+      },
+      toolUseId: 'tu-i10c',
+    });
+
+    expect(verdict.decision).toBe('deny');
+    expect(verdict.reason).toMatch(/authorship/i);
+    journal.close();
+    const state = replay(journalPath);
+    const denied = state.events.find((e) => e.event === 'rule.denied' && e.run === 'i10c');
+    expect(denied?.['rule']).toBe('authorship');
+    expect(denied?.['sink']).toBe('bash');
+  });
+
+  it('git push origin feature/x passes gitflow', async () => {
+    const parked = new Map<string, string>();
+    const journal = new Journal(journalPath);
+    const inbox = new Inbox(join(home, 'inbox-i10-gitflow'));
+    const hook = buildPreToolUseHook({
+      run: 'i10d', goal: 'i10d', parked, journal, inbox, deliverVia: 'hook',
+      repoContext: { branch: 'feature/x', controlled: true },
+    });
+
+    const verdict = await hook({ toolName: 'Bash', input: { command: 'git push origin feature/x' }, toolUseId: 'tu-i10d' });
+
+    expect(verdict.decision).toBeUndefined();
+  });
+
+  it('a deny never ends the run: unlike a park, a ceiling or the kill switch, a rule denial carries no handoff request', async () => {
+    const parked = new Map<string, string>();
+    const journal = new Journal(journalPath);
+    const inbox = new Inbox(join(home, 'inbox-i10-no-handoff'));
+    const hook = buildPreToolUseHook({ run: 'i10e', goal: 'i10e', parked, journal, inbox, deliverVia: 'hook' });
+
+    const verdict = await hook({
+      toolName: 'Write',
+      input: { file_path: '/repo/docs/x.md', content: 'This is fine -- trust me.' },
+      toolUseId: 'tu-i10e',
+    });
+
+    expect(verdict.decision).toBe('deny');
+    // A park/ceiling/kill-switch deny asks the model to write a handoff packet and stop;
+    // a rule deny asks it to try something else on its next tool call, so it must never
+    // carry that same instruction.
+    expect(verdict.additionalContext).toBeUndefined();
+  });
+});

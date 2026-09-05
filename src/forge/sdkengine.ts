@@ -26,7 +26,10 @@ import { Inbox, type InboxEntry } from './inbox.js';
 import { Journal } from './journal.js';
 import { fleetConfigDir } from './paths.js';
 import { readParkRecord } from './parkrecord.js';
-import { evaluateAction, type ProposedAction } from './rules/index.js';
+import {
+  authorshipRule, gitflowRule, humanizerRule, sycophancyRule, vaguenessRule,
+  type ProposedAction, type Rule, type RuleVerdict,
+} from './rules/index.js';
 import { injectMessages, RunInbox } from './runinbox.js';
 import {
   HANDOFF_REQUEST, workerEnv, type EngineLike, type FakeTurn, type SessionRequest,
@@ -422,24 +425,86 @@ export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
         additionalContext: HANDOFF_REQUEST,
       };
     }
-    // P4.7/I4: the Council's rules library, on every Bash and Edit/Write call -- the
-    // wiring `rules/index.ts`'s own doc comment named as "once P4.7's follow-up commit
-    // wires it in." A denial here journals `rule.denied` and stops the call the same way
-    // a park does; every other tool name (Read, Grep, the forge_* MCP tools) is untouched.
+    // P4.7/I4 (scoped by P4.7/I10): the Council's rules library, on every Bash and
+    // Edit/Write call. A denial here journals `rule.denied` and stops the call the same
+    // way a park does; every other tool name (Read, Grep, the forge_* MCP tools) is
+    // untouched. `evaluateScoped` never ends the run itself -- it only denies the one
+    // tool call, the same as any other rule verdict, leaving the worker free to try
+    // something else on its next turn.
     const action = proposedActionFor(call.toolName, call.input, deps.repoContext);
     if (action) {
-      const verdict = evaluateAction(action);
+      const verdict = evaluateScoped(action);
       if (!verdict.allow) {
+        const sink = action.kind;
+        const locator = action.kind === 'edit'
+          ? { path: action.path }
+          : action.kind === 'bash'
+            ? { command: action.command }
+            : {};
         deps.journal.append({
           event: 'rule.denied', run: deps.run, actor: 'runner', tool: call.toolName,
-          rule: verdict.rule, reason: verdict.reason,
+          rule: verdict.rule, reason: verdict.reason, sink, ...locator,
         });
-        return { decision: 'deny', reason: `${verdict.rule}: ${verdict.reason}` };
+        const locatorNote = action.kind === 'edit' ? ` (path: ${action.path})` : '';
+        return { decision: 'deny', reason: `${verdict.rule}: ${verdict.reason}${locatorNote}` };
       }
     }
     if (inboxHook) return inboxHook(call);
     return { decision: undefined };
   };
+}
+
+/**
+ * P4.7/I10: gitflow and authorship keep judging every Bash/Edit action -- their scope is
+ * unchanged. Humanizer, sycophancy and vagueness judge prose, never code, so they run
+ * only when the call's SHAPE says it produces outward-facing prose: a git commit message,
+ * a `gh pr`/`gh issue` create-edit-comment body or title, or a Write/Edit whose path is a
+ * doc. `isProseSink` reads the tool name, the command's subcommand, and the file
+ * extension only -- never the command's or file's own content -- because guessing prose
+ * from content is exactly the failure this item forbids (a `--colors=false` flag or an
+ * `i--` decrement inside a source file is not an em dash).
+ */
+const ALWAYS_ON_RULES: Rule[] = [gitflowRule, authorshipRule];
+const PROSE_RULES: Rule[] = [humanizerRule, sycophancyRule, vaguenessRule];
+
+const PROSE_PATH_RE = /\.(md|mdx)$/i;
+const DOCS_DIR_RE = /(^|[/\\])docs([/\\]|$)/i;
+
+function isProseSink(action: ProposedAction): boolean {
+  if (action.kind === 'edit') {
+    return PROSE_PATH_RE.test(action.path) || DOCS_DIR_RE.test(action.path);
+  }
+  if (action.kind === 'bash') {
+    const tokens = action.command.trim().split(/\s+/).map((t) => t.replace(/^['"]|['"]$/g, ''));
+    if (tokens[0] === 'git') {
+      return tokens[1] === 'commit'
+        && ['-m', '--message', '-F', '--file'].some((flag) => tokens.includes(flag));
+    }
+    if (tokens[0] === 'gh') {
+      if (tokens[1] === 'pr' || tokens[1] === 'issue') {
+        return ['create', 'edit', 'comment'].includes(tokens[2] ?? '');
+      }
+    }
+    return false;
+  }
+  // 'commit', 'pr' and 'reply' kinds never arise from this hook (only Bash and
+  // Edit/Write/NotebookEdit calls do), but they are prose by construction for any other
+  // caller of this library, so default to judging them.
+  return true;
+}
+
+function evaluateScoped(action: ProposedAction): RuleVerdict {
+  for (const rule of ALWAYS_ON_RULES) {
+    const verdict = rule.evaluate(action);
+    if (!verdict.allow) return verdict;
+  }
+  if (isProseSink(action)) {
+    for (const rule of PROSE_RULES) {
+      const verdict = rule.evaluate(action);
+      if (!verdict.allow) return verdict;
+    }
+  }
+  return { allow: true };
 }
 
 /**
