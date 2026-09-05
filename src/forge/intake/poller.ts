@@ -9,8 +9,23 @@
 import type { PollSource, PollSourceName, Watermark } from '../contracts.js';
 import { advanceWatermark, filterNewItems } from './watermark.js';
 
+/**
+ * J2: the source's own text, when the source has it, so the planner sees the ticket
+ * rather than a bare key. Only Jira populates this today. Every other fixture leaves it
+ * off, and downstream code falls back to the bare id.
+ */
+export interface PollItemDetail {
+  summary: string;
+  description: string;
+  status: string;
+  issuetype: string;
+  priority: string;
+}
+
 /** A source's own item, before this module stamps it with the feed's source name. */
-export type RawPollItem = Pick<PollSource, 'id' | 'updated'>;
+export interface RawPollItem extends Pick<PollSource, 'id' | 'updated'> {
+  detail?: PollItemDetail;
+}
 
 export interface FakePollFeed {
   name: PollSourceName;
@@ -28,6 +43,7 @@ export interface SourceObservedEvent {
   sourceId: string;
   updated: number;
   key: string;
+  detail?: PollItemDetail;
 }
 
 export interface PollResult {
@@ -53,7 +69,10 @@ export async function runPoll(
   const rawPage = await feed.fetchSince(mark);
   // A fixture may hand back bare { id, updated } rows; the feed's own name is the source
   // of truth for which source they came from, not whatever the fixture did or didn't set.
-  const page: PollSource[] = rawPage.map((item) => ({ ...item, name: feed.name }));
+  // `detail`, when a raw item carries one, rides along on the spread untyped by
+  // `PollSource` itself -- `filterNewItems` is generic over its element type, so it
+  // passes straight through the filter to the emitted event below.
+  const page: (PollSource & { detail?: PollItemDetail })[] = rawPage.map((item) => ({ ...item, name: feed.name }));
   const fresh = filterNewItems(mark, page)
     .slice()
     .sort((a, b) => (a.updated - b.updated) || a.id.localeCompare(b.id));
@@ -64,6 +83,7 @@ export async function runPoll(
       sourceId: item.id,
       updated: item.updated,
       key: observedKey(item),
+      ...(item.detail ? { detail: item.detail } : {}),
     });
   }
   return { watermark: advanceWatermark(mark, page), emitted: fresh.length };

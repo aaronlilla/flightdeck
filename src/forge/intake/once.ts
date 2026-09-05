@@ -64,12 +64,18 @@ export async function runIntakeOnce(
       observed += 1;
       emit({ ...event });
 
+      // J2: a Jira item carries its own text (summary, description, status, issue type,
+      // priority) on `event.detail`; the planner sees the ticket itself rather than a
+      // bare key. A source with no detail (every fixture that predates this stream)
+      // degrades to the id-only line it always wrote.
       const packet = {
         id: event.key,
         ticket: event.sourceId,
-        what: `observed via ${event.source}, not yet triangulated`,
+        what: event.detail
+          ? `${event.detail.summary} (${event.detail.issuetype}, ${event.detail.priority}, ${event.detail.status})`
+          : `observed via ${event.source}, not yet triangulated`,
         where: event.source,
-        evidence: [event.key],
+        evidence: event.detail?.description ? [event.key, event.detail.description] : [event.key],
         confidence: 'low' as const,
         repo: 'unknown',
         blockedBy: [],

@@ -32,6 +32,11 @@ beforeEach(() => {
   // reads no session or credentials mtime from this machine's actual fleet login. None
   // of these specimens are about the config-dir choice itself; paths.test.ts covers that.
   process.env['FORGE_CONFIG_DIR'] = join(home, 'claude');
+  // Forge Jira stream: every specimen starts from "nothing configured" and opts in
+  // explicitly, so a developer's own shell (or a prior specimen) never leaks a value in.
+  for (const name of ['FORGE_JIRA_SITE', 'FORGE_JIRA_EMAIL', 'FORGE_JIRA_TOKEN', 'FORGE_JIRA_JQL', 'FORGE_JIRA_QA_ACCOUNT', 'FORGE_JIRA_QA_TRANSITION']) {
+    delete process.env[name];
+  }
 });
 
 const lanes = () => new Lanes(join(home, 'lanes'));
@@ -675,6 +680,61 @@ describe('P4.7/I5: forge intake --once', () => {
     expect(planned).toBeTruthy();
     const briefPath = String(planned?.['briefPath']);
     expect(readFileSync(briefPath, 'utf8')).toContain('# Goal: fix BBZ-2');
+  });
+});
+
+describe('Forge Jira stream: J1 env wiring for forge intake --once', () => {
+  it('missing environment yields the honest zero-source line plus one line naming the missing variables, never their values', async () => {
+    const result = await forge(['intake', '--once']);
+    expect(result.code).toBe(0);
+    expect(result.lines.join(' ')).toMatch(/0 source.*\(none configured\)/);
+    expect(result.lines.join(' ')).toContain('FORGE_JIRA_SITE');
+    expect(result.lines.join(' ')).toContain('FORGE_JIRA_EMAIL');
+    expect(result.lines.join(' ')).toContain('FORGE_JIRA_TOKEN');
+  });
+
+  it('with all three variables set, wires a real Jira feed through the injected fetch, with no site or token in the output', async () => {
+    process.env['FORGE_JIRA_SITE'] = 'https://acme.atlassian.net';
+    process.env['FORGE_JIRA_EMAIL'] = 'bot@acme.test';
+    process.env['FORGE_JIRA_TOKEN'] = 'a-real-looking-secret-token-value-123456';
+    const fetchFn = (async () => new Response(JSON.stringify({
+      issues: [{ key: 'BBZ-9', fields: { summary: 'x', updated: '2026-09-01T00:00:00.000Z' } }], isLast: true,
+    }), { status: 200 })) as unknown as typeof fetch;
+
+    const result = await forge(['intake', '--once'], { fetchFn });
+
+    expect(result.code).toBe(0);
+    expect(result.lines.join(' ')).toContain('1 source(s): jira');
+    expect(result.lines.join(' ')).not.toContain(process.env['FORGE_JIRA_TOKEN']);
+    expect(result.lines.join(' ')).not.toContain('acme.atlassian.net');
+  });
+});
+
+describe('Forge Jira stream: J4 forge intake --probe-jira', () => {
+  it('prints displayName and accountId only, on success', async () => {
+    process.env['FORGE_JIRA_SITE'] = 'https://acme.atlassian.net';
+    process.env['FORGE_JIRA_EMAIL'] = 'bot@acme.test';
+    process.env['FORGE_JIRA_TOKEN'] = 'a-real-looking-secret-token-value-123456';
+    const fetchFn = (async () => new Response(JSON.stringify({ displayName: 'Aaron Lilla', accountId: 'acc-1' }), {
+      status: 200,
+    })) as unknown as typeof fetch;
+
+    const result = await forge(['intake', '--probe-jira'], { fetchFn });
+
+    expect(result.code).toBe(0);
+    expect(result.lines).toEqual(['Aaron Lilla', 'acc-1']);
+  });
+
+  it('a failing call exits 1 with the HTTP status and nothing else', async () => {
+    process.env['FORGE_JIRA_SITE'] = 'https://acme.atlassian.net';
+    process.env['FORGE_JIRA_EMAIL'] = 'bot@acme.test';
+    process.env['FORGE_JIRA_TOKEN'] = 'a-real-looking-secret-token-value-123456';
+    const fetchFn = (async () => new Response('forbidden', { status: 403 })) as unknown as typeof fetch;
+
+    const result = await forge(['intake', '--probe-jira'], { fetchFn });
+
+    expect(result.code).toBe(1);
+    expect(result.lines.join(' ')).toContain('403');
   });
 });
 

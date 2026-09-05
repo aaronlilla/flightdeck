@@ -237,6 +237,10 @@ export const FORGE_EVENT_NAMES = [
   // F3, 2026-09-05: an inbox ask retired because none of its runs has a registry row
   // left -- moved to ~/.forge/inbox/retired/ by `forge clear --all`, never deleted.
   'inbox.retired',
+  // Forge Jira stream (J3): `forge gate --merge` reached a completed merge whose PR
+  // named a ticket, but FORGE_JIRA_SITE/EMAIL/TOKEN were not all set, so none of the
+  // three handoff writes were attempted.
+  'jira.skipped',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];

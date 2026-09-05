@@ -62,6 +62,31 @@ describe('runIntakeOnce', () => {
     expect(calls).toBe(1);
   });
 
+  it('J2: a Jira item carrying detail lands on the packet, not just the bare key', async () => {
+    const feed = {
+      name: 'jira' as PollSourceName,
+      fetchSince: async () => [{
+        id: 'BBZ-1', updated: 100,
+        detail: {
+          summary: 'Login screen crashes on cold start', description: 'Repro: airplane mode, cold launch',
+          status: 'In Progress', issuetype: 'Bug', priority: 'High',
+        },
+      }],
+    };
+    const result = await runIntakeOnce([feed], memoryWatermarks(), () => {});
+    expect(result.writtenPackets).toHaveLength(1);
+    const packet = result.writtenPackets[0]!;
+    expect(packet.what).toContain('Login screen crashes on cold start');
+    expect(packet.what).toContain('Bug');
+    expect(packet.evidence).toContain('Repro: airplane mode, cold launch');
+  });
+
+  it('J2: a source with no detail still writes the plain id-only packet it always did', async () => {
+    const feed = { name: 'jira' as PollSourceName, fetchSince: async () => [{ id: 'BBZ-2', updated: 100 }] };
+    const result = await runIntakeOnce([feed], memoryWatermarks(), () => {});
+    expect(result.writtenPackets[0]?.what).toBe('observed via jira, not yet triangulated');
+  });
+
   it('polls every configured source, not only the first', async () => {
     const feeds = [
       { name: 'jira' as PollSourceName, fetchSince: async () => [] },
