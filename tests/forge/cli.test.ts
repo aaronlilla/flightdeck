@@ -884,10 +884,22 @@ describe('C2: forge chain', () => {
     seedBlockedPacket();
     await forge(['chain', 'retry', 'p1']);
 
-    const statusResult = await forge(['status']);
+    // `processes: () => []` pins this to a genuinely clean fleet -- no lanes, no
+    // waiting asks, no fleet notice -- which is exactly what a fresh CI runner looks
+    // like and exactly the case that fell through `status`'s "nothing is running"
+    // shortcut before that shortcut accounted for chain rows.
+    const statusResult = await forge(['status'], { processes: () => [] });
     const chainLine = statusResult.lines.find((line) => line.includes('ABC-1'));
     expect(chainLine).toBeDefined();
     expect(chainLine).not.toContain('ENOENT');
+  });
+
+  it('2026-09-05 CI escape: forge status shows a chain packet even on an otherwise '
+    + 'completely idle fleet (no lanes, no asks, no fleet notice)', async () => {
+    seedBlockedPacket();
+    const result = await forge(['status'], { processes: () => [] });
+    expect(result.lines.join(' ')).not.toBe('nothing is running');
+    expect(result.lines.join(' ')).toContain('ABC-1');
   });
 
   it('retry on an unknown packet id is refused with exit 2', async () => {
