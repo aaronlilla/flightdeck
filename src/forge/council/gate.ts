@@ -34,6 +34,27 @@ export function buildJudgeInput(source: {
 }
 
 // -------------------------------------------------------------------------------------
+// Judge/Codex reconciliation (decision 6): no Fable call anywhere in Council
+// -------------------------------------------------------------------------------------
+
+/**
+ * "Fable only when judge and Codex disagree on plan conformance" (spec) is superseded by
+ * decision 6: no Fable call anywhere in Council, because Fable is barred from
+ * Agent/Workflow fan-out and Council runs unattended. A disagreement resolves to `FIX
+ * FIRST` instead of a third opinion. `PASS` and `PASS WITH NOTES` both clear the gate, so
+ * that pair is not a disagreement worth a fix round; the stricter of the two wins.
+ */
+export function reconcileJudgeAndCodex(judgeVerdict: CouncilVerdict, codexVerdict: CouncilVerdict | undefined): CouncilVerdict {
+  if (codexVerdict === undefined) return judgeVerdict;
+  if (judgeVerdict === codexVerdict) return judgeVerdict;
+  const bothClear = CLEARS_GATE.includes(judgeVerdict) && CLEARS_GATE.includes(codexVerdict);
+  if (bothClear) {
+    return judgeVerdict === 'PASS WITH NOTES' || codexVerdict === 'PASS WITH NOTES' ? 'PASS WITH NOTES' : 'PASS';
+  }
+  return 'FIX FIRST';
+}
+
+// -------------------------------------------------------------------------------------
 // RN merge gate (specimen 5): judge PASS, Codex PASS, checks green ON THE HEAD BEING MERGED
 // -------------------------------------------------------------------------------------
 
