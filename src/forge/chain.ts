@@ -15,6 +15,19 @@
 export type ChainHop = 'unrouted' | 'provision' | 'launch' | 'gate';
 
 /**
+ * F1, 2026-09-05: the run key `forge run` assigns to any brief it is given -- the
+ * brief file's own basename with a trailing `.md` stripped (`cli.ts`'s `run` case computes
+ * the identical thing for its own `slug`). No `--name` flag exists on `forge run` and none
+ * is added; the chain has to compute this the same way everywhere it names a run --
+ * the launch wait, the `chain.launched` row, the finish detection in the gate hop, and the
+ * status rows -- or it ends up waiting on a row that will never appear under the name it
+ * guessed instead.
+ */
+export function runKeyForBrief(briefPath: string): string {
+  return briefPath.split(/[\\/]/).pop()!.replace(/\.md$/, '');
+}
+
+/**
  * H3: the planner's brief carries no `## Verification` block of its own (`planner.ts`
  * never writes one), and `forge_done` only ever honours a `done` verdict when one is
  * there. This completes the brief once, before launch, with the repository's
@@ -410,6 +423,10 @@ export interface ChainStatusRow {
   hop: string;
   state: string;
   reason?: string;
+  /** F1: the run key `forge run` is actually using for this packet -- present once the
+   *  launch hop has produced one, so a person reading `forge status`/`forge chain` can
+   *  match a row here to the run it names, rather than guessing at it from the ticket. */
+  runKey?: string;
 }
 
 function hopAndStateOf(row: ChainPacketState): { hop: string; state: string; reason?: string } {
@@ -428,10 +445,11 @@ export function chainStatusRows(state: Map<string, ChainPacketState>): ChainStat
     return {
       ticket: row.ticket ?? row.packetId, packetId: row.packetId, hop, state: rowState,
       ...(reason ? { reason } : {}),
+      ...(row.launched?.runKey ? { runKey: row.launched.runKey } : {}),
     };
   });
 }
 
 export function chainStatusLines(state: Map<string, ChainPacketState>): string[] {
-  return chainStatusRows(state).map((row) => `chain ${row.ticket} [${row.hop}] ${row.state}${row.reason ? `: ${row.reason}` : ''}`);
+  return chainStatusRows(state).map((row) => `chain ${row.ticket} [${row.hop}] ${row.state}${row.runKey ? ` (run ${row.runKey})` : ''}${row.reason ? `: ${row.reason}` : ''}`);
 }

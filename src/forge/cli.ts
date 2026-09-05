@@ -66,7 +66,9 @@ import { Breaker, clearKillSwitch, Fleet, Lanes, readKillSwitch } from './superv
 import { WardenActuator } from './warden.js';
 import { WardenTick, type WardenTickRun } from './warden-tick.js';
 import { Worker, type EngineLike, type WorkerConfig } from './worker.js';
-import { chainStatusLines, foldChainState, runChainTick } from './chain.js';
+import {
+  chainStatusLines, foldChainState, runChainTick, runKeyForBrief,
+} from './chain.js';
 import { readChainEnv } from './chain-env.js';
 import { buildChainDeps, hasRunRegistered } from './chain-wire.js';
 
@@ -543,7 +545,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       if (!verdict.ok) {
         return { code: 1, lines: ['refusing to start:', ...verdict.refusals.map((r) => `  ${r}`)] };
       }
-      const slug = briefPath.split(/[\\/]/).pop()!.replace(/\.md$/, '');
+      const slug = runKeyForBrief(briefPath);
       const pin = pinnedRuntime(slug);
       const breaker = new Breaker(lanes);
       const configDir = fleetConfigDirChoice();
