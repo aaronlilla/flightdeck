@@ -16,7 +16,7 @@ import { dirname, join } from 'node:path';
 import type { CliResult, ForgeDeps } from './cli.js';
 import { forge } from './cli.js';
 import {
-  completeBriefWithVerification,
+  completeBriefWithVerification, runKeyForBrief,
   type ChainCouncilFn, type ChainDeps, type ChainGateFn, type ChainGh, type ChainLauncher, type ChainPlannedPacket,
 } from './chain.js';
 import {
@@ -406,7 +406,10 @@ export function chainLauncher(chainEnv: ChainEnv, fleetConfigDir: string): Chain
     },
 
     async launch({ ticket, repo, briefPath, worktreePath, branch }) {
-      const runKey = ticket.toLowerCase();
+      // F1: the same basename `forge run` itself gives this run -- ticket.toLowerCase()
+      // guessed a name of its own, the live run this fixes actually registered under, and
+      // the chain waited 45s on a row that was never going to appear under that guess.
+      const runKey = runKeyForBrief(briefPath);
 
       const brief = readFileSync(briefPath, 'utf8');
       const completed = completeBriefWithVerification(brief, {
@@ -468,6 +471,13 @@ export function chainLauncher(chainEnv: ChainEnv, fleetConfigDir: string): Chain
         // named rather than papered over): the chain always falls back to `gh pr list`
         // for the PR itself.
       };
+    },
+
+    async runRegistered(runKey) {
+      return hasRunRegistered(runKey, {
+        registry: new Registry(registryDir()),
+        events: replay(journalPath()).events,
+      });
     },
   };
 }

@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  chainStatusLines, completeBriefWithVerification, foldChainState, runChainTick,
+  chainStatusLines, chainStatusRows, completeBriefWithVerification, foldChainState, runChainTick, runKeyForBrief,
   type ChainDeps, type ChainPacketState, type ChainPlannedPacket, type ChainRunStatus,
 } from '../../../src/forge/chain.js';
 
@@ -40,6 +40,7 @@ function buildFixture(overrides: Partial<{
       ),
       launch: async ({ ticket }) => ({ runKey: ticket.toLowerCase() }),
       status: async (): Promise<ChainRunStatus> => ({ finished: false }),
+      runRegistered: async () => false,
       ...overrides.launcher,
     },
     gh: {
@@ -367,5 +368,137 @@ describe('completeBriefWithVerification', () => {
       ticket: 'ABC-1', repo: 'owner/name', branch: 'feature/abc-1', base: 'develop',
     });
     expect(completed).toBe(brief);
+  });
+});
+
+/**
+ * F1: the run key `forge run` assigns to any brief -- the file's own basename with a
+ * trailing `.md` stripped. `cli.ts`'s `run` case computes the identical thing for its own
+ * `slug`; this is the one place both now call, so they can never disagree about which run
+ * a given brief actually became.
+ */
+describe('runKeyForBrief', () => {
+  it('is the basename with the extension stripped', () => {
+    expect(runKeyForBrief('/goals/jira_ABC-226_20260905.md')).toBe('jira_ABC-226_20260905');
+    expect(runKeyForBrief('/repo/briefs/p1.md')).toBe('p1');
+  });
+
+  it('handles a Windows-style path with backslashes', () => {
+    expect(runKeyForBrief('C:\\wt\\briefs\\p1.md')).toBe('p1');
+  });
+
+  it('is never derived from the ticket -- a ticket-shaped basename is not lower-cased or otherwise touched', () => {
+    expect(runKeyForBrief('/briefs/jira_ABC-226_20260905.md')).not.toBe('abc-226');
+  });
+});
+
+/**
+ * F1: the gate hop's finish detection reads back off whatever run key the launcher
+ * actually returned -- never one re-derived from the ticket. `runKeyForBrief` in
+ * `chain-wire.ts`'s `launch()` is what makes that key the runner's own basename in
+ * production; here it only has to be true that `runChainTick` itself never assumes
+ * anything about the key's shape.
+ */
+describe('F1: the chain follows the launcher\'s own run key end to end', () => {
+  it('the gate hop polls status and reaches merged using the launcher\'s run key, not one derived from the ticket', async () => {
+    const planned: ChainPlannedPacket[] = [
+      { packetId: 'p1', ticket: 'ABC-1', repo: 'owner/name', briefPath: 'C:/briefs/jira_ABC-1_20260905.md' },
+    ];
+    let statusKeySeen: string | undefined;
+    let statusCalls = 0;
+    const fixture = buildFixture({
+      planned,
+      launcher: {
+        launch: async () => ({ runKey: 'jira_abc-1_20260905' }),
+        status: async (runKey) => {
+          statusKeySeen = runKey;
+          statusCalls += 1;
+          return statusCalls < 2
+            ? { finished: false }
+            : { finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/7' };
+        },
+      },
+    });
+
+    await runChainTick(fixture.deps, fixture.state);
+    await runChainTick(fixture.deps, foldChainState(fixture.events));
+    await runChainTick(fixture.deps, foldChainState(fixture.events));
+
+    expect(statusKeySeen).toBe('jira_abc-1_20260905');
+    expect(fixture.events.find((event) => event['event'] === 'chain.merged')).toBeDefined();
+  });
+
+  it('the status row carries the ticket and the run key', () => {
+    const events: Record<string, unknown>[] = [
+      { event: 'intake.planned', packetId: 'p1', ticket: 'ABC-1', repo: 'owner/name', briefPath: 'C:/briefs/jira_ABC-1_20260905.md' },
+      { event: 'chain.provisioned', packetId: 'p1', worktreePath: 'C:/wt', branch: 'feature/abc-1' },
+      { event: 'chain.launched', packetId: 'p1', runKey: 'jira_abc-1_20260905' },
+    ];
+    const rows = chainStatusRows(foldChainState(events));
+    expect(rows[0]).toMatchObject({ ticket: 'ABC-1', runKey: 'jira_abc-1_20260905' });
+
+    const lines = chainStatusLines(foldChainState(events));
+    expect(lines[0]).toContain('ABC-1');
+    expect(lines[0]).toContain('jira_abc-1_20260905');
+  });
+});
+
+/**
+ * F2: a launch the chain lost track of -- the worker did register, but the process that
+ * spawned it (or the wait that followed) never got to journal `chain.launched` for it, so
+ * the packet sits at `chain.blocked` on hop `launch` even though nothing about the launch
+ * itself failed.
+ */
+describe('F2: reconcile a launch the chain lost track of', () => {
+  it('a packet blocked at launch, with a registered run under the basename key, folds to launched after one tick -- the launcher is never called again', async () => {
+    const planned: ChainPlannedPacket[] = [
+      { packetId: 'p1', ticket: 'ABC-1', repo: 'owner/name', briefPath: 'C:/briefs/jira_ABC-1_20260905.md' },
+    ];
+    let launchCalls = 0;
+    const fixture = buildFixture({
+      planned,
+      launcher: {
+        launch: async () => { launchCalls += 1; throw new Error('spawn ENOENT'); },
+        runRegistered: async (runKey) => runKey === 'jira_ABC-1_20260905',
+      },
+    });
+
+    await runChainTick(fixture.deps, fixture.state);
+    let state = foldChainState(fixture.events);
+    expect(state.get('p1')?.blocked?.hop).toBe('launch');
+    expect(launchCalls).toBe(1);
+
+    await runChainTick(fixture.deps, state);
+    state = foldChainState(fixture.events);
+
+    expect(launchCalls).toBe(1);
+    expect(state.get('p1')?.blocked).toBeUndefined();
+    expect(state.get('p1')?.launched?.runKey).toBe('jira_ABC-1_20260905');
+    const launchedEvent = [...fixture.events].reverse().find((event) => event['event'] === 'chain.launched');
+    expect(launchedEvent?.['reconciled']).toBe(true);
+  });
+
+  it('a packet blocked at launch with no registered run stays blocked, and the launcher is still never called a second time', async () => {
+    const planned: ChainPlannedPacket[] = [
+      { packetId: 'p1', ticket: 'ABC-1', repo: 'owner/name', briefPath: 'C:/briefs/p1.md' },
+    ];
+    let launchCalls = 0;
+    const fixture = buildFixture({
+      planned,
+      launcher: {
+        launch: async () => { launchCalls += 1; throw new Error('spawn ENOENT'); },
+        runRegistered: async () => false,
+      },
+    });
+
+    await runChainTick(fixture.deps, fixture.state);
+    let state = foldChainState(fixture.events);
+    expect(state.get('p1')?.blocked?.hop).toBe('launch');
+
+    await runChainTick(fixture.deps, state);
+    state = foldChainState(fixture.events);
+
+    expect(launchCalls).toBe(1);
+    expect(state.get('p1')?.blocked?.hop).toBe('launch');
   });
 });
