@@ -1,6 +1,7 @@
 import type { JSX, KeyboardEvent } from 'react';
 import { useState } from 'react';
 
+import { stateOf } from '../laneState.js';
 import type { LaneRecord } from '../types.js';
 import { Freshness } from './Freshness.js';
 
@@ -16,25 +17,6 @@ export interface LaneTileProps {
 }
 
 const CONTEXT_CEILING = 200_000;
-
-const RUN_STATE_LABEL: Record<string, string> = {
-  started: 'running',
-  paused: 'paused',
-  parked: 'blocked',
-  'handed-off': 'handing-off',
-};
-
-function stateOf(lane: LaneRecord): string {
-  // X1: a live run wins over the lane's own verdict/column, which describe whichever
-  // chain last finished rather than what is running right now. `finished` falls through
-  // deliberately -- once a run is done, the lane's own verdict is the more informative
-  // label (`done`, `failed`, and so on) than a bare "finished".
-  if (lane.run_state && lane.run_state in RUN_STATE_LABEL) return RUN_STATE_LABEL[lane.run_state]!;
-  if (lane.needs_aaron) return 'blocked';
-  if (lane.verdict) return lane.column === 'blocked' ? 'blocked' : lane.verdict;
-  if (lane.column) return lane.column;
-  return 'running';
-}
 
 export function LaneTile({ lane, now, disabledReason, onSend, onClear, onOpen }: LaneTileProps): JSX.Element {
   const state = stateOf(lane);

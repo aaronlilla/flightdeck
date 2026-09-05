@@ -1,4 +1,5 @@
 import type { JSX } from 'react';
+import { categoryOf } from '../laneState.js';
 import type { ForgeState } from '../types.js';
 import { Freshness } from './Freshness.js';
 
@@ -10,15 +11,15 @@ export interface CommandBarProps {
   now?: number;
 }
 
-function count(lanes: ForgeState['lanes']['value'] | undefined, predicate: (column: string) => boolean): number {
-  return (lanes ?? []).filter((lane) => predicate(lane.column)).length;
+function count(lanes: ForgeState['lanes']['value'] | undefined, category: 'running' | 'blocked' | 'done'): number {
+  return (lanes ?? []).filter((lane) => categoryOf(lane) === category).length;
 }
 
 export function CommandBar({ state, disabledReason, onStop, stopping, now }: CommandBarProps): JSX.Element {
   const lanes = state?.lanes.value;
-  const running = count(lanes, (column) => column !== 'blocked' && column !== 'done' && column !== 'parked');
-  const blocked = count(lanes, (column) => column === 'blocked');
-  const done = count(lanes, (column) => column === 'done');
+  const running = count(lanes, 'running');
+  const blocked = count(lanes, 'blocked');
+  const done = count(lanes, 'done');
 
   return (
     <header className="command-bar">
