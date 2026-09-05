@@ -662,6 +662,64 @@ describe('F1: a segment that ends while parked keeps waiting, not stopped', () =
       && (e['verdict'] === 'stopped' || e['verdict'] === 'exhausted'))).toBe(false);
   });
 
+  it('item 8, 2026-09-05: --auto-answer resumes an ask in-process, with no second Inbox', async () => {
+    const inboxDir = join(dir, 'inbox');
+    const inbox = new Inbox(inboxDir);
+    let key: string | undefined;
+    let resumedPrompt: string | undefined;
+
+    const engine = {
+      started: [] as unknown[],
+      inbox,
+      async run(config: { run: string }) {
+        this.started.push(config);
+        const entry = inbox.raise({
+          run: config.run, goal: config.run, actionTarget: 'AskUserQuestion',
+          question: 'dev or prod?', options: ['dev', 'prod'], kind: 'question',
+        });
+        key = entry.key;
+        return {
+          sessionId: 'session-1',
+          turns: [],
+          async send(prompt: string) {
+            resumedPrompt = prompt;
+            return [{ text: 'shipped', context: 10, done: true }];
+          },
+        };
+      },
+      parkedOn(run: string) {
+        return run === 'alpha' ? key : undefined;
+      },
+      clearPark() {
+        key = undefined;
+      },
+    };
+
+    const brief = '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnode -e process.exit(0)\n```\n';
+    const exec = async (request: { argv: string[] }) => ({
+      ok: true, tail: '', returncode: 0, argv: request.argv, owner: 'alpha', startedAt: 0, durationMs: 1,
+    });
+
+    const worker = new Worker({
+      run: 'alpha', brief, briefPath: join(dir, 'brief.md'), cwd: dir, journalPath,
+      engine: engine as never, exec, pollIntervalMs: 10, autoAnswer: 'yes',
+    } as never) as unknown as {
+      run: () => Promise<{ verdict: string; sessions: string[]; handoffs: number }>;
+    };
+
+    const result = await worker.run();
+
+    expect(result.verdict).toBe('done');
+    expect(result.sessions).toHaveLength(1);
+    expect(resumedPrompt).toContain('yes');
+
+    const state = replay(journalPath);
+    expect(state.events.some((e) => e.event === 'run.resumed' && e.run === 'alpha')).toBe(true);
+    const autoAnswered = state.events.find((e) => e.event === 'ask.auto-answered' && e.run === 'alpha');
+    expect(autoAnswered).toBeDefined();
+    expect(autoAnswered?.['answer']).toBe('yes');
+  });
+
   it('the falsifier: with no parkedOn on the engine, a zero-turn segment still reads as a plain stop', async () => {
     // Same shape (zero turns, nothing done), but the engine never says the run is parked.
     // This has to keep behaving exactly as it did before F1, proving the new wait only

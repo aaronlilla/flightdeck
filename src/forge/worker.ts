@@ -161,6 +161,11 @@ export interface WorkerConfig {
    *  never engaged. `forge run`'s own wiring in cli.ts passes the real kill switch in; a
    *  specimen that does not care about it needs no fake. */
   killSwitch?: () => boolean;
+  /** Item 8, 2026-09-05: for a probe or smoke run only (`cli.ts`'s `run` command refuses
+   *  the flag for any brief under a real goals directory), answers every ask this run
+   *  raises with this exact text, in-process, the moment it is raised -- no second
+   *  process, no person, no poll. Journals `ask.auto-answered` with the text used. */
+  autoAnswer?: string;
   /** P4.7/I3, wired live by P4.7/I9: the Governor's per-turn conformance check parks
    *  through this. `forge run` always builds a real `WardenActuator` and passes it here;
    *  undefined only in a specimen with nothing to say about parking. Either way a
@@ -491,6 +496,18 @@ export class Worker {
               continue;
             }
             break;
+          }
+
+          // Item 8, 2026-09-05: a probe or smoke run answers its own ask, in-process,
+          // rather than waiting on a second process polling the same shared inbox. The
+          // answer is written before the wait even starts, so `waitForAnswer`'s first
+          // poll already finds it and there is never an actual wait.
+          if (this.config.autoAnswer !== undefined) {
+            this.engine.inbox?.answer(key, this.config.autoAnswer);
+            journal.append({
+              event: 'ask.auto-answered', run: runName, actor: 'runner',
+              key, answer: this.config.autoAnswer,
+            });
           }
 
           const outcome = await this.waitForAnswer(key);

@@ -258,6 +258,29 @@ describe('forge run', () => {
     expect(result.lines.join(' ')).toMatch(/config dir: .+ \((override|fleet|forge)\)/);
   });
 
+  it('item 8, 2026-09-05: refuses --auto-answer for a brief under a real goals directory', async () => {
+    const goalsDir = join(home, 'goals');
+    mkdirSync(goalsDir, { recursive: true });
+    const brief = join(goalsDir, 'real-goal.md');
+    writeFileSync(brief, '# Goal\n\nDo the thing.\n', 'utf8');
+
+    const result = await forge(['run', brief, '--auto-answer', 'yes']);
+
+    expect(result.code).toBe(2);
+    expect(result.lines.join(' ')).toMatch(/--auto-answer/);
+  });
+
+  it('item 8, 2026-09-05: allows --auto-answer for a brief under a goals directory\'s own logs/', async () => {
+    const logsDir = join(home, 'goals', 'logs');
+    mkdirSync(logsDir, { recursive: true });
+    const brief = join(logsDir, 'probe.md');
+    writeFileSync(brief, '# Goal\n\nDo the thing.\n', 'utf8');
+
+    const result = await forge(['run', brief, '--dry-run', '--auto-answer', 'yes']);
+
+    expect(result.code).toBe(0);
+  });
+
   it('says which brief it could not read rather than failing silently', async () => {
     const result = await forge(['run', join(home, 'missing.md')]);
     expect(result.code).toBe(2);

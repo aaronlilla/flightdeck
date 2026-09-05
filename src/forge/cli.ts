@@ -179,16 +179,34 @@ function snapshotRuns(
 }
 
 /**
+ * Item 8, 2026-09-05: whether `briefPath` opens under a goals directory (any path
+ * segment literally named `goals`) somewhere other than that directory's own `logs/`
+ * subdirectory. `.claude/goals/logs/` is where probe and smoke briefs live and get
+ * cleaned up; `.claude/goals/` itself is where a real goal brief -- one whose outcome a
+ * person actually reads -- lives. A path with no `goals` segment at all (a specimen's
+ * temp directory, an ad hoc brief elsewhere) is never a real goal brief either, so it
+ * reads as allowed, the same as `logs/`.
+ */
+function briefUnderRealGoalsDir(briefPath: string): boolean {
+  const parts = briefPath.split(/[\\/]/);
+  const goalsIndex = parts.findIndex((part) => part.toLowerCase() === 'goals');
+  if (goalsIndex === -1) return false;
+  return parts[goalsIndex + 1]?.toLowerCase() !== 'logs';
+}
+
+/**
  * `forge run`'s arguments past the brief path: `--dry-run`, `--max-context N`,
  * `--max-turns N`, and whatever words are left over become the condition.
  */
 function parseRunArgs(rest: string[]): {
   dryRun: boolean; maxContext?: number; maxTurns?: number; condition: string; invalid?: string;
+  autoAnswer?: string;
 } {
   let dryRun = false;
   let maxContext: number | undefined;
   let maxTurns: number | undefined;
   let invalid: string | undefined;
+  let autoAnswer: string | undefined;
   const words: string[] = [];
   for (let index = 0; index < rest.length; index += 1) {
     const token = rest[index]!;
@@ -207,12 +225,19 @@ function parseRunArgs(rest: string[]): {
       maxTurns = value;
       continue;
     }
+    if (token === '--auto-answer') {
+      const raw = rest[index += 1];
+      if (raw === undefined) invalid ??= '--auto-answer needs the text to answer every ask with';
+      autoAnswer = raw;
+      continue;
+    }
     words.push(token);
   }
   return {
     dryRun, condition: words.join(' '),
     ...(maxContext !== undefined ? { maxContext } : {}),
     ...(maxTurns !== undefined ? { maxTurns } : {}),
+    ...(autoAnswer !== undefined ? { autoAnswer } : {}),
     ...(invalid ? { invalid } : {}),
   };
 }
@@ -412,11 +437,23 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       } catch (error) {
         return { code: 2, lines: [`cannot read ${briefPath}: ${(error as Error).message}`] };
       }
-      const { dryRun, maxContext, maxTurns, condition, invalid } = parseRunArgs(rest.slice(1));
+      const { dryRun, maxContext, maxTurns, condition, invalid, autoAnswer } = parseRunArgs(rest.slice(1));
       if (invalid) {
         // Refused before checkLaunch and before any lane is written: a NaN ceiling never
         // fires, which is the exact silent-unbounded-run this check exists to close.
         return { code: 2, lines: [`refusing to start: ${invalid}`] };
+      }
+      // Item 8, 2026-09-05: --auto-answer is for a probe or smoke run only -- a brief
+      // that opens under a real goals directory (`.claude/goals/`, outside its own
+      // `logs/` subdirectory, where probes and smoke briefs live) never gets it, since
+      // nothing should silently answer its own questions on a run someone will actually
+      // read the outcome of.
+      if (autoAnswer !== undefined && briefUnderRealGoalsDir(briefPath)) {
+        return {
+          code: 2,
+          lines: ['refusing to start: --auto-answer is for a probe or smoke run under a '
+            + 'goals directory\'s own logs/ subdirectory, never for a real goal brief'],
+        };
       }
       const verdict = checkLaunch({
         brief,
@@ -544,6 +581,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         ...(deps.exec ? { exec: deps.exec } : {}),
         ...(maxContext !== undefined ? { maxContext } : {}),
         ...(maxTurns !== undefined ? { maxTurns } : {}),
+        ...(autoAnswer !== undefined ? { autoAnswer } : {}),
       });
       let result: Awaited<ReturnType<Worker['run']>>;
       try {

@@ -208,6 +208,9 @@ export const FORGE_EVENT_NAMES = [
   // Item 4, 2026-09-05: `forge clear --stale` removing lane files whose chain finished
   // more than a day ago and whose registry row is gone.
   'lanes.cleared',
+  // Item 8, 2026-09-05: `forge run --auto-answer` answering its own ask in-process, for
+  // a probe or smoke run.
+  'ask.auto-answered',
   // I12: `reconcileRegistry` dropping a dead-pid row with no session id, once it is old
   // enough to be a crash rather than a race against its own admission.
   'registry.abandoned',
