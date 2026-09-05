@@ -22,6 +22,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { INHERITED, Worker, workerEnv, type FakeTurn } from '../../src/forge/worker.js';
 import { replay } from '../../src/forge/journal.js';
+import { Inbox } from '../../src/forge/inbox.js';
 
 let dir: string;
 let journalPath: string;
@@ -459,5 +460,101 @@ describe('B.3.8: no caps on implementation', () => {
     // it stops for running out of sessions, not because the stuck rule fired.
     expect(result.verdict).not.toBe('parked');
     expect(engine.started).toHaveLength(4);
+  });
+});
+
+describe('F1: a segment that ends while parked keeps waiting, not stopped', () => {
+  it('resumes the same session once a second Inbox instance writes the answer, and ends done', async () => {
+    const inboxDir = join(dir, 'inbox');
+    const inbox = new Inbox(inboxDir);
+    let key: string | undefined;
+    let resumedPrompt: string | undefined;
+
+    // The model asked, `canUseTool` denied it, and the segment ended with zero turns: the
+    // exact shape a real park leaves for worker.ts to find, with no live SDK involved.
+    const engine = {
+      started: [] as unknown[],
+      inbox,
+      async run(config: { run: string }) {
+        this.started.push(config);
+        const entry = inbox.raise({
+          run: config.run, goal: config.run, actionTarget: 'AskUserQuestion',
+          question: 'dev or prod?', options: ['dev', 'prod'], kind: 'question',
+        });
+        key = entry.key;
+        return {
+          sessionId: 'session-1',
+          turns: [],
+          async send(prompt: string) {
+            resumedPrompt = prompt;
+            return [{ text: 'shipped', context: 10, done: true }];
+          },
+        };
+      },
+      parkedOn(run: string) {
+        return run === 'alpha' ? key : undefined;
+      },
+      clearPark() {
+        key = undefined;
+      },
+    };
+
+    // A second `Inbox` instance on the same directory, standing in for a separate `forge
+    // answer` process: it never calls the engine or the worker directly, only the file.
+    const answerFromAnotherProcess = () => {
+      const outside = new Inbox(inboxDir);
+      const waiting = outside.open()[0];
+      if (waiting) outside.answer(waiting.key, 'go with dev');
+    };
+
+    const brief = '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnode -e process.exit(0)\n```\n';
+    const exec = async (request: { argv: string[] }) => ({
+      ok: true, tail: '', returncode: 0, argv: request.argv, owner: 'alpha', startedAt: 0, durationMs: 1,
+    });
+
+    const worker = new Worker({
+      run: 'alpha', brief, briefPath: join(dir, 'brief.md'), cwd: dir, journalPath,
+      engine: engine as never, exec, pollIntervalMs: 10,
+    } as never) as unknown as {
+      run: () => Promise<{ verdict: string; sessions: string[]; handoffs: number }>;
+    };
+
+    // Answered after the worker has already polled once and found nothing, so the round
+    // trip only succeeds if the wait is a real poll rather than a single check.
+    setTimeout(answerFromAnotherProcess, 15);
+
+    const result = await worker.run();
+
+    expect(result.verdict).toBe('done');
+    expect(result.sessions).toHaveLength(1);
+    expect(result.handoffs).toBe(0);
+    expect(resumedPrompt).toContain('go with dev');
+
+    const state = replay(journalPath);
+    expect(state.events.some((e) => e.event === 'run.resumed' && e.run === 'alpha')).toBe(true);
+    // The falsifier this closes: a run that ever reports stopped or exhausted while it was
+    // genuinely parked defeats the point, whatever its final verdict turns out to be.
+    expect(state.events.some((e) => e.event === 'run.finished'
+      && (e['verdict'] === 'stopped' || e['verdict'] === 'exhausted'))).toBe(false);
+  });
+
+  it('the falsifier: with no parkedOn on the engine, a zero-turn segment still reads as a plain stop', async () => {
+    // Same shape (zero turns, nothing done), but the engine never says the run is parked.
+    // This has to keep behaving exactly as it did before F1, proving the new wait only
+    // fires because the engine names a park key, never merely because turns came back empty.
+    const engine = {
+      started: [] as unknown[],
+      async run(config: { run: string }) {
+        this.started.push(config);
+        return { sessionId: 'session-1', turns: [] };
+      },
+    };
+    const worker = new Worker({
+      run: 'alpha', brief: '# Goal\n\nDo the thing.\n', briefPath: join(dir, 'brief.md'),
+      cwd: dir, journalPath, engine: engine as never,
+    } as never) as unknown as { run: () => Promise<{ verdict: string }> };
+
+    const result = await worker.run();
+    expect(['exhausted', 'parked']).toContain(result.verdict);
   });
 });

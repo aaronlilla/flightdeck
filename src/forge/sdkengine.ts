@@ -448,6 +448,14 @@ export class SdkEngine implements EngineLike {
   private readonly parked: Map<string, string>;
 
   /**
+   * The one `Inbox` this instance ever writes park entries into or reads them back from.
+   * Shared across every `run()` call on this instance (F1), not recreated per call: the
+   * worker's own poll for an answer (`EngineLike.inbox`) has to see the exact same on-disk
+   * directory `canUseTool`, `forge_ask` and the PreToolUse hook already write into.
+   */
+  private readonly sharedInbox: Inbox;
+
+  /**
    * The live `Engine` for each run this instance has started, kept for the life of this
    * `SdkEngine` so `answer()` can push into a session that is still open. Cleared by
    * `close()`, which is called once per whole chain, matching the journal handle above.
@@ -458,6 +466,25 @@ export class SdkEngine implements EngineLike {
     this.deliverVia = deps.deliverVia ?? 'hook';
     this.journal = new Journal(deps.journalPath);
     this.parked = deps.parked ?? new Map();
+    this.sharedInbox = new Inbox(deps.inboxDir);
+  }
+
+  /** The ask key this run is parked on, per `EngineLike.parkedOn` (F1). */
+  parkedOn(run: string): string | undefined {
+    return this.parked.get(run);
+  }
+
+  /** Clears this run's park state, per `EngineLike.clearPark` (F1): for the worker's own
+   *  in-process resume, never for a separate `forge answer` process, which goes through
+   *  `answer()` instead. */
+  clearPark(run: string): void {
+    this.parked.delete(run);
+  }
+
+  /** The shared `Inbox`, per `EngineLike.inbox` (F1): the same directory `canUseTool`,
+   *  `forge_ask` and the PreToolUse hook read and write park entries into. */
+  get inbox(): Inbox {
+    return this.sharedInbox;
   }
 
   async run(request: SessionRequest): Promise<SessionResult> {
@@ -475,7 +502,7 @@ export class SdkEngine implements EngineLike {
     });
 
     const journal = this.journal;
-    const inbox = new Inbox(this.deps.inboxDir);
+    const inbox = this.sharedInbox;
     const gotchas = new Gotchas(this.deps.gotchasDir, this.deps.journalPath);
 
     const handlers: ForgeToolHandlers = {

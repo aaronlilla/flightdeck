@@ -18,6 +18,7 @@
 import { tierOfBrief, contextFor, effortFor, modelFor, modelIdFor, turnsFor } from './policy.js';
 import { Journal } from './journal.js';
 import { run as execRun, type RunRequest, type RunResult } from './exec.js';
+import type { Inbox } from './inbox.js';
 
 /**
  * Markers a session inherits from the session that spawned it.
@@ -107,6 +108,24 @@ export interface SessionResult {
 export interface EngineLike {
   started: SessionRequest[];
   run(config: SessionRequest): Promise<SessionResult>;
+  /**
+   * The ask key this run is parked on, if the engine tracks park state (F1/F3). `SdkEngine`
+   * implements this. A fake with no park concept can leave it out, and the worker falls
+   * back to treating a segment that ended with no `done` and no ceiling as a plain stop.
+   */
+  parkedOn?(run: string): string | undefined;
+  /**
+   * Clears this run's park state once the worker has resumed it in-process (F1). Separate
+   * from `SdkEngine.answer()`, which is for a different `forge answer` process to call: the
+   * worker never calls `answer()` on its own engine. It resumes the session directly through
+   * `SessionResult.send` and only then clears the park it was waiting on.
+   */
+  clearPark?(run: string): void;
+  /**
+   * The shared `Inbox` this engine writes park entries into, so the worker can poll the
+   * same file a separate `forge answer` process writes the answer into (F1).
+   */
+  inbox?: Inbox;
 }
 
 export interface WorkerConfig {
@@ -129,6 +148,13 @@ export interface WorkerConfig {
   /** Called the moment a session in this chain has opened, so a caller (the registry, in
    *  cli.ts's `run`) can persist the session id before a crash could ever lose it. */
   onSessionStarted?: (run: string, sessionId: string, model: string) => void;
+  /** How often to re-check a park while waiting for an answer (F1). Defaults to 2,000ms; a
+   *  specimen overrides this so a park-and-answer round trip does not cost real seconds. */
+  pollIntervalMs?: number;
+  /** Read fresh on every poll while parked; `true` ends the wait with no answer. Defaults to
+   *  never engaged. `forge run`'s own wiring in cli.ts passes the real kill switch in; a
+   *  specimen that does not care about it needs no fake. */
+  killSwitch?: () => boolean;
 }
 
 export interface WorkerResult {
@@ -285,29 +311,58 @@ export class Worker {
 
         let ceilingHit = false;
         let finished = false;
-        for (const turn of session.turns) {
-          turns += 1;
-          context = turn.context;
-          journal.append({
-            event: 'turn.end',
-            run: runName,
-            actor: 'worker',
-            context: turn.context,
-            model,
-            // `model` above is the class-selected model this run was asked to open on;
-            // `messageModel` is what the SDK actually reported serving this specific
-            // message with, which a fallback reroute can make different.
-            ...(turn.model ? { messageModel: turn.model } : {}),
-            ...(turn.usage ? { usage: turn.usage } : {}),
-          });
-          if (turn.done) {
-            finished = true;
+        let parkedWithoutAnswer = false;
+        let pendingTurns = session.turns;
+        // A segment that ends with neither `done` nor the ceiling hit is not necessarily a
+        // stop: the model may have hit an `AskUserQuestion` or `forge_ask` and parked (F1).
+        // That is not this segment failing to finish, it is this segment waiting on a
+        // person, so the loop below waits for the answer and keeps going on the SAME open
+        // session rather than reporting `stopped` the moment the model's own turn ends.
+        for (;;) {
+          for (const turn of pendingTurns) {
+            turns += 1;
+            context = turn.context;
+            journal.append({
+              event: 'turn.end',
+              run: runName,
+              actor: 'worker',
+              context: turn.context,
+              model,
+              // `model` above is the class-selected model this run was asked to open on;
+              // `messageModel` is what the SDK actually reported serving this specific
+              // message with, which a fallback reroute can make different.
+              ...(turn.model ? { messageModel: turn.model } : {}),
+              ...(turn.usage ? { usage: turn.usage } : {}),
+            });
+            if (turn.done) {
+              finished = true;
+              break;
+            }
+            if (turn.context >= ceiling) {
+              ceilingHit = true;
+              break;
+            }
+          }
+          if (finished || ceilingHit) break;
+
+          const key = this.engine.parkedOn?.(runName);
+          if (!key) break;
+
+          const outcome = await this.waitForAnswer(key);
+          if (outcome !== 'answered') {
+            parkedWithoutAnswer = true;
             break;
           }
-          if (turn.context >= ceiling) {
-            ceilingHit = true;
-            break;
-          }
+          this.engine.clearPark?.(runName);
+          journal.append({ event: 'run.resumed', run: runName, actor: 'console', key });
+          if (!session.send) break;
+          pendingTurns = await session.send(this.engine.inbox?.resumePrompt(key) ?? '');
+        }
+
+        if (parkedWithoutAnswer) {
+          journal.append({ event: 'run.finished', run: runName, actor: 'runner', verdict: 'parked' });
+          verdict = 'parked';
+          break;
         }
 
         if (finished) {
@@ -427,6 +482,48 @@ export class Worker {
     }
     journal.append({ event: 'run.finished', run: runName, actor: 'runner', verdict: 'parked' });
     return 'parked';
+  }
+
+  /**
+   * Waits for a park to be answered (F1), polling the engine's shared `Inbox` on the
+   * interval `pollIntervalMs` sets, with no overall timeout: a park waits for a person, for
+   * as long as it takes. This never calls the engine's own `answer()` -- that path is for a
+   * separate `forge answer` process, and the falsifier here is exactly a specimen that used
+   * it instead of a second `Inbox` instance writing the file this one reads.
+   *
+   * Two things end the wait early, and both stop the run rather than the process: the kill
+   * switch (`forge stop --all`, checked via `killSwitch` on the same interval) and a
+   * `SIGINT`. Either resolves `'killed'` or `'interrupted'`, which the caller journals as a
+   * clean `parked` verdict, exit 2.
+   */
+  private waitForAnswer(key: string): Promise<'answered' | 'killed' | 'interrupted'> {
+    const inbox = this.engine.inbox;
+    const pollIntervalMs = this.config.pollIntervalMs ?? 2000;
+    const killSwitch = this.config.killSwitch ?? (() => false);
+    return new Promise((resolve) => {
+      let settled = false;
+      const onSigint = () => finish('interrupted');
+      const finish = (outcome: 'answered' | 'killed' | 'interrupted') => {
+        if (settled) return;
+        settled = true;
+        process.off('SIGINT', onSigint);
+        resolve(outcome);
+      };
+      process.once('SIGINT', onSigint);
+      const poll = () => {
+        if (settled) return;
+        if (killSwitch()) {
+          finish('killed');
+          return;
+        }
+        if (inbox?.entry(key)?.answer !== undefined) {
+          finish('answered');
+          return;
+        }
+        setTimeout(poll, pollIntervalMs);
+      };
+      poll();
+    });
   }
 
   /**
