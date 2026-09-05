@@ -41,6 +41,20 @@ export type EngineEvent =
        *  its own conversation and does not belong in that number. */
       parentToolUseId: string | null;
     }
+  | {
+      /**
+       * The SDK result message's own `modelUsage` map (main loop, Task subagents,
+       * sidechains and internal calls, per its own doc comment), emitted once per
+       * segment alongside `turn-complete`. This is the Governor's burn-ledger source
+       * (`src/forge/governor.ts`'s `buildBurnLedger`), kept separate from the per-message
+       * `usage` event above rather than replacing it: the two are reconciled against
+       * each other, not merged.
+       */
+      type: 'result-usage';
+      modelUsage: Record<string, {
+        input: number; cacheRead: number; cacheCreation: number; output: number; costUsd: number;
+      }>;
+    }
   | { type: 'compact-boundary'; trigger: string }
   | { type: 'engine-error'; message: string; fatal: boolean }
   | { type: 'stderr'; text: string }

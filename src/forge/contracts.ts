@@ -176,6 +176,13 @@ export const FORGE_EVENT_NAMES = [
   // a kill it refused for lack of a decision, and a fleet-probe health note that is never
   // acted on (liveness.ts's fleet-unknown, surfaced but not treated as a run's own fault).
   'run.killed', 'warden.refused', 'warden.health',
+  // The Governor stream's own (roadmap P4.2, `src/forge/governor.ts`): `result.usage`
+  // carries the SDK result message's own `modelUsage` map, journaled by the engine on a
+  // segment's end row; `burn.mismatch` is the reconciliation between that sum and B.3.6's
+  // per-message sum; `governor.parked` is a budget-cap park, kept apart from
+  // `warden.parked`'s model-mismatch park even though both use the same `run.parked`
+  // liveness fold, so a reader can tell a cap from a mismatch without inspecting `reason`.
+  'result.usage', 'burn.mismatch', 'governor.parked',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];

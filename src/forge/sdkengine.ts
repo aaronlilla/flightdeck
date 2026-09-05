@@ -766,6 +766,13 @@ export class SdkEngine implements EngineLike {
             }
             break;
           }
+          case 'result-usage':
+            // The SDK result message's own per-model totals, journaled on this
+            // segment's end row for the Governor's burn ledger (P4.2, `governor.ts`'s
+            // `buildBurnLedger`). Emitted before `turn-complete` by the adapter, so this
+            // case always runs while the listener below is still attached.
+            journal.append({ event: 'result.usage', run: request.run, actor: 'worker', modelUsage: event.modelUsage });
+            break;
           case 'turn-complete':
             flush();
             off();
