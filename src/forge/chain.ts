@@ -64,6 +64,10 @@ export interface ChainProvisionResult {
   /** H4: the branch's base, carried forward so the gate hop can pass it to the Codex
    *  lane as `baseRef` without re-deriving it from `chain-env.ts`. */
   base: string;
+  /** D1: true when the launcher found an existing worktree on the expected branch and
+   *  reused it rather than running `git worktree add` again. Carried onto the
+   *  `chain.provisioned` row so `forge chain`/`forge status` can say so. */
+  reused?: boolean;
 }
 
 export interface ChainLaunchResult {
@@ -148,7 +152,7 @@ export interface ChainPacketState {
   blocked?: { hop: ChainHop; reason: string };
   /** `base` is optional here only because a journal row written before H4 landed never
    *  carried it; every row `advancePacket` writes going forward has one. */
-  provisioned?: { worktreePath: string; branch: string; base?: string };
+  provisioned?: { worktreePath: string; branch: string; base?: string; reused?: boolean };
   launched?: { runKey: string };
   gated?: { verdict: string; attestationPath?: string };
   merged?: { mergeSha?: string };
@@ -203,6 +207,7 @@ export function foldChainState(events: ChainEventLike[]): Map<string, ChainPacke
         row.provisioned = {
           worktreePath: String(raw['worktreePath'] ?? ''), branch: String(raw['branch'] ?? ''),
           ...(typeof raw['base'] === 'string' ? { base: raw['base'] } : {}),
+          ...(raw['reused'] === true ? { reused: true } : {}),
         };
         break;
       case 'chain.launched':
@@ -270,6 +275,7 @@ async function advancePacket(row: ChainPacketState, deps: ChainDeps): Promise<vo
         deps.append({
           event: 'chain.provisioned', actor: 'chain', packetId: row.packetId,
           worktreePath: result.worktreePath, branch: result.branch, base: result.base,
+          ...(result.reused ? { reused: true } : {}),
         });
       } catch (error) {
         deps.append({

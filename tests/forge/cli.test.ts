@@ -278,6 +278,14 @@ describe('forge run', () => {
 });
 
 describe('forge run', () => {
+  // D3, 2026-09-05: this refusal itself is synchronous (WS_MONITOR is a plain regex
+  // test), but `checkLaunch` is only reached after `loginInFlight()`, which shells out
+  // to a real process-table probe (`powershell Get-CimInstance` on Windows, `ps` on
+  // Linux/macOS). That probe is a genuine wait -- CI itself measured this specimen
+  // timing out at the default 5 s on the Windows runner while passing on Linux -- not a
+  // delay in the refusal path this specimen means to prove, so the fix widens the
+  // specimen's own timeout rather than reordering `checkLaunch`'s real dependency out
+  // from under every other launch.
   it('refuses a brief that opens a websocket Monitor', async () => {
     const brief = join(home, 'bad.md');
     writeFileSync(brief, 'Open Monitor({ws:{url:"ws://127.0.0.1:4100"}}) first.\n', 'utf8');
@@ -286,7 +294,7 @@ describe('forge run', () => {
 
     expect(result.code).toBe(1);
     expect(result.lines.join(' ')).toMatch(/monitor/i);
-  });
+  }, 20_000);
 
   it('refuses a condition over the limit', async () => {
     const brief = join(home, 'ok.md');
@@ -909,6 +917,65 @@ describe('C2: forge chain', () => {
 
   it('retry with no packet id is refused with exit 2', async () => {
     const result = await forge(['chain', 'retry']);
+    expect(result.code).toBe(2);
+  });
+});
+
+describe('D2: forge chain skip', () => {
+  function seedPlannedPacket(): void {
+    const j = new Journal(journal());
+    j.append({ event: 'intake.planned', actor: 'intake', packetId: 'p1', ticket: 'ABC-1', repo: 'owner/name', briefPath: 'C:/briefs/p1.md' });
+    j.close();
+  }
+
+  function seedLaunchedPacket(): void {
+    const j = new Journal(journal());
+    j.append({ event: 'intake.planned', actor: 'intake', packetId: 'p1', ticket: 'ABC-1', repo: 'owner/name', briefPath: 'C:/briefs/p1.md' });
+    j.append({ event: 'chain.provisioned', actor: 'chain', packetId: 'p1', worktreePath: 'C:/wt', branch: 'feature/abc-1', base: 'develop' });
+    j.append({ event: 'chain.launched', actor: 'chain', packetId: 'p1', runKey: 'abc-1' });
+    j.close();
+  }
+
+  it('journals chain.stopped with reason skipped, plus the given reason, for a planned packet', async () => {
+    seedPlannedPacket();
+    const result = await forge(['chain', 'skip', 'p1', '--reason', 'ticket merged hours ago']);
+    expect(result.code).toBe(0);
+
+    const { events } = replayEvents(readFileSync(journal(), 'utf8'));
+    const stopped = events.find((event) => event.event === 'chain.stopped');
+    expect(stopped?.['packetId']).toBe('p1');
+    expect(String(stopped?.['reason'])).toContain('skipped');
+    expect(String(stopped?.['reason'])).toContain('ticket merged hours ago');
+  });
+
+  it('a skipped planned packet folds as terminal and forge chain shows it skipped', async () => {
+    seedPlannedPacket();
+    await forge(['chain', 'skip', 'p1']);
+
+    const result = await forge(['chain']);
+    const row = result.lines.find((line) => line.includes('ABC-1'));
+    expect(row).toBeDefined();
+    expect(row).toContain('skipped');
+  });
+
+  it('a launched packet cannot be skipped: exit 2, points at forge stop', async () => {
+    seedLaunchedPacket();
+    const result = await forge(['chain', 'skip', 'p1']);
+    expect(result.code).toBe(2);
+    expect(result.lines.join(' ')).toMatch(/forge stop/);
+
+    // Refused, so no chain.stopped row was written.
+    const { events } = replayEvents(readFileSync(journal(), 'utf8'));
+    expect(events.find((event) => event.event === 'chain.stopped')).toBeUndefined();
+  });
+
+  it('skip on an unknown packet id is refused with exit 2', async () => {
+    const result = await forge(['chain', 'skip', 'no-such-packet']);
+    expect(result.code).toBe(2);
+  });
+
+  it('skip with no packet id is refused with exit 2', async () => {
+    const result = await forge(['chain', 'skip']);
     expect(result.code).toBe(2);
   });
 });

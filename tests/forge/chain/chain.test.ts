@@ -224,6 +224,23 @@ describe('runChainTick', () => {
     expect(sawForceCodex).toBe(true);
   });
 
+  it('D1: carries reused: true from the launcher onto the chain.provisioned row', async () => {
+    const planned: ChainPlannedPacket[] = [{ packetId: 'p1', ticket: 'ABC-1', repo: 'owner/name', briefPath: 'C:/briefs/p1.md' }];
+    const fixture = buildFixture({
+      planned,
+      launcher: {
+        provision: async () => (
+          { worktreePath: 'C:/worktrees/repo--abc-1', branch: 'feature/abc-1', base: 'develop', reused: true }
+        ),
+      },
+    });
+
+    await runChainTick(fixture.deps, fixture.state);
+
+    const provisioned = fixture.events.find((event) => event['event'] === 'chain.provisioned');
+    expect(provisioned?.['reused']).toBe(true);
+  });
+
   it('blocks with the command tail when the worktree setup command fails', async () => {
     const planned: ChainPlannedPacket[] = [{ packetId: 'p1', ticket: 'ABC-1', repo: 'owner/name', briefPath: 'C:/briefs/p1.md' }];
     const fixture = buildFixture({
