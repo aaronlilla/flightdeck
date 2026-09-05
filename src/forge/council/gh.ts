@@ -20,6 +20,10 @@ export interface PrSnapshot {
   diffText: string;
   changedLines: number;
   checks: { runId: string; headSha: string; conclusion: 'success' | 'failure' | 'pending' };
+  /** F5: `gh pr merge` refuses outright on a draft PR, with no reason surfaced anywhere
+   *  in this codebase before this field existed. `forge gate --merge` reads it before
+   *  ever calling `mergePr`. */
+  isDraft: boolean;
 }
 
 /** Everything Council reads about a PR. One call, so a caller never risks reading the
@@ -28,10 +32,22 @@ export interface GhReader {
   viewPr(repo: string, pr: number): Promise<PrSnapshot>;
 }
 
-/** The two writes `forge gate --merge` performs, always through `ExternalWrite`'s own
- *  intent/call/complete cycle (`externalize.ts`) rather than fired and forgotten. */
+/** What a `gh` write reports back: the exit code and the combined output (`run()` in
+ *  `exec.ts` merges stdout and stderr into one tail, so this is that tail, not a
+ *  separately captured stream) -- F5's own fix for a merge that failed silently and
+ *  left `forge gate` printing the bare word "unknown" with no way to tell why. */
+export interface GhWriteResult {
+  returncode: number;
+  stderr: string;
+}
+
+/** The writes `forge gate --merge` performs, always through `ExternalWrite`'s own
+ *  intent/call/complete cycle (`externalize.ts`) rather than fired and forgotten.
+ *  `readyPr` (F5) is called first when the PR is still a draft: a passing gate is by
+ *  construction what makes a draft ready to merge. */
 export interface GhWriter {
-  mergePr(repo: string, pr: number, subject: string, body: string): Promise<void>;
+  mergePr(repo: string, pr: number, subject: string, body: string): Promise<GhWriteResult>;
+  readyPr(repo: string, pr: number): Promise<GhWriteResult>;
   viewPrState(repo: string, pr: number): Promise<GhPrView>;
 }
 
@@ -67,6 +83,7 @@ interface RawPrView {
   body: string;
   files?: { path: string }[];
   statusCheckRollup?: RawStatusCheck[];
+  isDraft?: boolean;
 }
 
 /**
@@ -98,7 +115,7 @@ export const REAL_GH: GhReader & GhWriter = {
     const view = await execRun({
       argv: [
         'gh', 'pr', 'view', String(pr), '--repo', repo, '--json',
-        'headRefOid,baseRefOid,title,body,files,statusCheckRollup',
+        'headRefOid,baseRefOid,title,body,files,statusCheckRollup,isDraft',
       ],
       cwd: process.cwd(), owner: 'council', cls: 'script',
     });
@@ -122,14 +139,27 @@ export const REAL_GH: GhReader & GhWriter = {
         headSha: parsed.headRefOid,
         conclusion: conclusionOf(parsed.statusCheckRollup),
       },
+      isDraft: parsed.isDraft ?? false,
     };
   },
 
   async mergePr(repo, pr, subject, body) {
-    await execRun({
+    const result = await execRun({
       argv: ['gh', 'pr', 'merge', String(pr), '--repo', repo, '--squash', '--subject', subject, '--body', body],
       cwd: process.cwd(), owner: 'council', cls: 'script',
     });
+    return { returncode: result.returncode ?? -1, stderr: result.tail };
+  },
+
+  /** F5: marks a draft PR ready to merge. Called by `forge gate --merge` before the
+   *  merge itself when `isDraft` says the PR is still a draft -- `gh pr merge` refuses
+   *  a draft outright, and nothing upstream of this fix ever looked. */
+  async readyPr(repo, pr) {
+    const result = await execRun({
+      argv: ['gh', 'pr', 'ready', String(pr), '--repo', repo],
+      cwd: process.cwd(), owner: 'council', cls: 'script',
+    });
+    return { returncode: result.returncode ?? -1, stderr: result.tail };
   },
 
   async viewPrState(repo, pr) {

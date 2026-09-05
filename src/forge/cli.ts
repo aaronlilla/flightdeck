@@ -22,7 +22,7 @@ import type { QueryFn } from '../adapter/engine.js';
 import { BlockerBoard } from './blockers.js';
 import { readAttestation, writeAttestation } from './council/attest.js';
 import { buildSquashMergeCall } from './council/gate.js';
-import { planMergeIntent, recordMergeCall, reconcileMerge } from './council/externalize.js';
+import { planMergeIntent, planReadyIntent, recordMergeCall, reconcileMerge } from './council/externalize.js';
 import { REAL_GH, type GhReader, type GhWriter } from './council/gh.js';
 import { findHaipingHandoff } from './council/handoffScan.js';
 import { runCouncilRound } from './council/orchestrate.js';
@@ -1138,6 +1138,40 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
 
       const gateJournal = new Journal(journalPath());
       try {
+        // F5: `gh pr merge` refuses outright on a draft PR and nothing here ever read
+        // `isDraft` to see it coming. A passing gate is by construction what makes a
+        // draft ready, so a merge decision on a draft marks it ready first, journaled
+        // as its own external.intent/external.call of kind pr-ready.
+        if (snapshot.isDraft) {
+          let readyWrite = planReadyIntent({ repo, pr, headSha: snapshot.headSha });
+          gateJournal.append({
+            event: 'external.intent', actor: 'council', kind: readyWrite.kind,
+            idempotencyKey: readyWrite.idempotencyKey,
+          });
+          readyWrite = recordMergeCall(readyWrite);
+          gateJournal.append({
+            event: 'external.call', actor: 'council', kind: readyWrite.kind,
+            idempotencyKey: readyWrite.idempotencyKey,
+          });
+          const readyResult = await gh.readyPr(repo, pr);
+          if (readyResult.returncode !== 0) {
+            const stderr = readyResult.stderr.slice(0, 300);
+            gateJournal.append({
+              event: 'external.unknown', actor: 'council', kind: readyWrite.kind,
+              idempotencyKey: readyWrite.idempotencyKey, state: 'unknown',
+              exitCode: readyResult.returncode, stderr,
+            });
+            return {
+              code: 1,
+              lines: [`ready unknown: ${repo}#${pr} (exit ${readyResult.returncode}): ${stderr}`],
+            };
+          }
+          gateJournal.append({
+            event: 'external.complete', actor: 'council', kind: readyWrite.kind,
+            idempotencyKey: readyWrite.idempotencyKey,
+          });
+        }
+
         const subject = `${snapshot.title} (#${pr})`;
         const body = redactPrBody(snapshot.body);
         const call = buildSquashMergeCall({ commits: [], subject, body });
@@ -1151,18 +1185,25 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         gateJournal.append({
           event: 'external.call', actor: 'council', kind: write.kind, idempotencyKey: write.idempotencyKey,
         });
-        await gh.mergePr(repo, pr, call.subject, call.body);
+        const mergeResult = await gh.mergePr(repo, pr, call.subject, call.body);
 
         const view = await gh.viewPrState(repo, pr);
         write = reconcileMerge(write, view);
+        // F5: an unknown outcome used to carry nothing beyond the word "unknown" -- the
+        // exit code and (truncated) stderr are what tell the operator why, rather than
+        // sending them back to read the raw gh call by hand.
+        const mergeStderr = mergeResult.stderr.slice(0, 300);
         gateJournal.append({
           event: write.state === 'complete' ? 'external.complete' : 'external.unknown',
           actor: 'council', kind: write.kind, idempotencyKey: write.idempotencyKey, state: write.state,
+          ...(write.state === 'unknown' ? { exitCode: mergeResult.returncode, stderr: mergeStderr } : {}),
         });
 
         return {
           code: write.state === 'complete' ? 0 : 1,
-          lines: [`merge ${write.state}: ${repo}#${pr}`],
+          lines: [write.state === 'complete'
+            ? `merge ${write.state}: ${repo}#${pr}`
+            : `merge ${write.state}: ${repo}#${pr} (exit ${mergeResult.returncode}): ${mergeStderr}`],
         };
       } finally {
         gateJournal.close();

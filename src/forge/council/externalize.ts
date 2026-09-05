@@ -30,7 +30,22 @@ export function planMergeIntent(subject: MergeSubject): ExternalWrite {
   };
 }
 
-/** The `gh pr merge` call was made. Its outcome is not yet known. */
+/** F5: recorded before the `gh pr ready` call, when a merge decision hits a draft PR.
+ *  Its own kind (`pr-ready`) rather than folded into `pr-merge`, since it is a distinct
+ *  external write with its own intent/call/complete row -- a passing gate is by
+ *  construction what makes a draft ready, so this always precedes a merge intent, never
+ *  replaces one. */
+export function planReadyIntent(subject: MergeSubject): ExternalWrite {
+  return {
+    id: `ready-${subject.repo}-${subject.pr}-${subject.headSha}`,
+    kind: 'pr-ready',
+    idempotencyKey: idempotencyKeyFor(subject),
+    state: 'intent',
+    at: Date.now(),
+  };
+}
+
+/** The `gh pr merge` (or `gh pr ready`) call was made. Its outcome is not yet known. */
 export function recordMergeCall(intent: ExternalWrite): ExternalWrite {
   return { ...intent, state: 'call', at: Date.now() };
 }
