@@ -18,7 +18,7 @@ import {
 } from '../../../src/forge/chain-env.js';
 import {
   CHAIN_LAUNCH_CONDITION, chainLaunchArgv, hasRunRegistered, launchWaitMs, provisionWorktree,
-  runWorktreeSetup, waitForLaunchToRegister, type ProvisionFs,
+  runOutcome, runWorktreeSetup, waitForLaunchToRegister, type ProvisionFs,
 } from '../../../src/forge/chain-wire.js';
 import type { RunRequest, RunResult } from '../../../src/forge/exec.js';
 import type { Registry } from '../../../src/forge/registry.js';
@@ -370,5 +370,73 @@ describe('launchWaitMs', () => {
   it('falls back to 45s on a non-positive or unparsable value', () => {
     expect(launchWaitMs({ FORGE_CHAIN_LAUNCH_WAIT_S: '0' })).toBe(45_000);
     expect(launchWaitMs({ FORGE_CHAIN_LAUNCH_WAIT_S: 'nope' })).toBe(45_000);
+  });
+});
+
+describe('runOutcome', () => {
+  it('unknown run key: not finished', () => {
+    expect(runOutcome('abc-1', { runs: {}, events: [] })).toEqual({ finished: false });
+  });
+
+  it('a root still started, no successor: not finished', () => {
+    const runs = { 'abc-1': { state: 'started' } };
+    expect(runOutcome('abc-1', { runs, events: [] })).toEqual({ finished: false });
+  });
+
+  it('a root finished done: finished with that verdict', () => {
+    const runs = { 'abc-1': { state: 'finished', verdict: 'done' } };
+    expect(runOutcome('abc-1', { runs, events: [] })).toEqual({ finished: true, verdict: 'done' });
+  });
+
+  it('a finished root with no verdict on the fold reads it off its run.finished row', () => {
+    const runs = { 'abc-1': { state: 'finished' } };
+    const events = [{ event: 'run.finished', run: 'abc-1', verdict: 'exhausted' }];
+    expect(runOutcome('abc-1', { runs, events })).toEqual({ finished: true, verdict: 'exhausted' });
+  });
+
+  it('two handoffs then done: the verdict is the last successor\'s, not unknown', () => {
+    const runs = {
+      'abc-1': { state: 'handed-off', successor: 'abc-1-2' },
+      'abc-1-2': { state: 'handed-off', successor: 'abc-1-3' },
+      'abc-1-3': { state: 'finished', verdict: 'done' },
+    };
+    expect(runOutcome('abc-1', { runs, events: [] })).toEqual({ finished: true, verdict: 'done' });
+  });
+
+  it('a handed-off root whose successor is still working: not finished', () => {
+    const runs = {
+      'abc-1': { state: 'handed-off', successor: 'abc-1-2' },
+      'abc-1-2': { state: 'started' },
+    };
+    expect(runOutcome('abc-1', { runs, events: [] })).toEqual({ finished: false });
+  });
+
+  it('a root put back to started by a resume, with a successor that finished: the successor decides', () => {
+    const runs = {
+      'abc-1': { state: 'started', successor: 'abc-1-2' },
+      'abc-1-2': { state: 'finished', verdict: 'done' },
+    };
+    expect(runOutcome('abc-1', { runs, events: [] })).toEqual({ finished: true, verdict: 'done' });
+  });
+
+  it('a handoff whose successor has not folded yet: not finished', () => {
+    const runs = { 'abc-1': { state: 'handed-off', successor: 'abc-1-2' } };
+    expect(runOutcome('abc-1', { runs, events: [] })).toEqual({ finished: false });
+  });
+
+  it('a parked terminal run: finished, and the verdict says parked rather than nothing', () => {
+    const runs = {
+      'abc-1': { state: 'handed-off', successor: 'abc-1-2' },
+      'abc-1-2': { state: 'parked' },
+    };
+    expect(runOutcome('abc-1', { runs, events: [] })).toEqual({ finished: true, verdict: 'parked' });
+  });
+
+  it('a successor cycle terminates instead of looping', () => {
+    const runs = {
+      'abc-1': { state: 'handed-off', successor: 'abc-1-2' },
+      'abc-1-2': { state: 'handed-off', successor: 'abc-1' },
+    };
+    expect(runOutcome('abc-1', { runs, events: [] }).finished).toBe(false);
   });
 });
