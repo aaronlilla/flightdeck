@@ -1397,7 +1397,38 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         return { code: 0, lines: [`unblocked ${packetId}`] };
       }
 
-      return { code: 2, lines: [`forge chain [retry PACKET [--reason "<why>"]] -- unknown subcommand ${sub}`] };
+      if (sub === 'skip') {
+        const [packetId, ...reasonArgs] = chainArgs;
+        if (!packetId) return { code: 2, lines: ['forge chain skip needs a packet id'] };
+
+        const state = foldChainState(replay(journalPath()).events);
+        const row = state.get(packetId);
+        if (!row) return { code: 2, lines: [`unknown packet ${packetId}`] };
+        if (row.launched) {
+          return {
+            code: 2,
+            lines: [`${packetId} is already launched; run forge stop to stop it instead`],
+          };
+        }
+
+        const reasonFlag = reasonArgs.indexOf('--reason');
+        const givenReason = reasonFlag >= 0 ? reasonArgs.slice(reasonFlag + 1).join(' ') : undefined;
+        const reason = givenReason ? `skipped: ${givenReason}` : 'skipped';
+
+        const chainJournal = new Journal(journalPath());
+        try {
+          chainJournal.append({ event: 'chain.stopped', actor: 'aaron', packetId, reason });
+        } finally {
+          chainJournal.close();
+        }
+        return { code: 0, lines: [`skipped ${packetId}`] };
+      }
+
+      return {
+        code: 2,
+        lines: [`forge chain [retry PACKET [--reason "<why>"]] | [skip PACKET [--reason "<why>"]] -- `
+          + `unknown subcommand ${sub}`],
+      };
     }
 
     case 'reason': {
@@ -1456,7 +1487,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           'forge up | status | run BRIEF | send RUN TEXT | answer KEY ANSWER | stop --all '
             + '| gotchas | clear LANE | cutover [--from DIR] | intake --dry-run | reason --class CLASS '
             + '| council --repo O/N --pr N | gate --repo O/N --pr N [--merge] [--handoff FILE] '
-            + '| chain [retry PACKET [--reason "<why>"]]',
+            + '| chain [retry PACKET [--reason "<why>"]] | [skip PACKET [--reason "<why>"]]',
           `the server listens on ${FORGE_PORT}`,
         ],
       };
