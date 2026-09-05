@@ -7,9 +7,9 @@
  * `forge up` builds one `ChainDeps` from here when `FORGE_CHAIN=1`, and nothing else in
  * this codebase constructs one.
  */
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import {
-  existsSync, mkdirSync, readFileSync, statSync, writeFileSync,
+  closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync, writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 
@@ -26,7 +26,10 @@ import {
 import type { PollSourceName } from './contracts.js';
 import { run as execRun, type RunRequest, type RunResult } from './exec.js';
 import { createJiraFeed } from './intake/jira.js';
-import { intakeBriefsDir, journalPath, killSwitchPath, forgeHome } from './paths.js';
+import {
+  intakeBriefsDir, journalPath, killSwitchPath, forgeHome, registryDir, runDir,
+} from './paths.js';
+import { Registry } from './registry.js';
 import { readWatermark, writeWatermark } from './intake/watermarkStore.js';
 import { planFromPacket } from './intake/planner.js';
 import { runIntakeOnce } from './intake/once.js';
@@ -96,6 +99,115 @@ const WORKER_ENV_STRIP = [
 
 function tailOfCommand(tail: string, limit = 500): string {
   return tail.length > limit ? tail.slice(-limit) : tail;
+}
+
+/**
+ * E1, 2026-09-05: the condition `forge run` gets for a chain launch. `forge run` falls
+ * back to this exact text when nothing is passed, but a chain launch names it explicitly
+ * instead of leaning on that default. That keeps the spawned argv complete on its own, so
+ * a specimen can assert it without reaching into `cli.ts`'s fallback.
+ */
+export const CHAIN_LAUNCH_CONDITION = 'Work the brief to completion.';
+
+/**
+ * E1: the argv a chain launch spawns, built once so the production `launch()` and a
+ * specimen asserting its shape read the same logic. `execArgv`/`argv1` are the parent's
+ * own: `process.execArgv` and `process.argv[1]`, the entry script currently running
+ * `forge up`, whether that is `src/forge/cli.ts` under tsx or `dist/forge/cli.js` under
+ * node. Never derived from `import.meta.url`. That path carries a leading slash on
+ * Windows and points at a `.js` sibling of `chain-wire.ts` that does not exist when the
+ * parent itself is running from source under tsx.
+ */
+export function chainLaunchArgv(execArgv: readonly string[], argv1: string, briefPath: string): string[] {
+  return [...execArgv, argv1, 'run', briefPath, CHAIN_LAUNCH_CONDITION];
+}
+
+/**
+ * E2/E3: whether a run has actually started, read from the two places that would show
+ * it: the registry row `forge run` admits before anything else, and the `run.started`
+ * row the worker journals once it has a brief loaded. Either one is enough, and neither
+ * is derived from the other, since a crash between admission and the worker's first
+ * journal write leaves a registry row with no `run.started` row yet. E3's retry checks
+ * both before deciding a launch never registered.
+ */
+export function hasRunRegistered(
+  runKey: string, input: { registry: Pick<Registry, 'get'>; events: Iterable<Record<string, unknown>> },
+): boolean {
+  if (input.registry.get(runKey)) return true;
+  for (const event of input.events) {
+    if (event['event'] === 'run.started' && event['run'] === runKey) return true;
+  }
+  return false;
+}
+
+function realSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => { setTimeout(resolve, ms); });
+}
+
+/** `FORGE_CHAIN_LAUNCH_WAIT_S`, in milliseconds -- 45s when unset or not a positive number. */
+export function launchWaitMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number(env['FORGE_CHAIN_LAUNCH_WAIT_S']);
+  return (Number.isFinite(raw) && raw > 0 ? raw : 45) * 1000;
+}
+
+export interface LaunchWaitDeps {
+  runKey: string;
+  registry: Pick<Registry, 'get'>;
+  /** Re-read fresh on every poll -- the journal grows while this waits. */
+  readEvents: () => Iterable<Record<string, unknown>>;
+  /** The spawned child; consulted for an exit code, never killed or written to. */
+  child: Pick<ChildProcess, 'exitCode'>;
+  readLogTail: () => string;
+  waitMs: number;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+  pollMs?: number;
+}
+
+/**
+ * E2: waits up to `waitMs` for the run to register, polling `hasRunRegistered` on the
+ * given interval, and resolves once it has. Throws once the child has exited without
+ * ever registering, or once the wait itself runs out. Either way the message carries the
+ * child's exit code (when it has one) and the last 300 characters of its launch log, so
+ * the caller's own catch-and-journal (`chain.ts`'s `chain.blocked` on hop `launch`)
+ * already has both without going looking for them.
+ */
+export async function waitForLaunchToRegister(deps: LaunchWaitDeps): Promise<void> {
+  const now = deps.now ?? Date.now;
+  const sleep = deps.sleep ?? realSleep;
+  const pollMs = deps.pollMs ?? 200;
+  const deadline = now() + deps.waitMs;
+
+  for (;;) {
+    if (hasRunRegistered(deps.runKey, { registry: deps.registry, events: deps.readEvents() })) return;
+
+    const { exitCode } = deps.child;
+    if (exitCode !== null && exitCode !== undefined) {
+      throw new Error(
+        `worker process exited with code ${exitCode} before the run registered\n`
+        + tailOfCommand(deps.readLogTail(), 300),
+      );
+    }
+
+    if (now() >= deadline) {
+      throw new Error(
+        `run did not register within ${Math.round(deps.waitMs / 1000)}s\n`
+        + tailOfCommand(deps.readLogTail(), 300),
+      );
+    }
+
+    await sleep(pollMs);
+  }
+}
+
+/** Reads back the launch log's own tail, never throwing when the file is not there yet
+ *  (a child that failed before writing anything leaves nothing to read). */
+function readLogTailFile(path: string): string {
+  try {
+    return readFileSync(path, 'utf8');
+  } catch {
+    return '';
+  }
 }
 
 /**
@@ -307,11 +419,38 @@ export function chainLauncher(chainEnv: ChainEnv, fleetConfigDir: string): Chain
       env['CLAUDE_CONFIG_DIR'] = fleetConfigDir;
       env['FORGE_HOME'] = forgeHome();
 
-      const cliEntry = join(dirname(new URL(import.meta.url).pathname), 'cli.js');
-      const child = spawn(process.execPath, [cliEntry, 'run', briefPath], {
-        cwd: worktreePath, env, detached: true, stdio: 'ignore',
-      });
+      // E1, 2026-09-05: the parent's own runtime, never a path derived from
+      // `import.meta.url` -- that path pointed at a `cli.js` sibling of this module
+      // that does not exist when the parent itself is running from source under tsx,
+      // and with `stdio: 'ignore'` the child's own "cannot find module" went nowhere.
+      const logPath = join(runDir(runKey), 'launch.log');
+      mkdirSync(dirname(logPath), { recursive: true });
+      const logFd = openSync(logPath, 'a');
+      let child: ChildProcess;
+      try {
+        child = spawn(
+          process.execPath,
+          chainLaunchArgv(process.execArgv, process.argv[1] ?? '', briefPath),
+          { cwd: worktreePath, env, detached: true, stdio: ['ignore', logFd, logFd] },
+        );
+      } finally {
+        closeSync(logFd);
+      }
       child.unref();
+
+      // E2: `chain.launched` is journaled by the caller (`chain.ts`'s `advancePacket`)
+      // only when this resolves. Throwing here instead lands in that same caller's
+      // existing catch, which journals `chain.blocked` on hop `launch` with this
+      // error's own message -- so a run that never registered is never reported as one
+      // that launched.
+      await waitForLaunchToRegister({
+        runKey,
+        registry: new Registry(registryDir()),
+        readEvents: () => replay(journalPath()).events,
+        child,
+        readLogTail: () => readLogTailFile(logPath),
+        waitMs: launchWaitMs(),
+      });
 
       return { runKey };
     },
