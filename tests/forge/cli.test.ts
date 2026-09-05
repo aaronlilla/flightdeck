@@ -507,6 +507,49 @@ describe('P4.7/I5: forge intake --once', () => {
     const result = await forge(['intake', '--once'], { intakeFeeds });
     expect(result.code).toBe(0);
   });
+
+  it('forge-council-live: a newly written packet gets a planned brief from a fake Reasoner answer', async () => {
+    const intakeFeeds = [{
+      name: 'jira' as const,
+      fetchSince: async () => [{ id: 'BBZ-2', updated: 200 }],
+    }];
+    function fakePlannerQuery(text: string) {
+      return ((params: { prompt: string | AsyncIterable<unknown>; options?: { model?: string; cwd?: string } }) => {
+        const promptIter = params.prompt as AsyncIterable<unknown>;
+        async function* generate() {
+          yield {
+            type: 'system', subtype: 'init', session_id: 'planner-cli-session',
+            model: params.options?.model ?? '', cwd: params.options?.cwd ?? '', tools: [], slash_commands: [],
+          };
+          for await (const _pushed of promptIter) {
+            yield {
+              type: 'assistant', session_id: 'planner-cli-session',
+              message: {
+                model: params.options?.model ?? '',
+                content: [{ type: 'text', text: JSON.stringify({ text }) }],
+                usage: { input_tokens: 3, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 2 },
+              },
+            };
+            yield { type: 'result', subtype: 'success', is_error: false, duration_ms: 1, total_cost_usd: 0 };
+            return;
+          }
+        }
+        return generate() as never;
+      }) as never;
+    }
+
+    const result = await forge(['intake', '--once'], {
+      intakeFeeds, reasonerQueryFn: fakePlannerQuery('# Goal: fix BBZ-2\n'),
+    });
+
+    expect(result.code).toBe(0);
+    expect(result.lines.join(' ')).toMatch(/planned a brief/);
+    const state = replay(journal());
+    const planned = state.events.find((e) => e.event === 'intake.planned');
+    expect(planned).toBeTruthy();
+    const briefPath = String(planned?.['briefPath']);
+    expect(readFileSync(briefPath, 'utf8')).toContain('# Goal: fix BBZ-2');
+  });
 });
 
 describe('F4: forge run releases what the engine held before it returns', () => {

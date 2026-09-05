@@ -120,10 +120,23 @@
     "a call that outruns it is journaled as reasoner.timeout rather than left hanging."
   ],
   "reasoner": { "astra": "off", "timeoutMs": 120000 },
+  "_council_comment": [
+    "forge-council-live: codex stays off by default (Aaron 2026-09-04 16:40: astra and",
+    "Codex are limited to what absolutely matters). allowedRepos and autoMerge are left",
+    "empty here on purpose -- this file is checked in and flightdeck stays project",
+    "agnostic (npm run check:agnostic scans every tracked file for a real repo name),",
+    "so a real entry for either list lives only in an operator's own environment",
+    "(FORGE_COUNCIL_REPOS, FORGE_COUNCIL_AUTOMERGE, both comma-separated) or a local,",
+    "untracked policy override, never here. Empty reads as fail-closed: review nothing,",
+    "merge nothing, until an operator configures it."
+  ],
   "council": {
     "smallMaxLines": 100,
     "largeMinLines": 500,
-    "riskyPaths": ["**/features/wallet/**", "**/features/auth/**", "**/Financial/**"]
+    "riskyPaths": ["**/features/wallet/**", "**/features/auth/**", "**/Financial/**"],
+    "codex": "off",
+    "allowedRepos": [],
+    "autoMerge": []
   },
   "router": {"enabled": false}
 }

@@ -220,6 +220,14 @@ export const FORGE_EVENT_NAMES = [
   // I16: a base-drift blocker this run raised earlier clears when a later post-push
   // read finds the branch mergeable after all.
   'run.unblocked',
+  // forge-council-live: `forge council`'s own rows -- one `council.lens` per lens
+  // packet, one `council.judge` for the judge's verdict, one `council.attested` when
+  // the attestation lands on disk. `external.call` fills the gap in the ExternalWrite
+  // state machine's own journal trail (`intent` and `complete`/`unknown` already had
+  // event names; `call` -- the write was attempted, outcome not yet known -- did not)
+  // for `forge gate --merge`'s squash-merge call. `intake.planned` is `forge intake
+  // --once`'s planner writing a goal brief for one queued packet.
+  'council.lens', 'council.judge', 'council.attested', 'external.call', 'intake.planned',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];

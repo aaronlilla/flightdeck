@@ -60,6 +60,12 @@ export function gotchasDir(): string {
   return join(forgeHome(), 'gotchas');
 }
 
+/** forge-council-live: where `forge intake --once`'s planner writes the goal brief it
+ *  proposes for one queued packet -- never launched, only written. */
+export function intakeBriefsDir(): string {
+  return join(forgeHome(), 'intake', 'briefs');
+}
+
 /**
  * Where the probe briefs the regression corpus references by basename actually live.
  *

@@ -24,13 +24,32 @@ export interface CouncilPolicy {
   smallMaxLines: number;
   largeMinLines: number;
   riskyPaths: string[];
+  /** Aaron 2026-09-04 16:40: the Codex lane stays off unless this is `'on'`. */
+  codex: 'on' | 'off';
+  /** Repos `forge council` will review at all. Empty (the checked-in default) is a
+   *  refusal, not a bypass -- see the field's own comment in `policy.ts`. */
+  allowedRepos: string[];
+  /** Repos `forge gate --merge` may squash-merge autonomously. Same fail-closed default
+   *  as `allowedRepos`. */
+  autoMerge: string[];
 }
 
 const DEFAULT_COUNCIL_POLICY: CouncilPolicy = {
   smallMaxLines: 100,
   largeMinLines: 500,
   riskyPaths: ['**/features/wallet/**', '**/features/auth/**', '**/Financial/**'],
+  codex: 'off',
+  allowedRepos: [],
+  autoMerge: [],
 };
+
+/** Comma-separated repo names from an operator's own environment, never from source
+ *  (see `policy.ts`'s comment on `Policy['council']`). */
+function envRepoList(name: string): string[] {
+  const raw = process.env[name];
+  if (!raw) return [];
+  return raw.split(',').map((entry) => entry.trim()).filter(Boolean);
+}
 
 function globToRegExp(glob: string): RegExp {
   const escaped = glob
@@ -40,9 +59,27 @@ function globToRegExp(glob: string): RegExp {
   return new RegExp(`^${escaped}$`);
 }
 
-export function councilPolicy(): CouncilPolicy {
-  const policy = loadPolicy() as unknown as { council?: Partial<CouncilPolicy> };
-  return { ...DEFAULT_COUNCIL_POLICY, ...(policy.council ?? {}) };
+export function councilPolicy(path?: string): CouncilPolicy {
+  const policy = loadPolicy(path) as unknown as { council?: Partial<CouncilPolicy> };
+  const configured = { ...DEFAULT_COUNCIL_POLICY, ...(policy.council ?? {}) };
+  return {
+    ...configured,
+    allowedRepos: [...new Set([...configured.allowedRepos, ...envRepoList('FORGE_COUNCIL_REPOS')])],
+    autoMerge: [...new Set([...configured.autoMerge, ...envRepoList('FORGE_COUNCIL_AUTOMERGE')])],
+  };
+}
+
+/** `forge council` refuses a repo that is not on this list -- fail-closed, since the
+ *  checked-in default is empty (see `policy.ts`). */
+export function repoAllowedForCouncil(repo: string, policy: CouncilPolicy = councilPolicy()): boolean {
+  return policy.allowedRepos.includes(repo);
+}
+
+/** `forge gate --merge` refuses a repo that is not on this list -- same fail-closed
+ *  default, so a controlled-code repo (never added here) can never merge by omission
+ *  rather than by an explicit block rule this file would have to name. */
+export function autoMergeAllowed(repo: string, policy: CouncilPolicy = councilPolicy()): boolean {
+  return policy.autoMerge.includes(repo);
 }
 
 export function matchesRiskyPath(path: string, riskyPaths: string[]): string | null {

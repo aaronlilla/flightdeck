@@ -14,7 +14,7 @@
  * work no stream has built yet, named as a gap rather than faked with a plausible-looking
  * summary.
  */
-import type { PollSourceName, Watermark } from '../contracts.js';
+import type { Packet, PollSourceName, Watermark } from '../contracts.js';
 import type { FakePollFeed } from './poller.js';
 import { runPoll } from './poller.js';
 import { PacketStore } from './packetStore.js';
@@ -34,6 +34,10 @@ export interface IntakeOnceResult {
   observed: number;
   packetsWritten: number;
   intentsRaised: number;
+  /** forge-council-live, additive per decision 4: every packet this cycle actually
+   *  wrote, so a caller (`cli.ts`) can hand one to the planner without re-deriving it
+   *  from the `packet.written` events above. */
+  writtenPackets: Packet[];
 }
 
 /**
@@ -51,6 +55,7 @@ export async function runIntakeOnce(
   let packetsWritten = 0;
   let intentsRaised = 0;
   const sourcesPolled: PollSourceName[] = [];
+  const writtenPackets: Packet[] = [];
 
   for (const feed of feeds) {
     sourcesPolled.push(feed.name);
@@ -73,6 +78,7 @@ export async function runIntakeOnce(
       const written = packetStore.write(packet);
       if (written.wrote) {
         packetsWritten += 1;
+        writtenPackets.push(packet);
         emit({ event: 'packet.written', ticket: packet.ticket, packetId: packet.id });
 
         intentsRaised += 1;
@@ -85,5 +91,5 @@ export async function runIntakeOnce(
     watermarks.set(feed.name, result.watermark);
   }
 
-  return { sourcesPolled, observed, packetsWritten, intentsRaised };
+  return { sourcesPolled, observed, packetsWritten, intentsRaised, writtenPackets };
 }
