@@ -222,6 +222,39 @@ export class ForgeServer {
     this.http = undefined;
   }
 
+  /**
+   * F2: the terminal `run_state` of a lane's whole handoff chain, trusted as "still
+   * running" only when a registry row backs some link in it.
+   *
+   * `fleet.runs[baseKey]` is that key's own last journal line and nothing more: once a
+   * run hands off, its base key never gets another event, so `run.state` sits on
+   * `'handed-off'` forever even after every successor has finished, crashed or been
+   * cleared. This walks `successor` down to the chain's last journaled link and checks
+   * every link along the way for a registry row (a live launch is not always the base
+   * key -- a successor can be started directly by its own name). A `'handed-off'`
+   * terminal with no live link anywhere in the chain is exactly the dead-chain case:
+   * `undefined` here so `categoryOf`/`stateOf` fall through to the lane's own verdict,
+   * the way a `'finished'` or `'parked'` terminal already does.
+   */
+  private chainRunState(
+    runs: Record<string, { state?: string; successor?: string } | undefined>, baseKey: string,
+  ): string | undefined {
+    let node = runs[baseKey];
+    if (!node) return undefined;
+    let live = Boolean(this.registry.get(baseKey));
+    const seen = new Set([baseKey]);
+    while (node?.successor && !seen.has(node.successor)) {
+      const nextKey = node.successor;
+      seen.add(nextKey);
+      if (this.registry.get(nextKey)) live = true;
+      const next = runs[nextKey];
+      if (!next) break;
+      node = next;
+    }
+    if (node?.state === 'handed-off' && !live) return undefined;
+    return node?.state;
+  }
+
   /** Keeps only the entries a registry row or a lane file backs (I11). A journal fold
    *  creates an entry for any key an event names `run`, including a fleet pid a Warden
    *  tick only ever meant to report on; this is what keeps one of those off the board. */
@@ -266,7 +299,7 @@ export class ForgeServer {
         cost_usd,
         className: run?.className ?? lane.className ?? null,
         model: run?.model ?? lane.model,
-        run_state: run?.state,
+        run_state: this.chainRunState(fleet.runs, lane.slug),
         usd_per_hour: usdPerHour({ ...lane, cost_usd }),
         verified_at: mtime,
         last_event_age_s: Math.max(0, Math.round((now - lastEventAt) / 1000)),

@@ -15,6 +15,8 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { categoryOf } from '../../src/console/laneState.js';
+import type { LaneRecord } from '../../src/console/types.js';
 import { Inbox } from '../../src/forge/inbox.js';
 import { Journal } from '../../src/forge/journal.js';
 import { Registry } from '../../src/forge/registry.js';
@@ -301,6 +303,95 @@ describe('GET /state', () => {
       expect(runs['beta']?.className).toBe('implement-hard');
     } finally {
       await x1Server.close();
+    }
+  });
+});
+
+/**
+ * F2: a handed-off chain with no live run left counted as running.
+ *
+ * `run_state` used to come straight off `fleet.runs[lane.slug]`, which is that key's own
+ * last journal line and nothing more. A base run that hands off never gets another event
+ * on its own key, so once every successor in the chain finished, crashed or was cleared,
+ * the base key's `run.handoff` line was still the last thing on record and `run_state`
+ * stayed `'handed-off'` forever -- which `categoryOf` (laneState.ts) counts as running.
+ * On 2026-09-05 at 01:05 this showed three fully-dead chains as "3 running" with an
+ * empty registry directory.
+ */
+describe('F2: a handed-off chain counts as running only while the registry backs it', () => {
+  const journalPath = () => join(dir, `fleet-f2-${Math.random().toString(36).slice(2)}.jsonl`);
+
+  it('a chain that handed off and finished, with an empty registry, is never running', async () => {
+    const lanes = new Lanes(join(dir, 'lanes-f2a'));
+    // The three real shapes from 2026-09-05: a handoff chain that ended unverified, a
+    // chain that exhausted its sessions, and one still parked on a question. All three
+    // read "running" before the fix.
+    lanes.put('chain-a', { column: 'forge', model: 'claude-sonnet-5', verdict: 'unverified' });
+    lanes.put('chain-b', { column: 'forge', model: 'claude-sonnet-5', verdict: 'exhausted' });
+    lanes.put('chain-c', { column: 'forge', model: 'claude-sonnet-5', verdict: 'parked', needs_aaron: 'answer the ask' });
+
+    const jPath = journalPath();
+    const journal = new Journal(jPath);
+    journal.append({ event: 'run.started', run: 'chain-a', actor: 'runner' });
+    journal.append({ event: 'run.handoff', run: 'chain-a', actor: 'worker', successor: 'chain-a-2' });
+    journal.append({ event: 'run.started', run: 'chain-a-2', actor: 'runner' });
+    journal.append({ event: 'run.finished', run: 'chain-a-2', actor: 'worker', verdict: 'unverified' });
+    journal.append({ event: 'run.started', run: 'chain-b', actor: 'runner' });
+    journal.append({ event: 'run.finished', run: 'chain-b', actor: 'worker', verdict: 'exhausted' });
+    journal.append({ event: 'run.started', run: 'chain-c', actor: 'runner' });
+    journal.append({ event: 'run.parked', run: 'chain-c', actor: 'warden', key: 'ask:1' });
+    journal.close();
+
+    const emptyRegistry = new Registry(join(dir, 'registry-f2a-empty'));
+    const f2Server = new ForgeServer({
+      lanes, inbox: new Inbox(join(dir, 'inbox-f2a')), journalPath: jPath, registry: emptyRegistry, port: 0,
+    });
+    const f2Base = `http://127.0.0.1:${await f2Server.listen()}`;
+    try {
+      const state = await (await fetch(`${f2Base}/state`)).json() as Record<string, unknown>;
+      const lanesOut = (state['lanes'] as Wrapped<LaneRecord[]>).value;
+      const chainA = lanesOut.find((lane) => lane.slug === 'chain-a')!;
+      // The bug: the base key's own last event is `run.handoff`, so a naive read of
+      // `fleet.runs['chain-a'].state` is stuck at `'handed-off'` even though the whole
+      // chain is over and the registry has nothing for it.
+      expect(chainA.run_state).not.toBe('handed-off');
+      const counts = { running: 0, blocked: 0, done: 0 };
+      for (const lane of lanesOut) counts[categoryOf(lane)] += 1;
+      expect(counts.running).toBe(0);
+      expect(counts.blocked).toBe(3);
+      expect(counts.done).toBe(0);
+    } finally {
+      await f2Server.close();
+    }
+  });
+
+  it('the same chain counts as running once the registry backs its successor', async () => {
+    const lanes = new Lanes(join(dir, 'lanes-f2b'));
+    lanes.put('chain-a', { column: 'forge', model: 'claude-sonnet-5', verdict: 'unverified' });
+
+    const jPath = journalPath();
+    const journal = new Journal(jPath);
+    journal.append({ event: 'run.started', run: 'chain-a', actor: 'runner' });
+    journal.append({ event: 'run.handoff', run: 'chain-a', actor: 'worker', successor: 'chain-a-2' });
+    journal.append({ event: 'run.started', run: 'chain-a-2', actor: 'runner' });
+    journal.close();
+
+    const liveRegistry = new Registry(join(dir, 'registry-f2b-live'));
+    liveRegistry.admit({
+      goal: 'chain-a-2', cwd: dir, briefPath: join(dir, 'chain-a.md'), pid: process.pid,
+    });
+    const f2Server = new ForgeServer({
+      lanes, inbox: new Inbox(join(dir, 'inbox-f2b')), journalPath: jPath, registry: liveRegistry, port: 0,
+    });
+    const f2Base = `http://127.0.0.1:${await f2Server.listen()}`;
+    try {
+      const state = await (await fetch(`${f2Base}/state`)).json() as Record<string, unknown>;
+      const lanesOut = (state['lanes'] as Wrapped<LaneRecord[]>).value;
+      const counts = { running: 0, blocked: 0, done: 0 };
+      for (const lane of lanesOut) counts[categoryOf(lane)] += 1;
+      expect(counts.running).toBe(1);
+    } finally {
+      await f2Server.close();
     }
   });
 });
