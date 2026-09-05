@@ -40,18 +40,18 @@ describe('watchedProcesses, given an injected probe', () => {
  */
 describe('watchedProcesses: only the executable is claude, not any path containing it', () => {
   const noise = [
-    '17728 "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -File "C:\\dev\\.claude\\coordination\\tile.ps1" -Watch',
-    '51000 "C:\\Program Files\\Git\\usr\\bin\\bash.exe" C:/Users/x/AppData/Local/Temp/claude/C--dev/abc/scratchpad/wait-and-run.sh',
-    '51072 "C:\\Program Files\\Git\\bin\\bash.exe" -c "source /c/Users/x/.claude/shell-snapshots/snapshot-bash-1-a.sh"',
-    '34812 "C:\\Program Files\\Git\\usr\\bin\\nohup.exe" python C:/dev/dev-harness/tools/codex_call.py --label run',
+    '17728 "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -File "C:\\<workspace>\\.claude\\coordination\\tile.ps1" -Watch',
+    '51000 "C:\\Program Files\\Git\\usr\\bin\\bash.exe" C:/Users/<user>/AppData/Local/Temp/claude/workspace-id/abc/scratchpad/wait-and-run.sh',
+    '51072 "C:\\Program Files\\Git\\bin\\bash.exe" -c "source /c/Users/<user>/.claude/shell-snapshots/snapshot-bash-1-a.sh"',
+    '34812 "C:\\Program Files\\Git\\usr\\bin\\nohup.exe" python C:/<workspace>/tools/codex_call.py --label run',
   ];
   const realClaude = [
-    '35256 C:\\Users\\x\\.local\\bin\\claude.exe --dangerously-skip-permissions',
-    '50664 "C:\\Users\\x\\.local\\bin\\claude.exe"  "--chrome-native-host"',
-    '31120 C:\\Users\\x\\.local\\bin\\claude.exe --dangerously-skip-permissions',
+    '35256 C:\\Users\\<user>\\.local\\bin\\claude.exe --dangerously-skip-permissions',
+    '50664 "C:\\Users\\<user>\\.local\\bin\\claude.exe"  "--chrome-native-host"',
+    '31120 C:\\Users\\<user>\\.local\\bin\\claude.exe --dangerously-skip-permissions',
   ];
   const posixClaude = '9001 /usr/local/bin/claude -p "some prompt"';
-  const loginClaude = '9002 C:\\Users\\x\\.local\\bin\\claude.exe login';
+  const loginClaude = '9002 C:\\Users\\<user>\\.local\\bin\\claude.exe login';
 
   it('drops every noise line and keeps only the real claude executables', () => {
     const result = watchedProcesses({

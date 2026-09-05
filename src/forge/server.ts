@@ -239,15 +239,16 @@ export class ForgeServer {
   private chainRunState(
     runs: Record<string, { state?: string; successor?: string } | undefined>, baseKey: string,
   ): string | undefined {
-    let node = runs[baseKey];
+    type Link = { state?: string; successor?: string };
+    let node: Link | undefined = runs[baseKey];
     if (!node) return undefined;
     let live = Boolean(this.registry.get(baseKey));
     const seen = new Set([baseKey]);
     while (node?.successor && !seen.has(node.successor)) {
-      const nextKey = node.successor;
+      const nextKey: string = node.successor;
       seen.add(nextKey);
       if (this.registry.get(nextKey)) live = true;
-      const next = runs[nextKey];
+      const next: Link | undefined = runs[nextKey];
       if (!next) break;
       node = next;
     }
