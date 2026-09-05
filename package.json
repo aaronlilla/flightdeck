@@ -12,7 +12,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && node scripts/copy-build-assets.mjs",
+    "build": "tsc -p tsconfig.build.json && node scripts/copy-build-assets.mjs && npm run console:build",
     "dev": "tsx src/cli.tsx",
     "typecheck": "tsc --noEmit",
     "typecheck:console": "tsc -p tsconfig.console.json --noEmit",

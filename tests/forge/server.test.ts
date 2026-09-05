@@ -9,7 +9,7 @@
  * Bound to loopback. This serves the fleet's state and takes answers that resume runs, so
  * a wrong bind address is a control surface on the network.
  */
-import { mkdtempSync, readFileSync, statSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -17,7 +17,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { Inbox } from '../../src/forge/inbox.js';
 import { Journal } from '../../src/forge/journal.js';
-import { Lanes } from '../../src/forge/supervisor.js';
+import { RunInbox } from '../../src/forge/runinbox.js';
+import { Breaker, readKillSwitch, Lanes } from '../../src/forge/supervisor.js';
 import { ForgeServer, FORGE_PORT } from '../../src/forge/server.js';
 
 let dir: string;
@@ -323,6 +324,190 @@ describe('POST /answer', () => {
     });
     expect(response.status).toBe(413);
     expect(server.inbox.entry(entry.key)?.answer).toBeUndefined();
+  });
+});
+
+describe('POST /stop', () => {
+  it('W6: parks every running lane and engages the kill switch', async () => {
+    const response = await fetch(`${base}/stop`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forge-token': server.token },
+      body: JSON.stringify({ reason: 'test stop' }),
+    });
+    const body = await response.json() as { stopped: string[] };
+
+    expect(response.status).toBe(200);
+    expect(body.stopped).toContain('alpha');
+    expect(readKillSwitch(join(dir, 'kill-switch.json')).engaged).toBe(true);
+  });
+
+  it('W6: refuses without a token', async () => {
+    const response = await fetch(`${base}/stop`, { method: 'POST', body: '{}' });
+    expect(response.status).toBe(401);
+  });
+
+  it('W6: refuses a different Origin', async () => {
+    const response = await fetch(`${base}/stop`, {
+      method: 'POST',
+      headers: { 'x-forge-token': server.token, origin: 'http://evil.example' },
+      body: '{}',
+    });
+    expect(response.status).toBe(403);
+  });
+
+  it('W6: refuses a body it cannot parse', async () => {
+    const response = await fetch(`${base}/stop`, {
+      method: 'POST',
+      headers: { 'x-forge-token': server.token },
+      body: 'not json',
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it('refuses a GET, because stopping is not a safe method', async () => {
+    expect((await fetch(`${base}/stop`)).status).toBe(405);
+  });
+});
+
+describe('POST /send', () => {
+  it('W6: queues a message into the run\'s own inbox', async () => {
+    const response = await fetch(`${base}/send`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forge-token': server.token },
+      body: JSON.stringify({ run: 'alpha', text: 'rebase first' }),
+    });
+    expect(response.status).toBe(200);
+    expect(new RunInbox('alpha').all().map((message) => message.text)).toContain('rebase first');
+  });
+
+  it('W6: refuses without a token', async () => {
+    const response = await fetch(`${base}/send`, {
+      method: 'POST',
+      body: JSON.stringify({ run: 'alpha', text: 'hi' }),
+    });
+    expect(response.status).toBe(401);
+  });
+
+  it('W6: refuses a different Origin', async () => {
+    const response = await fetch(`${base}/send`, {
+      method: 'POST',
+      headers: { 'x-forge-token': server.token, origin: 'http://evil.example' },
+      body: JSON.stringify({ run: 'alpha', text: 'hi' }),
+    });
+    expect(response.status).toBe(403);
+  });
+
+  it('W6: refuses a body missing run or text', async () => {
+    const response = await fetch(`${base}/send`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forge-token': server.token },
+      body: JSON.stringify({ run: 'alpha' }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it('W6: refuses a body it cannot parse', async () => {
+    const response = await fetch(`${base}/send`, {
+      method: 'POST',
+      headers: { 'x-forge-token': server.token },
+      body: 'not json',
+    });
+    expect(response.status).toBe(400);
+  });
+});
+
+describe('POST /clear', () => {
+  it('W6: clears a breaker-blocked lane', async () => {
+    const lanes = new Lanes(join(dir, 'lanes'));
+    new Breaker(lanes).noteZeroTurnStart('alpha');
+    new Breaker(lanes).noteZeroTurnStart('alpha');
+    new Breaker(lanes).noteZeroTurnStart('alpha');
+    expect(new Breaker(lanes).blocked('alpha')).toBe(true);
+
+    const response = await fetch(`${base}/clear`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forge-token': server.token },
+      body: JSON.stringify({ lane: 'alpha' }),
+    });
+    expect(response.status).toBe(200);
+    expect(new Breaker(lanes).blocked('alpha')).toBe(false);
+  });
+
+  it('W6: clears the kill switch with { all: true }', async () => {
+    writeFileSync(join(dir, 'kill-switch.json'), JSON.stringify({ reason: 'x', at: Date.now() }), 'utf8');
+    const response = await fetch(`${base}/clear`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forge-token': server.token },
+      body: JSON.stringify({ all: true }),
+    });
+    expect(response.status).toBe(200);
+    expect(readKillSwitch(join(dir, 'kill-switch.json')).engaged).toBe(false);
+  });
+
+  it('W6: refuses without a token', async () => {
+    const response = await fetch(`${base}/clear`, { method: 'POST', body: JSON.stringify({ lane: 'alpha' }) });
+    expect(response.status).toBe(401);
+  });
+
+  it('W6: refuses a different Origin', async () => {
+    const response = await fetch(`${base}/clear`, {
+      method: 'POST',
+      headers: { 'x-forge-token': server.token, origin: 'http://evil.example' },
+      body: JSON.stringify({ lane: 'alpha' }),
+    });
+    expect(response.status).toBe(403);
+  });
+
+  it('W6: refuses a body naming neither a lane nor { all: true }', async () => {
+    const response = await fetch(`${base}/clear`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forge-token': server.token },
+      body: JSON.stringify({}),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it('W6: refuses a body it cannot parse', async () => {
+    const response = await fetch(`${base}/clear`, {
+      method: 'POST',
+      headers: { 'x-forge-token': server.token },
+      body: 'not json',
+    });
+    expect(response.status).toBe(400);
+  });
+});
+
+describe('GET / (the built console)', () => {
+  it('W6: serves index.html with the real token injected into the meta tag', async () => {
+    const distDir = mkdtempSync(join(tmpdir(), 'forge-console-dist-'));
+    writeFileSync(
+      join(distDir, 'index.html'),
+      '<html><head><meta name="forge-token" content="" /></head><body></body></html>',
+      'utf8',
+    );
+    const withStatic = new ForgeServer({
+      lanes: new Lanes(join(dir, 'lanes')),
+      inbox: new Inbox(join(dir, 'inbox')),
+      journalPath: join(dir, 'fleet.jsonl'),
+      port: 0,
+      token: 'the-real-token',
+      consoleDistDir: distDir,
+    });
+    const staticBase = `http://127.0.0.1:${await withStatic.listen()}`;
+    try {
+      const html = await (await fetch(`${staticBase}/`)).text();
+      expect(html).toContain('content="the-real-token"');
+      expect(html).not.toContain('content="" />');
+    } finally {
+      await withStatic.close();
+    }
+  });
+
+  it('W6: a missing built asset is a 404 naming the build command, not a stack trace', async () => {
+    const response = await fetch(`${base}/does-not-exist.js`);
+    expect(response.status).toBe(404);
+    const body = await response.json() as { error: string };
+    expect(body.error).toContain('console:build');
   });
 });
 
