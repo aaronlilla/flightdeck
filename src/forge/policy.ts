@@ -84,9 +84,26 @@ export interface Policy {
      *  below. */
     timeoutMs?: number;
   };
-  /** Council's diff-risk thresholds (roadmap P4.4, decision 5). Optional: a file written
-   * before this stream has none, and `council/risk.ts` falls back to its own defaults. */
-  council?: { smallMaxLines: number; largeMinLines: number; riskyPaths: string[] };
+  /**
+   * Council's diff-risk thresholds (roadmap P4.4, decision 5) plus its two allow-lists
+   * (forge-council-live). Optional: a file written before this stream has none, and
+   * `council/risk.ts` falls back to its own defaults.
+   *
+   * `allowedRepos` and `autoMerge` are never populated with a real repo name in this
+   * checked-in file -- flightdeck stays project-agnostic (`check:agnostic`), so a real
+   * repo name lives only in an operator's own environment (`FORGE_COUNCIL_REPOS`,
+   * `FORGE_COUNCIL_AUTOMERGE`, both comma-separated) or a local, untracked policy
+   * override, never in source. Both default to empty, which `council/risk.ts` reads as
+   * "review nothing" / "merge nothing" rather than "allow everything" -- fail-closed.
+   */
+  council?: {
+    smallMaxLines: number;
+    largeMinLines: number;
+    riskyPaths: string[];
+    codex?: 'on' | 'off';
+    allowedRepos?: string[];
+    autoMerge?: string[];
+  };
   /** X4: the console's rail-thread router. Off by default -- a policy file with no
    *  `router` key at all (every fixture written before this field existed) reads the
    *  same as `{ enabled: false }`, never as an error. */

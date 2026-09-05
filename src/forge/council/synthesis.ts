@@ -19,7 +19,7 @@ export interface SynthesisResult {
 
 const keyOf = (f: CouncilFinding) => `${f.file}:${f.line}`;
 
-const SEVERITY_RANK: Record<CouncilFinding['severity'], number> = {
+export const SEVERITY_RANK: Record<CouncilFinding['severity'], number> = {
   critical: 3,
   high: 2,
   medium: 1,
