@@ -116,9 +116,14 @@ function writeWatermark(source: string, mark: ReturnType<typeof initialWatermark
   writeFileSync(watermarkPath(source), JSON.stringify(mark), 'utf8');
 }
 
-function snapshotRuns(state: ReturnType<typeof replay>): Array<{
+function snapshotRuns(
+  state: ReturnType<typeof replay>,
+  registry?: Registry,
+  alive: (pid: number) => boolean = processAlive,
+): Array<{
   run: string; className: string; lastEventAt: number; context: number;
   currentTool?: { name: string; startedAt: number };
+  registryLive?: boolean; registryRowRemains?: boolean;
 }> {
   // A finished, handed-off or parked run's lastEventAt is frozen at whatever it was when
   // it stopped, while `now` keeps moving; fed to assess() unfiltered, every one of them
@@ -126,10 +131,23 @@ function snapshotRuns(state: ReturnType<typeof replay>): Array<{
   // never stops reappearing. Only a run still actually going belongs in the snapshot.
   return Object.values(state.runs)
     .filter((run) => run.state === 'started')
-    .map((run) => ({
-      run: run.run, className: run.className ?? 'implement', lastEventAt: run.lastEventAt,
-      context: run.context, ...(run.currentTool ? { currentTool: run.currentTool } : {}),
-    }));
+    .map((run) => {
+      const base = {
+        run: run.run, className: run.className ?? 'implement', lastEventAt: run.lastEventAt,
+        context: run.context, ...(run.currentTool ? { currentTool: run.currentTool } : {}),
+      };
+      // I15: a run whose process died mid-tool-call leaves the fold above exactly as it
+      // was at the moment of death -- a `tool.start` with no `tool.end` reads as a tool
+      // still in flight no matter how long the process has actually been gone. Without a
+      // registry to check against, `registryLive` stays undefined and `assess` reads the
+      // run as live, unchanged from before this fix. With one, only a registry row whose
+      // pid is still alive counts as live; a dead or missing row never trips admission.
+      if (!registry) return base;
+      const row = registry.get(run.run);
+      if (!row) return { ...base, registryLive: false };
+      const live = alive(row.pid);
+      return { ...base, registryLive: live, ...(live ? {} : { registryRowRemains: true }) };
+    });
 }
 
 /**
@@ -190,9 +208,14 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
   switch (command) {
     case 'status': {
       const state = replay(journalPath());
+      const statusRegistry = new Registry(registryDir());
       const stuckRows = assess({
-        now: Date.now(), runs: snapshotRuns(state), fleet: fleetSnapshot(deps),
-      }).map((trip) => `STUCK  ${trip.key.padEnd(24)} ${trip.signal.padEnd(14)} ${trip.hint}`);
+        now: Date.now(),
+        runs: snapshotRuns(state, statusRegistry, deps.alive),
+        fleet: fleetSnapshot(deps),
+      })
+        .filter((trip) => trip.signal !== 'registry-abandoned')
+        .map((trip) => `STUCK  ${trip.key.padEnd(24)} ${trip.signal.padEnd(14)} ${trip.hint}`);
       const rows = lanes.all().map((lane) => [
         lane.slug.padEnd(28),
         (lane.model ?? '-').padEnd(18),
@@ -249,7 +272,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       const liveness = new LivenessSupervisor(
         () => ({
           now: Date.now(),
-          runs: snapshotRuns(sharedJournalCache.read(journalPath())),
+          runs: snapshotRuns(sharedJournalCache.read(journalPath()), registry, deps.alive),
           fleet: fleetSnapshot(deps),
         }),
         livenessJournal,
