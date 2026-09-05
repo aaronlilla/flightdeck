@@ -17,7 +17,7 @@ import type { CliResult, ForgeDeps } from './cli.js';
 import { forge } from './cli.js';
 import {
   completeBriefWithVerification, runKeyForBrief,
-  type ChainCouncilFn, type ChainDeps, type ChainGateFn, type ChainGh, type ChainLauncher, type ChainPlannedPacket,
+  type ChainCouncilFn, type ChainDeps, type ChainGateFn, type ChainGh, type ChainLauncher, type ChainPlannedPacket, type ChainRunStatus,
 } from './chain.js';
 import {
   baseFor, checkoutFor, mergeAllowedFor, verifyCommandFor, worktreePathFor, worktreeSetupFor,
@@ -138,6 +138,52 @@ export function hasRunRegistered(
     if (event['event'] === 'run.started' && event['run'] === runKey) return true;
   }
   return false;
+}
+
+/** One run as the outcome reader sees it: its fold state, its verdict, and the successor
+ *  a handoff named. Structural on purpose so a specimen hands in plain objects. */
+export interface RunLink {
+  state: string;
+  verdict?: string;
+  successor?: string;
+}
+
+/**
+ * The outcome of the run under `runKey`, for the gate hop, read through its handoffs.
+ *
+ * A worker that reaches its context ceiling hands off (`run.handoff`, successor
+ * `<key>-2`, then `-3`); the fold marks the root `handed-off` and the verdict lands on the
+ * last successor's `run.finished`. The first live chain run handed off twice, so a read of
+ * the root alone would have blocked the gate with `unknown` -- or, once a restart's
+ * reconcile put the root back to `started`, waited on it forever. Follow `successor`
+ * wherever the fold recorded one, whatever the state of the run that named it, and let
+ * the last run in the line decide. A successor named but not yet folded is a run still
+ * on its way, not a finish.
+ */
+export function runOutcome(
+  runKey: string,
+  input: { runs: Record<string, RunLink>; events: Iterable<Record<string, unknown>> },
+): ChainRunStatus {
+  const seen = new Set<string>();
+  let key = runKey;
+  let run = input.runs[key];
+  while (run?.successor && !seen.has(key)) {
+    seen.add(key);
+    const next = input.runs[run.successor];
+    if (!next) return { finished: false };
+    key = run.successor;
+    run = next;
+  }
+  if (!run) return { finished: false };
+  if (run.state === 'started' || run.state === 'paused' || run.state === 'handed-off') {
+    return { finished: false };
+  }
+  const finishedEvent = [...input.events].reverse()
+    .find((event) => event['event'] === 'run.finished' && event['run'] === key);
+  return {
+    finished: true,
+    verdict: run.verdict ?? (finishedEvent?.['verdict'] as string | undefined) ?? run.state,
+  };
 }
 
 function realSleep(ms: number): Promise<void> {
@@ -460,17 +506,10 @@ export function chainLauncher(chainEnv: ChainEnv, fleetConfigDir: string): Chain
 
     async status(runKey) {
       const state = replay(journalPath());
-      const run = state.runs[runKey];
-      if (!run || run.state === 'started') return { finished: false };
-      const finishedEvent = [...state.events].reverse()
-        .find((event) => event.event === 'run.finished' && event.run === runKey);
-      return {
-        finished: true,
-        verdict: run.verdict ?? (finishedEvent?.['verdict'] as string | undefined),
-        // The journal carries no forge_done evidence text today (worker.ts's own gap,
-        // named rather than papered over): the chain always falls back to `gh pr list`
-        // for the PR itself.
-      };
+      // The journal carries no forge_done evidence text today (worker.ts's own gap,
+      // named rather than papered over): the chain always falls back to `gh pr list`
+      // for the PR itself.
+      return runOutcome(runKey, { runs: state.runs, events: state.events });
     },
 
     async runRegistered(runKey) {
