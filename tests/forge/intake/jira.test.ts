@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { createJiraFeed, flattenAdf, probeJira } from '../../../src/forge/intake/jira.js';
+import { createJiraFeed, createJiraWriteClient, flattenAdf, probeJira } from '../../../src/forge/intake/jira.js';
 import { initialWatermark } from '../../../src/forge/intake/watermark.js';
 
 const CONFIG = { site: 'https://acme.atlassian.net', email: 'bot@acme.test', token: 'a-real-looking-secret-token-value-123456' };
@@ -112,6 +112,46 @@ describe('flattenAdf', () => {
 
   it('returns empty text for no description at all', () => {
     expect(flattenAdf(undefined)).toBe('');
+  });
+});
+
+describe('createJiraWriteClient — R2: comment posts an Atlassian Document Format body', () => {
+  it('sends a two-paragraph comment with a numbered list as the exact ADF document, never a plain string', async () => {
+    let requestedBody: unknown;
+    const fetchFn = (async (_url: string, init: RequestInit) => {
+      requestedBody = JSON.parse(init.body as string);
+      return new Response('', { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const client = createJiraWriteClient({ ...CONFIG, fetchFn });
+    const commentText = [
+      'Merged https://example.test/pr/1.',
+      'Steps to check:\n1. Open the app\n2. Confirm the banner shows',
+    ].join('\n\n');
+
+    await client.comment('BBZ-1', commentText);
+
+    expect(requestedBody).toEqual({
+      body: {
+        type: 'doc',
+        version: 1,
+        content: [
+          { type: 'paragraph', content: [{ type: 'text', text: 'Merged https://example.test/pr/1.' }] },
+          {
+            type: 'paragraph',
+            content: [
+              { type: 'text', text: 'Steps to check:' },
+              { type: 'hardBreak' },
+              { type: 'text', text: '1. Open the app' },
+              { type: 'hardBreak' },
+              { type: 'text', text: '2. Confirm the banner shows' },
+            ],
+          },
+        ],
+      },
+    });
+    const body = (requestedBody as { body: unknown }).body;
+    expect(typeof body).not.toBe('string');
   });
 });
 
