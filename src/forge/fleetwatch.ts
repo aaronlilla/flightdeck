@@ -90,11 +90,38 @@ export function readProcessList(): string[] {
 }
 
 /**
+ * A claude process's kind, read from its command line alone: `login` (`claude login`),
+ * `worker` (the SDK's own print-mode invocation, see below), `native-host` (the Chrome
+ * extension's helper), or `interactive` (anything else, meaning one of Aaron's own
+ * terminals).
+ *
+ * 2026-09-05: `forge status` reported three of Aaron's own processes as `STUCK
+ * stale-session`, two interactive `claude.exe --dangerously-skip-permissions` terminals
+ * and one `claude.exe --chrome-native-host`. None is a fleet worker, so none has a fleet
+ * session file that can go stale. `watchedProcesses` handed all three to liveness shaped
+ * exactly like a real worker (`isLogin: false` plus a `sessionFileMtime`), which is what
+ * made them trip forever. `sdkengine.ts` spawns every real worker through the SDK's own
+ * `query()`, whose transport always pushes `--output-format stream-json`
+ * (`node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs`'s `initialize()` builds that
+ * flag pair unconditionally, before any model or permission option). No other launch of
+ * `claude` on this machine has a reason to carry it, so its presence is the marker.
+ */
+export type ProcessKind = 'login' | 'worker' | 'native-host' | 'interactive';
+
+function classifyClaudeLine(line: string): ProcessKind {
+  if (/claude(\.exe)?\s+login/i.test(line)) return 'login';
+  if (/--chrome-native-host\b/i.test(line)) return 'native-host';
+  if (/--output-format\b/i.test(line)) return 'worker';
+  return 'interactive';
+}
+
+/**
  * Every `claude` process on this machine, read from the process list: the fleet's workers
- * and its login, and Aaron's own interactive sessions, which the caller must list and
- * never act on. `{ ok: false, reason }` when the probe behind it failed, rather than the
- * empty list a failure used to produce -- liveness's stale-session signal cannot tell a
- * verified-clean fleet from a probe that never ran unless the two are shaped differently.
+ * and its login, and Aaron's own interactive sessions and the Chrome native host, which
+ * the caller must list and never act on. `{ ok: false, reason }` when the probe behind it
+ * failed, rather than the empty list a failure used to produce -- liveness's stale-session
+ * signal cannot tell a verified-clean fleet from a probe that never ran unless the two are
+ * shaped differently.
  */
 export function watchedProcesses(
   probe: ProcessProbe = probeProcessList(),
@@ -122,10 +149,19 @@ export function watchedProcesses(
       const pidMatch = /^\s*(\d+)/.exec(line);
       const pid = pidMatch ? Number(pidMatch[1]) : NaN;
       if (!Number.isFinite(pid)) return undefined;
-      const isLogin = /claude(\.exe)?\s+login/i.test(line);
-      return isLogin
-        ? { pid, isLogin: true, ...(credentialsMtime !== undefined ? { credentialsMtime } : {}) }
-        : { pid, isLogin: false, ...(latestSessionMtime !== undefined ? { sessionFileMtime: latestSessionMtime } : {}) };
+      const kind = classifyClaudeLine(line);
+      if (kind === 'login') {
+        return { pid, isLogin: true, kind, ...(credentialsMtime !== undefined ? { credentialsMtime } : {}) };
+      }
+      if (kind === 'worker') {
+        return {
+          pid, isLogin: false, kind,
+          ...(latestSessionMtime !== undefined ? { sessionFileMtime: latestSessionMtime } : {}),
+        };
+      }
+      // native-host, interactive: listed for visibility, never fed a session or
+      // credentials mtime -- there is no fleet signal for `assess` to read either from.
+      return { pid, isLogin: false, kind };
     })
     .filter((proc): proc is FleetProcess => Boolean(proc));
 }

@@ -73,3 +73,47 @@ describe('watchedProcesses: only the executable is claude, not any path containi
     expect(result).toEqual([]);
   });
 });
+
+/**
+ * The 2026-09-05 escape: `forge status` reported the three real `claude.exe` lines
+ * above (see `realClaude` and `loginClaude`) as `STUCK stale-session` even though two are
+ * Aaron's own interactive terminals and one is the Chrome extension's native host. None
+ * of the three is a fleet worker, and `watchedProcesses` had no way to say so -- every
+ * non-login process it returned looked exactly like a real worker to `liveness.ts`. A
+ * process now carries a `kind`, read from its command line: `worker` only for the SDK's
+ * own print-mode invocation (`--output-format`, pushed unconditionally by
+ * `sdkengine.ts`'s `query()` transport), `login` for `claude login`, `native-host` for
+ * `--chrome-native-host`, and `interactive` for anything else.
+ */
+describe('watchedProcesses classifies each claude process by what its command line actually is', () => {
+  const worker = '40200 "C:\\Users\\<user>\\.local\\bin\\claude.exe" --output-format stream-json '
+    + '--verbose --input-format stream-json --permission-mode bypassPermissions';
+  const login = '9002 C:\\Users\\<user>\\.local\\bin\\claude.exe login';
+  const nativeHost = '50664 "C:\\Users\\<user>\\.local\\bin\\claude.exe"  "--chrome-native-host"';
+  const interactiveA = '35256 C:\\Users\\<user>\\.local\\bin\\claude.exe --dangerously-skip-permissions';
+  const interactiveB = '31120 C:\\Users\\<user>\\.local\\bin\\claude.exe --dangerously-skip-permissions';
+
+  it('marks the SDK-spawned worker "worker" by its print-mode flags', () => {
+    const result = watchedProcesses({ ok: true, lines: [worker] });
+    const processes = result as Array<{ pid: number; kind: string }>;
+    expect(processes).toEqual([expect.objectContaining({ pid: 40200, kind: 'worker' })]);
+  });
+
+  it('marks a claude login process "login"', () => {
+    const result = watchedProcesses({ ok: true, lines: [login] });
+    const processes = result as Array<{ pid: number; kind: string }>;
+    expect(processes).toEqual([expect.objectContaining({ pid: 9002, kind: 'login' })]);
+  });
+
+  it('marks the Chrome extension native host "native-host", never "worker"', () => {
+    const result = watchedProcesses({ ok: true, lines: [nativeHost] });
+    const processes = result as Array<{ pid: number; kind: string }>;
+    expect(processes).toEqual([expect.objectContaining({ pid: 50664, kind: 'native-host' })]);
+  });
+
+  it('marks the two 2026-09-05 interactive terminals "interactive", never "worker"', () => {
+    const result = watchedProcesses({ ok: true, lines: [interactiveA, interactiveB] });
+    const processes = result as Array<{ pid: number; kind: string }>;
+    expect(processes.map((p) => p.kind)).toEqual(['interactive', 'interactive']);
+  });
+});
