@@ -6,7 +6,7 @@
  * argument it could get wrong, it is safe to run twice, it says plainly when there was
  * nothing to stop, and it parks rather than kills so the work survives.
  */
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -14,6 +14,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { forge } from '../../src/forge/cli.js';
 import { Inbox } from '../../src/forge/inbox.js';
+import { replayEvents } from '../../src/forge/contracts.js';
 import { replay } from '../../src/forge/journal.js';
 import { RunInbox } from '../../src/forge/runinbox.js';
 import { Lanes } from '../../src/forge/supervisor.js';
@@ -427,5 +428,26 @@ describe('F4: forge run releases what the engine held before it returns', () => 
       new Promise<'timed-out'>((resolve) => setTimeout(() => resolve('timed-out'), 200)),
     ]);
     expect(raced).toBe('timed-out');
+  });
+});
+
+describe('forge decide', () => {
+  it('refuses any action but kill, and refuses a bare run with no reason', async () => {
+    const result = await forge(['decide', 'r1', 'nudge', 'because']);
+    expect(result.code).toBe(2);
+  });
+
+  it('journals a decision.made row naming the run, kill and the reason, and returns its id', async () => {
+    const result = await forge(['decide', 'r1', 'kill', 'stuck', 'for', 'an', 'hour']);
+    expect(result.code).toBe(0);
+    // decide is the only place a decision.made row is written: reading it back off the
+    // real journal, rather than trusting the CLI's own printed line, is what proves the
+    // id forge decide hands back is the same id a kill actually has to find later.
+    const { events } = replayEvents(readFileSync(journal(), 'utf8'));
+    const decision = events.find((event) => event.event === 'decision.made');
+    expect(decision?.run).toBe('r1');
+    expect(decision?.['action']).toBe('kill');
+    expect(decision?.['reason']).toBe('stuck for an hour');
+    expect(result.lines.join(' ')).toMatch(new RegExp(`decision ${decision?.id} recorded: kill r1`));
   });
 });

@@ -25,6 +25,7 @@ import { redactFields } from './redact.js';
 import { Inbox, type InboxEntry } from './inbox.js';
 import { Journal } from './journal.js';
 import { fleetConfigDir } from './paths.js';
+import { readParkRecord } from './parkrecord.js';
 import { injectMessages, RunInbox } from './runinbox.js';
 import {
   HANDOFF_REQUEST, workerEnv, type EngineLike, type FakeTurn, type SessionRequest,
@@ -353,6 +354,17 @@ export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
     : undefined;
   return async (call: { toolName: string; input: Record<string, unknown>; toolUseId: string }):
     Promise<PreToolVerdict> => {
+    const parkRecord = readParkRecord(deps.run);
+    if (parkRecord) {
+      deps.journal.append({
+        event: 'permission.denied', run: deps.run, actor: 'runner', tool: call.toolName,
+        reason: `parked by warden: ${parkRecord.key}`,
+      });
+      return {
+        decision: 'deny',
+        reason: `parked by warden: ${parkRecord.reason}`,
+      };
+    }
     const key = deps.parked.get(deps.run);
     if (key) {
       const entry = deps.inbox.entry(key);

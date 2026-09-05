@@ -67,5 +67,18 @@
     "claude-code-guide": "research",
     "statusline-setup": "research"
   },
-  "fanout_classes": ["research", "audit-lens", "triage", "sweep", "evaluate"]
+  "fanout_classes": ["research", "audit-lens", "triage", "sweep", "evaluate"],
+  "_warden_comment": [
+    "Cost-shape thresholds: a session can be technically fine (under its context ceiling,",
+    "no error) and still be alive and wasting money -- high context, almost all of it a",
+    "cache re-read, and no write tool call in a long while. These numbers are the spec's",
+    "own illustrative example (2026-09-04-forge-spine-sdk-workers.md:534-535), not yet",
+    "tuned against a real run; Warden treats them as configuration precisely so they can",
+    "move without a code change."
+  ],
+  "warden": {
+    "contextHigh": 300000,
+    "cacheReadRatio": 0.9,
+    "turnsWithoutWrite": 30
+  }
 }
