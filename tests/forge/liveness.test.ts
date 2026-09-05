@@ -233,11 +233,14 @@ describe('B.3.10: the minimal actuator', () => {
   it('parks the stuck run, flags its lane, and journals warden.parked with the evidence', async () => {
     const { buildPreToolUseHook } = await import('../../src/forge/sdkengine.js');
     const { Journal } = await import('../../src/forge/journal.js');
+    const { Inbox } = await import('../../src/forge/inbox.js');
     const { mkdtempSync } = await import('node:fs');
     const { tmpdir } = await import('node:os');
     const { join } = await import('node:path');
 
-    const journalPath = join(mkdtempSync(join(tmpdir(), 'forge-warden-')), 'fleet.jsonl');
+    const home = mkdtempSync(join(tmpdir(), 'forge-warden-'));
+    const journalPath = join(home, 'fleet.jsonl');
+    const inbox = new Inbox(join(home, 'inbox'));
     const journaled: Record<string, unknown>[] = [];
     const laneWrites: Array<{ slug: string; fields: Record<string, unknown> }> = [];
     const parked = new Map<string, string>();
@@ -263,7 +266,9 @@ describe('B.3.10: the minimal actuator', () => {
     // whether the run is actually blocked. This drives the same PreToolUse guard B.3.1
     // built, sharing the same parked map, and shows the next tool call really is denied.
     const journal = new Journal(journalPath);
-    const hook = buildPreToolUseHook({ run: 'stuck-run', goal: 'stuck-run', parked, journal, deliverVia: 'hook' });
+    const hook = buildPreToolUseHook({
+      run: 'stuck-run', goal: 'stuck-run', parked, journal, inbox, deliverVia: 'hook',
+    });
     const verdict = await hook({ toolName: 'Bash', input: {}, toolUseId: 'tu-1' });
     journal.close();
 

@@ -658,7 +658,7 @@ describe('B.3.1: park is a state', () => {
     const key = parked.get('park-run');
     expect(key).toBeTruthy();
 
-    const hook = buildPreToolUseHook({ run: 'park-run', goal: 'park-run', parked, journal, deliverVia: 'hook' });
+    const hook = buildPreToolUseHook({ run: 'park-run', goal: 'park-run', parked, journal, inbox, deliverVia: 'hook' });
     const denied = await hook({ toolName: 'Bash', input: { command: 'npm test' }, toolUseId: 'tu-1' });
     expect(denied.decision).toBe('deny');
     expect(denied.reason).toContain(key);
@@ -674,7 +674,10 @@ describe('B.3.1: park is a state', () => {
     // because the map says the run is parked, never unconditionally.
     const parked = new Map<string, string>();
     const journal = new Journal(journalPath);
-    const hook = buildPreToolUseHook({ run: 'unparked-run', goal: 'unparked-run', parked, journal, deliverVia: 'hook' });
+    const inbox = new Inbox(join(home, 'inbox-unparked'));
+    const hook = buildPreToolUseHook({
+      run: 'unparked-run', goal: 'unparked-run', parked, journal, inbox, deliverVia: 'hook',
+    });
     const verdict = await hook({ toolName: 'Bash', input: {}, toolUseId: 'tu-1' });
     expect(verdict.decision).toBeUndefined();
   });
@@ -729,6 +732,50 @@ describe('B.3.1: park is a state', () => {
     const result = await engine.answer('wrong-key-run', 'nope', 'go with dev');
     expect(result.delivered).toBe(false);
     expect(parked.get('wrong-key-run')).toBe('real-key');
+  });
+});
+
+describe('F2: the hook consults the shared answer while parked', () => {
+  it('allows the call and resumes once a separate Inbox instance writes the answer', async () => {
+    const parked = new Map<string, string>();
+    const inbox = new Inbox(join(home, 'inbox-f2'));
+    const journal = new Journal(journalPath);
+    const canUseTool = buildCanUseTool({ run: 'f2-run', goal: 'f2-run', inbox, journal, parked });
+    await canUseTool('AskUserQuestion', {
+      questions: [{ question: 'dev or prod?', options: [{ label: 'dev' }, { label: 'prod' }] }],
+    });
+    const key = parked.get('f2-run');
+    expect(key).toBeTruthy();
+
+    // A second `Inbox` instance on the same directory, standing in for a separate `forge
+    // answer` process. This never touches `SdkEngine.answer()`, which only ever reaches a
+    // session the process holding it still has open.
+    new Inbox(join(home, 'inbox-f2')).answer(key!, 'go with dev');
+
+    const hook = buildPreToolUseHook({
+      run: 'f2-run', goal: 'f2-run', parked, journal, inbox, deliverVia: 'hook',
+    });
+    const verdict = await hook({ toolName: 'Bash', input: { command: 'npm test' }, toolUseId: 'tu-1' });
+
+    expect(verdict.decision).toBeUndefined();
+    expect(verdict.additionalContext).toContain('go with dev');
+    expect(parked.has('f2-run')).toBe(false);
+
+    journal.close();
+    const state = replay(journalPath);
+    expect(state.events.some((e) => e.event === 'run.resumed' && e.run === 'f2-run')).toBe(true);
+  });
+
+  it('the falsifier: still denies while parked with no answer written', async () => {
+    const parked = new Map<string, string>([['f2-deny-run', 'some-key']]);
+    const inbox = new Inbox(join(home, 'inbox-f2-deny'));
+    const journal = new Journal(journalPath);
+    const hook = buildPreToolUseHook({
+      run: 'f2-deny-run', goal: 'f2-deny-run', parked, journal, inbox, deliverVia: 'hook',
+    });
+    const verdict = await hook({ toolName: 'Bash', input: {}, toolUseId: 'tu-1' });
+    expect(verdict.decision).toBe('deny');
+    expect(parked.has('f2-deny-run')).toBe(true);
   });
 });
 

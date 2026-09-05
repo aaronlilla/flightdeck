@@ -294,6 +294,13 @@ export interface PreToolUseHookDeps {
   /** Shared with `buildCanUseTool`: run name to the ask key it is parked on. */
   parked: Map<string, string>;
   /**
+   * The same `Inbox` `canUseTool` and `forge_ask` write park entries into. Read here on
+   * every parked call (F2) so an answer written by a separate `forge answer` process is
+   * seen the moment it lands, not only by `SdkEngine.answer()`, which only ever reaches a
+   * session this same process still holds open.
+   */
+  inbox: Inbox;
+  /**
    * True once this run's latest usage has reached its class ceiling. Checked after park,
    * before inbox delivery, so a session past its ceiling gets no further tool call: only
    * the handoff prompt, riding along as `additionalContext` on the deny itself, so the
@@ -313,6 +320,12 @@ export interface PreToolUseHookDeps {
  *
  * The park check runs first, then the ceiling, and both short-circuit: neither gets inbox
  * delivery either, because there is nothing left for either to act on until it clears.
+ *
+ * While parked, this reads the shared `Inbox` entry for the key before denying (F2): if it
+ * already carries an answer, the park clears here, `run.resumed` is journaled, and the call
+ * is allowed with the resume prompt riding along as `additionalContext`, so a model that
+ * kept calling tools after the deny can be resumed from a separate `forge answer` process
+ * too, not only through `SdkEngine.answer()` on the process that still holds the session.
  */
 export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
   const inboxHook = deps.deliverVia === 'hook'
@@ -324,6 +337,12 @@ export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
     Promise<PreToolVerdict> => {
     const key = deps.parked.get(deps.run);
     if (key) {
+      const entry = deps.inbox.entry(key);
+      if (entry?.answer !== undefined) {
+        deps.parked.delete(deps.run);
+        deps.journal.append({ event: 'run.resumed', run: deps.run, actor: 'console', key });
+        return { decision: undefined, additionalContext: deps.inbox.resumePrompt(key) };
+      }
       deps.journal.append({
         event: 'permission.denied', run: deps.run, actor: 'runner', tool: call.toolName,
         reason: `parked on ${key}`,
@@ -559,7 +578,7 @@ export class SdkEngine implements EngineLike {
       mcpServers: { forge: buildForgeMcpServer(handlers) },
       canUseTool: buildCanUseTool({ run: request.run, goal, inbox, journal, parked: this.parked }) as never,
       onToolCall: buildPreToolUseHook({
-        run: request.run, goal, journal, parked: this.parked, deliverVia: this.deliverVia,
+        run: request.run, goal, journal, parked: this.parked, inbox, deliverVia: this.deliverVia,
         ceilingHit: () => ceilingHit,
         onDelivered: (ids, text) => { pendingAck = { ids, text }; },
       }),
