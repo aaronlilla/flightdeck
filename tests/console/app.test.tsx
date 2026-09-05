@@ -63,6 +63,12 @@ describe('App', () => {
     expect(tile.textContent).toContain('claude-sonnet-5');
     expect(tile.textContent).toContain('$6.17/h');
     expect(screen.getByText('in-progress')).toBeTruthy();
+
+    // X3: the capacity chip says plainly that nothing computes it yet, and
+    // Start stays disabled since forge up is the process serving this page.
+    expect(screen.getByText('capacity: not wired')).toBeTruthy();
+    const startButton = screen.getByRole('button', { name: 'Start' }) as HTMLButtonElement;
+    expect(startButton.disabled).toBe(true);
   });
 
   // W3: an inbox entry renders as a card whose answer button posts to

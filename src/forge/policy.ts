@@ -80,6 +80,10 @@ export interface Policy {
   /** Council's diff-risk thresholds (roadmap P4.4, decision 5). Optional: a file written
    * before this stream has none, and `council/risk.ts` falls back to its own defaults. */
   council?: { smallMaxLines: number; largeMinLines: number; riskyPaths: string[] };
+  /** X4: the console's rail-thread router. Off by default -- a policy file with no
+   *  `router` key at all (every fixture written before this field existed) reads the
+   *  same as `{ enabled: false }`, never as an error. */
+  router?: { enabled: boolean };
 }
 
 /** The spec's own illustrative numbers, used when a policy file predates this field. */
@@ -194,6 +198,13 @@ export function fallbackFor(alias: string, path?: string): string[] {
 export function classForSubagent(subagentType: string, path?: string): string {
   const table = loadPolicy(path).subagents;
   return table[subagentType] ?? table['default'] ?? 'research';
+}
+
+/** X4: whether the console's router is allowed to act on a live message. Defaults to
+ *  off -- a policy file written before this field existed, or one that omits it on
+ *  purpose, is off, never a crash. */
+export function routerEnabled(path?: string): boolean {
+  return loadPolicy(path).router?.enabled === true;
 }
 
 /**

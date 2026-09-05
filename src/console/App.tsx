@@ -15,6 +15,7 @@ import { CommandBar } from './components/CommandBar.js';
 import { DisconnectedBanner } from './components/DisconnectedBanner.js';
 import { InboxRail } from './components/InboxRail.js';
 import { LanesGrid } from './components/LanesGrid.js';
+import { TicketSheet } from './components/TicketSheet.js';
 import type { ConnectionStatus, ForgeState, InboxState } from './types.js';
 import { EventStream, type EventStreamOptions } from './ws.js';
 
@@ -31,6 +32,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
   const [loadError, setLoadError] = useState<string | undefined>(undefined);
   const [stopping, setStopping] = useState(false);
+  const [openRun, setOpenRun] = useState<string | undefined>(undefined);
   const mounted = useRef(true);
 
   const refresh = useCallback(async () => {
@@ -102,6 +104,15 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     [refresh],
   );
 
+  const onRoute = useCallback(
+    async (text: string) => {
+      const result = await api.sendToRouter(text);
+      await refresh();
+      return result;
+    },
+    [refresh],
+  );
+
   const unreachable = status === 'closed' || Boolean(loadError);
 
   return (
@@ -119,9 +130,16 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
           disabledReason={unreachable ? 'the fleet server is unreachable' : undefined}
           onSend={onSend}
           onClear={onClear}
+          onOpen={setOpenRun}
         />
-        <InboxRail open={inbox.open} onAnswer={onAnswer} />
+        <InboxRail
+          open={inbox.open}
+          onAnswer={onAnswer}
+          routerEnabled={state?.router_enabled ?? false}
+          onRoute={onRoute}
+        />
       </main>
+      {openRun ? <TicketSheet run={openRun} onClose={() => setOpenRun(undefined)} /> : null}
     </div>
   );
 }

@@ -57,6 +57,28 @@ export interface LaneRecord {
   goal?: string;
   className?: string;
   provider?: string;
+  /** X1: the live run's own lifecycle state (`RunState['state']` in `journal.ts`), present
+   *  only when a run for this slug has taken at least one turn. A tile prefers this over
+   *  `verdict`/`column`, which describe whatever chain last finished, not what is running
+   *  now -- the falsifier this closes is a parked chain's verdict rendering beside a run
+   *  that is genuinely live. */
+  run_state?: 'started' | 'finished' | 'handed-off' | 'paused' | 'parked';
+}
+
+/** One run's slice of `/state`, keyed by run (today, the lane's own slug). Mirrors
+ *  `journal.ts`'s `RunState` on the fields the console reads. */
+export interface ConsoleRunView {
+  run: string;
+  state: 'started' | 'finished' | 'handed-off' | 'paused' | 'parked';
+  className?: string;
+  model?: string;
+  context: number;
+  costUsd: number;
+  currentTool?: { name: string; startedAt: number };
+  lastEventAt: number;
+  parkKey?: string;
+  successor?: string;
+  predecessor?: string;
 }
 
 export interface ForgeState {
@@ -68,6 +90,20 @@ export interface ForgeState {
   inbox_open: VerifiedField<number>;
   stuck: VerifiedField<unknown[]>;
   fleet: VerifiedField<Array<Record<string, unknown>> | { ok: false; reason: string }>;
+  /** The contracts' `ForgeStateSnapshot.runs`: the journal's live view of every run,
+   *  keyed by run. Optional so a fixture built before this field existed still typechecks. */
+  runs?: Record<string, ConsoleRunView>;
+  /** X4: whether `POST /router` will actually classify and act, read fresh from the
+   *  policy file on every `/state` call. Optional so a fixture predating the router
+   *  reads as "off" rather than throwing. */
+  router_enabled?: boolean;
+}
+
+/** `POST /router`'s response shape (X4). */
+export interface RouterResult {
+  routed: boolean;
+  reason?: string;
+  outcome?: { class: string; [key: string]: unknown };
 }
 
 export interface InboxEntry {
@@ -87,6 +123,21 @@ export interface InboxEntry {
 export interface InboxState {
   open: InboxEntry[];
   all: InboxEntry[];
+}
+
+/** `GET /run/:id`'s shape (X3). `plan`, `prUrl`, `council` and `comments` are
+ *  named explicitly as `null` rather than omitted so the ticket sheet can say
+ *  "not wired" for a field nothing in the fleet writes yet, distinct from a
+ *  field that failed to load. */
+export interface RunDetail {
+  run: string;
+  packet: string | null;
+  plan: string | null;
+  prUrl: string | null;
+  council: string | null;
+  comments: string | null;
+  provenance: { predecessor: string | null; successor: string | null };
+  state: ConsoleRunView | null;
 }
 
 export interface ForgeEvent {

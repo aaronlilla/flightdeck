@@ -37,7 +37,7 @@ import {
   ensureHome, fleetConfigDirChoice, forgeHome, gotchasDir, inboxDir, journalPath, killSwitchPath,
   lanesDir, registryDir,
 } from './paths.js';
-import { tierOfBrief } from './policy.js';
+import { modelFor, modelIdFor, tierOfBrief } from './policy.js';
 import { processAlive, reconcileRegistry, Registry } from './registry.js';
 import { deliverAnswer, RunInbox } from './runinbox.js';
 import { SdkEngine } from './sdkengine.js';
@@ -405,7 +405,16 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         return { code: 1, lines: [`refusing to start ${slug}: ${admission.reason}`] };
       }
 
-      lanes.put(slug, { column: 'forge', started: Date.now(), owner: 'forge' });
+      // Written here too, not only by the journal's own `run.started` fold: a board
+      // polling `/state` between admission and the worker's first event otherwise reads
+      // "unknown class" and a stale model for however long the launch takes to reach its
+      // first turn.
+      const plannedClassName = tierOfBrief(brief);
+      const plannedModel = modelIdFor(modelFor(plannedClassName));
+      lanes.put(slug, {
+        column: 'forge', started: Date.now(), owner: 'forge',
+        className: plannedClassName, model: plannedModel,
+      });
       const engine = deps.engine ?? new SdkEngine({
         journalPath: journalPath(), inboxDir: inboxDir(), gotchasDir: gotchasDir(),
         killSwitch: () => readKillSwitch(killSwitchPath()).engaged,

@@ -1,6 +1,7 @@
-import type { JSX } from 'react';
+import type { JSX, KeyboardEvent } from 'react';
 import { useState } from 'react';
 
+import { stateOf } from '../laneState.js';
 import type { LaneRecord } from '../types.js';
 import { Freshness } from './Freshness.js';
 
@@ -10,18 +11,14 @@ export interface LaneTileProps {
   disabledReason?: string;
   onSend: (run: string, text: string) => Promise<void>;
   onClear: (lane: string) => Promise<void>;
+  /** X3: opens the ticket sheet for this lane. Omitted in a context (a specimen,
+   *  a future embed) that has no sheet to open. */
+  onOpen?: (slug: string) => void;
 }
 
 const CONTEXT_CEILING = 200_000;
 
-function stateOf(lane: LaneRecord): string {
-  if (lane.needs_aaron) return 'blocked';
-  if (lane.verdict) return lane.column === 'blocked' ? 'blocked' : lane.verdict;
-  if (lane.column) return lane.column;
-  return 'running';
-}
-
-export function LaneTile({ lane, now, disabledReason, onSend, onClear }: LaneTileProps): JSX.Element {
+export function LaneTile({ lane, now, disabledReason, onSend, onClear, onOpen }: LaneTileProps): JSX.Element {
   const state = stateOf(lane);
   const contextPct = Math.min(100, Math.round((lane.context / CONTEXT_CEILING) * 100));
   const [text, setText] = useState('');
@@ -55,8 +52,21 @@ export function LaneTile({ lane, now, disabledReason, onSend, onClear }: LaneTil
     }
   };
 
+  const openSheet = (): void => onOpen?.(lane.slug);
+
   return (
-    <article className="lane-tile" data-lane={lane.slug}>
+    <article
+      className="lane-tile"
+      data-lane={lane.slug}
+      {...(onOpen ? {
+        role: 'button',
+        tabIndex: 0,
+        onClick: openSheet,
+        onKeyDown: (event: KeyboardEvent) => {
+          if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openSheet(); }
+        },
+      } : {})}
+    >
       <div className="lane-tile__head">
         <div>
           <p className="lane-tile__slug">{lane.slug}</p>
@@ -81,7 +91,7 @@ export function LaneTile({ lane, now, disabledReason, onSend, onClear }: LaneTil
         <Freshness verifiedAt={lane.verified_at} now={now} />
       </div>
 
-      <div className="inbox-card__free-text">
+      <div className="inbox-card__free-text" onClick={(event) => event.stopPropagation()}>
         <input
           type="text"
           value={text}
@@ -96,7 +106,12 @@ export function LaneTile({ lane, now, disabledReason, onSend, onClear }: LaneTil
       </div>
 
       {lane.needs_aaron ? (
-        <button type="button" className="btn btn--primary" disabled={disabled} onClick={() => void clear()}>
+        <button
+          type="button"
+          className="btn btn--primary"
+          disabled={disabled}
+          onClick={(event) => { event.stopPropagation(); void clear(); }}
+        >
           Clear
         </button>
       ) : null}

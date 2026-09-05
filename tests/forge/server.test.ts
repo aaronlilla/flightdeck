@@ -229,6 +229,50 @@ describe('GET /state', () => {
 
     expect(secondAt).toBeGreaterThan(firstAt);
   });
+
+  it('X4: carries router_enabled, off by the real policy\'s own default', async () => {
+    const state = await (await fetch(`${base}/state`)).json() as Record<string, unknown>;
+    expect(state['router_enabled']).toBe(false);
+  });
+
+  // X1: a lane can carry a stale verdict from an earlier chain (parked, or otherwise
+  // finished) while a fresh run for the same slug is genuinely live. A tile driven off
+  // the lane record alone would show the dead chain's verdict beside a running tool; the
+  // live run has to win.
+  it('X1: a live run for a lane overrides that lane\'s stale verdict, class, model and cost', async () => {
+    const lanes = new Lanes(join(dir, 'lanes-x1'));
+    lanes.put('beta', {
+      column: 'blocked', verdict: 'parked', model: 'claude-fable-5', context: 5_000, cost_usd: 0.01,
+    });
+    const journalPath = join(dir, 'fleet-x1.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'beta', actor: 'worker', model: 'claude-sonnet-5', className: 'implement-hard' });
+    journal.append({
+      event: 'turn.end', run: 'beta', actor: 'worker', context: 91_000, model: 'claude-sonnet-5',
+      usage: { input: 1_000_000, cacheRead: 0, cacheCreation: 0, output: 0 },
+    });
+    journal.append({ event: 'tool.start', run: 'beta', actor: 'worker', tool: 'Bash' });
+    journal.close();
+
+    const x1Server = new ForgeServer({
+      lanes, inbox: new Inbox(join(dir, 'inbox-x1')), journalPath, port: 0,
+    });
+    const x1Base = `http://127.0.0.1:${await x1Server.listen()}`;
+    try {
+      const state = await (await fetch(`${x1Base}/state`)).json() as Record<string, unknown>;
+      const lane = (state['lanes'] as Wrapped<Record<string, unknown>[]>).value[0]!;
+      expect(lane['run_state']).toBe('started');
+      expect(lane['className']).toBe('implement-hard');
+      expect(lane['model']).toBe('claude-sonnet-5');
+      expect(lane['cost_usd']).toBeGreaterThan(0.01);
+      expect(lane['current_tool']).toMatchObject({ name: 'Bash' });
+      const runs = state['runs'] as Record<string, { state: string; className?: string }>;
+      expect(runs['beta']?.state).toBe('started');
+      expect(runs['beta']?.className).toBe('implement-hard');
+    } finally {
+      await x1Server.close();
+    }
+  });
 });
 
 describe('GET /inbox', () => {
@@ -241,6 +285,143 @@ describe('GET /inbox', () => {
     server.inbox.raise({ run: 'alpha', question: 'Which environment?', options: ['dev'] });
     const body = await (await fetch(`${base}/inbox`)).json() as Record<string, unknown>;
     expect((body['open'] as unknown[])).toHaveLength(1);
+  });
+});
+
+describe('GET /run/:id', () => {
+  // X3: the ticket sheet's own read. Behind the token like every write on this server,
+  // since a packet can carry whatever a worker wrote about the goal it was on.
+  it('X3: refuses without a token', async () => {
+    const response = await fetch(`${base}/run/alpha`);
+    expect(response.status).toBe(401);
+  });
+
+  it('X3: refuses a different Origin', async () => {
+    const response = await fetch(`${base}/run/alpha`, {
+      headers: { 'x-forge-token': server.token, origin: 'http://evil.example' },
+    });
+    expect(response.status).toBe(403);
+  });
+
+  it('X3: a run with a packet on disk returns its text and provenance', async () => {
+    const journal = new Journal(join(dir, 'fleet.jsonl'));
+    journal.append({
+      event: 'run.handoff', run: 'alpha', actor: 'worker', successor: 'alpha-2',
+    });
+    journal.close();
+    mkdirSync(join(dir, 'packets'), { recursive: true });
+    writeFileSync(join(dir, 'packets', 'alpha.md'), '# what alpha found\n', 'utf8');
+    const withPackets = new ForgeServer({
+      lanes: new Lanes(join(dir, 'lanes')), inbox: new Inbox(join(dir, 'inbox')),
+      journalPath: join(dir, 'fleet.jsonl'), port: 0, packetsDir: join(dir, 'packets'),
+    });
+    const withPacketsBase = `http://127.0.0.1:${await withPackets.listen()}`;
+    try {
+      const response = await fetch(`${withPacketsBase}/run/alpha`, {
+        headers: { 'x-forge-token': withPackets.token },
+      });
+      const body = await response.json() as Record<string, unknown>;
+      expect(body['packet']).toBe('# what alpha found\n');
+      expect(body['provenance']).toMatchObject({ successor: 'alpha-2' });
+    } finally {
+      await withPackets.close();
+    }
+  });
+
+  it('X3: a run with no packet answers null rather than 404', async () => {
+    const response = await fetch(`${base}/run/nothing-ever-ran-here`, {
+      headers: { 'x-forge-token': server.token },
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json() as Record<string, unknown>;
+    expect(body['packet']).toBeNull();
+    expect(body['plan']).toBeNull();
+    expect(body['prUrl']).toBeNull();
+  });
+});
+
+describe('POST /router', () => {
+  afterEach(() => {
+    delete process.env['FORGE_POLICY_PATH'];
+  });
+
+  // X4: off by default. This is the real model-policy.json's own default
+  // (`router.enabled: false`), not a fixture override -- proving the production
+  // default is the safe one, not just that a test can construct a safe one.
+  it('X4: routes nothing while the policy has the router off, and never touches a reasoner', async () => {
+    let reasonerCalled = false;
+    const withReasoner = new ForgeServer({
+      lanes: new Lanes(join(dir, 'lanes')), inbox: new Inbox(join(dir, 'inbox')),
+      journalPath: join(dir, 'fleet.jsonl'), port: 0,
+      reasoner: { provider: 'claude', call: async () => { reasonerCalled = true; return { text: 'x' }; } },
+    });
+    const withReasonerBase = `http://127.0.0.1:${await withReasoner.listen()}`;
+    try {
+      const response = await fetch(`${withReasonerBase}/router`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-forge-token': withReasoner.token },
+        body: JSON.stringify({ text: 'what is running' }),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ routed: false, reason: 'router off' });
+      expect(reasonerCalled).toBe(false);
+    } finally {
+      await withReasoner.close();
+    }
+  });
+
+  it('X4: refuses without a token', async () => {
+    const response = await fetch(`${base}/router`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'hi' }),
+    });
+    expect(response.status).toBe(401);
+  });
+
+  it('X4: 501s when the router is enabled but no reasoner was wired', async () => {
+    const policyPath = join(dir, 'router-on-policy.json');
+    writeFileSync(policyPath, JSON.stringify({ router: { enabled: true } }), 'utf8');
+    process.env['FORGE_POLICY_PATH'] = policyPath;
+    const response = await fetch(`${base}/router`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forge-token': server.token },
+      body: JSON.stringify({ text: 'hi' }),
+    });
+    expect(response.status).toBe(501);
+  });
+
+  it('X4: when enabled and wired, classifies and acts through the fake reasoner only', async () => {
+    const policyPath = join(dir, 'router-on-policy-2.json');
+    writeFileSync(policyPath, JSON.stringify({ router: { enabled: true } }), 'utf8');
+    process.env['FORGE_POLICY_PATH'] = policyPath;
+
+    let calls = 0;
+    const reasoner = {
+      provider: 'claude' as const,
+      call: async () => {
+        calls += 1;
+        return { text: calls === 1 ? 'intake' : 'unused' };
+      },
+    };
+    const routedLanes = new Lanes(join(dir, 'lanes-routed'));
+    const routedServer = new ForgeServer({
+      lanes: routedLanes, inbox: new Inbox(join(dir, 'inbox-routed')),
+      journalPath: join(dir, 'fleet-routed.jsonl'), port: 0, reasoner,
+    });
+    const routedBase = `http://127.0.0.1:${await routedServer.listen()}`;
+    try {
+      const response = await fetch(`${routedBase}/router`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-forge-token': routedServer.token },
+        body: JSON.stringify({ text: 'build the new thing' }),
+      });
+      const body = await response.json() as Record<string, unknown>;
+      expect(response.status).toBe(200);
+      expect(body['routed']).toBe(true);
+      expect((body['outcome'] as Record<string, unknown>)['class']).toBe('intake');
+      expect(calls).toBe(1);
+    } finally {
+      await routedServer.close();
+    }
   });
 });
 

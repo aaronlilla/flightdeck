@@ -58,6 +58,10 @@ export interface LaneRecord {
   needs_aaron?: string | null;
   /** Timestamps of starts that took no turns, inside the rolling window. */
   zero_turn_starts?: number[];
+  /** The model-policy class this lane's most recent launch opened under. `cli.ts`'s
+   *  `run` command writes it at admission, so a board shows a real class right away
+   *  instead of "unknown class" until the run's first journal event overrides it. */
+  className?: string | null;
 }
 
 /** A record with every field present, so a reader never has to guess at a missing key. */

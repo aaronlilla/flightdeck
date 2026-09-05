@@ -21,11 +21,17 @@ import { dirname, extname, join } from 'node:path';
 import type { Duplex } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
+import type { Reasoner } from './contracts.js';
 import type { Inbox } from './inbox.js';
-import { JournalCache, type RangeReader } from './journal.js';
+import { appendOnce, JournalCache, type RangeReader } from './journal.js';
 import type { StuckSignal } from './liveness.js';
-import { killSwitchPath as defaultKillSwitchPath, registryDir, serverTokenPath } from './paths.js';
+import {
+  killSwitchPath as defaultKillSwitchPath, packetsDir as defaultPacketsDir, registryDir,
+  serverTokenPath,
+} from './paths.js';
+import { routerEnabled } from './policy.js';
 import { Registry } from './registry.js';
+import { route as routeMessage } from './router.js';
 import { RunInbox, deliverAnswer } from './runinbox.js';
 import { Breaker, clearKillSwitch, Fleet, type LaneRecord, type Lanes } from './supervisor.js';
 
@@ -110,6 +116,16 @@ export interface ForgeServerOptions {
   /** Overrides where `/` serves the built console from. Defaults to `dist/console/`
    *  found by walking up to the repo root. A specimen only. */
   consoleDistDir?: string;
+  /** Overrides where `GET /run/:id` reads a handoff packet from. Defaults to
+   *  `packetsDir()`, which itself follows `FORGE_HOME`. A specimen only. */
+  packetsDir?: string;
+  /** X4: what `POST /router` calls to classify and act on a message. No default is
+   *  wired: `router.enabled` in the model policy is `false` out of the box, and
+   *  `/router` never reaches this at all while it is off, so a real implementation
+   *  has nothing to answer for in this cut. A specimen hands this a fake; anything
+   *  else that constructs a `ForgeServer` with the router turned on must supply one
+   *  or `POST /router` answers 501 rather than throwing. */
+  reasoner?: Reasoner;
 }
 
 export class ForgeServer {
@@ -132,6 +148,10 @@ export class ForgeServer {
   private readonly registry: Registry;
 
   private readonly consoleDistDir: string;
+
+  private readonly packetsDirPath: string;
+
+  private readonly reasoner: Reasoner | undefined;
 
   private readonly wanted: number;
 
@@ -167,6 +187,8 @@ export class ForgeServer {
     this.killSwitchFile = options.killSwitchFile ?? defaultKillSwitchPath();
     this.registry = options.registry ?? new Registry(registryDir());
     this.consoleDistDir = options.consoleDistDir ?? defaultConsoleDistDir();
+    this.packetsDirPath = options.packetsDir ?? defaultPacketsDir();
+    this.reasoner = options.reasoner;
   }
 
   get listeners(): number {
@@ -219,14 +241,24 @@ export class ForgeServer {
       const mtime = this.lanes.mtimeOf(lane.slug) ?? now;
       const run = fleet.runs[lane.slug];
       const lastEventAt = run?.lastEventAt || mtime;
+      // The journal is updated on every turn; the lane file only at the end of a session
+      // chain (and, for model/className, at admission). Once a run has taken at least one
+      // turn, everything the journal tracks for it -- context, spend, class, model, and
+      // its own lifecycle state -- is the fresher answer. Before that, the run's own
+      // defaults would incorrectly overwrite whatever the lane file still remembers from
+      // an earlier chain, which is exactly the bug a parked verdict sitting beside a live
+      // "running Bash" tile came from: the tile was reading the lane's stale verdict
+      // instead of the live run underneath it.
+      const live = Boolean(run && run.turns > 0);
+      const cost_usd = live ? run!.costUsd : lane.cost_usd;
       return {
         ...lane,
-        // The journal is updated on every turn; the lane file only at the end of a
-        // session chain. Once a run has taken at least one turn, its journaled context is
-        // the fresher number; before that, the run's own default (0) would incorrectly
-        // overwrite whatever the lane file still remembers from an earlier session.
-        context: run && run.turns > 0 ? run.context : lane.context,
-        usd_per_hour: usdPerHour(lane),
+        context: live ? run!.context : lane.context,
+        cost_usd,
+        className: run?.className ?? lane.className ?? null,
+        model: run?.model ?? lane.model,
+        run_state: run?.state,
+        usd_per_hour: usdPerHour({ ...lane, cost_usd }),
         verified_at: mtime,
         last_event_age_s: Math.max(0, Math.round((now - lastEventAt) / 1000)),
         current_tool: run?.currentTool ?? null,
@@ -250,6 +282,15 @@ export class ForgeServer {
       inbox_open: { value: this.inbox.open().length, verified_at: this.inbox.mtime() ?? now },
       stuck: { value: this.stuckFn(), observed_at: now },
       fleet: { value: this.fleetFn(), observed_at: now },
+      // The contracts' own `ForgeStateSnapshot.runs`: the journal's live view of every
+      // run it has ever seen a line for, keyed by run (today, one run per lane slug).
+      // Not filtered to "still running" -- a finished or handed-off run stays visible so
+      // a tile can tell a live run apart from a lane record with nothing under it.
+      runs: fleet.runs,
+      // X4: read fresh on every call rather than cached at construction, so flipping
+      // `router.enabled` in the policy file takes effect on the console's next poll
+      // without restarting the server.
+      router_enabled: routerEnabled(),
     };
   }
 
@@ -275,6 +316,9 @@ export class ForgeServer {
     if (path === '/inbox' && request.method === 'GET') {
       return json(response, 200, { open: this.inbox.open(), all: this.inbox.all() });
     }
+    if (path.startsWith('/run/') && request.method === 'GET') {
+      return this.runDetail(request, response, decodeURIComponent(path.slice('/run/'.length)));
+    }
     if (path === '/answer') {
       if (request.method !== 'POST') {
         return json(response, 405, { error: 'answering a question is not a safe method' });
@@ -298,6 +342,12 @@ export class ForgeServer {
         return json(response, 405, { error: 'clearing a lane is not a safe method' });
       }
       return this.clearLane(request, response);
+    }
+    if (path === '/router') {
+      if (request.method !== 'POST') {
+        return json(response, 405, { error: 'routing a message is not a safe method' });
+      }
+      return this.routeMessage(request, response);
     }
     if (request.method === 'GET') {
       return this.serveStatic(path, response);
@@ -444,6 +494,76 @@ export class ForgeServer {
       }
       new Breaker(this.lanes).clear(parsed.lane);
       json(response, 200, { ok: true });
+    });
+  }
+
+  /**
+   * `POST /router`: a message typed into the console's rail thread. Behind the same
+   * token and Origin check as every other write. Off by default at the policy layer
+   * (`routerEnabled()`) -- while it is off this never calls `classify`/`act`, so a
+   * message posted here costs nothing and reaches no model, which is the mechanism
+   * behind "live routing stays off until Aaron turns `router.enabled` on."
+   */
+  private routeMessage(request: IncomingMessage, response: ServerResponse): void {
+    if (!this.authorized(request, response)) return;
+    this.readJson<{ text?: string }>(request, response, (parsed) => {
+      void (async () => {
+        if (!parsed || !parsed.text) {
+          json(response, 400, { error: 'a router message needs text' });
+          return;
+        }
+        if (!routerEnabled()) {
+          json(response, 200, { routed: false, reason: 'router off' });
+          return;
+        }
+        if (!this.reasoner) {
+          json(response, 501, { error: 'the router is enabled but this server has no reasoner wired' });
+          return;
+        }
+        const outcome = await routeMessage(this.reasoner, parsed.text, {
+          inbox: this.inbox,
+          journal: { append: (event) => appendOnce(this.journalPath, event) },
+          stateSummary: () => JSON.stringify(this.state()),
+          openAsks: () => this.inbox.open(),
+        });
+        json(response, 200, { routed: true, outcome });
+      })();
+    });
+  }
+
+  /**
+   * `GET /run/:id`: the ticket sheet's own read, behind the token like every other write
+   * on this server -- a packet, a provenance chain and a run's journal state are not
+   * public the way `/state`'s aggregate counts are, since a packet can carry whatever a
+   * worker wrote about the goal it was on.
+   *
+   * A run this server has never heard of, or one with no packet on disk yet, is not an
+   * error: `packet: null` and an empty provenance chain are the honest answer for a run
+   * that has not handed off, and the ticket sheet renders "not available" rather than a
+   * 404 for either. `plan`, `prUrl`, `council` and `comments` are not wired yet (no code
+   * anywhere in this repository writes them for a run today); they are named explicitly
+   * as `null` rather than omitted, so the sheet can say "not wired" instead of leaving a
+   * silently missing field indistinguishable from one that failed to load.
+   */
+  private runDetail(request: IncomingMessage, response: ServerResponse, id: string): void {
+    if (!this.authorized(request, response)) return;
+    if (!id) {
+      json(response, 400, { error: 'a run id is required' });
+      return;
+    }
+    const fleet = this.journalCache.read(this.journalPath);
+    const run = fleet.runs[id];
+    const packetFile = join(this.packetsDirPath, `${id}.md`);
+    const packet = existsSync(packetFile) ? readFileSync(packetFile, 'utf8') : null;
+    json(response, 200, {
+      run: id,
+      packet,
+      plan: null,
+      prUrl: null,
+      council: null,
+      comments: null,
+      provenance: { predecessor: run?.predecessor ?? null, successor: run?.successor ?? null },
+      state: run ?? null,
     });
   }
 
