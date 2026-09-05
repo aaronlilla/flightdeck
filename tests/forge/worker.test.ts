@@ -432,6 +432,54 @@ describe('B.3.4: done is verified', () => {
     expect(turnEnds.some((e) => JSON.stringify(e['usage']) === JSON.stringify(bounceUsage))).toBe(true);
   });
 
+  it('with no FORGE_WORKTREE_SHELL, runs the verification command directly, split, no shell', async () => {
+    const prior = process.env['FORGE_WORKTREE_SHELL'];
+    delete process.env['FORGE_WORKTREE_SHELL'];
+    try {
+      const brief = '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnpm run verify\n```\n';
+      const requests: Array<{ argv: string[]; shell?: boolean | string[] }> = [];
+      const exec = async (request: { argv: string[]; shell?: boolean | string[] }) => {
+        requests.push({ argv: request.argv, shell: request.shell });
+        return {
+          ok: true, tail: '', returncode: 0, argv: request.argv, owner: 'alpha',
+          startedAt: 0, durationMs: 1,
+        };
+      };
+      const worker = makeWorker([[{ text: 'shipped', context: 10, done: true }]], { brief, exec });
+
+      const result = await worker.run();
+
+      expect(result.verdict).toBe('done');
+      expect(requests[0]!.argv).toEqual(['npm', 'run', 'verify']);
+      expect(requests[0]!.shell).toBeFalsy();
+    } finally {
+      if (prior === undefined) delete process.env['FORGE_WORKTREE_SHELL'];
+      else process.env['FORGE_WORKTREE_SHELL'] = prior;
+    }
+  });
+
+  it('with a configured shell prefix, runs the whole verify line through it, unsplit', async () => {
+    const brief = '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnpm run verify\n```\n';
+    const requests: Array<{ argv: string[]; shell?: boolean | string[] }> = [];
+    const exec = async (request: { argv: string[]; shell?: boolean | string[] }) => {
+      requests.push({ argv: request.argv, shell: request.shell });
+      return {
+        ok: true, tail: '', returncode: 0, argv: request.argv, owner: 'alpha',
+        startedAt: 0, durationMs: 1,
+      };
+    };
+    const worker = makeWorker(
+      [[{ text: 'shipped', context: 10, done: true }]],
+      { brief, exec, verifyShell: ['C:/bash.exe', '-c'] },
+    );
+
+    const result = await worker.run();
+
+    expect(result.verdict).toBe('done');
+    expect(requests[0]!.argv).toEqual(['npm run verify']);
+    expect(requests[0]!.shell).toEqual(['C:/bash.exe', '-c']);
+  });
+
   it('the falsifier: done is never reachable without exec having actually run', async () => {
     const brief = '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnode -e process.exit(0)\n```\n';
     const order: string[] = [];
