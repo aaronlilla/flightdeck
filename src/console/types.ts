@@ -118,6 +118,11 @@ export interface InboxEntry {
   answeredAt?: number;
   disposition: 'park';
   ticket?: string;
+  /** F3: set by the server's `/inbox` projection, never stored on the entry itself --
+   *  true when none of `runs` has a registry row left, so answering it would resume
+   *  nothing. Optional so a fixture built before this field existed still typechecks. */
+  stale?: boolean;
+  staleReason?: string;
 }
 
 export interface InboxState {

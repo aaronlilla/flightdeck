@@ -22,7 +22,7 @@ import type { Duplex } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
 import type { Reasoner } from './contracts.js';
-import type { Inbox } from './inbox.js';
+import { isAskStale, projectStaleness, type Inbox } from './inbox.js';
 import { appendOnce, JournalCache, type RangeReader } from './journal.js';
 import type { StuckSignal } from './liveness.js';
 import {
@@ -222,6 +222,40 @@ export class ForgeServer {
     this.http = undefined;
   }
 
+  /**
+   * F2: the terminal `run_state` of a lane's whole handoff chain, trusted as "still
+   * running" only when a registry row backs some link in it.
+   *
+   * `fleet.runs[baseKey]` is that key's own last journal line and nothing more: once a
+   * run hands off, its base key never gets another event, so `run.state` sits on
+   * `'handed-off'` forever even after every successor has finished, crashed or been
+   * cleared. This walks `successor` down to the chain's last journaled link and checks
+   * every link along the way for a registry row (a live launch is not always the base
+   * key -- a successor can be started directly by its own name). A `'handed-off'`
+   * terminal with no live link anywhere in the chain is exactly the dead-chain case:
+   * `undefined` here so `categoryOf`/`stateOf` fall through to the lane's own verdict,
+   * the way a `'finished'` or `'parked'` terminal already does.
+   */
+  private chainRunState(
+    runs: Record<string, { state?: string; successor?: string } | undefined>, baseKey: string,
+  ): string | undefined {
+    type Link = { state?: string; successor?: string };
+    let node: Link | undefined = runs[baseKey];
+    if (!node) return undefined;
+    let live = Boolean(this.registry.get(baseKey));
+    const seen = new Set([baseKey]);
+    while (node?.successor && !seen.has(node.successor)) {
+      const nextKey: string = node.successor;
+      seen.add(nextKey);
+      if (this.registry.get(nextKey)) live = true;
+      const next: Link | undefined = runs[nextKey];
+      if (!next) break;
+      node = next;
+    }
+    if (node?.state === 'handed-off' && !live) return undefined;
+    return node?.state;
+  }
+
   /** Keeps only the entries a registry row or a lane file backs (I11). A journal fold
    *  creates an entry for any key an event names `run`, including a fleet pid a Warden
    *  tick only ever meant to report on; this is what keeps one of those off the board. */
@@ -266,7 +300,7 @@ export class ForgeServer {
         cost_usd,
         className: run?.className ?? lane.className ?? null,
         model: run?.model ?? lane.model,
-        run_state: run?.state,
+        run_state: this.chainRunState(fleet.runs, lane.slug),
         usd_per_hour: usdPerHour({ ...lane, cost_usd }),
         verified_at: mtime,
         last_event_age_s: Math.max(0, Math.round((now - lastEventAt) / 1000)),
@@ -327,7 +361,14 @@ export class ForgeServer {
       return json(response, 200, this.state());
     }
     if (path === '/inbox' && request.method === 'GET') {
-      return json(response, 200, { open: this.inbox.open(), all: this.inbox.all() });
+      // F3: `stale`/`staleReason` computed fresh on every read, from the registry as it
+      // is right now -- an ask's runs can all disappear with no new inbox event to say
+      // so, so stamping this at write time would go stale itself.
+      const hasRegistryRow = (run: string): boolean => Boolean(this.registry.get(run));
+      return json(response, 200, {
+        open: projectStaleness(this.inbox.open(), hasRegistryRow),
+        all: projectStaleness(this.inbox.all(), hasRegistryRow),
+      });
     }
     if (path.startsWith('/run/') && request.method === 'GET') {
       return this.runDetail(request, response, decodeURIComponent(path.slice('/run/'.length)));
@@ -495,14 +536,34 @@ export class ForgeServer {
    */
   private clearLane(request: IncomingMessage, response: ServerResponse): void {
     if (!this.authorized(request, response)) return;
-    this.readJson<{ lane?: string; all?: boolean }>(request, response, (parsed) => {
+    this.readJson<{ lane?: string; all?: boolean; inboxKey?: string }>(request, response, (parsed) => {
+      if (parsed?.inboxKey) {
+        // F3: retire one stale ask from the console's own Clear button. The client's say-
+        // so is not proof -- staleness is checked again here, against the registry as it
+        // is right now, before anything is moved.
+        const entry = this.inbox.entry(parsed.inboxKey);
+        if (!entry) {
+          json(response, 404, { error: `nothing asked ${parsed.inboxKey}` });
+          return;
+        }
+        if (!isAskStale(entry, (run) => Boolean(this.registry.get(run)))) {
+          json(response, 400, { error: `${parsed.inboxKey} still has a live run; it is not stale` });
+          return;
+        }
+        this.inbox.retire(parsed.inboxKey);
+        appendOnce(this.journalPath, {
+          event: 'inbox.retired', actor: 'console', key: parsed.inboxKey, runs: entry.runs,
+        });
+        json(response, 200, { ok: true });
+        return;
+      }
       if (parsed?.all === true) {
         clearKillSwitch(this.killSwitchFile);
         json(response, 200, { ok: true });
         return;
       }
       if (!parsed || !parsed.lane) {
-        json(response, 400, { error: 'a clear needs a lane or { all: true }' });
+        json(response, 400, { error: 'a clear needs a lane, { all: true } or { inboxKey }' });
         return;
       }
       new Breaker(this.lanes).clear(parsed.lane);

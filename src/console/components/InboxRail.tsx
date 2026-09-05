@@ -7,6 +7,8 @@ import { InboxCard } from './InboxCard.js';
 export interface InboxRailProps {
   open: InboxEntry[];
   onAnswer: (key: string, answer: string) => Promise<void>;
+  /** F3: clears a stale ask. */
+  onClearAsk: (key: string) => Promise<void>;
   /** X4: whether the server will actually act on a routed message. */
   routerEnabled: boolean;
   onRoute: (text: string) => Promise<RouterResult>;
@@ -18,7 +20,7 @@ export interface InboxRailProps {
  * this cut ships with -- typing here does nothing until Aaron flips
  * `router.enabled` in the policy file.
  */
-export function InboxRail({ open, onAnswer, routerEnabled, onRoute }: InboxRailProps): JSX.Element {
+export function InboxRail({ open, onAnswer, onClearAsk, routerEnabled, onRoute }: InboxRailProps): JSX.Element {
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [lastResult, setLastResult] = useState<RouterResult | undefined>(undefined);
@@ -48,7 +50,9 @@ export function InboxRail({ open, onAnswer, routerEnabled, onRoute }: InboxRailP
       {open.length === 0 ? (
         <p className="inbox-empty">Nothing waiting on you.</p>
       ) : (
-        open.map((entry) => <InboxCard key={entry.key} entry={entry} onAnswer={onAnswer} />)
+        open.map((entry) => (
+          <InboxCard key={entry.key} entry={entry} onAnswer={onAnswer} onClear={onClearAsk} />
+        ))
       )}
 
       <div className="rail-thread">

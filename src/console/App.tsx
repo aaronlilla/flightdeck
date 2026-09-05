@@ -104,6 +104,14 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     [refresh],
   );
 
+  const onClearAsk = useCallback(
+    async (key: string) => {
+      await api.retireAsk(key);
+      await refresh();
+    },
+    [refresh],
+  );
+
   const onRoute = useCallback(
     async (text: string) => {
       const result = await api.sendToRouter(text);
@@ -135,6 +143,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
         <InboxRail
           open={inbox.open}
           onAnswer={onAnswer}
+          onClearAsk={onClearAsk}
           routerEnabled={state?.router_enabled ?? false}
           onRoute={onRoute}
         />

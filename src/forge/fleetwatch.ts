@@ -15,6 +15,40 @@ import { fleetConfigDir } from './paths.js';
 export type ProcessProbe = { ok: true; lines: string[] } | { ok: false; reason: string };
 
 /**
+ * The first token after the pid: the executable a process line names, quoted or not.
+ *
+ * `undefined` when the line has nothing after the pid (a handful of system processes on
+ * every machine this reads show up with a blank command).
+ */
+function executableOf(line: string): string | undefined {
+  const rest = line.replace(/^\s*\d+\s*/, '');
+  const quoted = /^"([^"]*)"/.exec(rest);
+  if (quoted) return quoted[1] || undefined;
+  const unquoted = /^(\S+)/.exec(rest);
+  return unquoted?.[1];
+}
+
+/**
+ * F1: a process counts only when its own executable is claude, not when `claude`
+ * shows up anywhere on its command line.
+ *
+ * The old regex (`claude(\.exe)?\b` over the whole line, case-insensitive) matched a Git
+ * Bash shell reading `.claude/shell-snapshots/...`, a script under a `Temp/claude/`
+ * scratchpad, a PowerShell running `.claude/coordination/tile.ps1`, and a `nohup` wrapper
+ * around an unrelated command: 26 false matches out of 29 on this machine, every one a
+ * path or scratch directory with "claude" in it, none an actual claude process. The
+ * basename of the first token after the pid is the only field worth trusting here: real
+ * launches show up with and without a directory, with and without `.exe`, with and
+ * without quotes, and `claude(.exe)? login` is still recognisable inside them.
+ */
+function isClaudeExecutable(line: string): boolean {
+  const exe = executableOf(line);
+  if (!exe) return false;
+  const base = exe.split(/[\\/]/).pop() ?? exe;
+  return /^claude(\.exe)?$/i.test(base);
+}
+
+/**
  * The process table, pid first on every platform, or why reading it failed.
  *
  * `wmic` is deprecated and gone from newer Windows images (verified absent on this
@@ -83,7 +117,7 @@ export function watchedProcesses(
   const credentialsMtime = existsSync(credentialsPath) ? statSync(credentialsPath).mtimeMs : undefined;
 
   return lines
-    .filter((line) => /claude(\.exe)?\b/i.test(line))
+    .filter((line) => isClaudeExecutable(line))
     .map((line): FleetProcess | undefined => {
       const pidMatch = /^\s*(\d+)/.exec(line);
       const pid = pidMatch ? Number(pidMatch[1]) : NaN;

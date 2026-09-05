@@ -55,6 +55,44 @@ function findWardenLine(processList: string[]): string | undefined {
 }
 
 /**
+ * F4: a process still running one of the manifest's own files, whether or not it is
+ * the warden.
+ *
+ * On 2026-09-05 the cutover found no `conductor.py ... warden` line and completed, while
+ * `tile.ps1 -Watch -Gap 4 -Every 4` (the retired grid's window tiler, itself one of the
+ * files this cutover moves) was still running as pid 17728 and had to be killed by hand
+ * afterwards. The warden check alone only ever covered the one process that spawns the
+ * others; this covers every process naming a file the manifest is about to move, the
+ * tiler included.
+ */
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * A manifest name as its own token on a process line, not a substring of a longer one.
+ *
+ * `line.includes(name)` matched `go.py` inside `mongo.py` and `cargo.py` -- a real
+ * process nowhere near the manifest, refusing a cutover it had nothing to do with. The
+ * name has to be preceded by the start of the line, whitespace, a quote or a path
+ * separator, and followed by the end of the line, whitespace or a quote.
+ */
+function containsManifestName(line: string, name: string): boolean {
+  const boundary = new RegExp(`(?:^|[\\s"'/\\\\])${escapeRegExp(name)}(?:$|[\\s"'])`);
+  return boundary.test(line);
+}
+
+function findManifestProcessLine(
+  processList: string[], manifest: string[],
+): { line: string; file: string; pid?: string } | undefined {
+  for (const line of processList) {
+    const file = manifest.find((name) => containsManifestName(line, name));
+    if (file) return { line, file, pid: /^\s*(\d+)/.exec(line)?.[1] };
+  }
+  return undefined;
+}
+
+/**
  * Move the four old spawn files aside, or refuse.
  *
  * Refuses rather than moving nothing: a `--from` directory holding none of the four
@@ -85,6 +123,19 @@ export function runCutover(request: CutoverRequest, journal: CutoverJournal): Cu
     };
   }
 
+  // F4: a manifest file still running -- the retired grid's window tiler, say -- has to
+  // be stopped before it can be moved out from under itself, warden or no warden.
+  const manifestLine = findManifestProcessLine(request.processList, manifest);
+  if (manifestLine) {
+    return {
+      ok: false,
+      refusal: `${manifestLine.file} is still running`
+        + `${manifestLine.pid ? ` (pid ${manifestLine.pid})` : ''}: `
+        + `${manifestLine.line.trim()}; stop it before retiring the files it spawns from`,
+      moved: [],
+    };
+  }
+
   mkdirSync(request.retiredDir, { recursive: true });
   const moved: string[] = [];
   for (const name of manifest) {
@@ -98,6 +149,9 @@ export function runCutover(request: CutoverRequest, journal: CutoverJournal): Cu
     journal.append({ event: 'cutover.moved', actor: 'runner', file: name });
   }
 
-  journal.append({ event: 'cutover.completed', actor: 'runner', files: moved });
+  journal.append({
+    event: 'cutover.completed', actor: 'runner', files: moved,
+    processesChecked: request.processList.length,
+  });
   return { ok: true, moved };
 }

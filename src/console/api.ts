@@ -64,6 +64,12 @@ export function clearLane(target: string): Promise<{ ok: boolean }> {
   return call<{ ok: boolean }>('/clear', { method: 'POST', body: JSON.stringify(body) });
 }
 
+/** F3: retires one stale inbox ask (the console's Clear button on a dead-run entry).
+ *  The server checks staleness again before moving anything -- this call only asks. */
+export function retireAsk(key: string): Promise<{ ok: boolean }> {
+  return call<{ ok: boolean }>('/clear', { method: 'POST', body: JSON.stringify({ inboxKey: key }) });
+}
+
 /** X3: the ticket sheet's own read -- packet, provenance, and the not-yet-wired
  *  plan/PR/council/comment fields, all `null` rather than omitted. */
 export function getRun(id: string): Promise<RunDetail> {

@@ -35,6 +35,7 @@ function smallSnapshot(overrides: Partial<PrSnapshot> = {}): PrSnapshot {
     body: 'Fixes the retry loop.',
     files: ['src/x.ts'], diffText: '+line one', changedLines: 5,
     checks: { runId: 'run-1', headSha: 'head-1', conclusion: 'success' },
+    isDraft: false,
     ...overrides,
   };
 }
@@ -47,7 +48,8 @@ function fakeGh(snapshots: PrSnapshot[], overrides: Partial<GhWriter> = {}): GhR
       call += 1;
       return snapshot;
     },
-    async mergePr() { /* overridden per test when exercised */ },
+    async mergePr() { return { returncode: 0, stderr: '' }; /* overridden per test when exercised */ },
+    async readyPr() { return { returncode: 0, stderr: '' }; },
     async viewPrState() { return { prState: 'OPEN' }; },
     ...overrides,
   };
@@ -317,7 +319,7 @@ describe('forge gate', () => {
     let mergeCalled = false;
     const result = await forge(['gate', '--repo', REPO, '--pr', String(PR)], {
       councilGh: fakeGh([smallSnapshot({ body: bodyWithHandoff() })], {
-        async mergePr() { mergeCalled = true; },
+        async mergePr() { mergeCalled = true; return { returncode: 0, stderr: '' }; },
       }),
     });
     expect(result.code).toBe(0);
@@ -341,7 +343,7 @@ describe('forge gate', () => {
     let mergeCalls: { subject: string; body: string }[] = [];
     const result = await forge(['gate', '--repo', REPO, '--pr', String(PR), '--merge'], {
       councilGh: fakeGh([smallSnapshot({ body: bodyWithHandoff() })], {
-        async mergePr(_repo, _pr, subject, body) { mergeCalls.push({ subject, body }); },
+        async mergePr(_repo, _pr, subject, body) { mergeCalls.push({ subject, body }); return { returncode: 0, stderr: '' }; },
         async viewPrState() { return { prState: 'MERGED' }; },
       }),
     });
@@ -356,6 +358,61 @@ describe('forge gate', () => {
     expect(kinds).toContain('external.intent');
     expect(kinds).toContain('external.call');
     expect(kinds).toContain('external.complete');
+  });
+
+  /**
+   * F5: `forge gate --repo <repo> --pr 105 --merge` on 2026-09-05 at 01:17 printed only
+   * `merge unknown: <repo>#105` and exited 1, journaling `external.intent`,
+   * `external.call` and `external.unknown` for kind `pr-merge` with no reason. The PR
+   * was a draft, which `gh pr merge` refuses -- the gate never looked at `isDraft`.
+   */
+  it('F5: a merge decision on a draft PR marks it ready before ever calling mergePr', async () => {
+    await attestPass();
+    process.env['FORGE_COUNCIL_AUTOMERGE'] = REPO;
+    const calls: string[] = [];
+    const result = await forge(['gate', '--repo', REPO, '--pr', String(PR), '--merge'], {
+      councilGh: fakeGh([smallSnapshot({ body: bodyWithHandoff(), isDraft: true })], {
+        async readyPr() { calls.push('ready'); return { returncode: 0, stderr: '' }; },
+        async mergePr() { calls.push('merge'); return { returncode: 0, stderr: '' }; },
+        async viewPrState() { return { prState: 'MERGED' }; },
+      }),
+    });
+
+    expect(result.code).toBe(0);
+    expect(calls).toEqual(['ready', 'merge']);
+
+    const state = replay(join(home, 'fleet.jsonl'));
+    const rows = state.events.filter((e) => e.event.startsWith('external.'));
+    const readyRows = rows.filter((e) => e['kind'] === 'pr-ready').map((e) => e.event);
+    const mergeRows = rows.filter((e) => e['kind'] === 'pr-merge').map((e) => e.event);
+    expect(readyRows).toEqual(['external.intent', 'external.call', 'external.complete']);
+    expect(mergeRows).toEqual(['external.intent', 'external.call', 'external.complete']);
+    // The ready cycle has to finish before the merge cycle starts, not merely appear
+    // somewhere in the same journal.
+    expect(rows.indexOf(rows.find((e) => e['kind'] === 'pr-ready' && e.event === 'external.complete')!))
+      .toBeLessThan(rows.indexOf(rows.find((e) => e['kind'] === 'pr-merge' && e.event === 'external.intent')!));
+  });
+
+  it('F5: a merge call whose stderr names the draft refusal produces an external.unknown row carrying it', async () => {
+    await attestPass();
+    process.env['FORGE_COUNCIL_AUTOMERGE'] = REPO;
+    const draftStderr = 'GraphQL: Pull request is in draft state (mergePullRequest)';
+    const result = await forge(['gate', '--repo', REPO, '--pr', String(PR), '--merge'], {
+      councilGh: fakeGh([smallSnapshot({ body: bodyWithHandoff() })], {
+        async mergePr() { return { returncode: 1, stderr: draftStderr }; },
+        async viewPrState() { return { prState: 'OPEN' }; },
+      }),
+    });
+
+    expect(result.code).toBe(1);
+    expect(result.lines.join(' ')).toContain('draft state');
+    expect(result.lines.join(' ')).toMatch(/exit 1/);
+
+    const state = replay(join(home, 'fleet.jsonl'));
+    const unknownRow = state.events.find((e) => e.event === 'external.unknown' && e['kind'] === 'pr-merge');
+    expect(unknownRow).toBeTruthy();
+    expect(unknownRow?.['exitCode']).toBe(1);
+    expect(String(unknownRow?.['stderr'])).toContain('draft state');
   });
 });
 

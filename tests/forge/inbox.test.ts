@@ -11,13 +11,13 @@
  * workers that hit the same wall, must produce one entry: an inbox that grows a line per
  * retry is an inbox nobody reads, which is the same as no inbox.
  */
-import { mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { Inbox, askKey } from '../../src/forge/inbox.js';
+import { Inbox, askKey, isAskStale, projectStaleness } from '../../src/forge/inbox.js';
 
 let dir: string;
 let inbox: Inbox;
@@ -182,5 +182,68 @@ describe('code-review finding: deliverAnswer targets the goal id, not the segmen
     await deliverAnswer(entry, entry.key, 'staging');
 
     expect(new RunInbox('no-goal-run').unread()).toHaveLength(1);
+  });
+});
+
+/**
+ * F3: an ask whose every run is dead stays open with nothing to resume.
+ *
+ * `~/.forge/inbox/5ab5510a66092343.json` on 2026-09-04 was "Probe: continue to the end?"
+ * asked by three runs, all long gone by the time the console still showed it as the one
+ * open ask with Yes/No/free-text controls. Answering it would have resumed nothing.
+ */
+describe('F3: a stale ask has no live run left', () => {
+  const registryOf = (liveRuns: string[]) => (run: string): boolean => liveRuns.includes(run);
+
+  // A `blocker` merges across runs by wording alone (unlike a `question`, which B.3.7
+  // scopes per run), so three runs hitting the same wall land in one entry's `runs` --
+  // the shape the real `5ab5510a66092343.json` entry was in on 2026-09-04.
+  const PROBE = { ...QUESTION, kind: 'blocker' as const, question: 'Probe: continue to the end?' };
+
+  it('is stale when none of its runs has a registry row', () => {
+    const entry = inbox.raise({ ...PROBE, run: 'forge-live-probe' });
+    inbox.raise({ ...PROBE, run: 'forge-live-probe-3' });
+    inbox.raise({ ...PROBE, run: 'forge-live-probe-5' });
+    const merged = inbox.entry(entry.key)!;
+    expect(merged.runs).toEqual(['forge-live-probe', 'forge-live-probe-3', 'forge-live-probe-5']);
+    expect(isAskStale(merged, registryOf([]))).toBe(true);
+  });
+
+  it('is not stale while at least one of its runs still has a registry row', () => {
+    const entry = inbox.raise({ ...PROBE, run: 'forge-live-probe' });
+    inbox.raise({ ...PROBE, run: 'forge-live-probe-3' });
+    const merged = inbox.entry(entry.key)!;
+    expect(isAskStale(merged, registryOf(['forge-live-probe-3']))).toBe(false);
+  });
+
+  it('an already-answered entry is never marked stale, even with no live runs', () => {
+    const entry = inbox.raise(QUESTION);
+    inbox.answer(entry.key, 'dev');
+    expect(isAskStale(inbox.entry(entry.key)!, registryOf([]))).toBe(false);
+  });
+
+  it('projectStaleness adds stale and a one-line reason, and leaves a live one untouched', () => {
+    const deadEntry = inbox.raise({ ...QUESTION, run: 'forge-live-probe' });
+    const liveEntry = inbox.raise({ run: 'forge-live-probe-3', question: 'a different question' });
+    const projected = projectStaleness(inbox.open(), registryOf(['forge-live-probe-3']));
+    const dead = projected.find((e) => e.key === deadEntry.key)!;
+    const live = projected.find((e) => e.key === liveEntry.key)!;
+    expect(dead.stale).toBe(true);
+    expect(dead.staleReason).toMatch(/forge-live-probe/);
+    expect(live.stale).toBe(false);
+    expect(live.staleReason).toBeUndefined();
+  });
+
+  it('retire moves the file under retired/ and drops it from open() and all()', () => {
+    const entry = inbox.raise(QUESTION);
+    const retired = inbox.retire(entry.key);
+    expect(retired?.key).toBe(entry.key);
+    expect(inbox.open()).toHaveLength(0);
+    expect(inbox.all()).toHaveLength(0);
+    expect(existsSync(join(dir, '.forge', 'inbox', 'retired', `${entry.key}.json`))).toBe(true);
+  });
+
+  it('retire on a key nobody asked returns undefined and moves nothing', () => {
+    expect(inbox.retire('nope')).toBeUndefined();
   });
 });

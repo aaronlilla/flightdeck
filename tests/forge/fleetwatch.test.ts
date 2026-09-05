@@ -27,3 +27,49 @@ describe('watchedProcesses, given an injected probe', () => {
     expect(result).toEqual({ ok: false, reason: 'powershell timed out' });
   });
 });
+
+/**
+ * F1: `watchedProcesses` matched paths, not executables.
+ *
+ * The old filter, `claude(\.exe)?\b` over the whole line, matched anything with "claude"
+ * in it: a Git Bash shell reading a `.claude/shell-snapshots/` file, a script under a
+ * `Temp/claude/` scratchpad, a PowerShell running `.claude/coordination/tile.ps1`, a
+ * `nohup` wrapper. Shapes below are genericised from a real 444-line process table
+ * captured on 2026-09-05, which had 29 lines matching that regex and only 3 real
+ * `claude.exe` processes.
+ */
+describe('watchedProcesses: only the executable is claude, not any path containing it', () => {
+  const noise = [
+    '17728 "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -File "C:\\<workspace>\\.claude\\coordination\\tile.ps1" -Watch',
+    '51000 "C:\\Program Files\\Git\\usr\\bin\\bash.exe" C:/Users/<user>/AppData/Local/Temp/claude/workspace-id/abc/scratchpad/wait-and-run.sh',
+    '51072 "C:\\Program Files\\Git\\bin\\bash.exe" -c "source /c/Users/<user>/.claude/shell-snapshots/snapshot-bash-1-a.sh"',
+    '34812 "C:\\Program Files\\Git\\usr\\bin\\nohup.exe" python C:/<workspace>/tools/codex_call.py --label run',
+  ];
+  const realClaude = [
+    '35256 C:\\Users\\<user>\\.local\\bin\\claude.exe --dangerously-skip-permissions',
+    '50664 "C:\\Users\\<user>\\.local\\bin\\claude.exe"  "--chrome-native-host"',
+    '31120 C:\\Users\\<user>\\.local\\bin\\claude.exe --dangerously-skip-permissions',
+  ];
+  const posixClaude = '9001 /usr/local/bin/claude -p "some prompt"';
+  const loginClaude = '9002 C:\\Users\\<user>\\.local\\bin\\claude.exe login';
+
+  it('drops every noise line and keeps only the real claude executables', () => {
+    const result = watchedProcesses({
+      ok: true, lines: [...noise, ...realClaude, posixClaude],
+    });
+    const processes = result as Array<{ pid: number; isLogin: boolean }>;
+    expect(processes.map((p) => p.pid).sort((a, b) => a - b)).toEqual([9001, 31120, 35256, 50664]);
+  });
+
+  it('still recognises a quoted claude.exe running login, flagged isLogin', () => {
+    const result = watchedProcesses({ ok: true, lines: [loginClaude] });
+    const processes = result as Array<{ pid: number; isLogin: boolean }>;
+    expect(processes).toHaveLength(1);
+    expect(processes[0]).toMatchObject({ pid: 9002, isLogin: true });
+  });
+
+  it('never matches a path segment or scratchpad file merely containing "claude"', () => {
+    const result = watchedProcesses({ ok: true, lines: noise });
+    expect(result).toEqual([]);
+  });
+});

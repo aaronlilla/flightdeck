@@ -22,7 +22,7 @@ import type { QueryFn } from '../adapter/engine.js';
 import { BlockerBoard } from './blockers.js';
 import { readAttestation, writeAttestation } from './council/attest.js';
 import { buildSquashMergeCall } from './council/gate.js';
-import { planMergeIntent, recordMergeCall, reconcileMerge } from './council/externalize.js';
+import { planMergeIntent, planReadyIntent, recordMergeCall, reconcileMerge } from './council/externalize.js';
 import { REAL_GH, type GhReader, type GhWriter } from './council/gh.js';
 import { findHaipingHandoff } from './council/handoffScan.js';
 import { runCouncilRound } from './council/orchestrate.js';
@@ -42,7 +42,7 @@ import { resolvePlanProvider } from './intake/reasoner.js';
 import { initialWatermark } from './intake/watermark.js';
 import { readProcessList, watchedProcesses } from './fleetwatch.js';
 import { Gotchas } from './gotcha.js';
-import { Inbox } from './inbox.js';
+import { Inbox, isAskStale } from './inbox.js';
 import { replay, Journal, JournalCache } from './journal.js';
 import { checkLaunch, launchEnv, loginInFlight, pinnedRuntime, runtimeVersion } from './launcher.js';
 import { assess, LivenessSupervisor } from './liveness.js';
@@ -287,7 +287,15 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         money(lane.cost_usd ?? 0).padStart(9),
         lane.needs_aaron ? 'NEEDS AARON' : (lane.verdict ?? 'running'),
       ].join(' '));
-      const waiting = inbox.open().length;
+      const openAsks = inbox.open();
+      const waiting = openAsks.length;
+      // F3: none of an ask's runs still having a registry row means answering it resumes
+      // nothing. Counted separately from `waiting` rather than dropped from it: a stale
+      // ask is still open until `forge clear --all` retires it, and the count is what
+      // says the "1 waiting" on screen is not actually worth Aaron's time.
+      const stale = openAsks.filter(
+        (entry) => isAskStale(entry, (run) => Boolean(statusRegistry.get(run))),
+      ).length;
       // An idle fleet says one thing and stops. Appending "inbox: 0 waiting" to it made
       // "nothing is running" impossible to say, which is the answer a person most wants.
       if (!rows.length && !waiting && !state.torn && !stuckRows.length) {
@@ -296,7 +304,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       if (state.torn) {
         rows.push(`journal: ${state.torn} torn line(s), which is a crash somebody should read`);
       }
-      rows.push(`inbox: ${waiting} waiting`);
+      rows.push(`inbox: ${waiting} waiting${stale ? ` (${stale} stale)` : ''}`);
       return { code: 0, lines: [...stuckRows, ...rows] };
     }
 
@@ -709,7 +717,37 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       if (!slug) return { code: 2, lines: ['forge clear needs a lane or --all'] };
       if (slug === '--all') {
         clearKillSwitch(killSwitchPath());
-        return { code: 0, lines: ['kill switch cleared; forge run may start again'] };
+        // F3: an ask whose every run is gone stays open forever, with nothing left to
+        // resume if it were answered. `--all` retires each one under `~/.forge/inbox/
+        // retired/` rather than deleting it, and journals `inbox.retired` with the key
+        // and the runs that asked it, so the question survives even once it is off the
+        // open list.
+        const clearRegistry = new Registry(registryDir());
+        const hasRegistryRow = (run: string): boolean => Boolean(clearRegistry.get(run));
+        const staleKeys = inbox.open()
+          .filter((entry) => isAskStale(entry, hasRegistryRow))
+          .map((entry) => entry.key);
+        let retired = 0;
+        for (const key of staleKeys) {
+          const entry = inbox.retire(key);
+          if (!entry) continue;
+          retired += 1;
+          const retireJournal = new Journal(journalPath());
+          try {
+            retireJournal.append({ event: 'inbox.retired', actor: 'forge', key, runs: entry.runs });
+          } finally {
+            retireJournal.close();
+          }
+        }
+        return {
+          code: 0,
+          lines: [
+            'kill switch cleared; forge run may start again',
+            retired
+              ? `retired ${retired} stale inbox ask${retired === 1 ? '' : 's'}`
+              : 'no stale inbox asks found',
+          ],
+        };
       }
       if (slug === '--stale') {
         // Item 4, 2026-09-05: a lane file outlives the chain it describes -- `forge run`
@@ -1100,6 +1138,40 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
 
       const gateJournal = new Journal(journalPath());
       try {
+        // F5: `gh pr merge` refuses outright on a draft PR and nothing here ever read
+        // `isDraft` to see it coming. A passing gate is by construction what makes a
+        // draft ready, so a merge decision on a draft marks it ready first, journaled
+        // as its own external.intent/external.call of kind pr-ready.
+        if (snapshot.isDraft) {
+          let readyWrite = planReadyIntent({ repo, pr, headSha: snapshot.headSha });
+          gateJournal.append({
+            event: 'external.intent', actor: 'council', kind: readyWrite.kind,
+            idempotencyKey: readyWrite.idempotencyKey,
+          });
+          readyWrite = recordMergeCall(readyWrite);
+          gateJournal.append({
+            event: 'external.call', actor: 'council', kind: readyWrite.kind,
+            idempotencyKey: readyWrite.idempotencyKey,
+          });
+          const readyResult = await gh.readyPr(repo, pr);
+          if (readyResult.returncode !== 0) {
+            const stderr = readyResult.stderr.slice(0, 300);
+            gateJournal.append({
+              event: 'external.unknown', actor: 'council', kind: readyWrite.kind,
+              idempotencyKey: readyWrite.idempotencyKey, state: 'unknown',
+              exitCode: readyResult.returncode, stderr,
+            });
+            return {
+              code: 1,
+              lines: [`ready unknown: ${repo}#${pr} (exit ${readyResult.returncode}): ${stderr}`],
+            };
+          }
+          gateJournal.append({
+            event: 'external.complete', actor: 'council', kind: readyWrite.kind,
+            idempotencyKey: readyWrite.idempotencyKey,
+          });
+        }
+
         const subject = `${snapshot.title} (#${pr})`;
         const body = redactPrBody(snapshot.body);
         const call = buildSquashMergeCall({ commits: [], subject, body });
@@ -1113,18 +1185,25 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         gateJournal.append({
           event: 'external.call', actor: 'council', kind: write.kind, idempotencyKey: write.idempotencyKey,
         });
-        await gh.mergePr(repo, pr, call.subject, call.body);
+        const mergeResult = await gh.mergePr(repo, pr, call.subject, call.body);
 
         const view = await gh.viewPrState(repo, pr);
         write = reconcileMerge(write, view);
+        // F5: an unknown outcome used to carry nothing beyond the word "unknown" -- the
+        // exit code and (truncated) stderr are what tell the operator why, rather than
+        // sending them back to read the raw gh call by hand.
+        const mergeStderr = mergeResult.stderr.slice(0, 300);
         gateJournal.append({
           event: write.state === 'complete' ? 'external.complete' : 'external.unknown',
           actor: 'council', kind: write.kind, idempotencyKey: write.idempotencyKey, state: write.state,
+          ...(write.state === 'unknown' ? { exitCode: mergeResult.returncode, stderr: mergeStderr } : {}),
         });
 
         return {
           code: write.state === 'complete' ? 0 : 1,
-          lines: [`merge ${write.state}: ${repo}#${pr}`],
+          lines: [write.state === 'complete'
+            ? `merge ${write.state}: ${repo}#${pr}`
+            : `merge ${write.state}: ${repo}#${pr} (exit ${mergeResult.returncode}): ${mergeStderr}`],
         };
       } finally {
         gateJournal.close();
