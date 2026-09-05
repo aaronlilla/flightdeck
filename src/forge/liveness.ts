@@ -68,6 +68,16 @@ export interface FleetProcess {
   pid: number;
   /** True for a `claude login` process; every other watched process is a worker. */
   isLogin: boolean;
+  /**
+   * How `fleetwatch.ts` classified this process from its command line. `worker` and
+   * `login` are the only kinds `assess` reads a signal from; `native-host` and
+   * `interactive` are listed for a caller to display and are never assessed, no matter
+   * what `sessionFileMtime` or `credentialsMtime` they carry. Optional so a `FleetProcess`
+   * built before this field existed (every existing specimen with only `isLogin` set)
+   * keeps working exactly as before: `assess` falls back to `isLogin` when `kind` is
+   * absent.
+   */
+  kind?: 'login' | 'worker' | 'native-host' | 'interactive';
   /** When the login's credentials file was last written, for a login process. */
   credentialsMtime?: number;
   /** When this process's session file was last written, for a worker process. */
@@ -184,7 +194,14 @@ export function assess(input: LivenessInput, thresholds: LivenessThresholds = DE
     });
   } else {
     for (const proc of input.fleet) {
-      if (proc.isLogin) {
+      // A `kind` of `native-host` or `interactive` means fleetwatch.ts has already
+      // decided this process is not the fleet's to watch (2026-09-05: an interactive
+      // terminal or the Chrome extension's native host, neither with a fleet session
+      // file that can ever go stale). No `kind` at all is every specimen and reader
+      // built before this field existed, which falls back to the old `isLogin` split.
+      const kind = proc.kind ?? (proc.isLogin ? 'login' : 'worker');
+      if (kind === 'native-host' || kind === 'interactive') continue;
+      if (kind === 'login') {
         if (proc.credentialsMtime === undefined) continue;
         const stuckFor = input.now - proc.credentialsMtime;
         if (stuckFor >= thresholds.loginGraceMs) {

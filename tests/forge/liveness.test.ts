@@ -224,6 +224,68 @@ describe('the login-stuck signal', () => {
   });
 });
 
+/**
+ * The 2026-09-05 escape: three of Aaron's own processes read `STUCK stale-session`
+ * forever, because `watchedProcesses` handed liveness two interactive terminals and the
+ * Chrome extension's native host shaped exactly like real fleet workers. `assess` now
+ * reads a fleet process's `kind`: only `worker` and `login` feed a signal, and
+ * `native-host` and `interactive` are silently skipped no matter what mtime they carry.
+ */
+describe('assess only reads a signal from a worker or a login process', () => {
+  it('never trips stale-session for an interactive terminal, even with a stale sessionFileMtime', () => {
+    const trips = assess(baseInput({
+      fleet: [{
+        pid: 35256, isLogin: false, kind: 'interactive',
+        sessionFileMtime: NOW - DEFAULT_THRESHOLDS.staleSessionMs,
+      }],
+    }));
+    expect(trips).toHaveLength(0);
+  });
+
+  it('never trips stale-session for the Chrome extension native host', () => {
+    const trips = assess(baseInput({
+      fleet: [{
+        pid: 50664, isLogin: false, kind: 'native-host',
+        sessionFileMtime: NOW - DEFAULT_THRESHOLDS.staleSessionMs,
+      }],
+    }));
+    expect(trips).toHaveLength(0);
+  });
+
+  it('still trips stale-session for a real worker', () => {
+    const trips = assess(baseInput({
+      fleet: [{
+        pid: 40200, isLogin: false, kind: 'worker',
+        sessionFileMtime: NOW - DEFAULT_THRESHOLDS.staleSessionMs,
+      }],
+    }));
+    expect(trips.find((t) => t.signal === 'stale-session')?.key).toBe('pid:40200');
+  });
+
+  it('still trips login-stuck for a real login process', () => {
+    const trips = assess(baseInput({
+      fleet: [{
+        pid: 9002, isLogin: true, kind: 'login',
+        credentialsMtime: NOW - DEFAULT_THRESHOLDS.loginGraceMs,
+      }],
+    }));
+    expect(trips.find((t) => t.signal === 'login-stuck')?.key).toBe('pid:9002');
+  });
+
+  it('reads the full 2026-09-05 fleet snapshot as clean: no STUCK row for either interactive terminal or the native host', () => {
+    const trips = assess(baseInput({
+      fleet: [
+        { pid: 35256, isLogin: false, kind: 'interactive', sessionFileMtime: NOW - DEFAULT_THRESHOLDS.staleSessionMs },
+        { pid: 50664, isLogin: false, kind: 'native-host', sessionFileMtime: NOW - DEFAULT_THRESHOLDS.staleSessionMs },
+        { pid: 31120, isLogin: false, kind: 'interactive', sessionFileMtime: NOW - DEFAULT_THRESHOLDS.staleSessionMs },
+        { pid: 40200, isLogin: false, kind: 'worker', sessionFileMtime: NOW - DEFAULT_THRESHOLDS.staleSessionMs },
+        { pid: 9002, isLogin: true, kind: 'login', credentialsMtime: NOW - DEFAULT_THRESHOLDS.loginGraceMs },
+      ],
+    }));
+    expect(trips.map((t) => t.key).sort()).toEqual(['pid:40200', 'pid:9002']);
+  });
+});
+
 describe('a failed fleet probe', () => {
   it('trips fleet-unknown with the reason rather than reading as zero stale sessions', () => {
     const trips = assess(baseInput({ fleet: { ok: false, reason: 'powershell timed out' } }));
