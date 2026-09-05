@@ -52,6 +52,10 @@ export function recordMergeCall(intent: ExternalWrite): ExternalWrite {
 
 export interface GhPrView {
   prState: 'MERGED' | 'OPEN' | 'CLOSED';
+  /** P5.7: the merge commit's sha, when GitHub reports one -- read by `forge gate`'s
+   *  caller to journal `chain.merged`'s own merge sha. Absent on anything but a merged
+   *  PR, and never read by `reconcileMerge` itself, which only ever looks at `prState`. */
+  mergeCommitOid?: string;
 }
 
 /**

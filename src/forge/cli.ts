@@ -42,7 +42,7 @@ import type { FakePollFeed } from './intake/poller.js';
 import { planFromPacket } from './intake/planner.js';
 import { parseRepoMap } from './intake/repoRoute.js';
 import { resolvePlanProvider } from './intake/reasoner.js';
-import { initialWatermark } from './intake/watermark.js';
+import { readWatermark, writeWatermark } from './intake/watermarkStore.js';
 import { readProcessList, watchedProcesses } from './fleetwatch.js';
 import { Gotchas } from './gotcha.js';
 import { Inbox, isAskStale } from './inbox.js';
@@ -66,10 +66,18 @@ import { Breaker, clearKillSwitch, Fleet, Lanes, readKillSwitch } from './superv
 import { WardenActuator } from './warden.js';
 import { WardenTick, type WardenTickRun } from './warden-tick.js';
 import { Worker, type EngineLike, type WorkerConfig } from './worker.js';
+import { chainStatusLines, foldChainState, runChainTick } from './chain.js';
+import { readChainEnv } from './chain-env.js';
+import { buildChainDeps } from './chain-wire.js';
 
 export interface CliResult {
   code: number;
   lines: string[];
+  /** P5.7: structured data a programmatic caller (the chain) reads instead of parsing
+   *  `lines`. Additive only -- `council` sets `verdict`/`attestationPath` on a clean
+   *  round, `gate` sets `merged`/`mergeSha`; every other command leaves this unset, and
+   *  no existing caller reads it, so nothing about `lines`' own text changes. */
+  data?: Record<string, unknown>;
 }
 
 export interface ForgeDeps {
@@ -105,6 +113,10 @@ export interface ForgeDeps {
    *  `FORGE_JIRA_SITE`/`FORGE_JIRA_EMAIL`/`FORGE_JIRA_TOKEN` when all three are set;
    *  every specimen injects a fake here instead. */
   jiraWrite?: JiraWriteClient;
+  /** P5.7: `forge council` forces the Codex lane's own policy check to `'on'` for this
+   *  round and asks `runCouncilRound` to run it regardless of diff size or path -- the
+   *  chain's `FORGE_COUNCIL_CODEX=always` sets this on every chain council call. */
+  forceCodexLane?: boolean;
 }
 
 /** Item 4, 2026-09-05: how old a lane's own file has to be, with no live registry row
@@ -162,23 +174,8 @@ function fleetNoticeLine(fleet: Awaited<ReturnType<typeof watchedProcesses>>): s
  * on-disk store for it (every specimen kept its watermark in memory for the one call
  * under test), so this is the first place it survives a process exit.
  */
-function watermarkPath(source: string): string {
-  return join(forgeHome(), 'intake', `${source}.watermark.json`);
-}
-
-function readWatermark(source: Parameters<typeof initialWatermark>[0]): ReturnType<typeof initialWatermark> {
-  try {
-    return JSON.parse(readFileSync(watermarkPath(source), 'utf8'));
-  } catch {
-    return initialWatermark(source);
-  }
-}
-
-function writeWatermark(source: string, mark: ReturnType<typeof initialWatermark>): void {
-  const dir = join(forgeHome(), 'intake');
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(watermarkPath(source), JSON.stringify(mark), 'utf8');
-}
+// Moved to `intake/watermarkStore.ts` (P5.7) so `chain-wire.ts` reads and writes the
+// exact same files rather than a second, divergent copy of this logic.
 
 function snapshotRuns(
   state: ReturnType<typeof replay>,
@@ -344,7 +341,11 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       }
       rows.push(`inbox: ${waiting} waiting${stale ? ` (${stale} stale)` : ''}`);
       if (fleetNotice) rows.push(fleetNotice);
-      return { code: 0, lines: [...stuckRows, ...rows] };
+      // P5.7: one row per packet the chain has ever seen, alongside the lane rows --
+      // present whether or not FORGE_CHAIN is on today, since a packet already in
+      // flight from an earlier `forge up` still deserves to show here.
+      const chainRows = chainStatusLines(foldChainState(state.events));
+      return { code: 0, lines: [...stuckRows, ...rows, ...chainRows] };
     }
 
     case 'up': {
@@ -463,6 +464,32 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         }
       }, 30_000);
       tick.unref();
+
+      // P5.7: `FORGE_CHAIN=1` turns this on; off, `forge up` behaves exactly as it did
+      // before this stream. Its own timer, at `FORGE_CHAIN_POLL_S` (default 300s), so a
+      // slow intake poll never competes with liveness/Warden's 30s cadence above.
+      const chainEnv = readChainEnv();
+      let chainLine = '';
+      if (chainEnv.enabled) {
+        const chainJournal = new Journal(journalPath());
+        const chainDeps = buildChainDeps(chainEnv, fleetConfigDirChoice().dir, deps);
+        const chainTick = setInterval(() => {
+          void (async () => {
+            try {
+              const chainState = foldChainState(replay(journalPath()).events);
+              await runChainTick(chainDeps, chainState);
+            } catch (error) {
+              chainJournal.append({
+                event: 'chain.tick-error', actor: 'chain',
+                message: error instanceof Error ? error.message : String(error),
+              });
+            }
+          })();
+        }, chainEnv.pollSeconds * 1000);
+        chainTick.unref();
+        chainLine = `chain on, polling every ${chainEnv.pollSeconds}s`;
+      }
+
       return {
         code: 0,
         lines: [
@@ -471,6 +498,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           state.torn ? `${state.torn} torn journal line(s) survived and were skipped` : '',
           ...reconcileLines,
           `inbox: ${inbox.open().length} waiting`,
+          chainLine,
         ].filter(Boolean),
       };
     }
@@ -1033,7 +1061,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         const councilRun = `${repo}#${pr}`;
         const roles = {
           lensRunner: reasonerLensRunner(reasoner, [ruleVerdict], councilRun),
-          codexLane: codexLaneFor(policy),
+          codexLane: codexLaneFor(deps.forceCodexLane ? { ...policy, codex: 'on' } : policy),
           judge: reasonerJudge(reasoner, councilRun),
         };
 
@@ -1050,6 +1078,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
             {
               brief: snapshot.body, diffSummary: snapshot.diffText, changedLines: snapshot.changedLines,
               paths: snapshot.files, ci: { runId: snapshot.checks.runId, headSha: snapshot.checks.headSha },
+              ...(deps.forceCodexLane ? { forceCodex: true } : {}),
             },
             roles,
           );
@@ -1103,6 +1132,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
               `verdict: ${round.verdict}`,
               ...(findingLines.length ? findingLines : ['no deciding findings']),
             ],
+            data: { verdict: round.verdict },
           };
         }
 
@@ -1127,6 +1157,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
             ...(findingLines.length ? findingLines : ['no deciding findings']),
             `attestation: ${attPath}`,
           ],
+          data: { verdict: round.verdict, attestationPath: attPath },
         };
       } finally {
         councilJournal.close();
@@ -1197,6 +1228,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         return {
           code: 0,
           lines: [`gate: PASS -- ${repo}#${pr} at ${snapshot.headSha} clears (${attestation.verdict})`],
+          data: { merged: false },
         };
       }
 
@@ -1209,6 +1241,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         return {
           code: 3,
           lines: [`${repo} is not on council.autoMerge: leaving the draft PR for Joe`, JSON.stringify(joe)],
+          data: { merged: false },
         };
       }
 
@@ -1309,7 +1342,14 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           }
         }
 
-        return { code: write.state === 'complete' ? 0 : 1, lines };
+        return {
+          code: write.state === 'complete' ? 0 : 1,
+          lines,
+          data: {
+            merged: write.state === 'complete',
+            ...(view.mergeCommitOid ? { mergeSha: view.mergeCommitOid } : {}),
+          },
+        };
       } finally {
         gateJournal.close();
       }

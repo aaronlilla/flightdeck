@@ -18,6 +18,11 @@ export interface CouncilRoundInput {
   changedLines: number;
   paths: string[];
   ci: { runId: string; headSha: string };
+  /** P5.7: the chain's `FORGE_COUNCIL_CODEX=always` forces the Codex lane for this round
+   *  regardless of what `diffRisk` would have decided on size and path alone. The lane
+   *  itself still runs (or no-ops) per `codexLaneFor`'s own policy check -- this only
+   *  overrides whether the round asks it to run at all. */
+  forceCodex?: boolean;
 }
 
 export interface CouncilRoles {
@@ -43,7 +48,7 @@ export async function runCouncilRound(input: CouncilRoundInput, roles: CouncilRo
     lensNames.map((lens) => roles.lensRunner.run({ lens, brief: input.brief, diffSummary: input.diffSummary })),
   );
 
-  const codexResult = risk.needsCodex
+  const codexResult = (input.forceCodex || risk.needsCodex)
     ? await roles.codexLane.run({ brief: input.brief, diffSummary: input.diffSummary })
     : { ran: false, findings: [] };
 
