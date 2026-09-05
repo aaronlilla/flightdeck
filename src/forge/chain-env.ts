@@ -57,7 +57,7 @@ function parseCommaList(raw: string | undefined): string[] {
 
 /** C1: `FORGE_WORKTREE_SHELL` is a shell binary plus its flags, whitespace separated
  *  (e.g. `/bin/bash -c`), never comma-separated like the lists above. */
-function parseShellPrefix(raw: string | undefined): string[] {
+export function parseShellPrefix(raw: string | undefined): string[] {
   if (!raw || raw.trim().length === 0) return [];
   return raw.split(/\s+/).filter(Boolean);
 }

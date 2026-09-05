@@ -18,6 +18,7 @@
 import { tierOfBrief, contextFor, effortFor, modelFor, modelIdFor, turnsFor } from './policy.js';
 import { Journal, replay } from './journal.js';
 import { run as execRun, type RunRequest, type RunResult } from './exec.js';
+import { parseShellPrefix } from './chain-env.js';
 import type { Inbox } from './inbox.js';
 import { asRunId, type Actuator } from './contracts.js';
 import { checkConformance, isRateLimitMessage, WindowGate } from './governor.js';
@@ -151,6 +152,13 @@ export interface WorkerConfig {
   /** Runs a brief's declared verification commands. Overridable so a specimen can record
    *  calls instead of spawning a real process; defaults to `exec.ts`'s own `run`. */
   exec?: (request: RunRequest) => Promise<RunResult>;
+  /** The shell a brief's verification command runs through. A verify command routinely
+   *  chains steps with `&&` and calls `npm` (a `.cmd` shim on Windows), so it must go
+   *  through a shell or it dies with `spawn npm ENOENT` -- the failure that parked the
+   *  first live chain run whose own command passed by hand. Defaults to
+   *  `FORGE_WORKTREE_SHELL` (a prefix such as a bash path plus `-c`), else the platform's
+   *  own shell. Overridable so a specimen records what it was handed. */
+  verifyShell?: boolean | string[];
   /** Called the moment a session in this chain has opened, so a caller (the registry, in
    *  cli.ts's `run`) can persist the session id before a crash could ever lose it. */
   onSessionStarted?: (run: string, sessionId: string, model: string) => void;
@@ -642,13 +650,24 @@ export class Worker {
     }
 
     const exec = this.config.exec ?? execRun;
+    // A verify command that chains steps with `&&` and calls `npm` (a `.cmd` shim on
+    // Windows) dies with `spawn npm ENOENT` when exec'd as a split argv, which parked the
+    // first live chain run whose own command passed by hand. Route it through a shell only
+    // when one is named -- `FORGE_WORKTREE_SHELL`, the same prefix the chain's worktree
+    // setup reads. With none named (every unit run, and Linux CI), keep the direct exec:
+    // splitting an already-shell-quoted line and rejoining it under `/bin/sh` mangles a
+    // command like `node -e process.exit(0)`, so shell mode is opt-in, not the default.
+    const verifyShell: boolean | string[] =
+      this.config.verifyShell ?? parseShellPrefix(process.env['FORGE_WORKTREE_SHELL']);
+    const useShell = Array.isArray(verifyShell) ? verifyShell.length > 0 : verifyShell;
     const attempts = 3;
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       const outcomes: VerificationOutcome[] = [];
       for (const command of commands) {
-        const result = await exec({
-          argv: command.split(/\s+/).filter(Boolean), cwd: this.config.cwd, owner: runName, cls: 'verify',
-        });
+        const base = { cwd: this.config.cwd, owner: runName, cls: 'verify' as const };
+        const result = useShell
+          ? await exec({ ...base, argv: [command], shell: verifyShell })
+          : await exec({ ...base, argv: command.split(/\s+/).filter(Boolean) });
         outcomes.push({ command, ok: result.ok, tail: result.tail });
       }
       const failed = outcomes.filter((outcome) => !outcome.ok);
