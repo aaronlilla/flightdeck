@@ -166,11 +166,11 @@ const RESUME_PROMPT = [
  * row is cleared either way: this is reconciliation, not a retry loop.
  */
 export async function reconcileRegistry(
-  registry: Registry, engine: EngineLike, journal: Journal,
+  registry: Registry, engine: EngineLike, journal: Journal, alive: (pid: number) => boolean = processAlive,
 ): Promise<ReconcileOutcome[]> {
   const outcomes: ReconcileOutcome[] = [];
   for (const record of registry.all()) {
-    if (processAlive(record.pid)) continue;
+    if (alive(record.pid)) continue;
 
     if (!record.sessionId) {
       outcomes.push({ goal: record.goal, ok: false, reason: 'no session id was recorded before it stopped' });

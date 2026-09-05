@@ -136,7 +136,7 @@ describe('forge status', () => {
     lanes().put('alpha', {
       column: 'c', model: 'claude-sonnet-5', context: 42_000, cost_usd: 1.25,
     });
-    const result = await forge(['status']);
+    const result = await forge(['status'], { processes: () => [] });
     const text = result.lines.join('\n');
     expect(text).toContain('claude-sonnet-5');
     expect(text).toContain('42000');
@@ -145,11 +145,37 @@ describe('forge status', () => {
 
   it('says a lane needs Aaron rather than showing it as running', async () => {
     lanes().put('flappy', { column: 'c', needs_aaron: 'three bad starts' });
-    expect((await forge(['status'])).lines.join('\n')).toContain('NEEDS AARON');
+    expect((await forge(['status'], { processes: () => [] })).lines.join('\n')).toContain('NEEDS AARON');
   });
 
   it('says so when nothing is running', async () => {
-    expect((await forge(['status'])).lines).toEqual(['nothing is running']);
+    expect((await forge(['status'], { processes: () => [] })).lines).toEqual(['nothing is running']);
+  });
+
+  /**
+   * The actual incident: a CI runner's process probe outlasted vitest's 5-second test
+   * timeout, and no specimen here had any way to avoid it -- `status` always called the
+   * real reader with no override. `deps.processes` fixes that; this specimen proves the
+   * fix is wired, not just declared, by counting calls on a fake reader rather than
+   * timing anything (a sleep-based proof would either pass trivially pre-fix, since an
+   * unwired dependency is never invoked either way, or make the suite itself flaky and
+   * slow in exchange for no more certainty). If `status` ever stops reading through
+   * `deps.processes` -- back to calling the real prober directly, or calling both -- this
+   * count stops being exactly 1 and the specimen goes red.
+   */
+  it('reads the fleet through the injected processes reader, never the real process table', async () => {
+    lanes().put('alpha', {
+      column: 'c', model: 'claude-sonnet-5', context: 1_000, cost_usd: 0,
+    });
+    let calls = 0;
+    const result = await forge(['status'], {
+      processes: () => {
+        calls += 1;
+        return [];
+      },
+    });
+    expect(calls).toBe(1);
+    expect(result.lines.join('\n')).toContain('claude-sonnet-5');
   });
 });
 

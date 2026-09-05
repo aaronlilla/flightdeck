@@ -62,6 +62,27 @@ export interface ForgeDeps {
    *  1's Jira token is still unset), so a real `--once` run polls zero sources and says
    *  so honestly rather than fabricating a client. */
   intakeFeeds?: FakePollFeed[];
+  /** Overrides the fleet's process-table reader that `status` and `up` feed into
+   *  `watchedProcesses`. Every specimen injects a fixed list here; the production
+   *  default (an explicit-undefined probe, which lets `watchedProcesses`'s own default
+   *  parameter spawn the real `powershell`/`ps` read) is what made a CI runner's slower
+   *  process probe a 5-second test timeout with no way for a specimen to avoid it. */
+  processes?: () => string[];
+  /** Overrides the pid-liveness check `up`'s registry reconcile reads. Production
+   *  default: `processAlive` (a `process.kill(pid, 0)` signal probe). */
+  alive?: (pid: number) => boolean;
+}
+
+/**
+ * The fleet's process table for `status` and `up`, read through `deps.processes` when a
+ * specimen supplies one. `watchedProcesses`'s own parameter defaults to a real
+ * `probeProcessList()` call, evaluated fresh each time the argument is left out -- passing
+ * `undefined` explicitly here (the production path) hits that same default, so nothing
+ * about a real run's behavior changes; passing an injected list instead skips the real
+ * probe outright, since a supplied argument always wins over a default one.
+ */
+function fleetSnapshot(deps: ForgeDeps): ReturnType<typeof watchedProcesses> {
+  return watchedProcesses(deps.processes ? { ok: true, lines: deps.processes() } : undefined);
 }
 
 /**
@@ -170,7 +191,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
     case 'status': {
       const state = replay(journalPath());
       const stuckRows = assess({
-        now: Date.now(), runs: snapshotRuns(state), fleet: watchedProcesses(),
+        now: Date.now(), runs: snapshotRuns(state), fleet: fleetSnapshot(deps),
       }).map((trip) => `STUCK  ${trip.key.padEnd(24)} ${trip.signal.padEnd(14)} ${trip.hint}`);
       const rows = lanes.all().map((lane) => [
         lane.slug.padEnd(28),
@@ -206,7 +227,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       const reconcileJournal = new Journal(journalPath());
       let reconciled: Awaited<ReturnType<typeof reconcileRegistry>>;
       try {
-        reconciled = await reconcileRegistry(registry, reconcileEngine, reconcileJournal);
+        reconciled = await reconcileRegistry(registry, reconcileEngine, reconcileJournal, deps.alive);
       } finally {
         reconcileJournal.close();
         await reconcileEngine.close?.();
@@ -220,7 +241,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         lanes, inbox, journalPath: journalPath(), journalCache: sharedJournalCache, registry,
         stuck: () => liveness.stuck(),
         fleet: () => {
-          const read = watchedProcesses();
+          const read = fleetSnapshot(deps);
           return Array.isArray(read) ? read.map((proc) => ({ ...proc })) : read;
         },
       });
@@ -229,7 +250,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         () => ({
           now: Date.now(),
           runs: snapshotRuns(sharedJournalCache.read(journalPath())),
-          fleet: watchedProcesses(),
+          fleet: fleetSnapshot(deps),
         }),
         livenessJournal,
         (event) => server.publish(event),
