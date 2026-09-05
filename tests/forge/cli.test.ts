@@ -383,10 +383,39 @@ describe('forge intake --dry-run', () => {
     expect(result.code).toBe(0);
   });
 
-  it('refuses any form other than --dry-run: no live-write mode ships in this stream', async () => {
+  it('refuses a form that is neither --dry-run nor --once', async () => {
     const result = await forge(['intake']);
     expect(result.code).toBe(2);
-    expect(result.lines.join(' ')).toMatch(/--dry-run/);
+    expect(result.lines.join(' ')).toMatch(/--dry-run|--once/);
+  });
+});
+
+describe('P4.7/I5: forge intake --once', () => {
+  it('with no feeds configured, polls nothing and says so honestly', async () => {
+    const result = await forge(['intake', '--once']);
+    expect(result.code).toBe(0);
+    expect(result.lines.join(' ')).toMatch(/0 source/);
+  });
+
+  it('with fixture feeds injected, journals source.observed, packet.written and external.intent', async () => {
+    const intakeFeeds = [{
+      name: 'jira' as const,
+      fetchSince: async () => [{ id: 'BBZ-1', updated: 100 }],
+    }];
+
+    const result = await forge(['intake', '--once'], { intakeFeeds });
+
+    expect(result.code).toBe(0);
+    const state = replay(journal());
+    expect(state.events.some((e) => e.event === 'source.observed')).toBe(true);
+    expect(state.events.some((e) => e.event === 'packet.written')).toBe(true);
+    expect(state.events.some((e) => e.event === 'external.intent')).toBe(true);
+  });
+
+  it('makes no live call: a fixture feed with no client behind it never throws a network error', async () => {
+    const intakeFeeds = [{ name: 'sentry' as const, fetchSince: async () => [] }];
+    const result = await forge(['intake', '--once'], { intakeFeeds });
+    expect(result.code).toBe(0);
   });
 });
 

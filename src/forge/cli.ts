@@ -15,7 +15,7 @@
  * nothing to stop. It parks rather than kills: the work survives and `forge up` continues
  * it. A stop that lost an afternoon is a stop nobody dares press.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { BlockerBoard } from './blockers.js';
@@ -24,6 +24,9 @@ import { readLoginLock } from './credential-horizon.js';
 import { buildBurnLedger, checkBudget } from './governor.js';
 import { reconcileBurnOnce } from './burn-reconcile.js';
 import { planIntakeWrites } from './intake/dryRun.js';
+import { runIntakeOnce } from './intake/once.js';
+import type { FakePollFeed } from './intake/poller.js';
+import { initialWatermark } from './intake/watermark.js';
 import { readProcessList, watchedProcesses } from './fleetwatch.js';
 import { Gotchas } from './gotcha.js';
 import { Inbox } from './inbox.js';
@@ -54,6 +57,11 @@ export interface ForgeDeps {
   engine?: EngineLike;
   /** Overrides the verification commands' executor. Same rule: fakes only. */
   exec?: WorkerConfig['exec'];
+  /** P4.7/I5: overrides `forge intake --once`'s feeds. Every specimen injects fixtures
+   *  here; production passes none, since no real per-source client exists yet (decision
+   *  1's Jira token is still unset), so a real `--once` run polls zero sources and says
+   *  so honestly rather than fabricating a client. */
+  intakeFeeds?: FakePollFeed[];
 }
 
 /**
@@ -62,6 +70,31 @@ export interface ForgeDeps {
  * Shared by `status` and `up` so there is exactly one place that reads a run's model-policy
  * class off `RunState` rather than assuming `implement` for every run.
  */
+/**
+ * P4.7/I5: `forge intake --once`'s watermark, persisted as one small JSON file per
+ * source under `~/.forge/intake/`, so a second CLI invocation does not re-observe
+ * everything the first one already saw. No stream before this integration built any
+ * on-disk store for it (every specimen kept its watermark in memory for the one call
+ * under test), so this is the first place it survives a process exit.
+ */
+function watermarkPath(source: string): string {
+  return join(forgeHome(), 'intake', `${source}.watermark.json`);
+}
+
+function readWatermark(source: Parameters<typeof initialWatermark>[0]): ReturnType<typeof initialWatermark> {
+  try {
+    return JSON.parse(readFileSync(watermarkPath(source), 'utf8'));
+  } catch {
+    return initialWatermark(source);
+  }
+}
+
+function writeWatermark(source: string, mark: ReturnType<typeof initialWatermark>): void {
+  const dir = join(forgeHome(), 'intake');
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(watermarkPath(source), JSON.stringify(mark), 'utf8');
+}
+
 function snapshotRuns(state: ReturnType<typeof replay>): Array<{
   run: string; className: string; lastEventAt: number; context: number;
   currentTool?: { name: string; startedAt: number };
@@ -542,12 +575,43 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
     }
 
     case 'intake': {
+      if (rest.includes('--once')) {
+        // P4.7/I5: `forge intake --once`, exported so the console's router (cut 2) calls
+        // the same function rather than a second copy of this wiring. Production passes
+        // no feeds -- no real per-source client exists yet, decision 1's Jira token
+        // included -- so a real run polls zero sources and says so, honestly, rather
+        // than fabricating a client this codebase has not built.
+        const feeds = deps.intakeFeeds ?? [];
+        const intakeJournal = new Journal(journalPath());
+        let result: Awaited<ReturnType<typeof runIntakeOnce>>;
+        try {
+          result = await runIntakeOnce(
+            feeds,
+            {
+              get: (source) => readWatermark(source),
+              set: (source, mark) => writeWatermark(source, mark),
+            },
+            (event) => intakeJournal.append({ actor: 'intake', ...event }),
+          );
+        } finally {
+          intakeJournal.close();
+        }
+        return {
+          code: 0,
+          lines: [
+            `polled ${result.sourcesPolled.length} source(s): `
+              + `${result.sourcesPolled.join(', ') || '(none configured)'}`,
+            `observed ${result.observed}, wrote ${result.packetsWritten} packet(s), `
+              + `raised ${result.intentsRaised} external intent(s)`,
+          ],
+        };
+      }
       if (!rest.includes('--dry-run')) {
         return {
           code: 2,
           lines: [
-            'forge intake --dry-run is the only form today: decision 1\'s Jira token '
-              + 'does not exist yet, so nothing here ever performs a live write',
+            'forge intake --dry-run | --once are the only forms today: decision 1\'s '
+              + 'Jira token does not exist yet, so nothing here ever performs a live write',
           ],
         };
       }
