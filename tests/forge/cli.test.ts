@@ -278,6 +278,14 @@ describe('forge run', () => {
 });
 
 describe('forge run', () => {
+  // D3, 2026-09-05: this refusal itself is synchronous (WS_MONITOR is a plain regex
+  // test), but `checkLaunch` is only reached after `loginInFlight()`, which shells out
+  // to a real process-table probe (`powershell Get-CimInstance` on Windows, `ps` on
+  // Linux/macOS). That probe is a genuine wait -- CI itself measured this specimen
+  // timing out at the default 5 s on the Windows runner while passing on Linux -- not a
+  // delay in the refusal path this specimen means to prove, so the fix widens the
+  // specimen's own timeout rather than reordering `checkLaunch`'s real dependency out
+  // from under every other launch.
   it('refuses a brief that opens a websocket Monitor', async () => {
     const brief = join(home, 'bad.md');
     writeFileSync(brief, 'Open Monitor({ws:{url:"ws://127.0.0.1:4100"}}) first.\n', 'utf8');
@@ -286,7 +294,7 @@ describe('forge run', () => {
 
     expect(result.code).toBe(1);
     expect(result.lines.join(' ')).toMatch(/monitor/i);
-  });
+  }, 20_000);
 
   it('refuses a condition over the limit', async () => {
     const brief = join(home, 'ok.md');
