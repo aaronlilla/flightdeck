@@ -53,6 +53,11 @@ export function countChangedLines(diffText: string): number {
 interface RawStatusCheck {
   conclusion?: string | null;
   status?: string | null;
+  // `gh pr view --json statusCheckRollup` mixes two row shapes in the same array: a
+  // GitHub Actions `CheckRun` carries `conclusion` (final) and `status` (while running),
+  // but a commit status posted by an external CI (EAS included) is a `StatusContext` --
+  // it never has `conclusion` or `status`, only `state`.
+  state?: string | null;
 }
 
 interface RawPrView {
@@ -70,10 +75,15 @@ interface RawPrView {
  * success; any failing check reads as `failure`; only every check succeeding reads as
  * `success`. `pending` is the safe default on the two shapes that are not a clear yes --
  * a check the reader could not read is not a check that passed.
+ *
+ * A `CheckRun` row is read off `conclusion` (falling back to `status` while it is still
+ * running, so an in-progress run reads pending rather than falling through to `state`
+ * and going unread). A `StatusContext` row -- what an external CI like EAS posts -- has
+ * neither and is read off `state` instead.
  */
 export function conclusionOf(rollup: RawStatusCheck[] | undefined): 'success' | 'failure' | 'pending' {
   if (!rollup || rollup.length === 0) return 'pending';
-  const states = rollup.map((entry) => (entry.conclusion ?? entry.status ?? '').toUpperCase());
+  const states = rollup.map((entry) => (entry.conclusion ?? entry.status ?? entry.state ?? '').toUpperCase());
   if (states.some((state) => state === '' || state === 'PENDING' || state === 'IN_PROGRESS' || state === 'QUEUED')) {
     return 'pending';
   }

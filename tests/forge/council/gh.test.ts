@@ -42,4 +42,28 @@ describe('conclusionOf', () => {
   it('a check still in progress reads as pending, not as a passing check', () => {
     expect(conclusionOf([{ conclusion: 'SUCCESS' }, { status: 'IN_PROGRESS' }])).toBe('pending');
   });
+
+  it('a rollup of four StatusContext SUCCESS rows (state, no conclusion or status) reads success', () => {
+    expect(conclusionOf([
+      { state: 'SUCCESS' },
+      { state: 'SUCCESS' },
+      { state: 'SUCCESS' },
+      { state: 'SUCCESS' },
+    ])).toBe('success');
+  });
+
+  it('a mixed rollup with one CheckRun in progress alongside StatusContext successes reads pending', () => {
+    expect(conclusionOf([
+      { state: 'SUCCESS' },
+      { state: 'SUCCESS' },
+      { status: 'IN_PROGRESS' },
+    ])).toBe('pending');
+  });
+
+  it('one StatusContext FAILURE among successes reads failure', () => {
+    expect(conclusionOf([
+      { state: 'SUCCESS' },
+      { state: 'FAILURE' },
+    ])).toBe('failure');
+  });
 });
