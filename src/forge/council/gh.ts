@@ -164,11 +164,11 @@ export const REAL_GH: GhReader & GhWriter = {
 
   async viewPrState(repo, pr) {
     const view = await execRun({
-      argv: ['gh', 'pr', 'view', String(pr), '--repo', repo, '--json', 'state'],
+      argv: ['gh', 'pr', 'view', String(pr), '--repo', repo, '--json', 'state,mergeCommit'],
       cwd: process.cwd(), owner: 'council', cls: 'script',
     });
-    const parsed = JSON.parse(view.tail) as { state?: string };
+    const parsed = JSON.parse(view.tail) as { state?: string; mergeCommit?: { oid?: string } | null };
     const prState = parsed.state === 'MERGED' ? 'MERGED' : parsed.state === 'CLOSED' ? 'CLOSED' : 'OPEN';
-    return { prState };
+    return { prState, ...(parsed.mergeCommit?.oid ? { mergeCommitOid: parsed.mergeCommit.oid } : {}) };
   },
 };

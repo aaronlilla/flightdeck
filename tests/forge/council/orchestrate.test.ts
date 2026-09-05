@@ -68,4 +68,21 @@ describe('runCouncilRound', () => {
 
     expect(JSON.stringify(seenInput)).not.toContain('RAW DIFF TEXT');
   });
+
+  it('P5.7: forceCodex runs Codex on a small, non-risky diff that would otherwise skip it', async () => {
+    const lensRunner = fakeLensRunner({ correctness: { lens: 'correctness', findings: [] } });
+    let codexCalled = false;
+    const codexLane: CodexLane = { async run() { codexCalled = true; return { ran: true, findings: [] }; } };
+    const judge = fakeJudge('PASS');
+
+    await runCouncilRound(
+      {
+        brief: 'x', diffSummary: 'y', changedLines: 10, paths: ['src/x.ts'],
+        ci: { runId: 'r', headSha: 'a' }, forceCodex: true,
+      },
+      { lensRunner, codexLane, judge },
+    );
+
+    expect(codexCalled).toBe(true);
+  });
 });
