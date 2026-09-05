@@ -154,3 +154,49 @@ describe('the warden refusal', () => {
     expect(result.moved).toHaveLength(CUTOVER_FILES.length);
   });
 });
+
+/**
+ * F4: the process check only knew the warden.
+ *
+ * On 2026-09-05 at 01:02 the cutover reported no live process and completed while
+ * `tile.ps1 -Watch -Gap 4 -Every 4` (the retired grid's window tiler, itself one of the
+ * files a cutover moves) was still running as pid 17728, and had to be stopped by hand
+ * afterward. The refusal has to cover any process naming a manifest file, not only the
+ * warden line.
+ */
+describe('F4: a running manifest file refuses the cutover, warden or no warden', () => {
+  it('refuses and names the pid and the file when a manifest file is still running', () => {
+    const result = runCutover({
+      from, retiredDir,
+      processList: ['17728 "powershell.exe" -File tile.ps1 -Watch -Gap 4 -Every 4'],
+    }, journal);
+    expect(result.ok).toBe(false);
+    expect(result.refusal).toMatch(/tile\.ps1/);
+    expect(result.refusal).toMatch(/17728/);
+    for (const name of CUTOVER_FILES) expect(existsSync(join(from, name))).toBe(true);
+  });
+
+  it('never runs the move when it refuses on a manifest file', () => {
+    runCutover({
+      from, retiredDir,
+      processList: ['17728 "powershell.exe" -File tile.ps1 -Watch'],
+    }, journal);
+    expect(journaled).toHaveLength(0);
+  });
+
+  it('proceeds when the process list names neither the warden nor a manifest file', () => {
+    const result = runCutover({
+      from, retiredDir,
+      processList: ['1000 node some-unrelated-daemon.js'],
+    }, journal);
+    expect(result.ok).toBe(true);
+    expect(result.moved).toHaveLength(CUTOVER_FILES.length);
+  });
+
+  it('cutover.completed carries the count of processes checked', () => {
+    const processList = ['1000 node some-unrelated-daemon.js', '1001 node another.js'];
+    runCutover({ from, retiredDir, processList }, journal);
+    const event = journaled.find((e) => e['event'] === 'cutover.completed');
+    expect(event?.['processesChecked']).toBe(processList.length);
+  });
+});
