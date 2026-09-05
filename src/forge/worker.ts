@@ -191,14 +191,24 @@ export interface WorkerResult {
 
 /**
  * The commands a brief declares under a `## Verification` heading, one per line inside a
- * single fenced block. Missing entirely, or an empty block, both read as "nothing
- * declared" -- there is no default command to fall back to, because guessing one would be
- * exactly the unproven `done` this item exists to close off.
+ * single fenced block. The block is the first fenced block that appears after the
+ * heading and before the next heading -- prose between the heading and the fence (a
+ * sentence of instructions, a "run this from the worktree root" line) is allowed, and
+ * skipped, rather than treated as a missing block. A fence that only appears after the
+ * next `##` heading belongs to that section, not this one, and does not count. Missing
+ * entirely, or an empty block, both read as "nothing declared" -- there is no default
+ * command to fall back to, because guessing one would be exactly the unproven `done`
+ * this item exists to close off.
  */
 export function verificationCommands(brief: string): string[] | undefined {
-  const match = /^##[ \t]+Verification[ \t]*\r?\n+```[^\n]*\r?\n([\s\S]*?)```/m.exec(brief);
-  if (!match) return undefined;
-  const lines = match[1]!.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const headingMatch = /^##[ \t]+Verification[ \t]*$/m.exec(brief);
+  if (!headingMatch) return undefined;
+  const afterHeading = brief.slice(headingMatch.index + headingMatch[0].length);
+  const nextHeadingMatch = /^##[ \t]+\S/m.exec(afterHeading);
+  const section = nextHeadingMatch ? afterHeading.slice(0, nextHeadingMatch.index) : afterHeading;
+  const fenceMatch = /```[^\n]*\r?\n([\s\S]*?)```/.exec(section);
+  if (!fenceMatch) return undefined;
+  const lines = fenceMatch[1]!.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   return lines.length ? lines : undefined;
 }
 

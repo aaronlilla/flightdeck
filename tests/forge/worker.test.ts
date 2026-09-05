@@ -20,7 +20,9 @@ import { join } from 'node:path';
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { INHERITED, Worker, workerEnv, type FakeTurn } from '../../src/forge/worker.js';
+import {
+  INHERITED, Worker, workerEnv, verificationCommands, type FakeTurn,
+} from '../../src/forge/worker.js';
 import { Journal, replay } from '../../src/forge/journal.js';
 import { Inbox } from '../../src/forge/inbox.js';
 import { readParkRecord, writeParkRecord } from '../../src/forge/parkrecord.js';
@@ -298,6 +300,52 @@ describe('the environment a worker is spawned with', () => {
     expect(spawned['CLAUDECODE']).toBeUndefined();
     expect(spawned['CLAUDE_PID']).toBeUndefined();
     expect(spawned['PATH']).toBe('/usr/bin');
+  });
+});
+
+describe('verificationCommands', () => {
+  it('accepts prose between the heading and its fence, as the C2 brief had it', () => {
+    const brief = [
+      '## Verification',
+      '',
+      'Run from the worktree root after `npm ci`:',
+      '',
+      '```bash',
+      'npx jest src/features/home/components/Tutorial/__tests__/Card.operator.test.tsx --colors=false',
+      'npm test',
+      'npx tsc --noEmit',
+      'npm run lint',
+      '```',
+      '',
+      'All four exit 0. If baseline counts are non-zero, paste before/after numbers.',
+      '',
+      '## Status',
+      '',
+      'nothing here yet',
+    ].join('\n');
+
+    expect(verificationCommands(brief)).toEqual([
+      'npx jest src/features/home/components/Tutorial/__tests__/Card.operator.test.tsx --colors=false',
+      'npm test',
+      'npx tsc --noEmit',
+      'npm run lint',
+    ]);
+  });
+
+  it('finds the first fenced block after the heading, never one from a later heading', () => {
+    const brief = [
+      '## Verification',
+      '',
+      'no fence here at all before the next heading',
+      '',
+      '## Status',
+      '',
+      '```bash',
+      'this belongs to Status, not Verification',
+      '```',
+    ].join('\n');
+
+    expect(verificationCommands(brief)).toBeUndefined();
   });
 });
 
