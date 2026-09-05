@@ -10,6 +10,18 @@ import {
   verifyCommandFor, worktreePathFor, worktreeSetupFor,
 } from '../../../src/forge/chain-env.js';
 
+describe('C1: FORGE_WORKTREE_SHELL', () => {
+  it('is empty by default, so the runner falls back to shell: true', () => {
+    const env = readChainEnv({});
+    expect(env.shell).toEqual([]);
+  });
+
+  it('splits into a shell binary plus its flags', () => {
+    const env = readChainEnv({ FORGE_WORKTREE_SHELL: '/bin/bash -c' });
+    expect(env.shell).toEqual(['/bin/bash', '-c']);
+  });
+});
+
 describe('readChainEnv', () => {
   it('defaults to disabled, a 300s poll and no repositories configured', () => {
     const env = readChainEnv({});

@@ -39,6 +39,12 @@ export interface ChainEnv {
   verify: RepoScopedValue[];
   mergeRepos: string[];
   forceCodex: boolean;
+  /** C1: `FORGE_WORKTREE_SHELL`, split into a shell binary plus its flags (e.g. a bash
+   *  path and `-c`). Empty when unset, which tells the launcher to fall back to the
+   *  platform's own default shell (`shell: true`) rather than a named one. Not
+   *  repository-scoped like the values above -- one shell serves every repository this
+   *  worker provisions. */
+  shell: string[];
 }
 
 const DEFAULT_POLL_SECONDS = 300;
@@ -47,6 +53,13 @@ const DEFAULT_BASE = 'develop';
 function parseCommaList(raw: string | undefined): string[] {
   if (!raw || raw.trim().length === 0) return [];
   return raw.split(',').map((entry) => entry.trim()).filter(Boolean);
+}
+
+/** C1: `FORGE_WORKTREE_SHELL` is a shell binary plus its flags, whitespace separated
+ *  (e.g. `/bin/bash -c`), never comma-separated like the lists above. */
+function parseShellPrefix(raw: string | undefined): string[] {
+  if (!raw || raw.trim().length === 0) return [];
+  return raw.split(/\s+/).filter(Boolean);
 }
 
 export function readChainEnv(env: NodeJS.ProcessEnv = process.env): ChainEnv {
@@ -61,6 +74,7 @@ export function readChainEnv(env: NodeJS.ProcessEnv = process.env): ChainEnv {
     verify: parseRepoScoped(env['FORGE_REPO_VERIFY']),
     mergeRepos: parseCommaList(env['FORGE_CHAIN_MERGE']),
     forceCodex: env['FORGE_COUNCIL_CODEX'] === 'always',
+    shell: parseShellPrefix(env['FORGE_WORKTREE_SHELL']),
   };
 }
 

@@ -22,7 +22,7 @@ import {
   branchFor, type ChainEnv,
 } from './chain-env.js';
 import type { PollSourceName } from './contracts.js';
-import { run as execRun } from './exec.js';
+import { run as execRun, type RunRequest, type RunResult } from './exec.js';
 import { createJiraFeed } from './intake/jira.js';
 import { intakeBriefsDir, journalPath, killSwitchPath, forgeHome } from './paths.js';
 import { readWatermark, writeWatermark } from './intake/watermarkStore.js';
@@ -96,6 +96,34 @@ function tailOfCommand(tail: string, limit = 500): string {
   return tail.length > limit ? tail.slice(-limit) : tail;
 }
 
+/**
+ * C1: the worktree setup command, run through a shell rather than exec'd directly.
+ * `FORGE_REPO_CHECKOUTS`'s worktree add never needed a shell -- one binary, one argv --
+ * but the setup command is whatever a repository's own bootstrap needs, commonly more
+ * than one step joined with `&&`, and on Windows `npm` is a `.cmd` shim a direct exec
+ * never finds. `FORGE_WORKTREE_SHELL` names a shell prefix (a bash path plus `-c`,
+ * say); left unset, the command runs under the platform's own default shell instead.
+ * Split out from `provision()` so a specimen can prove this step alone, against an
+ * injected `exec`, without a real git checkout underneath it.
+ */
+export async function runWorktreeSetup(input: {
+  chainEnv: ChainEnv; repo: string; ticket: string; worktreePath: string;
+  exec?: (request: RunRequest) => Promise<RunResult>;
+}): Promise<void> {
+  const setup = worktreeSetupFor(input.chainEnv, input.repo);
+  if (!setup) return;
+
+  const runner = input.exec ?? execRun;
+  const result = await runner({
+    argv: [setup],
+    shell: input.chainEnv.shell.length ? input.chainEnv.shell : true,
+    cwd: input.worktreePath, owner: `chain-${input.ticket}`, cls: 'install',
+  });
+  if (!result.ok) {
+    throw new Error(`setup command failed: ${setup}\n${tailOfCommand(result.tail, 300)}`);
+  }
+}
+
 /** H2/H3: real worktrees, a real detached launch, and a real status read off the shared
  *  journal -- one `ChainLauncher` per `chain-env.ts` configuration, built fresh on every
  *  `forge up` process. */
@@ -120,13 +148,7 @@ export function chainLauncher(chainEnv: ChainEnv, fleetConfigDir: string): Chain
         throw new Error(tailOfCommand(add.tail));
       }
 
-      const setup = worktreeSetupFor(chainEnv, repo);
-      if (setup) {
-        const setupResult = await execRun({
-          argv: setup.split(/\s+/).filter(Boolean), cwd: worktreePath, owner: `chain-${ticket}`, cls: 'install',
-        });
-        if (!setupResult.ok) throw new Error(tailOfCommand(setupResult.tail));
-      }
+      await runWorktreeSetup({ chainEnv, repo, ticket, worktreePath });
 
       return { worktreePath, branch, base };
     },
