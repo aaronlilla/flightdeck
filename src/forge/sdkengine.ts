@@ -349,6 +349,12 @@ export interface PreToolUseHookDeps {
    * (every branch reads as safe, every repo as uncontrolled) rather than a guess.
    */
   repoContext?: { branch?: string; controlled?: boolean };
+  /** I14: this run's own working directory, so the prose rules can tell an edit inside
+   *  the run's repository from one outside it (an internal agent file elsewhere on the
+   *  machine, such as a goal brief under `.claude/goals/`). Undefined means no caller
+   *  named it -- every edit is judged as if it were inside the run's own repo, the
+   *  permissive default this hook already used before this field existed. */
+  runCwd?: string;
 }
 
 /**
@@ -433,7 +439,7 @@ export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
     // something else on its next turn.
     const action = proposedActionFor(call.toolName, call.input, deps.repoContext);
     if (action) {
-      const verdict = evaluateScoped(action);
+      const verdict = evaluateScoped(action, deps.runCwd);
       if (!verdict.allow) {
         const sink = action.kind;
         const locator = action.kind === 'edit'
@@ -470,8 +476,36 @@ const PROSE_RULES: Rule[] = [humanizerRule, sycophancyRule, vaguenessRule];
 const PROSE_PATH_RE = /\.(md|mdx)$/i;
 const DOCS_DIR_RE = /(^|[/\\])docs([/\\]|$)/i;
 
-function isProseSink(action: ProposedAction): boolean {
+// I14: a run's `Edit` of its own goal brief, under its `.claude/goals/` directory, was
+// denied by the humanizer rule for a `--`, and the model ended its turn over it. That
+// file is
+// the run's own internal log, never outward-facing prose, and the humanizer skill's own
+// exclusion list already says so (`CLAUDE.md`, `.claude/**`, memory and plan files).
+// These mirror that list for the one caller (this hook) the skill was never wired into.
+const DOT_CLAUDE_SEGMENT_RE = /(^|[/\\])\.claude([/\\]|$)/i;
+const CLAUDE_MD_RE = /(^|[/\\])CLAUDE\.md$/i;
+const MEMORY_OR_PLAN_FILE_RE = /(^|[/\\])(memory|plan)[^/\\]*\.md$/i;
+
+/** True for a path outside the run's own repository checkout, in addition to the named
+ *  internal-agent patterns above -- a rule judging outward-facing prose has no business
+ *  with anything that is not this run's own working tree, whatever its extension. */
+function isInternalAgentPath(path: string, runCwd?: string): boolean {
+  if (DOT_CLAUDE_SEGMENT_RE.test(path) || CLAUDE_MD_RE.test(path) || MEMORY_OR_PLAN_FILE_RE.test(path)) {
+    return true;
+  }
+  if (!runCwd) return false;
+  const normalizedPath = path.replace(/\\/g, '/').toLowerCase();
+  const normalizedCwd = runCwd.replace(/\\/g, '/').toLowerCase();
+  return isAbsolutePathLike(normalizedPath) && !normalizedPath.startsWith(normalizedCwd);
+}
+
+function isAbsolutePathLike(path: string): boolean {
+  return path.startsWith('/') || /^[a-z]:\//.test(path);
+}
+
+function isProseSink(action: ProposedAction, runCwd?: string): boolean {
   if (action.kind === 'edit') {
+    if (isInternalAgentPath(action.path, runCwd)) return false;
     return PROSE_PATH_RE.test(action.path) || DOCS_DIR_RE.test(action.path);
   }
   if (action.kind === 'bash') {
@@ -493,12 +527,12 @@ function isProseSink(action: ProposedAction): boolean {
   return true;
 }
 
-function evaluateScoped(action: ProposedAction): RuleVerdict {
+function evaluateScoped(action: ProposedAction, runCwd?: string): RuleVerdict {
   for (const rule of ALWAYS_ON_RULES) {
     const verdict = rule.evaluate(action);
     if (!verdict.allow) return verdict;
   }
-  if (isProseSink(action)) {
+  if (isProseSink(action, runCwd)) {
     for (const rule of PROSE_RULES) {
       const verdict = rule.evaluate(action);
       if (!verdict.allow) return verdict;
@@ -789,6 +823,7 @@ export class SdkEngine implements EngineLike {
         ceilingHit: () => ceilingHit,
         killSwitchHit: this.deps.killSwitch,
         onDelivered: (ids, text) => { pendingAck = { ids, text }; },
+        runCwd: request.cwd,
       }),
     };
 

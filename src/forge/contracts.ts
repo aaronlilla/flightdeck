@@ -208,6 +208,10 @@ export const FORGE_EVENT_NAMES = [
   // I12: `reconcileRegistry` dropping a dead-pid row with no session id, once it is old
   // enough to be a crash rather than a race against its own admission.
   'registry.abandoned',
+  // I14: a continuation prompt the worker sends on its own open session when a segment
+  // ends with no `forge_done`, no ceiling hit, no park and no kill -- before it gives up
+  // and calls the run `stopped`.
+  'run.nudged',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];

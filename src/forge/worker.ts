@@ -16,7 +16,7 @@
  * nothing and still exercises the loop that decides the money.
  */
 import { tierOfBrief, contextFor, effortFor, modelFor, modelIdFor, turnsFor } from './policy.js';
-import { Journal } from './journal.js';
+import { Journal, replay } from './journal.js';
 import { run as execRun, type RunRequest, type RunResult } from './exec.js';
 import type { Inbox } from './inbox.js';
 import { asRunId, type Actuator } from './contracts.js';
@@ -236,6 +236,23 @@ export const HANDOFF_REQUEST = [
   'Everything you leave out, it repeats.',
 ].join('\n');
 
+/**
+ * I14: a segment that ends with none of done, ceiling, park or kill is not necessarily
+ * stuck -- three cases tonight ended a turn on "wait" for a background agent, or right
+ * after a tool call the rules library denied, and the runner called each `stopped`
+ * without ever asking the model to carry on. This is that ask, on the same open session
+ * rather than a fresh one, at most `NUDGE_LIMIT` times before `run.finished stopped`
+ * still applies.
+ */
+export const NUDGE_LIMIT = 2;
+
+export const NUDGE_REASON = [
+  'You ended your turn without calling forge_done. The run is not over. If the goal is',
+  'complete, call forge_done with the evidence; if a tool call was denied, fix what the',
+  'reason says and retry; if you are waiting on an agent, block on it with TaskOutput;',
+  'otherwise continue.',
+].join(' ');
+
 export function successorPrompt(packet: string, brief: string): string {
   return [
     'You are continuing a goal a previous session started. This is its handoff packet.',
@@ -362,6 +379,9 @@ export class Worker {
         // continuing to a successor the way an ordinary ceiling hit would.
         let killedMidTurn = false;
         let pendingTurns = session.turns;
+        // I14: per session (this outer loop's own iteration), not per run -- a successor
+        // opened after a handoff gets its own fresh count, the same as a resumed one.
+        let nudges = 0;
         // A segment that ends with neither `done` nor the ceiling hit is not necessarily a
         // stop: the model may have hit an `AskUserQuestion` or `forge_ask` and parked (F1).
         // That is not this segment failing to finish, it is this segment waiting on a
@@ -418,7 +438,29 @@ export class Worker {
           if (finished || ceilingHit) break;
 
           const key = this.engine.parkedOn?.(runName);
-          if (!key) break;
+          if (!key) {
+            if (nudges < NUDGE_LIMIT && session.send) {
+              nudges += 1;
+              // A denied tool call is very rarely the literal last row: the turn it
+              // happened in still ends normally and journals its own `turn.end` right
+              // after. So this looks for the most recent `rule.denied` anywhere in the
+              // CURRENT segment (since this run's own `run.started`), not only the
+              // single last event.
+              const state = replay(this.config.journalPath);
+              const runEvents = state.events.filter((event) => event.run === runName);
+              const sinceStart = runEvents.slice(
+                runEvents.map((event) => event.event).lastIndexOf('run.started') + 1,
+              );
+              const lastDenial = [...sinceStart].reverse().find((event) => event.event === 'rule.denied');
+              const reason = lastDenial
+                ? `${NUDGE_REASON} The last tool call was denied for: "${String(lastDenial['reason'] ?? '')}".`
+                : NUDGE_REASON;
+              journal.append({ event: 'run.nudged', run: runName, actor: 'runner', reason, attempt: nudges });
+              pendingTurns = await session.send(reason);
+              continue;
+            }
+            break;
+          }
 
           const outcome = await this.waitForAnswer(key);
           if (outcome !== 'answered') {

@@ -311,6 +311,11 @@ describe('forge_done is only honoured on a clean result', () => {
     const { fn } = fakeQuery([
       [{ text: 'trying', usage: { input: 100, cacheRead: 0, cacheCreation: 0, output: 10 },
         toolUse: { name: 'mcp__forge__forge_done', input: { evidence: 'shipped' }, isError: true } }],
+      // I14: the segment still has neither `done` nor a ceiling hit after the errored
+      // call, so the worker nudges (twice, its own cap) before it gives up -- one more
+      // plain reply per nudge, so the fake stream has something to answer with.
+      [{ text: 'still stuck' }],
+      [{ text: 'still stuck' }],
     ]);
     const engine = engineFor(fn);
     const worker = new Worker({
@@ -330,6 +335,10 @@ describe('the journal handle across a chain', () => {
   it('reuses one handle across every session in a chain and closes cleanly', async () => {
     const { fn } = fakeQuery([
       [{ text: 'working', usage: { input: 65_000, cacheRead: 0, cacheCreation: 0, output: 10 } }],
+      // Consumed by `requestHandoff`'s own `send()` for the packet, not by the
+      // successor's first turn.
+      [{ text: 'packet' }],
+      // The successor's actual first turn: a clean finish, so it never needs I14's nudge.
       [{ text: 'done', usage: { input: 100, cacheRead: 0, cacheCreation: 0, output: 10 },
         toolUse: { name: 'mcp__forge__forge_done', input: { evidence: 'shipped' } } }],
     ]);
@@ -396,6 +405,10 @@ describe('B.3.7: the inbox survives a handoff', () => {
       [{ text: 'working', usage: { input: 65_000, cacheRead: 0, cacheCreation: 0, output: 10 } }],
       [{ text: 'packet', usage: { input: 100, cacheRead: 0, cacheCreation: 0, output: 10 } }],
       [{ text: 'ok', usage: { input: 100, cacheRead: 0, cacheCreation: 0, output: 10 } }],
+      // I14: the successor's first turn above ends with neither `done` nor a ceiling
+      // hit, so the worker sends a nudge on the same session; this answers it cleanly.
+      [{ text: 'done', usage: { input: 100, cacheRead: 0, cacheCreation: 0, output: 10 },
+        toolUse: { name: 'mcp__forge__forge_done', input: { evidence: 'shipped' } } }],
     ]);
     const engine = engineFor(fn);
     const worker = new Worker({
@@ -1314,6 +1327,81 @@ describe('P4.7/I10: the prose rules never judge source code', () => {
     expect(denied?.['rule']).toBe('humanizer');
     expect(denied?.['sink']).toBe('edit');
     expect(denied?.['path']).toBe('/repo/docs/x.md');
+  });
+
+  it('I14: an Edit of .claude/goals/x.md carrying an em dash passes every rule; the same text in docs/x.md is denied', async () => {
+    const parked = new Map<string, string>();
+    const journal = new Journal(journalPath);
+    const inbox = new Inbox(join(home, 'inbox-i14-claude'));
+    const hook = buildPreToolUseHook({
+      run: 'i14a', goal: 'i14a', parked, journal, inbox, deliverVia: 'hook', runCwd: '/repo',
+    });
+
+    const claudeVerdict = await hook({
+      toolName: 'Edit',
+      input: { file_path: '/repo/.claude/goals/x.md', new_string: 'This is fine -- trust me.' },
+      toolUseId: 'tu-i14a',
+    });
+    expect(claudeVerdict.decision).toBeUndefined();
+
+    const docsVerdict = await hook({
+      toolName: 'Edit',
+      input: { file_path: '/repo/docs/x.md', new_string: 'This is fine -- trust me.' },
+      toolUseId: 'tu-i14a-2',
+    });
+    expect(docsVerdict.decision).toBe('deny');
+  });
+
+  it('I14: an Edit of CLAUDE.md, or of a memory/plan file, passes every rule', async () => {
+    const parked = new Map<string, string>();
+    const journal = new Journal(journalPath);
+    const inbox = new Inbox(join(home, 'inbox-i14-memory'));
+    const hook = buildPreToolUseHook({ run: 'i14b', goal: 'i14b', parked, journal, inbox, deliverVia: 'hook' });
+
+    const claudeMd = await hook({
+      toolName: 'Edit',
+      input: { file_path: '/anywhere/CLAUDE.md', new_string: 'This is fine -- trust me.' },
+      toolUseId: 'tu-i14b-1',
+    });
+    expect(claudeMd.decision).toBeUndefined();
+
+    const memory = await hook({
+      toolName: 'Edit',
+      input: { file_path: '/anywhere/memory-note.md', new_string: 'This is fine -- trust me.' },
+      toolUseId: 'tu-i14b-2',
+    });
+    expect(memory.decision).toBeUndefined();
+
+    const plan = await hook({
+      toolName: 'Edit',
+      input: { file_path: '/anywhere/plan-goal.md', new_string: 'This is fine -- trust me.' },
+      toolUseId: 'tu-i14b-3',
+    });
+    expect(plan.decision).toBeUndefined();
+  });
+
+  it('I14: an Edit of a docs/x.md outside the run\'s own cwd repository passes every rule', async () => {
+    const parked = new Map<string, string>();
+    const journal = new Journal(journalPath);
+    const inbox = new Inbox(join(home, 'inbox-i14-outside'));
+    const hook = buildPreToolUseHook({
+      run: 'i14c', goal: 'i14c', parked, journal, inbox, deliverVia: 'hook', runCwd: '/repo',
+    });
+
+    const outside = await hook({
+      toolName: 'Edit',
+      input: { file_path: '/somewhere/else/docs/x.md', new_string: 'This is fine -- trust me.' },
+      toolUseId: 'tu-i14c-1',
+    });
+    expect(outside.decision).toBeUndefined();
+
+    // The falsifier: the same doc, inside the run's own repo, is still denied.
+    const inside = await hook({
+      toolName: 'Edit',
+      input: { file_path: '/repo/docs/x.md', new_string: 'This is fine -- trust me.' },
+      toolUseId: 'tu-i14c-2',
+    });
+    expect(inside.decision).toBe('deny');
   });
 
   it('a gh pr create --body carrying a co-author trailer is denied by authorship', async () => {

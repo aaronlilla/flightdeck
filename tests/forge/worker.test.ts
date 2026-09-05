@@ -21,7 +21,7 @@ import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { INHERITED, Worker, workerEnv, type FakeTurn } from '../../src/forge/worker.js';
-import { replay } from '../../src/forge/journal.js';
+import { Journal, replay } from '../../src/forge/journal.js';
 import { Inbox } from '../../src/forge/inbox.js';
 import { readParkRecord, writeParkRecord } from '../../src/forge/parkrecord.js';
 import { Registry } from '../../src/forge/registry.js';
@@ -868,5 +868,77 @@ describe('P4.7/I3: a rate-limit engine.error pauses through the Governor\'s Wind
     const state = replay(journalPath);
     const row = state.events.find((event) => event.event === 'run.paused' && event.run === 'alpha');
     expect(row?.['resumeAt']).toBeUndefined();
+  });
+});
+
+describe('I14: a segment that ends with no done, ceiling, park or kill gets one nudge before it gives up', () => {
+  it('sends up to two nudges on the same session, then reports stopped, never a third', async () => {
+    const worker = makeWorker([[{ text: 'idle', context: 100 }]], { maxContext: 60_000 });
+    await worker.run();
+
+    // Two sends, not zero and not three: NUDGE_LIMIT is exactly two.
+    expect(worker.engine.sent).toHaveLength(2);
+    const state = replay(journalPath);
+    const nudges = state.events.filter((event) => event.event === 'run.nudged' && event.run === 'alpha');
+    expect(nudges).toHaveLength(2);
+    expect(nudges[0]?.['reason']).toMatch(/forge_done/);
+    expect(nudges[1]?.['attempt']).toBe(2);
+    const finished = state.events.find((event) => event.event === 'run.finished' && event.run === 'alpha');
+    expect(finished?.['verdict']).not.toBe('done');
+  });
+
+  it('sends the nudge on the open session, never a fresh one', async () => {
+    const worker = makeWorker([[{ text: 'idle', context: 100 }]], { maxContext: 60_000 });
+    await worker.run();
+
+    // A fresh session would be a second `engine.started` entry; there is only the one.
+    expect(worker.engine.started).toHaveLength(1);
+  });
+
+  it('never nudges a session that already ended in done, a park, a kill or a handoff', async () => {
+    const worker = makeWorker(
+      [[{ text: 'done', context: 10, done: true }]],
+      { maxContext: 60_000 },
+    );
+    await worker.run();
+
+    const state = replay(journalPath);
+    expect(state.events.some((event) => event.event === 'run.nudged')).toBe(false);
+  });
+
+  it('quotes the rule.denied reason when the segment ends right after one', async () => {
+    let calls = 0;
+    const engine = {
+      started: [] as unknown[],
+      sent: [] as string[],
+      async run(config: { run: string }) {
+        this.started.push(config);
+        const journal = new Journal(journalPath);
+        journal.append({
+          event: 'rule.denied', run: config.run, actor: 'runner', tool: 'Edit',
+          rule: 'humanizer', reason: 'Carries an em dash', sink: 'edit', path: '/repo/docs/x.md',
+        });
+        journal.close();
+        return {
+          sessionId: 'session-1', turns: [{ text: 'trying again', context: 10 }],
+          send: async (prompt: string) => {
+            calls += 1;
+            this.sent.push(prompt);
+            return [{ text: 'still trying', context: 10 }];
+          },
+        };
+      },
+    };
+    const worker = new Worker({
+      run: 'alpha', brief: '# Goal\n\nDo the thing.\n', briefPath: join(dir, 'brief.md'),
+      cwd: dir, journalPath, engine: engine as never, maxContext: 60_000,
+    } as never) as unknown as { run: () => Promise<unknown> };
+
+    await worker.run();
+
+    expect(calls).toBeGreaterThan(0);
+    const state = replay(journalPath);
+    const nudges = state.events.filter((event) => event.event === 'run.nudged' && event.run === 'alpha');
+    expect(nudges[0]?.['reason']).toContain('Carries an em dash');
   });
 });
