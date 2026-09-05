@@ -1027,3 +1027,59 @@ describe('F3: forge_ask parks', () => {
     expect(parked.has('f3-falsifier-run')).toBe(true);
   });
 });
+
+describe('F4: close() stops every live engine, not just forgetting about it', () => {
+  it('tells the underlying session to stop once the whole chain is done', async () => {
+    // A real async generator, standing in for the SDK's own session stream: calling
+    // `.return()` on it (which is what `Engine.stop()` does to its handle) runs this
+    // `finally`, the same way ending a live SDK session would. No live SDK anywhere here.
+    let stopped = false;
+    const fn = ((params: { prompt: string | AsyncIterable<unknown>; options?: Options }) => {
+      const promptIter = params.prompt as AsyncIterable<unknown>;
+      async function* generate() {
+        try {
+          yield {
+            type: 'system', subtype: 'init', session_id: 'sdk-fake-session',
+            model: params.options?.model ?? '', cwd: params.options?.cwd ?? '',
+            tools: [], slash_commands: [],
+          };
+          for await (const _pushed of promptIter) {
+            yield {
+              type: 'assistant', session_id: 'sdk-fake-session',
+              message: {
+                model: params.options?.model ?? '',
+                content: [
+                  { type: 'text', text: 'shipped' },
+                  { type: 'tool_use', id: 'tu-1', name: 'mcp__forge__forge_done', input: { evidence: 'shipped' } },
+                ],
+                usage: { input_tokens: 10, output_tokens: 1 },
+              },
+            };
+            yield {
+              type: 'user', session_id: 'sdk-fake-session',
+              message: { content: [{ type: 'tool_result', tool_use_id: 'tu-1', is_error: false, content: 'ok' }] },
+            };
+            yield { type: 'result', subtype: 'success', is_error: false, duration_ms: 1 };
+            // No `return` here: a real session stays open for the next prompt, and only
+            // `Engine.stop()` (calling `.return()` on this generator from outside) ends it.
+          }
+        } finally {
+          stopped = true;
+        }
+      }
+      return generate() as unknown as Query;
+    }) as unknown as QueryFn;
+
+    const engine = new SdkEngine({
+      journalPath, inboxDir: join(home, 'inbox-f4'), gotchasDir: join(home, 'gotchas-f4'), queryFn: fn,
+    });
+    await engine.run({ ...REQUEST, run: 'f4-run', env: { PATH: '/usr/bin' } });
+
+    expect(stopped).toBe(false);
+
+    await engine.close();
+
+    expect(stopped).toBe(true);
+  });
+
+});

@@ -820,10 +820,23 @@ export class SdkEngine implements EngineLike {
     return { delivered: true };
   }
 
-  /** Releases the journal handle. Call once the whole chain, not one session, is done. */
-  close(): void {
+  /**
+   * Releases the journal handle and stops every live `Engine` this instance still holds
+   * (F4). Call once the whole chain, not one session, is done.
+   *
+   * Before F4 this cleared `liveEngines` without ever calling `.stop()` on what it held, so
+   * the SDK child process behind each one outlived the chain that opened it: the live probe
+   * that found this saw `claude.exe`'s count go up by one and stay there after `forge run`
+   * printed its verdict and the process never exited. The journal and the park map are
+   * still cleared synchronously, so an immediate `replay()` right after this call, as the
+   * existing suite does, sees the file closed whether or not the returned promise is
+   * awaited; only stopping the engines themselves is asynchronous.
+   */
+  close(): Promise<void> {
     this.journal.close();
+    const engines = [...this.liveEngines.values()];
     this.liveEngines.clear();
     this.parked.clear();
+    return Promise.all(engines.map((engine) => engine.stop())).then(() => undefined);
   }
 }

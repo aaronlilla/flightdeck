@@ -167,7 +167,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         reconciled = await reconcileRegistry(registry, reconcileEngine, reconcileJournal);
       } finally {
         reconcileJournal.close();
-        if (reconcileEngine instanceof SdkEngine) reconcileEngine.close();
+        await reconcileEngine.close?.();
       }
       const reconcileLines = reconciled.map((outcome) => (outcome.ok
         ? `reconciled ${outcome.goal}: resumed by session id`
@@ -287,7 +287,10 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       try {
         result = await worker.run();
       } finally {
-        if (engine instanceof SdkEngine) engine.close();
+        // Awaited rather than fired-and-forgotten (F4): a `close()` that stops a live
+        // engine's SDK child process is exactly the cleanup this process must not exit
+        // ahead of, or the child outlives the `forge run` that opened it.
+        await engine.close?.();
         registry.remove(slug);
       }
       const started = result.sessions[0];

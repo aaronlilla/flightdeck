@@ -375,3 +375,57 @@ describe('an unknown command', () => {
     expect(result.lines.join(' ')).toContain('4120');
   });
 });
+
+describe('F4: forge run releases what the engine held before it returns', () => {
+  it('awaits the engine close() before forge() itself resolves', async () => {
+    const brief = join(home, 'ok.md');
+    writeFileSync(brief, '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnode -e process.exit(0)\n```\n', 'utf8');
+
+    let closed = false;
+    let closedBeforeReturn = false;
+    const engine = {
+      started: [] as SessionRequest[],
+      async run(config: SessionRequest) {
+        this.started.push(config);
+        return { sessionId: 'fake-session', turns: [{ text: 'shipped', context: 10, done: true }] };
+      },
+      async close() {
+        // A resolved microtask delay: proves `forge()` genuinely awaits this rather than
+        // firing it and moving on, which is exactly what let the SDK child outlive the
+        // process in the live probe.
+        await Promise.resolve();
+        closed = true;
+      },
+    };
+
+    const resultPromise = forge(['run', brief], { engine });
+    closedBeforeReturn = closed;
+    await resultPromise;
+
+    expect(closedBeforeReturn).toBe(false);
+    expect(closed).toBe(true);
+  });
+
+  it('the falsifier: a close() that is fired without awaiting would still read as done', async () => {
+    // Same brief and engine shape, but this proves the specimen above is actually checking
+    // something: an engine whose close() never resolves must make forge() hang rather than
+    // silently return, or the await above is not being honoured at all.
+    const brief = join(home, 'ok2.md');
+    writeFileSync(brief, '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnode -e process.exit(0)\n```\n', 'utf8');
+
+    const engine = {
+      started: [] as SessionRequest[],
+      async run(config: SessionRequest) {
+        this.started.push(config);
+        return { sessionId: 'fake-session', turns: [{ text: 'shipped', context: 10, done: true }] };
+      },
+      close: () => new Promise<void>(() => {}), // never resolves
+    };
+
+    const raced = await Promise.race([
+      forge(['run', brief], { engine }).then(() => 'resolved' as const),
+      new Promise<'timed-out'>((resolve) => setTimeout(() => resolve('timed-out'), 200)),
+    ]);
+    expect(raced).toBe('timed-out');
+  });
+});

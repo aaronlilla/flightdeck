@@ -126,6 +126,9 @@ export interface EngineLike {
    * same file a separate `forge answer` process writes the answer into (F1).
    */
   inbox?: Inbox;
+  /** Shuts down whatever this engine's sessions are still holding open, mainly the SDK
+   *  child process behind a live session (F4). Every caller awaits it before returning. */
+  close?(): Promise<void> | void;
 }
 
 export interface WorkerConfig {
