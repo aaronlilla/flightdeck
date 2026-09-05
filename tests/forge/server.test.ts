@@ -230,6 +230,11 @@ describe('GET /state', () => {
     expect(secondAt).toBeGreaterThan(firstAt);
   });
 
+  it('X4: carries router_enabled, off by the real policy\'s own default', async () => {
+    const state = await (await fetch(`${base}/state`)).json() as Record<string, unknown>;
+    expect(state['router_enabled']).toBe(false);
+  });
+
   // X1: a lane can carry a stale verdict from an earlier chain (parked, or otherwise
   // finished) while a fresh run for the same slug is genuinely live. A tile driven off
   // the lane record alone would show the dead chain's verdict beside a running tool; the
@@ -332,6 +337,91 @@ describe('GET /run/:id', () => {
     expect(body['packet']).toBeNull();
     expect(body['plan']).toBeNull();
     expect(body['prUrl']).toBeNull();
+  });
+});
+
+describe('POST /router', () => {
+  afterEach(() => {
+    delete process.env['FORGE_POLICY_PATH'];
+  });
+
+  // X4: off by default. This is the real model-policy.json's own default
+  // (`router.enabled: false`), not a fixture override -- proving the production
+  // default is the safe one, not just that a test can construct a safe one.
+  it('X4: routes nothing while the policy has the router off, and never touches a reasoner', async () => {
+    let reasonerCalled = false;
+    const withReasoner = new ForgeServer({
+      lanes: new Lanes(join(dir, 'lanes')), inbox: new Inbox(join(dir, 'inbox')),
+      journalPath: join(dir, 'fleet.jsonl'), port: 0,
+      reasoner: { provider: 'claude', call: async () => { reasonerCalled = true; return { text: 'x' }; } },
+    });
+    const withReasonerBase = `http://127.0.0.1:${await withReasoner.listen()}`;
+    try {
+      const response = await fetch(`${withReasonerBase}/router`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-forge-token': withReasoner.token },
+        body: JSON.stringify({ text: 'what is running' }),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ routed: false, reason: 'router off' });
+      expect(reasonerCalled).toBe(false);
+    } finally {
+      await withReasoner.close();
+    }
+  });
+
+  it('X4: refuses without a token', async () => {
+    const response = await fetch(`${base}/router`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'hi' }),
+    });
+    expect(response.status).toBe(401);
+  });
+
+  it('X4: 501s when the router is enabled but no reasoner was wired', async () => {
+    const policyPath = join(dir, 'router-on-policy.json');
+    writeFileSync(policyPath, JSON.stringify({ router: { enabled: true } }), 'utf8');
+    process.env['FORGE_POLICY_PATH'] = policyPath;
+    const response = await fetch(`${base}/router`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forge-token': server.token },
+      body: JSON.stringify({ text: 'hi' }),
+    });
+    expect(response.status).toBe(501);
+  });
+
+  it('X4: when enabled and wired, classifies and acts through the fake reasoner only', async () => {
+    const policyPath = join(dir, 'router-on-policy-2.json');
+    writeFileSync(policyPath, JSON.stringify({ router: { enabled: true } }), 'utf8');
+    process.env['FORGE_POLICY_PATH'] = policyPath;
+
+    let calls = 0;
+    const reasoner = {
+      provider: 'claude' as const,
+      call: async () => {
+        calls += 1;
+        return { text: calls === 1 ? 'intake' : 'unused' };
+      },
+    };
+    const routedLanes = new Lanes(join(dir, 'lanes-routed'));
+    const routedServer = new ForgeServer({
+      lanes: routedLanes, inbox: new Inbox(join(dir, 'inbox-routed')),
+      journalPath: join(dir, 'fleet-routed.jsonl'), port: 0, reasoner,
+    });
+    const routedBase = `http://127.0.0.1:${await routedServer.listen()}`;
+    try {
+      const response = await fetch(`${routedBase}/router`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-forge-token': routedServer.token },
+        body: JSON.stringify({ text: 'build the new thing' }),
+      });
+      const body = await response.json() as Record<string, unknown>;
+      expect(response.status).toBe(200);
+      expect(body['routed']).toBe(true);
+      expect((body['outcome'] as Record<string, unknown>)['class']).toBe('intake');
+      expect(calls).toBe(1);
+    } finally {
+      await routedServer.close();
+    }
   });
 });
 

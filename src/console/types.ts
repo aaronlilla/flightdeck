@@ -93,6 +93,17 @@ export interface ForgeState {
   /** The contracts' `ForgeStateSnapshot.runs`: the journal's live view of every run,
    *  keyed by run. Optional so a fixture built before this field existed still typechecks. */
   runs?: Record<string, ConsoleRunView>;
+  /** X4: whether `POST /router` will actually classify and act, read fresh from the
+   *  policy file on every `/state` call. Optional so a fixture predating the router
+   *  reads as "off" rather than throwing. */
+  router_enabled?: boolean;
+}
+
+/** `POST /router`'s response shape (X4). */
+export interface RouterResult {
+  routed: boolean;
+  reason?: string;
+  outcome?: { class: string; [key: string]: unknown };
 }
 
 export interface InboxEntry {

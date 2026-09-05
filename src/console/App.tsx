@@ -104,6 +104,15 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     [refresh],
   );
 
+  const onRoute = useCallback(
+    async (text: string) => {
+      const result = await api.sendToRouter(text);
+      await refresh();
+      return result;
+    },
+    [refresh],
+  );
+
   const unreachable = status === 'closed' || Boolean(loadError);
 
   return (
@@ -123,7 +132,12 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
           onClear={onClear}
           onOpen={setOpenRun}
         />
-        <InboxRail open={inbox.open} onAnswer={onAnswer} />
+        <InboxRail
+          open={inbox.open}
+          onAnswer={onAnswer}
+          routerEnabled={state?.router_enabled ?? false}
+          onRoute={onRoute}
+        />
       </main>
       {openRun ? <TicketSheet run={openRun} onClose={() => setOpenRun(undefined)} /> : null}
     </div>

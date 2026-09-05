@@ -475,6 +475,33 @@ button {
   font-size: var(--gd-size-label);
 }
 
+/* -- Rail thread (X4) -------------------------------------------------------- */
+
+.rail-thread {
+  margin-top: auto;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--gd-border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.rail-thread__status {
+  margin: 0;
+  font-size: var(--gd-size-label);
+  color: var(--gd-ink-faint);
+}
+
+.rail-thread__status[data-router-status='on'] {
+  color: var(--gd-verified);
+}
+
+.rail-thread__result {
+  margin: 0;
+  font-size: var(--gd-size-label);
+  color: var(--gd-ink-muted);
+}
+
 .inbox-card {
   background: var(--gd-surface-sunken);
   border: 1px solid var(--gd-border);

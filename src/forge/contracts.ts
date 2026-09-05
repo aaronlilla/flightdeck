@@ -189,6 +189,11 @@ export const FORGE_EVENT_NAMES = [
   // from `permission.denied` (a park or the context ceiling) so a reader can tell a
   // policy refusal from a liveness one without inspecting `reason`.
   'rule.denied',
+  // X4, the console's rail-thread router: 'intake.requested' for new work the router
+  // handed to Intake, 'proposal' for a system-instruction message the act step read as
+  // a suggestion rather than a bug report (`gotcha` above already covers the other
+  // reading of that same class).
+  'intake.requested', 'proposal',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];

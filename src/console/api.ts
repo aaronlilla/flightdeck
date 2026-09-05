@@ -5,7 +5,7 @@
  * goal brief: "all of that lives behind one `api.ts`").
  */
 import { redactErrorBody } from './redact.js';
-import type { ForgeState, InboxEntry, InboxState, RunDetail } from './types.js';
+import type { ForgeState, InboxEntry, InboxState, RouterResult, RunDetail } from './types.js';
 
 export class ApiError extends Error {
   constructor(readonly status: number, message: string) {
@@ -68,4 +68,10 @@ export function clearLane(target: string): Promise<{ ok: boolean }> {
  *  plan/PR/council/comment fields, all `null` rather than omitted. */
 export function getRun(id: string): Promise<RunDetail> {
   return call<RunDetail>(`/run/${encodeURIComponent(id)}`);
+}
+
+/** X4: a message typed into the rail thread. Answers `{ routed: false }` when the
+ *  server's policy has the router off; the rail renders that as "router off". */
+export function sendToRouter(text: string): Promise<RouterResult> {
+  return call<RouterResult>('/router', { method: 'POST', body: JSON.stringify({ text }) });
 }

@@ -123,5 +123,6 @@
     "smallMaxLines": 100,
     "largeMinLines": 500,
     "riskyPaths": ["**/features/wallet/**", "**/features/auth/**", "**/Financial/**"]
-  }
+  },
+  "router": {"enabled": false}
 }
