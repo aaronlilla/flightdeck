@@ -24,7 +24,7 @@ describe('readChainEnv', () => {
     const env = readChainEnv({
       FORGE_CHAIN: '1',
       FORGE_CHAIN_POLL_S: '60',
-      FORGE_REPO_CHECKOUTS: 'owner/name=C:/dev/name',
+      FORGE_REPO_CHECKOUTS: 'owner/name=D:/repos/name',
       FORGE_REPO_BASE: 'owner/name=main',
       FORGE_WORKTREE_SETUP: 'owner/name=npm ci',
       FORGE_REPO_VERIFY: 'owner/name=npm run verify',
@@ -33,7 +33,7 @@ describe('readChainEnv', () => {
     });
     expect(env.enabled).toBe(true);
     expect(env.pollSeconds).toBe(60);
-    expect(checkoutFor(env, 'owner/name')).toBe('C:/dev/name');
+    expect(checkoutFor(env, 'owner/name')).toBe('D:/repos/name');
     expect(baseFor(env, 'owner/name')).toBe('main');
     expect(baseFor(env, 'owner/unset')).toBe('develop');
     expect(worktreeSetupFor(env, 'owner/name')).toBe('npm ci');
@@ -62,8 +62,8 @@ describe('parseRepoScoped', () => {
 
 describe('worktreePathFor', () => {
   it('places the worktree in a sibling "worktrees" directory, named <name-lower>--<ticket-lower>', () => {
-    const path = worktreePathFor('C:/dev/Name', 'Owner/Name', 'ABC-1');
-    expect(path).toBe('C:/dev/worktrees/name--abc-1');
+    const path = worktreePathFor('D:/repos/Name', 'Owner/Name', 'ABC-1');
+    expect(path).toBe('D:/repos/worktrees/name--abc-1');
   });
 });
 
