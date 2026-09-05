@@ -18,6 +18,7 @@ import type { Packet, PollSourceName, Watermark } from '../contracts.js';
 import type { FakePollFeed } from './poller.js';
 import { runPoll } from './poller.js';
 import { PacketStore } from './packetStore.js';
+import { routeRepo, type RepoRule } from './repoRoute.js';
 
 export interface WatermarkStore {
   get(source: PollSourceName): Watermark;
@@ -38,6 +39,10 @@ export interface IntakeOnceResult {
    *  wrote, so a caller (`cli.ts`) can hand one to the planner without re-deriving it
    *  from the `packet.written` events above. */
   writtenPackets: Packet[];
+  /** R1: every packet this cycle wrote whose repository stayed `'unknown'`, with the
+   *  labels and components it saw, so `cli.ts` can print one line per ticket telling
+   *  the operator what to add to `FORGE_INTAKE_REPO_MAP`. */
+  unrouted: { ticket: string; labels: string[]; components: string[] }[];
 }
 
 /**
@@ -50,12 +55,14 @@ export async function runIntakeOnce(
   watermarks: WatermarkStore,
   emit: (event: IntakeOnceEvent) => void,
   packetStore: PacketStore = new PacketStore(),
+  repoRules: RepoRule[] = [],
 ): Promise<IntakeOnceResult> {
   let observed = 0;
   let packetsWritten = 0;
   let intentsRaised = 0;
   const sourcesPolled: PollSourceName[] = [];
   const writtenPackets: Packet[] = [];
+  const unrouted: IntakeOnceResult['unrouted'] = [];
 
   for (const feed of feeds) {
     sourcesPolled.push(feed.name);
@@ -68,6 +75,14 @@ export async function runIntakeOnce(
       // priority) on `event.detail`; the planner sees the ticket itself rather than a
       // bare key. A source with no detail (every fixture that predates this stream)
       // degrades to the id-only line it always wrote.
+      const labels = event.detail?.labels ?? [];
+      const components = event.detail?.components ?? [];
+      // R1: the router turns a ticket's labels, components, issue type and project key
+      // into a repository, first matching rule wins. No rules, or nothing matching,
+      // leaves it 'unknown' and the ticket is recorded below so `cli.ts` can print it.
+      const repo = routeRepo(repoRules, {
+        ticket: event.sourceId, labels, components, issuetype: event.detail?.issuetype ?? '',
+      });
       const packet = {
         id: event.key,
         ticket: event.sourceId,
@@ -77,7 +92,7 @@ export async function runIntakeOnce(
         where: event.source,
         evidence: event.detail?.description ? [event.key, event.detail.description] : [event.key],
         confidence: 'low' as const,
-        repo: 'unknown',
+        repo,
         blockedBy: [],
         at: event.updated,
       };
@@ -86,6 +101,10 @@ export async function runIntakeOnce(
         packetsWritten += 1;
         writtenPackets.push(packet);
         emit({ event: 'packet.written', ticket: packet.ticket, packetId: packet.id });
+
+        if (repo === 'unknown') {
+          unrouted.push({ ticket: packet.ticket, labels, components });
+        }
 
         intentsRaised += 1;
         emit({
@@ -97,5 +116,5 @@ export async function runIntakeOnce(
     watermarks.set(feed.name, result.watermark);
   }
 
-  return { sourcesPolled, observed, packetsWritten, intentsRaised, writtenPackets };
+  return { sourcesPolled, observed, packetsWritten, intentsRaised, writtenPackets, unrouted };
 }

@@ -40,6 +40,7 @@ import { runJiraHandoff } from './intake/jiraHandoff.js';
 import { runIntakeOnce } from './intake/once.js';
 import type { FakePollFeed } from './intake/poller.js';
 import { planFromPacket } from './intake/planner.js';
+import { parseRepoMap } from './intake/repoRoute.js';
 import { resolvePlanProvider } from './intake/reasoner.js';
 import { initialWatermark } from './intake/watermark.js';
 import { readProcessList, watchedProcesses } from './fleetwatch.js';
@@ -930,6 +931,11 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
               set: (source, mark) => writeWatermark(source, mark),
             },
             (event) => intakeJournal.append({ actor: 'intake', ...event }),
+            undefined,
+            // R1: the launch line, never a tracked file, carries the map. No map or no
+            // match leaves a packet's repository 'unknown', printed below so an operator
+            // knows what to add.
+            parseRepoMap(process.env['FORGE_INTAKE_REPO_MAP']),
           );
           // forge-council-live, work item 3: one queued packet through the planner,
           // best-effort. A Reasoner failure here must not turn an honest zero-feed or
@@ -965,6 +971,8 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
             `observed ${result.observed}, wrote ${result.packetsWritten} packet(s), `
               + `raised ${result.intentsRaised} external intent(s)`,
             ...(missingJiraLine ? [missingJiraLine] : []),
+            ...result.unrouted.map((u) => `unrouted ${u.ticket}: labels=[${u.labels.join(', ')}], `
+              + `components=[${u.components.join(', ')}]`),
             ...(plannedLine ? [plannedLine] : []),
           ],
         };

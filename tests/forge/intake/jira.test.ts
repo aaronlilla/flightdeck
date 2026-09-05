@@ -72,6 +72,32 @@ describe('createJiraFeed — no token in any error, journal row or printed line'
   });
 });
 
+describe('createJiraFeed — R1 routing fields', () => {
+  it('requests components alongside labels, and carries both on the detail', async () => {
+    let requestedBody: { fields?: string[] } | undefined;
+    const fetchFn = (async (_url: string, init: RequestInit) => {
+      requestedBody = JSON.parse(init.body as string);
+      return jsonResponse(200, {
+        issues: [{
+          key: 'BBZ-1',
+          fields: {
+            summary: 'x', updated: '2026-09-05T00:00:00.000Z',
+            labels: ['mobile'], components: [{ name: 'api' }, { name: 'wallet' }],
+          },
+        }],
+        isLast: true,
+      });
+    }) as unknown as typeof fetch;
+
+    const feed = createJiraFeed({ ...CONFIG, fetchFn });
+    const items = await feed.fetchSince(initialWatermark('jira'));
+
+    expect(requestedBody?.fields).toContain('components');
+    expect(items[0]?.detail?.labels).toEqual(['mobile']);
+    expect(items[0]?.detail?.components).toEqual(['api', 'wallet']);
+  });
+});
+
 describe('flattenAdf', () => {
   it('flattens a two-paragraph Atlassian document to plain text', () => {
     const adf = {

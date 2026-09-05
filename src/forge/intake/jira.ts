@@ -70,6 +70,8 @@ interface JiraSearchIssue {
     updated?: string;
     issuetype?: { name?: string };
     priority?: { name?: string };
+    labels?: string[];
+    components?: { name?: string }[];
   };
   renderedFields?: { description?: string };
 }
@@ -88,6 +90,9 @@ function detailFor(issue: JiraSearchIssue): PollItemDetail {
     status: issue.fields.status?.name ?? '',
     issuetype: issue.fields.issuetype?.name ?? '',
     priority: issue.fields.priority?.name ?? '',
+    // R1: what the repository router matches labels and components against.
+    labels: issue.fields.labels ?? [],
+    components: (issue.fields.components ?? []).map((c) => c.name ?? '').filter((name) => name.length > 0),
   };
 }
 
@@ -114,7 +119,7 @@ export function createJiraFeed(config: JiraConfig): FakePollFeed {
           headers: { 'content-type': 'application/json', authorization: auth },
           body: JSON.stringify({
             jql: config.jql ?? DEFAULT_JIRA_JQL,
-            fields: ['summary', 'description', 'status', 'updated', 'issuetype', 'priority', 'labels'],
+            fields: ['summary', 'description', 'status', 'updated', 'issuetype', 'priority', 'labels', 'components'],
             maxResults: 50,
             ...(nextPageToken ? { nextPageToken } : {}),
           }),

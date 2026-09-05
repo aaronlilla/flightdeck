@@ -13,6 +13,9 @@ import { advanceWatermark, filterNewItems } from './watermark.js';
  * J2: the source's own text, when the source has it, so the planner sees the ticket
  * rather than a bare key. Only Jira populates this today. Every other fixture leaves it
  * off, and downstream code falls back to the bare id.
+ *
+ * `labels` and `components` (R1) feed the repository router in `repoRoute.ts`. Optional
+ * because every fixture written before R1 constructs a detail without them.
  */
 export interface PollItemDetail {
   summary: string;
@@ -20,6 +23,8 @@ export interface PollItemDetail {
   status: string;
   issuetype: string;
   priority: string;
+  labels?: string[];
+  components?: string[];
 }
 
 /** A source's own item, before this module stamps it with the feed's source name. */

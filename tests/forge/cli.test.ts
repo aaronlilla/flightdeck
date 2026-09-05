@@ -34,7 +34,10 @@ beforeEach(() => {
   process.env['FORGE_CONFIG_DIR'] = join(home, 'claude');
   // Forge Jira stream: every specimen starts from "nothing configured" and opts in
   // explicitly, so a developer's own shell (or a prior specimen) never leaks a value in.
-  for (const name of ['FORGE_JIRA_SITE', 'FORGE_JIRA_EMAIL', 'FORGE_JIRA_TOKEN', 'FORGE_JIRA_JQL', 'FORGE_JIRA_QA_ACCOUNT', 'FORGE_JIRA_QA_TRANSITION']) {
+  for (const name of [
+    'FORGE_JIRA_SITE', 'FORGE_JIRA_EMAIL', 'FORGE_JIRA_TOKEN', 'FORGE_JIRA_JQL',
+    'FORGE_JIRA_QA_ACCOUNT', 'FORGE_JIRA_QA_TRANSITION', 'FORGE_INTAKE_REPO_MAP',
+  ]) {
     delete process.env[name];
   }
 });
@@ -680,6 +683,44 @@ describe('P4.7/I5: forge intake --once', () => {
     expect(planned).toBeTruthy();
     const briefPath = String(planned?.['briefPath']);
     expect(readFileSync(briefPath, 'utf8')).toContain('# Goal: fix BBZ-2');
+  });
+});
+
+describe('R1: FORGE_INTAKE_REPO_MAP routing for forge intake --once', () => {
+  it('with no map, prints one line per unrouted packet naming the ticket, labels and components', async () => {
+    const intakeFeeds = [{
+      name: 'jira' as const,
+      fetchSince: async () => [{
+        id: 'BBZ-6', updated: 100,
+        detail: {
+          summary: 'x', description: '', status: 'Open', issuetype: 'Bug', priority: 'High',
+          labels: ['other'], components: ['api'],
+        },
+      }],
+    }];
+    const result = await forge(['intake', '--once'], { intakeFeeds });
+    expect(result.code).toBe(0);
+    const line = result.lines.join(' ');
+    expect(line).toContain('BBZ-6');
+    expect(line).toContain('other');
+    expect(line).toContain('api');
+  });
+
+  it('a matching rule routes the ticket, and no unrouted line is printed for it', async () => {
+    process.env['FORGE_INTAKE_REPO_MAP'] = 'label:mobile=owner/frontend';
+    const intakeFeeds = [{
+      name: 'jira' as const,
+      fetchSince: async () => [{
+        id: 'BBZ-7', updated: 100,
+        detail: {
+          summary: 'x', description: '', status: 'Open', issuetype: 'Bug', priority: 'High',
+          labels: ['mobile'], components: [],
+        },
+      }],
+    }];
+    const result = await forge(['intake', '--once'], { intakeFeeds });
+    expect(result.code).toBe(0);
+    expect(result.lines.join(' ')).not.toMatch(/unrouted/);
   });
 });
 
