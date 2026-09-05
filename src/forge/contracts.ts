@@ -172,6 +172,10 @@ export const FORGE_EVENT_NAMES = [
   'inbox.queued', 'inbox.offered', 'stuck', 'cleared', 'blocker.raised', 'blocker.cleared',
   'external.intent', 'external.complete', 'external.unknown', 'decision.made',
   'source.observed', 'packet.written', 'policy.unknown-model',
+  // Warden's own additions (roadmap P4.1): a kill Actuator.kill actually carried out,
+  // a kill it refused for lack of a decision, and a fleet-probe health note that is never
+  // acted on (liveness.ts's fleet-unknown, surfaced but not treated as a run's own fault).
+  'run.killed', 'warden.refused', 'warden.health',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];
@@ -320,7 +324,7 @@ export function replayEvents(text: string, options: { sinceSeq?: number } = {}):
 // StuckSignal, extended with drift and a blocker record
 // ---------------------------------------------------------------------------------------
 
-export type ExtendedLivenessSignal = LivenessSignal | 'drift' | 'blocker';
+export type ExtendedLivenessSignal = LivenessSignal | 'drift' | 'blocker' | 'cost-shape';
 
 /** A blocker's own identity, so Warden can build on `liveness.ts` rather than beside it. */
 export interface BlockerRecord {
@@ -336,7 +340,10 @@ export interface ExtendedStuckSignal extends Omit<StuckSignal, 'signal'> {
 
 export const ExtendedStuckSignalSchema = z.object({
   key: z.string().min(1),
-  signal: z.enum(['idle', 'tool-budget', 'context', 'stale-session', 'login-stuck', 'fleet-unknown', 'drift', 'blocker']),
+  signal: z.enum([
+    'idle', 'tool-budget', 'context', 'stale-session', 'login-stuck', 'fleet-unknown', 'drift',
+    'blocker', 'cost-shape',
+  ]),
   threshold: z.number(),
   observed: z.number(),
   since: z.number(),
