@@ -31,7 +31,7 @@ beforeEach(() => {
   board = new BlockerBoard({
     journal,
     actuator: {
-      park: async (run, reason) => { parked.push(`${run}:${reason}`); },
+      park: async (run, reason) => { parked.push(`${run}:${reason}`); return true; },
       resume: async (run, input) => { resumed.push(`${run}:${input}`); },
     },
   });

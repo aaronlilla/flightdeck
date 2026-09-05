@@ -217,6 +217,9 @@ export const FORGE_EVENT_NAMES = [
   // parse (`parsed: false`, with the raw text); `reasoner.timeout` is a call that
   // outran `reasoner.timeoutMs` and was abandoned rather than awaited further.
   'reasoner.call', 'reasoner.timeout',
+  // I16: a base-drift blocker this run raised earlier clears when a later post-push
+  // read finds the branch mergeable after all.
+  'run.unblocked',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];
@@ -679,7 +682,15 @@ export type DecisionId = string;
  * `StuckSignal`, never an `Actuator`.
  */
 export interface Actuator {
-  park(run: RunId, reason: string): Promise<void>;
+  /**
+   * Resolves `true` when the run was actually parked (a registry row or a lane backs
+   * it), `false` when the target is unregistered and the actuator refused instead,
+   * journaling `warden.refused` itself and touching nothing on disk (I11/I11b). A
+   * caller deciding which event to journal must use this return value, never a
+   * registration check it computed itself earlier: two separate reads of the same
+   * registry, one before this call and one inside it, can disagree on a live fleet.
+   */
+  park(run: RunId, reason: string): Promise<boolean>;
   nudge(run: RunId, message: string): Promise<void>;
   resume(run: RunId, input: string): Promise<void>;
   /** `kill` alone carries a decision id: park, nudge and resume are reversible, this is not. */

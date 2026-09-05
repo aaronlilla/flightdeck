@@ -83,18 +83,19 @@ export class WardenActuator implements Actuator {
    * check (`warden-tick.ts`): whatever else calls this actuator directly still cannot
    * park a phantom.
    */
-  async park(run: string, reason: string): Promise<void> {
+  async park(run: string, reason: string): Promise<boolean> {
     if (!this.isRegistered(run)) {
       this.deps.journal.append({
         event: 'warden.refused', run, actor: 'warden', action: 'park',
         reason: 'no registry row and no lane names this run',
       });
-      return;
+      return false;
     }
     const at = Date.now();
     writeParkRecord(run, { key: `warden:${run}`, reason, at });
     this.deps.lanes?.put(run, { needs_aaron: reason });
     this.deps.journal.append({ event: 'run.parked', run, actor: 'warden', reason });
+    return true;
   }
 
   async nudge(run: string, message: string): Promise<void> {

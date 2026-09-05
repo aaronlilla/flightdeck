@@ -10,7 +10,7 @@
 import type { Journal } from './journal.js';
 
 export interface BlockerActuator {
-  park(run: string, reason: string): Promise<void>;
+  park(run: string, reason: string): Promise<boolean>;
   resume(run: string, input: string): Promise<void>;
 }
 

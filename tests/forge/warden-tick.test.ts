@@ -129,6 +129,36 @@ describe('WardenTick.run', () => {
     expect(readParkRecord('pid:9999')).toBeUndefined();
   });
 
+  it("I11b: when the tick's own isRegisteredRun disagrees with the actuator's real answer, "
+    + 'the actuator wins -- warden.health, never warden.parked, no directory', async () => {
+    // The tick's own registration snapshot says "registered"; the real actuator (backed
+    // by a registry with no row for this key) refuses underneath it. Reproduces the
+    // 2026-09-04 22:28 incident: twenty `warden.parked` rows for `pid:NNNN` keys with no
+    // run directory, because the tick journaled off its own stale check instead of the
+    // actuator's actual outcome.
+    const tick = new WardenTick({
+      journal, actuator, blockers: new BlockerBoard({ journal, actuator }),
+      now: () => Date.now(),
+      stuck: () => [makeStuck({
+        key: 'pid:5555', signal: 'stale-session',
+        hint: "fleet pid 5555's session file has not updated in 6 minutes",
+      })],
+      liveRuns: () => [],
+      reportFleetHealth: () => 0,
+      isRegisteredRun: () => true,
+    });
+
+    await tick.run();
+    await tick.run();
+    await tick.run();
+
+    const state = replay(journalPath);
+    expect(state.events.some((e) => e.event === 'warden.parked' && e.run === 'pid:5555')).toBe(false);
+    const healthRows = state.events.filter((e) => e.event === 'warden.health' && e['key'] === 'pid:5555');
+    expect(healthRows).toHaveLength(3);
+    expect(readParkRecord('pid:5555')).toBeUndefined();
+  });
+
   it('still parks a registered run whose key passes isRegisteredRun', async () => {
     const tick = new WardenTick({
       journal, actuator, blockers: new BlockerBoard({ journal, actuator }),

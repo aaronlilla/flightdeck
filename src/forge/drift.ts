@@ -50,3 +50,46 @@ export function driftBlocker(run: string, state: Mergeable, base = 'the base bra
     options: ['rebase and continue', 'stop and leave it for review'],
   };
 }
+
+/**
+ * `now()`/`sleep()`, injected so a specimen can drive the retry window below without a
+ * real wait (I16's own falsifier: "the retry sleeps for real in the specimen").
+ * Production gets the real clock; a fake advances its own virtual clock on `sleep`
+ * instead of actually waiting.
+ */
+export interface DriftClock {
+  now(): number;
+  sleep(ms: number): Promise<void>;
+}
+
+export const REAL_DRIFT_CLOCK: DriftClock = {
+  now: () => Date.now(),
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+};
+
+/**
+ * GitHub computes a pull request's mergeable state asynchronously after it is created
+ * (and after a push moves it), so the read right after a push or a PR open is routinely
+ * UNKNOWN for a branch that is perfectly fine (I16, C2 run 8: the drift check raised a
+ * blocker for a PR that was twelve seconds old). Retrying gives that computation a
+ * chance to finish before treating the run as stuck.
+ *
+ * A confirmed CONFLICTING state raises at once -- there is nothing to wait for, the
+ * branch already lost. An UNKNOWN state is retried every `intervalMs` until either a
+ * definite answer arrives or `windowMs` has passed, at which point the last read
+ * (MERGEABLE, CONFLICTING or still UNKNOWN) is returned as-is.
+ */
+export async function resolveMergeable(
+  check: () => Promise<Mergeable>,
+  clock: DriftClock = REAL_DRIFT_CLOCK,
+  intervalMs = 10_000,
+  windowMs = 90_000,
+): Promise<Mergeable> {
+  const deadline = clock.now() + windowMs;
+  let state = await check();
+  while (state === 'UNKNOWN' && clock.now() < deadline) {
+    await clock.sleep(intervalMs);
+    state = await check();
+  }
+  return state;
+}

@@ -65,7 +65,7 @@ describe('a single off-task verdict', () => {
     const checker = new ConformanceDrift({
       reasoner: fakeReasoner(['no, wandered off']),
       journal,
-      actuator: { park: async (run) => { parked.push(run); } },
+      actuator: { park: async (run) => { parked.push(run); return true; } },
     });
     const result = await checker.check('r1', '- do the thing', ['Bash: ls']);
     expect(result.parked).toBe(false);
@@ -78,7 +78,7 @@ describe('two consecutive off-task verdicts', () => {
     const checker = new ConformanceDrift({
       reasoner: fakeReasoner(['no, first drift', 'no, second drift']),
       journal,
-      actuator: { park: async (run) => { parked.push(run); } },
+      actuator: { park: async (run) => { parked.push(run); return true; } },
     });
 
     await checker.check('r1', '- do the thing', []);
@@ -96,7 +96,7 @@ describe('two consecutive off-task verdicts', () => {
     const checker = new ConformanceDrift({
       reasoner: fakeReasoner(['no, drifted', 'yes, back on task', 'no, drifted again']),
       journal,
-      actuator: { park: async (run) => { parked.push(run); } },
+      actuator: { park: async (run) => { parked.push(run); return true; } },
     });
     await checker.check('r1', '- do the thing', []);
     await checker.check('r1', '- do the thing', []);

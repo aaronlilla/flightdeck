@@ -13,7 +13,7 @@ import type { Journal } from './journal.js';
 import type { Reasoner } from './contracts.js';
 
 export interface DriftActuator {
-  park(run: string, reason: string): Promise<void>;
+  park(run: string, reason: string): Promise<boolean>;
 }
 
 export interface ConformanceDriftDeps {

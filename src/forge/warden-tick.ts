@@ -131,21 +131,34 @@ export class WardenTick {
       const id = `${trip.key}:${trip.signal}`;
       if (this.parkedTrips.has(id)) continue;
 
-      if (!isRegistered(trip.key)) {
-        // `trip.key` names no registry row and no lane: a fleet pid the tick was never
-        // meant to act on, per the same trip it would otherwise have parked (I11). Report
-        // it and stop -- the actuator never sees it, so it can never create a run
-        // directory or a lane for a process that is not a run.
-        await guarded(`health:${id}`, () => {
+      await guarded(`park:${id}`, async () => {
+        const health = (): void => {
           this.deps.journal.append({
             event: 'warden.health', actor: 'warden', key: trip.key, signal: trip.signal, evidence: trip,
           });
-        }, onError);
-        continue;
-      }
+        };
 
-      await guarded(`park:${id}`, async () => {
-        await this.deps.actuator.park(trip.key, trip.hint);
+        // `trip.key`'s own pre-check: a fleet pid the tick was never meant to act on
+        // (I11) skips calling the actuator at all, the common case for a `pid:N` key
+        // that never has a registry row or a lane. This is an optimisation, not the
+        // decision of record -- see below.
+        if (!isRegistered(trip.key)) {
+          health();
+          return;
+        }
+
+        // I11b: the pre-check above and the actuator's own registration check are two
+        // reads of the same registry, one before this call and one inside it, and a
+        // live fleet can change between them (the 2026-09-04 22:28 incident: the tick
+        // believed a `pid:N` key was registered, the actuator refused it underneath,
+        // and the tick journaled `warden.parked` anyway because it never looked at what
+        // the actuator actually did). So the journal is decided from the actuator's
+        // real answer, never from the pre-check that got it to call the actuator.
+        const parked = await this.deps.actuator.park(trip.key, trip.hint);
+        if (!parked) {
+          health();
+          return;
+        }
         this.deps.journal.append({
           event: 'warden.parked', run: trip.key, actor: 'warden', signal: trip.signal, evidence: trip,
         });
@@ -166,7 +179,13 @@ export class WardenTick {
         if (!trip) return;
         const id = `${trip.key}:${trip.signal}`;
         if (this.parkedTrips.has(id)) return;
-        await this.deps.actuator.park(run.run, trip.hint);
+        const parked = await this.deps.actuator.park(run.run, trip.hint);
+        if (!parked) {
+          this.deps.journal.append({
+            event: 'warden.health', actor: 'warden', key: run.run, signal: trip.signal, evidence: trip.hint,
+          });
+          return;
+        }
         this.deps.journal.append({
           event: 'warden.parked', run: run.run, actor: 'warden', signal: trip.signal, evidence: trip.hint,
         });
