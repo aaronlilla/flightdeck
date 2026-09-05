@@ -472,6 +472,13 @@ export function chainLauncher(chainEnv: ChainEnv, fleetConfigDir: string): Chain
         // for the PR itself.
       };
     },
+
+    async runRegistered(runKey) {
+      return hasRunRegistered(runKey, {
+        registry: new Registry(registryDir()),
+        events: replay(journalPath()).events,
+      });
+    },
   };
 }
 

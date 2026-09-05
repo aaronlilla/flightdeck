@@ -112,6 +112,10 @@ export interface ChainLauncher {
     worktreePath: string; branch: string;
   }): Promise<ChainLaunchResult>;
   status(runKey: string): Promise<ChainRunStatus>;
+  /** F2: whether a run under this key has actually started -- a registry row or a
+   *  `run.started` journal row. `runChainTick` calls this only to reconcile a packet
+   *  blocked at the launch hop; a launch that succeeds on its own never needs it. */
+  runRegistered(runKey: string): Promise<boolean>;
 }
 
 export interface ChainGh {
@@ -230,6 +234,11 @@ export function foldChainState(events: ChainEventLike[]): Map<string, ChainPacke
         break;
       case 'chain.launched':
         row.launched = { runKey: String(raw['runKey'] ?? '') };
+        // F2: a reconciled launch is journaled straight from a `blocked` row (the
+        // launch hop's own retry never runs `chain.unblocked` first), so this clears
+        // that block itself -- otherwise the row stays terminal forever with a launch
+        // that in fact went ahead.
+        delete row.blocked;
         break;
       case 'chain.gated':
         row.gated = {
@@ -271,6 +280,22 @@ function prNumberFromUrl(url: string): number | undefined {
 }
 
 async function advancePacket(row: ChainPacketState, deps: ChainDeps): Promise<void> {
+  // F2: a packet blocked at the launch hop might have a run that did register -- the
+  // chain lost track of it (a crash between the child registering and this process's own
+  // wait resolving, say), rather than the launch itself failing. Checked before the block
+  // is treated as terminal, on every tick, so this never depends on `forge chain retry` to
+  // notice: a registered run folds the packet straight back to `launched`, and
+  // `deps.launcher.launch` is never called a second time for it.
+  if (row.blocked?.hop === 'launch' && !row.launched && row.briefPath) {
+    const runKey = runKeyForBrief(row.briefPath);
+    if (await deps.launcher.runRegistered(runKey)) {
+      deps.append({
+        event: 'chain.launched', actor: 'chain', packetId: row.packetId, runKey, reconciled: true,
+      });
+      return;
+    }
+  }
+
   if (isTerminal(row)) return;
 
   if (!row.launched) {
