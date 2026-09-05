@@ -11,6 +11,8 @@
  * outlive a plain kill. `taskkill /F /T` takes the tree. The specimen that matters is a
  * command that spawns a child and outlives its parent.
  */
+import type { ChildProcess, SpawnOptions } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -139,6 +141,66 @@ describe('B.3.9: redact() reaches the dump and the tail, even split across chunk
     expect(dump).not.toContain(secret);
     expect(dump).toContain('[REDACTED]');
   }, 20_000);
+});
+
+describe('C1: running the command through a shell', () => {
+  /** A `spawn`-shaped fake that never touches a real process: records what it was
+   *  called with, then resolves the run immediately as if the command exited clean. */
+  function fakeSpawn(calls: Array<{ command: string; args: string[]; options: Record<string, unknown> }>) {
+    return (command: string, args: string[] = [], options: SpawnOptions = {}): ChildProcess => {
+      calls.push({ command, args, options: options as unknown as Record<string, unknown> });
+      const child = new EventEmitter() as unknown as ChildProcess;
+      (child as unknown as { pid: number }).pid = 4242;
+      (child as unknown as { stdout: EventEmitter }).stdout = new EventEmitter();
+      (child as unknown as { stderr: EventEmitter }).stderr = new EventEmitter();
+      setImmediate(() => child.emit('close', 0));
+      return child;
+    };
+  }
+
+  it('with a shell prefix, runs the prefix followed by the whole command as one argument', async () => {
+    const calls: Array<{ command: string; args: string[]; options: Record<string, unknown> }> = [];
+    await run({
+      argv: ['npm', 'ci', '&&', 'npm', 'run', 'build'],
+      shell: ['C:/tools/bash.exe', '-c'],
+      cwd: dir, owner: 'r1', spawnFn: fakeSpawn(calls),
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.command).toBe('C:/tools/bash.exe');
+    expect(calls[0]?.args).toEqual(['-c', 'npm ci && npm run build']);
+    expect(calls[0]?.options['shell']).toBeFalsy();
+  });
+
+  it('with no prefix, runs the whole command as one string with shell: true', async () => {
+    const calls: Array<{ command: string; args: string[]; options: Record<string, unknown> }> = [];
+    await run({
+      argv: ['npm', 'ci', '&&', 'npm', 'run', 'build'],
+      shell: true,
+      cwd: dir, owner: 'r1', spawnFn: fakeSpawn(calls),
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.command).toBe('npm ci && npm run build');
+    expect(calls[0]?.args).toEqual([]);
+    expect(calls[0]?.options['shell']).toBe(true);
+  });
+
+  it('with no shell option at all, keeps exec\'ing argv directly (today\'s behavior)', async () => {
+    const calls: Array<{ command: string; args: string[]; options: Record<string, unknown> }> = [];
+    await run({ argv: ['npm', 'ci'], cwd: dir, owner: 'r1', spawnFn: fakeSpawn(calls) });
+    expect(calls[0]?.command).toBe('npm');
+    expect(calls[0]?.args).toEqual(['ci']);
+    expect(calls[0]?.options['shell']).toBeFalsy();
+  });
+
+  it('a real shell:true run chains two commands the way "&&" implies', async () => {
+    // No fake here -- a real run through the platform's own shell, on both the
+    // Windows and POSIX runners this repository's CI matrix carries.
+    const result = await run({
+      argv: ['node -e "process.exitCode=0" && exit 0'],
+      shell: true, cwd: dir, owner: 'r1',
+    });
+    expect(result.ok).toBe(true);
+  });
 });
 
 describe('B.3.9: killTree is latched, not fired every tick', () => {
