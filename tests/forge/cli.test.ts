@@ -464,3 +464,45 @@ describe('forge decide', () => {
     expect(result.lines.join(' ')).toMatch(new RegExp(`decision ${decision?.id} recorded: kill r1`));
   });
 });
+
+describe('P4.7/I2: CredentialHorizon consulted before every launch', () => {
+  it('refuses to launch a second run on an account whose login flow is already in flight', async () => {
+    const { acquireLoginLock } = await import('../../src/forge/credential-horizon.js');
+    const account = process.env['FORGE_CONFIG_DIR']!;
+    acquireLoginLock(account, { pid: process.pid, startedAt: Date.now() }, () => true);
+
+    const brief = join(home, 'ok.md');
+    writeFileSync(brief, '# Goal\n\nDo the thing.\n', 'utf8');
+    const result = await forge(['run', brief]);
+
+    expect(result.code).toBe(1);
+    expect(result.lines.join(' ')).toMatch(/credential horizon|login.*(flight|already)/i);
+  });
+
+  it('launches normally when no login flow is in flight for the account', async () => {
+    const brief = join(home, 'ok.md');
+    const briefText = '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnode -e process.exit(0)\n```\n';
+    writeFileSync(brief, briefText, 'utf8');
+    const engine = { started: [] as SessionRequest[], async run(config: SessionRequest) { engine.started.push(config); return { sessionId: 's', turns: [{ text: 'done', context: 10, done: true }] }; } };
+
+    const result = await forge(['run', brief], { engine });
+
+    expect(result.code).toBe(0);
+  });
+
+  it('a stale lock (dead pid) never blocks a launch', async () => {
+    const { acquireLoginLock } = await import('../../src/forge/credential-horizon.js');
+    const account = process.env['FORGE_CONFIG_DIR']!;
+    // A pid that is certainly not alive on this machine.
+    acquireLoginLock(account, { pid: 999_999, startedAt: Date.now() }, () => false);
+
+    const brief = join(home, 'ok.md');
+    const briefText = '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnode -e process.exit(0)\n```\n';
+    writeFileSync(brief, briefText, 'utf8');
+    const engine = { started: [] as SessionRequest[], async run(config: SessionRequest) { engine.started.push(config); return { sessionId: 's', turns: [{ text: 'done', context: 10, done: true }] }; } };
+
+    const result = await forge(['run', brief], { engine });
+
+    expect(result.code).toBe(0);
+  });
+});

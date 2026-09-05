@@ -18,7 +18,9 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { BlockerBoard } from './blockers.js';
 import { runCutover } from './cutover.js';
+import { readLoginLock } from './credential-horizon.js';
 import { planIntakeWrites } from './intake/dryRun.js';
 import { readProcessList, watchedProcesses } from './fleetwatch.js';
 import { Gotchas } from './gotcha.js';
@@ -30,11 +32,13 @@ import {
   ensureHome, fleetConfigDirChoice, forgeHome, gotchasDir, inboxDir, journalPath, killSwitchPath,
   lanesDir, registryDir,
 } from './paths.js';
-import { reconcileRegistry, Registry } from './registry.js';
+import { processAlive, reconcileRegistry, Registry } from './registry.js';
 import { deliverAnswer, RunInbox } from './runinbox.js';
 import { SdkEngine } from './sdkengine.js';
 import { FORGE_PORT, ForgeServer } from './server.js';
 import { Breaker, clearKillSwitch, Fleet, Lanes, readKillSwitch } from './supervisor.js';
+import { WardenActuator } from './warden.js';
+import { WardenTick, type WardenTickRun } from './warden-tick.js';
 import { Worker, type EngineLike, type WorkerConfig } from './worker.js';
 
 export interface CliResult {
@@ -194,8 +198,57 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         livenessJournal,
         (event) => server.publish(event),
       );
+      // P4.7/I2: the Warden tick, wiring reportFleetHealth, assessCostShape,
+      // ConformanceDrift (only once a real Reasoner is constructed here -- none is yet,
+      // so drift checks are a no-op today, named in the Status rather than silently
+      // skipped) and the actuator's park onto the same 30s cadence liveness already
+      // runs on. No `reasoner` is passed: nothing in this codebase implements one against
+      // a live model yet, so this tick's drift leg stays dormant until one exists.
+      const wardenJournal = new Journal(journalPath());
+      const wardenActuator = new WardenActuator({
+        journal: wardenJournal, journalPath: journalPath(), registry, lanes,
+      });
+      const wardenBlockers = new BlockerBoard({ journal: wardenJournal, actuator: wardenActuator });
+      const wardenTick = new WardenTick({
+        journal: wardenJournal,
+        actuator: wardenActuator,
+        blockers: wardenBlockers,
+        now: () => Date.now(),
+        stuck: () => liveness.stuck(),
+        liveRuns: (): WardenTickRun[] => {
+          const fleetState = sharedJournalCache.read(journalPath());
+          return Object.values(fleetState.runs)
+            .filter((run) => run.state === 'started')
+            .map((run) => {
+              const admitted = registry.get(run.run);
+              let brief: string | undefined;
+              try {
+                brief = admitted ? readFileSync(admitted.briefPath, 'utf8') : undefined;
+              } catch {
+                brief = undefined;
+              }
+              const recentToolCalls = fleetState.events
+                .filter((event) => event.run === run.run && event.event === 'tool.start')
+                .slice(-5)
+                .map((event) => String(event['tool'] ?? ''));
+              return {
+                run: run.run,
+                ...(brief !== undefined ? { brief } : {}),
+                recentToolCalls,
+                costShape: {
+                  run: run.run, context: run.context, cacheReadTokens: run.cacheReadTokens,
+                  totalReadTokens: run.totalReadTokens, turnsSinceWrite: run.turnsSinceWrite,
+                },
+              };
+            });
+        },
+      });
+
       const port = await server.listen();
-      const tick = setInterval(() => liveness.evaluate(), 30_000);
+      const tick = setInterval(() => {
+        liveness.evaluate();
+        void wardenTick.run();
+      }, 30_000);
       tick.unref();
       return {
         code: 0,
@@ -257,6 +310,23 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           lines: [
             `refusing to start ${slug}: ${lanes.get(slug)?.needs_aaron}`,
             `run forge clear ${slug} once you have looked at why it kept failing to start`,
+          ],
+        };
+      }
+
+      // P4.7/I2: CredentialHorizon is consulted before every launch. The fleet's config
+      // dir IS the account this run authenticates as, so a login flow already in flight
+      // for it (another `forge run` process's `onLapse` holding `~/.forge/logins/*.lock`)
+      // means this launch would open a second, racing login on the same account rather
+      // than parking behind the one already running. A lock whose pid is no longer alive
+      // is stale, per `credential-horizon.ts`'s own rule, and never blocks a launch.
+      const lockHolder = readLoginLock(configDir.dir);
+      if (lockHolder && processAlive(lockHolder.pid)) {
+        return {
+          code: 1,
+          lines: [
+            `refusing to start ${slug}: credential horizon has a login flow already in `
+              + `flight for ${configDir.dir} (pid ${lockHolder.pid})`,
           ],
         };
       }
