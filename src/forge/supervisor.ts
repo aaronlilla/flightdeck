@@ -137,6 +137,13 @@ export class Lanes {
       .map((name) => this.get(name.slice(0, -'.json'.length)))
       .filter((row): row is LaneRecord => Boolean(row));
   }
+
+  /** Deletes a lane's file outright. Used by `forge clear --stale`, never by anything
+   *  that just wants to reset a lane's fields -- `put` is that path. */
+  remove(slug: string): void {
+    const path = this.pathFor(slug);
+    if (existsSync(path)) rmSync(path);
+  }
 }
 
 export interface BreakerVerdict {

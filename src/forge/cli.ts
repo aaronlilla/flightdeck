@@ -96,6 +96,11 @@ export interface ForgeDeps {
   councilGh?: GhReader & GhWriter;
 }
 
+/** Item 4, 2026-09-05: how old a lane's own file has to be, with no live registry row
+ *  behind it, before `forge clear --stale` deletes it and `forge status` stops showing
+ *  it by default. */
+const STALE_LANE_MS = 24 * 3_600_000;
+
 /**
  * The fleet's process table for `status` and `up`, read through `deps.processes` when a
  * specimen supplies one. `watchedProcesses`'s own parameter defaults to a real
@@ -239,7 +244,18 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       })
         .filter((trip) => trip.signal !== 'registry-abandoned')
         .map((trip) => `STUCK  ${trip.key.padEnd(24)} ${trip.signal.padEnd(14)} ${trip.hint}`);
-      const rows = lanes.all().map((lane) => [
+      // Item 4, 2026-09-05: a lane's file survives long after its chain finished, so a
+      // fleet that ran for weeks accumulates one row per goal ever launched. `--all`
+      // still shows every one of them; the default view hides anything untouched for
+      // longer than STALE_LANE_MS, the same threshold `forge clear --stale` deletes by.
+      const showAll = rest.includes('--all');
+      const rows = lanes.all()
+        .filter((lane) => {
+          if (showAll) return true;
+          const mtime = lanes.mtimeOf(lane.slug);
+          return mtime === undefined || Date.now() - mtime < STALE_LANE_MS;
+        })
+        .map((lane) => [
         lane.slug.padEnd(28),
         (lane.model ?? '-').padEnd(18),
         `ctx ${String(lane.context ?? 0).padStart(7)}`,
@@ -656,6 +672,39 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       if (slug === '--all') {
         clearKillSwitch(killSwitchPath());
         return { code: 0, lines: ['kill switch cleared; forge run may start again'] };
+      }
+      if (slug === '--stale') {
+        // Item 4, 2026-09-05: a lane file outlives the chain it describes -- `forge run`
+        // writes it once at admission and again when the chain finishes, and nothing
+        // ever removes it after that. A lane whose chain finished (it carries a
+        // `verdict`) more than a day ago, and whose registry row is gone (so nothing is
+        // still tracking it as live or crashed-and-resumable), is stale and safe to
+        // delete outright.
+        const staleRegistry = new Registry(registryDir());
+        const staleLanes = new Lanes(lanesDir());
+        let removed = 0;
+        for (const lane of staleLanes.all()) {
+          if (!lane.verdict) continue;
+          if (staleRegistry.get(lane.slug)) continue;
+          const mtime = staleLanes.mtimeOf(lane.slug);
+          if (mtime === undefined || Date.now() - mtime < STALE_LANE_MS) continue;
+          staleLanes.remove(lane.slug);
+          removed += 1;
+        }
+        if (removed > 0) {
+          const clearJournal = new Journal(journalPath());
+          try {
+            clearJournal.append({ event: 'lanes.cleared', actor: 'forge', count: removed });
+          } finally {
+            clearJournal.close();
+          }
+        }
+        return {
+          code: 0,
+          lines: [removed
+            ? `removed ${removed} stale lane${removed === 1 ? '' : 's'}`
+            : 'no stale lanes found'],
+        };
       }
       if (slug === '--phantoms') {
         // I11: `runs/pid_N/` directories the Warden used to write for a fleet process

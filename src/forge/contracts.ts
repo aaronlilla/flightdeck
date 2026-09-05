@@ -205,6 +205,9 @@ export const FORGE_EVENT_NAMES = [
   // I11: `forge clear --phantoms` removing `runs/pid_N/` directories the Warden wrote
   // for a fleet process id that was never a registered run.
   'phantoms.cleared',
+  // Item 4, 2026-09-05: `forge clear --stale` removing lane files whose chain finished
+  // more than a day ago and whose registry row is gone.
+  'lanes.cleared',
   // I12: `reconcileRegistry` dropping a dead-pid row with no session id, once it is old
   // enough to be a crash rather than a race against its own admission.
   'registry.abandoned',

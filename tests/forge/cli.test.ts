@@ -6,7 +6,9 @@
  * argument it could get wrong, it is safe to run twice, it says plainly when there was
  * nothing to stop, and it parks rather than kills so the work survives.
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -367,6 +369,58 @@ describe('forge run', () => {
     const result = await forge(['clear', '--phantoms']);
     expect(result.code).toBe(0);
     expect(result.lines.join(' ')).toMatch(/no phantom/);
+  });
+
+  /** Item 4, 2026-09-05: sets a lane file's mtime to `ageMs` in the past, which is what
+   *  `forge clear --stale` and `forge status`'s age filter both read a lane's age from. */
+  function ageLane(slug: string, ageMs: number): void {
+    const path = join(home, 'lanes', `${slug}.json`);
+    const at = new Date(Date.now() - ageMs);
+    utimesSync(path, at, at);
+  }
+
+  it('forge clear --stale removes a finished lane over a day old with no registry row', async () => {
+    lanes().put('old-finished', { column: 'forge', verdict: 'done' });
+    ageLane('old-finished', 25 * 3_600_000);
+    lanes().put('recent-finished', { column: 'forge', verdict: 'done' });
+    lanes().put('old-registered', { column: 'forge', verdict: 'exhausted' });
+    ageLane('old-registered', 25 * 3_600_000);
+    admitLive('old-registered');
+    lanes().put('old-never-finished', { column: 'forge' });
+    ageLane('old-never-finished', 25 * 3_600_000);
+
+    const result = await forge(['clear', '--stale']);
+
+    expect(result.code).toBe(0);
+    expect(result.lines.join(' ')).toMatch(/removed 1 stale lane/);
+    expect(existsSync(join(home, 'lanes', 'old-finished.json'))).toBe(false);
+    expect(existsSync(join(home, 'lanes', 'recent-finished.json'))).toBe(true);
+    expect(existsSync(join(home, 'lanes', 'old-registered.json'))).toBe(true);
+    expect(existsSync(join(home, 'lanes', 'old-never-finished.json'))).toBe(true);
+
+    const state = replay(journal());
+    const rows = state.events.filter((e) => e.event === 'lanes.cleared');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!['count']).toBe(1);
+  });
+
+  it('forge clear --stale says plainly when there is nothing to clear', async () => {
+    const result = await forge(['clear', '--stale']);
+    expect(result.code).toBe(0);
+    expect(result.lines.join(' ')).toMatch(/no stale lane/);
+  });
+
+  it('forge status hides a lane over a day old', async () => {
+    lanes().put('ancient', { column: 'forge', model: 'claude-sonnet-5', verdict: 'done' });
+    ageLane('ancient', 25 * 3_600_000);
+    lanes().put('fresh', { column: 'forge', model: 'claude-sonnet-5', verdict: 'done' });
+
+    const hidden = await forge(['status'], { processes: () => [] });
+    expect(hidden.lines.join('\n')).not.toContain('ancient');
+    expect(hidden.lines.join('\n')).toContain('fresh');
+
+    const shown = await forge(['status', '--all'], { processes: () => [] });
+    expect(shown.lines.join('\n')).toContain('ancient');
   });
 
   it('refuses once forge stop --all has engaged the kill switch', async () => {
