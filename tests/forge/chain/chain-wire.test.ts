@@ -16,8 +16,12 @@ import { describe, expect, it } from 'vitest';
 import {
   branchFor, readChainEnv, worktreePathFor, type ChainEnv,
 } from '../../../src/forge/chain-env.js';
-import { provisionWorktree, runWorktreeSetup, type ProvisionFs } from '../../../src/forge/chain-wire.js';
+import {
+  CHAIN_LAUNCH_CONDITION, chainLaunchArgv, hasRunRegistered, launchWaitMs, provisionWorktree,
+  runWorktreeSetup, waitForLaunchToRegister, type ProvisionFs,
+} from '../../../src/forge/chain-wire.js';
 import type { RunRequest, RunResult } from '../../../src/forge/exec.js';
+import type { Registry } from '../../../src/forge/registry.js';
 
 function envWith(overrides: Partial<ChainEnv>): ChainEnv {
   return { ...readChainEnv({}), worktreeSetup: [{ repo: 'owner/name', value: 'irrelevant' }], ...overrides };
@@ -209,5 +213,162 @@ describe('provisionWorktree', () => {
 
     expect(result.reused).toBe(true);
     expect(calls.some((c) => c.argv[0] === 'npm ci')).toBe(true);
+  });
+});
+
+/** E1: the argv a chain launch spawns, against the parent's own `execArgv`/`argv[1]`. */
+describe('chainLaunchArgv', () => {
+  it('is execArgv, argv[1], run, the brief path, and the condition -- in that order', () => {
+    const argv = chainLaunchArgv(['--loader', 'tsx'], '/repo/src/forge/cli.ts', 'C:/briefs/p1.md');
+    expect(argv).toEqual(['--loader', 'tsx', '/repo/src/forge/cli.ts', 'run', 'C:/briefs/p1.md', CHAIN_LAUNCH_CONDITION]);
+  });
+
+  it('never touches import.meta.url or a cli.js sibling', () => {
+    const argv = chainLaunchArgv([], '/repo/dist/forge/cli.js', 'C:/briefs/p1.md');
+    expect(argv).not.toContain(expect.stringMatching(/chain-wire/));
+    expect(argv[0]).toBe('/repo/dist/forge/cli.js');
+  });
+});
+
+/** E2/E3: whether a run has actually started, off an injected registry and journal events. */
+describe('hasRunRegistered', () => {
+  function registryReturning(row: unknown): Pick<Registry, 'get'> {
+    return { get: () => row as ReturnType<Registry['get']> };
+  }
+
+  it('true when the registry has a row for the run key', () => {
+    const registered = hasRunRegistered('abc-1', {
+      registry: registryReturning({ goal: 'abc-1' }), events: [],
+    });
+    expect(registered).toBe(true);
+  });
+
+  it('true when a run.started row names the run key, with no registry row', () => {
+    const registered = hasRunRegistered('abc-1', {
+      registry: registryReturning(undefined),
+      events: [{ event: 'run.started', run: 'abc-1' }],
+    });
+    expect(registered).toBe(true);
+  });
+
+  it('false when neither the registry nor the journal has anything for the run key', () => {
+    const registered = hasRunRegistered('abc-1', {
+      registry: registryReturning(undefined),
+      events: [{ event: 'run.started', run: 'some-other-run' }],
+    });
+    expect(registered).toBe(false);
+  });
+});
+
+/** E2: the wait loop, against an injected clock, registry, child, and log. */
+describe('waitForLaunchToRegister', () => {
+  function fakeClock(startMs = 0): { now: () => number; sleep: (ms: number) => Promise<void> } {
+    let current = startMs;
+    return {
+      now: () => current,
+      sleep: async (ms: number) => { current += ms; },
+    };
+  }
+
+  it('resolves as soon as the run registers, without waiting out the full budget', async () => {
+    const clock = fakeClock();
+    let calls = 0;
+    const registry: Pick<Registry, 'get'> = {
+      get: () => {
+        calls += 1;
+        return (calls >= 2 ? { goal: 'abc-1' } : undefined) as ReturnType<Registry['get']>;
+      },
+    };
+
+    await waitForLaunchToRegister({
+      runKey: 'abc-1',
+      registry,
+      readEvents: () => [],
+      child: { exitCode: null },
+      readLogTail: () => '',
+      waitMs: 45_000,
+      now: clock.now,
+      sleep: clock.sleep,
+      pollMs: 200,
+    });
+
+    expect(clock.now()).toBeLessThan(45_000);
+  });
+
+  it('throws with the exit code and the log tail once the child exits before registering', async () => {
+    const clock = fakeClock();
+    const registry: Pick<Registry, 'get'> = { get: () => undefined };
+
+    await expect(waitForLaunchToRegister({
+      runKey: 'abc-1',
+      registry,
+      readEvents: () => [],
+      child: { exitCode: 1 },
+      readLogTail: () => 'Error: cannot find module cli.js',
+      waitMs: 45_000,
+      now: clock.now,
+      sleep: clock.sleep,
+    })).rejects.toThrow(/exited with code 1/);
+
+    await expect(waitForLaunchToRegister({
+      runKey: 'abc-1',
+      registry,
+      readEvents: () => [],
+      child: { exitCode: 1 },
+      readLogTail: () => 'Error: cannot find module cli.js',
+      waitMs: 45_000,
+      now: clock.now,
+      sleep: clock.sleep,
+    })).rejects.toThrow(/cannot find module cli\.js/);
+  });
+
+  it('throws once the wait itself runs out, carrying the log tail, for a child still running', async () => {
+    const clock = fakeClock();
+    const registry: Pick<Registry, 'get'> = { get: () => undefined };
+
+    await expect(waitForLaunchToRegister({
+      runKey: 'abc-1',
+      registry,
+      readEvents: () => [],
+      child: { exitCode: null },
+      readLogTail: () => 'still starting up',
+      waitMs: 1_000,
+      now: clock.now,
+      sleep: clock.sleep,
+      pollMs: 250,
+    })).rejects.toThrow(/did not register within/);
+  });
+
+  it('the thrown message never carries more than the last 300 characters of the log', async () => {
+    const clock = fakeClock();
+    const registry: Pick<Registry, 'get'> = { get: () => undefined };
+    const longLog = 'x'.repeat(1000);
+
+    await expect(waitForLaunchToRegister({
+      runKey: 'abc-1',
+      registry,
+      readEvents: () => [],
+      child: { exitCode: 1 },
+      readLogTail: () => longLog,
+      waitMs: 45_000,
+      now: clock.now,
+      sleep: clock.sleep,
+    })).rejects.toThrow(new RegExp(`x{300}(?!x)`));
+  });
+});
+
+/** E1: `FORGE_CHAIN_LAUNCH_WAIT_S`, in milliseconds. */
+describe('launchWaitMs', () => {
+  it('defaults to 45s when unset', () => {
+    expect(launchWaitMs({})).toBe(45_000);
+  });
+
+  it('reads a configured value, converted to milliseconds', () => {
+    expect(launchWaitMs({ FORGE_CHAIN_LAUNCH_WAIT_S: '10' })).toBe(10_000);
+  });
+
+  it('falls back to 45s on a non-positive or unparsable value', () => {
+    expect(launchWaitMs({ FORGE_CHAIN_LAUNCH_WAIT_S: '0' })).toBe(45_000);
+    expect(launchWaitMs({ FORGE_CHAIN_LAUNCH_WAIT_S: 'nope' })).toBe(45_000);
   });
 });

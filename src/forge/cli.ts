@@ -68,7 +68,7 @@ import { WardenTick, type WardenTickRun } from './warden-tick.js';
 import { Worker, type EngineLike, type WorkerConfig } from './worker.js';
 import { chainStatusLines, foldChainState, runChainTick } from './chain.js';
 import { readChainEnv } from './chain-env.js';
-import { buildChainDeps } from './chain-wire.js';
+import { buildChainDeps, hasRunRegistered } from './chain-wire.js';
 
 export interface CliResult {
   code: number;
@@ -1380,11 +1380,41 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         const [packetId, ...reasonArgs] = chainArgs;
         if (!packetId) return { code: 2, lines: ['forge chain retry needs a packet id'] };
 
-        const state = foldChainState(replay(journalPath()).events);
-        if (!state.has(packetId)) return { code: 2, lines: [`unknown packet ${packetId}`] };
+        const journalState = replay(journalPath());
+        const state = foldChainState(journalState.events);
+        const row = state.get(packetId);
+        if (!row) return { code: 2, lines: [`unknown packet ${packetId}`] };
 
         const reasonFlag = reasonArgs.indexOf('--reason');
         const reason = reasonFlag >= 0 ? reasonArgs.slice(reasonFlag + 1).join(' ') : undefined;
+
+        // E3, 2026-09-05: a packet whose last chain row is `chain.launched` and whose
+        // run has neither a registry row nor a `run.started` row never actually started
+        // -- the launch hop is the one worth re-running, not whatever comes after it.
+        // A run that did start is refused: `forge stop` is the right tool for that one.
+        if (row.launched && !row.blocked && !row.gated && !row.merged && !row.stopped) {
+          const runKey = row.launched.runKey;
+          const started = hasRunRegistered(runKey, {
+            registry: new Registry(registryDir()), events: journalState.events,
+          });
+          if (started) {
+            return {
+              code: 2,
+              lines: [`${packetId}'s run (${runKey}) already started; run forge stop to stop it instead`],
+            };
+          }
+
+          const launchRetryJournal = new Journal(journalPath());
+          try {
+            launchRetryJournal.append({
+              event: 'chain.unblocked', actor: 'aaron', packetId, hop: 'launch',
+              reason: 'launch never registered',
+            });
+          } finally {
+            launchRetryJournal.close();
+          }
+          return { code: 0, lines: [`unblocked ${packetId}: launch never registered, will relaunch`] };
+        }
 
         const chainJournal = new Journal(journalPath());
         try {
