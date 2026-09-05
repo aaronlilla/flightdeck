@@ -51,7 +51,7 @@ import {
   killSwitchPath, lanesDir, registryDir, runsDir,
 } from './paths.js';
 import { loadPolicy, modelFor, modelIdFor, tierOfBrief } from './policy.js';
-import { attestationCoversHead, checkHandoff, providerFor, verified } from './contracts.js';
+import { attestationCoversHead, checkHandoff, providerFor, redact, verified } from './contracts.js';
 import type { CouncilAttestation, HaipingHandoff, JoeHandoff } from './contracts.js';
 import { evaluateAction } from './rules/index.js';
 import { processAlive, reconcileRegistry, Registry } from './registry.js';
@@ -832,18 +832,41 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           judge: reasonerJudge(reasoner),
         };
 
-        const round = await runCouncilRound(
-          {
-            brief: snapshot.body, diffSummary: snapshot.diffText, changedLines: snapshot.changedLines,
-            paths: snapshot.files, ci: { runId: snapshot.checks.runId, headSha: snapshot.checks.headSha },
-          },
-          roles,
-        );
+        // I19: a lens's own reply failure (unparseable JSON, prose, or anything else
+        // `reasonerLensRunner` cannot make sense of) never reaches here as a rejection --
+        // it is already folded into a `failed: true` lens report. What can still throw at
+        // this point is the judge (or, when `council.codex` is `on`, the Codex lane)
+        // genuinely failing to answer at all, which is a different condition from any
+        // verdict the judge could actually reach: the round produced nothing to attest,
+        // rather than a verdict of FIX FIRST.
+        let round: Awaited<ReturnType<typeof runCouncilRound>>;
+        try {
+          round = await runCouncilRound(
+            {
+              brief: snapshot.body, diffSummary: snapshot.diffText, changedLines: snapshot.changedLines,
+              paths: snapshot.files, ci: { runId: snapshot.checks.runId, headSha: snapshot.checks.headSha },
+            },
+            roles,
+          );
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          councilJournal.append({
+            event: 'council.judge', actor: 'council', repo, pr, verdict: 'unavailable', error: redact(message),
+          });
+          return { code: 1, lines: [`refused: the judge could not produce a verdict: ${redact(message)}`] };
+        }
 
         for (const report of round.lensReports) {
           councilJournal.append({
             event: 'council.lens', actor: 'council', repo, pr, lens: report.lens,
             findings: report.findings.length,
+            ...(report.failed
+              ? {
+                  failed: true,
+                  error: `lens ${report.lens} returned an unparseable reply`,
+                  raw: report.rawReply !== undefined ? redact(report.rawReply) : undefined,
+                }
+              : {}),
           });
         }
         councilJournal.append({ event: 'council.judge', actor: 'council', repo, pr, verdict: round.verdict });

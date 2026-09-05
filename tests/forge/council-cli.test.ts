@@ -150,6 +150,96 @@ describe('forge council', () => {
     expect(result.lines.join(' ')).toMatch(/head moved/);
   });
 
+  // I19: a live lens answered with a fenced JSON array carrying a real finding, and
+  // separately a lens answering with prose took the whole process down with an uncaught
+  // exception (the parse failure propagated as a rejection nothing in `forge council`
+  // ever caught). Both fixtures below drive the full `forge council` command, not just
+  // the reasoner in isolation, since the crash happened in the wiring between them.
+  it('a fenced JSON array reply from the lens (small diff, one lens) still yields the finding and exit 0', async () => {
+    process.env['FORGE_COUNCIL_REPOS'] = REPO;
+    const finding = {
+      member: 'correctness', file: 'src/x.ts', line: 3, claim: 'off by one on the retry count',
+      failureScenario: 'retries one time fewer than configured', severity: 'high', confidence: 'high',
+    };
+    const reasonerQueryFn = fakeQueryByModel({
+      [LENS_MODEL]: '```json\n' + JSON.stringify([finding]) + '\n```',
+      [JUDGE_MODEL]: JSON.stringify({ verdict: 'PASS WITH NOTES', decidingFindings: [finding] }),
+    });
+
+    const result = await forge(['council', '--repo', REPO, '--pr', String(PR)], {
+      councilGh: fakeGh([smallSnapshot(), smallSnapshot()]),
+      reasonerQueryFn,
+    });
+
+    expect(result.code).toBe(0);
+    expect(result.lines.join(' ')).toMatch(/off by one on the retry count/);
+  });
+
+  it('a lens replying with prose never crashes the process: the round still produces a judge verdict and an attestation noting the failed lens', async () => {
+    process.env['FORGE_COUNCIL_REPOS'] = REPO;
+    const reasonerQueryFn = fakeQueryByModel({
+      [LENS_MODEL]: 'sorry, I could not find anything actionable in this diff',
+      [JUDGE_MODEL]: JSON.stringify({ verdict: 'PASS', decidingFindings: [] }),
+    });
+
+    let unhandled: unknown;
+    const onUnhandled = (reason: unknown) => { unhandled = reason; };
+    process.on('unhandledRejection', onUnhandled);
+    let result: Awaited<ReturnType<typeof forge>>;
+    try {
+      result = await forge(['council', '--repo', REPO, '--pr', String(PR)], {
+        councilGh: fakeGh([smallSnapshot(), smallSnapshot()]),
+        reasonerQueryFn,
+      });
+      // Give any straggling rejection a tick to surface before asserting on it.
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+
+    expect(unhandled).toBeUndefined();
+    expect(result.code).toBe(0);
+    expect(result.lines.join(' ')).toMatch(/verdict: PASS/);
+
+    const attPath = attestationPath(REPO, PR, 'head-1');
+    const attestation = JSON.parse(readFileSync(attPath, 'utf8'));
+    expect(attestation.lenses).toHaveLength(1);
+    expect(attestation.lenses[0].failed).toBe(true);
+    expect(attestation.lenses[0].findings[0].severity).toBe('medium');
+
+    const state = replay(join(home, 'fleet.jsonl'));
+    const lensRow = state.events.find((e) => e.event === 'council.lens');
+    expect(lensRow?.['failed']).toBe(true);
+    expect(String(lensRow?.['error'])).toMatch(/unparseable reply/);
+  });
+
+  it('the judge itself failing to answer at all (not a verdict, a hard failure) exits 1 with no attestation, and never crashes the process', async () => {
+    process.env['FORGE_COUNCIL_REPOS'] = REPO;
+    const reasonerQueryFn = fakeQueryByModel({
+      [LENS_MODEL]: JSON.stringify({ findings: [] }),
+      [JUDGE_MODEL]: 'sorry, I am not able to reach a verdict on this one',
+    });
+
+    let unhandled: unknown;
+    const onUnhandled = (reason: unknown) => { unhandled = reason; };
+    process.on('unhandledRejection', onUnhandled);
+    let result: Awaited<ReturnType<typeof forge>>;
+    try {
+      result = await forge(['council', '--repo', REPO, '--pr', String(PR)], {
+        councilGh: fakeGh([smallSnapshot(), smallSnapshot()]),
+        reasonerQueryFn,
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+
+    expect(unhandled).toBeUndefined();
+    expect(result.code).toBe(1);
+    expect(result.lines.join(' ')).toMatch(/judge could not produce a verdict/);
+    expect(() => readFileSync(attestationPath(REPO, PR, 'head-1'), 'utf8')).toThrow();
+  });
+
   it('checks that are not green refuse before any model call, exit 2', async () => {
     process.env['FORGE_COUNCIL_REPOS'] = REPO;
     const result = await forge(['council', '--repo', REPO, '--pr', String(PR)], {

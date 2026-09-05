@@ -273,6 +273,68 @@ describe('ClaudeReasoner', () => {
   });
 });
 
+describe('ClaudeReasoner: fenced and array replies (I19)', () => {
+  it('parses a fenced JSON array against replyShape: "array"', async () => {
+    const finding = {
+      member: 'scope-conformance', file: 'src/z.ts', line: 9, claim: 'touches unrelated module',
+      failureScenario: 'widens the diff past the ticket', severity: 'medium', confidence: 'medium',
+    };
+    const fenced = '```json\n' + JSON.stringify([finding]) + '\n```';
+    const { fn } = fakeQuery(fenced);
+    const journal = new Journal(journalPath);
+    const reasoner = new ClaudeReasoner({ journal, queryFn: fn, existsConfigDir: () => false });
+
+    const result = await reasoner.call({ className: 'audit-lens', prompt: 'x', replyShape: 'array' });
+    journal.close();
+
+    expect(JSON.parse(result.text)).toEqual([finding]);
+  });
+
+  it('a fenced reply still rejects as an array when the caller never asked for one', async () => {
+    const fenced = '```json\n[1, 2, 3]\n```';
+    const { fn } = fakeQuery(fenced);
+    const journal = new Journal(journalPath);
+    const reasoner = new ClaudeReasoner({ journal, queryFn: fn, existsConfigDir: () => false });
+
+    await expect(reasoner.call({ className: 'evaluate', prompt: 'x' }))
+      .rejects.toBeInstanceOf(ReasonerParseError);
+    journal.close();
+  });
+
+  it('a fenced JSON object still parses (no replyShape needed)', async () => {
+    const fenced = '```json\n{"text": "on task, still building the fixture"}\n```';
+    const { fn } = fakeQuery(fenced);
+    const journal = new Journal(journalPath);
+    const reasoner = new ClaudeReasoner({ journal, queryFn: fn, existsConfigDir: () => false });
+
+    const result = await reasoner.call({ className: 'evaluate', prompt: 'x' });
+    journal.close();
+
+    expect(result.text).toBe('on task, still building the fixture');
+  });
+
+  it('a plain, unfenced JSON array still parses against replyShape: "array"', async () => {
+    const { fn } = fakeQuery('[]');
+    const journal = new Journal(journalPath);
+    const reasoner = new ClaudeReasoner({ journal, queryFn: fn, existsConfigDir: () => false });
+
+    const result = await reasoner.call({ className: 'audit-lens', prompt: 'x', replyShape: 'array' });
+    journal.close();
+
+    expect(JSON.parse(result.text)).toEqual([]);
+  });
+
+  it('prose (no JSON at all) still rejects with a typed parse error even under replyShape: "array"', async () => {
+    const { fn } = fakeQuery('sorry, I cannot find anything wrong with this diff');
+    const journal = new Journal(journalPath);
+    const reasoner = new ClaudeReasoner({ journal, queryFn: fn, existsConfigDir: () => false });
+
+    await expect(reasoner.call({ className: 'audit-lens', prompt: 'x', replyShape: 'array' }))
+      .rejects.toBeInstanceOf(ReasonerParseError);
+    journal.close();
+  });
+});
+
 describe('CodexReasoner', () => {
   it('returns "not configured" without any subprocess', async () => {
     const reasoner = new CodexReasoner();
