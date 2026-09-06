@@ -10,27 +10,37 @@ export interface PaletteItem {
   go: () => void;
 }
 
+const VIEW_LABELS: [View, string][] = [
+  ['board', 'Board'],
+  ['settings', 'Settings'],
+  ['review', 'Flight review'],
+];
+
 export function buildPaletteItems(
   query: string,
   lanes: Lane[],
   journal: JournalEntry[],
   onOpenLane: (id: string) => void,
   onNav: (view: View) => void,
+  onOpenJournal: (jid: string) => void,
 ): PaletteItem[] {
   const q = query.trim().toLowerCase();
   const items: PaletteItem[] = [];
-  for (const lane of lanes) {
-    if (!q || lane.id.toLowerCase().includes(q)) {
-      items.push({ kind: 'lane', title: lane.id, sub: `${lane.state} · ${lane.repo ?? ''}`, go: () => onOpenLane(lane.id) });
-    }
+  // Per-category caps apply before the categories are combined: 6 lanes, the last
+  // 3 journal matches, both ahead of any overall limit -- otherwise a broad query
+  // can flood the list with lanes and crowd out journal and view results.
+  const laneMatches = lanes.filter((lane) => !q || lane.id.toLowerCase().includes(q)).slice(0, 6);
+  for (const lane of laneMatches) {
+    items.push({ kind: 'lane', title: lane.id, sub: `${lane.state} · ${lane.stepText}`, go: () => onOpenLane(lane.id) });
   }
-  for (const j of journal) {
-    if (!q || j.jid.toLowerCase().includes(q) || j.text.toLowerCase().includes(q)) {
-      items.push({ kind: 'journal', title: j.jid, sub: j.text, go: () => undefined });
-    }
+  const journalMatches = journal
+    .filter((j) => !q || j.jid.toLowerCase().includes(q) || j.text.toLowerCase().includes(q))
+    .slice(-3);
+  for (const j of journalMatches) {
+    items.push({ kind: 'journal', title: j.jid, sub: j.text, go: () => onOpenJournal(j.jid) });
   }
-  for (const view of ['board', 'settings', 'review'] as View[]) {
-    if (!q || view.includes(q)) items.push({ kind: 'view', title: view, sub: 'switch view', go: () => onNav(view) });
+  for (const [view, label] of VIEW_LABELS) {
+    if (!q || label.toLowerCase().includes(q)) items.push({ kind: 'view', title: label, sub: 'switch view', go: () => onNav(view) });
   }
   return items.slice(0, 20);
 }
@@ -64,7 +74,11 @@ export function CommandPalette({ query, items, onQueryChange, onClose }: Command
         </div>
         <div style={{ padding: '6px 0', maxHeight: 360, overflow: 'auto' }}>
           {items.map((p, i) => (
-            <div key={`${p.kind}-${p.title}-${i}`} style={{ display: 'flex', gap: 12, alignItems: 'center', padding: '8px 14px', cursor: 'pointer' }} onClick={() => { p.go(); onClose(); }}>
+            <div
+              key={`${p.kind}-${p.title}-${i}`}
+              style={{ display: 'flex', gap: 12, alignItems: 'center', padding: '8px 14px', cursor: 'pointer', background: i === 0 ? 'var(--panel2)' : 'transparent' }}
+              onClick={() => { p.go(); onClose(); }}
+            >
               <span className="chip" style={{ width: 52, textAlign: 'center' }}>{p.kind}</span>
               <span className="m" style={{ fontSize: 12, fontWeight: 700 }}>{p.title}</span>
               <span className="m" style={{ fontSize: '10.5px', color: 'var(--ink2)', flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.sub}</span>
