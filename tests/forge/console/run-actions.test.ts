@@ -82,6 +82,7 @@ describe('killRun', () => {
 
   it('writes a decision.made row the actuator can find, then calls kill with its id', async () => {
     registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'alpha' });
 
     const result = await killRun('alpha', 'over budget', deps);
 
@@ -90,20 +91,34 @@ describe('killRun', () => {
     expect(actuator.killed).toEqual([{ run: 'alpha', decisionId: (result.body as { jid: string }).jid }]);
 
     const rows = readFileSync(journalPath, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
-    expect(rows[0]).toMatchObject({ event: 'decision.made', action: 'kill', run: 'alpha', actor: 'console' });
+    expect(rows[1]).toMatchObject({ event: 'decision.made', action: 'kill', run: 'alpha', actor: 'console' });
   });
 
   it('is not undoable', async () => {
     registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'alpha' });
     const result = await killRun('alpha', 'reason', deps);
     const row = ledger.get((result.body as { jid: string }).jid);
     expect(row?.undo).toBeNull();
+  });
+
+  it('refuses a kill on a run that is not running, handed off, paused or parked, with no journal row', async () => {
+    registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.finished', run: 'alpha', verdict: 'done' });
+
+    const result = await killRun('alpha', 'reason', deps);
+
+    expect(result.status).toBe(409);
+    expect(result.body).toMatchObject({ error: expect.any(String), state: 'done' });
+    expect(actuator.killed).toHaveLength(0);
+    expect(readFileSync(journalPath, 'utf8').trim().split('\n')).toHaveLength(1);
   });
 });
 
 describe('pauseRun / resumeRun', () => {
   it('pauses a registered run and records an undo that resumes it', async () => {
     registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'alpha' });
 
     const result = await pauseRun('alpha', 'operator paused', deps);
 
@@ -115,6 +130,7 @@ describe('pauseRun / resumeRun', () => {
 
   it('answers 409 when the actuator refuses to park', async () => {
     registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'alpha' });
     actuator.parkReturns = false;
 
     const result = await pauseRun('alpha', 'reason', deps);
@@ -122,14 +138,36 @@ describe('pauseRun / resumeRun', () => {
     expect(result.status).toBe(409);
   });
 
+  it('refuses to pause a run that is not running or handed off', async () => {
+    registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.finished', run: 'alpha', verdict: 'done' });
+
+    const result = await pauseRun('alpha', 'reason', deps);
+
+    expect(result.status).toBe(409);
+    expect(actuator.parked).toHaveLength(0);
+  });
+
   it('resumes a registered run via the actuator', async () => {
     registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'alpha' });
+    appendOnce(journalPath, { event: 'run.paused', run: 'alpha' });
 
     const result = await resumeRun('alpha', deps);
 
     expect(result.status).toBe(200);
     expect(actuator.resumed).toHaveLength(1);
     expect(actuator.resumed[0]!.run).toBe('alpha');
+  });
+
+  it('refuses to resume a run that is not paused or parked', async () => {
+    registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'alpha' });
+
+    const result = await resumeRun('alpha', deps);
+
+    expect(result.status).toBe(409);
+    expect(actuator.resumed).toHaveLength(0);
   });
 });
 
@@ -172,6 +210,9 @@ describe('mergeRun / verifyRun', () => {
     // foldChainState reads `launched.runKey` from the row's own field, not `run`; write
     // it the way chain.ts's advancePacket actually does.
     appendOnce(journalPath, { event: 'chain.provisioned', packetId: 'p1', worktreePath: dir, branch: 'feat/x' });
+    // merge's own state guard needs done/unverified -- otherwise this never reaches the
+    // PR lookup this test is actually about.
+    appendOnce(journalPath, { event: 'run.finished', run: 'alpha', verdict: 'done' });
 
     deps.spawnFn = fakeSpawn(0, '[]');
     const result = await mergeRun('alpha', deps);

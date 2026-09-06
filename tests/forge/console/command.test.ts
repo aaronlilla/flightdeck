@@ -19,13 +19,29 @@ class FakeActuator implements Actuator {
 
   killed: string[] = [];
 
-  async park(run: RunId): Promise<boolean> { this.parked.push(run); return true; }
+  constructor(private readonly journalPath: string) {}
+
+  // Mirrors WardenActuator's own journal rows (warden.ts's park/resume/kill), since the
+  // guard run-actions.ts now checks reads a run's state off the journal: a fake that
+  // wrote nothing would leave every run "running" forever, no matter what this actuator
+  // was just asked to do.
+  async park(run: RunId, reason: string): Promise<boolean> {
+    this.parked.push(run);
+    appendOnce(this.journalPath, { event: 'run.parked', run, actor: 'warden', reason });
+    return true;
+  }
 
   async nudge(): Promise<void> {}
 
-  async resume(run: RunId): Promise<void> { this.resumed.push(run); }
+  async resume(run: RunId): Promise<void> {
+    this.resumed.push(run);
+    appendOnce(this.journalPath, { event: 'run.resumed', run, actor: 'warden' });
+  }
 
-  async kill(run: RunId, _decisionId: DecisionId): Promise<void> { this.killed.push(run); }
+  async kill(run: RunId, _decisionId: DecisionId): Promise<void> {
+    this.killed.push(run);
+    appendOnce(this.journalPath, { event: 'run.killed', run, actor: 'warden' });
+  }
 }
 
 function fakeRequest(method: string, body?: unknown): IncomingMessage {
@@ -92,7 +108,7 @@ beforeEach(() => {
   journalPath = join(dir, 'fleet.jsonl');
   registry = new Registry(join(dir, 'registry'));
   inbox = new Inbox(join(dir, 'inbox'));
-  actuator = new FakeActuator();
+  actuator = new FakeActuator(journalPath);
   writes = new ConsoleWrites({
     journalPath, registry, inbox, actuator,
     authorized: () => true,
@@ -112,6 +128,7 @@ describe('ConsoleWrites.handle', () => {
 
   it('kills a run through POST /run/:id/kill', async () => {
     registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'alpha' });
     const { response, result } = fakeResponse();
 
     const handled = await writes.handle('/run/alpha/kill', fakeRequest('POST', { reason: 'stop' }), response);
@@ -133,6 +150,7 @@ describe('ConsoleWrites.handle', () => {
 
   it('undoes a pause through POST /journal/:jid/undo', async () => {
     registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'alpha' });
     const pauseResponse = fakeResponse();
     await writes.handle('/run/alpha/pause', fakeRequest('POST', { reason: 'op' }), pauseResponse.response);
     const paused = await pauseResponse.result;
@@ -149,6 +167,7 @@ describe('ConsoleWrites.handle', () => {
 
   it('refuses a second undo of the same jid with 409', async () => {
     registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'alpha' });
     const pauseResponse = fakeResponse();
     await writes.handle('/run/alpha/pause', fakeRequest('POST', { reason: 'op' }), pauseResponse.response);
     const jid = ((await pauseResponse.result).body as { jid: string }).jid;
@@ -164,6 +183,7 @@ describe('ConsoleWrites.handle', () => {
 describe('ConsoleWrites.command / kill confirm flow', () => {
   it('answers a kill request with a confirm card, executing only after confirm <token>', async () => {
     registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'alpha' });
 
     const cards = await writes.command('kill alpha');
     const confirm = cards.find((card) => card.type === 'confirm');

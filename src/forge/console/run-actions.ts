@@ -23,7 +23,8 @@ import { RunInbox } from '../runinbox.js';
 import { HANDOFF_REQUEST } from '../worker.js';
 import type { Lanes } from '../supervisor.js';
 import { consoleDir, recordAction, type ActionsLedger } from './actions-ledger.js';
-import type { ActionResult } from '../../shared/console-model.js';
+import { laneStateNowFor } from './lanes.js';
+import type { ActionResult, LaneState } from '../../shared/console-model.js';
 
 export interface RunActionsDeps {
   ledger: ActionsLedger;
@@ -44,7 +45,10 @@ export interface RunActionsDeps {
   cliArgv?: () => string[];
 }
 
-export type RunActionResponse = { status: number; body: ActionResult | { error: string; reason?: string } };
+export type RunActionResponse = {
+  status: number;
+  body: ActionResult | { error: string; reason?: string } | { error: string; state: LaneState };
+};
 
 function isRegistered(run: string, deps: Pick<RunActionsDeps, 'registry' | 'lanes'>): boolean {
   return Boolean(deps.registry.get(run)) || Boolean(deps.lanes?.get(run));
@@ -54,12 +58,46 @@ function notFound(run: string): RunActionResponse {
   return { status: 404, body: { ok: false, jid: null, message: `${run} is not a registered run`, undoable: false } };
 }
 
+/** The lane states each action is allowed to run from. Answering ok on the wrong one is
+ *  exactly how "pause a finished run" used to read as a success: nothing here checked
+ *  the lane's own state before driving the actuator or the CLI. */
+const ALLOWED_STATES: Record<'pause' | 'resume' | 'kill' | 'compact' | 'merge' | 'reopen', LaneState[]> = {
+  pause: ['running', 'handed-off'],
+  resume: ['paused', 'parked'],
+  kill: ['running', 'handed-off', 'paused', 'parked'],
+  compact: ['running', 'exhausted'],
+  merge: ['done', 'unverified'],
+  reopen: ['killed', 'blocked', 'exhausted'],
+};
+
+function wrongState(action: keyof typeof ALLOWED_STATES, state: LaneState): RunActionResponse {
+  return {
+    status: 409,
+    body: { error: `${action} needs ${ALLOWED_STATES[action].join('/')}, not ${state}`, state },
+  };
+}
+
+/** Checked before any of the six state-gated actions writes a journal row or drives a
+ *  mechanism, so a refusal never leaves a `decision.made` row behind it. `undefined`
+ *  when the action is allowed to proceed. */
+function guardState(
+  action: keyof typeof ALLOWED_STATES, run: string, deps: Pick<RunActionsDeps, 'journalPath' | 'lanes'>,
+): RunActionResponse | undefined {
+  const fleet = replay(deps.journalPath);
+  const chain = foldChainState(fleet.events);
+  const { state } = laneStateNowFor(run, { fleet, chain, laneRecord: deps.lanes?.get(run) });
+  if (ALLOWED_STATES[action].includes(state)) return undefined;
+  return wrongState(action, state);
+}
+
 function defaultCliArgv(): string[] {
   return [process.execPath, ...process.execArgv, process.argv[1] ?? 'forge'];
 }
 
 export async function killRun(run: string, reason: string, deps: RunActionsDeps): Promise<RunActionResponse> {
   if (!isRegistered(run, deps)) return notFound(run);
+  const guard = guardState('kill', run, deps);
+  if (guard) return guard;
   const { jid } = recordAction(deps.journalPath, deps.ledger, {
     kind: 'kill', run, text: `kill requested: ${reason}`, undo: null, extra: { reason },
   });
@@ -69,6 +107,8 @@ export async function killRun(run: string, reason: string, deps: RunActionsDeps)
 
 export async function pauseRun(run: string, reason: string, deps: RunActionsDeps): Promise<RunActionResponse> {
   if (!isRegistered(run, deps)) return notFound(run);
+  const guard = guardState('pause', run, deps);
+  if (guard) return guard;
   const ok = await deps.actuator.park(asRunId(run), reason);
   if (!ok) {
     return {
@@ -84,6 +124,8 @@ export async function pauseRun(run: string, reason: string, deps: RunActionsDeps
 
 export async function resumeRun(run: string, deps: RunActionsDeps): Promise<RunActionResponse> {
   if (!isRegistered(run, deps)) return notFound(run);
+  const guard = guardState('resume', run, deps);
+  if (guard) return guard;
   await deps.actuator.resume(asRunId(run), 'resume requested from the console');
   const { jid } = recordAction(deps.journalPath, deps.ledger, {
     kind: 'resume', run, text: `resumed ${run}`, undo: null,
@@ -216,7 +258,9 @@ async function gateAction(run: string, wantsMerge: boolean, deps: RunActionsDeps
   return { status: ok ? 200 : 502, body: { ok, jid, message: summary, undoable: false } };
 }
 
-export function mergeRun(run: string, deps: RunActionsDeps): Promise<RunActionResponse> {
+export async function mergeRun(run: string, deps: RunActionsDeps): Promise<RunActionResponse> {
+  const guard = guardState('merge', run, deps);
+  if (guard) return guard;
   return gateAction(run, true, deps);
 }
 
@@ -225,6 +269,8 @@ export function verifyRun(run: string, deps: RunActionsDeps): Promise<RunActionR
 }
 
 export async function reopenRun(run: string, deps: RunActionsDeps): Promise<RunActionResponse> {
+  const guard = guardState('reopen', run, deps);
+  if (guard) return guard;
   const row = findChainRowForRun(run, deps.journalPath);
   if (!row) {
     return { status: 501, body: { error: 'not wired', reason: `no chain packet found for run ${run}` } };
@@ -256,6 +302,8 @@ export async function reopenRun(run: string, deps: RunActionsDeps): Promise<RunA
  */
 export async function compactRun(run: string, deps: RunActionsDeps): Promise<RunActionResponse> {
   if (!isRegistered(run, deps)) return notFound(run);
+  const guard = guardState('compact', run, deps);
+  if (guard) return guard;
   new RunInbox(run).send(HANDOFF_REQUEST, 'console');
   const { jid } = recordAction(deps.journalPath, deps.ledger, {
     kind: 'compact', run, text: `requested a handoff at the context ceiling for ${run}`, undo: null,
