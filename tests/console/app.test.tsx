@@ -49,7 +49,7 @@ afterEach(async () => {
 });
 
 describe('App', () => {
-  it('renders the 14-lane board and opens the ticket sheet for a lane', async () => {
+  it('renders the 15-lane board and opens the ticket sheet for a lane', async () => {
     render(<App eventStreamOptions={{ WebSocketImpl: FakeSocket as unknown as typeof WebSocket }} />);
     await waitFor(() => expect(screen.getByTestId('lane-FLT-201')).toBeInTheDocument());
     expect(screen.getAllByText(/FLT-|BBZ-/).length).toBeGreaterThan(0);

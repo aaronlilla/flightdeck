@@ -149,5 +149,14 @@ export function seedLanes(): Lane[] {
       ctxTokens: 30_000, costUsd: 0.8, capUsd: 20, burnUsdPerMin: 0.05,
       observedAt: now - 5_000, verifiedAt: now - 5_000, since: now - 10 * 60_000, startedAt: now - 10 * 60_000,
     }),
+    // A third repo, so the repo chip row has something real to derive from --
+    // fidelity sweep #1 (the chips are never a fixed pair).
+    lane({
+      id: 'FLT-215', ticket: 'FLT-215', state: 'running', heart: true, hop: 1, hopStatus: 'live',
+      repo: 'flightdeck-docs',
+      stepN: 1, stepTotal: 6, stepText: 'drafting the release notes',
+      ctxTokens: 8_000, costUsd: 0.15, capUsd: 20, burnUsdPerMin: 0.02,
+      observedAt: now - 4_000, verifiedAt: now - 4_000, since: now - 6 * 60_000, startedAt: now - 6 * 60_000,
+    }),
   ];
 }

@@ -30,9 +30,9 @@ async function post<T>(path: string, body: unknown = {}): Promise<{ status: numb
 }
 
 describe('stub server', () => {
-  it('serves the 14-lane board with one lane per state', async () => {
+  it('serves the 15-lane board with one lane per state (plus a third-repo lane)', async () => {
     const { lanes } = await get<{ lanes: { state: string }[] }>('/lanes');
-    expect(lanes.length).toBe(14);
+    expect(lanes.length).toBe(15);
     const states = new Set(lanes.map((l) => l.state));
     expect(states).toContain('running');
     expect(states).toContain('parked');
@@ -43,7 +43,7 @@ describe('stub server', () => {
   // must not break on the query it doesn't otherwise act on.
   it('accepts the all=1 query on /lanes without erroring', async () => {
     const { lanes } = await get<{ lanes: { state: string }[] }>('/lanes?all=1');
-    expect(lanes.length).toBe(14);
+    expect(lanes.length).toBe(15);
   });
 
   it('kills a run and journals it', async () => {

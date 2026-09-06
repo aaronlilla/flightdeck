@@ -2,9 +2,9 @@ import { expect, test } from '@playwright/test';
 
 test.describe.configure({ mode: 'serial' });
 
-test('the board renders all 14 lanes', async ({ page }) => {
+test('the board renders all 15 lanes', async ({ page }) => {
   await page.goto('/');
-  await expect(page.locator('[data-testid^="lane-"]')).toHaveCount(14);
+  await expect(page.locator('[data-testid^="lane-"]')).toHaveCount(15);
 });
 
 // Final fidelity sweep #1: a lane with a ticket heads the tile with the ticket

@@ -7,9 +7,9 @@ import { visibleLanes } from './LanesGrid.js';
 export interface FiltersProps {
   filter: Filter;
   sort: Sort;
-  /** No longer used to build the repo chips -- see `REPO_FILTERS` -- kept so callers
-   *  need not change; a caller-derived repo list never matched the prototype's fixed
-   *  pair anyway. */
+  /** The distinct repos across the lanes on the board, in first-seen order -- see
+   *  `renderVals`'s `F` array (script_wrapped.txt 266). Not a fixed pair: a fleet
+   *  whose lanes carry no `repo` at all renders no repo chip. */
   repos: string[];
   lanes: Lane[];
   now: number;
@@ -24,17 +24,13 @@ const BASE_FILTERS: { key: Filter; label: string }[] = [
   { key: 'finished', label: 'finished' },
 ];
 
-/** The prototype always shows exactly these two repo chips (script_wrapped.txt 266),
- *  with no count appended -- unlike the base filters, which do carry one. */
-const REPO_FILTERS = ['flightdeck-rn', 'flightdeck-api'];
-
 const SORTS: { key: Sort; label: string }[] = [
   { key: 'cost', label: 'cost ↓' },
   { key: 'age', label: 'age' },
   { key: 'state', label: 'state' },
 ];
 
-export function Filters({ filter, sort, lanes, now, onFilter, onSort }: FiltersProps): JSX.Element {
+export function Filters({ filter, sort, repos, lanes, now, onFilter, onSort }: FiltersProps): JSX.Element {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 16px 0', flexWrap: 'wrap' }}>
       {BASE_FILTERS.map((f) => {
@@ -46,7 +42,7 @@ export function Filters({ filter, sort, lanes, now, onFilter, onSort }: FiltersP
           </span>
         );
       })}
-      {REPO_FILTERS.map((repo) => (
+      {repos.map((repo) => (
         <span key={repo} className={`chip chipB ${filter === repo ? 'chipOn' : ''}`} onClick={() => onFilter(repo)}>
           {repo}
         </span>

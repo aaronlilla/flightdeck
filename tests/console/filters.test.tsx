@@ -16,9 +16,9 @@ function lane(state: LaneState, extra: Partial<Lane> = {}): Lane {
   };
 }
 
-// Row: chips are exactly all / needs me · N lanes / running / finished / the two repo
-// names, with no invented "today" chip and no counts on the repo chips
-// (script_wrapped.txt 266).
+// Row: chips are exactly all / needs me · N lanes / running / finished / one chip per
+// distinct repo actually on the board, with no invented "today" chip and no counts on
+// the repo chips (script_wrapped.txt 266).
 describe('Filters chips', () => {
   it('never renders a "today" chip', () => {
     render(<Filters filter="all" sort="cost" repos={[]} lanes={[lane('running')]} now={Date.now()} onFilter={vi.fn()} onSort={vi.fn()} />);
@@ -30,9 +30,24 @@ describe('Filters chips', () => {
     expect(screen.getByText('needs me · 1 lanes')).toBeInTheDocument();
   });
 
-  it('always shows both repo chips with no appended count', () => {
-    render(<Filters filter="all" sort="cost" repos={[]} lanes={[lane('running', { repo: 'flightdeck-api' })]} now={Date.now()} onFilter={vi.fn()} onSort={vi.fn()} />);
-    expect(screen.getByText('flightdeck-rn')).toBeInTheDocument();
-    expect(screen.getByText('flightdeck-api')).toBeInTheDocument();
+  // Fidelity sweep #1: the prototype's `renderVals` builds the repo chip row from the
+  // distinct `repo` values across the lanes it's showing (script_wrapped.txt 266), in
+  // first-seen order -- never the prototype's own two seed repos as a fixed pair.
+  it('derives repo chips from the distinct repos on the board, in first-seen order, with no appended count', () => {
+    render(
+      <Filters
+        filter="all" sort="cost" repos={['flightdeck-docs', 'flightdeck-rn']}
+        lanes={[lane('running', { repo: 'flightdeck-docs' }), lane('running', { repo: 'flightdeck-rn' })]}
+        now={Date.now()} onFilter={vi.fn()} onSort={vi.fn()}
+      />,
+    );
+    const chips = screen.getAllByText(/^flightdeck-/).map((el) => el.textContent);
+    expect(chips).toEqual(['flightdeck-docs', 'flightdeck-rn']);
+    expect(screen.queryByText('flightdeck-api')).not.toBeInTheDocument();
+  });
+
+  it('renders no repo chip at all when the board has no repository on any lane', () => {
+    render(<Filters filter="all" sort="cost" repos={[]} lanes={[lane('running', { repo: null })]} now={Date.now()} onFilter={vi.fn()} onSort={vi.fn()} />);
+    expect(screen.queryByText(/^flightdeck-/)).not.toBeInTheDocument();
   });
 });
