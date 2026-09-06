@@ -14,6 +14,8 @@ import type {
   LanesResponse,
   ProposalsResponse,
   ReconnectResponse,
+  RunCostResponse,
+  RunJournalResponse,
   RunPrResponse,
   RunSandboxResponse,
   RunThreadResponse,
@@ -82,6 +84,14 @@ export function getRunPr(id: string): Promise<RunPrResponse> {
 
 export function getRunSandbox(id: string): Promise<RunSandboxResponse> {
   return call<RunSandboxResponse>(`/run/${encodeURIComponent(id)}/sandbox`);
+}
+
+export function getRunCost(id: string): Promise<RunCostResponse> {
+  return call<RunCostResponse>(`/run/${encodeURIComponent(id)}/cost`);
+}
+
+export function getRunJournal(id: string): Promise<RunJournalResponse> {
+  return call<RunJournalResponse>(`/run/${encodeURIComponent(id)}/journal`);
 }
 
 function post<T>(path: string, body?: unknown): Promise<T> {

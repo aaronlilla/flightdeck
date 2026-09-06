@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 
 import * as api from '../api.js';
 import { stateOf } from '../laneVM.js';
-import type { Lane, LaneSandbox } from '../../shared/console-model.js';
+import type { Lane, LaneSandbox, SandboxLogLine, SandboxLogSeverity } from '../../shared/console-model.js';
 
 export interface SandboxSheetProps {
   lane: Lane;
@@ -11,10 +11,17 @@ export interface SandboxSheetProps {
   onKill: (id: string) => void;
 }
 
+const SEVERITY_COLOR: Record<SandboxLogSeverity, string> = {
+  info: '#9aa08c',
+  progress: 'var(--hand)',
+  retry: 'var(--park)',
+  error: 'var(--block)',
+};
+
 /** Sandbox sheet: region/instance/model/state, log tail, Open shell, Kill sandbox. */
 export function SandboxSheet({ lane, onClose, onKill }: SandboxSheetProps): JSX.Element {
   const [sandbox, setSandbox] = useState<LaneSandbox | null>(lane.sandbox);
-  const [log, setLog] = useState<string[]>([]);
+  const [log, setLog] = useState<SandboxLogLine[]>([]);
 
   useEffect(() => {
     let active = true;
@@ -31,6 +38,8 @@ export function SandboxSheet({ lane, onClose, onKill }: SandboxSheetProps): JSX.
       </div>
       <div style={{ padding: '16px 22px', display: 'flex', flexDirection: 'column', gap: 12 }}>
         <div style={{ display: 'flex', gap: 8 }}>
+          <span className="chip">{sandbox?.region ?? '--'}</span>
+          <span className="chip">{sandbox?.instanceType ?? '--'}</span>
           <span className="chip">{lane.model}</span>
           <span className="chip" style={{ color: st.color, borderColor: st.color }}>{st.label}</span>
           <span style={{ flex: 1 }} />
@@ -39,7 +48,9 @@ export function SandboxSheet({ lane, onClose, onKill }: SandboxSheetProps): JSX.
         </div>
         <div style={{ background: 'var(--well)', borderRadius: 3, padding: '12px 14px', boxShadow: 'inset 0 2px 5px rgba(0,0,0,.6)' }}>
           <div className="m" style={{ fontSize: '10.5px', lineHeight: 1.9, color: '#9aa08c' }}>
-            {log.length === 0 ? <div style={{ color: '#59614d' }}>no sandbox log</div> : log.map((line, i) => <div key={i}>{line}</div>)}
+            {log.length === 0
+              ? <div style={{ color: '#59614d' }}>no sandbox log</div>
+              : log.map((line, i) => <div key={i} style={{ color: SEVERITY_COLOR[line.severity] }}>{line.text}</div>)}
           </div>
         </div>
       </div>

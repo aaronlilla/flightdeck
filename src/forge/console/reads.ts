@@ -21,16 +21,18 @@ import type { StuckSignal } from '../liveness.js';
 import { Lanes, type LaneRecord } from '../supervisor.js';
 import { RunInbox } from '../runinbox.js';
 import type {
-  Caps, JournalResponse, LanesResponse, ProposalsResponse, RunPrResponse, RunSandboxResponse,
-  RunThreadResponse, ThreadResponse,
+  Caps, JournalResponse, LanesResponse, ProposalsResponse, RunCostResponse, RunJournalResponse,
+  RunPrResponse, RunSandboxResponse, RunThreadResponse, ThreadResponse,
 } from '../../shared/console-model.js';
 import { capsOverridesPath, computeCaps, readCapsOverrides } from './caps-read.js';
 import { ensureHardUsd } from './caps-write.js';
+import { computeCostSteps, findCapEnforcementFailure } from './cost-steps.js';
 import { actionsLedgerPath, computeJournal, readActionsLedger } from './journal-route.js';
+import { computeJournalNarrative } from './journal-narrative.js';
 import { computeLanes, spentTodayUsd, windowLanes, type LanesInput } from './lanes.js';
 import { computeRunPr, prCachePath, readPrCache, writePrCache, type GhLookupFn, type GhPrLookup } from './pr.js';
 import { computeProposals, readRules, rulesPath } from './proposals.js';
-import { computeSandbox, newestLogFile, tailLog } from './sandbox.js';
+import { computeSandbox, newestLogFile, packetForRun, tailLogWithSeverity } from './sandbox.js';
 import { computeRunThread, computeThread, readThread, threadPath } from './thread.js';
 
 export interface ConsoleReadsOptions {
@@ -77,8 +79,8 @@ function defaultGhLookup(): GhLookupFn {
 }
 
 /** The runs `GET /run/:id` matches, and everything under it -- `/run/:id/thread`,
- *  `/run/:id/pr`, `/run/:id/sandbox`. */
-const RUN_SUBROUTE = /^\/run\/([^/]+)\/(thread|pr|sandbox)$/;
+ *  `/run/:id/pr`, `/run/:id/sandbox`, `/run/:id/cost`, `/run/:id/journal`. */
+const RUN_SUBROUTE = /^\/run\/([^/]+)\/(thread|pr|sandbox|cost|journal)$/;
 
 export class ConsoleReads {
   private readonly lanes: Lanes;
@@ -163,7 +165,7 @@ export class ConsoleReads {
     const runMatch = RUN_SUBROUTE.exec(path);
     if (runMatch) {
       const id = runMatch[1] ?? '';
-      const sub = runMatch[2] as 'thread' | 'pr' | 'sandbox';
+      const sub = runMatch[2] as 'thread' | 'pr' | 'sandbox' | 'cost' | 'journal';
       const run = decodeURIComponent(id);
       if (sub === 'thread') {
         json(response, 200, this.runThreadResponse(run));
@@ -171,6 +173,14 @@ export class ConsoleReads {
       }
       if (sub === 'pr') {
         json(response, 200, await this.runPrResponse(run));
+        return true;
+      }
+      if (sub === 'cost') {
+        json(response, 200, this.runCostResponse(run));
+        return true;
+      }
+      if (sub === 'journal') {
+        json(response, 200, this.runJournalResponse(run));
         return true;
       }
       json(response, 200, this.runSandboxResponse(run));
@@ -277,7 +287,28 @@ export class ConsoleReads {
   private runSandboxResponse(run: string): RunSandboxResponse {
     const sandbox = computeSandbox(run, this.chain(), this.registry.get(run));
     const logFile = existsSync(runsDir()) ? newestLogFile(runDir(run)) : undefined;
-    return { sandbox, log: tailLog(logFile) };
+    return { sandbox, log: tailLogWithSeverity(logFile) };
+  }
+
+  private runCostResponse(run: string): RunCostResponse {
+    const fleet = this.journalCache.read(this.journalPath);
+    const runaway = this.lanesResponse(true).lanes.find((l) => l.id === run)?.runaway ?? false;
+    return {
+      steps: computeCostSteps(run, fleet.events),
+      capEnforcementFailedJid: findCapEnforcementFailure(run, fleet.events, runaway),
+    };
+  }
+
+  /** `GET /run/:id/journal`: needs the run's own already-computed `Lane` (for its state,
+   *  cost and sandbox id) alongside the raw journal and chain, so it reads the same
+   *  `Lane[]` the board itself renders rather than re-deriving those fields a second way. */
+  private runJournalResponse(run: string): RunJournalResponse {
+    const now = Date.now();
+    const fleet = this.journalCache.read(this.journalPath);
+    const chain = this.chain();
+    const lane = this.lanesResponse(true).lanes.find((l) => l.id === run);
+    if (!lane) return { entries: [] };
+    return { entries: computeJournalNarrative(lane, fleet.events, packetForRun(chain, run), now) };
   }
 }
 

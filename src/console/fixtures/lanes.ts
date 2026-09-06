@@ -52,7 +52,10 @@ export function seedLanes(): Lane[] {
       stepN: 3, stepTotal: 6, stepText: 'writing the withdrawal-fee integration test',
       ctxTokens: 86_000, costUsd: 4.32, capUsd: 20, burnUsdPerMin: 0.09,
       observedAt: now - 3_000, verifiedAt: now - 3_000, since: now - 42 * 60_000, startedAt: now - 42 * 60_000,
-      sandbox: { id: 'fd-2201', path: null, branch: 'feature/flt-201', pid: 44821, sessionId: 'sess-9f21' },
+      sandbox: {
+        id: 'fd-2201', path: null, branch: 'feature/flt-201', pid: 44821, sessionId: 'sess-9f21',
+        region: 'local', instanceType: 'win32/x64',
+      },
     }),
     lane({
       id: 'BBZ-118', ticket: 'BBZ-118', state: 'parked', heart: false, hop: 2, hopStatus: 'blocked',

@@ -1,7 +1,10 @@
 import type { JSX } from 'react';
+import { useEffect, useState } from 'react';
 
+import * as api from '../api.js';
 import { capText, costClass } from '../laneVM.js';
-import type { Lane } from '../../shared/console-model.js';
+import { hm } from '../freshness.js';
+import type { CostStep, Lane } from '../../shared/console-model.js';
 
 export interface CostSheetProps {
   lane: Lane;
@@ -9,9 +12,27 @@ export interface CostSheetProps {
   onKill: (id: string) => void;
 }
 
-/** Cost sheet: total readout, tokens, cap state, burn, Kill attempt when over cap. */
+/** Cost sheet: total readout, tokens, cap state, burn, by-step breakdown, Kill attempt
+ *  when over cap. */
 export function CostSheet({ lane, onClose, onKill }: CostSheetProps): JSX.Element {
+  const [steps, setSteps] = useState<CostStep[]>([]);
+  const [capEnforcementFailedJid, setCapEnforcementFailedJid] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    api.getRunCost(lane.id).then((r) => {
+      if (!active) return;
+      setSteps(r.steps);
+      setCapEnforcementFailedJid(r.capEnforcementFailedJid);
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [lane.id]);
+
   const over = lane.capUsd !== null && lane.costUsd > lane.capUsd;
+  const totalInput = steps.reduce((sum, s) => sum + s.inputTokens, 0);
+  const totalOutput = steps.reduce((sum, s) => sum + s.outputTokens, 0);
+  const burnText = lane.state === 'running' ? `$${lane.burnUsdPerMin.toFixed(2)}/min` : '—/min';
+
   return (
     <div className="plate" data-testid="cost-sheet" style={{ width: 520, maxWidth: 'calc(100vw - 40px)' }}>
       <div className="lbl" style={{ padding: '7px 20px', display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--line)' }}>
@@ -22,12 +43,27 @@ export function CostSheet({ lane, onClose, onKill }: CostSheetProps): JSX.Elemen
         <div style={{ display: 'flex', alignItems: 'center', gap: 18 }}>
           <span className={costClass(lane)}>${lane.costUsd.toFixed(2)}</span>
           <div className="m" style={{ fontSize: 11, lineHeight: 1.8, color: 'var(--ink2)' }}>
-            {Math.round(lane.ctxTokens / 1000)}k tokens<br />
-            {capText(lane)} · burn ${lane.burnUsdPerMin.toFixed(2)}/min
+            {Math.round(totalInput / 1000)}k input · {Math.round(totalOutput / 1000)}k output · {lane.model}<br />
+            {capText(lane)}{capEnforcementFailedJid ? ` · cap event failed (${capEnforcementFailedJid})` : ''} · burn {burnText}
           </div>
           <span style={{ flex: 1 }} />
           {over ? <span className="btnR" onClick={() => onKill(lane.id)}>Kill attempt</span> : null}
         </div>
+        {steps.length > 0 ? (
+          <div>
+            <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 8 }}>By step</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {steps.map((step, i) => (
+                <div key={i} className="m" style={{ fontSize: '10.5px', color: 'var(--ink2)', display: 'flex', gap: 10, alignItems: 'baseline' }}>
+                  <span style={{ color: 'var(--ink3)', whiteSpace: 'nowrap' }}>{hm(step.t)}</span>
+                  <span style={{ flex: 1 }}>{step.stepText}</span>
+                  <span style={{ whiteSpace: 'nowrap' }}>{Math.round(step.inputTokens / 1000)}k in</span>
+                  <span style={{ whiteSpace: 'nowrap' }}>${step.costUsd.toFixed(2)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
       </div>
     </div>
   );
