@@ -6,10 +6,11 @@ import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { Actuator, DecisionId, RunId } from '../../../src/forge/contracts.js';
-import { appendOnce } from '../../../src/forge/journal.js';
+import { appendOnce, replay } from '../../../src/forge/journal.js';
 import { Inbox } from '../../../src/forge/inbox.js';
 import { Registry } from '../../../src/forge/registry.js';
 import { ConsoleWrites, parseIntent } from '../../../src/forge/console/command.js';
+import { spentTodayUsd } from '../../../src/forge/console/lanes.js';
 
 class FakeActuator implements Actuator {
   parked: string[] = [];
@@ -192,6 +193,34 @@ describe('ConsoleWrites.command / kill confirm flow', () => {
     await expect(writes.command('status')).resolves.toBeTruthy();
     await expect(writes.command('spend today')).resolves.toBeTruthy();
     await expect(writes.command("what's stuck")).resolves.toBeTruthy();
+  });
+
+  it('answers why-stuck with the lane state and reason first, then meaningful rows, skipping noise', async () => {
+    registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'alpha', actor: 'runner' });
+    appendOnce(journalPath, { event: 'burn.mismatch', run: 'alpha', actor: 'runner' });
+    appendOnce(journalPath, { event: 'burn.mismatch', run: 'alpha', actor: 'runner' });
+    appendOnce(journalPath, { event: 'burn.mismatch', run: 'alpha', actor: 'runner' });
+    appendOnce(journalPath, { event: 'run.blocked', run: 'alpha', actor: 'runner', reason: 'base drift' });
+
+    const cards = await writes.command('why is alpha stuck');
+
+    const reply = cards.find((card) => card.type === 'reply')!;
+    expect(reply.text.startsWith('blocked: base drift')).toBe(true);
+    expect(reply.text).not.toContain('burn.mismatch');
+  });
+
+  it("answers 'spend today' with the same figure lanes.ts's spentTodayUsd computes off the same journal", async () => {
+    appendOnce(journalPath, {
+      event: 'result.usage', run: 'alpha', actor: 'runner', model: 'claude-sonnet-5',
+      usage: { input: 1_000_000, cacheRead: 0, cacheCreation: 0, output: 0 },
+    });
+    const expected = spentTodayUsd(replay(journalPath).runs, Date.now());
+
+    const cards = await writes.command('spend today');
+
+    const reply = cards.find((card) => card.type === 'reply')!;
+    expect(reply.text).toBe(`spent $${expected.toFixed(2)} today`);
   });
 
   it("answers an operator's free text against the one open ask", async () => {

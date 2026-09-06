@@ -26,7 +26,7 @@ import type {
 } from '../../shared/console-model.js';
 import { capsOverridesPath, computeCaps, readCapsOverrides } from './caps-read.js';
 import { actionsLedgerPath, computeJournal, readActionsLedger } from './journal-route.js';
-import { computeLanes, type LanesInput } from './lanes.js';
+import { computeLanes, spentTodayUsd, type LanesInput } from './lanes.js';
 import { computeRunPr, prCachePath, readPrCache, writePrCache, type GhLookupFn, type GhPrLookup } from './pr.js';
 import { computeProposals, readRules, rulesPath } from './proposals.js';
 import { computeSandbox, newestLogFile, tailLog } from './sandbox.js';
@@ -213,11 +213,6 @@ export class ConsoleReads {
   private capsResponse(): Caps {
     const now = Date.now();
     const fleet = this.journalCache.read(this.journalPath);
-    const since = new Date(now);
-    since.setHours(0, 0, 0, 0);
-    const spentTodayUsd = Object.values(fleet.runs)
-      .filter((run) => run.lastEventAt >= since.getTime())
-      .reduce((sum, run) => sum + run.costUsd, 0);
     const budget = governorBudget();
     const overrides = readCapsOverrides(capsOverridesPath(this.forgeHomeDir));
     const implementClassName = classNames().includes('implement') ? 'implement' : (classNames()[0] ?? 'implement');
@@ -230,7 +225,7 @@ export class ConsoleReads {
       governor: budget as ReturnType<typeof governorBudget> & { hardUsd?: number },
       implementClassName,
       overrides,
-      spentTodayUsd,
+      spentTodayUsd: spentTodayUsd(fleet.runs, now),
       governorConfigured,
     });
   }
