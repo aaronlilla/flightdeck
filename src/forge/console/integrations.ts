@@ -269,7 +269,7 @@ const BUILTIN_DECLS: IntegrationDecl[] = [
   { id: 'jira', kind: 'conn', name: 'Jira', desc: 'FORGE_JIRA_* credentials', reconnectLabel: 'Reconnect' },
   { id: 'model-provider', kind: 'conn', name: 'Model provider', desc: 'fleet login', reconnectLabel: 'Reconnect via SSO' },
   { id: 'codex', kind: 'conn', name: 'Codex', desc: 'codex CLI', reconnectLabel: 'Reconnect' },
-  { id: 'aws', kind: 'conn', name: 'AWS', desc: 'FORGE_AWS_PROFILE via SSO', reconnectLabel: 'Reconnect via SSO' },
+  { id: 'aws', kind: 'conn', name: 'AWS', desc: 'FORGE_AWS_PROFILE via SSO', reconnectLabel: 'Reconnect AWS via SSO' },
 ];
 
 function defaultProbes(spawnFn?: RunRequest['spawnFn']): Record<string, Probe> {
