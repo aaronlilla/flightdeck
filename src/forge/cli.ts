@@ -621,7 +621,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         };
       }
 
-      // P4.7/I3: checkBudget at admission. What this run "would spend" is unknowable
+      // P4.7/I3: admission never refuses on a list-priced total. What a run "would spend" is unknowable
       // before it opens a session, so this is a daily-cap gate in practice: today's
       // No money gate here any more. This fleet runs on a flat subscription, so the
       // figure this used to compare against `dailyUsd` was tokens multiplied by list

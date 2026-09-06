@@ -131,7 +131,7 @@ const ROWS: Row[] = [
   // ---- This integration's own wiring (I2-I5), so the table covers what P4.7 itself built ----
   { stream: 'integration', requirement: 'I2: WardenTick calls reportFleetHealth/assessCostShape/actuator.park on the forge up cadence, guarded', specimen: 'parks a stuck run exactly once across three ticks, never kills, and survives a throw in reportFleetHealth' },
   { stream: 'integration', requirement: 'I2: CredentialHorizon consulted before every forge run launch', specimen: 'refuses to launch a second run on an account whose login flow is already in flight' },
-  { stream: 'integration', requirement: 'I3: checkBudget at admission', specimen: 'refuses to launch when today\'s burn is already at or over the daily cap' },
+  { stream: 'integration', requirement: 'I3: admission never refuses on a list-priced total', specimen: 'launches even when the ledger already carries an enormous list-priced total' },
   { stream: 'integration', requirement: 'I3: checkConformance per turn, parking through the Warden actuator', specimen: 'parks the run in the very turn a served model does not match its class, through the Warden actuator' },
   { stream: 'integration', requirement: 'I3: WindowGate pauses on a rate-limit engine.error, with a resolved resumeAt', specimen: 'journals run.paused with the resolved resumeAt, for a rate-limit-shaped error' },
   { stream: 'integration', requirement: 'I3: providerFor delegates to policy.ts instead of a second hardcoded map', specimen: 'agrees with policy.ts\'s own providerFor for every declared class' },
