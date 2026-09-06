@@ -50,6 +50,22 @@ test('kill shows a confirm card before anything happens', async ({ page }) => {
   await expect(page.getByTestId('lane-FLT-201')).toHaveAttribute('data-state', 'running');
 });
 
+test('a lane tile prefixes its step text with step N/M, and shows no cap text unless it is runaway', async ({ page }) => {
+  await page.goto('/');
+  const runaway = page.getByTestId('lane-FLT-204');
+  await expect(runaway.getByText('step 2/6 · retrying a flaky build step')).toBeVisible();
+  await expect(runaway.getByText(/cap \$8 · exceeded/)).toBeVisible();
+  const normal = page.getByTestId('lane-FLT-201');
+  await expect(normal.getByText(/cap \$/)).toHaveCount(0);
+});
+
+test('an observed tile dims and its cost readout loses its glow', async ({ page }) => {
+  await page.goto('/');
+  const observed = page.getByTestId('lane-FLT-176');
+  await expect(observed).toHaveCSS('opacity', '0.6');
+  await expect(observed.locator('.ws')).toBeVisible();
+});
+
 test('a dropped feed shows the disconnected banner and disables the composer', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByTestId('lane-FLT-201')).toBeVisible();

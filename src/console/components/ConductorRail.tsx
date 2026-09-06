@@ -17,7 +17,7 @@ function MessageCard({
   switch (message.type) {
     case 'event':
       return (
-        <div style={{ alignSelf: 'center', display: 'flex', alignItems: 'center', gap: 7 }}>
+        <div style={{ alignSelf: 'center', display: 'flex', alignItems: 'center', gap: 7, opacity: fresh && !fresh.verified ? 0.6 : 1 }}>
           <span className="chip" style={{ borderColor: 'var(--ink2)', color: 'var(--ink2)' }}>{message.text}</span>
           {fresh ? <span className={freshnessClass(fresh)}>{freshnessStamp(fresh)}</span> : null}
         </div>

@@ -4,6 +4,8 @@
  * separate from the components so a test can assert "exactly one CTA per
  * state" without rendering anything.
  */
+import { hm } from './freshness.js';
+import type { Freshness } from './freshness.js';
 import type { Lane, LaneState } from '../shared/console-model.js';
 
 export interface StateGlyph {
@@ -79,7 +81,17 @@ export function ctxPercent(lane: Lane): number {
   return Math.min(100, Math.round((lane.ctxTokens / lane.ctxCeiling) * 100));
 }
 
-export function costClass(lane: Lane): 'w0' | 'w1' | 'w2' {
+/** Prefix a tile's step text with `step N/M · ` when the lane has a step total, exactly
+ *  as the prototype's `l.stepN?'step '+l.stepN+'/'+l.stepTotal+' · ':''` did. */
+export function stepDisplay(lane: Lane): string {
+  return lane.stepTotal > 0 ? `step ${lane.stepN}/${lane.stepTotal} · ${lane.stepText}` : lane.stepText;
+}
+
+/** `stale` renders the cost readout phosphor-off (dim, no glow) regardless of amount.
+ *  The tile passes `true` for an observed value; other callers (cost sheet, ticket
+ *  sheet) never pass it, so their readout still reflects the amount. */
+export function costClass(lane: Lane, stale = false): 'w0' | 'w1' | 'w2' | 'ws' {
+  if (stale) return 'ws';
   if (lane.capUsd !== null && lane.costUsd > lane.capUsd) return 'w2';
   if (lane.costUsd >= 5) return 'w1';
   return 'w0';
@@ -89,7 +101,53 @@ export function capText(lane: Lane): string {
   if (lane.capUsd === null) return '';
   if (lane.costUsd > lane.capUsd) {
     const times = (lane.costUsd / lane.capUsd).toFixed(1);
-    return `cap $${lane.capUsd} · exceeded x${times}`;
+    return `cap $${lane.capUsd} · exceeded ×${times}`;
   }
   return `cap $${lane.capUsd}`;
+}
+
+/** The tile shows the cap only for a runaway lane; a lane merely under its per-run
+ *  cap says nothing next to the cost (the cap sheet and hover card show it either way). */
+export function tileCapText(lane: Lane): string {
+  return lane.runaway ? capText(lane) : '';
+}
+
+export interface TipContent {
+  head: string;
+  body: string;
+  click: string;
+  color?: string;
+}
+
+function whenLabel(fresh: Freshness): string {
+  return `${fresh.verified ? 'verified' : 'observed'} ${hm(fresh.at)}`;
+}
+
+/** Real hover cards (HANDOFF "Hover cards"): head, then a body carrying the value, its
+ *  source and when it was last known, then a "Click → target" line. */
+export function costTip(lane: Lane, fresh: Freshness): TipContent {
+  const over = lane.capUsd !== null && lane.costUsd > lane.capUsd;
+  return {
+    head: `$${lane.costUsd.toFixed(2)}${over ? ' · over cap' : ''}`,
+    body: `value $${lane.costUsd.toFixed(2)} · source ${lane.sandbox?.id ?? lane.id} · ${whenLabel(fresh)}`,
+    click: 'Click → cost sheet',
+    color: over ? '#ff5c47' : '#9df598',
+  };
+}
+
+export function ctxTip(lane: Lane, fresh: Freshness): TipContent {
+  const pct = ctxPercent(lane);
+  return {
+    head: `${pct}% context`,
+    body: `value ${Math.round(lane.ctxTokens / 1000)}k / ${Math.round(lane.ctxCeiling / 1000)}k tokens · source ${lane.id} · ${whenLabel(fresh)}`,
+    click: 'Click → ticket sheet',
+  };
+}
+
+export function modelTip(lane: Lane, fresh: Freshness): TipContent {
+  return {
+    head: lane.model,
+    body: `value ${lane.modelId ?? lane.model} · source ${lane.id} · ${whenLabel(fresh)}`,
+    click: 'Click → ticket sheet',
+  };
 }

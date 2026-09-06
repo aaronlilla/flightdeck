@@ -45,4 +45,25 @@ describe('LaneTile', () => {
     expect(screen.getByText('◆ human needed')).toBeInTheDocument();
     expect(screen.getByText('Answer →')).toBeInTheDocument();
   });
+
+  // POLISH-1 #1: `step N/M · ` prefixes the step text once the lane has a step total.
+  it('prefixes the step text with step N/M when the lane has a step total', () => {
+    render(<LaneTile lane={lane({ stepN: 2, stepTotal: 9, stepText: 'retry loop' })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
+    expect(screen.getByText('step 2/9 · retry loop')).toBeInTheDocument();
+  });
+
+  // POLISH-1 #2: no cap text next to the cost unless the lane is runaway.
+  it('shows no cap text on a normal tile, and the exceeded form on a runaway one', () => {
+    const { rerender } = render(<LaneTile lane={lane({ costUsd: 4.32, capUsd: 20 })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
+    expect(screen.queryByText(/cap \$/)).not.toBeInTheDocument();
+    rerender(<LaneTile lane={lane({ costUsd: 27.5, capUsd: 8, runaway: true })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
+    expect(screen.getByText('cap $8 · exceeded ×3.4')).toBeInTheDocument();
+  });
+
+  // POLISH-1 #3: an observed tile dims to 60% opacity, and its cost readout goes phosphor-off.
+  it('dims to 60% opacity and drops the cost glow once the value is only observed', () => {
+    render(<LaneTile lane={lane({ costUsd: 5.6 })} feedLive={false} now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
+    expect(screen.getByTestId('lane-FLT-1')).toHaveStyle({ opacity: 0.6 });
+    expect(screen.getByText('$5.60')).toHaveClass('ws');
+  });
 });

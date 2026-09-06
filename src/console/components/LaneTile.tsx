@@ -1,9 +1,13 @@
-import type { JSX } from 'react';
+import type { JSX, MouseEvent } from 'react';
+import { useEffect, useRef } from 'react';
 
-import { capText, costClass, ctxPercent, laneCta, stateOf } from '../laneVM.js';
+import { costClass, costTip, ctxPercent, ctxTip, laneCta, modelTip, stateOf, stepDisplay, tileCapText } from '../laneVM.js';
+import type { TipContent } from '../laneVM.js';
 import { computeFreshness, freshnessClass, freshnessStamp } from '../freshness.js';
 import type { Lane } from '../../shared/console-model.js';
 import type { TipSpec } from '../store.js';
+
+const HOVER_DELAY_MS = 250;
 
 export interface LaneTileProps {
   lane: Lane;
@@ -22,6 +26,28 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
   const pct = ctxPercent(lane);
   const fresh = computeFreshness(lane.verifiedAt, lane.observedAt, feedLive, now);
   const opacity = fresh.verified ? 1 : 0.6;
+
+  // Keyed rather than a single flag: a stray enter/leave pair from an adjacent
+  // hover target (context gauge, model chip, cost readout) must never cancel or
+  // overwrite a still-current hover for a different one.
+  const hover = useRef<{ timer: ReturnType<typeof setTimeout> | null; key: string | null }>({ timer: null, key: null });
+  useEffect(() => () => { if (hover.current.timer) clearTimeout(hover.current.timer); }, []);
+  const showTip = (key: string, e: MouseEvent, tip: TipContent): void => {
+    const x = e.clientX + 12;
+    const y = e.clientY + 12;
+    if (hover.current.timer) clearTimeout(hover.current.timer);
+    hover.current.key = key;
+    hover.current.timer = setTimeout(() => {
+      if (hover.current.key === key) onTip({ x, y, head: tip.head, body: tip.body, click: tip.click, color: tip.color });
+    }, HOVER_DELAY_MS);
+  };
+  const hideTip = (key: string): void => {
+    if (hover.current.key !== key) return;
+    if (hover.current.timer) clearTimeout(hover.current.timer);
+    hover.current.timer = null;
+    hover.current.key = null;
+    onTip(null);
+  };
 
   return (
     <div
@@ -43,17 +69,17 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
         <a className="m" style={{ fontSize: 13, fontWeight: 700 }}>{lane.id}</a>
         <span
           className="chip"
-          onMouseEnter={(e) => onTip({ x: e.clientX + 12, y: e.clientY + 12, head: lane.model, body: `Model id ${lane.modelId ?? lane.model}`, click: '' })}
-          onMouseLeave={() => onTip(null)}
+          onMouseEnter={(e) => showTip('model', e, modelTip(lane, fresh))}
+          onMouseLeave={() => hideTip('model')}
         >
           {lane.model}
         </span>
       </div>
       <div className="lbl" style={{ color: st.color, cursor: 'help' }}>{st.glyph} {st.label}</div>
       <div style={{ font: '12.5px/1.45 "IBM Plex Sans",sans-serif', color: 'var(--ink2)', minHeight: 38 }}>
-        {lane.stepText}
+        {stepDisplay(lane)}
       </div>
-      <div style={{ cursor: 'help' }}>
+      <div style={{ cursor: 'help' }} onMouseEnter={(e) => showTip('ctx', e, ctxTip(lane, fresh))} onMouseLeave={() => hideTip('ctx')}>
         <div style={{ position: 'relative', height: 8, background: 'var(--well)', borderRadius: 2, boxShadow: 'inset 0 1px 3px rgba(0,0,0,.6)', borderRight: '3px solid var(--block)' }}>
           <div style={{ position: 'absolute', top: 1, bottom: 1, left: 1, width: `${pct}%`, background: `repeating-linear-gradient(90deg, ${st.color} 0 5px, transparent 5px 7px)` }} />
         </div>
@@ -64,13 +90,15 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
       </div>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
         <span
-          className={costClass(lane)}
+          className={costClass(lane, !fresh.verified)}
           onClick={(e) => { e.stopPropagation(); onOpenCost(lane.id); }}
+          onMouseEnter={(e) => showTip('cost', e, costTip(lane, fresh))}
+          onMouseLeave={() => hideTip('cost')}
         >
           ${lane.costUsd.toFixed(2)}
         </span>
         <span className="m" style={{ fontSize: '9.5px', fontWeight: 700, color: 'var(--block)', whiteSpace: 'nowrap' }}>
-          {capText(lane)}
+          {tileCapText(lane)}
         </span>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 7, borderTop: '1px solid var(--line)', paddingTop: 7 }}>
