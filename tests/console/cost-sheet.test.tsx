@@ -1,0 +1,64 @@
+// @vitest-environment jsdom
+import { render, screen, waitFor } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
+
+import { CostSheet } from '../../src/console/components/CostSheet.js';
+import type { CostStep, Lane } from '../../src/shared/console-model.js';
+
+vi.mock('../../src/console/api.js', () => ({ getRunCost: vi.fn() }));
+import * as api from '../../src/console/api.js';
+
+function lane(extra: Partial<Lane> = {}): Lane {
+  return {
+    id: 'FLT-204', ticket: 'FLT-204', model: 'sonnet-5', modelId: 'claude-sonnet-5', className: 'implement',
+    repo: 'flightdeck-api', attempt: 1, state: 'running', reason: null, stepN: 2, stepTotal: 6, stepText: 'working',
+    ctxTokens: 70_000, ctxCeiling: 200_000, ctxCompactAt: 180_000, costUsd: 27.5, capUsd: 8, burnUsdPerMin: 1.3,
+    fails: 2, hop: 2, hopStatus: 'live', observedAt: Date.now(), verifiedAt: Date.now(), heart: true, since: Date.now(),
+    startedAt: Date.now(), endedAt: null, question: null, pr: null, sandbox: null, blockedBy: null, runaway: true,
+    needsAaron: null,
+    ...extra,
+  };
+}
+
+function renderSheet(laneExtra: Partial<Lane> = {}, steps: CostStep[] = [], capEnforcementFailedJid: string | null = null) {
+  vi.mocked(api.getRunCost).mockResolvedValue({ steps, capEnforcementFailedJid });
+  return render(<CostSheet lane={lane(laneExtra)} onClose={vi.fn()} onKill={vi.fn()} />);
+}
+
+describe('CostSheet', () => {
+  it('splits tokens into input/output plus the model, not a flat total', () => {
+    renderSheet({ ctxTokens: 40_000 });
+    expect(screen.queryByText(/^40k tokens$/)).not.toBeInTheDocument();
+  });
+
+  it('shows "—" for burn when the lane is not running', () => {
+    renderSheet({ state: 'done', burnUsdPerMin: 1.3 });
+    expect(screen.getByText(/burn —\/min/)).toBeInTheDocument();
+  });
+
+  it('shows the real burn rate for a running lane', () => {
+    renderSheet({ state: 'running', burnUsdPerMin: 1.3 });
+    expect(screen.getByText(/burn \$1\.30\/min/)).toBeInTheDocument();
+  });
+
+  it('renders a by-step table from the real per-step data', async () => {
+    renderSheet({}, [
+      { t: 1, stepText: 'FLT-204 finished a turn', inputTokens: 12_000, outputTokens: 900, costUsd: 0.42 },
+      { t: 2, stepText: 'FLT-204 finished a turn', inputTokens: 8_000, outputTokens: 600, costUsd: 0.31 },
+    ]);
+    await waitFor(() => expect(screen.getAllByText('FLT-204 finished a turn')).toHaveLength(2));
+    expect(screen.getByText('$0.42')).toBeInTheDocument();
+    expect(screen.getByText('$0.31')).toBeInTheDocument();
+  });
+
+  it('appends the real cap-enforcement-failure detail for a runaway lane, when the server names one', async () => {
+    renderSheet({ runaway: true }, [], 'J-40211');
+    await waitFor(() => expect(screen.getByText(/cap event failed \(J-40211\)/)).toBeInTheDocument());
+  });
+
+  it('never fabricates a cap-enforcement-failure jid when the server names none', async () => {
+    renderSheet({ runaway: true }, [], null);
+    await waitFor(() => expect(screen.getByText(/\$27\.50/)).toBeInTheDocument());
+    expect(screen.queryByText(/cap event failed/)).not.toBeInTheDocument();
+  });
+});
