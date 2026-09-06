@@ -1,0 +1,316 @@
+/**
+ * The intake queue's worker (`queue.ts`), against fakes for every dependency -- no
+ * network call, no spawned process, no real git worktree, mirroring how
+ * `tests/forge/chain/chain.test.ts` proves `chain.ts`. Every specimen builds its own
+ * `QueueRuntimeDeps` plus a real `QueueStore` over a temp file (the store's own I/O is
+ * cheap and deterministic, the same choice `tests/forge/console/proposals.test.ts` makes
+ * for the fleet journal).
+ */
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { describe, expect, it } from 'vitest';
+
+import type { ChainCouncilFn, ChainGateFn, ChainGh, ChainLauncher, ChainRunStatus } from '../../../src/forge/chain.js';
+import {
+  addBacklogItems, addBriefItem, addQueryItems, addTicketItem, advanceItem, removeItem, retryItem, runQueueTick,
+  type QueuePlanner, type QueueRuntimeDeps, type QueueTicketSearch,
+} from '../../../src/forge/intake/queue.js';
+import { QueueStore } from '../../../src/forge/intake/queueStore.js';
+
+function tempStore(): QueueStore {
+  const dir = mkdtempSync(join(tmpdir(), 'queue-'));
+  return new QueueStore(join(dir, 'queue.jsonl'));
+}
+
+interface FixtureOverrides {
+  planner?: Partial<QueuePlanner>;
+  launcher?: Partial<ChainLauncher>;
+  gh?: Partial<ChainGh>;
+  council?: ChainCouncilFn;
+  gate?: ChainGateFn;
+  killSwitch?: () => boolean;
+  paused?: () => boolean;
+  maxInFlight?: number;
+}
+
+function buildDeps(store: QueueStore, overrides: FixtureOverrides = {}): { deps: QueueRuntimeDeps; events: Record<string, unknown>[] } {
+  const events: Record<string, unknown>[] = [];
+  let seq = 0;
+  const deps: QueueRuntimeDeps = {
+    planner: {
+      planTicket: async (ticket) => ({ ticket, repo: 'owner/name', briefPath: `C:/briefs/${ticket}.md` }),
+      planBrief: async () => ({ ticket: 'BRIEF-1', repo: 'owner/name', briefPath: 'C:/briefs/brief-1.md' }),
+      ...overrides.planner,
+    },
+    launcher: {
+      provision: async ({ ticket }) => ({
+        worktreePath: `C:/worktrees/repo--${ticket.toLowerCase()}`, branch: `feature/${ticket.toLowerCase()}`, base: 'develop',
+      }),
+      launch: async ({ ticket }) => ({ runKey: ticket.toLowerCase() }),
+      status: async (): Promise<ChainRunStatus> => ({ finished: false }),
+      runRegistered: async () => false,
+      ...overrides.launcher,
+    },
+    gh: {
+      findPrByHead: async () => undefined,
+      ...overrides.gh,
+    },
+    council: overrides.council ?? (async () => ({ verdict: 'PASS' })),
+    gate: overrides.gate ?? (async () => ({ merged: false })),
+    clock: () => 1_000,
+    killSwitch: overrides.killSwitch ?? (() => false),
+    paused: overrides.paused ?? (() => false),
+    maxInFlight: overrides.maxInFlight ?? 2,
+    append: (event) => {
+      seq += 1;
+      const id = `e${seq}`;
+      events.push({ id, ...event });
+      return { id };
+    },
+    store,
+  };
+  return { deps, events };
+}
+
+describe('addTicketItem / addBriefItem', () => {
+  it('adds a queued item carrying the ticket as both input and ticket', () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    expect(item).toMatchObject({ source: 'ticket', input: 'ABC-1', ticket: 'ABC-1', state: 'queued', repo: null });
+    expect(store.all()).toEqual([item]);
+  });
+
+  it('adds a queued item for a pasted brief with no ticket yet', () => {
+    const store = tempStore();
+    const item = addBriefItem(store, '# Goal: fix the thing', 1000);
+    expect(item).toMatchObject({ source: 'brief', input: '# Goal: fix the thing', ticket: null, state: 'queued' });
+  });
+});
+
+describe('addQueryItems / addBacklogItems', () => {
+  it('resolves a JQL query to one item per matching ticket', async () => {
+    const store = tempStore();
+    const search: QueueTicketSearch = { searchKeys: async () => ['ABC-1', 'ABC-2'] };
+    const items = await addQueryItems(store, 'sprint = 42', search, 1000);
+    expect(items.map((i) => i.ticket)).toEqual(['ABC-1', 'ABC-2']);
+    expect(items.every((i) => i.source === 'query' && i.input === 'sprint = 42')).toBe(true);
+  });
+
+  it('adds nothing for a backlog filter matching no tickets', async () => {
+    const store = tempStore();
+    const search: QueueTicketSearch = { searchKeys: async () => [] };
+    const items = await addBacklogItems(store, 'label = flaky', search, 1000);
+    expect(items).toEqual([]);
+    expect(store.all()).toEqual([]);
+  });
+});
+
+describe('removeItem / retryItem', () => {
+  it('removes an item from the visible list without erasing it from the raw log', () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    expect(removeItem(store, item.id, 2000)).toBe(true);
+    expect(store.all()).toEqual([]);
+    expect(removeItem(store, 'nope', 2000)).toBe(false);
+  });
+
+  it('sends a parked item back to queued, keeping its brief and repo', () => {
+    const store = tempStore();
+    store.append({
+      id: 'q1', at: 1000, source: 'ticket', input: 'ABC-1', ticket: 'ABC-1', repo: 'owner/name',
+      briefPath: 'C:/briefs/abc-1.md', state: 'parked', reason: 'unrouted', runKey: null, pr: null,
+      journalIds: [], createdAt: 1000, updatedAt: 1000,
+    });
+    const retried = retryItem(store, 'q1', 2000);
+    expect(retried).toMatchObject({ state: 'queued', reason: null, briefPath: 'C:/briefs/abc-1.md', repo: 'owner/name' });
+  });
+
+  it('refuses to retry an item that is not parked or failed', () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    expect(retryItem(store, item.id, 2000)).toBeUndefined();
+  });
+});
+
+describe('advanceItem', () => {
+  it('walks a ticket item from queued through planned, launched, gated to review', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let statusCalls = 0;
+    const { deps, events } = buildDeps(store, {
+      launcher: {
+        status: async () => {
+          statusCalls += 1;
+          return statusCalls < 2
+            ? { finished: false }
+            : { finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/42' };
+        },
+      },
+    });
+
+    const planned = await advanceItem(item, deps);
+    expect(planned.state).toBe('running');
+    expect(planned.briefPath).toBe('C:/briefs/ABC-1.md');
+    expect(planned.runKey).toBeNull();
+
+    const launched = await advanceItem(planned, deps);
+    expect(launched.runKey).toBe('abc-1');
+    expect(launched.branch).toBe('feature/abc-1');
+
+    const stillWaiting = await advanceItem(launched, deps);
+    expect(stillWaiting.state).toBe('running');
+    expect(stillWaiting.runKey).toBe('abc-1');
+
+    const reviewed = await advanceItem(stillWaiting, deps);
+    expect(reviewed.state).toBe('review');
+    expect(reviewed.pr).toMatchObject({ no: 42, url: 'https://github.com/owner/name/pull/42', draft: true });
+
+    expect(store.get(item.id)?.state).toBe('review');
+    expect(events.map((e) => e['event'])).toEqual([
+      'queue.planning', 'queue.planned', 'queue.launched', 'queue.review',
+    ]);
+  });
+
+  it('never asks the gate to merge, even when the council passes', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let gateInput: { repo: string; pr: number; merge: boolean } | undefined;
+    const { deps } = buildDeps(store, {
+      launcher: {
+        status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/9' }),
+      },
+      gate: async (input) => { gateInput = input; return { merged: false }; },
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps); // plan
+    current = await advanceItem(current, deps); // launch
+    await advanceItem(current, deps); // gate
+
+    expect(gateInput?.merge).toBe(false);
+  });
+
+  it('parks an item whose repo does not route, without touching the launcher', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ZZZ-1', 1000);
+    let provisionCalls = 0;
+    const { deps } = buildDeps(store, {
+      planner: { planTicket: async (ticket) => ({ ticket, repo: 'unknown', briefPath: `C:/briefs/${ticket}.md` }) },
+      launcher: { provision: async (input) => { provisionCalls += 1; return { worktreePath: 'x', branch: 'y', base: 'z' }; } },
+    });
+
+    const result = await advanceItem(item, deps);
+    expect(result.state).toBe('parked');
+    expect(result.reason).toBe('unrouted');
+    expect(provisionCalls).toBe(0);
+  });
+
+  it('parks an item whose council does not pass', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'FIX FIRST' }),
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    const result = await advanceItem(current, deps);
+    expect(result.state).toBe('parked');
+    expect(result.reason).toBe('FIX FIRST');
+  });
+
+  it('parks an item whose run finished but no verdict was done', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'blocked' }) },
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    const result = await advanceItem(current, deps);
+    expect(result.state).toBe('parked');
+    expect(result.reason).toBe('blocked');
+  });
+
+  it('fails an item whose provisioning throws', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const { deps } = buildDeps(store, {
+      launcher: { provision: async () => { throw new Error('git worktree add failed'); } },
+    });
+
+    const planned = await advanceItem(item, deps);
+    const result = await advanceItem(planned, deps);
+    expect(result.state).toBe('failed');
+    expect(result.reason).toContain('git worktree add failed');
+  });
+
+  it('resumes planning for an item already stuck in planning after a crash', async () => {
+    const store = tempStore();
+    store.append({
+      id: 'q2', at: 1000, source: 'ticket', input: 'ABC-2', ticket: 'ABC-2', repo: null, briefPath: null,
+      state: 'planning', reason: null, runKey: null, pr: null, journalIds: [], createdAt: 1000, updatedAt: 1000,
+    });
+    const stuck = store.get('q2')!;
+    const { deps } = buildDeps(store);
+    const result = await advanceItem(stuck, deps);
+    expect(result.state).toBe('running');
+    expect(result.briefPath).toBe('C:/briefs/ABC-2.md');
+  });
+});
+
+describe('runQueueTick', () => {
+  it('refuses to start anything while the kill switch is engaged', async () => {
+    const store = tempStore();
+    addTicketItem(store, 'ABC-1', 1000);
+    const { deps } = buildDeps(store, { killSwitch: () => true });
+    const result = await runQueueTick(deps, store.all());
+    expect(result).toEqual({ started: 0, advanced: 0, killSwitchEngaged: true, paused: false });
+  });
+
+  it('refuses to start anything while the queue is paused', async () => {
+    const store = tempStore();
+    addTicketItem(store, 'ABC-1', 1000);
+    const { deps } = buildDeps(store, { paused: () => true });
+    const result = await runQueueTick(deps, store.all());
+    expect(result).toEqual({ started: 0, advanced: 0, killSwitchEngaged: false, paused: true });
+  });
+
+  it('keeps at most maxInFlight items moving, leaving the rest queued', async () => {
+    const store = tempStore();
+    addTicketItem(store, 'A-1', 1000);
+    addTicketItem(store, 'A-2', 1000);
+    addTicketItem(store, 'A-3', 1000);
+    const { deps } = buildDeps(store, { maxInFlight: 2 });
+
+    const result = await runQueueTick(deps, store.all());
+    expect(result.started).toBe(2);
+    const states = store.all().map((item) => item.state);
+    expect(states.filter((s) => s === 'running').length).toBe(2);
+    expect(states.filter((s) => s === 'queued').length).toBe(1);
+  });
+
+  it('advances already in-flight items before starting anything new', async () => {
+    const store = tempStore();
+    store.append({
+      id: 'q1', at: 1000, source: 'ticket', input: 'A-1', ticket: 'A-1', repo: 'owner/name',
+      briefPath: 'C:/briefs/a-1.md', branch: 'feature/a-1', worktreePath: 'C:/worktrees/repo--a-1', base: 'develop',
+      state: 'running', runKey: 'a-1', reason: null, pr: null, journalIds: [], createdAt: 1000, updatedAt: 1000,
+    });
+    addTicketItem(store, 'A-2', 1000);
+    const { deps } = buildDeps(store, {
+      maxInFlight: 1,
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+    });
+
+    const result = await runQueueTick(deps, store.all());
+    expect(result.started).toBe(0);
+    expect(store.get('q1')?.state).toBe('review');
+  });
+});
