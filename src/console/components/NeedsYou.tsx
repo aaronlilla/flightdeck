@@ -1,6 +1,6 @@
 import type { JSX } from 'react';
 
-import { hm } from '../freshness.js';
+import { ago, hm } from '../freshness.js';
 import { laneHeadline } from '../laneVM.js';
 import type { Integration, Lane } from '../../shared/console-model.js';
 
@@ -15,44 +15,56 @@ export interface NeedItem {
   cta: string;
   ctaCls: 'btnP' | 'btnA' | 'btnR' | 'btnS';
   onClick: () => void;
+  /** The plate's trailing "label ▸" link, when it has one (the integration plate's
+   *  "why + fix ▸", opening Settings). */
+  more: { label: string; onClick: () => void } | null;
 }
 
 export function buildNeeds(
   lanes: Lane[],
   integrations: Integration[],
   onFix: (item: 'integration' | 'lane', id: string) => void,
+  onOpenSettings: () => void = () => undefined,
+  now: number = Date.now(),
 ): NeedItem[] {
   const items: NeedItem[] = [];
   for (const integration of integrations) {
     if (integration.status !== 'down') continue;
     const since = integration.since !== null ? ` · since ${hm(integration.since)}` : '';
     items.push({
-      id: `int-${integration.id}`, color: 'var(--block)', title: integration.name, runId: null, sub: 'disconnected',
-      line: `${integration.dependents.length} lanes blocked${since}`, cta: integration.fixLabel ?? 'Reconnect →',
+      id: `int-${integration.id}`, color: 'var(--block)', title: integration.name, runId: null,
+      sub: `${integration.dependents.length} lanes blocked${since}`,
+      line: integration.cause ?? '', cta: integration.fixLabel ?? 'Reconnect →',
       ctaCls: 'btnR', onClick: () => onFix('integration', integration.id),
+      more: integration.cause ? { label: 'why + fix', onClick: onOpenSettings } : null,
     });
   }
   for (const lane of lanes) {
     const headline = laneHeadline(lane);
     if (lane.state === 'parked') {
       const question = lane.question?.text ?? '';
-      // The prototype's own plate: `asks: ` plus the question, truncated. It never
-      // covers an inbox entry with no readable question -- every fixture it ships
-      // with has one -- so a blank question here fell straight through as a bare
-      // `asks: `. The em dash keeps that same shape without putting words in the
-      // run's mouth for a question the console never actually read.
-      const asks = question.length > 60 ? `${question.slice(0, 60)}…` : (question || '—');
+      // The prototype's own plate: `asks: ` plus the question, truncated to 70 chars
+      // with an unconditional "…" (script_wrapped.txt 199: `text.slice(0,70)+'…'`,
+      // appended even when the question is already short). It never covers an inbox
+      // entry with no readable question -- every fixture it ships with has one -- so
+      // a blank question here fell straight through as a bare `asks: `. The em dash
+      // keeps that same shape without putting words in the run's mouth for a question
+      // the console never actually read.
+      const asks = question ? `${question.slice(0, 70)}…` : '—';
       items.push({
-        id: `park-${lane.id}`, color: 'var(--park)', title: headline.main, runId: headline.sub, sub: 'parked',
+        id: `park-${lane.id}`, color: 'var(--park)', title: headline.main, runId: headline.sub,
+        sub: `waiting ${ago(now - lane.since)}`,
         line: `asks: ${asks}`, cta: 'Answer →', ctaCls: 'btnA',
-        onClick: () => onFix('lane', lane.id),
+        onClick: () => onFix('lane', lane.id), more: null,
       });
     }
     if (lane.state === 'running' && lane.runaway) {
+      const cap = lane.capUsd ?? 0;
       items.push({
-        id: `over-${lane.id}`, color: 'var(--block)', title: headline.main, runId: headline.sub, sub: 'over cap',
-        line: `burning $${lane.burnUsdPerMin.toFixed(2)}/min · ${lane.fails} fails`, cta: 'Kill attempt', ctaCls: 'btnR',
-        onClick: () => onFix('lane', lane.id),
+        id: `over-${lane.id}`, color: 'var(--block)', title: headline.main, runId: headline.sub,
+        sub: `$${lane.costUsd.toFixed(2)} / $${cap}`,
+        line: `retry loop ×${lane.fails} · burning $${lane.burnUsdPerMin.toFixed(2)}/min`, cta: 'Kill attempt', ctaCls: 'btnR',
+        onClick: () => onFix('lane', lane.id), more: null,
       });
     }
   }
@@ -81,7 +93,10 @@ export function NeedsYou({ items }: NeedsYouProps): JSX.Element | null {
               {n.runId ? <span title={n.runId} style={{ color: 'var(--ink3)', fontWeight: 500, marginLeft: 6, fontSize: 10 }}>{n.runId}</span> : null}
               {' '}<span style={{ color: 'var(--ink2)', fontWeight: 500 }}>{n.sub}</span>
             </div>
-            <div className="m" style={{ fontSize: 10, color: 'var(--ink2)' }}>{n.line}</div>
+            <div className="m" style={{ fontSize: 10, color: 'var(--ink2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {n.line}
+              {n.more ? <> · <a style={{ color: 'var(--ink3)' }} onClick={n.more.onClick}>{n.more.label} ▸</a></> : null}
+            </div>
           </div>
           <span className={n.ctaCls} style={{ padding: '7px 11px', fontSize: '9.5px' }} onClick={n.onClick}>{n.cta}</span>
         </div>
