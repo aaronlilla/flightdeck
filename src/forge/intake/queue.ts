@@ -301,10 +301,19 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
  * fill `maxInFlight`. A paused or kill-switched tick still reports which one stopped it,
  * so a caller can say so honestly rather than silently doing nothing.
  */
+/** Items whose `advanceItem` has been entered and has not returned. A council and gate
+ *  pass takes minutes while the tick fires every ten seconds, so without this an item
+ *  stays `running` across several ticks and each one starts the same work again: a live
+ *  run of this queue spawned three concurrent Codex processes for a single item that way.
+ *  Module scope rather than a field, because the tick is a free function and one process
+ *  owns one queue. */
+const advancing = new Set<string>();
+
 export async function runQueueTick(deps: QueueRuntimeDeps, items: QueueItem[]): Promise<QueueTickResult> {
   if (deps.killSwitch()) return { started: 0, advanced: 0, killSwitchEngaged: true, paused: false };
   if (deps.paused()) return { started: 0, advanced: 0, killSwitchEngaged: false, paused: true };
 
+  items = items.filter((item) => !advancing.has(item.id));
   const inFlight = items.filter((item) => QUEUE_IN_FLIGHT_STATES.includes(item.state));
   const queued = items.filter((item) => item.state === 'queued');
   let slots = Math.max(0, deps.maxInFlight - inFlight.length);
@@ -319,9 +328,14 @@ export async function runQueueTick(deps: QueueRuntimeDeps, items: QueueItem[]): 
 
   let advanced = 0;
   for (const item of toAdvance) {
+    advancing.add(item.id);
     const before = JSON.stringify(item);
-    const next = await advanceItem(item, deps);
-    if (JSON.stringify(next) !== before) advanced += 1;
+    try {
+      const next = await advanceItem(item, deps);
+      if (JSON.stringify(next) !== before) advanced += 1;
+    } finally {
+      advancing.delete(item.id);
+    }
   }
   return { started, advanced, killSwitchEngaged: false, paused: false };
 }

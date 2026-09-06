@@ -333,4 +333,33 @@ describe('runQueueTick', () => {
     expect(result.started).toBe(0);
     expect(store.get('q1')?.state).toBe('review');
   });
+
+  // A council and gate pass takes minutes while the tick fires every ten seconds, so an
+  // item whose advance is still awaiting is still `running` when the next tick reads the
+  // queue. Without a lock the tick calls `advanceItem` for it again, and a live run of
+  // this queue really did spawn three concurrent Codex processes for one item that way.
+  it('never advances an item whose previous advance has not returned', async () => {
+    const store = tempStore();
+    addTicketItem(store, 'ABC-1', 1000);
+    let calls = 0;
+    let release: (() => void) | undefined;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const { deps } = buildDeps(store, {
+      planner: {
+        planTicket: async (ticket) => {
+          calls += 1;
+          await held;
+          return { ticket, repo: 'owner/name', briefPath: `C:/briefs/${ticket}.md` };
+        },
+      },
+    });
+
+    const first = runQueueTick(deps, store.all());
+    await Promise.resolve();
+    const second = runQueueTick(deps, store.all());
+    release?.();
+    await Promise.all([first, second]);
+
+    expect(calls).toBe(1);
+  });
 });
