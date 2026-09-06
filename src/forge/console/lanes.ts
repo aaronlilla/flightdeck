@@ -359,6 +359,24 @@ export function computeLanes(input: LanesInput, now: number): LanesResponse {
   };
 }
 
+const FINISHED_WINDOW_STATES = new Set<LaneState>(['done', 'merged', 'killed', 'exhausted', 'unverified']);
+const FINISHED_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/** `GET /lanes`'s default view: a finished lane (done, merged, killed, exhausted,
+ *  unverified) drops off the board 24 hours after its own `observedAt`, so a board that
+ *  has been running a while does not accumulate every run that ever finished. Running,
+ *  handed-off, paused, parked and blocked lanes are never windowed out -- there is
+ *  always a reason an operator would want to see one of those. `all` bypasses the
+ *  window entirely, for the one screen (or `all=1` query) that wants the full history. */
+export function windowLanes(response: LanesResponse, now: number, all: boolean): LanesResponse {
+  if (all) return response;
+  const cutoff = now - FINISHED_WINDOW_MS;
+  const lanes = response.lanes.filter((lane) => (
+    !FINISHED_WINDOW_STATES.has(lane.state) || lane.observedAt >= cutoff
+  ));
+  return { ...response, lanes };
+}
+
 /** The lane state (and why) for an arbitrary run right now, for a caller that only has
  *  a run name and a journal path -- a command-grammar handler answering "why is X
  *  stuck", or a write guarding what state an action is allowed from. Builds the same

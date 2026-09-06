@@ -12,8 +12,9 @@ import { describe, expect, it } from 'vitest';
 import { foldChainState, type ChainPacketState } from '../../../src/forge/chain.js';
 import { Journal, replay } from '../../../src/forge/journal.js';
 import {
-  computeLanes, hopFor, laneStateFor, meaningfulEvents, modelAlias, ticketFor, type LanesInput,
+  computeLanes, hopFor, laneStateFor, meaningfulEvents, modelAlias, ticketFor, windowLanes, type LanesInput,
 } from '../../../src/forge/console/lanes.js';
+import type { Lane, LanesResponse } from '../../../src/shared/console-model.js';
 import { laneRecord, type LaneRecord } from '../../../src/forge/supervisor.js';
 
 function tempJournal(): { path: string; journal: Journal } {
@@ -336,5 +337,63 @@ describe('foldChainState + computeLanes', () => {
     expect(built.repo).toBe('o/n');
     expect(built.hop).toBe(4);
     expect(built.hopStatus).toBe('done');
+  });
+});
+
+describe('windowLanes', () => {
+  const HOUR = 3_600_000;
+  const now = 100 * HOUR;
+
+  function laneWith(overrides: Partial<Lane>): Lane {
+    return {
+      id: 'alpha', ticket: null, model: 'sonnet-5', modelId: null, className: null, repo: null,
+      attempt: 1, state: 'running', reason: null, stepN: 0, stepTotal: 0, stepText: '',
+      ctxTokens: 0, ctxCeiling: 0, ctxCompactAt: 0, costUsd: 0, capUsd: null, burnUsdPerMin: 0,
+      fails: 0, hop: 0, hopStatus: 'live', observedAt: now, verifiedAt: null, heart: true,
+      since: now, startedAt: now, endedAt: null, question: null, pr: null, sandbox: null,
+      blockedBy: null, runaway: false, needsAaron: null,
+      ...overrides,
+    };
+  }
+
+  function responseWith(lanes: Lane[]): LanesResponse {
+    return { at: now, lanes, spentTodayUsd: 0, burnUsdPerMin: 0 };
+  }
+
+  it('drops a finished lane whose observedAt is more than 24h old', () => {
+    const stale = laneWith({ id: 'stale', state: 'done', observedAt: now - 25 * HOUR });
+    const fresh = laneWith({ id: 'fresh', state: 'done', observedAt: now - 1 * HOUR });
+    const result = windowLanes(responseWith([stale, fresh]), now, false);
+    expect(result.lanes.map((lane) => lane.id)).toEqual(['fresh']);
+  });
+
+  it('never windows out running, handed-off, paused, parked or blocked lanes, however old', () => {
+    const alwaysShown = (['running', 'handed-off', 'paused', 'parked', 'blocked'] as const).map((state, index) => (
+      laneWith({ id: `lane-${index}`, state, observedAt: now - 100 * HOUR })
+    ));
+    const result = windowLanes(responseWith(alwaysShown), now, false);
+    expect(result.lanes).toHaveLength(alwaysShown.length);
+  });
+
+  it('windows out merged, killed, exhausted and unverified lanes past 24h, same as done', () => {
+    const stale = (['merged', 'killed', 'exhausted', 'unverified'] as const).map((state, index) => (
+      laneWith({ id: `lane-${index}`, state, observedAt: now - 25 * HOUR })
+    ));
+    const result = windowLanes(responseWith(stale), now, false);
+    expect(result.lanes).toHaveLength(0);
+  });
+
+  it('bypasses the window entirely when all is true', () => {
+    const stale = laneWith({ id: 'stale', state: 'done', observedAt: now - 25 * HOUR });
+    const result = windowLanes(responseWith([stale]), now, true);
+    expect(result.lanes).toHaveLength(1);
+  });
+
+  it('leaves spentTodayUsd and burnUsdPerMin untouched by the window', () => {
+    const stale = laneWith({ id: 'stale', state: 'done', observedAt: now - 25 * HOUR });
+    const response = { ...responseWith([stale]), spentTodayUsd: 12.5, burnUsdPerMin: 0.4 };
+    const result = windowLanes(response, now, false);
+    expect(result.spentTodayUsd).toBe(12.5);
+    expect(result.burnUsdPerMin).toBe(0.4);
   });
 });

@@ -26,7 +26,7 @@ import type {
 } from '../../shared/console-model.js';
 import { capsOverridesPath, computeCaps, readCapsOverrides } from './caps-read.js';
 import { actionsLedgerPath, computeJournal, readActionsLedger } from './journal-route.js';
-import { computeLanes, spentTodayUsd, type LanesInput } from './lanes.js';
+import { computeLanes, spentTodayUsd, windowLanes, type LanesInput } from './lanes.js';
 import { computeRunPr, prCachePath, readPrCache, writePrCache, type GhLookupFn, type GhPrLookup } from './pr.js';
 import { computeProposals, readRules, rulesPath } from './proposals.js';
 import { computeSandbox, newestLogFile, tailLog } from './sandbox.js';
@@ -124,7 +124,8 @@ export class ConsoleReads {
     if (request.method !== 'GET') return false;
 
     if (path === '/lanes') {
-      json(response, 200, this.lanesResponse());
+      const url = new URL(request.url ?? '/', 'http://localhost');
+      json(response, 200, this.lanesResponse(url.searchParams.get('all') === '1'));
       return true;
     }
     if (path === '/thread') {
@@ -170,8 +171,10 @@ export class ConsoleReads {
   }
 
   /** Public so `command.ts`'s `status` intent can answer from the same lane counts and
-   *  spend the board itself shows, rather than a figure of its own. */
-  lanesResponse(): LanesResponse {
+   *  spend the board itself shows, rather than a figure of its own. `all` bypasses the
+   *  24-hour finished-lane window (`GET /lanes?all=1`); `status` calls this with the
+   *  window on, the same default the board itself renders. */
+  lanesResponse(all = false): LanesResponse {
     const now = Date.now();
     const fleet = this.journalCache.read(this.journalPath);
     const chain = this.chain();
@@ -196,7 +199,7 @@ export class ConsoleReads {
       prFor: (run) => prCache[run]?.pr ?? null,
       usdPerHour: (lane) => usdPerHour(lane, now),
     };
-    return computeLanes(input, now);
+    return windowLanes(computeLanes(input, now), now, all);
   }
 
   private threadResponse(): ThreadResponse {
