@@ -113,19 +113,22 @@ export function costClass(lane: Lane, stale = false): 'w0' | 'w1' | 'w2' | 'ws' 
   return 'w0';
 }
 
+/** Matches the prototype's own `'cap $'+l.cap+' · ×'+Math.round(l.cost/l.cap)`: no
+ *  word "exceeded", and the multiplier is rounded rather than shown to one decimal. */
 export function capText(lane: Lane): string {
   if (lane.capUsd === null) return '';
   if (lane.costUsd > lane.capUsd) {
-    const times = (lane.costUsd / lane.capUsd).toFixed(1);
-    return `cap $${lane.capUsd} · exceeded ×${times}`;
+    const times = Math.round(lane.costUsd / lane.capUsd);
+    return `cap $${lane.capUsd} · ×${times}`;
   }
   return `cap $${lane.capUsd}`;
 }
 
-/** The tile shows the cap only for a runaway lane; a lane merely under its per-run
- *  cap says nothing next to the cost (the cap sheet and hover card show it either way). */
+/** The tile shows the cap text whenever cost exceeds cap, not only for a lane also
+ *  flagged `runaway`: a lane can quietly cross its cap without ever being marked
+ *  runaway, and it still needs the warning. */
 export function tileCapText(lane: Lane): string {
-  return lane.runaway ? capText(lane) : '';
+  return lane.capUsd !== null && lane.costUsd > lane.capUsd ? capText(lane) : '';
 }
 
 export interface TipContent {

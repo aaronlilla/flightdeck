@@ -239,7 +239,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       }
       await refresh();
     })();
-  });
+  }, () => dispatch({ type: 'view', view: 'settings' }), state.now);
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent): void {

@@ -25,7 +25,7 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
   const headline = laneHeadline(lane);
   const cta = laneCta(lane);
   const pct = ctxPercent(lane);
-  const fresh = computeFreshness(lane.verifiedAt, lane.observedAt, feedLive, now);
+  const fresh = computeFreshness(lane.verifiedAt, lane.observedAt, feedLive, now, lane.heart);
   const opacity = fresh.verified ? 1 : 0.6;
 
   // Keyed rather than a single flag: a stray enter/leave pair from an adjacent
