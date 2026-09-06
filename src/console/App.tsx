@@ -309,7 +309,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
         ) : null}
         {state.view === 'review' ? (
           <FlightReview
-            proposals={state.proposals}
+            proposals={state.proposals} now={state.now}
             onApply={(id) => void runAction(() => api.applyProposal(id)).then(() => refresh())}
             onDismiss={(id) => void runAction(() => api.dismissProposal(id))}
             onRestore={(id) => void runAction(() => api.restoreProposal(id))}
