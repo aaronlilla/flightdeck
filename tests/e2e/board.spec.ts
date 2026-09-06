@@ -66,6 +66,14 @@ test('an observed tile dims and its cost readout loses its glow', async ({ page 
   await expect(observed.locator('.ws')).toBeVisible();
 });
 
+test('the spend readout opens the fleet cost sheet', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('.w0, .w1, .w2').filter({ hasText: '/' }).click();
+  const sheet = page.getByTestId('fleet-cost-sheet');
+  await expect(sheet).toBeVisible();
+  await expect(sheet.getByText('FLT-204')).toBeVisible();
+});
+
 test('a dropped feed shows the disconnected banner and disables the composer', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByTestId('lane-FLT-201')).toBeVisible();

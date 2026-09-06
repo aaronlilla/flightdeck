@@ -22,6 +22,7 @@ export type Sort = 'cost' | 'age' | 'state';
 export type SheetSpec =
   | { type: 'ticket'; id: string }
   | { type: 'cost'; id: string }
+  | { type: 'fleet-cost' }
   | { type: 'journal'; run?: string }
   | { type: 'sandbox'; id: string };
 

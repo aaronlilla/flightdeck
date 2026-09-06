@@ -13,6 +13,7 @@ import { CommandPalette, buildPaletteItems } from './components/CommandPalette.j
 import { CostSheet } from './components/CostSheet.js';
 import { DisconnectedBanner } from './components/DisconnectedBanner.js';
 import { Filters } from './components/Filters.js';
+import { FleetCostSheet } from './components/FleetCostSheet.js';
 import { FlightReview } from './components/FlightReview.js';
 import { HoverCard } from './components/HoverCard.js';
 import { JournalSheet } from './components/JournalSheet.js';
@@ -199,7 +200,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   const onUndo = useCallback((jid: string) => { void runAction(() => api.undoJournal(jid)); }, [runAction]);
 
   const sheet = state.sheet;
-  const sheetLane = sheet && sheet.type !== 'journal'
+  const sheetLane = sheet && sheet.type !== 'journal' && sheet.type !== 'fleet-cost'
     ? state.lanes.find((l) => l.id === sheet.id)
     : undefined;
 
@@ -256,7 +257,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
           theme={state.theme}
           onNav={(view) => dispatch({ type: 'view', view })}
           onOpenPalette={() => dispatch({ type: 'palette-open', open: true })}
-          onOpenCost={() => undefined}
+          onOpenCost={() => dispatch({ type: 'sheet', sheet: { type: 'fleet-cost' } })}
           onToggleTheme={() => dispatch({ type: 'theme', theme: state.theme === 'thD' ? 'thL' : 'thD' })}
         />
         <NeedsYou items={needs} />
@@ -333,6 +334,13 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
               ) : null}
               {state.sheet.type === 'cost' && sheetLane ? (
                 <CostSheet lane={sheetLane} onClose={() => dispatch({ type: 'sheet', sheet: null })} onKill={(id) => onCommand(id, 'kill')} />
+              ) : null}
+              {state.sheet.type === 'fleet-cost' ? (
+                <FleetCostSheet
+                  lanes={state.lanes} spentTodayUsd={state.caps?.spentTodayUsd ?? 0}
+                  onClose={() => dispatch({ type: 'sheet', sheet: null })}
+                  onOpenLane={(id) => dispatch({ type: 'sheet', sheet: { type: 'ticket', id } })}
+                />
               ) : null}
               {state.sheet.type === 'journal' ? (
                 <JournalSheet rows={state.journal} run={state.sheet.run} onClose={() => dispatch({ type: 'sheet', sheet: null })} onUndo={onUndo} />
