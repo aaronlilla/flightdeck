@@ -239,6 +239,37 @@ describe('ConsoleWrites.command / kill confirm flow', () => {
     expect(reply.text).toContain('2 running');
     expect(reply.text).toContain('1 blocked');
     expect(reply.text).toContain('$12.50');
+    expect(reply.text).toContain('gamma (blocked)');
+    withView.stop();
+  });
+
+  it('lists at most five lanes needing attention, by id and state, labeling a runaway as such', async () => {
+    const lanes = [
+      { id: 'a', state: 'parked' }, { id: 'b', state: 'blocked' },
+      { id: 'c', state: 'running', runaway: true },
+      { id: 'd', state: 'parked' }, { id: 'e', state: 'blocked' }, { id: 'f', state: 'parked' },
+      { id: 'ok', state: 'running' },
+    ];
+    const withView = new ConsoleWrites({
+      journalPath, registry, inbox, actuator,
+      authorized: () => true,
+      ledgerPath: join(dir, 'actions-3.jsonl'),
+      capsOverridesPath: join(dir, 'caps-3.json'),
+      rulesConfigPath: join(dir, 'rules-3.json'),
+      integrationsConfigPath: join(dir, 'integrations-3.json'),
+      lanesView: () => ({
+        at: Date.now(), lanes: lanes as never, spentTodayUsd: 0, burnUsdPerMin: 0,
+      }),
+    });
+
+    const cards = await withView.command('status');
+
+    const reply = cards.find((card) => card.type === 'reply')!;
+    expect(reply.text).toContain('needs attention');
+    expect(reply.text).toContain('c (runaway)');
+    expect(reply.text).not.toContain('ok (');
+    const namedLanes = /needs attention: ([^.]+)\./.exec(reply.text)?.[1]?.split(', ') ?? [];
+    expect(namedLanes).toHaveLength(5);
     withView.stop();
   });
 
