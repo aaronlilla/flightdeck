@@ -39,7 +39,7 @@ afterEach(async () => {
   await server.close();
 });
 
-describe.each(['/lanes', '/thread', '/journal', '/caps', '/proposals'])('%s', (path) => {
+describe.each(['/lanes', '/thread', '/journal', '/caps', '/proposals', '/queue'])('%s', (path) => {
   it('refuses a request with no token', async () => {
     const response = await fetch(`${base}${path}`);
     expect(response.status).toBe(401);
