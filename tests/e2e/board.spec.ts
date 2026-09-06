@@ -37,11 +37,13 @@ test('the needs-you strip keeps all three plates on one row at 1440', async ({ p
   await expect(plates).toHaveCount(3);
   // The web fonts land after the first paint and reflow the plates, so measure only once
   // the layout has stopped moving; otherwise this reads a mid-reflow frame and flakes.
-  await page.evaluate(() => document.fonts.ready);
+  // The main tsconfig carries no DOM lib, so browser globals are reached through a
+  // string-bodied evaluate rather than a typed arrow, the same way overflow.spec.ts does.
+  await page.evaluate('document.fonts.ready');
   await expect.poll(async () => {
-    const boxes = await plates.evaluateAll((nodes) =>
-      nodes.map((node) => Math.round(node.getBoundingClientRect().y)));
-    return new Set(boxes).size;
+    const tops = await page.evaluate<number[]>(
+      `Array.from(document.querySelectorAll('.plate')).map(n => Math.round(n.getBoundingClientRect().y))`);
+    return new Set(tops).size;
   }, { timeout: 5000 }).toBe(1);
 });
 
