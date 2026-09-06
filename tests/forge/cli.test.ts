@@ -261,7 +261,7 @@ describe('forge answer', () => {
 describe('forge run', () => {
   it('B.3.9: refuses a non-numeric --max-context rather than launching with a NaN ceiling', async () => {
     const brief = join(home, 'ok.md');
-    writeFileSync(brief, '# Goal\n\nDo the thing.\n', 'utf8');
+    writeFileSync(brief, '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnode -e process.exit(0)\n```\n', 'utf8');
     const result = await forge(['run', brief, '--max-context', 'abc']);
     expect(result.code).toBe(2);
     expect(result.lines.join(' ')).toMatch(/--max-context needs a number/);
@@ -1097,8 +1097,12 @@ describe('P4.7/I9: the conformance park is live on forge run', () => {
   });
 });
 
-describe('P4.7/I3: checkBudget at admission', () => {
-  it('refuses to launch when today\'s burn is already at or over the daily cap', async () => {
+describe('admission and the money that was never real', () => {
+  // This fleet runs on a flat subscription, so a launch must never be refused because a
+  // list-priced total crossed a ceiling. The old gate summed the whole burn ledger rather
+  // than a day of it, so the figure only ever climbed and would eventually have refused
+  // every launch for good on a quantity that never described anything.
+  it('launches even when the ledger already carries an enormous list-priced total', async () => {
     const { Journal } = await import('../../src/forge/journal.js');
     const j = new Journal(journal());
     j.append({
@@ -1111,11 +1115,10 @@ describe('P4.7/I3: checkBudget at admission', () => {
     j.close();
 
     const brief = join(home, 'ok.md');
-    writeFileSync(brief, '# Goal\n\nDo the thing.\n', 'utf8');
+    writeFileSync(brief, '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnode -e process.exit(0)\n```\n', 'utf8');
     const result = await forge(['run', brief]);
 
-    expect(result.code).toBe(1);
-    expect(result.lines.join(' ')).toMatch(/budget|daily/i);
+    expect(result.lines.join(' ')).not.toMatch(/budget cap/i);
   });
 
   it('launches normally when nothing has been spent yet', async () => {

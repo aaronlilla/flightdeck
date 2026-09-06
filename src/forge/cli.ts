@@ -623,21 +623,15 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
 
       // P4.7/I3: checkBudget at admission. What this run "would spend" is unknowable
       // before it opens a session, so this is a daily-cap gate in practice: today's
-      // burn (summed off every result.usage row already on the journal) plus zero more
-      // against the fleet's daily ceiling. A class whose own per-run cap is 0 would also
-      // be caught; enforcing the per-run cap for real needs a cost estimate this
-      // integration does not build, named here rather than pretended.
+      // No money gate here any more. This fleet runs on a flat subscription, so the
+      // figure this used to compare against `dailyUsd` was tokens multiplied by list
+      // prices: an invented quantity. Worse, it summed the whole burn ledger rather than
+      // today's, so it only ever climbed, and would eventually have refused every launch
+      // for good on a number that never described anything real. What actually limits
+      // work is how many runs a person can supervise at once, which the queue holds at
+      // two, and the per-run token ceiling the board shows. `checkBudget` itself stays
+      // for callers that pass a real ceiling.
       const launchClass = tierOfBrief(brief);
-      const spentTodayUsd = Object.values(
-        buildBurnLedger(replay(journalPath()).events).byRun,
-      ).reduce((sum, usd) => sum + usd, 0);
-      const budgetDecision = checkBudget(slug, launchClass, 0, spentTodayUsd);
-      if (!budgetDecision.allowed) {
-        return {
-          code: 1,
-          lines: [`refusing to start ${slug}: budget cap (${String(budgetDecision.event?.['reason'])})`],
-        };
-      }
 
       const registry = new Registry(registryDir());
       const admission = registry.admit({
