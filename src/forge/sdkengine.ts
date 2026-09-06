@@ -409,6 +409,27 @@ export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
         reason: `parked on ${key}: this run takes no further tool call until that question is answered`,
       };
     }
+    // Confirmed on a live run 2026-09-06: a worker called Monitor with a plain shell
+    // command (no websocket, `persistent: true`, watching `gh pr checks`) and its own
+    // `-p` session ended mid-turn, never finishing, never hitting the context ceiling --
+    // `worker.ts` read that as `verdict: 'stopped'`. `checkLaunch`'s `WS_MONITOR` regex
+    // only ever caught a websocket-sourced Monitor named in the brief text; it said
+    // nothing about the worker's own tool calls, and nothing else here stopped a plain
+    // polling Monitor from taking the session down the same way. A worker has no console
+    // to watch a Monitor's notifications on, so the tool is refused outright rather than
+    // narrowed to the one shape that has already been seen killing a session.
+    if (call.toolName === 'Monitor') {
+      deps.journal.append({
+        event: 'permission.denied', run: deps.run, actor: 'runner', tool: call.toolName,
+        reason: 'a worker session has no console to watch Monitor notifications on, and a Monitor call has '
+          + 'ended a live worker session mid-turn without finishing; poll status yourself with Bash instead',
+      });
+      return {
+        decision: 'deny',
+        reason: 'Monitor is refused inside a worker run: it has ended a session mid-turn before, and there is '
+          + 'no console here to receive its notifications. Poll with a plain Bash command instead.',
+      };
+    }
     if (deps.killSwitchHit?.()) {
       deps.journal.append({
         event: 'permission.denied', run: deps.run, actor: 'runner', tool: call.toolName,
