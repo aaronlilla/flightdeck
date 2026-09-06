@@ -433,7 +433,10 @@ export class IntegrationsRegistry {
       const dependents = this.dependentsByIntegration();
       const items = this.decls().map((decl) =>
         toIntegration(decl, stored.rows[decl.id], dependents[decl.id] ?? []));
-      void this.refreshStale();
+      // Nothing awaits this, so a probe that rejects after the caller has moved on would
+      // surface as an unhandled rejection and take the process down with it. A failed
+      // probe is ordinary here: the row simply keeps its previous value until one works.
+      void this.refreshStale().catch(() => undefined);
       return { items, checkedAt: now, everyS: this.everyS };
     }
     return this.refreshStale(true);
@@ -445,10 +448,19 @@ export class IntegrationsRegistry {
     if (this.refreshing && !force) return this.refreshing;
     const run = this.probeStale(force);
     if (!force) {
-      this.refreshing = run.finally(() => { this.refreshing = undefined; });
+      this.refreshing = run.catch(() => this.emptyResponse()).finally(() => { this.refreshing = undefined; });
       return this.refreshing;
     }
     return run;
+  }
+
+  /** What a failed background refresh resolves to, so a rejection never escapes. */
+  private emptyResponse(): IntegrationsResponse {
+    const stored = readStored(this.configPath);
+    const dependents = this.dependentsByIntegration();
+    const items = this.decls().map((decl) =>
+      toIntegration(decl, stored.rows[decl.id], dependents[decl.id] ?? []));
+    return { items, checkedAt: Date.now(), everyS: this.everyS };
   }
 
   private async probeStale(force: boolean): Promise<IntegrationsResponse> {

@@ -114,7 +114,14 @@ describe('killRun', () => {
     registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
     appendOnce(journalPath, { event: 'run.started', run: 'alpha' });
     const journal = new Journal(journalPath);
-    const realActuator = new WardenActuator({ journal, journalPath, registry });
+    // The registry row names this very process, because the point of the test is the
+    // decision-id format the actuator looks up, not the signal it sends. Hand it a kill
+    // that records instead of one that fires, or the real `killTree` ends the test
+    // runner itself: on Windows it fails quietly, on Linux the worker simply dies.
+    const signalled: number[] = [];
+    const realActuator = new WardenActuator({
+      journal, journalPath, registry, killProcess: (pid) => { signalled.push(pid); },
+    });
     const realDeps: RunActionsDeps = { ...deps, actuator: realActuator };
 
     const result = await killRun('alpha', 'over budget', realDeps);
@@ -125,6 +132,7 @@ describe('killRun', () => {
     const decisionRow = rows.find((row) => row.event === 'decision.made');
     expect(findDecision(journalPath, 'alpha', 'kill', decisionRow.id)).toBeDefined();
     expect(rows.some((row) => row.event === 'warden.refused')).toBe(false);
+    expect(signalled).toEqual([process.pid]);
   });
 
   it('is not undoable', async () => {
