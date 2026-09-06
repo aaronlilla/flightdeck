@@ -41,6 +41,12 @@ export interface ClassSpec {
 export interface GovernorBudget {
   dailyUsd: number;
   usdPerRun: Record<string, number>;
+  /** The console's org-wide ceiling: nothing a console write sets (a daily cap, a
+   *  per-run cap) may go above this. Missing reads as five times `dailyUsd`, the same
+   *  "unset means a computed default, not unlimited" the console's caps read already
+   *  uses -- added for the Flightdeck board (`src/forge/console/caps-write.ts`), read
+   *  nowhere else in this file. */
+  hardUsd?: number;
 }
 
 export interface Price {
