@@ -35,8 +35,13 @@ test('the needs-you strip keeps all three plates on one row at 1440', async ({ p
   const strip = page.getByText('Needs you').locator('../..');
   const plates = strip.locator('.plate');
   await expect(plates).toHaveCount(3);
-  const boxes = await plates.evaluateAll((els) => els.map((el) => el.getBoundingClientRect().top));
-  expect(new Set(boxes.map((top) => Math.round(top))).size).toBe(1);
+  const count = await plates.count();
+  const tops: number[] = [];
+  for (let i = 0; i < count; i += 1) {
+    const box = await plates.nth(i).boundingBox();
+    if (box) tops.push(Math.round(box.y));
+  }
+  expect(new Set(tops).size).toBe(1);
 });
 
 test('command palette opens on cmd/ctrl+K and closes on Escape', async ({ page }) => {
