@@ -52,12 +52,23 @@ describe('LaneTile', () => {
     expect(screen.getByText('step 2/9 · retry loop')).toBeInTheDocument();
   });
 
-  // POLISH-1 #2: no cap text next to the cost unless the lane is runaway.
-  it('shows no cap text on a normal tile, and the exceeded form on a runaway one', () => {
+  // POLISH-1 #2, corrected: cap text shows whenever cost exceeds cap, not only when
+  // the lane also carries the separate `runaway` flag.
+  it('shows no cap text on a normal tile, and the exceeded form once cost crosses cap', () => {
     const { rerender } = render(<LaneTile lane={lane({ costUsd: 4.32, capUsd: 20 })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
     expect(screen.queryByText(/cap \$/)).not.toBeInTheDocument();
+    rerender(<LaneTile lane={lane({ costUsd: 27.5, capUsd: 8, runaway: false })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
+    expect(screen.getByText('cap $8 · ×3')).toBeInTheDocument();
     rerender(<LaneTile lane={lane({ costUsd: 27.5, capUsd: 8, runaway: true })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
-    expect(screen.getByText('cap $8 · exceeded ×3.4')).toBeInTheDocument();
+    expect(screen.getByText('cap $8 · ×3')).toBeInTheDocument();
+  });
+
+  // Prototype's `fresh(l)` requires the source's own heartbeat flag, not only a
+  // recent `verifiedAt`: a lane that stopped heartbeating reads observed, not verified.
+  it('reads observed, not verified, once the lane stops heartbeating even with a fresh verifiedAt', () => {
+    const now = Date.now();
+    render(<LaneTile lane={lane({ heart: false, verifiedAt: now - 1_000 })} feedLive now={now} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
+    expect(screen.getByText(/observed/)).toBeInTheDocument();
   });
 
   // POLISH-1 #3: an observed tile dims to 60% opacity, and its cost readout goes phosphor-off.

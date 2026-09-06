@@ -13,13 +13,22 @@ export interface Freshness {
   ageMs: number;
 }
 
+/**
+ * `heart` defaults to `true` for callers with no heartbeat of their own (a message's
+ * `ts`, a generic `<Freshness>` readout), so they verify exactly as before. The lane
+ * tile is the one caller with a real heartbeat flag (`Lane.heart`) and passes it: a
+ * lane that stopped emitting heartbeats must never read "verified" just because its
+ * last-known `verifiedAt` still falls inside the window. The prototype's `fresh(l)`
+ * requires `l.heart` alongside the window check, and this does the same.
+ */
 export function computeFreshness(
   verifiedAt: number | null,
   observedAt: number,
   feedLive: boolean,
   now: number,
+  heart = true,
 ): Freshness {
-  const verified = feedLive && verifiedAt !== null && now - verifiedAt < VERIFIED_WINDOW_MS;
+  const verified = feedLive && heart && verifiedAt !== null && now - verifiedAt < VERIFIED_WINDOW_MS;
   const at = verified ? (verifiedAt as number) : observedAt;
   return { verified, at, ageMs: Math.max(0, now - at) };
 }
@@ -31,6 +40,15 @@ function pad(n: number): string {
 export function hm(at: number): string {
   const d = new Date(at);
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** `Ns` / `Nm` / `Nh`, matching the prototype's `ago(ms)`: seconds under a minute,
+ *  minutes under an hour, hours beyond that. Used for elapsed-time reads such as
+ *  "waiting 5m" that are not a clock time. */
+export function ago(ms: number): string {
+  if (ms < 60_000) return `${Math.max(0, Math.floor(ms / 1000))}s`;
+  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m`;
+  return `${Math.floor(ms / 3_600_000)}h`;
 }
 
 /** `✓ verified Ns ago` / `observed hh:mm`, exactly the two forms the HANDOFF names. */
