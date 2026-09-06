@@ -50,8 +50,15 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   const refresh = useCallback(async () => {
     const startedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
     try {
+      // Always the unwindowed `all=1` fetch: the server drops finished lanes older than
+      // 24h out of the default `/lanes` response, and a board that fetched THAT while
+      // showing every other filter off a stale unwindowed set (loaded back when the
+      // filter was still "all") would leave the "all" chip's count -- and every other
+      // chip's, since they all read the same array -- disagreeing with what the grid
+      // actually renders. One dataset, filtered the same way everywhere, keeps every
+      // chip's count equal to what clicking it would show (fidelity sweep #2).
       const [lanes, thread, journal, integrations, caps, proposals] = await Promise.all([
-        stateRef.current.filter === 'all' ? api.getLanes({ all: true }) : api.getLanes(),
+        api.getLanes({ all: true }),
         api.getThread(), api.getJournal(), api.getIntegrations(), api.getCaps(), api.getProposals(),
       ]);
       if (!mounted.current) return;
