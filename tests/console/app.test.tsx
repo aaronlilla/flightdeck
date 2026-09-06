@@ -81,6 +81,24 @@ describe('App', () => {
     await waitFor(() => expect(screen.getByTestId('lane-FLT-204')).toHaveAttribute('data-state', 'killed'));
   });
 
+  it('a live event refresh must not silently drop an unconfirmed kill card', async () => {
+    // The Kill/Merge confirm card is client-only state until Confirm is clicked. `/events`
+    // fires on every journal event from every lane -- including the very run about to be
+    // killed, which produces `tool.start`/`tool.end` several times a minute -- and each
+    // frame makes App refetch `/thread`, which this stub answers from its fixed seed and
+    // therefore never echoes back a card the operator has not confirmed yet. Confirmed
+    // live: two attempts on a real run never found (or lost) the card at all.
+    render(<App eventStreamOptions={{ WebSocketImpl: FakeSocket as unknown as typeof WebSocket }} />);
+    await waitFor(() => expect(screen.getByTestId('lane-FLT-204')).toBeInTheDocument());
+    await userEvent.click(within(screen.getByTestId('lane-FLT-204')).getByText('Kill attempt'));
+    expect(screen.getByText('Confirm — irreversible')).toBeInTheDocument();
+    await waitFor(() => expect(FakeSocket.instances.length).toBeGreaterThan(0));
+    FakeSocket.instances[0]!.onmessage?.({ data: JSON.stringify({ type: 'tool.start', run: 'FLT-204' }) });
+    await waitFor(() => expect(screen.getByText('Confirm — irreversible')).toBeInTheDocument());
+    await userEvent.click(screen.getByText('Confirm'));
+    await waitFor(() => expect(screen.getByTestId('lane-FLT-204')).toHaveAttribute('data-state', 'killed'));
+  });
+
   it('delivers a ticket-sheet message to that run, not the board-wide command classifier', async () => {
     // TicketSheet's composer is captioned "message {lane.id}...", so the operator has
     // every reason to believe free text typed there reaches that one run. Wiring it

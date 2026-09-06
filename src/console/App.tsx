@@ -41,11 +41,20 @@ function receiptCard(jid: string | null, text: string, undoable: boolean): Messa
 
 export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   const [state, dispatch] = useReducer(reducer, undefined, initialState);
-  const [pendingConfirm, setPendingConfirm] = useState<{ k: string; id: string; cmd: 'kill' | 'merge' } | null>(null);
+  const [pendingConfirm, setPendingConfirm] = useState<{ k: string; id: string; cmd: 'kill' | 'merge'; card: Message } | null>(null);
   const failCount = useRef(0);
   const mounted = useRef(true);
   const stateRef = useRef(state);
   stateRef.current = state;
+  // The confirm card is client-only until Confirm is clicked, but `refresh()` replaces
+  // `state.thread` wholesale from the server's `/thread`, which never echoes it back.
+  // `/events` fires on every journal event from every lane, including the one an
+  // operator is mid-confirm on killing, so a refresh can land in the gap between the
+  // card appearing and the click -- silently, with no error. Kept in a ref (rather than
+  // read from `pendingConfirm` directly) because `refresh` is a stable `useCallback`
+  // with no dependency on it.
+  const pendingConfirmRef = useRef(pendingConfirm);
+  pendingConfirmRef.current = pendingConfirm;
   // Load-verify finding: the 5s poll and every `/events` frame both call `refresh`, with
   // nothing stopping either from starting a second one while the first is still waiting
   // on a slow `/lanes` (the response that a few thousand lanes over a few hundred
@@ -75,7 +84,14 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       const endedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
       dispatch({ type: 'fetch-latency', ms: Math.round(endedAt - startedAt) });
       dispatch({ type: 'lanes', lanes: lanes.lanes });
-      dispatch({ type: 'thread', thread: thread.messages });
+      // Re-attach an unconfirmed confirm card the server's own `/thread` never carries,
+      // rather than letting this refetch silently erase the last line of defence before
+      // an irreversible action.
+      const pending = pendingConfirmRef.current;
+      const incomingThread = pending && !thread.messages.some((m) => m.k === pending.k)
+        ? [...thread.messages, pending.card]
+        : thread.messages;
+      dispatch({ type: 'thread', thread: incomingThread });
       dispatch({ type: 'journal', journal: journal.rows });
       dispatch({ type: 'integrations', integrations: integrations.items });
       dispatch({ type: 'caps', caps });
@@ -140,18 +156,18 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     const lane = state.lanes.find((l) => l.id === id);
     if (cmd === 'kill' || cmd === 'merge') {
       const k = `confirm-${id}-${Date.now()}`;
-      setPendingConfirm({ k, id, cmd });
+      const card: Message = {
+        k, type: 'confirm', text: `${cmd === 'kill' ? 'Kill' : 'Merge'} ${id}?`, ts: Date.now(), source: 'console',
+        blast: cmd === 'kill' ? 'discards the working diff and stops the sandbox.' : 'merges the PR and closes the ticket.',
+      };
+      // Kept alongside the card's own thread entry so `refresh()` can put it back
+      // verbatim if a `/thread` refetch lands before the operator confirms.
+      setPendingConfirm({ k, id, cmd, card });
       // The confirm card lives in the rail; a sheet's modal overlay sits above it and
       // would make Confirm/Not now unreachable, so the sheet closes the moment an
       // irreversible action starts.
       dispatch({ type: 'sheet', sheet: null });
-      dispatch({
-        type: 'thread-append',
-        messages: [{
-          k, type: 'confirm', text: `${cmd === 'kill' ? 'Kill' : 'Merge'} ${id}?`, ts: Date.now(), source: 'console',
-          blast: cmd === 'kill' ? 'discards the working diff and stops the sandbox.' : 'merges the PR and closes the ticket.',
-        }],
-      });
+      dispatch({ type: 'thread-append', messages: [card] });
       return;
     }
     if (cmd === 'watch' || cmd === 'council' || cmd === 'gate-log' || cmd === 'answer') {
