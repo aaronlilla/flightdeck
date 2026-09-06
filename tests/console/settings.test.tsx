@@ -9,7 +9,7 @@ function integration(extra: Partial<Integration> = {}): Integration {
   return {
     id: 'mcp-x', kind: 'mcp', name: 'mcp-x', desc: 'a tool server', latencyMs: null,
     status: 'ok', checkedAt: Date.now(), since: null, cause: null, effect: null, fix: null, fixLabel: null,
-    dependents: [], step: null, links: {},
+    scope: null, lastHealthyAt: null, retryCount: 0, dependents: [], step: null, links: {},
     ...extra,
   };
 }

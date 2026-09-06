@@ -20,7 +20,9 @@ import type { FleetProcess } from '../liveness.js';
 import { fleetConfigDir } from '../paths.js';
 import { appendOnce } from '../journal.js';
 import { consoleDir, recordAction, type ActionsLedger } from './actions-ledger.js';
-import type { Integration, IntegrationsResponse, IntegrationStatus, ReconnectResponse } from '../../shared/console-model.js';
+import type {
+  Integration, IntegrationsResponse, IntegrationStatus, LanesResponse, ReconnectResponse,
+} from '../../shared/console-model.js';
 
 export function integrationsConfigPath(): string {
   return join(consoleDir(), 'integrations.json');
@@ -33,6 +35,22 @@ export interface ProbeResult {
    *  description depends on what it found (an stdio MCP server's "command found" vs
    *  "command not on PATH"). Undefined leaves the declaration's own `desc` in place. */
   desc?: string;
+  /** Why this specific probe failed, in its own words: a missing env var, a non-zero
+   *  exit, a non-OK response, instead of the same "is not reachable" every row would
+   *  otherwise repeat. Undefined on an `ok` result, since there's nothing to explain. */
+  detail?: string;
+  /** A real, runtime-read identifier for what this probe checked, such as an AWS profile
+   *  name or a Jira site, never a name written into source. Undefined for a probe with
+   *  no scope of its own; a down integration with none isn't missing anything. */
+  scope?: string;
+}
+
+/** The `{ok, detail}` shape a boolean-probe body returns to `timed`, which turns it into
+ *  the `ProbeResult` every probe function above it returns. */
+interface ProbeOutcome {
+  ok: boolean;
+  detail?: string;
+  scope?: string;
 }
 
 export type Probe = () => Promise<ProbeResult>;
@@ -46,16 +64,22 @@ interface IntegrationDecl {
   reconnectLabel: string | null;
 }
 
-async function timed(fn: () => Promise<boolean>, spawnFn?: RunRequest['spawnFn']): Promise<ProbeResult> {
+async function timed(fn: () => Promise<ProbeOutcome>, spawnFn?: RunRequest['spawnFn']): Promise<ProbeResult> {
   const started = Date.now();
   try {
-    const ok = await Promise.race([
+    const outcome = await Promise.race([
       fn(),
-      new Promise<boolean>((resolve) => { setTimeout(() => resolve(false), 5000); }),
+      new Promise<ProbeOutcome>((resolve) => {
+        setTimeout(() => resolve({ ok: false, detail: 'timed out after 5s' }), 5000);
+      }),
     ]);
-    return { status: ok ? 'ok' : 'off', latencyMs: ok ? Date.now() - started : null };
-  } catch {
-    return { status: 'off', latencyMs: null };
+    return {
+      status: outcome.ok ? 'ok' : 'off', latencyMs: outcome.ok ? Date.now() - started : null,
+      ...(outcome.detail !== undefined ? { detail: outcome.detail } : {}),
+      ...(outcome.scope !== undefined ? { scope: outcome.scope } : {}),
+    };
+  } catch (error) {
+    return { status: 'off', latencyMs: null, detail: error instanceof Error ? error.message : 'probe threw' };
   }
 }
 
@@ -65,7 +89,7 @@ function ghProbe(spawnFn?: RunRequest['spawnFn']): Probe {
       argv: ['gh', 'auth', 'status'], cwd: process.cwd(), owner: 'console-integrations-gh',
       cls: 'script', ...(spawnFn ? { spawnFn } : {}),
     });
-    return result.returncode === 0;
+    return { ok: result.returncode === 0, detail: result.returncode === 0 ? undefined : `gh auth status exited ${result.returncode}` };
   }, spawnFn);
 }
 
@@ -74,12 +98,12 @@ function jiraProbe(spawnFn?: RunRequest['spawnFn']): Probe {
     const site = process.env['FORGE_JIRA_SITE'];
     const email = process.env['FORGE_JIRA_EMAIL'];
     const token = process.env['FORGE_JIRA_TOKEN'];
-    if (!site || !email || !token) return false;
+    if (!site || !email || !token) return { ok: false, detail: 'FORGE_JIRA_SITE / FORGE_JIRA_EMAIL / FORGE_JIRA_TOKEN are not all set' };
     const auth = Buffer.from(`${email}:${token}`).toString('base64');
     const response = await fetch(`https://${site}/rest/api/3/myself`, {
       headers: { authorization: `Basic ${auth}` },
     });
-    return response.ok;
+    return { ok: response.ok, detail: response.ok ? undefined : `myself endpoint returned ${response.status}`, scope: site };
   }, spawnFn);
 }
 
@@ -119,7 +143,10 @@ export function modelProviderProbeResult(deps: {
 }
 
 function modelProviderProbe(spawnFn?: RunRequest['spawnFn']): Probe {
-  return () => timed(async () => modelProviderProbeResult(), spawnFn);
+  return () => timed(async () => {
+    const ok = modelProviderProbeResult();
+    return { ok, detail: ok ? undefined : 'no fleet login session or credentials found' };
+  }, spawnFn);
 }
 
 function codexProbe(spawnFn?: RunRequest['spawnFn']): Probe {
@@ -128,19 +155,23 @@ function codexProbe(spawnFn?: RunRequest['spawnFn']): Probe {
       argv: ['codex', '--version'], cwd: process.cwd(), owner: 'console-integrations-codex',
       cls: 'script', ...(spawnFn ? { spawnFn } : {}),
     });
-    return result.returncode === 0;
+    return { ok: result.returncode === 0, detail: result.returncode === 0 ? undefined : 'codex --version failed' };
   }, spawnFn);
 }
 
 function awsProbe(spawnFn?: RunRequest['spawnFn']): Probe {
   return () => timed(async () => {
     const profile = process.env['FORGE_AWS_PROFILE'];
-    if (!profile) return false;
+    if (!profile) return { ok: false, detail: 'FORGE_AWS_PROFILE is not set' };
     const result = await execRun({
       argv: ['aws', 'sts', 'get-caller-identity', '--profile', profile], cwd: process.cwd(),
       owner: 'console-integrations-aws', cls: 'script', ...(spawnFn ? { spawnFn } : {}),
     });
-    return result.returncode === 0;
+    return {
+      ok: result.returncode === 0,
+      detail: result.returncode === 0 ? undefined : `sts get-caller-identity failed for profile ${profile}`,
+      scope: profile,
+    };
   }, spawnFn);
 }
 
@@ -200,9 +231,9 @@ function mcpProbes(spawnFn?: RunRequest['spawnFn']): Record<string, { decl: Inte
         probe: () => timed(async () => {
           try {
             const response = await fetch(spec.url!);
-            return response.ok;
-          } catch {
-            return false;
+            return { ok: response.ok, detail: response.ok ? undefined : `${spec.url} returned ${response.status}` };
+          } catch (error) {
+            return { ok: false, detail: error instanceof Error ? error.message : `could not reach ${spec.url}` };
           }
         }),
       };
@@ -228,6 +259,9 @@ export interface IntegrationsDeps {
   probes?: Record<string, Probe>;
   reconnects?: Record<string, Reconnect>;
   everyS?: number;
+  /** The same lane view the board renders, so a down row can name the lanes actually
+   *  blocked on it instead of a generic sentence. Undefined reads as no lanes blocked. */
+  lanesView?: () => LanesResponse;
 }
 
 const BUILTIN_DECLS: IntegrationDecl[] = [
@@ -263,6 +297,15 @@ interface StoredRow {
    *  `desc` for this row (a stdio MCP server's "command found" vs "command not on
    *  PATH"). Absent for every probe whose desc never varies by outcome. */
   desc?: string;
+  /** Why the row is down, from the probe itself. Absent while the row is `ok`. */
+  detail?: string;
+  /** A real, runtime-read scope for this row (an AWS profile, a Jira site). Absent for
+   *  a probe with no such scope. */
+  scope?: string;
+  /** The last time this row's probe returned `ok`. Null until it has, at least once. */
+  lastHealthyAt: number | null;
+  /** Consecutive non-`ok` probe results since the last `ok` one; reset to 0 on recovery. */
+  retryCount: number;
 }
 
 interface StoredFile {
@@ -283,8 +326,25 @@ function writeStored(path: string, value: StoredFile): void {
   writeFileSync(path, JSON.stringify(value, null, 2), 'utf8');
 }
 
+/** The down-plate's cause/effect/fix, built from the probe's own detail and the lanes
+ *  actually blocked on this row, rather than a sentence naming nothing but the
+ *  integration itself. */
+function downCopy(decl: IntegrationDecl, row: StoredRow | undefined, dependents: string[]): { cause: string; effect: string; fix: string } {
+  const cause = row?.detail ?? `${decl.name} failed its health check`;
+  const effect = dependents.length
+    ? `${dependents.join(', ')} blocked on ${decl.name} · lanes not depending on it are unaffected`
+    : `no lane is currently blocked on ${decl.name}`;
+  const label = decl.reconnectLabel ?? 'Reconnect';
+  const fix = decl.reconnectLabel
+    ? `${label} → verify → ${dependents.length ? `${dependents.length} blocked lane(s)` : 'any blocked lanes'} resume`
+    : `no reconnect command is wired for ${decl.name} yet`;
+  return { cause, effect, fix };
+}
+
 function toIntegration(decl: IntegrationDecl, row: StoredRow | undefined, dependents: string[]): Integration {
   const status = row?.status ?? 'checking';
+  const down = status === 'down';
+  const copy = down ? downCopy(decl, row, dependents) : null;
   return {
     id: decl.id,
     kind: decl.kind,
@@ -294,10 +354,13 @@ function toIntegration(decl: IntegrationDecl, row: StoredRow | undefined, depend
     status,
     checkedAt: row?.checkedAt ?? 0,
     since: row?.since ?? null,
-    cause: status === 'down' ? `${decl.name} is not reachable` : null,
-    effect: status === 'down' ? `lanes depending on ${decl.name} are blocked` : null,
-    fix: status === 'down' ? (decl.reconnectLabel ?? 'Reconnect') : null,
-    fixLabel: status === 'down' ? (decl.reconnectLabel ?? 'Reconnect') : null,
+    cause: copy?.cause ?? null,
+    effect: copy?.effect ?? null,
+    fix: copy?.fix ?? null,
+    fixLabel: down ? (decl.reconnectLabel ?? 'Reconnect') : null,
+    scope: row?.scope ?? null,
+    lastHealthyAt: row?.lastHealthyAt ?? null,
+    retryCount: row?.retryCount ?? 0,
     dependents,
     step: null,
     links: {},
@@ -334,10 +397,13 @@ export class IntegrationsRegistry {
     return [...BUILTIN_DECLS, ...dynamic];
   }
 
-  private dependentsOf(_id: string): string[] {
-    // `blockedBy` (which lane is blocked on which integration) is computed by the reads
-    // module from `run.blocked` reasons; this module only reports the integration side.
-    return [];
+  private dependentsOf(id: string): string[] {
+    // `blockedBy` (which lane is blocked on which integration) is the reads module's
+    // computation off `run.blocked` reasons; `deps.lanesView` hands us that same result
+    // rather than this module recomputing it from the journal a second time.
+    const view = this.deps.lanesView?.();
+    if (!view) return [];
+    return view.lanes.filter((lane) => lane.blockedBy === id).map((lane) => lane.id);
   }
 
   async list(force = false): Promise<IntegrationsResponse> {
@@ -355,7 +421,11 @@ export class IntegrationsRegistry {
           stored.rows[decl.id] = {
             id: decl.id, latencyMs: result.latencyMs, status: result.status, checkedAt: now,
             since: (wasDown && nowUp) ? (existing?.since ?? now) : (existing?.since ?? now),
+            lastHealthyAt: nowUp ? now : (existing?.lastHealthyAt ?? null),
+            retryCount: nowUp ? 0 : (existing?.retryCount ?? 0) + 1,
             ...(result.desc !== undefined ? { desc: result.desc } : {}),
+            ...(result.detail !== undefined ? { detail: result.detail } : {}),
+            ...(result.scope !== undefined ? { scope: result.scope } : {}),
           };
         }
       }
@@ -370,10 +440,16 @@ export class IntegrationsRegistry {
     const stored = readStored(this.configPath);
     if (probe) {
       const result = await probe();
+      const existing = stored.rows[id];
+      const nowUp = result.status === 'ok';
       stored.rows[id] = {
         id, latencyMs: result.latencyMs, status: result.status, checkedAt: Date.now(),
-        since: stored.rows[id]?.since ?? Date.now(),
+        since: existing?.since ?? Date.now(),
+        lastHealthyAt: nowUp ? Date.now() : (existing?.lastHealthyAt ?? null),
+        retryCount: nowUp ? 0 : (existing?.retryCount ?? 0) + 1,
         ...(result.desc !== undefined ? { desc: result.desc } : {}),
+        ...(result.detail !== undefined ? { detail: result.detail } : {}),
+        ...(result.scope !== undefined ? { scope: result.scope } : {}),
       };
       writeStored(this.configPath, stored);
     }
