@@ -8,12 +8,16 @@ directories:
 # locates at runtime, never bundled in.
 files:
   - build/main.cjs
+  - build/icon.png
   - build/status-preload.cjs
   - package.json
 
 asar: true
 
 win:
+  # The board's own lane tile, drawn in its palette. electron-builder converts
+  # this to the icon formats the installer and the shortcut need.
+  icon: build/icon.png
   # No certificate is configured, so signing would fail anyway. Off outright
   # to skip the rcedit/signtool step, which otherwise downloads a macOS
   # code-signing toolchain this build never touches.
