@@ -12,6 +12,8 @@ export interface TopBarProps {
   spentTodayUsd: number;
   feed: Feed;
   now: number;
+  /** Duration of the last `/lanes` fetch, used when no heartbeat has arrived yet. */
+  fetchLatencyMs: number | null;
   theme: 'thD' | 'thL';
   onNav: (view: View) => void;
   onOpenPalette: () => void;
@@ -19,10 +21,13 @@ export interface TopBarProps {
   onToggleTheme: () => void;
 }
 
-/** Top nav: Board / Settings [n] / Flight review [n], ⌘K, spend today, feed stamp, clock, theme. */
+/** Top nav: Board / Settings [n down] / Flight review [n proposed], ⌘K, spend today, feed stamp, clock, theme. */
 export function TopBar(props: TopBarProps): JSX.Element {
-  const { view, settingsBadge, reviewBadge, caps, spentTodayUsd, feed, now, theme, onNav, onOpenPalette, onOpenCost, onToggleTheme } = props;
+  const { view, settingsBadge, reviewBadge, caps, spentTodayUsd, feed, now, fetchLatencyMs, theme, onNav, onOpenPalette, onOpenCost, onToggleTheme } = props;
   const overDaily = caps ? spentTodayUsd > caps.dailyUsd : false;
+  // Latency prefers the age of the last heartbeat round trip; before one arrives (or once
+  // the feed is driven by polling alone) it falls back to the last `/lanes` fetch duration.
+  const latencyMs = feed.lastHeartbeatAt !== null ? Math.max(0, now - feed.lastHeartbeatAt) : (fetchLatencyMs ?? 0);
   return (
     <div
       style={{
@@ -34,10 +39,10 @@ export function TopBar(props: TopBarProps): JSX.Element {
       <div style={{ display: 'flex', gap: 16 }}>
         <a className={`nav ${view === 'board' ? 'navOn' : ''}`} onClick={() => onNav('board')}>Board</a>
         <a className={`nav ${view === 'settings' ? 'navOn' : ''}`} onClick={() => onNav('settings')}>
-          Settings <span style={{ color: 'var(--block)' }}>{settingsBadge > 0 ? settingsBadge : ''}</span>
+          Settings{settingsBadge > 0 ? <span style={{ color: 'var(--block)' }}> · {settingsBadge} down</span> : null}
         </a>
         <a className={`nav ${view === 'review' ? 'navOn' : ''}`} onClick={() => onNav('review')}>
-          Flight review <span style={{ color: 'var(--park)' }}>{reviewBadge > 0 ? reviewBadge : ''}</span>
+          Flight review{reviewBadge > 0 ? <span style={{ color: 'var(--park)' }}> · {reviewBadge} proposed</span> : null}
         </a>
       </div>
       <span style={{ flex: 1 }} />
@@ -53,7 +58,7 @@ export function TopBar(props: TopBarProps): JSX.Element {
         ${spentTodayUsd.toFixed(2)}{caps ? ` / $${caps.dailyUsd}` : ''}
       </span>
       <span className={feed.live ? 'stF' : 'stO'}>
-        {feed.live ? 'feed live' : `feed lost · observed ${feed.lostAt ? hm(feed.lostAt) : ''}`}
+        {feed.live ? `■ live feed · ${latencyMs}ms` : `feed lost · retry in ${feed.retryInS ?? 0}s`}
       </span>
       <span className="m" style={{ fontSize: 11, color: 'var(--ink2)', minWidth: 62 }}>{hm(now)}</span>
       <span className="chip chipB" onClick={onToggleTheme}>{theme === 'thD' ? 'dark' : 'light'}</span>

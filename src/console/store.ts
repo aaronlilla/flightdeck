@@ -22,6 +22,7 @@ export type Sort = 'cost' | 'age' | 'state';
 export type SheetSpec =
   | { type: 'ticket'; id: string }
   | { type: 'cost'; id: string }
+  | { type: 'fleet-cost' }
   | { type: 'journal'; run?: string }
   | { type: 'sandbox'; id: string };
 
@@ -52,6 +53,8 @@ export interface State {
   proposals: ProposalsResponse | null;
   loaded: boolean;
   now: number;
+  /** Duration of the last `/lanes` fetch, for the feed stamp's latency fallback. */
+  fetchLatencyMs: number | null;
 
   view: View;
   filter: Filter;
@@ -76,6 +79,7 @@ export type Action =
   | { type: 'proposals'; proposals: ProposalsResponse }
   | { type: 'loaded' }
   | { type: 'tick'; now: number }
+  | { type: 'fetch-latency'; ms: number }
   | { type: 'feed-live' }
   | { type: 'feed-lost'; reason: string }
   | { type: 'heartbeat'; at: number }
@@ -102,6 +106,7 @@ export function initialState(): State {
     proposals: null,
     loaded: false,
     now: Date.now(),
+    fetchLatencyMs: null,
     view: 'board',
     filter: 'all',
     sort: 'cost',
@@ -136,6 +141,8 @@ export function reducer(state: State, action: Action): State {
       return { ...state, loaded: true };
     case 'tick':
       return { ...state, now: action.now };
+    case 'fetch-latency':
+      return { ...state, fetchLatencyMs: action.ms };
     case 'feed-live':
       return { ...state, feed: { live: true, lostAt: null, reason: null, retryInS: null, lastHeartbeatAt: state.feed.lastHeartbeatAt } };
     case 'feed-lost':
