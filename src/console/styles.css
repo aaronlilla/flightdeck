@@ -5,7 +5,7 @@ input{outline:none}
 --run:oklch(.82 .16 145);--hand:oklch(.82 .1 215);--pause:oklch(.68 .11 78);--park:oklch(.8 .15 78);--merge:oklch(.85 .06 195);--block:oklch(.66 .21 27);--exh:oklch(.72 .13 55)}
 .thL{--bg:#e4e4da;--panel:#f1f1e9;--panel2:#d8d8cb;--well:#101208;--ink:#20241a;--ink2:#6d7461;--ink3:#9aa08c;--line:#c9c9b9;--line2:#adad99;--hi:rgba(255,255,255,.6);--aInk:#f4f5ec;
 --run:oklch(.46 .13 145);--hand:oklch(.46 .09 215);--pause:oklch(.5 .1 78);--park:oklch(.62 .13 78);--merge:oklch(.44 .06 195);--block:oklch(.5 .2 27);--exh:oklch(.52 .11 55)}
-.app{background:var(--bg);color:var(--ink);font-family:'IBM Plex Sans',sans-serif;height:100vh;display:flex;flex-direction:column;overflow:hidden;min-width:900px}
+.app{background:var(--bg);color:var(--ink);font-family:'IBM Plex Sans',sans-serif;height:100vh;display:flex;flex-direction:column;overflow:hidden}
 .m{font-family:'IBM Plex Mono',ui-monospace,monospace}
 .lbl{font:600 9.5px 'IBM Plex Mono',monospace;letter-spacing:1.4px;text-transform:uppercase}
 .stF{font:500 9.5px 'IBM Plex Mono',monospace;color:var(--run);letter-spacing:.3px;white-space:nowrap;cursor:help}
