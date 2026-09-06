@@ -1,0 +1,31 @@
+appId: com.forge.console
+productName: Forge Console
+directories:
+  output: release
+
+# The main-process bundle and its preload. Nothing else in this checkout
+# belongs in the artifact: the console itself is a separate checkout the app
+# locates at runtime, never bundled in.
+files:
+  - build/main.cjs
+  - build/status-preload.cjs
+  - package.json
+
+asar: true
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  artifactName: forge-console-${version}-setup.${ext}
+
+nsis:
+  # Per-user, so installing needs no administrator and no elevation prompt.
+  oneClick: true
+  perMachine: false
+  allowElevation: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Forge Console
+  deleteAppDataOnUninstall: false
