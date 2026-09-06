@@ -51,8 +51,10 @@ function fetchState(): Promise<Record<string, unknown>> {
   });
 }
 
-function spawnChild(command: string, args: string[], cwd: string): Spawned {
-  const child = nodeSpawn(command, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+function spawnChild(command: string, args: string[], cwd: string, env: Record<string, string> = {}): Spawned {
+  const child = nodeSpawn(command, args, {
+    cwd, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...env },
+  });
   return {
     pid: child.pid,
     onExit: (handler) => child.on('exit', (code) => handler(code)),

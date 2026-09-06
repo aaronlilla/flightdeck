@@ -21,7 +21,7 @@ export interface Spawned {
 
 export interface SupervisorDeps {
   probe(): Promise<ProbeResult>;
-  spawn(command: string, args: string[], cwd: string): Spawned;
+  spawn(command: string, args: string[], cwd: string, env: Record<string, string>): Spawned;
   fs: StartCommandFs;
   join(...parts: string[]): string;
   nodeExecPath: string;
@@ -49,9 +49,9 @@ export async function bringUpConsole(checkoutDir: string, deps: SupervisorDeps):
     return { mode: 'attach' };
   }
 
-  const { command, args, cwd } = buildStartCommand(deps.fs, deps.join, checkoutDir, deps.nodeExecPath);
+  const { command, args, cwd, env } = buildStartCommand(deps.fs, deps.join, checkoutDir, deps.nodeExecPath);
   deps.onLog(`starting the console: ${command} ${args.join(' ')} (in ${cwd})`);
-  const child = deps.spawn(command, args, cwd);
+  const child = deps.spawn(command, args, cwd, env);
   child.onOutput((chunk) => deps.onLog(chunk));
 
   const ready = await deps.waitUntilReachable(() => deps.probe(), START_TIMEOUT_MS);

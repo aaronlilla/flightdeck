@@ -45,7 +45,7 @@ describe('bringUpConsole', () => {
       onLog: () => {},
     });
     expect(outcome).toEqual({ mode: 'start', process: child });
-    expect(spawn).toHaveBeenCalledWith('/node', ['/repo/dist/forge/cli.js', 'up'], '/repo');
+    expect(spawn).toHaveBeenCalledWith('/node', ['/repo/dist/forge/cli.js', 'up'], '/repo', { ELECTRON_RUN_AS_NODE: '1' });
   });
 
   it('kills the spawned process and reports failure when it never comes up', async () => {

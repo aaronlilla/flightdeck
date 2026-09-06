@@ -14,13 +14,18 @@ describe('decideServerMode', () => {
 });
 
 describe('buildStartCommand', () => {
-  it('runs the built entry with the system node when it exists', () => {
+  // Packaged, the executable handed in here is this application itself, not a Node
+  // binary: launching a script with it starts a second copy of the desktop app and no
+  // console at all, which is exactly what happened the first time the start path ran
+  // for real. `ELECTRON_RUN_AS_NODE` is what makes that executable run the script.
+  it('runs the built entry with the executable put into node mode', () => {
     const fs: StartCommandFs = { existsSync: (p) => p === '/repo/dist/forge/cli.js' };
-    const result = buildStartCommand(fs, join, '/repo', '/usr/bin/node');
+    const result = buildStartCommand(fs, join, '/repo', '/apps/Console.exe');
     expect(result).toEqual({
-      command: '/usr/bin/node',
+      command: '/apps/Console.exe',
       args: ['/repo/dist/forge/cli.js', 'up'],
       cwd: '/repo',
+      env: { ELECTRON_RUN_AS_NODE: '1' },
     });
   });
 
