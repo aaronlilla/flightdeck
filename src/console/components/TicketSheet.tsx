@@ -135,7 +135,12 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
   const pct = ctxPercent(lane);
   const fresh = computeFreshness(lane.verifiedAt, lane.observedAt, feedLive, now);
   const canPause = (lane.state === 'running' || lane.state === 'handed-off') && !lane.runaway;
-  const canKill = (lane.state === 'running' || lane.state === 'handed-off' || lane.state === 'paused') && !lane.runaway;
+  // `blocked` included: it is otherwise the one lane state whose own CTA ("Gate log ->")
+  // just reopens this same sheet, which reads as a genuine dead end for a lane blocked
+  // by a stuck-session signal or a stale park record rather than an integration outage.
+  const canKill = (
+    lane.state === 'running' || lane.state === 'handed-off' || lane.state === 'paused' || lane.state === 'blocked'
+  ) && !lane.runaway;
   const band = bandFor(lane);
 
   return (

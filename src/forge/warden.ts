@@ -129,7 +129,13 @@ export class WardenActuator implements Actuator {
     const kill = this.deps.killProcess ?? killTree;
     if (record) kill(record.pid);
 
-    this.deps.lanes?.put(run, { verdict: 'killed', ended: Date.now() });
+    // `needs_aaron` outranks every other check in `laneStateFor` (console/lanes.ts), so
+    // killing a run the console had already allowed to kill from `blocked` (closing the
+    // dead end where that state offered neither Resume nor Kill) left the tile reading
+    // `blocked` forever, "Gate log ->" its only action, even once the journal below says
+    // `run.killed` and the process is gone. Clearing it here is what lets a killed lane
+    // actually read `killed`.
+    this.deps.lanes?.put(run, { verdict: 'killed', ended: Date.now(), needs_aaron: null });
     this.deps.journal.append({
       event: 'run.killed', run, actor: 'warden', decisionId, evidence: [decision.id],
       pid: record?.pid,

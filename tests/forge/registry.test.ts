@@ -187,6 +187,32 @@ describe('B.3.5: forge up reconciles a dead pid', () => {
     expect(rows).toHaveLength(1);
   });
 
+  it('never resumes a run the journal already records as killed, even with a session id on file', async () => {
+    const briefPath = join(dir, 'was-killed.md');
+    writeFileSync(briefPath, '# Goal\n\nDo the thing.\n', 'utf8');
+    const registry = new Registry(join(dir, 'registry'));
+    registry.admit({ goal: 'was-killed', cwd: dir, briefPath, pid: 999_999 });
+    registry.setSession('was-killed', 'sess-before-kill', 'claude-sonnet-5');
+
+    const journal = new Journal(journalPath);
+    // The kill happened while the process was still up (the row's pid is only stale by
+    // the time `forge up` runs the reconcile pass) -- the journal outlives the process.
+    journal.append({ event: 'run.killed', run: 'was-killed', actor: 'warden', decisionId: 'dec-1' });
+
+    const engine = fakeEngine();
+    const outcomes = await reconcileRegistry(registry, engine, journal);
+    journal.close();
+
+    expect(outcomes).toEqual([{ goal: 'was-killed', ok: false, reason: expect.stringContaining('killed') }]);
+    expect(engine.started).toHaveLength(0);
+    expect(registry.get('was-killed')).toBeUndefined();
+    const state = replay(journalPath);
+    expect(state.events.some((e) => e.event === 'run.resumed' && e.run === 'was-killed')).toBe(false);
+    // The falsifier this closes: a resurrected run whose new events push `run.killed`
+    // out of "last own event" and leave the tile reading `running` forever.
+    expect(state.runs['was-killed']?.state).not.toBe('started');
+  });
+
   it('I12: a dead row with no session id, younger than the idle budget, is reported but not journaled as abandoned', async () => {
     const briefPath = join(dir, 'young.md');
     writeFileSync(briefPath, '# Goal\n\nDo the thing.\n', 'utf8');
