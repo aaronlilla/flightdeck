@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { ActionsLedger } from '../../../src/forge/console/actions-ledger.js';
 import {
   commandOnPath, IntegrationsRegistry, modelProviderProbeResult, stdioMcpProbe, type Probe,
+  type ProbeResult,
 } from '../../../src/forge/console/integrations.js';
 import type { Lane, LanesResponse } from '../../../src/shared/console-model.js';
 
@@ -68,7 +69,7 @@ describe('IntegrationsRegistry.list', () => {
       probes: { github: up(), jira: down(), 'model-provider': up(), codex: up(), aws: up() },
     });
 
-    const result = await registry.list(false);
+    const result = await registry.list(true);
 
     const github = result.items.find((item) => item.id === 'github');
     const jira = result.items.find((item) => item.id === 'jira');
@@ -88,10 +89,38 @@ describe('IntegrationsRegistry.list', () => {
       probes: { github: countingProbe, jira: up(), 'model-provider': up(), codex: up(), aws: up() },
     });
 
+    // A poll answers from the store and refreshes behind the response, so let the first
+    // refresh settle before polling again; the second must reuse what the first wrote.
     await registry.list(false);
+    await new Promise((resolve) => { setTimeout(resolve, 20); });
     await registry.list(false);
+    await new Promise((resolve) => { setTimeout(resolve, 20); });
 
     expect(calls).toBe(1);
+  });
+
+  // The load run measured `GET /integrations` at 9.4s on a busy fleet, because a poll
+  // every five seconds awaited a serial run of `gh`, `aws` and one shell per MCP server.
+  // A poll must never wait on an external tool: it answers from the last stored result
+  // and lets the refresh land behind it.
+  it('answers a poll without waiting on a slow probe', async () => {
+    const journalPath = join(mkdtempSync(join(tmpdir(), 'integrations-slow-')), 'fleet.jsonl');
+    const configPath = join(mkdtempSync(join(tmpdir(), 'integrations-slow-cfg-')), 'integrations.json');
+    const ledger = new ActionsLedger(join(mkdtempSync(join(tmpdir(), 'integrations-slow-led-')), 'actions.jsonl'));
+    const slow = async (): Promise<ProbeResult> => {
+      await new Promise((resolve) => { setTimeout(resolve, 300); });
+      return { status: 'ok', latencyMs: 300 };
+    };
+    const registry = new IntegrationsRegistry({
+      journalPath, ledger, configPath, everyS: 30,
+      probes: { github: slow, jira: slow, 'model-provider': slow, codex: slow, aws: slow },
+    });
+
+    const started = Date.now();
+    await registry.list(false);
+    const elapsed = Date.now() - started;
+
+    expect(elapsed).toBeLessThan(150);
   });
 });
 
@@ -110,7 +139,7 @@ describe('IntegrationsRegistry down-plate copy', () => {
       ]),
     });
 
-    const result = await registry.list(false);
+    const result = await registry.list(true);
     const aws = result.items.find((item) => item.id === 'aws');
 
     expect(aws?.cause).toBe('FORGE_AWS_PROFILE is not set');
@@ -127,7 +156,7 @@ describe('IntegrationsRegistry down-plate copy', () => {
       lanesView: lanesView([]),
     });
 
-    const result = await registry.list(false);
+    const result = await registry.list(true);
     const aws = result.items.find((item) => item.id === 'aws');
 
     expect(aws?.effect).toBe('no lane is currently blocked on AWS');

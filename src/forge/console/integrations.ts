@@ -376,6 +376,9 @@ export class IntegrationsRegistry {
 
   private readonly everyS: number;
 
+  /** The refresh currently running behind a response, so ten polls do not start ten. */
+  private refreshing: Promise<IntegrationsResponse> | undefined;
+
   constructor(private readonly deps: IntegrationsDeps) {
     this.configPath = deps.configPath ?? integrationsConfigPath();
     this.probes = deps.probes ?? { ...defaultProbes(deps.spawnFn), ...Object.fromEntries(
@@ -398,21 +401,67 @@ export class IntegrationsRegistry {
   }
 
   private dependentsOf(id: string): string[] {
+    return this.dependentsByIntegration()[id] ?? [];
+  }
+
+  /** One pass over the lanes per request rather than one per integration row: with a
+   *  couple of dozen rows and a few thousand lanes the per-row filter was the difference
+   *  between a response and a stall. */
+  private dependentsByIntegration(): Record<string, string[]> {
     // `blockedBy` (which lane is blocked on which integration) is the reads module's
     // computation off `run.blocked` reasons; `deps.lanesView` hands us that same result
     // rather than this module recomputing it from the journal a second time.
     const view = this.deps.lanesView?.();
-    if (!view) return [];
-    return view.lanes.filter((lane) => lane.blockedBy === id).map((lane) => lane.id);
+    const grouped: Record<string, string[]> = {};
+    if (!view) return grouped;
+    for (const lane of view.lanes) {
+      if (!lane.blockedBy) continue;
+      (grouped[lane.blockedBy] ??= []).push(lane.id);
+    }
+    return grouped;
   }
 
+  /** A probe shells out to `gh`, `aws` or an MCP command, so awaiting them inside a
+   *  request makes every console poll wait on the slowest external tool. `list` therefore
+   *  answers from what was last stored and kicks off a refresh behind the response; the
+   *  next poll, five seconds later, picks the new values up. `force` (the operator's own
+   *  "check now") still waits, because that is the one time they asked to. */
   async list(force = false): Promise<IntegrationsResponse> {
+    if (!force) {
+      const stored = readStored(this.configPath);
+      const now = Date.now();
+      const dependents = this.dependentsByIntegration();
+      const items = this.decls().map((decl) =>
+        toIntegration(decl, stored.rows[decl.id], dependents[decl.id] ?? []));
+      void this.refreshStale();
+      return { items, checkedAt: now, everyS: this.everyS };
+    }
+    return this.refreshStale(true);
+  }
+
+  /** Probes every row whose stored result has aged out, all of them at once rather than
+   *  one after another, and writes the results back. */
+  private async refreshStale(force = false): Promise<IntegrationsResponse> {
+    if (this.refreshing && !force) return this.refreshing;
+    const run = this.probeStale(force);
+    if (!force) {
+      this.refreshing = run.finally(() => { this.refreshing = undefined; });
+      return this.refreshing;
+    }
+    return run;
+  }
+
+  private async probeStale(force: boolean): Promise<IntegrationsResponse> {
     const stored = readStored(this.configPath);
     const now = Date.now();
-    for (const decl of this.decls()) {
+    const due = this.decls().filter((decl) => {
       const existing = stored.rows[decl.id];
-      const stale = !existing || now - existing.checkedAt > this.everyS * 1000;
-      if (force || stale) {
+      return (force || !existing || now - existing.checkedAt > this.everyS * 1000)
+        && this.probes[decl.id] !== undefined;
+    });
+    await Promise.all(due.map(async (decl) => {
+      const existing = stored.rows[decl.id];
+      {
         const probe = this.probes[decl.id];
         if (probe) {
           const result = await probe();
@@ -429,9 +478,11 @@ export class IntegrationsRegistry {
           };
         }
       }
-    }
+    }));
     writeStored(this.configPath, stored);
-    const items = this.decls().map((decl) => toIntegration(decl, stored.rows[decl.id], this.dependentsOf(decl.id)));
+    const dependents = this.dependentsByIntegration();
+    const items = this.decls().map((decl) =>
+      toIntegration(decl, stored.rows[decl.id], dependents[decl.id] ?? []));
     return { items, checkedAt: now, everyS: this.everyS };
   }
 
