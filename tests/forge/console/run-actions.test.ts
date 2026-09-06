@@ -135,6 +135,22 @@ describe('killRun', () => {
     expect(row?.undo).toBeNull();
   });
 
+  it('allows a kill on a blocked run, so blocked is never a dead end', async () => {
+    // A run parked by liveness's stuck-session signal, or by a stale cross-process park
+    // record, reads as `blocked` (`needs_aaron`/`run.blocked`), and that state's own
+    // tile CTA ("Gate log ->") only reopens the same sheet -- confirmed live as a
+    // genuine dead end with no Resume and no Kill anywhere on it. Kill has to reach a
+    // blocked run too, whether or not its process is still alive.
+    registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'alpha' });
+    appendOnce(journalPath, { event: 'run.blocked', run: 'alpha', reason: 'stuck' });
+
+    const result = await killRun('alpha', 'operator kill from a blocked lane', deps);
+
+    expect(result.status).toBe(200);
+    expect(actuator.killed).toHaveLength(1);
+  });
+
   it('refuses a kill on a run that is not running, handed off, paused or parked, with no journal row', async () => {
     registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
     appendOnce(journalPath, { event: 'run.finished', run: 'alpha', verdict: 'done' });
@@ -149,26 +165,26 @@ describe('killRun', () => {
 });
 
 describe('pauseRun / resumeRun', () => {
-  it('pauses a registered run and records an undo that resumes it', async () => {
+  // Pause used to call `actuator.park`, the same cross-process record a Warden writes
+  // to hold an already-parked run's ask open. That record only denies the run's *next*
+  // tool call; the worker's own turn loop never recognizes it as a park (it only
+  // watches the engine's in-process ask map), so a run denied by it just looks to the
+  // worker like an ordinary tool-call denial. It nudges the model past the denial (up
+  // to NUDGE_LIMIT times), spending real turns and real cost each time, and once the
+  // nudges run out the run gives up on its own -- confirmed live: a board pause put a
+  // real run into a ~90-second denial spiral that kept billing, then finished on its
+  // own with the tile stuck in `blocked`, no Resume and no Kill anywhere on it. Pause
+  // now answers 501 honestly instead, the same shape `compactRun` already uses, rather
+  // than reporting success on a click that leaves the run running and spending.
+  it('refuses honestly rather than parking a run it cannot actually suspend', async () => {
     registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
     appendOnce(journalPath, { event: 'run.started', run: 'alpha' });
 
     const result = await pauseRun('alpha', 'operator paused', deps);
 
-    expect(result.status).toBe(200);
-    expect(actuator.parked).toEqual([{ run: 'alpha', reason: 'operator paused' }]);
-    const row = ledger.get((result.body as { jid: string }).jid);
-    expect(row?.undo).toEqual({ kind: 'resume-run', payload: { run: 'alpha' } });
-  });
-
-  it('answers 409 when the actuator refuses to park', async () => {
-    registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
-    appendOnce(journalPath, { event: 'run.started', run: 'alpha' });
-    actuator.parkReturns = false;
-
-    const result = await pauseRun('alpha', 'reason', deps);
-
-    expect(result.status).toBe(409);
+    expect(result.status).toBe(501);
+    expect(result.body).toMatchObject({ error: 'not wired' });
+    expect(actuator.parked).toHaveLength(0);
   });
 
   it('refuses to pause a run that is not running or handed off', async () => {

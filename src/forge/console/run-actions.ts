@@ -61,7 +61,12 @@ function notFound(run: string): RunActionResponse {
 const ALLOWED_STATES: Record<'pause' | 'resume' | 'kill' | 'compact' | 'merge' | 'reopen', LaneState[]> = {
   pause: ['running', 'handed-off'],
   resume: ['paused', 'parked'],
-  kill: ['running', 'handed-off', 'paused', 'parked'],
+  // `blocked` covers a liveness stuck-session signal, a stale cross-process park record,
+  // and a chain-level block alike, and none of those give a blocked lane's own tile CTA
+  // ("Gate log ->") anywhere to go besides reopening the same sheet. Confirmed live as a
+  // genuine dead end: no Resume, no Kill, nothing. Kill has to reach a blocked run too --
+  // whether or not its process is still alive, this is what closes the lane out.
+  kill: ['running', 'handed-off', 'paused', 'parked', 'blocked'],
   compact: ['running', 'exhausted'],
   merge: ['done', 'unverified'],
   reopen: ['killed', 'blocked', 'exhausted'],
@@ -108,21 +113,38 @@ export async function killRun(run: string, reason: string, deps: RunActionsDeps)
   return { status: 200, body: { ok: true, jid, message: `kill requested for ${run}`, undoable: false } };
 }
 
-export async function pauseRun(run: string, reason: string, deps: RunActionsDeps): Promise<RunActionResponse> {
+/**
+ * "Pause" would suspend a live run's own turn loop mid-flight. Forge has no mechanism
+ * for that today: `WardenActuator.park` (still driving a legitimate case elsewhere --
+ * a conformance mismatch, or holding an already-parked ask open) only writes a
+ * cross-process record `parkrecord.ts` owns, which the PreToolUse hook checks ahead of
+ * the run's *next* tool call. `worker.ts`'s own turn loop never consults that record:
+ * it only recognizes a park through the engine's in-process ask map, so a run denied by
+ * this record just looks, from the worker's side, like an ordinary tool-call denial. It
+ * nudges the model past the denial (up to `NUDGE_LIMIT` times), spending a real turn and
+ * real cost on each attempt, and once the nudges run out the run gives up on its own.
+ *
+ * Driven live against a real run: clicking Pause put it into a roughly 90-second denial
+ * spiral that kept billing the whole way, then the run finished on its own with the tile
+ * stuck in `blocked` -- no Resume button and no Kill button anywhere on it, because that
+ * lane state's own call-to-action never accounted for a run parked this way. Reporting
+ * `ok: true` here would be the worst of the three controls this closed: a click that
+ * reads as success while the run keeps running and spending. Honest refusal instead, the
+ * same shape `compactRun` already answers with.
+ */
+export async function pauseRun(run: string, _reason: string, deps: RunActionsDeps): Promise<RunActionResponse> {
   if (!isRegistered(run, deps)) return notFound(run);
   const guard = guardState('pause', run, deps);
   if (guard) return guard;
-  const ok = await deps.actuator.park(asRunId(run), reason);
-  if (!ok) {
-    return {
-      status: 409,
-      body: { ok: false, jid: null, message: `refused: ${run} could not be parked`, undoable: false },
-    };
-  }
-  const { jid } = recordAction(deps.journalPath, deps.ledger, {
-    kind: 'pause', run, text: `paused: ${reason}`, undo: { kind: 'resume-run', payload: { run } }, extra: { reason },
-  });
-  return { status: 200, body: { ok: true, jid, message: `paused ${run}`, undoable: true } };
+  return {
+    status: 501,
+    body: {
+      error: 'not wired',
+      reason: `${run} can't be paused mid-turn: forge's park record only blocks the run's next tool `
+        + "call, the worker doesn't read that as a park, so it nudges past the denial and keeps "
+        + 'spending until it gives up on its own instead of actually suspending',
+    },
+  };
 }
 
 export async function resumeRun(run: string, deps: RunActionsDeps): Promise<RunActionResponse> {

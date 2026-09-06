@@ -148,13 +148,16 @@ describe('ConsoleWrites.handle', () => {
     expect(outcome.status).toBe(422);
   });
 
-  it('undoes a pause through POST /journal/:jid/undo', async () => {
-    registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
-    appendOnce(journalPath, { event: 'run.started', run: 'alpha' });
-    const pauseResponse = fakeResponse();
-    await writes.handle('/run/alpha/pause', fakeRequest('POST', { reason: 'op' }), pauseResponse.response);
-    const paused = await pauseResponse.result;
-    const jid = (paused.body as { jid: string }).jid;
+  // Pause used to be the undoable action exercised here, but it never actually
+  // suspended a run (see run-actions.ts's own doc on `pauseRun`) and now answers 501
+  // honestly instead of recording an undoable action at all. A per-run cap override is
+  // still genuinely undoable, so it stands in for exercising the generic
+  // POST /journal/:jid/undo endpoint here.
+  it('undoes a run-cap override through POST /journal/:jid/undo', async () => {
+    const capResponse = fakeResponse();
+    await writes.handle('/run/alpha/cap', fakeRequest('POST', { capUsd: 5 }), capResponse.response);
+    const capped = await capResponse.result;
+    const jid = (capped.body as { jid: string }).jid;
 
     const undoResponse = fakeResponse();
     const handled = await writes.handle(`/journal/${jid}/undo`, fakeRequest('POST'), undoResponse.response);
@@ -162,15 +165,12 @@ describe('ConsoleWrites.handle', () => {
 
     expect(handled).toBe(true);
     expect(undone.status).toBe(200);
-    expect(actuator.resumed).toEqual(['alpha']);
   });
 
   it('refuses a second undo of the same jid with 409', async () => {
-    registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
-    appendOnce(journalPath, { event: 'run.started', run: 'alpha' });
-    const pauseResponse = fakeResponse();
-    await writes.handle('/run/alpha/pause', fakeRequest('POST', { reason: 'op' }), pauseResponse.response);
-    const jid = ((await pauseResponse.result).body as { jid: string }).jid;
+    const capResponse = fakeResponse();
+    await writes.handle('/run/alpha/cap', fakeRequest('POST', { capUsd: 5 }), capResponse.response);
+    const jid = ((await capResponse.result).body as { jid: string }).jid;
 
     await writes.handle(`/journal/${jid}/undo`, fakeRequest('POST'), fakeResponse().response);
     const secondResponse = fakeResponse();

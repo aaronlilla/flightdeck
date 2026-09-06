@@ -128,6 +128,17 @@ describe('TicketSheet', () => {
       expect(screen.queryByText('Pause')).not.toBeInTheDocument();
       expect(screen.getByText('Kill')).toBeInTheDocument();
     });
+
+    // A blocked lane's own CTA (`laneCta`) is "Gate log ->", which only reopens this
+    // same sheet -- for a lane blocked by a stuck-session signal or a stale park record
+    // rather than an integration outage, that CTA leads nowhere. Confirmed live: a lane
+    // stuck in `blocked` with no chain packet showed "GATE LOG ->" as its only action,
+    // with no Resume and no Kill anywhere on the tile -- a genuine dead end. Kill must
+    // always be here too, so every lane state keeps at least one way out.
+    it('offers Kill for a blocked lane, so blocked is never a dead end', () => {
+      renderSheet([], { state: 'blocked', runaway: false });
+      expect(screen.getByText('Kill')).toBeInTheDocument();
+    });
   });
 
   describe('pipeline nodes', () => {

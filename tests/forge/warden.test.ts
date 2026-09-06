@@ -119,6 +119,26 @@ describe('kill with a valid decision', () => {
     expect(killedEvent?.evidence).toEqual([decision.id]);
   });
 
+  // `needs_aaron` outranks every other check in `laneStateFor` (`console/lanes.ts`), so
+  // a run killed while `blocked` (the console can now kill from that state, closing the
+  // dead end where blocked offered neither Resume nor Kill) needs that field cleared or
+  // the tile keeps reading `blocked` forever, with "Gate log ->" as its only action,
+  // even though the journal already says `run.killed` and the process is gone.
+  it('clears needs_aaron on kill, so a run killed while blocked reads killed, not stuck blocked', async () => {
+    registry.admit({ goal: 'r1', cwd: 'nowhere', briefPath: 'nowhere/brief.md', pid: 424242 });
+    lanes.put('r1', { needs_aaron: 'stuck-session signal' });
+    const decision = journal.append({
+      event: 'decision.made', run: 'r1', actor: 'aaron', action: 'kill', reason: 'stuck for an hour',
+    });
+    const actuator = new WardenActuator({
+      journal, journalPath, registry, lanes, killProcess: () => {},
+    });
+
+    await actuator.kill('r1', decision.id);
+
+    expect(lanes.get('r1')?.needs_aaron).toBeFalsy();
+  });
+
   it('a decisionId naming a different run is refused', async () => {
     registry.admit({ goal: 'r1', cwd: 'nowhere', briefPath: 'nowhere/brief.md', pid: 111111 });
     const decision = journal.append({
