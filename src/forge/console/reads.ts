@@ -169,7 +169,9 @@ export class ConsoleReads {
     return false;
   }
 
-  private lanesResponse(): LanesResponse {
+  /** Public so `command.ts`'s `status` intent can answer from the same lane counts and
+   *  spend the board itself shows, rather than a figure of its own. */
+  lanesResponse(): LanesResponse {
     const now = Date.now();
     const fleet = this.journalCache.read(this.journalPath);
     const chain = this.chain();

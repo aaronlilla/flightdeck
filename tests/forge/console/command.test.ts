@@ -195,6 +195,33 @@ describe('ConsoleWrites.command / kill confirm flow', () => {
     await expect(writes.command("what's stuck")).resolves.toBeTruthy();
   });
 
+  it('answers status from the lanes view when one is wired, not just a run count', async () => {
+    const withView = new ConsoleWrites({
+      journalPath, registry, inbox, actuator,
+      authorized: () => true,
+      ledgerPath: join(dir, 'actions-2.jsonl'),
+      capsOverridesPath: join(dir, 'caps-2.json'),
+      rulesConfigPath: join(dir, 'rules-2.json'),
+      integrationsConfigPath: join(dir, 'integrations-2.json'),
+      lanesView: () => ({
+        at: Date.now(),
+        lanes: [
+          { id: 'alpha', state: 'running' } as never, { id: 'beta', state: 'running' } as never,
+          { id: 'gamma', state: 'blocked' } as never,
+        ],
+        spentTodayUsd: 12.5, burnUsdPerMin: 0.75,
+      }),
+    });
+
+    const cards = await withView.command('status');
+
+    const reply = cards.find((card) => card.type === 'reply')!;
+    expect(reply.text).toContain('2 running');
+    expect(reply.text).toContain('1 blocked');
+    expect(reply.text).toContain('$12.50');
+    withView.stop();
+  });
+
   it('answers why-stuck with the lane state and reason first, then meaningful rows, skipping noise', async () => {
     registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
     appendOnce(journalPath, { event: 'run.started', run: 'alpha', actor: 'runner' });

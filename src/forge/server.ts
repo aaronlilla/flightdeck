@@ -223,6 +223,7 @@ export class ForgeServer {
       }),
       authorized: (request, response) => this.authorized(request, response),
       stuck: this.stuckFn,
+      lanesView: () => this.consoleReads.lanesResponse(),
     });
   }
 

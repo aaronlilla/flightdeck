@@ -42,6 +42,13 @@ import {
 } from './rules.js';
 import type { ActionResult, LanesResponse, Message, PlanItem } from '../../shared/console-model.js';
 
+function statusText(view: LanesResponse): string {
+  const counts = new Map<string, number>();
+  for (const lane of view.lanes) counts.set(lane.state, (counts.get(lane.state) ?? 0) + 1);
+  const byState = [...counts.entries()].map(([state, n]) => `${n} ${state}`).join(', ') || 'no lanes';
+  return `${byState}. spent $${view.spentTodayUsd.toFixed(2)} today, burning $${view.burnUsdPerMin.toFixed(2)}/min`;
+}
+
 function threadPath(): string {
   return join(consoleDir(), 'thread.jsonl');
 }
@@ -150,6 +157,10 @@ export interface ConsoleWritesDeps {
   actuator: Actuator;
   authorized: (request: IncomingMessage, response: ServerResponse) => boolean;
   stuck?: () => StuckSignal[];
+  /** What `status` answers from: the same `Lane[]` and spend the board renders.
+   *  Defaults to `${n} run(s) registered` off the registry when unset (a specimen that
+   *  only cares about the write side never has to build a whole lanes view). */
+  lanesView?: () => LanesResponse;
   spawnFn?: RunRequest['spawnFn'];
   ledgerPath?: string;
   capsOverridesPath?: string;
@@ -431,8 +442,9 @@ export class ConsoleWrites {
         return [replyCard(source, `spent $${this.spendToday().toFixed(2)} today`)];
 
       case 'status': {
-        const rows = this.deps.registry.all();
-        return [replyCard(source, `${rows.length} run(s) registered`)];
+        const view = this.deps.lanesView?.();
+        if (!view) return [replyCard(source, `${this.deps.registry.all().length} run(s) registered`)];
+        return [replyCard(source, statusText(view))];
       }
 
       case 'answer': {
