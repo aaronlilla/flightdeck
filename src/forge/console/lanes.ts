@@ -32,14 +32,20 @@ export function meaningfulEvents(events: ForgeEvent[]): ForgeEvent[] {
  *  chain names a hop before it. */
 const CHAIN_HOP_ORDER: readonly string[] = ['unrouted', 'provision', 'launch', 'gate'];
 
-const TICKET_PATTERN = /^[a-z]+-\d+$/i;
+/** A ticket key as a whole `_`/`/`-delimited segment of a run name: 2 to 6 letters, no
+ *  digits, then a literal `-`, then digits, and nothing else in that segment. The `-`
+ *  inside the key is never a segment boundary itself (a ticket key always has one), so
+ *  `forge-live-probe-10` reads as a single segment that fails this pattern rather than
+ *  as `probe-10` -- there is nothing here to tell a real ticket-shaped run name apart
+ *  from a hyphenated one that merely ends in a number. */
+const TICKET_TOKEN_PATTERN = /^[A-Za-z]{2,6}-\d+$/;
 
-/** `RunState.ticket`, or the run's own name when it reads as a ticket key
- *  (`^[a-z]+-\d+$`), upper-cased. `null` when neither is true. */
+/** `RunState.ticket`, or the first `_`/`/`-delimited segment of the run's own name that
+ *  reads as a ticket key on its own, upper-cased. `null` when neither is true. */
 export function ticketFor(run: string, runState: RunState | undefined): string | null {
   if (runState?.ticket) return runState.ticket.toUpperCase();
-  if (TICKET_PATTERN.test(run)) return run.toUpperCase();
-  return null;
+  const token = run.split(/[_/]/).find((part) => TICKET_TOKEN_PATTERN.test(part));
+  return token ? token.toUpperCase() : null;
 }
 
 /** `claude-sonnet-5[...]` -> `sonnet-5`, `claude-opus-5` -> `opus-5`,
@@ -351,6 +357,24 @@ export function computeLanes(input: LanesInput, now: number): LanesResponse {
     at: now, lanes, spentTodayUsd: spentTodayUsd(input.fleet.runs, now),
     burnUsdPerMin: Number(burnUsdPerMin.toFixed(4)),
   };
+}
+
+const FINISHED_WINDOW_STATES = new Set<LaneState>(['done', 'merged', 'killed', 'exhausted', 'unverified']);
+const FINISHED_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/** `GET /lanes`'s default view: a finished lane (done, merged, killed, exhausted,
+ *  unverified) drops off the board 24 hours after its own `observedAt`, so a board that
+ *  has been running a while does not accumulate every run that ever finished. Running,
+ *  handed-off, paused, parked and blocked lanes are never windowed out -- there is
+ *  always a reason an operator would want to see one of those. `all` bypasses the
+ *  window entirely, for the one screen (or `all=1` query) that wants the full history. */
+export function windowLanes(response: LanesResponse, now: number, all: boolean): LanesResponse {
+  if (all) return response;
+  const cutoff = now - FINISHED_WINDOW_MS;
+  const lanes = response.lanes.filter((lane) => (
+    !FINISHED_WINDOW_STATES.has(lane.state) || lane.observedAt >= cutoff
+  ));
+  return { ...response, lanes };
 }
 
 /** The lane state (and why) for an arbitrary run right now, for a caller that only has

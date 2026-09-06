@@ -42,11 +42,24 @@ import {
 } from './rules.js';
 import type { ActionResult, LanesResponse, Message, PlanItem } from '../../shared/console-model.js';
 
+/** Up to five lanes worth an operator's attention right now: parked, blocked, or
+ *  running away on cost, labeled with whichever of those is true (a lane is never
+ *  parked/blocked and runaway at once -- runaway only applies while running or handed
+ *  off). `status` names them so the reply is something to act on, not just a count. */
+function attentionLanes(view: LanesResponse): string[] {
+  return view.lanes
+    .filter((lane) => lane.state === 'parked' || lane.state === 'blocked' || lane.runaway)
+    .slice(0, 5)
+    .map((lane) => `${lane.id} (${lane.runaway ? 'runaway' : lane.state})`);
+}
+
 function statusText(view: LanesResponse): string {
   const counts = new Map<string, number>();
   for (const lane of view.lanes) counts.set(lane.state, (counts.get(lane.state) ?? 0) + 1);
   const byState = [...counts.entries()].map(([state, n]) => `${n} ${state}`).join(', ') || 'no lanes';
-  return `${byState}. spent $${view.spentTodayUsd.toFixed(2)} today, burning $${view.burnUsdPerMin.toFixed(2)}/min`;
+  const attention = attentionLanes(view);
+  const attentionText = attention.length ? ` needs attention: ${attention.join(', ')}.` : '';
+  return `${byState}. spent $${view.spentTodayUsd.toFixed(2)} today, burning $${view.burnUsdPerMin.toFixed(2)}/min.${attentionText}`;
 }
 
 function threadPath(): string {

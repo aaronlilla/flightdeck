@@ -29,6 +29,10 @@ export function integrationsConfigPath(): string {
 export interface ProbeResult {
   status: IntegrationStatus;
   latencyMs: number | null;
+  /** Overrides the row's declared `desc` for this probe result, when a probe's own
+   *  description depends on what it found (an stdio MCP server's "command found" vs
+   *  "command not on PATH"). Undefined leaves the declaration's own `desc` in place. */
+  desc?: string;
 }
 
 export type Probe = () => Promise<ProbeResult>;
@@ -140,12 +144,49 @@ function awsProbe(spawnFn?: RunRequest['spawnFn']): Probe {
   }, spawnFn);
 }
 
-function mcpProbes(): Record<string, { decl: IntegrationDecl; probe: Probe }> {
+/** Whether `command` resolves on PATH (`where` on Windows, `which` elsewhere), capped
+ *  at 5s the same way every other probe here is. Exported so a specimen can inject a
+ *  fake resolver rather than reaching a real PATH lookup. */
+export async function commandOnPath(command: string, spawnFn?: RunRequest['spawnFn']): Promise<boolean> {
+  const finder = process.platform === 'win32' ? 'where' : 'which';
+  try {
+    const found = await Promise.race([
+      execRun({
+        argv: [finder, command], cwd: process.cwd(), owner: `console-integrations-mcp-${command}`,
+        cls: 'script', ...(spawnFn ? { spawnFn } : {}),
+      }).then((result) => result.returncode === 0),
+      new Promise<boolean>((resolve) => { setTimeout(() => resolve(false), 5000); }),
+    ]);
+    return found;
+  } catch {
+    return false;
+  }
+}
+
+/** A `command`-declared (stdio) MCP server is probed by resolving that command on PATH,
+ *  never by attempting to speak its stdio protocol -- there is nothing to connect to
+ *  until something actually launches it. `found` reads `ok` with a `desc` saying so;
+ *  otherwise `down`, since an MCP server the console cannot even find a binary for is a
+ *  real outage, not merely "off" the way an unconfigured integration is. */
+export function stdioMcpProbe(command: string, spawnFn?: RunRequest['spawnFn']): Probe {
+  return async () => {
+    const found = await commandOnPath(command, spawnFn);
+    return {
+      status: found ? 'ok' : 'down',
+      latencyMs: null,
+      desc: found ? 'stdio · command found' : 'stdio · command not on PATH',
+    };
+  };
+}
+
+function mcpProbes(spawnFn?: RunRequest['spawnFn']): Record<string, { decl: IntegrationDecl; probe: Probe }> {
   const claudeJson = join(process.env['USERPROFILE'] ?? process.env['HOME'] ?? '.', '.claude.json');
   if (!existsSync(claudeJson)) return {};
-  let servers: Record<string, { url?: string }> = {};
+  let servers: Record<string, { url?: string; command?: string }> = {};
   try {
-    const parsed = JSON.parse(readFileSync(claudeJson, 'utf8')) as { mcpServers?: Record<string, { url?: string }> };
+    const parsed = JSON.parse(readFileSync(claudeJson, 'utf8')) as {
+      mcpServers?: Record<string, { url?: string; command?: string }>;
+    };
     servers = parsed.mcpServers ?? {};
   } catch {
     return {};
@@ -153,18 +194,26 @@ function mcpProbes(): Record<string, { decl: IntegrationDecl; probe: Probe }> {
   const out: Record<string, { decl: IntegrationDecl; probe: Probe }> = {};
   for (const [name, spec] of Object.entries(servers)) {
     const id = `mcp-${name}`;
-    out[id] = {
-      decl: { id, kind: 'mcp', name, desc: `MCP server ${name}`, reconnectLabel: null },
-      probe: () => timed(async () => {
-        if (!spec.url) return false;
-        try {
-          const response = await fetch(spec.url);
-          return response.ok;
-        } catch {
-          return false;
-        }
-      }),
-    };
+    if (spec.url) {
+      out[id] = {
+        decl: { id, kind: 'mcp', name, desc: `MCP server ${name}`, reconnectLabel: null },
+        probe: () => timed(async () => {
+          try {
+            const response = await fetch(spec.url!);
+            return response.ok;
+          } catch {
+            return false;
+          }
+        }),
+      };
+      continue;
+    }
+    if (spec.command) {
+      out[id] = {
+        decl: { id, kind: 'mcp', name, desc: `stdio · ${spec.command}`, reconnectLabel: null },
+        probe: stdioMcpProbe(spec.command, spawnFn),
+      };
+    }
   }
   return out;
 }
@@ -210,6 +259,10 @@ interface StoredRow {
   status: IntegrationStatus;
   checkedAt: number;
   since: number | null;
+  /** A probe's own description of what it found, overriding the declaration's static
+   *  `desc` for this row (a stdio MCP server's "command found" vs "command not on
+   *  PATH"). Absent for every probe whose desc never varies by outcome. */
+  desc?: string;
 }
 
 interface StoredFile {
@@ -236,7 +289,7 @@ function toIntegration(decl: IntegrationDecl, row: StoredRow | undefined, depend
     id: decl.id,
     kind: decl.kind,
     name: decl.name,
-    desc: decl.desc,
+    desc: row?.desc ?? decl.desc,
     latencyMs: row?.latencyMs ?? null,
     status,
     checkedAt: row?.checkedAt ?? 0,
@@ -263,7 +316,7 @@ export class IntegrationsRegistry {
   constructor(private readonly deps: IntegrationsDeps) {
     this.configPath = deps.configPath ?? integrationsConfigPath();
     this.probes = deps.probes ?? { ...defaultProbes(deps.spawnFn), ...Object.fromEntries(
-      Object.entries(mcpProbes()).map(([id, entry]) => [id, entry.probe]),
+      Object.entries(mcpProbes(deps.spawnFn)).map(([id, entry]) => [id, entry.probe]),
     ) };
     this.reconnects = deps.reconnects ?? Object.fromEntries(
       Object.entries(DEFAULT_RECONNECTS).map(([id, argv]) => [id, async () => {
@@ -277,7 +330,7 @@ export class IntegrationsRegistry {
   }
 
   private decls(): IntegrationDecl[] {
-    const dynamic = this.deps.probes ? [] : Object.values(mcpProbes()).map((entry) => entry.decl);
+    const dynamic = this.deps.probes ? [] : Object.values(mcpProbes(this.deps.spawnFn)).map((entry) => entry.decl);
     return [...BUILTIN_DECLS, ...dynamic];
   }
 
@@ -302,6 +355,7 @@ export class IntegrationsRegistry {
           stored.rows[decl.id] = {
             id: decl.id, latencyMs: result.latencyMs, status: result.status, checkedAt: now,
             since: (wasDown && nowUp) ? (existing?.since ?? now) : (existing?.since ?? now),
+            ...(result.desc !== undefined ? { desc: result.desc } : {}),
           };
         }
       }
@@ -316,7 +370,11 @@ export class IntegrationsRegistry {
     const stored = readStored(this.configPath);
     if (probe) {
       const result = await probe();
-      stored.rows[id] = { id, latencyMs: result.latencyMs, status: result.status, checkedAt: Date.now(), since: stored.rows[id]?.since ?? Date.now() };
+      stored.rows[id] = {
+        id, latencyMs: result.latencyMs, status: result.status, checkedAt: Date.now(),
+        since: stored.rows[id]?.since ?? Date.now(),
+        ...(result.desc !== undefined ? { desc: result.desc } : {}),
+      };
       writeStored(this.configPath, stored);
     }
     return this.list(false);

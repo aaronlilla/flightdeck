@@ -15,7 +15,7 @@ import { Inbox } from '../inbox.js';
 import { JournalCache } from '../journal.js';
 import { forgeHome, inboxDir, lanesDir, registryDir, runDir, runsDir } from '../paths.js';
 import { foldChainState, type ChainPacketState } from '../chain.js';
-import { classFor, classNames, governorBudget } from '../policy.js';
+import { classFor, classNames, governorBudget, policyPath } from '../policy.js';
 import { Registry } from '../registry.js';
 import type { StuckSignal } from '../liveness.js';
 import { Lanes, type LaneRecord } from '../supervisor.js';
@@ -25,8 +25,9 @@ import type {
   RunThreadResponse, ThreadResponse,
 } from '../../shared/console-model.js';
 import { capsOverridesPath, computeCaps, readCapsOverrides } from './caps-read.js';
+import { ensureHardUsd } from './caps-write.js';
 import { actionsLedgerPath, computeJournal, readActionsLedger } from './journal-route.js';
-import { computeLanes, spentTodayUsd, type LanesInput } from './lanes.js';
+import { computeLanes, spentTodayUsd, windowLanes, type LanesInput } from './lanes.js';
 import { computeRunPr, prCachePath, readPrCache, writePrCache, type GhLookupFn, type GhPrLookup } from './pr.js';
 import { computeProposals, readRules, rulesPath } from './proposals.js';
 import { computeSandbox, newestLogFile, tailLog } from './sandbox.js';
@@ -44,6 +45,12 @@ export interface ConsoleReadsOptions {
   /** Overrides the fleet-process probe `stuck` reads for `blockedBy` context. Defaults
    *  to reporting nothing stuck, the same conservative default `ForgeServer` uses. */
   stuck?: () => StuckSignal[];
+  /** Overrides where `GET /caps` reads the Governor's budget from, and where
+   *  `ensureHardUsd` writes a missing `hardUsd` back to. Defaults to `policyPath()`,
+   *  which (unlike every other Forge path) does not follow `FORGE_HOME` -- a specimen
+   *  always sets this, or `GET /caps` writes into this repo's own tracked
+   *  `model-policy.json` the moment `hardUsd` is absent from it. */
+  modelPolicyPath?: string;
 }
 
 function usdPerHour(lane: LaneRecord, now: number): number {
@@ -90,6 +97,8 @@ export class ConsoleReads {
 
   private readonly stuckFn: () => StuckSignal[];
 
+  private readonly modelPolicyPath: string;
+
   constructor(options: ConsoleReadsOptions = {}) {
     this.forgeHomeDir = options.forgeHomeDir ?? forgeHome();
     this.lanes = options.lanes ?? new Lanes(lanesDir());
@@ -99,6 +108,7 @@ export class ConsoleReads {
     this.journalCache = options.journalCache ?? new JournalCache();
     this.ghLookup = options.ghLookup ?? defaultGhLookup();
     this.stuckFn = options.stuck ?? (() => []);
+    this.modelPolicyPath = options.modelPolicyPath ?? policyPath();
   }
 
   private chain(): Map<string, ChainPacketState> {
@@ -124,7 +134,8 @@ export class ConsoleReads {
     if (request.method !== 'GET') return false;
 
     if (path === '/lanes') {
-      json(response, 200, this.lanesResponse());
+      const url = new URL(request.url ?? '/', 'http://localhost');
+      json(response, 200, this.lanesResponse(url.searchParams.get('all') === '1'));
       return true;
     }
     if (path === '/thread') {
@@ -170,13 +181,15 @@ export class ConsoleReads {
   }
 
   /** Public so `command.ts`'s `status` intent can answer from the same lane counts and
-   *  spend the board itself shows, rather than a figure of its own. */
-  lanesResponse(): LanesResponse {
+   *  spend the board itself shows, rather than a figure of its own. `all` bypasses the
+   *  24-hour finished-lane window (`GET /lanes?all=1`); `status` calls this with the
+   *  window on, the same default the board itself renders. */
+  lanesResponse(all = false): LanesResponse {
     const now = Date.now();
     const fleet = this.journalCache.read(this.journalPath);
     const chain = this.chain();
     const prCache = readPrCache(prCachePath(this.forgeHomeDir));
-    const budget = governorBudget();
+    const budget = governorBudget(this.modelPolicyPath);
     const input: LanesInput = {
       laneRecords: this.lanes.all(),
       fleet,
@@ -186,7 +199,7 @@ export class ConsoleReads {
       stuck: this.stuckFn(),
       classFor: (name) => {
         try {
-          return classFor(name);
+          return classFor(name, this.modelPolicyPath);
         } catch {
           return undefined;
         }
@@ -196,7 +209,7 @@ export class ConsoleReads {
       prFor: (run) => prCache[run]?.pr ?? null,
       usdPerHour: (lane) => usdPerHour(lane, now),
     };
-    return computeLanes(input, now);
+    return windowLanes(computeLanes(input, now), now, all);
   }
 
   private threadResponse(): ThreadResponse {
@@ -215,16 +228,22 @@ export class ConsoleReads {
   private capsResponse(): Caps {
     const now = Date.now();
     const fleet = this.journalCache.read(this.journalPath);
-    const budget = governorBudget();
+    const budget = governorBudget(this.modelPolicyPath);
     const overrides = readCapsOverrides(capsOverridesPath(this.forgeHomeDir));
-    const implementClassName = classNames().includes('implement') ? 'implement' : (classNames()[0] ?? 'implement');
+    const implementClassName = classNames(this.modelPolicyPath).includes('implement')
+      ? 'implement' : (classNames(this.modelPolicyPath)[0] ?? 'implement');
     // A policy file with no `governor` block reads back as `{ dailyUsd: Infinity,
     // usdPerRun: {} }` (policy.ts's own `governorBudget` default) -- the only way to
     // tell that apart from a real, deliberately-unbounded budget is that a configured
     // one always sets at least one of the two.
     const governorConfigured = Number.isFinite(budget.dailyUsd) || Object.keys(budget.usdPerRun).length > 0;
+    // `ensureHardUsd` writes 5x dailyUsd into the policy file's own governor block the
+    // first time it finds no hardUsd there, so the org hard limit (FD-7) the caps sheet
+    // shows is a real, stable number in model-policy.json rather than a fresh
+    // computation nobody editing that file by hand would ever see.
+    const hardUsd = governorConfigured ? ensureHardUsd(this.modelPolicyPath) : Number.POSITIVE_INFINITY;
     return computeCaps({
-      governor: budget as ReturnType<typeof governorBudget> & { hardUsd?: number },
+      governor: { ...budget, hardUsd } as ReturnType<typeof governorBudget> & { hardUsd?: number },
       implementClassName,
       overrides,
       spentTodayUsd: spentTodayUsd(fleet.runs, now),

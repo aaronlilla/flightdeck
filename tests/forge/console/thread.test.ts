@@ -59,4 +59,51 @@ describe('computeRunThread', () => {
     expect(result.messages.map((m) => m.text)).toContain('alpha started');
     expect(result.messages.map((m) => m.text)).toContain('do the thing');
   });
+
+  it('renders forge.report as a reply card carrying the run\'s own outcome text', () => {
+    const { path, journal } = tempJournal();
+    journal.append({
+      event: 'forge.report', run: 'alpha', actor: 'worker',
+      outcome: 'shipped the fix', done: 'tests pass', leftOff: 'nothing outstanding',
+    });
+    journal.close();
+    const fleet = replay(path);
+
+    const result = computeRunThread('alpha', fleet.events, []);
+
+    const report = result.messages.find((m) => m.text.includes('shipped the fix'));
+    expect(report).toBeDefined();
+    expect(report!.type).toBe('reply');
+    expect(report!.source).toBe('alpha');
+    expect(report!.text).toContain('Done: tests pass');
+    expect(report!.text).toContain('Left off: nothing outstanding');
+  });
+
+  it('renders forge.done as a reply card carrying its evidence text', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'forge.done', run: 'alpha', actor: 'worker', evidence: 'ran the test suite, green' });
+    journal.close();
+    const fleet = replay(path);
+
+    const result = computeRunThread('alpha', fleet.events, []);
+
+    const done = result.messages.find((m) => m.text === 'ran the test suite, green');
+    expect(done).toBeDefined();
+    expect(done!.type).toBe('reply');
+    expect(done!.source).toBe('alpha');
+  });
+
+  it('renders the run\'s own decision.made rows as receipt cards carrying their jid', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'decision.made', run: 'alpha', actor: 'console', action: 'kill', text: 'kill requested: over budget' });
+    journal.close();
+    const fleet = replay(path);
+    const row = fleet.events[0]!;
+
+    const result = computeRunThread('alpha', fleet.events, []);
+
+    const receipt = result.messages.find((m) => m.type === 'receipt');
+    expect(receipt).toBeDefined();
+    expect(receipt!.jid).toBe(`J-${row.id.slice(0, 8)}`);
+  });
 });

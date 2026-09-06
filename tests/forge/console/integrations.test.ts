@@ -1,3 +1,5 @@
+import type { ChildProcess } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -5,7 +7,22 @@ import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { ActionsLedger } from '../../../src/forge/console/actions-ledger.js';
-import { IntegrationsRegistry, modelProviderProbeResult, type Probe } from '../../../src/forge/console/integrations.js';
+import {
+  commandOnPath, IntegrationsRegistry, modelProviderProbeResult, stdioMcpProbe, type Probe,
+} from '../../../src/forge/console/integrations.js';
+
+function fakeSpawn(returncode: number, stdout: string) {
+  return () => {
+    const child = new EventEmitter() as unknown as ChildProcess;
+    (child as unknown as { stdout: EventEmitter }).stdout = new EventEmitter();
+    (child as unknown as { stderr: EventEmitter }).stderr = new EventEmitter();
+    setImmediate(() => {
+      (child as unknown as { stdout: EventEmitter }).stdout.emit('data', Buffer.from(stdout));
+      child.emit('close', returncode);
+    });
+    return child;
+  };
+}
 
 let dir: string;
 let journalPath: string;
@@ -167,5 +184,31 @@ describe('modelProviderProbeResult', () => {
       processes: () => ({ ok: false, reason: 'no process table' }),
     });
     expect(result).toBe(false);
+  });
+});
+
+describe('commandOnPath', () => {
+  it('is true when the finder resolves the command', async () => {
+    const result = await commandOnPath('some-tool', fakeSpawn(0, 'found it'));
+    expect(result).toBe(true);
+  });
+
+  it('is false when the finder cannot find the command', async () => {
+    const result = await commandOnPath('missing-tool', fakeSpawn(1, ''));
+    expect(result).toBe(false);
+  });
+});
+
+describe('stdioMcpProbe', () => {
+  it('reads ok with "stdio - command found" once the command resolves on PATH', async () => {
+    const probe = stdioMcpProbe('some-tool', fakeSpawn(0, 'found it'));
+    const result = await probe();
+    expect(result).toEqual({ status: 'ok', latencyMs: null, desc: 'stdio · command found' });
+  });
+
+  it('reads down with "stdio - command not on PATH" when it does not', async () => {
+    const probe = stdioMcpProbe('missing-tool', fakeSpawn(1, ''));
+    const result = await probe();
+    expect(result).toEqual({ status: 'down', latencyMs: null, desc: 'stdio · command not on PATH' });
   });
 });
