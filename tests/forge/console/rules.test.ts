@@ -105,9 +105,15 @@ describe('enforceRulesOnce', () => {
 
   it('kills a run with fails at or above the rule threshold', async () => {
     registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+    // Still running despite three fails today -- killRun's own state guard refuses a
+    // kill on a run that is already blocked, so each fail is followed by an unblock.
+    appendOnce(journalPath, { event: 'run.started', run: 'alpha' });
     appendOnce(journalPath, { event: 'run.blocked', run: 'alpha', reason: 'a' });
+    appendOnce(journalPath, { event: 'run.unblocked', run: 'alpha' });
     appendOnce(journalPath, { event: 'run.blocked', run: 'alpha', reason: 'b' });
+    appendOnce(journalPath, { event: 'run.unblocked', run: 'alpha' });
     appendOnce(journalPath, { event: 'run.blocked', run: 'alpha', reason: 'c' });
+    appendOnce(journalPath, { event: 'run.unblocked', run: 'alpha' });
     writeRule({
       id: 'r1', kind: 'kill-after-fails', title: 'kill after fails', summary: 's', evidence: 'e',
       effect: 'kill', status: 'open', jid: null, prUrl: null,
@@ -168,9 +174,15 @@ describe('startEnforcementTick', () => {
     const inbox = new Inbox(join(dir, 'inbox'));
     const actuator = new FakeActuator();
     registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+    // Still running despite three fails today -- killRun's own state guard refuses a
+    // kill on a run that is already blocked, so each fail is followed by an unblock.
+    appendOnce(journalPath, { event: 'run.started', run: 'alpha' });
     appendOnce(journalPath, { event: 'run.blocked', run: 'alpha' });
+    appendOnce(journalPath, { event: 'run.unblocked', run: 'alpha' });
     appendOnce(journalPath, { event: 'run.blocked', run: 'alpha' });
+    appendOnce(journalPath, { event: 'run.unblocked', run: 'alpha' });
     appendOnce(journalPath, { event: 'run.blocked', run: 'alpha' });
+    appendOnce(journalPath, { event: 'run.unblocked', run: 'alpha' });
     writeRule({
       id: 'r1', kind: 'kill-after-fails', title: 't', summary: 's', evidence: 'e', effect: 'kill',
       status: 'open', jid: null, prUrl: null,

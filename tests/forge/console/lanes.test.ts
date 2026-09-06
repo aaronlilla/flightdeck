@@ -11,7 +11,9 @@ import { describe, expect, it } from 'vitest';
 
 import { foldChainState, type ChainPacketState } from '../../../src/forge/chain.js';
 import { Journal, replay } from '../../../src/forge/journal.js';
-import { computeLanes, hopFor, laneStateFor, modelAlias, ticketFor, type LanesInput } from '../../../src/forge/console/lanes.js';
+import {
+  computeLanes, hopFor, laneStateFor, meaningfulEvents, modelAlias, ticketFor, type LanesInput,
+} from '../../../src/forge/console/lanes.js';
 import { laneRecord, type LaneRecord } from '../../../src/forge/supervisor.js';
 
 function tempJournal(): { path: string; journal: Journal } {
@@ -65,33 +67,62 @@ describe('ticketFor', () => {
 });
 
 describe('hopFor', () => {
-  it('is hop 2 (launch), live, for a running lane with no chain packet', () => {
-    expect(hopFor(undefined, true, false)).toEqual({ hop: 2, hopStatus: 'live' });
+  it('is hop 2 (launch), live, for a running or handed-off lane with no chain packet', () => {
+    expect(hopFor(undefined, 'running', false)).toEqual({ hop: 2, hopStatus: 'live' });
+    expect(hopFor(undefined, 'handed-off', false)).toEqual({ hop: 2, hopStatus: 'live' });
   });
 
-  it('is hop 0 (poll), live, for an idle lane with no chain packet', () => {
-    expect(hopFor(undefined, false, false)).toEqual({ hop: 0, hopStatus: 'live' });
+  it('is hop 2 (launch), done, for a done/unverified/exhausted lane with no chain packet', () => {
+    expect(hopFor(undefined, 'done', false)).toEqual({ hop: 2, hopStatus: 'done' });
+    expect(hopFor(undefined, 'unverified', false)).toEqual({ hop: 2, hopStatus: 'done' });
+    expect(hopFor(undefined, 'exhausted', false)).toEqual({ hop: 2, hopStatus: 'done' });
+  });
+
+  it('is hop 3 (gate), blocked, for a blocked lane with no chain packet', () => {
+    expect(hopFor(undefined, 'blocked', false)).toEqual({ hop: 3, hopStatus: 'blocked' });
+  });
+
+  it('is hop 0 (poll), live, for a lane with no chain packet that has not started (paused/parked/killed/merged)', () => {
+    expect(hopFor(undefined, 'paused', false)).toEqual({ hop: 0, hopStatus: 'live' });
+    expect(hopFor(undefined, 'parked', false)).toEqual({ hop: 0, hopStatus: 'live' });
+    expect(hopFor(undefined, 'killed', false)).toEqual({ hop: 0, hopStatus: 'live' });
   });
 
   it('reads a blocked hop name into its numeric slot, blocked', () => {
     const packet: ChainPacketState = { packetId: 'p1', blocked: { hop: 'launch', reason: 'x' } };
-    expect(hopFor(packet, false, false)).toEqual({ hop: 2, hopStatus: 'blocked' });
+    expect(hopFor(packet, 'blocked', false)).toEqual({ hop: 2, hopStatus: 'blocked' });
   });
 
   it('is hop 4 (merge), done, once merged, unless jira writes are also complete', () => {
     const packet: ChainPacketState = { packetId: 'p1', merged: {} };
-    expect(hopFor(packet, false, false)).toEqual({ hop: 4, hopStatus: 'done' });
-    expect(hopFor(packet, false, true)).toEqual({ hop: 5, hopStatus: 'done' });
+    expect(hopFor(packet, 'merged', false)).toEqual({ hop: 4, hopStatus: 'done' });
+    expect(hopFor(packet, 'merged', true)).toEqual({ hop: 5, hopStatus: 'done' });
   });
 
   it('is hop 3 (gate), live, once launched', () => {
     const packet: ChainPacketState = { packetId: 'p1', launched: { runKey: 'alpha' } };
-    expect(hopFor(packet, true, false)).toEqual({ hop: 3, hopStatus: 'live' });
+    expect(hopFor(packet, 'running', false)).toEqual({ hop: 3, hopStatus: 'live' });
   });
 
   it('is hop 2 (launch), live, once provisioned but not launched', () => {
     const packet: ChainPacketState = { packetId: 'p1', provisioned: { worktreePath: 'w', branch: 'b' } };
-    expect(hopFor(packet, false, false)).toEqual({ hop: 2, hopStatus: 'live' });
+    expect(hopFor(packet, 'running', false)).toEqual({ hop: 2, hopStatus: 'live' });
+  });
+});
+
+describe('meaningfulEvents', () => {
+  const at = (event: string): { id: string; seq: number; at: number; version: 1; event: string; actor: string; run: string } => (
+    { id: event, seq: 1, at: 1, version: 1, event, actor: 'runner', run: 'alpha' }
+  );
+
+  it('drops noise rows (burn.mismatch, result.usage, subagent.usage, warden.health, tool.end) when something else exists', () => {
+    const events = [at('burn.mismatch'), at('run.started'), at('tool.end'), at('result.usage')];
+    expect(meaningfulEvents(events).map((e) => e.event)).toEqual(['run.started']);
+  });
+
+  it('falls back to every row, noise included, when nothing else is left', () => {
+    const events = [at('burn.mismatch'), at('warden.health')];
+    expect(meaningfulEvents(events)).toEqual(events);
   });
 });
 
@@ -197,6 +228,19 @@ describe('computeLanes', () => {
     expect(built.capUsd).toBe(5);
   });
 
+  it('skips noise rows (tool.end, burn.mismatch) for step text once no tool is running', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.append({ event: 'tool.start', run: 'alpha', actor: 'runner', tool: 'Bash' });
+    journal.append({ event: 'tool.end', run: 'alpha', actor: 'runner' });
+    journal.append({ event: 'burn.mismatch', run: 'alpha', actor: 'runner' });
+    journal.close();
+    const fleet = replay(path);
+    const lane = laneRecord({ slug: 'alpha', column: 'c1' });
+    const built = computeLanes(baseInput({ laneRecords: [lane], fleet }), 1_000).lanes[0]!;
+    expect(built.stepText).toBe('alpha running Bash');
+  });
+
   it('counts run.blocked and engine.error rows toward fails', () => {
     const { path, journal } = tempJournal();
     journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
@@ -222,11 +266,29 @@ describe('computeLanes', () => {
     expect(result.question).toEqual({ key: 'k1', text: 'staging or dev?', opts: ['staging', 'dev'], askedAt: 500 });
   });
 
-  it('flags runaway when cost exceeds the resolved cap', () => {
-    const lane = { ...laneRecord({ slug: 'alpha', column: 'c1' }), cost_usd: 9, className: 'implement' };
-    const result = computeLanes(baseInput({ laneRecords: [lane] }), 1_000).lanes[0]!;
+  it('flags runaway for a running lane over its resolved cap', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner', model: 'claude-sonnet-5' });
+    journal.append({
+      event: 'result.usage', run: 'alpha', actor: 'runner', model: 'claude-sonnet-5',
+      usage: { input: 100_000_000, cacheRead: 0, cacheCreation: 0, output: 0 },
+    });
+    journal.close();
+    const fleet = replay(path);
+    const lane = laneRecord({ slug: 'alpha', column: 'c1', className: 'implement' });
+    const result = computeLanes(baseInput({ laneRecords: [lane], fleet }), 1_000).lanes[0]!;
+    expect(result.state).toBe('running');
     expect(result.capUsd).toBe(5);
+    expect(result.costUsd).toBeGreaterThan(5);
     expect(result.runaway).toBe(true);
+  });
+
+  it('does not flag a finished run over its cap as runaway', () => {
+    const lane = { ...laneRecord({ slug: 'alpha', column: 'c1' }), cost_usd: 9, className: 'implement', verdict: 'done' };
+    const result = computeLanes(baseInput({ laneRecords: [lane] }), 1_000).lanes[0]!;
+    expect(result.state).toBe('done');
+    expect(result.capUsd).toBe(5);
+    expect(result.runaway).toBe(false);
   });
 
   it('sums spentTodayUsd from every run whose last event was today', () => {

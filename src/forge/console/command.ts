@@ -19,7 +19,6 @@ import { dirname, join } from 'node:path';
 
 import type { Actuator } from '../contracts.js';
 import { foldChainState } from '../chain.js';
-import { buildBurnLedger } from '../governor.js';
 import type { Inbox } from '../inbox.js';
 import { deliverAnswer } from '../runinbox.js';
 import { appendOnce, replay } from '../journal.js';
@@ -35,11 +34,20 @@ import {
 } from './run-actions.js';
 import { hardUsdOf, restoreCaps, writeCaps, type CapsWriteDeps } from './caps-write.js';
 import { IntegrationsRegistry, type IntegrationsDeps } from './integrations.js';
+import { laneStateNowFor, meaningfulEvents, spentTodayUsd } from './lanes.js';
+import { textFor } from './journal-route.js';
 import {
   applyRule, dismissRule, restoreRule, rulesPath, setRuleStatus, startEnforcementTick,
   type RulesDeps,
 } from './rules.js';
-import type { ActionResult, Message, PlanItem } from '../../shared/console-model.js';
+import type { ActionResult, LanesResponse, Message, PlanItem } from '../../shared/console-model.js';
+
+function statusText(view: LanesResponse): string {
+  const counts = new Map<string, number>();
+  for (const lane of view.lanes) counts.set(lane.state, (counts.get(lane.state) ?? 0) + 1);
+  const byState = [...counts.entries()].map(([state, n]) => `${n} ${state}`).join(', ') || 'no lanes';
+  return `${byState}. spent $${view.spentTodayUsd.toFixed(2)} today, burning $${view.burnUsdPerMin.toFixed(2)}/min`;
+}
 
 function threadPath(): string {
   return join(consoleDir(), 'thread.jsonl');
@@ -149,6 +157,10 @@ export interface ConsoleWritesDeps {
   actuator: Actuator;
   authorized: (request: IncomingMessage, response: ServerResponse) => boolean;
   stuck?: () => StuckSignal[];
+  /** What `status` answers from: the same `Lane[]` and spend the board renders.
+   *  Defaults to `${n} run(s) registered` off the registry when unset (a specimen that
+   *  only cares about the write side never has to build a whole lanes view). */
+  lanesView?: () => LanesResponse;
   spawnFn?: RunRequest['spawnFn'];
   ledgerPath?: string;
   capsOverridesPath?: string;
@@ -208,17 +220,30 @@ export class ConsoleWrites {
       ...(deps.integrationsConfigPath ? { configPath: deps.integrationsConfigPath } : {}),
       ...(deps.spawnFn ? { spawnFn: deps.spawnFn } : {}),
     });
+    // Not started here: `server.ts` starts it from `listen()` and stops it in `close()`,
+    // the same lifecycle the heartbeat timer already has. Starting it the moment a
+    // `ForgeServer` is merely constructed, listening or not, left a 10-second tick
+    // ticking against a journal a test's own temp dir had already been removed out from
+    // under.
+  }
+
+  /** Starts the 10-second rule-enforcement tick. Called once by `server.ts#listen()`;
+   *  a second call is a no-op. */
+  start(): void {
+    if (this.enforcement) return;
     this.enforcement = startEnforcementTick({
-      journalPath: deps.journalPath,
-      ...(deps.rulesConfigPath ? { rulesPath: deps.rulesConfigPath } : {}),
-      inbox: deps.inbox,
+      journalPath: this.deps.journalPath,
+      ...(this.deps.rulesConfigPath ? { rulesPath: this.deps.rulesConfigPath } : {}),
+      inbox: this.deps.inbox,
       runActions: this.runActionsDeps(),
     });
   }
 
-  /** Lets a caller (server shutdown, or a test) stop the 10-second rule tick. */
+  /** Lets a caller (server shutdown, or a test) stop the 10-second rule tick. A no-op
+   *  when `start()` was never called. */
   stop(): void {
     this.enforcement?.stop();
+    this.enforcement = undefined;
   }
 
   private runActionsDeps(): RunActionsDeps {
@@ -248,12 +273,7 @@ export class ConsoleWrites {
   }
 
   private spendToday(): number {
-    const midnight = new Date();
-    midnight.setHours(0, 0, 0, 0);
-    const { events } = replay(this.deps.journalPath);
-    const todays = events.filter((event) => event.at >= midnight.getTime());
-    const ledger = buildBurnLedger(todays);
-    return Object.values(ledger.byRun).reduce((sum, value) => sum + value, 0);
+    return spentTodayUsd(replay(this.deps.journalPath).runs, Date.now());
   }
 
   private readyToMergeRuns(): string[] {
@@ -411,11 +431,14 @@ export class ConsoleWrites {
 
       case 'why-stuck': {
         const signals = (this.deps.stuck?.() ?? []).filter((signal) => signal.key === intent.lane);
-        const { events } = replay(this.deps.journalPath);
-        const lastThree = events.filter((event) => event.run === intent.lane).slice(-3)
-          .map((event) => `${event.event}${event['reason'] ? `: ${String(event['reason'])}` : ''}`);
-        if (!signals.length && !lastThree.length) return [replyCard(source, `nothing known about ${intent.lane}`)];
+        const fleet = replay(this.deps.journalPath);
+        const runEvents = fleet.events.filter((event) => event.run === intent.lane);
+        if (!signals.length && !runEvents.length) return [replyCard(source, `nothing known about ${intent.lane}`)];
+        const chain = foldChainState(fleet.events);
+        const { state, reason } = laneStateNowFor(intent.lane, { fleet, chain, laneRecord: this.deps.lanes?.get(intent.lane) });
+        const lastThree = meaningfulEvents(runEvents).slice(-3).map((event) => textFor(event));
         const parts = [
+          reason ? `${state}: ${reason}` : state,
           ...signals.map((signal) => `${signal.signal}: ${signal.hint}`),
           ...lastThree,
         ];
@@ -432,8 +455,9 @@ export class ConsoleWrites {
         return [replyCard(source, `spent $${this.spendToday().toFixed(2)} today`)];
 
       case 'status': {
-        const rows = this.deps.registry.all();
-        return [replyCard(source, `${rows.length} run(s) registered`)];
+        const view = this.deps.lanesView?.();
+        if (!view) return [replyCard(source, `${this.deps.registry.all().length} run(s) registered`)];
+        return [replyCard(source, statusText(view))];
       }
 
       case 'answer': {

@@ -70,3 +70,31 @@ describe('the heartbeat frame', () => {
     spy.mockRestore();
   });
 });
+
+describe('the console rule-enforcement tick', () => {
+  it('does not start until listen(), and stops on close(), the same lifecycle as the heartbeat', async () => {
+    vi.useFakeTimers();
+    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval');
+    const clearIntervalSpy = vi.spyOn(globalThis, 'clearInterval');
+    const server = new ForgeServer({
+      lanes: new Lanes(join(dir, 'lanes')), inbox: new Inbox(join(dir, 'inbox')),
+      journalPath: join(dir, 'fleet.jsonl'), port: 0,
+    });
+
+    // Merely constructing a server (never listening) used to start the 10-second rule
+    // tick anyway, since `ConsoleWrites`'s own constructor called `startEnforcementTick`
+    // unconditionally -- a tick against a journal path that may never see a listen()
+    // call, let alone a close() to stop it.
+    expect(setIntervalSpy).not.toHaveBeenCalled();
+
+    await server.listen();
+    // One timer for the heartbeat, one for the rule-enforcement tick.
+    expect(setIntervalSpy).toHaveBeenCalledTimes(2);
+
+    await server.close();
+    expect(clearIntervalSpy).toHaveBeenCalledTimes(2);
+
+    setIntervalSpy.mockRestore();
+    clearIntervalSpy.mockRestore();
+  });
+});

@@ -6,10 +6,11 @@ import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { Actuator, DecisionId, RunId } from '../../../src/forge/contracts.js';
-import { appendOnce } from '../../../src/forge/journal.js';
+import { appendOnce, replay } from '../../../src/forge/journal.js';
 import { Inbox } from '../../../src/forge/inbox.js';
 import { Registry } from '../../../src/forge/registry.js';
 import { ConsoleWrites, parseIntent } from '../../../src/forge/console/command.js';
+import { spentTodayUsd } from '../../../src/forge/console/lanes.js';
 
 class FakeActuator implements Actuator {
   parked: string[] = [];
@@ -18,13 +19,29 @@ class FakeActuator implements Actuator {
 
   killed: string[] = [];
 
-  async park(run: RunId): Promise<boolean> { this.parked.push(run); return true; }
+  constructor(private readonly journalPath: string) {}
+
+  // Mirrors WardenActuator's own journal rows (warden.ts's park/resume/kill), since the
+  // guard run-actions.ts now checks reads a run's state off the journal: a fake that
+  // wrote nothing would leave every run "running" forever, no matter what this actuator
+  // was just asked to do.
+  async park(run: RunId, reason: string): Promise<boolean> {
+    this.parked.push(run);
+    appendOnce(this.journalPath, { event: 'run.parked', run, actor: 'warden', reason });
+    return true;
+  }
 
   async nudge(): Promise<void> {}
 
-  async resume(run: RunId): Promise<void> { this.resumed.push(run); }
+  async resume(run: RunId): Promise<void> {
+    this.resumed.push(run);
+    appendOnce(this.journalPath, { event: 'run.resumed', run, actor: 'warden' });
+  }
 
-  async kill(run: RunId, _decisionId: DecisionId): Promise<void> { this.killed.push(run); }
+  async kill(run: RunId, _decisionId: DecisionId): Promise<void> {
+    this.killed.push(run);
+    appendOnce(this.journalPath, { event: 'run.killed', run, actor: 'warden' });
+  }
 }
 
 function fakeRequest(method: string, body?: unknown): IncomingMessage {
@@ -91,7 +108,7 @@ beforeEach(() => {
   journalPath = join(dir, 'fleet.jsonl');
   registry = new Registry(join(dir, 'registry'));
   inbox = new Inbox(join(dir, 'inbox'));
-  actuator = new FakeActuator();
+  actuator = new FakeActuator(journalPath);
   writes = new ConsoleWrites({
     journalPath, registry, inbox, actuator,
     authorized: () => true,
@@ -111,6 +128,7 @@ describe('ConsoleWrites.handle', () => {
 
   it('kills a run through POST /run/:id/kill', async () => {
     registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'alpha' });
     const { response, result } = fakeResponse();
 
     const handled = await writes.handle('/run/alpha/kill', fakeRequest('POST', { reason: 'stop' }), response);
@@ -132,6 +150,7 @@ describe('ConsoleWrites.handle', () => {
 
   it('undoes a pause through POST /journal/:jid/undo', async () => {
     registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'alpha' });
     const pauseResponse = fakeResponse();
     await writes.handle('/run/alpha/pause', fakeRequest('POST', { reason: 'op' }), pauseResponse.response);
     const paused = await pauseResponse.result;
@@ -148,6 +167,7 @@ describe('ConsoleWrites.handle', () => {
 
   it('refuses a second undo of the same jid with 409', async () => {
     registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'alpha' });
     const pauseResponse = fakeResponse();
     await writes.handle('/run/alpha/pause', fakeRequest('POST', { reason: 'op' }), pauseResponse.response);
     const jid = ((await pauseResponse.result).body as { jid: string }).jid;
@@ -163,6 +183,7 @@ describe('ConsoleWrites.handle', () => {
 describe('ConsoleWrites.command / kill confirm flow', () => {
   it('answers a kill request with a confirm card, executing only after confirm <token>', async () => {
     registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'alpha' });
 
     const cards = await writes.command('kill alpha');
     const confirm = cards.find((card) => card.type === 'confirm');
@@ -192,6 +213,61 @@ describe('ConsoleWrites.command / kill confirm flow', () => {
     await expect(writes.command('status')).resolves.toBeTruthy();
     await expect(writes.command('spend today')).resolves.toBeTruthy();
     await expect(writes.command("what's stuck")).resolves.toBeTruthy();
+  });
+
+  it('answers status from the lanes view when one is wired, not just a run count', async () => {
+    const withView = new ConsoleWrites({
+      journalPath, registry, inbox, actuator,
+      authorized: () => true,
+      ledgerPath: join(dir, 'actions-2.jsonl'),
+      capsOverridesPath: join(dir, 'caps-2.json'),
+      rulesConfigPath: join(dir, 'rules-2.json'),
+      integrationsConfigPath: join(dir, 'integrations-2.json'),
+      lanesView: () => ({
+        at: Date.now(),
+        lanes: [
+          { id: 'alpha', state: 'running' } as never, { id: 'beta', state: 'running' } as never,
+          { id: 'gamma', state: 'blocked' } as never,
+        ],
+        spentTodayUsd: 12.5, burnUsdPerMin: 0.75,
+      }),
+    });
+
+    const cards = await withView.command('status');
+
+    const reply = cards.find((card) => card.type === 'reply')!;
+    expect(reply.text).toContain('2 running');
+    expect(reply.text).toContain('1 blocked');
+    expect(reply.text).toContain('$12.50');
+    withView.stop();
+  });
+
+  it('answers why-stuck with the lane state and reason first, then meaningful rows, skipping noise', async () => {
+    registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'alpha', actor: 'runner' });
+    appendOnce(journalPath, { event: 'burn.mismatch', run: 'alpha', actor: 'runner' });
+    appendOnce(journalPath, { event: 'burn.mismatch', run: 'alpha', actor: 'runner' });
+    appendOnce(journalPath, { event: 'burn.mismatch', run: 'alpha', actor: 'runner' });
+    appendOnce(journalPath, { event: 'run.blocked', run: 'alpha', actor: 'runner', reason: 'base drift' });
+
+    const cards = await writes.command('why is alpha stuck');
+
+    const reply = cards.find((card) => card.type === 'reply')!;
+    expect(reply.text.startsWith('blocked: base drift')).toBe(true);
+    expect(reply.text).not.toContain('burn.mismatch');
+  });
+
+  it("answers 'spend today' with the same figure lanes.ts's spentTodayUsd computes off the same journal", async () => {
+    appendOnce(journalPath, {
+      event: 'result.usage', run: 'alpha', actor: 'runner', model: 'claude-sonnet-5',
+      usage: { input: 1_000_000, cacheRead: 0, cacheCreation: 0, output: 0 },
+    });
+    const expected = spentTodayUsd(replay(journalPath).runs, Date.now());
+
+    const cards = await writes.command('spend today');
+
+    const reply = cards.find((card) => card.type === 'reply')!;
+    expect(reply.text).toBe(`spent $${expected.toFixed(2)} today`);
   });
 
   it("answers an operator's free text against the one open ask", async () => {
