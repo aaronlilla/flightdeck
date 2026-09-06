@@ -14,7 +14,7 @@ export function JournalSheet({ rows, run, onClose, onUndo }: JournalSheetProps):
   return (
     <div className="plate" data-testid="journal-sheet" style={{ width: 760, maxWidth: 'calc(100vw - 40px)' }}>
       <div className="lbl" style={{ padding: '7px 20px', display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--line)' }}>
-        <span>Journal · {run ?? 'all'}</span>
+        <span>Journal · {run ?? 'all entries'}</span>
         <span style={{ cursor: 'pointer' }} onClick={onClose}>esc ✕</span>
       </div>
       <div style={{ padding: '12px 0' }}>
