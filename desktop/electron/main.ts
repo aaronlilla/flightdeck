@@ -106,6 +106,11 @@ function createMainWindow(): BrowserWindow {
   win.setMenu(null);
   win.once('ready-to-show', () => win.show());
 
+  // The console's own page sets a document title, which Electron applies to
+  // the window by default. This window's title carries the head-and-mode
+  // label instead, so that overwrite is refused.
+  win.on('page-title-updated', (event) => event.preventDefault());
+
   win.webContents.on('will-navigate', (event, url) => {
     if (!url.startsWith(`${CONSOLE_ORIGIN}/`) && url !== CONSOLE_ORIGIN) event.preventDefault();
   });

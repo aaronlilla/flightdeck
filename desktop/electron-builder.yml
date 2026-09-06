@@ -14,6 +14,10 @@ files:
 asar: true
 
 win:
+  # No certificate is configured, so signing would fail anyway. Off outright
+  # to skip the rcedit/signtool step, which otherwise downloads a macOS
+  # code-signing toolchain this build never touches.
+  signAndEditExecutable: false
   target:
     - target: nsis
       arch:
