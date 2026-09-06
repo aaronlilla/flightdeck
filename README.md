@@ -179,7 +179,10 @@ Flightdeck prototype ported to React: lanes with one call to action per state, a
 needs-you strip, the Conductor rail, ticket, cost, journal and sandbox sheets,
 settings for integrations and spend caps, and the daily flight review. Every
 value on it is either verified (the feed is up and its source reported under
-15 s ago) or observed, computed per value from the journal.
+15 s ago) or observed, computed per value from the journal. `desktop/` wraps
+the same console in an Electron shell, finding or starting it on
+127.0.0.1:4120 and showing it in a window, for running the board outside a
+browser tab.
 
 The server computes the board's shapes from the journal, the registry and the
 policy file. `src/shared/console-model.ts` holds those shapes and lists the
