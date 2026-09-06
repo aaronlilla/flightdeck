@@ -28,7 +28,9 @@ export function collapseReplies(thread: Message[]): CollapsedMessage[] {
   return out;
 }
 
-function MessageCard({
+/** Exported so `TicketSheet.tsx` can render a lane-scoped thread with the same per-type
+ *  card styling this rail uses, instead of a second, flatter renderer drifting from it. */
+export function MessageCard({
   message, feedLive, now, onSend, onUndo,
 }: { message: CollapsedMessage; feedLive: boolean; now: number; onSend: (text: string) => void; onUndo: (jid: string) => void }): JSX.Element {
   const [free, setFree] = useState('');

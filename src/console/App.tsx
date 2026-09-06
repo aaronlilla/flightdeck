@@ -330,6 +330,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
                   onOpenCost={(id) => dispatch({ type: 'sheet', sheet: { type: 'cost', id } })}
                   onOpenSandbox={(id) => dispatch({ type: 'sheet', sheet: { type: 'sandbox', id } })}
                   onSendLane={(id, textMsg) => onRailSend(textMsg)}
+                  onUndo={onUndo}
                 />
               ) : null}
               {state.sheet.type === 'cost' && sheetLane ? (
