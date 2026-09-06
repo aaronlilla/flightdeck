@@ -12,7 +12,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import type { ForgeEvent } from '../journal.js';
 import type { RunMessage } from '../runinbox.js';
 import type { Message, ThreadResponse } from '../../shared/console-model.js';
-import { textFor } from './journal-route.js';
+import { jidFor, textFor } from './journal-route.js';
 
 export function threadPath(forgeHomeDir: string): string {
   return `${forgeHomeDir}/console/thread.jsonl`;
@@ -70,6 +70,40 @@ export function computeThread(persisted: Message[], events: ForgeEvent[], now: n
   return { messages };
 }
 
+/** `forge_report`'s own text fields (`ForgeReportInputSchema` in `contracts.ts`), joined
+ *  into the one summary a `forge.report` row becomes on the run's own thread. */
+function forgeReportText(row: ForgeEvent): string {
+  const lines: string[] = [];
+  if (typeof row.outcome === 'string') lines.push(row.outcome);
+  if (typeof row.done === 'string') lines.push(`Done: ${row.done}`);
+  if (typeof row.leftOff === 'string') lines.push(`Left off: ${row.leftOff}`);
+  if (typeof row.issues === 'string') lines.push(`Issues: ${row.issues}`);
+  if (typeof row.blockers === 'string') lines.push(`Blockers: ${row.blockers}`);
+  if (typeof row.unverified === 'string') lines.push(`Unverified: ${row.unverified}`);
+  return lines.join('\n') || 'filed a report';
+}
+
+/** One of the run's own journal rows, rendered as the message kind its content earns:
+ *  `forge.report` and `forge.done` are the run's own account of itself, so they read as
+ *  a `reply` from the run rather than a one-line event chip; a console write's own
+ *  `decision.made` row reads as the `receipt` it always was, jid and all, since that
+ *  jid is what `POST /journal/:jid/undo` needs back. Everything else keeps the plain
+ *  event rendering the board already uses everywhere.
+ */
+function runRowToMessage(run: string, row: ForgeEvent): Message {
+  const k = `run-${run}-${row.id}`;
+  if (row.event === 'forge.report') {
+    return { k, type: 'reply', text: forgeReportText(row), ts: row.at, source: run };
+  }
+  if (row.event === 'forge.done') {
+    return { k, type: 'reply', text: typeof row.evidence === 'string' ? row.evidence : 'done', ts: row.at, source: run };
+  }
+  if (row.event === 'decision.made') {
+    return { k, type: 'receipt', text: textFor(row), ts: row.at, source: run, jid: jidFor(row) };
+  }
+  return { k, type: 'event', text: textFor(row), ts: row.at, source: run, lane: run, verifiedAt: row.at };
+}
+
 function runMessageToMessage(message: RunMessage): Message {
   return {
     k: `run-inbox-${message.id}`,
@@ -89,15 +123,7 @@ function runMessageToMessage(message: RunMessage): Message {
 export function computeRunThread(run: string, events: ForgeEvent[], runInboxMessages: RunMessage[]): { messages: Message[] } {
   const own = events
     .filter((row) => row.run === run)
-    .map((row) => ({
-      k: `run-${run}-${row.id}`,
-      type: 'event' as const,
-      text: textFor(row),
-      ts: row.at,
-      source: run,
-      lane: run,
-      verifiedAt: row.at,
-    }));
+    .map((row) => runRowToMessage(run, row));
   const inbox = runInboxMessages.map(runMessageToMessage);
   return { messages: [...own, ...inbox].sort((a, b) => a.ts - b.ts) };
 }
