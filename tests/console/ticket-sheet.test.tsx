@@ -181,4 +181,11 @@ describe('TicketSheet', () => {
     await waitFor(() => expect(screen.getByText('NOT NULL')).toBeInTheDocument());
     expect(screen.getByText('Question ·', { exact: false })).toHaveTextContent('Question · from AB-12');
   });
+
+  // Every state the operator can see must offer a way to end the run. `exhausted`'s own
+  // call to action answers 501, so without Kill in the sheet it is a dead end.
+  it('offers Kill on an exhausted run, whose own action cannot resume it', async () => {
+    renderSheet([], { state: 'exhausted', runaway: false });
+    expect(await screen.findByText('Kill')).toBeInTheDocument();
+  });
 });

@@ -138,8 +138,13 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
   // `blocked` included: it is otherwise the one lane state whose own CTA ("Gate log ->")
   // just reopens this same sheet, which reads as a genuine dead end for a lane blocked
   // by a stuck-session signal or a stale park record rather than an integration outage.
+  // `exhausted` for the same reason: its own call to action, "Compact + resume", answers
+  // an honest 501 because the runner cannot hand a run off on demand, which would leave an
+  // exhausted run with no action at all. A run the operator can see must always be one the
+  // operator can end.
   const canKill = (
-    lane.state === 'running' || lane.state === 'handed-off' || lane.state === 'paused' || lane.state === 'blocked'
+    lane.state === 'running' || lane.state === 'handed-off' || lane.state === 'paused'
+    || lane.state === 'blocked' || lane.state === 'exhausted'
   ) && !lane.runaway;
   const band = bandFor(lane);
 
