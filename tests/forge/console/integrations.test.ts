@@ -10,6 +10,7 @@ import { ActionsLedger } from '../../../src/forge/console/actions-ledger.js';
 import {
   commandOnPath, IntegrationsRegistry, modelProviderProbeResult, stdioMcpProbe, type Probe,
 } from '../../../src/forge/console/integrations.js';
+import type { Lane, LanesResponse } from '../../../src/shared/console-model.js';
 
 function fakeSpawn(returncode: number, stdout: string) {
   return () => {
@@ -44,6 +45,22 @@ function down(): Probe {
   return async () => ({ status: 'down', latencyMs: null });
 }
 
+function lane(overrides: Partial<Lane>): Lane {
+  return {
+    id: 'FLT-211', ticket: null, model: 'sonnet-5', modelId: 'claude-sonnet-5', className: 'implement',
+    repo: 'flightdeck-api', attempt: 1, state: 'blocked', reason: 'aws down', stepN: 0, stepTotal: 6, stepText: 'blocked',
+    ctxTokens: 0, ctxCeiling: 200_000, ctxCompactAt: 180_000, costUsd: 0, capUsd: 10, burnUsdPerMin: 0,
+    fails: 0, hop: 0, hopStatus: 'blocked', observedAt: Date.now(), verifiedAt: null, heart: false, since: Date.now(),
+    startedAt: Date.now(), endedAt: null, question: null, pr: null, sandbox: null, blockedBy: 'aws',
+    runaway: false, needsAaron: null,
+    ...overrides,
+  };
+}
+
+function lanesView(lanes: Lane[]): () => LanesResponse {
+  return () => ({ at: Date.now(), lanes, spentTodayUsd: 0, burnUsdPerMin: 0 });
+}
+
 describe('IntegrationsRegistry.list', () => {
   it('probes every declared integration and persists the result', async () => {
     const registry = new IntegrationsRegistry({
@@ -75,6 +92,69 @@ describe('IntegrationsRegistry.list', () => {
     await registry.list(false);
 
     expect(calls).toBe(1);
+  });
+});
+
+describe('IntegrationsRegistry down-plate copy', () => {
+  it('names the probe detail as cause and the actually-blocked lanes as effect', async () => {
+    const registry = new IntegrationsRegistry({
+      journalPath, ledger, configPath,
+      probes: {
+        github: up(), jira: up(), 'model-provider': up(), codex: up(),
+        aws: async () => ({ status: 'down', latencyMs: null, detail: 'FORGE_AWS_PROFILE is not set' }),
+      },
+      lanesView: lanesView([
+        lane({ id: 'FLT-211', blockedBy: 'aws' }),
+        lane({ id: 'FLT-212', blockedBy: 'aws' }),
+        lane({ id: 'FLT-213', blockedBy: 'jira' }),
+      ]),
+    });
+
+    const result = await registry.list(false);
+    const aws = result.items.find((item) => item.id === 'aws');
+
+    expect(aws?.cause).toBe('FORGE_AWS_PROFILE is not set');
+    expect(aws?.effect).toContain('FLT-211');
+    expect(aws?.effect).toContain('FLT-212');
+    expect(aws?.effect).not.toContain('FLT-213');
+    expect(aws?.dependents).toEqual(['FLT-211', 'FLT-212']);
+  });
+
+  it('reads no lanes blocked, not a generic cause, when the probe gives no detail and nothing depends on it', async () => {
+    const registry = new IntegrationsRegistry({
+      journalPath, ledger, configPath,
+      probes: { github: up(), jira: up(), 'model-provider': up(), codex: up(), aws: down() },
+      lanesView: lanesView([]),
+    });
+
+    const result = await registry.list(false);
+    const aws = result.items.find((item) => item.id === 'aws');
+
+    expect(aws?.effect).toBe('no lane is currently blocked on AWS');
+  });
+
+  it('tracks lastHealthyAt and increments retryCount across consecutive down probes, resetting on recovery', async () => {
+    let status: 'ok' | 'down' = 'down';
+    const registry = new IntegrationsRegistry({
+      journalPath, ledger, configPath, everyS: 0,
+      probes: {
+        github: up(), jira: up(), 'model-provider': up(), codex: up(),
+        aws: async () => ({ status, latencyMs: status === 'ok' ? 5 : null }),
+      },
+    });
+
+    const first = await registry.list(true);
+    expect(first.items.find((i) => i.id === 'aws')?.retryCount).toBe(1);
+    expect(first.items.find((i) => i.id === 'aws')?.lastHealthyAt).toBeNull();
+
+    const second = await registry.list(true);
+    expect(second.items.find((i) => i.id === 'aws')?.retryCount).toBe(2);
+
+    status = 'ok';
+    const third = await registry.list(true);
+    const awsThird = third.items.find((i) => i.id === 'aws');
+    expect(awsThird?.retryCount).toBe(0);
+    expect(awsThird?.lastHealthyAt).not.toBeNull();
   });
 });
 

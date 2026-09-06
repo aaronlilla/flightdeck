@@ -234,6 +234,7 @@ export class ConsoleWrites {
       journalPath: deps.journalPath, ledger: this.ledger,
       ...(deps.integrationsConfigPath ? { configPath: deps.integrationsConfigPath } : {}),
       ...(deps.spawnFn ? { spawnFn: deps.spawnFn } : {}),
+      ...(deps.lanesView ? { lanesView: deps.lanesView } : {}),
     });
     // Not started here: `server.ts` starts it from `listen()` and stops it in `close()`,
     // the same lifecycle the heartbeat timer already has. Starting it the moment a

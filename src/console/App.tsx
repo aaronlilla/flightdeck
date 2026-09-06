@@ -312,6 +312,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
         {state.view === 'settings' ? (
           <Settings
             integrations={state.integrations} caps={state.caps} journalCount={state.journal.length}
+            journal={state.journal} rules={state.proposals?.rules ?? []} lanes={state.lanes} feed={state.feed} now={state.now}
             onCheck={(id) => void api.checkIntegration(id).then((r) => dispatch({ type: 'integrations', integrations: r.items }))}
             onReconnect={(id) => void (async () => {
               const r = await api.reconnectIntegration(id);
@@ -332,7 +333,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
         ) : null}
         {state.view === 'review' ? (
           <FlightReview
-            proposals={state.proposals}
+            proposals={state.proposals} now={state.now}
             onApply={(id) => void runAction(() => api.applyProposal(id)).then(() => refresh())}
             onDismiss={(id) => void runAction(() => api.dismissProposal(id))}
             onRestore={(id) => void runAction(() => api.restoreProposal(id))}

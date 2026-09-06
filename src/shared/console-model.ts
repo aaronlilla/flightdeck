@@ -197,6 +197,13 @@ export interface Integration {
   effect: string | null;
   fix: string | null;
   fixLabel: string | null;
+  /** A real, runtime-read scope for this row (an AWS profile, a Jira site), for the
+   *  down-plate's scope chip. Null for a row with no such scope of its own. */
+  scope: string | null;
+  /** The last time this row's probe came back `ok`. Null until it has, at least once. */
+  lastHealthyAt: number | null;
+  /** Consecutive non-`ok` probe results since the last `ok` one. */
+  retryCount: number;
   /** Lanes blocked on this integration. */
   dependents: string[];
   /** Reconnect progress 0..3 while a reconnect runs. */
@@ -244,6 +251,9 @@ export interface Rule {
   status: 'open' | 'applied' | 'dismissed';
   jid: string | null;
   prUrl: string | null;
+  /** Whether this rule's evidence starts expanded on load. Only the top proposal ships
+   *  this true; every other rule starts collapsed. */
+  expanded?: boolean;
 }
 
 export interface ReviewMetrics {
