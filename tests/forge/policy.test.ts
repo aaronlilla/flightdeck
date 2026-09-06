@@ -16,6 +16,7 @@ import {
   classNames,
   contextFor,
   DEFAULT_REASONER_TIMEOUT_MS,
+  effectiveGovernorBudget,
   effortFor,
   governorBudget,
   loadPolicy,
@@ -27,7 +28,7 @@ import {
   tierOfBrief,
   turnsFor,
 } from '../../src/forge/policy.js';
-import { writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -173,6 +174,57 @@ describe('the governor budget block', () => {
   it('never parks a run on the file this stream ships, since a real cap is set', () => {
     const budget = governorBudget();
     expect(Object.keys(budget.usdPerRun).length).toBeGreaterThan(0);
+  });
+});
+
+describe('effectiveGovernorBudget: governorBudget() merged with a console override', () => {
+  function policyFile(governor: Record<string, unknown>): string {
+    const dir = mkdtempSync(join(tmpdir(), 'policy-'));
+    const path = join(dir, 'model-policy.json');
+    writeFileSync(path, JSON.stringify({ version: 1, classes: {}, governor }), 'utf8');
+    return path;
+  }
+
+  function homeWithOverrides(overrides: Record<string, unknown> | null): string {
+    const home = mkdtempSync(join(tmpdir(), 'forge-home-'));
+    if (overrides) {
+      mkdirSync(join(home, 'console'), { recursive: true });
+      writeFileSync(join(home, 'console', 'caps.json'), JSON.stringify(overrides), 'utf8');
+    }
+    return home;
+  }
+
+  it('reads the policy file straight when the console has overridden nothing', () => {
+    const path = policyFile({ dailyUsd: 50, usdPerRun: { implement: 5 } });
+    const budget = effectiveGovernorBudget(path, homeWithOverrides(null));
+    expect(budget.dailyUsd).toBe(50);
+    expect(budget.usdPerRun['implement']).toBe(5);
+  });
+
+  it('lets a console dailyUsd override the policy figure', () => {
+    const path = policyFile({ dailyUsd: 50, usdPerRun: {} });
+    const budget = effectiveGovernorBudget(path, homeWithOverrides({ dailyUsd: 80 }));
+    expect(budget.dailyUsd).toBe(80);
+  });
+
+  it('mirrors a console runUsd override onto both implement and default', () => {
+    const path = policyFile({ dailyUsd: 50, usdPerRun: { implement: 5, default: 5 } });
+    const budget = effectiveGovernorBudget(path, homeWithOverrides({ runUsd: 12 }));
+    expect(budget.usdPerRun['implement']).toBe(12);
+    expect(budget.usdPerRun['default']).toBe(12);
+  });
+
+  it('carries a console hardUsd override through onto the merged budget', () => {
+    const path = policyFile({ dailyUsd: 50, usdPerRun: {} });
+    const budget = effectiveGovernorBudget(path, homeWithOverrides({ hardUsd: 999 }));
+    expect(budget.hardUsd).toBe(999);
+  });
+
+  it('never writes the policy file for the override itself', () => {
+    const path = policyFile({ dailyUsd: 50, usdPerRun: {} });
+    const before = readFileSync(path, 'utf8');
+    effectiveGovernorBudget(path, homeWithOverrides({ dailyUsd: 80 }));
+    expect(readFileSync(path, 'utf8')).toBe(before);
   });
 });
 

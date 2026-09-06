@@ -10,9 +10,11 @@
  * nothing a run does to itself changes its tier. There is deliberately no function here
  * that takes a failure count.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { forgeHome } from './paths.js';
 
 /**
  * Which side reasons a class: `codex` for the runtime master and planner (the
@@ -274,6 +276,52 @@ export function reasonerTimeoutMs(path?: string): number {
  */
 export function governorBudget(path?: string): GovernorBudget {
   return loadPolicy(path).governor ?? { dailyUsd: Number.POSITIVE_INFINITY, usdPerRun: {} };
+}
+
+interface ConsoleCapsOverrides {
+  dailyUsd?: number;
+  runUsd?: number;
+  hardUsd?: number;
+}
+
+/** `~/.forge/console/caps.json`'s top-level fields, read the same defensive way every
+ *  other reader of that file does: absent or unparseable reads as no override at all,
+ *  never a crash. Duplicated here rather than imported from `console/caps-read.ts`
+ *  because this file has no business depending on the console at all -- the console
+ *  depends on this one, for `GovernorBudget` itself. */
+function readConsoleCapsOverrides(forgeHomeDir: string): ConsoleCapsOverrides {
+  const path = join(forgeHomeDir, 'console', 'caps.json');
+  if (!existsSync(path)) return {};
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as ConsoleCapsOverrides;
+    return { dailyUsd: parsed.dailyUsd, runUsd: parsed.runUsd, hardUsd: parsed.hardUsd };
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * `governorBudget()` merged with whatever the console has overridden in
+ * `~/.forge/console/caps.json`, so `checkBudget` (`governor.ts`) enforces the same cap
+ * `GET /caps` shows and `POST /caps` edits, instead of a policy-file figure the console
+ * can display but never actually move. `governorBudget()` alone stays the policy file's
+ * own answer, read nowhere near a console override -- this is the one function that
+ * combines the two, called from admission and from `run-actions.ts`'s cap validation, so
+ * a console-set cap binds the very next launch the same way an edited policy file would.
+ */
+export function effectiveGovernorBudget(policyFilePath?: string, forgeHomeDir: string = forgeHome()): GovernorBudget {
+  const budget = governorBudget(policyFilePath);
+  const overrides = readConsoleCapsOverrides(forgeHomeDir);
+  const dailyUsd = overrides.dailyUsd ?? budget.dailyUsd;
+  const usdPerRun = overrides.runUsd !== undefined
+    ? { ...budget.usdPerRun, implement: overrides.runUsd, default: overrides.runUsd }
+    : budget.usdPerRun;
+  return {
+    ...budget,
+    dailyUsd,
+    usdPerRun,
+    ...(overrides.hardUsd !== undefined ? { hardUsd: overrides.hardUsd } : {}),
+  };
 }
 
 /**
