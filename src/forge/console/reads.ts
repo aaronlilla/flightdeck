@@ -25,11 +25,11 @@ import type {
   RunPrResponse, RunSandboxResponse, RunThreadResponse, ThreadResponse,
 } from '../../shared/console-model.js';
 import { capsOverridesPath, computeCaps, readCapsOverrides } from './caps-read.js';
-import { ensureHardUsd } from './caps-write.js';
+import { ensureHardTokens } from './caps-write.js';
 import { computeCostSteps, findCapEnforcementFailure } from './cost-steps.js';
 import { actionsLedgerPath, computeJournal, readActionsLedger } from './journal-route.js';
 import { computeJournalNarrative } from './journal-narrative.js';
-import { computeLanes, spentTodayUsd, windowLanes, type LanesInput } from './lanes.js';
+import { computeLanes, tokensToday, windowLanes, type LanesInput } from './lanes.js';
 import { computeRunPr, prCachePath, readPrCache, writePrCache, type GhLookupFn, type GhPrLookup } from './pr.js';
 import { computeProposals, readRules, rulesPath } from './proposals.js';
 import { computeSandbox, newestLogFile, packetForRun, tailLogWithSeverity } from './sandbox.js';
@@ -48,18 +48,22 @@ export interface ConsoleReadsOptions {
    *  to reporting nothing stuck, the same conservative default `ForgeServer` uses. */
   stuck?: () => StuckSignal[];
   /** Overrides where `GET /caps` reads the Governor's budget from, and where
-   *  `ensureHardUsd` writes a missing `hardUsd` back to. Defaults to `policyPath()`,
+   *  `ensureHardTokens` writes a missing `hardTokens` back to. Defaults to `policyPath()`,
    *  which (unlike every other Forge path) does not follow `FORGE_HOME` -- a specimen
    *  always sets this, or `GET /caps` writes into this repo's own tracked
-   *  `model-policy.json` the moment `hardUsd` is absent from it. */
+   *  `model-policy.json` the moment `hardTokens` is absent from it. */
   modelPolicyPath?: string;
 }
 
-function usdPerHour(lane: LaneRecord, now: number): number {
-  if (!lane.started || !lane.cost_usd) return 0;
+/** The lane's own burn rate in tokens/hour, off the journal's real cumulative total for
+ *  its run -- never `lane.cost_usd` (the registry's dollar-denominated field, shared
+ *  with the legacy `/state` server this stream does not touch). A lane the journal has
+ *  no run state for yet reads 0 rather than a conversion this file cannot honestly make. */
+function tokensPerHour(lane: LaneRecord, tokensUsed: number, now: number): number {
+  if (!lane.started || !tokensUsed) return 0;
   const hours = (now - lane.started) / 3_600_000;
   if (hours < 1 / 12) return 0;
-  return Number((lane.cost_usd / hours).toFixed(4));
+  return Number((tokensUsed / hours).toFixed(4));
 }
 
 function defaultGhLookup(): GhLookupFn {
@@ -199,7 +203,6 @@ export class ConsoleReads {
     const fleet = this.journalCache.read(this.journalPath);
     const chain = this.chain();
     const prCache = readPrCache(prCachePath(this.forgeHomeDir));
-    const budget = governorBudget(this.modelPolicyPath);
     const input: LanesInput = {
       laneRecords: this.lanes.all(),
       fleet,
@@ -214,10 +217,9 @@ export class ConsoleReads {
           return undefined;
         }
       },
-      usdPerRun: budget.usdPerRun,
       capOverrides: readCapsOverrides(capsOverridesPath(this.forgeHomeDir)).perRun ?? {},
       prFor: (run) => prCache[run]?.pr ?? null,
-      usdPerHour: (lane) => usdPerHour(lane, now),
+      tokensPerHour: (lane) => tokensPerHour(lane, fleet.runs[lane.slug]?.tokensUsed ?? 0, now),
     };
     return windowLanes(computeLanes(input, now), now, all);
   }
@@ -240,24 +242,22 @@ export class ConsoleReads {
     const fleet = this.journalCache.read(this.journalPath);
     const budget = governorBudget(this.modelPolicyPath);
     const overridesPath = capsOverridesPath(this.forgeHomeDir);
-    const implementClassName = classNames(this.modelPolicyPath).includes('implement')
-      ? 'implement' : (classNames(this.modelPolicyPath)[0] ?? 'implement');
     // A policy file with no `governor` block reads back as `{ dailyUsd: Infinity,
     // usdPerRun: {} }` (policy.ts's own `governorBudget` default) -- the only way to
     // tell that apart from a real, deliberately-unbounded budget is that a configured
-    // one always sets at least one of the two.
+    // one always sets at least one of the two. This is the enforcement on/off signal
+    // only: the policy's own dollar-denominated numbers never feed into a token cap
+    // here (see `caps-read.ts`'s own comment on why not).
     const governorConfigured = Number.isFinite(budget.dailyUsd) || Object.keys(budget.usdPerRun).length > 0;
-    // `ensureHardUsd` writes 5x the effective daily cap into `~/.forge/console/caps.json`
-    // the first time neither the policy file nor a console override declares one --
+    // `ensureHardTokens` writes 5x the effective daily cap into
+    // `~/.forge/console/caps.json` the first time no console override declares one --
     // FD-7 never writes into the tracked model-policy.json (round 3: it used to, and a
     // smoke server running from a worktree dirtied that worktree's own tracked file).
-    if (governorConfigured) ensureHardUsd(this.modelPolicyPath, overridesPath);
+    ensureHardTokens(overridesPath);
     const overrides = readCapsOverrides(overridesPath);
     return computeCaps({
-      governor: budget,
-      implementClassName,
       overrides,
-      spentTodayUsd: spentTodayUsd(fleet.runs, now),
+      tokensToday: tokensToday(fleet.runs, now),
       governorConfigured,
     });
   }
@@ -265,9 +265,9 @@ export class ConsoleReads {
   private proposalsResponse(): ProposalsResponse {
     const now = Date.now();
     const fleet = this.journalCache.read(this.journalPath);
-    const costUsdByRun = Object.fromEntries(Object.entries(fleet.runs).map(([run, state]) => [run, state.costUsd]));
+    const tokensByRun = Object.fromEntries(Object.entries(fleet.runs).map(([run, state]) => [run, state.tokensUsed]));
     const existingRules = readRules(rulesPath(this.forgeHomeDir));
-    return computeProposals(fleet.events, now, costUsdByRun, existingRules);
+    return computeProposals(fleet.events, now, tokensByRun, existingRules);
   }
 
   private runThreadResponse(run: string): RunThreadResponse {

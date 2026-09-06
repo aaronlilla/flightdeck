@@ -33,10 +33,9 @@ function baseInput(overrides: Partial<LanesInput> = {}): LanesInput {
     openAsks: [],
     stuck: [],
     classFor: () => ({ model: 'claude-sonnet-5', effort: 'medium', maxContext: 200_000, maxTurns: 40 }),
-    usdPerRun: { implement: 5 },
     capOverrides: {},
     prFor: () => null,
-    usdPerHour: () => 0,
+    tokensPerHour: () => 0,
     ...overrides,
   };
 }
@@ -56,7 +55,7 @@ describe('modelAlias', () => {
 
 describe('ticketFor', () => {
   it('reads the run state ticket, upper-cased', () => {
-    expect(ticketFor('alpha', { run: 'alpha', state: 'started', turns: 0, context: 0, costUsd: 0, lastEventAt: 0, cacheReadTokens: 0, totalReadTokens: 0, turnsSinceWrite: 0, ticket: 'ab-1' })).toBe('AB-1');
+    expect(ticketFor('alpha', { run: 'alpha', state: 'started', turns: 0, context: 0, costUsd: 0, tokensUsed: 0, lastEventAt: 0, cacheReadTokens: 0, totalReadTokens: 0, turnsSinceWrite: 0, ticket: 'ab-1' })).toBe('AB-1');
   });
 
   it('falls back to the run name when it reads as a ticket key', () => {
@@ -146,14 +145,14 @@ describe('laneStateFor', () => {
   it('running, from a started run state', () => {
     expect(laneStateFor({
       packet: undefined, lane, runEvents: [],
-      runState: { run: 'alpha', state: 'started', turns: 0, context: 0, costUsd: 0, lastEventAt: 0, cacheReadTokens: 0, totalReadTokens: 0, turnsSinceWrite: 0 },
+      runState: { run: 'alpha', state: 'started', turns: 0, context: 0, costUsd: 0, tokensUsed: 0, lastEventAt: 0, cacheReadTokens: 0, totalReadTokens: 0, turnsSinceWrite: 0 },
     }).state).toBe('running');
   });
 
   it('handed-off, paused and parked, from their own run states', () => {
     const of = (state: 'handed-off' | 'paused' | 'parked') => laneStateFor({
       packet: undefined, lane, runEvents: [],
-      runState: { run: 'alpha', state, turns: 0, context: 0, costUsd: 0, lastEventAt: 0, cacheReadTokens: 0, totalReadTokens: 0, turnsSinceWrite: 0 },
+      runState: { run: 'alpha', state, turns: 0, context: 0, costUsd: 0, tokensUsed: 0, lastEventAt: 0, cacheReadTokens: 0, totalReadTokens: 0, turnsSinceWrite: 0 },
     }).state;
     expect(of('handed-off')).toBe('handed-off');
     expect(of('paused')).toBe('paused');
@@ -163,7 +162,7 @@ describe('laneStateFor', () => {
   it('done, exhausted and unverified, from a finished run state by verdict', () => {
     const of = (verdict: string | undefined) => laneStateFor({
       packet: undefined, lane, runEvents: [],
-      runState: { run: 'alpha', state: 'finished', verdict, turns: 0, context: 0, costUsd: 0, lastEventAt: 0, cacheReadTokens: 0, totalReadTokens: 0, turnsSinceWrite: 0 },
+      runState: { run: 'alpha', state: 'finished', verdict, turns: 0, context: 0, costUsd: 0, tokensUsed: 0, lastEventAt: 0, cacheReadTokens: 0, totalReadTokens: 0, turnsSinceWrite: 0 },
     }).state;
     expect(of('done')).toBe('done');
     expect(of('exhausted')).toBe('exhausted');
@@ -173,7 +172,7 @@ describe('laneStateFor', () => {
   it('killed, from a finished run state with a killed or skipped verdict', () => {
     const of = (verdict: string) => laneStateFor({
       packet: undefined, lane, runEvents: [],
-      runState: { run: 'alpha', state: 'finished', verdict, turns: 0, context: 0, costUsd: 0, lastEventAt: 0, cacheReadTokens: 0, totalReadTokens: 0, turnsSinceWrite: 0 },
+      runState: { run: 'alpha', state: 'finished', verdict, turns: 0, context: 0, costUsd: 0, tokensUsed: 0, lastEventAt: 0, cacheReadTokens: 0, totalReadTokens: 0, turnsSinceWrite: 0 },
     }).state;
     expect(of('killed')).toBe('killed');
     expect(of('skipped')).toBe('killed');
@@ -183,7 +182,7 @@ describe('laneStateFor', () => {
     const packet: ChainPacketState = { packetId: 'p1', launched: { runKey: 'alpha' }, merged: {} };
     expect(laneStateFor({
       packet, lane: { ...lane, needs_aaron: 'ignored' }, runEvents: [],
-      runState: { run: 'alpha', state: 'started', turns: 0, context: 0, costUsd: 0, lastEventAt: 0, cacheReadTokens: 0, totalReadTokens: 0, turnsSinceWrite: 0 },
+      runState: { run: 'alpha', state: 'started', turns: 0, context: 0, costUsd: 0, tokensUsed: 0, lastEventAt: 0, cacheReadTokens: 0, totalReadTokens: 0, turnsSinceWrite: 0 },
     }).state).toBe('merged');
   });
 
@@ -194,7 +193,7 @@ describe('laneStateFor', () => {
 
   it('blocked, with a reason, when the run\'s own last event is run.blocked', () => {
     const result = laneStateFor({
-      packet: undefined, lane, runState: { run: 'alpha', state: 'started', turns: 0, context: 0, costUsd: 0, lastEventAt: 0, cacheReadTokens: 0, totalReadTokens: 0, turnsSinceWrite: 0 },
+      packet: undefined, lane, runState: { run: 'alpha', state: 'started', turns: 0, context: 0, costUsd: 0, tokensUsed: 0, lastEventAt: 0, cacheReadTokens: 0, totalReadTokens: 0, turnsSinceWrite: 0 },
       runEvents: [{ id: '1', seq: 1, at: 1, version: 1, event: 'run.blocked', actor: 'runner', run: 'alpha', reason: 'base drift' }],
     });
     expect(result).toEqual({ state: 'blocked', reason: 'base drift' });
@@ -208,7 +207,7 @@ describe('laneStateFor', () => {
 
   it('killed, when the run\'s own last event is run.killed', () => {
     const result = laneStateFor({
-      packet: undefined, lane, runState: { run: 'alpha', state: 'started', turns: 0, context: 0, costUsd: 0, lastEventAt: 0, cacheReadTokens: 0, totalReadTokens: 0, turnsSinceWrite: 0 },
+      packet: undefined, lane, runState: { run: 'alpha', state: 'started', turns: 0, context: 0, costUsd: 0, tokensUsed: 0, lastEventAt: 0, cacheReadTokens: 0, totalReadTokens: 0, turnsSinceWrite: 0 },
       runEvents: [{ id: '1', seq: 1, at: 1, version: 1, event: 'run.killed', actor: 'warden', run: 'alpha', reason: 'runaway' }],
     });
     expect(result).toEqual({ state: 'killed', reason: 'runaway' });
@@ -229,7 +228,7 @@ describe('computeLanes', () => {
     const fleet = replay(path);
 
     const lane = laneRecord({ slug: 'alpha', column: 'c1' });
-    const result = computeLanes(baseInput({ laneRecords: [lane], fleet }), 1_000);
+    const result = computeLanes(baseInput({ laneRecords: [lane], fleet, capOverrides: { alpha: 5 } }), 1_000);
 
     expect(result.lanes).toHaveLength(1);
     const built = result.lanes[0]!;
@@ -239,7 +238,7 @@ describe('computeLanes', () => {
     expect(built.stepText).toBe('Bash');
     expect(built.ctxCeiling).toBe(200_000);
     expect(built.ctxCompactAt).toBe(180_000);
-    expect(built.capUsd).toBe(5);
+    expect(built.tokenCap).toBe(5);
   });
 
   it('skips noise rows (tool.end, burn.mismatch) for step text once no tool is running', () => {
@@ -290,22 +289,22 @@ describe('computeLanes', () => {
     journal.close();
     const fleet = replay(path);
     const lane = laneRecord({ slug: 'alpha', column: 'c1', className: 'implement' });
-    const result = computeLanes(baseInput({ laneRecords: [lane], fleet }), 1_000).lanes[0]!;
+    const result = computeLanes(baseInput({ laneRecords: [lane], fleet, capOverrides: { alpha: 5 } }), 1_000).lanes[0]!;
     expect(result.state).toBe('running');
-    expect(result.capUsd).toBe(5);
-    expect(result.costUsd).toBeGreaterThan(5);
+    expect(result.tokenCap).toBe(5);
+    expect(result.tokens).toBeGreaterThan(5);
     expect(result.runaway).toBe(true);
   });
 
   it('does not flag a finished run over its cap as runaway', () => {
     const lane = { ...laneRecord({ slug: 'alpha', column: 'c1' }), cost_usd: 9, className: 'implement', verdict: 'done' };
-    const result = computeLanes(baseInput({ laneRecords: [lane] }), 1_000).lanes[0]!;
+    const result = computeLanes(baseInput({ laneRecords: [lane], capOverrides: { alpha: 5 } }), 1_000).lanes[0]!;
     expect(result.state).toBe('done');
-    expect(result.capUsd).toBe(5);
+    expect(result.tokenCap).toBe(5);
     expect(result.runaway).toBe(false);
   });
 
-  it('sums spentTodayUsd from every run whose last event was today', () => {
+  it('sums tokensToday from every run whose last event was today', () => {
     const { path, journal } = tempJournal();
     journal.append({
       event: 'result.usage', run: 'alpha', actor: 'runner', model: 'claude-sonnet-5',
@@ -314,7 +313,7 @@ describe('computeLanes', () => {
     journal.close();
     const fleet = replay(path);
     const result = computeLanes(baseInput({ laneRecords: [], fleet }), Date.now());
-    expect(result.spentTodayUsd).toBeGreaterThan(0);
+    expect(result.tokensToday).toBeGreaterThan(0);
   });
 });
 
@@ -376,9 +375,9 @@ describe('handoff chain folding', () => {
     const built = computeLanes(baseInput({ laneRecords: [lane], fleet }), 1_000).lanes[0]!;
     expect(built.state).toBe('running');
     expect(built.ctxTokens).toBe(42_000);
-    const expectedTotal = fleet.runs['alpha']!.costUsd + fleet.runs['alpha-2']!.costUsd;
-    expect(built.costUsd).toBeCloseTo(expectedTotal, 6);
-    expect(built.costUsd).toBeGreaterThan(fleet.runs['alpha-2']!.costUsd);
+    const expectedTotal = fleet.runs['alpha']!.tokensUsed + fleet.runs['alpha-2']!.tokensUsed;
+    expect(built.tokens).toBe(expectedTotal);
+    expect(built.tokens).toBeGreaterThan(fleet.runs['alpha-2']!.tokensUsed);
   });
 
   it('heart is false for a stalled handoff with no live registry row anywhere in the chain', () => {
@@ -423,7 +422,7 @@ describe('handoff chain folding', () => {
     const lane = laneRecord({ slug: 'alpha', column: 'c1', className: 'implement' });
     const built = computeLanes(baseInput({ laneRecords: [lane], fleet }), 1_000).lanes[0]!;
     expect(built.state).toBe('unverified');
-    expect(built.costUsd).toBeGreaterThan(built.capUsd ?? 0);
+    expect(built.tokens).toBeGreaterThan(built.tokenCap ?? 0);
     expect(built.runaway).toBe(false);
   });
 
@@ -440,7 +439,7 @@ describe('handoff chain folding', () => {
     const lane = laneRecord({ slug: 'alpha', column: 'c1', className: 'implement' });
     const built = computeLanes(baseInput({ laneRecords: [lane], fleet, registryGet: () => undefined }), 1_000).lanes[0]!;
     expect(built.state).toBe('handed-off');
-    expect(built.costUsd).toBeGreaterThan(built.capUsd ?? 0);
+    expect(built.tokens).toBeGreaterThan(built.tokenCap ?? 0);
     expect(built.runaway).toBe(false);
   });
 });
@@ -498,7 +497,7 @@ describe('windowLanes', () => {
     return {
       id: 'alpha', ticket: null, model: 'sonnet-5', modelId: null, className: null, repo: null,
       attempt: 1, state: 'running', reason: null, stepN: 0, stepTotal: 0, stepText: '',
-      ctxTokens: 0, ctxCeiling: 0, ctxCompactAt: 0, costUsd: 0, capUsd: null, burnUsdPerMin: 0,
+      ctxTokens: 0, ctxCeiling: 0, ctxCompactAt: 0, tokens: 0, tokenCap: null, tokensPerMin: 0,
       fails: 0, hop: 0, hopStatus: 'live', observedAt: now, verifiedAt: null, heart: true,
       since: now, startedAt: now, endedAt: null, question: null, pr: null, sandbox: null,
       blockedBy: null, runaway: false, needsAaron: null,
@@ -507,7 +506,7 @@ describe('windowLanes', () => {
   }
 
   function responseWith(lanes: Lane[]): LanesResponse {
-    return { at: now, lanes, spentTodayUsd: 0, burnUsdPerMin: 0 };
+    return { at: now, lanes, tokensToday: 0, tokensPerMin: 0 };
   }
 
   it('drops a finished lane whose observedAt is more than 24h old', () => {
@@ -539,11 +538,11 @@ describe('windowLanes', () => {
     expect(result.lanes).toHaveLength(1);
   });
 
-  it('leaves spentTodayUsd and burnUsdPerMin untouched by the window', () => {
+  it('leaves tokensToday and tokensPerMin untouched by the window', () => {
     const stale = laneWith({ id: 'stale', state: 'done', observedAt: now - 25 * HOUR });
-    const response = { ...responseWith([stale]), spentTodayUsd: 12.5, burnUsdPerMin: 0.4 };
+    const response = { ...responseWith([stale]), tokensToday: 12.5, tokensPerMin: 0.4 };
     const result = windowLanes(response, now, false);
-    expect(result.spentTodayUsd).toBe(12.5);
-    expect(result.burnUsdPerMin).toBe(0.4);
+    expect(result.tokensToday).toBe(12.5);
+    expect(result.tokensPerMin).toBe(0.4);
   });
 });

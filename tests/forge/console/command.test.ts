@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -10,7 +10,8 @@ import { appendOnce, replay } from '../../../src/forge/journal.js';
 import { Inbox } from '../../../src/forge/inbox.js';
 import { Registry } from '../../../src/forge/registry.js';
 import { ConsoleWrites, parseIntent } from '../../../src/forge/console/command.js';
-import { spentTodayUsd } from '../../../src/forge/console/lanes.js';
+import { tokensToday } from '../../../src/forge/console/lanes.js';
+import { fmtTokens } from '../../../src/shared/format-tokens.js';
 
 class FakeActuator implements Actuator {
   parked: string[] = [];
@@ -78,9 +79,9 @@ describe('parseIntent', () => {
     expect(parseIntent('resume')).toEqual({ kind: 'resume' });
     expect(parseIntent('kill FLT-204')).toEqual({ kind: 'kill', lane: 'FLT-204' });
     expect(parseIntent('merge ready lanes')).toEqual({ kind: 'merge-ready' });
-    expect(parseIntent('raise daily cap to $50')).toEqual({ kind: 'set-daily-cap', amount: 50 });
-    expect(parseIntent('set daily cap to 50')).toEqual({ kind: 'set-daily-cap', amount: 50 });
-    expect(parseIntent('cap FLT-204 at $5')).toEqual({ kind: 'set-run-cap', lane: 'FLT-204', amount: 5 });
+    expect(parseIntent('raise daily cap to 500000')).toEqual({ kind: 'set-daily-cap', amount: 500_000 });
+    expect(parseIntent('set daily cap to 500k')).toEqual({ kind: 'set-daily-cap', amount: 500_000 });
+    expect(parseIntent('cap FLT-204 at 50000')).toEqual({ kind: 'set-run-cap', lane: 'FLT-204', amount: 50_000 });
     expect(parseIntent("why is lane FLT-1 stuck")).toEqual({ kind: 'why-stuck', lane: 'FLT-1' });
     expect(parseIntent("what's stuck")).toEqual({ kind: 'what-stuck' });
     expect(parseIntent('spend today')).toEqual({ kind: 'spend-today' });
@@ -140,9 +141,10 @@ describe('ConsoleWrites.handle', () => {
   });
 
   it('refuses a run cap above the hard limit with 422', async () => {
+    writeFileSync(join(dir, 'caps.json'), JSON.stringify({ hardTokens: 100_000 }), 'utf8');
     const { response, result } = fakeResponse();
 
-    await writes.handle('/run/alpha/cap', fakeRequest('POST', { capUsd: 999999 }), response);
+    await writes.handle('/run/alpha/cap', fakeRequest('POST', { tokenCap: 999_999 }), response);
 
     const outcome = await result;
     expect(outcome.status).toBe(422);
@@ -155,7 +157,7 @@ describe('ConsoleWrites.handle', () => {
   // POST /journal/:jid/undo endpoint here.
   it('undoes a run-cap override through POST /journal/:jid/undo', async () => {
     const capResponse = fakeResponse();
-    await writes.handle('/run/alpha/cap', fakeRequest('POST', { capUsd: 5 }), capResponse.response);
+    await writes.handle('/run/alpha/cap', fakeRequest('POST', { tokenCap: 5 }), capResponse.response);
     const capped = await capResponse.result;
     const jid = (capped.body as { jid: string }).jid;
 
@@ -169,7 +171,7 @@ describe('ConsoleWrites.handle', () => {
 
   it('refuses a second undo of the same jid with 409', async () => {
     const capResponse = fakeResponse();
-    await writes.handle('/run/alpha/cap', fakeRequest('POST', { capUsd: 5 }), capResponse.response);
+    await writes.handle('/run/alpha/cap', fakeRequest('POST', { tokenCap: 5 }), capResponse.response);
     const jid = ((await capResponse.result).body as { jid: string }).jid;
 
     await writes.handle(`/journal/${jid}/undo`, fakeRequest('POST'), fakeResponse().response);
@@ -229,7 +231,7 @@ describe('ConsoleWrites.command / kill confirm flow', () => {
           { id: 'alpha', state: 'running' } as never, { id: 'beta', state: 'running' } as never,
           { id: 'gamma', state: 'blocked' } as never,
         ],
-        spentTodayUsd: 12.5, burnUsdPerMin: 0.75,
+        tokensToday: 12.5, tokensPerMin: 0.75,
       }),
     });
 
@@ -238,7 +240,7 @@ describe('ConsoleWrites.command / kill confirm flow', () => {
     const reply = cards.find((card) => card.type === 'reply')!;
     expect(reply.text).toContain('2 running');
     expect(reply.text).toContain('1 blocked');
-    expect(reply.text).toContain('$12.50');
+    expect(reply.text).toContain('13 tokens today');
     expect(reply.text).toContain('gamma (blocked)');
     withView.stop();
   });
@@ -258,7 +260,7 @@ describe('ConsoleWrites.command / kill confirm flow', () => {
       rulesConfigPath: join(dir, 'rules-3.json'),
       integrationsConfigPath: join(dir, 'integrations-3.json'),
       lanesView: () => ({
-        at: Date.now(), lanes: lanes as never, spentTodayUsd: 0, burnUsdPerMin: 0,
+        at: Date.now(), lanes: lanes as never, tokensToday: 0, tokensPerMin: 0,
       }),
     });
 
@@ -288,17 +290,17 @@ describe('ConsoleWrites.command / kill confirm flow', () => {
     expect(reply.text).not.toContain('burn.mismatch');
   });
 
-  it("answers 'spend today' with the same figure lanes.ts's spentTodayUsd computes off the same journal", async () => {
+  it("answers 'spend today' with the same figure lanes.ts's tokensToday computes off the same journal", async () => {
     appendOnce(journalPath, {
       event: 'result.usage', run: 'alpha', actor: 'runner', model: 'claude-sonnet-5',
       usage: { input: 1_000_000, cacheRead: 0, cacheCreation: 0, output: 0 },
     });
-    const expected = spentTodayUsd(replay(journalPath).runs, Date.now());
+    const expected = tokensToday(replay(journalPath).runs, Date.now());
 
     const cards = await writes.command('spend today');
 
     const reply = cards.find((card) => card.type === 'reply')!;
-    expect(reply.text).toBe(`spent $${expected.toFixed(2)} today`);
+    expect(reply.text).toBe(`spent ${fmtTokens(expected)} tokens today`);
   });
 
   it("answers an operator's free text against the one open ask", async () => {

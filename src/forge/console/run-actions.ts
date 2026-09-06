@@ -22,6 +22,7 @@ import { recordAction, type ActionsLedger } from './actions-ledger.js';
 import { capsOverridesPath, readCapsOverrides, writeCapsOverrides } from './caps-read.js';
 import { laneStateNowFor } from './lanes.js';
 import type { ActionResult, LaneState } from '../../shared/console-model.js';
+import { fmtTokens } from '../../shared/format-tokens.js';
 
 export interface RunActionsDeps {
   ledger: ActionsLedger;
@@ -33,7 +34,7 @@ export interface RunActionsDeps {
    *  Undefined in production; a specimen always sets it, per this stream's rule that
    *  a test never shells out. */
   spawnFn?: RunRequest['spawnFn'];
-  hardUsd: () => number;
+  hardTokens: () => number;
   capsOverridesPath?: string;
   /** Overrides the entry point spawned for `forge gate` / `forge chain retry`.
    *  Defaults to this process's own (`process.execPath`, `process.execArgv`,
@@ -165,36 +166,39 @@ export function capOverridesPath(override?: string): string {
   return override ?? capsOverridesPath(forgeHome());
 }
 
-export async function setRunCap(run: string, capUsd: number, deps: RunActionsDeps): Promise<RunActionResponse> {
-  if (!Number.isFinite(capUsd) || capUsd <= 0) {
-    return { status: 400, body: { error: 'capUsd must be a positive number' } };
+export async function setRunCap(run: string, tokenCap: number, deps: RunActionsDeps): Promise<RunActionResponse> {
+  if (!Number.isFinite(tokenCap) || tokenCap <= 0) {
+    return { status: 400, body: { error: 'tokenCap must be a positive number' } };
   }
-  const hardUsd = deps.hardUsd();
-  if (capUsd > hardUsd) {
-    return { status: 422, body: { error: `$${capUsd} is above the org hard limit of $${hardUsd}`, reason: 'FD-7' } };
+  const hardTokens = deps.hardTokens();
+  if (tokenCap > hardTokens) {
+    return {
+      status: 422,
+      body: { error: `${fmtTokens(tokenCap)} tokens is above the org hard limit of ${fmtTokens(hardTokens)} tokens`, reason: 'FD-7' },
+    };
   }
   const path = capOverridesPath(deps.capsOverridesPath);
   const current = readCapsOverrides(path);
   const perRun = { ...(current.perRun ?? {}) };
   const previous = perRun[run] ?? null;
-  perRun[run] = capUsd;
+  perRun[run] = tokenCap;
   writeCapsOverrides(path, { ...current, perRun });
   const { jid } = recordAction(deps.journalPath, deps.ledger, {
-    kind: 'run-cap', run, text: `cap set to $${capUsd} for ${run}`,
-    undo: { kind: 'restore-run-cap', payload: { run, capUsd: previous } },
+    kind: 'run-cap', run, text: `cap set to ${fmtTokens(tokenCap)} tokens for ${run}`,
+    undo: { kind: 'restore-run-cap', payload: { run, tokenCap: previous } },
   });
-  return { status: 200, body: { ok: true, jid, message: `${run} capped at $${capUsd}`, undoable: true } };
+  return { status: 200, body: { ok: true, jid, message: `${run} capped at ${fmtTokens(tokenCap)} tokens`, undoable: true } };
 }
 
 /** Restores a per-run cap override to what it was before a `run-cap` write (or removes
  *  the override entirely when there was none). The one undo executor this module owns
  *  that `actions-ledger.ts`'s dispatcher (in `command.ts`) calls by `undo.kind`. */
-export function restoreRunCap(run: string, capUsd: number | null, deps: Pick<RunActionsDeps, 'capsOverridesPath'>): void {
+export function restoreRunCap(run: string, tokenCap: number | null, deps: Pick<RunActionsDeps, 'capsOverridesPath'>): void {
   const path = capOverridesPath(deps.capsOverridesPath);
   const current = readCapsOverrides(path);
   const perRun = { ...(current.perRun ?? {}) };
-  if (capUsd === null) delete perRun[run];
-  else perRun[run] = capUsd;
+  if (tokenCap === null) delete perRun[run];
+  else perRun[run] = tokenCap;
   writeCapsOverrides(path, { ...current, perRun });
 }
 

@@ -282,11 +282,10 @@ export interface LaneBuildInput {
   openAsks: InboxEntry[];
   stuck: StuckSignal[];
   classFor: (name: string) => ClassSpec | undefined;
-  usdPerRun: Record<string, number>;
   capOverride: number | undefined;
   prFor: (run: string) => LanePr | null;
   attempt: number;
-  usdPerHourValue: number;
+  tokensPerHourValue: number;
   /** `indexEventsByRun(fleet.events)`, built once per `computeLanes` call. */
   eventsByRun: Map<string, ForgeEvent[]>;
   /** `indexJiraCompleteTickets(fleet.events)`, built once per `computeLanes` call. */
@@ -311,7 +310,7 @@ function sandboxFor(packet: ChainPacketState | undefined, registryRow: RegistryR
 }
 
 export function buildLane(input: LaneBuildInput): Lane {
-  const { lane, now, fleet, chain, registryRow, openAsks, stuck, classFor, usdPerRun, capOverride, prFor } = input;
+  const { lane, now, fleet, chain, registryRow, openAsks, stuck, classFor, capOverride, prFor } = input;
   const id = lane.slug;
   // I1: a run that has handed off is read through the whole chain its successors form,
   // not just its own last journal line -- `fleet.runs[id]` never gets another event
@@ -334,15 +333,25 @@ export function buildLane(input: LaneBuildInput): Lane {
 
   const ctxCeiling = spec?.maxContext ?? 0;
   const ctxCompactAt = Math.round(ctxCeiling * 0.9);
-  const capUsd = capOverride ?? (className ? usdPerRun[className] ?? null : null);
-  // I1: the chain's total spend, not just the newest link's -- every link in `links`
+  // The cap comes only from a console override (`POST /run/:id/cap`, or `POST /caps`'
+  // per-run default in `caps-read.ts`) -- there is no policy-sourced per-class default
+  // any more, because the policy's own `usdPerRun` is priced in dollars this fleet never
+  // actually spends, and a token figure derived from it would be a made-up exchange rate
+  // wearing a number's shape. Unset reads as no cap, exactly like an unset console
+  // override always has.
+  const tokenCap = capOverride ?? null;
+  // I1: the chain's total tokens, not just the newest link's -- every link in `links`
   // has a defined `runState` once `runState` (the terminal's) does, since the walk in
   // `chainLinks` only ever advances onto a link it already found a run state for.
-  const costUsd = runState
-    ? links.reduce((sum, link) => sum + (link.runState?.costUsd ?? 0), 0)
-    : lane.cost_usd;
+  const tokens = runState
+    ? links.reduce((sum, link) => sum + (link.runState?.tokensUsed ?? 0), 0)
+    // `lane.cost_usd` is the one remaining dollar-denominated field on the registry's
+    // own `LaneRecord` (shared with the legacy `/state` server, out of this stream's
+    // scope) -- a lane the journal has no run state for at all reads 0 tokens rather
+    // than a conversion this file cannot honestly make.
+    : 0;
   const running = state === 'running' || state === 'handed-off';
-  const burnUsdPerMin = running ? Number((input.usdPerHourValue / 60).toFixed(4)) : 0;
+  const tokensPerMin = running ? Number((input.tokensPerHourValue / 60).toFixed(4)) : 0;
 
   const fails = runEvents.filter((row) => row.event === 'run.blocked' || row.event === 'engine.error').length;
 
@@ -402,9 +411,9 @@ export function buildLane(input: LaneBuildInput): Lane {
     ctxTokens: runState ? runState.context : lane.context,
     ctxCeiling,
     ctxCompactAt,
-    costUsd,
-    capUsd,
-    burnUsdPerMin,
+    tokens,
+    tokenCap,
+    tokensPerMin,
     fails,
     hop,
     hopStatus,
@@ -425,7 +434,7 @@ export function buildLane(input: LaneBuildInput): Lane {
     // finished chain over its cap never reads `running` or `handed-off` here at all, and
     // a stalled handoff over its cap with nothing left running shows its cost in amber
     // with the cap text instead of the red runaway treatment.
-    runaway: running && capUsd !== null && costUsd > capUsd && (state === 'running' || chainLive),
+    runaway: running && tokenCap !== null && tokens > tokenCap && (state === 'running' || chainLive),
     needsAaron: lane.needs_aaron ?? null,
   };
 }
@@ -438,10 +447,9 @@ export interface LanesInput {
   openAsks: InboxEntry[];
   stuck: StuckSignal[];
   classFor: (name: string) => ClassSpec | undefined;
-  usdPerRun: Record<string, number>;
   capOverrides: Record<string, number>;
   prFor: (run: string) => LanePr | null;
-  usdPerHour: (lane: LaneRecord) => number;
+  tokensPerHour: (lane: LaneRecord) => number;
 }
 
 function startOfLocalDay(now: number): number {
@@ -453,16 +461,16 @@ function startOfLocalDay(now: number): number {
 /** The one spend-since-midnight figure every console read and write agrees on: `GET
  *  /lanes`, `GET /caps`, `POST /caps` and the `spend today` command all call this
  *  instead of each folding the journal their own way. */
-export function spentTodayUsd(runs: FleetState['runs'], now: number): number {
+export function tokensToday(runs: FleetState['runs'], now: number): number {
   const since = startOfLocalDay(now);
   return Object.values(runs)
     .filter((run) => run.lastEventAt >= since)
-    .reduce((sum, run) => sum + run.costUsd, 0);
+    .reduce((sum, run) => sum + run.tokensUsed, 0);
 }
 
 export function computeLanes(input: LanesInput, now: number): LanesResponse {
   const attempts = new Map<string, number>();
-  let burnUsdPerMin = 0;
+  let tokensPerMin = 0;
   // Built once per call rather than once per lane: `buildLane` used to re-scan every
   // event in the journal for each lane it built, which made this function O(lanes *
   // events) -- fine at a handful of lanes, ruinous once a fleet has run long enough to
@@ -472,21 +480,21 @@ export function computeLanes(input: LanesInput, now: number): LanesResponse {
   const lanes = input.laneRecords.map((lane) => {
     const attempt = (attempts.get(lane.column) ?? 0) + 1;
     attempts.set(lane.column, attempt);
-    const usdPerHourValue = input.usdPerHour(lane);
+    const tokensPerHourValue = input.tokensPerHour(lane);
     const built = buildLane({
       lane, now, fleet: input.fleet, chain: input.chain, registryRow: input.registryGet(lane.slug),
       registryGet: input.registryGet,
       openAsks: input.openAsks, stuck: input.stuck, classFor: input.classFor,
-      usdPerRun: input.usdPerRun, capOverride: input.capOverrides[lane.slug], prFor: input.prFor,
-      attempt, usdPerHourValue, eventsByRun, jiraCompleteTickets,
+      capOverride: input.capOverrides[lane.slug], prFor: input.prFor,
+      attempt, tokensPerHourValue, eventsByRun, jiraCompleteTickets,
     });
-    burnUsdPerMin += built.burnUsdPerMin;
+    tokensPerMin += built.tokensPerMin;
     return built;
   });
 
   return {
-    at: now, lanes, spentTodayUsd: spentTodayUsd(input.fleet.runs, now),
-    burnUsdPerMin: Number(burnUsdPerMin.toFixed(4)),
+    at: now, lanes, tokensToday: tokensToday(input.fleet.runs, now),
+    tokensPerMin: Number(tokensPerMin.toFixed(4)),
   };
 }
 

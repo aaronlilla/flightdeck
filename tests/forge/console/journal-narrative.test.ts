@@ -20,7 +20,7 @@ function lane(extra: Partial<Lane> = {}): Lane {
   return {
     id: 'alpha', ticket: null, model: 'sonnet-5', modelId: 'claude-sonnet-5', className: 'implement',
     repo: 'flightdeck-api', attempt: 1, state: 'running', reason: null, stepN: 1, stepTotal: 6, stepText: 'working',
-    ctxTokens: 1_000, ctxCeiling: 200_000, ctxCompactAt: 180_000, costUsd: 1, capUsd: 10, burnUsdPerMin: 0,
+    ctxTokens: 1_000, ctxCeiling: 200_000, ctxCompactAt: 180_000, tokens: 1, tokenCap: 10, tokensPerMin: 0,
     fails: 0, hop: 0, hopStatus: 'live', observedAt: 0, verifiedAt: 0, heart: true, since: 1_000,
     startedAt: 0, endedAt: null, question: null, pr: null, sandbox: null, blockedBy: null, runaway: false,
     needsAaron: null,
@@ -83,9 +83,9 @@ describe('computeJournalNarrative', () => {
     journal.close();
     const fleet = replay(path);
     const chain = foldChainState(fleet.events);
-    const entries = computeJournalNarrative(lane({ runaway: true, fails: 3, costUsd: 27.5 }), fleet.events, packetForRun(chain, 'alpha'), 5_000);
+    const entries = computeJournalNarrative(lane({ runaway: true, fails: 3, tokens: 5_500_000 }), fleet.events, packetForRun(chain, 'alpha'), 5_000);
     const last = entries[entries.length - 1]!;
-    expect(last).toEqual({ t: 5_000, text: 'build failing ×3 · $27.50', color: 'var(--block)' });
+    expect(last).toEqual({ t: 5_000, text: 'build failing ×3 · 5.5M tokens', color: 'var(--block)' });
   });
 
   it('adds no closing line for a lane still running normally', () => {

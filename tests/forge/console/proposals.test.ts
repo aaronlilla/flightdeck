@@ -37,13 +37,13 @@ describe('computeMetrics', () => {
     journal.append({ event: 'run.killed', actor: 'warden', run: 'alpha', reason: 'runaway' });
     journal.close();
     const fleet = replay(path);
-    const metrics = computeMetrics(fleet.events, Date.now(), { alpha: 4.5 });
-    expect(metrics.wastedUsd).toBe(4.5);
+    const metrics = computeMetrics(fleet.events, Date.now(), { alpha: 450_000 });
+    expect(metrics.tokensWasted).toBe(450_000);
   });
 
-  it('reads costPerMergeUsd as null with nothing merged yet', () => {
+  it('reads tokensPerMerge as null with nothing merged yet', () => {
     const metrics = computeMetrics([], Date.now(), {});
-    expect(metrics.costPerMergeUsd).toBeNull();
+    expect(metrics.tokensPerMerge).toBeNull();
   });
 });
 

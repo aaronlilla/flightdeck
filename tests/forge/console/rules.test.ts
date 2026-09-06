@@ -99,7 +99,7 @@ describe('enforceRulesOnce', () => {
     inbox = new Inbox(join(dir, 'inbox'));
     runActions = {
       ledger: new ActionsLedger(join(dir, 'actions.jsonl')), registry, actuator, journalPath,
-      hardUsd: () => 10,
+      hardTokens: () => 10,
     };
   });
 
@@ -189,7 +189,7 @@ describe('startEnforcementTick', () => {
     });
     const runActions: RunActionsDeps = {
       ledger: new ActionsLedger(join(dir, 'actions.jsonl')), registry, actuator, journalPath,
-      hardUsd: () => 10,
+      hardTokens: () => 10,
     };
 
     const handle = startEnforcementTick({ journalPath, rulesPath: rulesFile, inbox, runActions }, 10_000);
