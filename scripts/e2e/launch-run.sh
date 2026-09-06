@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Adapted from C:/dev/.claude/goals/logs/forge-live-probe-b3.launch.sh for the console
+# Adapted from the repository-external live probe launcher for the console.
 # e2e verification (worktree flightdeck--e2e). Launches one real worker run against a
 # throwaway FORGE_HOME, on the fleet login, with the interactive session's CLAUDE_*
 # markers stripped so the child starts clean.
@@ -16,7 +16,7 @@ echo "launch $(date +%T) run=$RUN brief=$BRIEF home=$FORGE_HOME" > "$L/$RUN.log"
 rm -f "$L/$RUN.done"
 BEFORE=$(tasklist 2>/dev/null | grep -c "claude.exe")
 echo "claude.exe before: $BEFORE" >> "$L/$RUN.log"
-FORGE_HOME="$FORGE_HOME" FORGE_CONFIG_DIR=C:/Users/aaron/.claude-fleet \
+FORGE_HOME="$FORGE_HOME" FORGE_CONFIG_DIR="${FORGE_CONFIG_DIR:?set it to the fleet account config dir}" \
   env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_SESSION_ID -u CLAUDE_PID -u CLAUDE_EFFORT \
       -u CLAUDE_CODE_MESSAGING_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN -u CLAUDECODE \
       -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH -u ANTHROPIC_API_KEY \
