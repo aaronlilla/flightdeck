@@ -445,6 +445,30 @@ describe('handoff chain folding', () => {
   });
 });
 
+describe('observedAt vs the noise-refreshed RunState.lastEventAt', () => {
+  it('windows a finished lane out by its own last real event, ignoring later noise the governor keeps re-emitting on every forge-up restart', () => {
+    const HOUR = 3_600_000;
+    const now = 100 * HOUR;
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner', at: now - 30 * HOUR });
+    journal.append({ event: 'run.finished', run: 'alpha', actor: 'runner', verdict: 'done', at: now - 29 * HOUR });
+    // `reconcileBurnOnce`'s dedup Set is per-process, so every `forge up` restart
+    // re-reports the same unresolved burn mismatch once -- this run's own
+    // `RunState.lastEventAt` keeps climbing to "now" even though nothing about the run
+    // itself has changed since it finished a day ago.
+    journal.append({ event: 'burn.mismatch', run: 'alpha', actor: 'governor', at: now - 1000 });
+    journal.close();
+    const fleet = replay(path);
+    expect(fleet.runs['alpha']!.lastEventAt).toBe(now - 1000);
+    // `started`, as every real admission sets it (`cli.ts`'s `run` command always
+    // writes `Date.now()` at admission time) -- never null for a lane that has actually
+    // run, which the noise-refreshed `lastEventAt` alone is enough to reopen.
+    const lane = laneRecord({ slug: 'alpha', column: 'c1', started: now - 30 * HOUR });
+    const result = windowLanes(computeLanes(baseInput({ laneRecords: [lane], fleet }), now), now, false);
+    expect(result.lanes).toHaveLength(0);
+  });
+});
+
 describe('windowLanes', () => {
   const HOUR = 3_600_000;
   const now = 100 * HOUR;
