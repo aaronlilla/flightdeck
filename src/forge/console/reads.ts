@@ -226,7 +226,7 @@ export class ConsoleReads {
     const now = Date.now();
     const persisted = readThread(threadPath(this.forgeHomeDir));
     const fleet = this.journalCache.read(this.journalPath);
-    return computeThread(persisted, fleet.events, now);
+    return computeThread(persisted, fleet.events, now, this.inbox.open());
   }
 
   private journalResponse(query: { since?: number; run?: string; limit?: number }): JournalResponse {

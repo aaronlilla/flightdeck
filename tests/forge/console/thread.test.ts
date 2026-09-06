@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import { Journal, replay } from '../../../src/forge/journal.js';
 import { computeRunThread, computeThread } from '../../../src/forge/console/thread.js';
+import type { InboxEntry } from '../../../src/forge/inbox.js';
 import type { Message } from '../../../src/shared/console-model.js';
 
 function tempJournal(): { path: string; journal: Journal } {
@@ -43,6 +44,26 @@ describe('computeThread', () => {
     const persisted: Message[] = [{ k: 'm1', type: 'operator', text: 'hi', ts: 5_000, source: 'operator' }];
     const result = computeThread(persisted, fleet.events, 10_000);
     expect(result.messages.filter((m) => m.type === 'event')).toHaveLength(0);
+  });
+
+  it('surfaces a run\'s open inbox ask as an answerable question card, not just a plate', () => {
+    // The board's needs-you plate and the rail's "Question" card (with clickable option
+    // buttons) read from two different places: the plate reads `lane.question` off
+    // /lanes, but the rail's card only ever renders a persisted `type: 'question'`
+    // message -- and nothing wrote one for a live parked run. An operator staring at
+    // the rail saw no way to click an answer; they had to already know to type
+    // `answer <key> <text>` into the composer by hand.
+    const entry: InboxEntry = {
+      key: 'ask-1', question: 'Probe: continue to the end?', options: ['Yes', 'No'],
+      kind: 'question', runs: ['probe-1'], goals: ['probe-1'], asked: 1, at: 2_000,
+      disposition: 'park',
+    };
+    const result = computeThread([], [], 10_000, [entry]);
+    const question = result.messages.find((m) => m.type === 'question');
+    expect(question).toBeDefined();
+    expect(question?.askKey).toBe('ask-1');
+    expect(question?.opts).toEqual(['Yes', 'No']);
+    expect(question?.text).toBe('Probe: continue to the end?');
   });
 });
 
