@@ -1,0 +1,42 @@
+import { describe, expect, it } from 'vitest';
+
+import { initialState, reducer } from '../../src/console/store.js';
+
+describe('store reducer', () => {
+  it('flips the feed live once lanes load, then drops it on feed-lost', () => {
+    let state = initialState();
+    state = reducer(state, { type: 'lanes', lanes: [] });
+    expect(state.loaded).toBe(true);
+    state = reducer(state, { type: 'feed-lost', reason: 'unreachable' });
+    expect(state.feed.live).toBe(false);
+    expect(state.feed.reason).toBe('unreachable');
+    // a second feed-lost while already down does not reset lostAt
+    const lostAt = state.feed.lostAt;
+    state = reducer(state, { type: 'feed-lost', reason: 'still unreachable' });
+    expect(state.feed.lostAt).toBe(lostAt);
+    state = reducer(state, { type: 'feed-live' });
+    expect(state.feed.live).toBe(true);
+    expect(state.feed.lostAt).toBeNull();
+  });
+
+  it('appends to the thread without dropping earlier messages', () => {
+    let state = initialState();
+    state = reducer(state, { type: 'thread', thread: [{ k: 'a', type: 'event', text: 'x', ts: 1, source: 'system' }] });
+    state = reducer(state, { type: 'thread-append', messages: [{ k: 'b', type: 'event', text: 'y', ts: 2, source: 'system' }] });
+    expect(state.thread.map((m) => m.k)).toEqual(['a', 'b']);
+  });
+
+  it('opens and closes a sheet', () => {
+    let state = initialState();
+    state = reducer(state, { type: 'sheet', sheet: { type: 'ticket', id: 'FLT-1' } });
+    expect(state.sheet).toEqual({ type: 'ticket', id: 'FLT-1' });
+    state = reducer(state, { type: 'sheet', sheet: null });
+    expect(state.sheet).toBeNull();
+  });
+
+  it('toggles the theme', () => {
+    let state = initialState();
+    state = reducer(state, { type: 'theme', theme: 'thL' });
+    expect(state.theme).toBe('thL');
+  });
+});
