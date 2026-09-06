@@ -21,7 +21,6 @@ import { dirname, extname, join } from 'node:path';
 import type { Duplex } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
-
 import { ConsoleReads } from './console/reads.js';
 import { HEARTBEAT_MS } from '../shared/console-model.js';
 import { ConsoleWrites } from './console/command.js';
@@ -202,7 +201,7 @@ export class ForgeServer {
     this.inbox = options.inbox;
     this.journalPath = options.journalPath;
     this.journalCache = options.journalCache ?? new JournalCache(options.journalRangeReader);
-    this.wanted = options.port ?? FORGE_PORT;
+    this.wanted = options.port ?? Number(process.env['FORGE_PORT'] ?? FORGE_PORT);
     this.host = options.host ?? '127.0.0.1';
     this.stuckFn = options.stuck ?? (() => []);
     this.fleetFn = options.fleet ?? (() => []);
