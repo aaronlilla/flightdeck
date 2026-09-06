@@ -5,6 +5,6 @@
     "noEmit": true,
     "types": ["vite/client"]
   },
-  "include": ["src/console/**/*", "tests/console/**/*", "vite.console.config.ts"],
+  "include": ["src/console/**/*", "src/shared/**/*", "tests/console/**/*", "vite.console.config.ts"],
   "exclude": []
 }
