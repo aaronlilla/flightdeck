@@ -167,6 +167,29 @@ describe('Settings row freshness', () => {
   });
 });
 
+// Final fidelity sweep #4: a down or degraded row gets a background tint from its
+// own status color, matching the prototype's intVM (`bg: bad ? color-mix(...) :
+// transparent`); a healthy or off row stays plain.
+describe('Settings row tint', () => {
+  it('tints a down row with its status color', () => {
+    renderSettings({ integrations: [integration({ kind: 'conn', status: 'down' })] });
+    const row = screen.getAllByText('mcp-x').map((el) => el.closest('.row')).find((el): el is HTMLElement => el !== null) as HTMLElement;
+    expect(row.style.background).toContain('color-mix');
+  });
+
+  it('tints a degraded row with its status color', () => {
+    renderSettings({ integrations: [integration({ kind: 'conn', status: 'degraded' })] });
+    const row = screen.getAllByText('mcp-x').map((el) => el.closest('.row')).find((el): el is HTMLElement => el !== null) as HTMLElement;
+    expect(row.style.background).toContain('color-mix');
+  });
+
+  it('leaves a healthy row untinted', () => {
+    renderSettings({ integrations: [integration({ kind: 'conn', status: 'ok' })] });
+    const row = screen.getByText('mcp-x').closest('.row') as HTMLElement;
+    expect(row.style.background).toBe('transparent');
+  });
+});
+
 // FIDELITY-DIFFS rows 38/75/76: the down plate carries scope, footer, and the exact
 // "Reconnect AWS via SSO" / "≈ 20s" text.
 describe('Settings down plate', () => {

@@ -60,6 +60,26 @@ describe('FlightReview kind taxonomy', () => {
   });
 });
 
+// Final fidelity sweep #4: the Apply rule button's color comes from the rule kind
+// (script_wrapped.txt seeds `btn: 'btnP'` for cost/speed, `'btnA'` for human wait),
+// not one fixed style for every kind.
+describe('FlightReview Apply rule button color', () => {
+  it('uses btnA for a human-wait kind rule', () => {
+    renderReview([rule({ kind: 'auto-answer' })]);
+    expect(screen.getByText('Apply rule →')).toHaveClass('btnA');
+  });
+
+  it('uses btnP for a cost-kind rule', () => {
+    renderReview([rule({ kind: 'cost' })]);
+    expect(screen.getByText('Apply rule →')).toHaveClass('btnP');
+  });
+
+  it('uses btnP for a speed-kind rule', () => {
+    renderReview([rule({ kind: 'self-iteration' })]);
+    expect(screen.getByText('Apply rule →')).toHaveClass('btnP');
+  });
+});
+
 describe('FlightReview evidence toggle', () => {
   it('starts collapsed with the evidence glyph by default', () => {
     renderReview([rule({ expanded: false })]);

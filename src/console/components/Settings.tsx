@@ -63,12 +63,20 @@ function rowFreshness(i: Integration, now: number): { cls: 'stF' | 'stO'; text: 
   return { cls: 'stF', text: `✓ ${seconds}s ago` };
 }
 
+/** A down or degraded row gets a faint tint of its own status color, matching the
+ *  prototype's `intVM` (`bg: bad ? color-mix(in srgb, col 8%, transparent) :
+ *  transparent`); a healthy, off, or checking row stays plain. */
+function rowBackground(status: Integration['status']): string {
+  if (status !== 'down' && status !== 'degraded') return 'transparent';
+  return `color-mix(in srgb, ${STATUS_COLOR[status]} 8%, transparent)`;
+}
+
 function Row({ i, now, onCheck, onReconnect }: {
   i: Integration; now: number; onCheck: (id: string) => void; onReconnect: (id: string) => void;
 }): JSX.Element {
   const fresh = rowFreshness(i, now);
   return (
-    <div className="row">
+    <div className="row" style={{ background: rowBackground(i.status) }}>
       <span className="led" style={{ background: STATUS_COLOR[i.status] }} />
       <b>{i.name}</b>
       <span style={{ color: 'var(--ink2)' }}>{i.desc}</span>

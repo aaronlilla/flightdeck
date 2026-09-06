@@ -16,6 +16,10 @@ export interface FlightReviewProps {
 interface KindTaxon {
   label: string;
   color: string;
+  /** The Apply button's class, taken from the rule kind (the prototype's own
+   *  seed data, script_wrapped.txt: `btn: 'btnP'` for cost/speed, `'btnA'` for
+   *  human wait) rather than one fixed style for every kind. */
+  btnCls: 'btnP' | 'btnA';
 }
 
 /** The three proposal categories the review screen actually distinguishes, and the
@@ -24,16 +28,16 @@ interface KindTaxon {
  *  authority) falls back to its own id, upper-cased, in the neutral ink color rather
  *  than guessing which of the three it belongs to. */
 const KIND_TAXONOMY: Record<string, KindTaxon> = {
-  cost: { label: 'COST', color: 'var(--block)' },
-  'kill-after-fails': { label: 'COST', color: 'var(--block)' },
-  'human wait': { label: 'HUMAN WAIT', color: 'var(--park)' },
-  'auto-answer': { label: 'HUMAN WAIT', color: 'var(--park)' },
-  speed: { label: 'SPEED', color: 'var(--ink2)' },
-  'self-iteration': { label: 'SPEED', color: 'var(--ink2)' },
+  cost: { label: 'COST', color: 'var(--block)', btnCls: 'btnP' },
+  'kill-after-fails': { label: 'COST', color: 'var(--block)', btnCls: 'btnP' },
+  'human wait': { label: 'HUMAN WAIT', color: 'var(--park)', btnCls: 'btnA' },
+  'auto-answer': { label: 'HUMAN WAIT', color: 'var(--park)', btnCls: 'btnA' },
+  speed: { label: 'SPEED', color: 'var(--ink2)', btnCls: 'btnP' },
+  'self-iteration': { label: 'SPEED', color: 'var(--ink2)', btnCls: 'btnP' },
 };
 
 function kindTaxon(kind: string): KindTaxon {
-  return KIND_TAXONOMY[kind] ?? { label: kind.toUpperCase(), color: 'var(--ink3)' };
+  return KIND_TAXONOMY[kind] ?? { label: kind.toUpperCase(), color: 'var(--ink3)', btnCls: 'btnP' };
 }
 
 function RuleCard({ rule, onApply, onDismiss, onRestore, onUndo }: {
@@ -61,7 +65,7 @@ function RuleCard({ rule, onApply, onDismiss, onRestore, onUndo }: {
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, justifyContent: 'center' }}>
         {rule.status === 'open' ? (
           <>
-            <span className="btnP" style={{ padding: 11 }} onClick={() => onApply(rule.id)}>Apply rule →</span>
+            <span className={taxon.btnCls} style={{ padding: 11 }} onClick={() => onApply(rule.id)}>Apply rule →</span>
             <div style={{ display: 'flex', gap: 8 }}>
               <span className="btnS" style={{ flex: 1 }} onClick={() => setExpanded(true)}>Evidence</span>
               <span className="btnS" style={{ flex: 1 }} onClick={() => onDismiss(rule.id)}>Dismiss</span>
