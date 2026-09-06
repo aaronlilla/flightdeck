@@ -4,14 +4,31 @@ import type { Lane } from '../../shared/console-model.js';
 import type { Filter, Sort, TipSpec } from '../store.js';
 import { LaneTile } from './LaneTile.js';
 
-export function visibleLanes(lanes: Lane[], filter: Filter, sort: Sort): Lane[] {
+const FINISHED_STATES = new Set(['done', 'merged', 'killed']);
+
+function localMidnight(now: number): number {
+  const d = new Date(now);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+/** `today`'s cutoff only touches a lane that's actually finished; a running,
+ *  parked or otherwise still-live lane never disappears just for being old. */
+function finishedBeforeToday(lane: Lane, now: number): boolean {
+  if (!FINISHED_STATES.has(lane.state)) return false;
+  return (lane.endedAt ?? lane.since) < localMidnight(now);
+}
+
+export function visibleLanes(lanes: Lane[], filter: Filter, sort: Sort, now: number = Date.now()): Lane[] {
   let filtered = lanes;
   if (filter === 'needs-me') {
     filtered = lanes.filter((l) => l.state === 'parked' || l.state === 'blocked' || (l.state === 'running' && l.runaway));
   } else if (filter === 'running') {
     filtered = lanes.filter((l) => l.state === 'running' || l.state === 'handed-off');
   } else if (filter === 'finished') {
-    filtered = lanes.filter((l) => l.state === 'done' || l.state === 'merged' || l.state === 'killed');
+    filtered = lanes.filter((l) => FINISHED_STATES.has(l.state));
+  } else if (filter === 'today') {
+    filtered = lanes.filter((l) => !finishedBeforeToday(l, now));
   } else if (filter !== 'all') {
     filtered = lanes.filter((l) => l.repo === filter);
   }
@@ -36,7 +53,7 @@ export interface LanesGridProps {
 
 export function LanesGrid(props: LanesGridProps): JSX.Element {
   const { lanes, filter, sort, feedLive, now, onOpen, onOpenCost, onCommand, onTip } = props;
-  const shown = visibleLanes(lanes, filter, sort);
+  const shown = visibleLanes(lanes, filter, sort, now);
   return (
     <div
       className="scroll"

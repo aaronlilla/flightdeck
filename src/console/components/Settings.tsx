@@ -19,10 +19,18 @@ const STATUS_COLOR: Record<Integration['status'], string> = {
 };
 
 function ctaFor(i: Integration): string {
-  if (i.status === 'down') return i.fixLabel ?? 'Reconnect →';
+  if (i.status === 'down') return i.kind === 'mcp' ? 'Fix →' : (i.fixLabel ?? 'Reconnect →');
   if (i.status === 'degraded') return 'Restart';
   if (i.status === 'off') return 'Connect';
   return 'manage';
+}
+
+/** An MCP server runs over stdio, so a healthy row with no measured latency says so
+ *  instead of the generic "--" a connection with nothing to report would print. */
+function latencyDisplay(i: Integration): string {
+  if (i.latencyMs !== null) return `${i.latencyMs} ms`;
+  if (i.kind === 'mcp' && i.status === 'ok') return 'stdio';
+  return '--';
 }
 
 function Row({ i, onCheck, onReconnect }: { i: Integration; onCheck: (id: string) => void; onReconnect: (id: string) => void }): JSX.Element {
@@ -31,7 +39,7 @@ function Row({ i, onCheck, onReconnect }: { i: Integration; onCheck: (id: string
       <span className="led" style={{ background: STATUS_COLOR[i.status] }} />
       <b>{i.name}</b>
       <span style={{ color: 'var(--ink2)' }}>{i.desc}</span>
-      <span style={{ color: 'var(--ink2)' }}>{i.latencyMs !== null ? `${i.latencyMs} ms` : '--'}</span>
+      <span style={{ color: 'var(--ink2)' }}>{latencyDisplay(i)}</span>
       <span className={i.status === 'ok' ? 'stF' : 'stO'}>{i.status}</span>
       <span
         className="btnS" style={{ padding: '5px 10px', fontSize: '9.5px', justifySelf: 'end', textAlign: 'right' }}

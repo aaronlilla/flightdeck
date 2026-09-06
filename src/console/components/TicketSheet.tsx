@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 
 import * as api from '../api.js';
 import { HOP_NAMES } from '../../shared/console-model.js';
-import { capText, costClass, ctxPercent, laneCta, stateOf } from '../laneVM.js';
+import { capText, costClass, ctxPercent, laneCta, laneHeadline, stateOf } from '../laneVM.js';
 import { computeFreshness, freshnessClass, freshnessStamp } from '../freshness.js';
 import type { Lane, Message } from '../../shared/console-model.js';
 
@@ -31,11 +31,15 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
   }, [lane.id]);
 
   const st = stateOf(lane.state);
+  const headline = laneHeadline(lane);
   const cta = laneCta(lane);
   const pct = ctxPercent(lane);
   const fresh = computeFreshness(lane.verifiedAt, lane.observedAt, feedLive, now);
   const canPause = lane.state === 'running' || lane.state === 'handed-off';
   const canKill = lane.state === 'running' || lane.state === 'handed-off' || lane.state === 'parked';
+  // The run's own report (its reply cards) plus what the console did to it
+  // (receipt cards); the run thread on the right keeps every message type.
+  const journalItems = thread.filter((m) => m.type === 'reply' || m.type === 'receipt');
 
   return (
     <div className="plate" data-testid="ticket-sheet" style={{ width: 900, maxWidth: 'calc(100vw - 40px)', borderColor: 'var(--line2)' }}>
@@ -45,7 +49,14 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
       </div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 22px', borderBottom: '1px solid var(--line)', flexWrap: 'wrap', gap: '12px 20px' }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, whiteSpace: 'nowrap' }}>
-          <span className="m" style={{ fontSize: 22, fontWeight: 700 }}>{lane.id}</span>
+          <div>
+            <span className="m" style={{ fontSize: 22, fontWeight: 700 }}>{headline.main}</span>
+            {headline.sub ? (
+              <div className="m" title={headline.sub} style={{ fontSize: '10.5px', color: 'var(--ink3)', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {headline.sub}
+              </div>
+            ) : null}
+          </div>
           <span className="chip">{lane.model}</span>
           <span className="chip">{lane.repo}</span>
           <span className="chip">attempt {lane.attempt}</span>
@@ -93,7 +104,19 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
       <div style={{ display: 'flex', minHeight: 300, flexWrap: 'wrap' }}>
         <div style={{ width: 340, flex: '1 1 300px', borderRight: '1px solid var(--line)', padding: '16px 22px' }}>
           <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 10 }}>Journal</div>
-          {lane.reason ? <div className="m" style={{ fontSize: 11, color: 'var(--block)' }}>{lane.reason}</div> : null}
+          {journalItems.length === 0 ? (
+            <div className="m" style={{ fontSize: 11, color: 'var(--ink3)' }}>no report yet</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {journalItems.map((m) => (
+                <div key={m.k} className="m" style={{ fontSize: '10.5px', color: 'var(--ink2)' }}>
+                  {m.type === 'receipt' ? <span style={{ fontWeight: 700, color: 'var(--ink)' }}>{m.jid} </span> : null}
+                  {m.text}
+                </div>
+              ))}
+            </div>
+          )}
+          {lane.reason ? <div className="m" style={{ fontSize: 11, color: 'var(--block)', marginTop: 12 }}>{lane.reason}</div> : null}
           {lane.pr ? (
             <>
               <div className="lbl" style={{ color: 'var(--ink2)', margin: '16px 0 8px' }}>Draft output</div>

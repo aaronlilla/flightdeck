@@ -43,8 +43,8 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
-export function getLanes(): Promise<LanesResponse> {
-  return call<LanesResponse>('/lanes');
+export function getLanes(params?: { all?: boolean }): Promise<LanesResponse> {
+  return call<LanesResponse>(params?.all ? '/lanes?all=1' : '/lanes');
 }
 
 export function getThread(): Promise<ThreadResponse> {

@@ -2,9 +2,19 @@ import { expect, test } from '@playwright/test';
 
 test.describe.configure({ mode: 'serial' });
 
-test('the board renders all 13 lanes', async ({ page }) => {
+test('the board renders all 14 lanes', async ({ page }) => {
   await page.goto('/');
-  await expect(page.locator('[data-testid^="lane-"]')).toHaveCount(13);
+  await expect(page.locator('[data-testid^="lane-"]')).toHaveCount(14);
+});
+
+// POLISH-2 #1: a lane with a ticket heads with the ticket; the long run id beneath
+// it stays to one line, with the full id in the title attribute.
+test('a lane with a ticket heads with the ticket and truncates the long run id beneath it', async ({ page }) => {
+  await page.goto('/');
+  const tile = page.getByTestId('lane-jira_AB-12_1788460932645');
+  await expect(tile.getByText('AB-12', { exact: true })).toBeVisible();
+  const runId = tile.getByText('jira_AB-12_1788460932645');
+  await expect(runId).toHaveAttribute('title', 'jira_AB-12_1788460932645');
 });
 
 test('the needs-you strip shows the three sources: a down integration, a parked lane, an over-cap lane', async ({ page }) => {
@@ -72,6 +82,17 @@ test('the spend readout opens the fleet cost sheet', async ({ page }) => {
   const sheet = page.getByTestId('fleet-cost-sheet');
   await expect(sheet).toBeVisible();
   await expect(sheet.getByText('FLT-204')).toBeVisible();
+});
+
+// POLISH-2 #4: "today" defaults once the fleet passes 12 lanes; "all" refetches
+// with ?all=1.
+test('today is the default filter past 12 lanes, and all refetches with ?all=1', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByTestId('lane-FLT-201')).toBeVisible();
+  await expect(page.locator('.chipOn', { hasText: 'today' })).toBeVisible();
+  const allRequest = page.waitForRequest((req) => req.url().includes('/lanes?all=1'));
+  await page.locator('.chip', { hasText: /^all \d+$/ }).click();
+  await allRequest;
 });
 
 test('a dropped feed shows the disconnected banner and disables the composer', async ({ page }) => {

@@ -1,7 +1,7 @@
 import type { JSX, MouseEvent } from 'react';
 import { useEffect, useRef } from 'react';
 
-import { costClass, costTip, ctxPercent, ctxTip, laneCta, modelTip, stateOf, stepDisplay, tileCapText } from '../laneVM.js';
+import { costClass, costTip, ctxPercent, ctxTip, laneCta, laneHeadline, modelTip, stateOf, stepDisplay, tileCapText } from '../laneVM.js';
 import type { TipContent } from '../laneVM.js';
 import { computeFreshness, freshnessClass, freshnessStamp } from '../freshness.js';
 import type { Lane } from '../../shared/console-model.js';
@@ -22,6 +22,7 @@ export interface LaneTileProps {
 /** One board tile: id, model chip, state, step, context gauge, cost readout, freshness, one CTA. */
 export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, onTip }: LaneTileProps): JSX.Element {
   const st = stateOf(lane.state);
+  const headline = laneHeadline(lane);
   const cta = laneCta(lane);
   const pct = ctxPercent(lane);
   const fresh = computeFreshness(lane.verifiedAt, lane.observedAt, feedLive, now);
@@ -65,10 +66,22 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
           <span>◆ human needed</span>
         </div>
       ) : null}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
-        <a className="m" style={{ fontSize: 13, fontWeight: 700 }}>{lane.id}</a>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 6 }}>
+        <div style={{ minWidth: 0 }}>
+          <a className="m" style={{ fontSize: 13, fontWeight: 700 }}>{headline.main}</a>
+          {headline.sub ? (
+            <div
+              className="m"
+              title={headline.sub}
+              style={{ fontSize: 9, color: 'var(--ink3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+            >
+              {headline.sub}
+            </div>
+          ) : null}
+        </div>
         <span
           className="chip"
+          style={{ flex: 'none' }}
           onMouseEnter={(e) => showTip('model', e, modelTip(lane, fresh))}
           onMouseLeave={() => hideTip('model')}
         >

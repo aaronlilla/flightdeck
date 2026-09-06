@@ -9,11 +9,13 @@ export interface FiltersProps {
   sort: Sort;
   repos: string[];
   lanes: Lane[];
+  now: number;
   onFilter: (filter: Filter) => void;
   onSort: (sort: Sort) => void;
 }
 
 const BASE_FILTERS: { key: Filter; label: string }[] = [
+  { key: 'today', label: 'today' },
   { key: 'all', label: 'all' },
   { key: 'needs-me', label: 'needs me' },
   { key: 'running', label: 'running' },
@@ -26,13 +28,13 @@ const SORTS: { key: Sort; label: string }[] = [
   { key: 'state', label: 'state' },
 ];
 
-export function Filters({ filter, sort, repos, lanes, onFilter, onSort }: FiltersProps): JSX.Element {
+export function Filters({ filter, sort, repos, lanes, now, onFilter, onSort }: FiltersProps): JSX.Element {
   const chips = [...BASE_FILTERS, ...repos.map((r) => ({ key: r, label: r }))];
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 16px 0', flexWrap: 'wrap' }}>
       {chips.map((f) => (
         <span key={f.key} className={`chip chipB ${filter === f.key ? 'chipOn' : ''}`} onClick={() => onFilter(f.key)}>
-          {f.label} {visibleLanes(lanes, f.key, sort).length}
+          {f.label} {visibleLanes(lanes, f.key, sort, now).length}
         </span>
       ))}
       <span style={{ flex: 1 }} />

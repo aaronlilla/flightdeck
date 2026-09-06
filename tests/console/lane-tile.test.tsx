@@ -66,4 +66,19 @@ describe('LaneTile', () => {
     expect(screen.getByTestId('lane-FLT-1')).toHaveStyle({ opacity: 0.6 });
     expect(screen.getByText('$5.60')).toHaveClass('ws');
   });
+
+  // POLISH-2 #1: a ticket heads the tile, with the run id small beneath it, truncated to
+  // one line with the full id in the title attribute so a long jira-style id never wraps.
+  it('shows the run id as the headline when there is no ticket', () => {
+    render(<LaneTile lane={lane({ ticket: null, id: 'jira_AB-12_1788460932645' })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
+    expect(screen.getByText('jira_AB-12_1788460932645')).toBeInTheDocument();
+  });
+
+  it('heads with the ticket and keeps a long run id to one line with the full id in the title', () => {
+    render(<LaneTile lane={lane({ ticket: 'AB-12', id: 'jira_AB-12_1788460932645' })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
+    expect(screen.getByText('AB-12')).toBeInTheDocument();
+    const runIdLine = screen.getByText('jira_AB-12_1788460932645');
+    expect(runIdLine).toHaveAttribute('title', 'jira_AB-12_1788460932645');
+    expect(runIdLine).toHaveStyle({ whiteSpace: 'nowrap', textOverflow: 'ellipsis' });
+  });
 });
