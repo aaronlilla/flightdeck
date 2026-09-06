@@ -110,14 +110,47 @@ export function packetForRun(chain: Map<string, ChainPacketState>, run: string):
 
 /** Whether an `external.complete` row for a `jira-*` write names this run's own ticket,
  *  anywhere in the journal (the Jira handoff runs once, well after the run itself has
- *  finished, so it is never scoped to the run's own events). */
-function jiraWritesComplete(events: ForgeEvent[], ticket: string | null): boolean {
-  if (!ticket) return false;
-  return events.some((row) => (
-    row.event === 'external.complete'
-    && typeof row.kind === 'string' && row.kind.startsWith('jira-')
-    && row.ticket === ticket
-  ));
+ *  finished, so it is never scoped to the run's own events). O(1) against the index
+ *  `computeLanes` builds once per request rather than a fresh scan of every event per
+ *  lane -- see `jiraCompleteTickets` below. */
+function jiraWritesComplete(jiraCompleteTickets: Set<string>, ticket: string | null): boolean {
+  return Boolean(ticket) && jiraCompleteTickets.has(ticket!);
+}
+
+/** Every ticket a `jira-*` `external.complete` row names, built once per `computeLanes`
+ *  call. `jiraWritesComplete` used to `Array.some` the whole event log per lane, which
+ *  made a board with N lanes over M journal events cost O(N*M) on every `/lanes` poll --
+ *  at a few thousand lanes over a few hundred thousand events that is billions of
+ *  comparisons on a single request. One pass here turns every lane's lookup into a set
+ *  membership check. */
+function indexJiraCompleteTickets(events: ForgeEvent[]): Set<string> {
+  const tickets = new Set<string>();
+  for (const row of events) {
+    if (row.event === 'external.complete' && typeof row.kind === 'string' && row.kind.startsWith('jira-')
+      && typeof row.ticket === 'string') {
+      tickets.add(row.ticket);
+    }
+  }
+  return tickets;
+}
+
+/** Every event grouped by the run it belongs to, in the same order `fleet.events` holds
+ *  them. Built once per `computeLanes` call so `buildLane`'s "this chain link's own
+ *  events" read (`eventsByRun.get(terminal.key)`) is a map lookup instead of an
+ *  `Array.filter` over the whole journal -- the other half of the O(N*M) fix
+ *  `indexJiraCompleteTickets` describes above. */
+function indexEventsByRun(events: ForgeEvent[]): Map<string, ForgeEvent[]> {
+  const byRun = new Map<string, ForgeEvent[]>();
+  for (const row of events) {
+    if (!row.run) continue;
+    let bucket = byRun.get(row.run);
+    if (!bucket) {
+      bucket = [];
+      byRun.set(row.run, bucket);
+    }
+    bucket.push(row);
+  }
+  return byRun;
 }
 
 export interface HopInfo {
@@ -249,6 +282,10 @@ export interface LaneBuildInput {
   prFor: (run: string) => LanePr | null;
   attempt: number;
   usdPerHourValue: number;
+  /** `indexEventsByRun(fleet.events)`, built once per `computeLanes` call. */
+  eventsByRun: Map<string, ForgeEvent[]>;
+  /** `indexJiraCompleteTickets(fleet.events)`, built once per `computeLanes` call. */
+  jiraCompleteTickets: Set<string>;
 }
 
 function questionFor(id: string, openAsks: InboxEntry[]): LaneQuestion | null {
@@ -280,7 +317,7 @@ export function buildLane(input: LaneBuildInput): Lane {
   const links = chainLinks(fleet.runs, id);
   const terminal = links[links.length - 1]!;
   const runState = terminal.runState;
-  const runEvents = fleet.events.filter((row) => row.run === terminal.key);
+  const runEvents = input.eventsByRun.get(terminal.key) ?? [];
   const packet = packetForRun(chain, id);
 
   const { state, reason } = laneStateFor({ packet, lane, runState, runEvents });
@@ -335,7 +372,7 @@ export function buildLane(input: LaneBuildInput): Lane {
     ?? (meaningfulRunEvents.length ? textFor(meaningfulRunEvents[meaningfulRunEvents.length - 1]!) : '');
 
   const ticketForJira = ticket;
-  const jiraDone = jiraWritesComplete(fleet.events, ticketForJira);
+  const jiraDone = jiraWritesComplete(input.jiraCompleteTickets, ticketForJira);
   const { hop, hopStatus } = hopFor(packet, state, jiraDone);
 
   return {
@@ -415,6 +452,12 @@ export function spentTodayUsd(runs: FleetState['runs'], now: number): number {
 export function computeLanes(input: LanesInput, now: number): LanesResponse {
   const attempts = new Map<string, number>();
   let burnUsdPerMin = 0;
+  // Built once per call rather than once per lane: `buildLane` used to re-scan every
+  // event in the journal for each lane it built, which made this function O(lanes *
+  // events) -- fine at a handful of lanes, ruinous once a fleet has run long enough to
+  // carry a few thousand of either. See `indexEventsByRun`/`indexJiraCompleteTickets`.
+  const eventsByRun = indexEventsByRun(input.fleet.events);
+  const jiraCompleteTickets = indexJiraCompleteTickets(input.fleet.events);
   const lanes = input.laneRecords.map((lane) => {
     const attempt = (attempts.get(lane.column) ?? 0) + 1;
     attempts.set(lane.column, attempt);
@@ -424,7 +467,7 @@ export function computeLanes(input: LanesInput, now: number): LanesResponse {
       registryGet: input.registryGet,
       openAsks: input.openAsks, stuck: input.stuck, classFor: input.classFor,
       usdPerRun: input.usdPerRun, capOverride: input.capOverrides[lane.slug], prFor: input.prFor,
-      attempt, usdPerHourValue,
+      attempt, usdPerHourValue, eventsByRun, jiraCompleteTickets,
     });
     burnUsdPerMin += built.burnUsdPerMin;
     return built;

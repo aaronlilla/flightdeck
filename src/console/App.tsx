@@ -46,8 +46,17 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   const mounted = useRef(true);
   const stateRef = useRef(state);
   stateRef.current = state;
+  // Load-verify finding: the 5s poll and every `/events` frame both call `refresh`, with
+  // nothing stopping either from starting a second one while the first is still waiting
+  // on a slow `/lanes` (the response that a few thousand lanes over a few hundred
+  // thousand journal events makes slow in the first place). Left unguarded, that pile-up
+  // only compounds the load that caused it -- the fix is to skip a refresh outright
+  // while one is already in flight, never to queue it.
+  const refreshing = useRef(false);
 
   const refresh = useCallback(async () => {
+    if (refreshing.current) return;
+    refreshing.current = true;
     const startedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
     try {
       // Always the unwindowed `all=1` fetch: the server drops finished lanes older than
@@ -73,9 +82,12 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       dispatch({ type: 'proposals', proposals });
       dispatch({ type: 'feed-live' });
     } catch {
-      if (!mounted.current) return;
-      failCount.current += 1;
-      if (failCount.current >= 2) dispatch({ type: 'feed-lost', reason: 'the fleet server is unreachable' });
+      if (mounted.current) {
+        failCount.current += 1;
+        if (failCount.current >= 2) dispatch({ type: 'feed-lost', reason: 'the fleet server is unreachable' });
+      }
+    } finally {
+      refreshing.current = false;
     }
   }, []);
 
