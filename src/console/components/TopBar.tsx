@@ -1,0 +1,62 @@
+import type { JSX } from 'react';
+
+import { hm } from '../freshness.js';
+import type { Caps, Feed } from '../../shared/console-model.js';
+import type { View } from '../store.js';
+
+export interface TopBarProps {
+  view: View;
+  settingsBadge: number;
+  reviewBadge: number;
+  caps: Caps | null;
+  spentTodayUsd: number;
+  feed: Feed;
+  now: number;
+  theme: 'thD' | 'thL';
+  onNav: (view: View) => void;
+  onOpenPalette: () => void;
+  onOpenCost: () => void;
+  onToggleTheme: () => void;
+}
+
+/** Top nav: Board / Settings [n] / Flight review [n], ⌘K, spend today, feed stamp, clock, theme. */
+export function TopBar(props: TopBarProps): JSX.Element {
+  const { view, settingsBadge, reviewBadge, caps, spentTodayUsd, feed, now, theme, onNav, onOpenPalette, onOpenCost, onToggleTheme } = props;
+  const overDaily = caps ? spentTodayUsd > caps.dailyUsd : false;
+  return (
+    <div
+      style={{
+        display: 'flex', alignItems: 'center', gap: '14px 20px', padding: '10px 22px',
+        borderBottom: '1px solid var(--line)', background: 'var(--panel)', boxShadow: 'inset 0 1px 0 var(--hi)', flexWrap: 'wrap',
+      }}
+    >
+      <span className="m" style={{ fontSize: 14, fontWeight: 700, letterSpacing: 6 }}>FLIGHTDECK</span>
+      <div style={{ display: 'flex', gap: 16 }}>
+        <a className={`nav ${view === 'board' ? 'navOn' : ''}`} onClick={() => onNav('board')}>Board</a>
+        <a className={`nav ${view === 'settings' ? 'navOn' : ''}`} onClick={() => onNav('settings')}>
+          Settings <span style={{ color: 'var(--block)' }}>{settingsBadge > 0 ? settingsBadge : ''}</span>
+        </a>
+        <a className={`nav ${view === 'review' ? 'navOn' : ''}`} onClick={() => onNav('review')}>
+          Flight review <span style={{ color: 'var(--park)' }}>{reviewBadge > 0 ? reviewBadge : ''}</span>
+        </a>
+      </div>
+      <span style={{ flex: 1 }} />
+      <span className="m" style={{ fontSize: '10.5px', color: 'var(--ink3)', border: '1px solid var(--line2)', borderRadius: 3, padding: '4px 10px', cursor: 'pointer' }} onClick={onOpenPalette}>
+        ⌘K jump
+      </span>
+      <span className="lbl" style={{ color: 'var(--ink2)' }}>spend today</span>
+      <span
+        className={overDaily ? 'w2' : 'w0'}
+        style={{ fontSize: 14, padding: '2px 8px' }}
+        onClick={onOpenCost}
+      >
+        ${spentTodayUsd.toFixed(2)}{caps ? ` / $${caps.dailyUsd}` : ''}
+      </span>
+      <span className={feed.live ? 'stF' : 'stO'}>
+        {feed.live ? 'feed live' : `feed lost · observed ${feed.lostAt ? hm(feed.lostAt) : ''}`}
+      </span>
+      <span className="m" style={{ fontSize: 11, color: 'var(--ink2)', minWidth: 62 }}>{hm(now)}</span>
+      <span className="chip chipB" onClick={onToggleTheme}>{theme === 'thD' ? 'dark' : 'light'}</span>
+    </div>
+  );
+}

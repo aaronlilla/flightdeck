@@ -1,122 +1,88 @@
-import type { JSX, KeyboardEvent } from 'react';
-import { useState } from 'react';
+import type { JSX } from 'react';
 
-import { stateOf } from '../laneState.js';
-import type { LaneRecord } from '../types.js';
-import { Freshness } from './Freshness.js';
+import { capText, costClass, ctxPercent, laneCta, stateOf } from '../laneVM.js';
+import { computeFreshness, freshnessClass, freshnessStamp } from '../freshness.js';
+import type { Lane } from '../../shared/console-model.js';
+import type { TipSpec } from '../store.js';
 
 export interface LaneTileProps {
-  lane: LaneRecord;
-  now?: number;
-  disabledReason?: string;
-  onSend: (run: string, text: string) => Promise<void>;
-  onClear: (lane: string) => Promise<void>;
-  /** X3: opens the ticket sheet for this lane. Omitted in a context (a specimen,
-   *  a future embed) that has no sheet to open. */
-  onOpen?: (slug: string) => void;
+  lane: Lane;
+  feedLive: boolean;
+  now: number;
+  onOpen: (id: string) => void;
+  onOpenCost: (id: string) => void;
+  onCommand: (id: string, cmd: string) => void;
+  onTip: (tip: TipSpec | null) => void;
 }
 
-const CONTEXT_CEILING = 200_000;
-
-export function LaneTile({ lane, now, disabledReason, onSend, onClear, onOpen }: LaneTileProps): JSX.Element {
-  const state = stateOf(lane);
-  const contextPct = Math.min(100, Math.round((lane.context / CONTEXT_CEILING) * 100));
-  const [text, setText] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | undefined>(undefined);
-  const disabled = Boolean(disabledReason) || busy;
-
-  const send = async (): Promise<void> => {
-    if (!text.trim()) return;
-    setBusy(true);
-    setError(undefined);
-    try {
-      await onSend(lane.slug, text);
-      setText('');
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'that message did not go through');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const clear = async (): Promise<void> => {
-    setBusy(true);
-    setError(undefined);
-    try {
-      await onClear(lane.slug);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'clearing this lane did not go through');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const openSheet = (): void => onOpen?.(lane.slug);
+/** One board tile: id, model chip, state, step, context gauge, cost readout, freshness, one CTA. */
+export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, onTip }: LaneTileProps): JSX.Element {
+  const st = stateOf(lane.state);
+  const cta = laneCta(lane);
+  const pct = ctxPercent(lane);
+  const fresh = computeFreshness(lane.verifiedAt, lane.observedAt, feedLive, now);
+  const opacity = fresh.verified ? 1 : 0.6;
 
   return (
-    <article
-      className="lane-tile"
-      data-lane={lane.slug}
-      {...(onOpen ? {
-        role: 'button',
-        tabIndex: 0,
-        onClick: openSheet,
-        onKeyDown: (event: KeyboardEvent) => {
-          if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openSheet(); }
-        },
-      } : {})}
+    <div
+      className="lane"
+      data-testid={`lane-${lane.id}`}
+      data-state={lane.state}
+      style={{ borderColor: lane.state === 'parked' ? 'var(--park)' : undefined, opacity }}
+      onClick={() => onOpen(lane.id)}
     >
-      <div className="lane-tile__head">
-        <div>
-          <p className="lane-tile__slug">{lane.slug}</p>
-          {lane.goal ? <p className="lane-tile__goal">{lane.goal}</p> : null}
-        </div>
-        <span className={`pill pill--state-${state}`}>{state}</span>
-      </div>
-
-      <div className="lane-tile__row">
-        <span>{lane.className ?? 'unknown class'} · {lane.model ?? 'model unknown'}</span>
-        <span>${lane.usd_per_hour.toFixed(2)}/h</span>
-      </div>
-
-      <div>
-        <div className="context-bar" role="img" aria-label={`context ${contextPct}%`}>
-          <div className="context-bar__fill" style={{ width: `${contextPct}%` }} />
-        </div>
-      </div>
-
-      <div className="lane-tile__row">
-        <span>{lane.current_tool ? `running ${lane.current_tool.name}` : `idle ${lane.last_event_age_s}s`}</span>
-        <Freshness verifiedAt={lane.verified_at} now={now} />
-      </div>
-
-      <div className="inbox-card__free-text" onClick={(event) => event.stopPropagation()}>
-        <input
-          type="text"
-          value={text}
-          onChange={(event) => setText(event.target.value)}
-          placeholder="Send to this run"
-          aria-label={`send a message to ${lane.slug}`}
-          disabled={disabled}
-        />
-        <button type="button" className="btn" disabled={disabled || !text.trim()} onClick={() => void send()}>
-          Send
-        </button>
-      </div>
-
-      {lane.needs_aaron ? (
-        <button
-          type="button"
-          className="btn btn--primary"
-          disabled={disabled}
-          onClick={(event) => { event.stopPropagation(); void clear(); }}
+      {lane.state === 'parked' ? (
+        <div
+          className="lbl"
+          style={{ margin: '-12px -13px 2px', background: 'var(--park)', color: 'var(--aInk)', padding: '5px 13px', display: 'flex', justifyContent: 'space-between', borderRadius: '3px 3px 0 0' }}
         >
-          Clear
-        </button>
+          <span>◆ human needed</span>
+        </div>
       ) : null}
-
-      {error ? <p className="inbox-card__error">{error}</p> : null}
-    </article>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
+        <a className="m" style={{ fontSize: 13, fontWeight: 700 }}>{lane.id}</a>
+        <span
+          className="chip"
+          onMouseEnter={(e) => onTip({ x: e.clientX + 12, y: e.clientY + 12, head: lane.model, body: `Model id ${lane.modelId ?? lane.model}`, click: '' })}
+          onMouseLeave={() => onTip(null)}
+        >
+          {lane.model}
+        </span>
+      </div>
+      <div className="lbl" style={{ color: st.color, cursor: 'help' }}>{st.glyph} {st.label}</div>
+      <div style={{ font: '12.5px/1.45 "IBM Plex Sans",sans-serif', color: 'var(--ink2)', minHeight: 38 }}>
+        {lane.stepText}
+      </div>
+      <div style={{ cursor: 'help' }}>
+        <div style={{ position: 'relative', height: 8, background: 'var(--well)', borderRadius: 2, boxShadow: 'inset 0 1px 3px rgba(0,0,0,.6)', borderRight: '3px solid var(--block)' }}>
+          <div style={{ position: 'absolute', top: 1, bottom: 1, left: 1, width: `${pct}%`, background: `repeating-linear-gradient(90deg, ${st.color} 0 5px, transparent 5px 7px)` }} />
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, whiteSpace: 'nowrap' }}>
+          <span className="m" style={{ fontSize: '9.5px', color: 'var(--ink2)' }}>context {pct}%</span>
+          <span className="m" style={{ fontSize: '9.5px', color: 'var(--ink3)' }}>ceiling {Math.round(lane.ctxCeiling / 1000)}k</span>
+        </div>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+        <span
+          className={costClass(lane)}
+          onClick={(e) => { e.stopPropagation(); onOpenCost(lane.id); }}
+        >
+          ${lane.costUsd.toFixed(2)}
+        </span>
+        <span className="m" style={{ fontSize: '9.5px', fontWeight: 700, color: 'var(--block)', whiteSpace: 'nowrap' }}>
+          {capText(lane)}
+        </span>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 7, borderTop: '1px solid var(--line)', paddingTop: 7 }}>
+        <span className={freshnessClass(fresh)} style={{ alignSelf: 'flex-start' }}>{freshnessStamp(fresh)}</span>
+        <span
+          className={cta.cls}
+          style={{ padding: '7px 9px', fontSize: '9.5px', width: '100%' }}
+          onClick={(e) => { e.stopPropagation(); onCommand(lane.id, cta.cmd); }}
+        >
+          {cta.label}
+        </span>
+      </div>
+    </div>
   );
 }
