@@ -86,9 +86,13 @@ export interface Lane {
   ctxTokens: number;
   ctxCeiling: number;
   ctxCompactAt: number;
-  costUsd: number;
-  capUsd: number | null;
-  burnUsdPerMin: number;
+  /** Real, cumulative token usage for this run (every model call: input + output +
+   *  cache read + cache write), never a dollar figure -- this fleet runs on a flat
+   *  subscription, so no dollar is ever actually spent, and a `$` readout here would
+   *  be fiction wearing a number's shape. */
+  tokens: number;
+  tokenCap: number | null;
+  tokensPerMin: number;
   fails: number;
   hop: Hop;
   hopStatus: 'live' | 'done' | 'blocked';
@@ -122,9 +126,9 @@ export interface Feed {
 export interface LanesResponse {
   at: number;
   lanes: Lane[];
-  /** Total spend since local midnight, and the burn of everything running now. */
-  spentTodayUsd: number;
-  burnUsdPerMin: number;
+  /** Total tokens burned since local midnight, and the burn of everything running now. */
+  tokensToday: number;
+  tokensPerMin: number;
 }
 
 export type MessageType =
@@ -240,18 +244,23 @@ export interface ReconnectResponse {
 }
 
 export interface Caps {
-  dailyUsd: number;
-  runUsd: number;
-  hardUsd: number;
+  /** Every field here is a token count, not a dollar figure -- this fleet runs on a
+   *  flat subscription, so a `$` cap here was always fiction wearing a number's shape.
+   *  Unset (no console override, and nothing this file can honestly derive from the
+   *  policy's own dollar-denominated defaults) reads as `Infinity`, never a guessed
+   *  token figure. */
+  dailyTokens: number;
+  runTokens: number;
+  hardTokens: number;
   enforcement: 'on' | 'off';
-  spentTodayUsd: number;
+  tokensToday: number;
   /** Per-run overrides the operator set from the console. */
   overrides: Record<string, number>;
   /** Where each top-level figure came from: `console` once the operator has set it from
-   *  here (`~/.forge/console/caps.json`), `policy` while it is still whatever
-   *  `model-policy.json` says (or, for `hardUsd` with neither set, 5x the effective
-   *  daily cap). Lets the caps sheet say which numbers are actually theirs to change. */
-  sources: Record<'dailyUsd' | 'runUsd' | 'hardUsd', 'policy' | 'console'>;
+   *  here (`~/.forge/console/caps.json`), `policy` while none has been set (for
+   *  `hardTokens` with neither set, 5x the effective daily cap). Lets the caps sheet say
+   *  which numbers are actually theirs to change. */
+  sources: Record<'dailyTokens' | 'runTokens' | 'hardTokens', 'policy' | 'console'>;
 }
 
 export interface Rule {
@@ -272,8 +281,10 @@ export interface Rule {
 export interface ReviewMetrics {
   mergedToday: number;
   humanWaitMin: number;
-  costPerMergeUsd: number | null;
-  wastedUsd: number;
+  tokensPerMerge: number | null;
+  /** Tokens spent on runs whose last state today is killed, blocked or exhausted --
+   *  never a dollar figure. */
+  tokensWasted: number;
 }
 
 export interface ProposalsResponse {
@@ -308,13 +319,16 @@ export interface RunThreadResponse {
   messages: Message[];
 }
 
-/** One row of the cost sheet's "by step" table: what one turn cost, in real usage. */
+/** One row of the cost sheet's "by step" table: what one turn actually used, straight
+ *  off the journal's own usage rows -- no list-price multiplication. */
 export interface CostStep {
   t: number;
   stepText: string;
   inputTokens: number;
   outputTokens: number;
-  costUsd: number;
+  /** `inputTokens + outputTokens` plus this turn's cache read/write, when either is
+   *  billed under a raw token count rather than a dollar amount. */
+  tokens: number;
 }
 
 export interface RunCostResponse {
@@ -365,8 +379,8 @@ export interface RunJournalResponse {
  *   POST /run/:id/reopen    {}           ActionResult
  *   POST /run/:id/compact   {}           ActionResult   hand off at the ceiling, resume successor
  *   POST /run/:id/verify    {}           ActionResult   runs the gate without merge
- *   POST /run/:id/cap       {capUsd}     ActionResult   undoable
- *   POST /caps              {dailyUsd?, runUsd?}  Caps | 422 {error, hardUsd}   undoable
+ *   POST /run/:id/cap       {tokenCap}   ActionResult   undoable
+ *   POST /caps              {dailyTokens?, runTokens?}  Caps | 422 {error, hardTokens}   undoable
  *   POST /command           {text}       CommandResponse
  *   POST /integrations/:id/check         IntegrationsResponse
  *   POST /integrations/:id/reconnect     ReconnectResponse
