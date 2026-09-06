@@ -27,6 +27,18 @@ test('the needs-you strip shows the three sources: a down integration, a parked 
   await expect(strip.getByText('BBZ-118').first()).toBeVisible();
 });
 
+// Final fidelity sweep #3: the prototype's needs-you strip is one row of shrinking
+// plates at 1440, never a third plate wrapping onto a second full-width row.
+test('the needs-you strip keeps all three plates on one row at 1440', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/');
+  const strip = page.getByText('Needs you').locator('../..');
+  const plates = strip.locator('.plate');
+  await expect(plates).toHaveCount(3);
+  const boxes = await plates.evaluateAll((els) => els.map((el) => el.getBoundingClientRect().top));
+  expect(new Set(boxes.map((top) => Math.round(top))).size).toBe(1);
+});
+
 test('command palette opens on cmd/ctrl+K and closes on Escape', async ({ page }) => {
   await page.goto('/');
   await page.keyboard.press('Control+k');
