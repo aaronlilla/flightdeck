@@ -79,6 +79,10 @@ beforeEach(async () => {
       response.end(JSON.stringify({ rules: [], metrics: { mergedToday: 0, humanWaitMin: 0, costPerMergeUsd: null, wastedUsd: 0 }, computedAt: Date.now() }));
       return;
     }
+    if (url.pathname === '/queue') {
+      response.end(JSON.stringify({ items: [], paused: false, maxInFlight: 2 }));
+      return;
+    }
     response.statusCode = 404;
     response.end('{}');
   });
