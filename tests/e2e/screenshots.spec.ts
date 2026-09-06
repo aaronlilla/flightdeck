@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 
 const SIZES: { name: string; width: number; height: number }[] = [
   { name: '1440x900', width: 1440, height: 900 },
+  { name: '900x900', width: 900, height: 900 },
   { name: '720x900', width: 720, height: 900 },
 ];
 
