@@ -37,6 +37,9 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
   const fresh = computeFreshness(lane.verifiedAt, lane.observedAt, feedLive, now);
   const canPause = lane.state === 'running' || lane.state === 'handed-off';
   const canKill = lane.state === 'running' || lane.state === 'handed-off' || lane.state === 'parked';
+  // The run's own report (its reply cards) plus what the console did to it
+  // (receipt cards); the run thread on the right keeps every message type.
+  const journalItems = thread.filter((m) => m.type === 'reply' || m.type === 'receipt');
 
   return (
     <div className="plate" data-testid="ticket-sheet" style={{ width: 900, maxWidth: 'calc(100vw - 40px)', borderColor: 'var(--line2)' }}>
@@ -101,7 +104,19 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
       <div style={{ display: 'flex', minHeight: 300, flexWrap: 'wrap' }}>
         <div style={{ width: 340, flex: '1 1 300px', borderRight: '1px solid var(--line)', padding: '16px 22px' }}>
           <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 10 }}>Journal</div>
-          {lane.reason ? <div className="m" style={{ fontSize: 11, color: 'var(--block)' }}>{lane.reason}</div> : null}
+          {journalItems.length === 0 ? (
+            <div className="m" style={{ fontSize: 11, color: 'var(--ink3)' }}>no report yet</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {journalItems.map((m) => (
+                <div key={m.k} className="m" style={{ fontSize: '10.5px', color: 'var(--ink2)' }}>
+                  {m.type === 'receipt' ? <span style={{ fontWeight: 700, color: 'var(--ink)' }}>{m.jid} </span> : null}
+                  {m.text}
+                </div>
+              ))}
+            </div>
+          )}
+          {lane.reason ? <div className="m" style={{ fontSize: 11, color: 'var(--block)', marginTop: 12 }}>{lane.reason}</div> : null}
           {lane.pr ? (
             <>
               <div className="lbl" style={{ color: 'var(--ink2)', margin: '16px 0 8px' }}>Draft output</div>
