@@ -64,6 +64,14 @@ describe('App', () => {
     await waitFor(() => expect(screen.getByTestId('rail-thread').textContent).toMatch(/resumed/));
   });
 
+  it('answering a question from the board never echoes a fake operator bubble', async () => {
+    render(<App eventStreamOptions={{ WebSocketImpl: FakeSocket as unknown as typeof WebSocket }} />);
+    await waitFor(() => expect(screen.getByText('NOT NULL')).toBeInTheDocument());
+    await userEvent.click(screen.getByText('NOT NULL'));
+    await waitFor(() => expect(screen.getByTestId('rail-thread').textContent).toMatch(/resumed/));
+    expect(screen.getByTestId('rail-thread').textContent).not.toMatch(/answer .*NOT NULL/i);
+  });
+
   it('requires a confirm card before a kill goes through', async () => {
     render(<App eventStreamOptions={{ WebSocketImpl: FakeSocket as unknown as typeof WebSocket }} />);
     await waitFor(() => expect(screen.getByTestId('lane-FLT-204')).toBeInTheDocument());

@@ -176,7 +176,12 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     setPendingConfirm(null);
   }, [state.thread, pendingConfirm, runAction]);
 
-  const onRailSend = useCallback((text: string) => {
+  // The prototype's own `handle(text)` -- confirm/decline resolution, else a
+  // POST /command round trip -- runs identically whether the text was typed into
+  // the composer or produced by a button/chip. Only the operator-bubble echo
+  // differs by call site (`send()` vs. a direct method call), so that split lives
+  // one level up in onRailSend/onRailCommand rather than here.
+  const processCommand = useCallback((text: string) => {
     const trimmed = text.trim();
     if (!trimmed) return;
     if (pendingConfirm && trimmed.startsWith('confirm ')) { resolveConfirm(pendingConfirm.k, true); return; }
@@ -185,10 +190,6 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     const declineMatch = trimmed.match(/^decline (.+)$/);
     if (confirmMatch) { resolveConfirm(confirmMatch[1] as string, true); return; }
     if (declineMatch) { resolveConfirm(declineMatch[1] as string, false); return; }
-    dispatch({
-      type: 'thread-append',
-      messages: [{ k: `op-${Date.now()}-${Math.random()}`, type: 'operator', text: trimmed, ts: Date.now(), source: 'operator' }],
-    });
     void (async () => {
       try {
         const response = await api.sendCommand(trimmed);
@@ -200,7 +201,27 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     })();
   }, [pendingConfirm, resolveConfirm, appendReceipt, refresh]);
 
+  // Typed composer text (and the rail's quick-command chips, which the prototype
+  // also routes through `send()`) echoes an operator bubble before processing.
+  const onRailSend = useCallback((text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    dispatch({
+      type: 'thread-append',
+      messages: [{ k: `op-${Date.now()}-${Math.random()}`, type: 'operator', text: trimmed, ts: Date.now(), source: 'operator' }],
+    });
+    processCommand(trimmed);
+  }, [processCommand]);
+
+  // Reply/plan/confirm/question buttons in the rail: the prototype wires these
+  // straight to a method call, never to `send()`, so no fake operator bubble.
+  const onRailCommand = useCallback((text: string) => { processCommand(text); }, [processCommand]);
+
   const onUndo = useCallback((jid: string) => { void runAction(() => api.undoJournal(jid)); }, [runAction]);
+
+  const onOpenJournal = useCallback((jid: string) => {
+    dispatch({ type: 'sheet', sheet: { type: 'journal', run: jid } });
+  }, []);
 
   const sheet = state.sheet;
   const sheetLane = sheet && sheet.type !== 'journal' && sheet.type !== 'fleet-cost'
@@ -240,6 +261,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     state.paletteQuery, state.lanes, state.journal,
     (id) => dispatch({ type: 'sheet', sheet: { type: 'ticket', id } }),
     (view) => dispatch({ type: 'view', view }),
+    onOpenJournal,
   );
 
   const repos = [...new Set(state.lanes.map((l) => l.repo).filter((r): r is string => Boolean(r)))];
@@ -281,7 +303,9 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
               thread={state.thread} feed={state.feed} now={state.now} composer={state.composer}
               onComposerChange={(text) => dispatch({ type: 'composer', text })}
               onSend={onRailSend}
+              onCommand={onRailCommand}
               onUndo={onUndo}
+              onOpenJournal={onOpenJournal}
             />
           </div>
         ) : null}
