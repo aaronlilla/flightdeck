@@ -3,7 +3,7 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
-import { collapseReplies, ConductorRail, QUICK_COMMANDS } from '../../src/console/components/ConductorRail.js';
+import { ConductorRail, QUICK_COMMANDS } from '../../src/console/components/ConductorRail.js';
 import type { Feed, Message } from '../../src/shared/console-model.js';
 
 const feedUp: Feed = { live: true, lostAt: null, reason: null, retryInS: null, lastHeartbeatAt: Date.now() };
@@ -136,9 +136,9 @@ describe('ConductorRail', () => {
   });
 
   describe('freshness fallback', () => {
-    it('shows an observed/verified stamp on a receipt even without an explicit verifiedAt', () => {
+    it('shows a compact ✓/obs stamp on a receipt even without an explicit verifiedAt', () => {
       renderRail([{ k: 'r1', type: 'receipt', text: 'paused FLT-187', ts: Date.now() - 3000, source: 'console', jid: 'J-1', undoable: false }]);
-      expect(screen.getByText(/verified|observed/)).toBeInTheDocument();
+      expect(screen.getByText(/^✓ |^obs /)).toBeInTheDocument();
     });
   });
 
@@ -151,53 +151,22 @@ describe('ConductorRail', () => {
     });
   });
 
-  // POLISH-2 #5: a run of identical consecutive conductor replies collapses into one card.
-  describe('collapseReplies', () => {
-    it('collapses three identical consecutive replies into one card with the count', () => {
-      const reply = (k: string): Message => ({ k, type: 'reply', text: 'still working', ts: 1, source: 'conductor' });
-      const out = collapseReplies([reply('a'), reply('b'), reply('c')]);
-      expect(out).toHaveLength(1);
-      expect(out[0]?.collapsedCount).toBe(3);
-    });
-
-    it('does not collapse replies with different text, or across a different message type', () => {
-      const thread: Message[] = [
-        { k: 'a', type: 'reply', text: 'still working', ts: 1, source: 'conductor' },
-        { k: 'b', type: 'event', text: 'heartbeat', ts: 2, source: 'system' },
-        { k: 'c', type: 'reply', text: 'still working', ts: 3, source: 'conductor' },
-        { k: 'd', type: 'reply', text: 'done', ts: 4, source: 'conductor' },
-      ];
-      expect(collapseReplies(thread)).toHaveLength(4);
-    });
-
-    it('renders the ×N suffix on a collapsed reply card', () => {
+  // Final fidelity sweep #2: the prototype never collapses repeated replies and
+  // never caps the thread behind a "show earlier" link -- every message renders,
+  // in order, exactly as it arrived.
+  describe('full thread rendering', () => {
+    it('renders every reply on its own, even three identical ones in a row', () => {
       const reply = (k: string): Message => ({ k, type: 'reply', text: 'still working', ts: 1, source: 'conductor' });
       renderRail([reply('a'), reply('b'), reply('c')]);
-      expect(screen.getByText(/still working ×3/)).toBeInTheDocument();
-    });
-  });
-
-  // POLISH-2 #5: never render more than the last 200 messages; older ones sit behind "show earlier".
-  describe('the 200-message cap', () => {
-    function longThread(n: number): Message[] {
-      return Array.from({ length: n }, (_, i) => ({ k: `m${i}`, type: 'event', text: `event ${i}`, ts: i, source: 'system' }));
-    }
-
-    it('shows only the last 200 messages by default, with a show earlier link', () => {
-      renderRail(longThread(210));
-      expect(screen.queryByText('event 0')).not.toBeInTheDocument();
-      expect(screen.getByText('event 209')).toBeInTheDocument();
-      expect(screen.getByText(/show earlier/)).toBeInTheDocument();
+      expect(screen.getAllByText('still working')).toHaveLength(3);
+      expect(screen.queryByText(/still working ×/)).not.toBeInTheDocument();
     });
 
-    it('reveals the earlier messages once show earlier is clicked', async () => {
-      renderRail(longThread(210));
-      await userEvent.click(screen.getByText(/show earlier/));
+    it('renders more than 200 messages with no show earlier link and no cap', () => {
+      const longThread: Message[] = Array.from({ length: 210 }, (_, i) => ({ k: `m${i}`, type: 'event', text: `event ${i}`, ts: i, source: 'system' }));
+      renderRail(longThread);
       expect(screen.getByText('event 0')).toBeInTheDocument();
-    });
-
-    it('shows no show earlier link at or under 200 messages', () => {
-      renderRail(longThread(200));
+      expect(screen.getByText('event 209')).toBeInTheDocument();
       expect(screen.queryByText(/show earlier/)).not.toBeInTheDocument();
     });
   });

@@ -51,13 +51,23 @@ export function ago(ms: number): string {
   return `${Math.floor(ms / 3_600_000)}h`;
 }
 
-/** `✓ verified Ns ago` / `observed hh:mm`, exactly the two forms the HANDOFF names. */
+/** `✓ verified Ns ago` / `observed hh:mm`, exactly the two forms the HANDOFF names.
+ *  This is the tile and ticket-sheet-band form -- the prototype's own `stamp(l)`. */
 export function freshnessStamp(f: Freshness): string {
   if (f.verified) {
     const seconds = Math.round(f.ageMs / 1000);
     return `✓ verified ${seconds}s ago`;
   }
   return `observed ${hm(f.at)}`;
+}
+
+/** The rail chip / card corner form the prototype's own `msgVM` builds for every
+ *  event, receipt and question card: `✓ Ns`/`✓ Nm`/`✓ Nh` while verified, `obs hh:mm`
+ *  once it isn't -- shorter than `freshnessStamp`'s tile form and missing the word
+ *  "verified" on purpose. */
+export function compactFreshnessStamp(f: Freshness): string {
+  if (f.verified) return `✓ ${ago(f.ageMs)}`;
+  return `obs ${hm(f.at)}`;
 }
 
 export function freshnessClass(f: Freshness): 'stF' | 'stO' {

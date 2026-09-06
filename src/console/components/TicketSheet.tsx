@@ -6,7 +6,6 @@ import { HOP_NAMES } from '../../shared/console-model.js';
 import { costClass, ctxPercent, laneCta, laneHeadline, stateOf } from '../laneVM.js';
 import { computeFreshness, freshnessClass, freshnessStamp, hm } from '../freshness.js';
 import { MessageCard } from './ConductorRail.js';
-import type { CollapsedMessage } from './ConductorRail.js';
 import type { JournalNarrativeEntry, Lane, Message } from '../../shared/console-model.js';
 
 export interface TicketSheetProps {
@@ -206,7 +205,7 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
           <div className="lbl" style={{ color: 'var(--ink2)' }}>Run thread — {lane.id} only</div>
           {thread.map((m) => (
             <MessageCard
-              key={m.k} message={m as CollapsedMessage} feedLive={feedLive} now={now}
+              key={m.k} message={m} feedLive={feedLive} now={now}
               onCommand={(text) => onCommand(lane.id, text)} onUndo={onUndo}
               onOpenJournal={onOpenJournal}
             />

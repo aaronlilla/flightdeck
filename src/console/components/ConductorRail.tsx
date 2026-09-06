@@ -1,7 +1,7 @@
 import type { JSX } from 'react';
 import { useState } from 'react';
 
-import { computeFreshness, freshnessClass, freshnessStamp, hm } from '../freshness.js';
+import { computeFreshness, compactFreshnessStamp, freshnessClass, hm } from '../freshness.js';
 import type { Feed, Message } from '../../shared/console-model.js';
 
 /** Chip label paired with the command it actually sends. The prototype's own
@@ -14,35 +14,12 @@ export const QUICK_COMMANDS: [label: string, command: string][] = [
   ['spend today', 'spend today'],
   ['merge ready lanes', 'merge ready lanes'],
 ];
-const MAX_VISIBLE_MESSAGES = 200;
-
-export interface CollapsedMessage extends Message {
-  /** Set once a run of identical consecutive conductor replies collapses into one card. */
-  collapsedCount?: number;
-}
-
-/** A run of identical consecutive `reply` cards from the conductor becomes one card
- *  with a `×N` count -- every other message type, and any reply that differs from
- *  its predecessor, passes through untouched. */
-export function collapseReplies(thread: Message[]): CollapsedMessage[] {
-  const out: CollapsedMessage[] = [];
-  for (const m of thread) {
-    const prev = out[out.length - 1];
-    if (m.type === 'reply' && prev?.type === 'reply' && prev.text === m.text && prev.source === m.source) {
-      prev.collapsedCount = (prev.collapsedCount ?? 1) + 1;
-      continue;
-    }
-    out.push({ ...m });
-  }
-  return out;
-}
-
 /** Exported so a lane-scoped thread (the ticket sheet) can render each message
  *  with the exact same per-type card the Conductor rail uses, rather than a
  *  second, drifting copy of this switch. */
 export function MessageCard({
   message, feedLive, now, onCommand, onUndo, onOpenJournal,
-}: { message: CollapsedMessage; feedLive: boolean; now: number; onCommand: (text: string) => void; onUndo: (jid: string) => void; onOpenJournal: (jid: string) => void }): JSX.Element {
+}: { message: Message; feedLive: boolean; now: number; onCommand: (text: string) => void; onUndo: (jid: string) => void; onOpenJournal: (jid: string) => void }): JSX.Element {
   const [free, setFree] = useState('');
   const [showTip, setShowTip] = useState(false);
   // Every message carries a stamp: verifiedAt falls back to the message's own
@@ -55,7 +32,7 @@ export function MessageCard({
       return (
         <div style={{ alignSelf: 'center', display: 'flex', alignItems: 'center', gap: 7 }}>
           <span className="chip" style={{ borderColor: 'var(--ink2)', color: 'var(--ink2)' }}>{message.text}</span>
-          <span className={freshnessClass(fresh)}>{freshnessStamp(fresh)}</span>
+          <span className={freshnessClass(fresh)}>{compactFreshnessStamp(fresh)}</span>
         </div>
       );
     case 'operator':
@@ -69,7 +46,7 @@ export function MessageCard({
         <div style={{ maxWidth: '92%' }}>
           <div className="lbl" style={{ color: 'var(--ink3)', marginBottom: 3 }}>Conductor</div>
           <div style={{ borderLeft: '2px solid var(--line2)', paddingLeft: 10, font: '13px/1.5 "IBM Plex Sans",sans-serif' }}>
-            {message.text}{message.collapsedCount && message.collapsedCount > 1 ? ` ×${message.collapsedCount}` : ''}
+            {message.text}
           </div>
           {message.btns && message.btns.length > 0 ? (
             <div style={{ display: 'flex', gap: 6, margin: '8px 0 0 12px', flexWrap: 'wrap' }}>
@@ -118,7 +95,7 @@ export function MessageCard({
           ) : null}
           <span>{message.text}</span>
           {message.undoable && !message.undone && message.jid ? <a style={{ fontWeight: 600 }} onClick={() => onUndo(message.jid as string)}>undo</a> : null}
-          <span className={freshnessClass(fresh)}>{freshnessStamp(fresh)}</span>
+          <span className={freshnessClass(fresh)}>{compactFreshnessStamp(fresh)}</span>
         </div>
       );
     case 'plan':
@@ -177,7 +154,7 @@ export function MessageCard({
         <div style={{ border: '1px solid var(--hand)', borderRadius: 4, maxWidth: '94%' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 12px', borderBottom: '1px solid var(--line)' }}>
             <span className="lbl" style={{ color: 'var(--hand)' }}>Question · from {message.source}</span>
-            <span className={freshnessClass(fresh)}>{freshnessStamp(fresh)}</span>
+            <span className={freshnessClass(fresh)}>{compactFreshnessStamp(fresh)}</span>
           </div>
           <div style={{ padding: '10px 12px', font: '13px/1.5 "IBM Plex Sans",sans-serif' }}>{message.text}</div>
           {message.answer === undefined ? (
@@ -239,15 +216,11 @@ export interface ConductorRailProps {
 /** Right rail, single thread; composer disabled with a reason banner when the feed is down. */
 export function ConductorRail(props: ConductorRailProps): JSX.Element {
   const { thread, feed, now, composer, onComposerChange, onSend, onCommand, onUndo, onOpenJournal } = props;
-  const [showEarlier, setShowEarlier] = useState(false);
   const pending = thread.filter((m) => (
     (m.type === 'question' && m.answer === undefined)
     || (m.type === 'confirm' && m.resolved === undefined)
     || (m.type === 'plan' && m.resolved === undefined)
   )).length;
-  const collapsed = collapseReplies(thread);
-  const hiddenCount = Math.max(0, collapsed.length - MAX_VISIBLE_MESSAGES);
-  const visible = showEarlier || hiddenCount === 0 ? collapsed : collapsed.slice(-MAX_VISIBLE_MESSAGES);
   return (
     <div style={{ width: 'clamp(300px,30vw,390px)', flex: 'none', borderLeft: '2px solid var(--line2)', display: 'flex', flexDirection: 'column', background: 'var(--panel)', minHeight: 0 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid var(--line)' }}>
@@ -255,12 +228,7 @@ export function ConductorRail(props: ConductorRailProps): JSX.Element {
         <span className="m" style={{ fontSize: 10, fontWeight: 700, color: 'var(--block)' }}>{pending > 0 ? `${pending} waiting ↓` : ''}</span>
       </div>
       <div className="scroll" data-testid="rail-thread" style={{ flex: 1, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12, opacity: feed.live ? 1 : 0.6 }}>
-        {hiddenCount > 0 && !showEarlier ? (
-          <a className="m" style={{ alignSelf: 'center', fontSize: '10.5px', color: 'var(--ink3)' }} onClick={() => setShowEarlier(true)}>
-            show earlier ({hiddenCount})
-          </a>
-        ) : null}
-        {visible.map((m) => (
+        {thread.map((m) => (
           <MessageCard key={m.k} message={m} feedLive={feed.live} now={now} onCommand={onCommand} onUndo={onUndo} onOpenJournal={onOpenJournal} />
         ))}
       </div>
