@@ -141,6 +141,7 @@ export function seedLanes(): Lane[] {
     // uses, and whose ticket differs from its id -- POLISH-2 #1's headline rule.
     lane({
       id: 'jira_AB-12_1788460932645', ticket: 'AB-12', state: 'running', heart: true, hop: 2, hopStatus: 'live',
+      repo: 'flightdeck-rn',
       stepN: 2, stepTotal: 6, stepText: 'wiring the webhook retry',
       ctxTokens: 30_000, costUsd: 0.8, capUsd: 20, burnUsdPerMin: 0.05,
       observedAt: now - 5_000, verifiedAt: now - 5_000, since: now - 10 * 60_000, startedAt: now - 10 * 60_000,
