@@ -77,19 +77,18 @@ export function laneCta(lane: Lane): LaneCta {
 }
 
 export interface LaneHeadline {
-  /** The big line: the ticket when the lane has one, the run id otherwise. */
+  /** The line every headline renders: the ticket if the lane has one, else the run id. */
   main: string;
-  /** The small mono line beneath it, the run id, only when a ticket is showing. */
-  sub: string | null;
+  /** The lane's run id. Goes in the `title` attribute, never on its own visible
+   *  line, since the prototype's tile headline is one line: `{{l.id}}`. */
+  runId: string;
 }
 
-/** The one rule for what a lane's headline says, shared by the tile, the ticket
- *  sheet band and the needs-you plates: a ticket outranks the run id, but the
- *  run id only earns its own line when it actually says something the ticket
- *  didn't -- most of today's lanes still key their ticket off their own id. */
+/** What a lane's headline says, shared by the tile, the ticket sheet band, and
+ *  the needs-you plates: a ticket outranks the run id, and the run id only
+ *  shows up in `title`, matching the prototype's single-line `l.id`. */
 export function laneHeadline(lane: Lane): LaneHeadline {
-  if (lane.ticket && lane.ticket !== lane.id) return { main: lane.ticket, sub: lane.id };
-  return { main: lane.ticket ?? lane.id, sub: null };
+  return { main: lane.ticket ?? lane.id, runId: lane.id };
 }
 
 export function ctxPercent(lane: Lane): number {

@@ -133,14 +133,7 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
       </div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 22px', borderBottom: '1px solid var(--line)', flexWrap: 'wrap', gap: '12px 20px' }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, whiteSpace: 'nowrap' }}>
-          <div>
-            <span className="m" style={{ fontSize: 22, fontWeight: 700 }}>{headline.main}</span>
-            {headline.sub ? (
-              <div className="m" title={headline.sub} style={{ fontSize: '10.5px', color: 'var(--ink3)', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {headline.sub}
-              </div>
-            ) : null}
-          </div>
+          <span className="m" title={headline.runId} style={{ fontSize: 22, fontWeight: 700 }}>{headline.main}</span>
           <span className="chip">{lane.model}</span>
           <span className="chip">{lane.repo}</span>
           <span className="chip">attempt {lane.attempt}</span>

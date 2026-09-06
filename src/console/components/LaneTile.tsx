@@ -68,16 +68,7 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
       ) : null}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 6 }}>
         <div style={{ minWidth: 0 }}>
-          <a className="m" style={{ fontSize: 13, fontWeight: 700 }}>{headline.main}</a>
-          {headline.sub ? (
-            <div
-              className="m"
-              title={headline.sub}
-              style={{ fontSize: 9, color: 'var(--ink3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
-            >
-              {headline.sub}
-            </div>
-          ) : null}
+          <a className="m" title={headline.runId} style={{ fontSize: 13, fontWeight: 700 }}>{headline.main}</a>
         </div>
         <span
           className="chip"

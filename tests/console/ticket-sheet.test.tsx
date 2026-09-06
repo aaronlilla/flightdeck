@@ -38,11 +38,11 @@ function renderSheet(messages: Message[], laneExtra: Partial<Lane> = {}, journal
 }
 
 describe('TicketSheet', () => {
-  it('heads the band with the ticket and keeps the run id as the small line', () => {
+  it('heads the band with the ticket alone, carrying the full run id in its title attribute', () => {
     renderSheet([]);
-    expect(screen.getByText('AB-12')).toBeInTheDocument();
-    const runId = screen.getByText('jira_AB-12_1788460932645');
-    expect(runId).toHaveAttribute('title', 'jira_AB-12_1788460932645');
+    const headline = screen.getByText('AB-12');
+    expect(headline).toHaveAttribute('title', 'jira_AB-12_1788460932645');
+    expect(screen.queryByText('jira_AB-12_1788460932645')).not.toBeInTheDocument();
   });
 
   it('heads the band with the run id alone when there is no ticket', () => {

@@ -79,19 +79,21 @@ describe('tileCapText / costClass', () => {
   });
 });
 
-// POLISH-2 #1: a ticket outranks the run id as the headline; the tile, the ticket
-// sheet band and the needs-you plates all read it off this one function.
+// Final fidelity sweep #1: a ticket outranks the run id as the headline, and the
+// headline is always exactly one line -- the run id lives only in `runId`, for a
+// `title` attribute, never as a second visible line. The tile, the ticket sheet
+// band and the needs-you plates all read it off this one function.
 describe('laneHeadline', () => {
   it('heads with the run id when there is no ticket', () => {
-    expect(laneHeadline(lane('running', { ticket: null, id: 'jira_AB-12_1788460932645' }))).toEqual({ main: 'jira_AB-12_1788460932645', sub: null });
+    expect(laneHeadline(lane('running', { ticket: null, id: 'jira_AB-12_1788460932645' }))).toEqual({ main: 'jira_AB-12_1788460932645', runId: 'jira_AB-12_1788460932645' });
   });
 
-  it('heads with the ticket and keeps the run id as the small line beneath it', () => {
-    expect(laneHeadline(lane('running', { ticket: 'AB-12', id: 'jira_AB-12_1788460932645' }))).toEqual({ main: 'AB-12', sub: 'jira_AB-12_1788460932645' });
+  it('heads with the ticket and still carries the full run id for the title attribute', () => {
+    expect(laneHeadline(lane('running', { ticket: 'AB-12', id: 'jira_AB-12_1788460932645' }))).toEqual({ main: 'AB-12', runId: 'jira_AB-12_1788460932645' });
   });
 
-  it('shows no redundant second line when the ticket is just the run id under another name', () => {
-    expect(laneHeadline(lane('running', { ticket: 'FLT-1', id: 'FLT-1' }))).toEqual({ main: 'FLT-1', sub: null });
+  it('carries the same value for main and runId when the ticket is just the run id under another name', () => {
+    expect(laneHeadline(lane('running', { ticket: 'FLT-1', id: 'FLT-1' }))).toEqual({ main: 'FLT-1', runId: 'FLT-1' });
   });
 });
 

@@ -8,8 +8,9 @@ export interface NeedItem {
   id: string;
   color: string;
   title: string;
-  /** The run id, shown small next to the title, only when the title is a ticket. */
-  runId: string | null;
+  /** The full run id for the plate title's `title` attribute (a lane's `runId`,
+   *  null for the AWS integration plate, which names no single lane). */
+  titleId: string | null;
   sub: string;
   line: string;
   cta: string;
@@ -32,7 +33,7 @@ export function buildNeeds(
     if (integration.status !== 'down') continue;
     const since = integration.since !== null ? ` · since ${hm(integration.since)}` : '';
     items.push({
-      id: `int-${integration.id}`, color: 'var(--block)', title: integration.name, runId: null,
+      id: `int-${integration.id}`, color: 'var(--block)', title: integration.name, titleId: null,
       sub: `${integration.dependents.length} lanes blocked${since}`,
       line: integration.cause ?? '', cta: integration.fixLabel ?? 'Reconnect →',
       ctaCls: 'btnR', onClick: () => onFix('integration', integration.id),
@@ -52,7 +53,7 @@ export function buildNeeds(
       // the console never actually read.
       const asks = question ? `${question.slice(0, 70)}…` : '—';
       items.push({
-        id: `park-${lane.id}`, color: 'var(--park)', title: headline.main, runId: headline.sub,
+        id: `park-${lane.id}`, color: 'var(--park)', title: headline.main, titleId: headline.runId,
         sub: `waiting ${ago(now - lane.since)}`,
         line: `asks: ${asks}`, cta: 'Answer →', ctaCls: 'btnA',
         onClick: () => onFix('lane', lane.id), more: null,
@@ -61,7 +62,7 @@ export function buildNeeds(
     if (lane.state === 'running' && lane.runaway) {
       const cap = lane.capUsd ?? 0;
       items.push({
-        id: `over-${lane.id}`, color: 'var(--block)', title: headline.main, runId: headline.sub,
+        id: `over-${lane.id}`, color: 'var(--block)', title: headline.main, titleId: headline.runId,
         sub: `$${lane.costUsd.toFixed(2)} / $${cap}`,
         line: `retry loop ×${lane.fails} · burning $${lane.burnUsdPerMin.toFixed(2)}/min`, cta: 'Kill attempt', ctaCls: 'btnR',
         onClick: () => onFix('lane', lane.id), more: null,
@@ -85,20 +86,18 @@ export function NeedsYou({ items }: NeedsYouProps): JSX.Element | null {
         <span className="m" style={{ fontSize: 22, fontWeight: 700, color: 'var(--park)' }}>{items.length}</span>
       </div>
       {items.map((n) => (
-        <div key={n.id} className="plate" style={{ flex: '1 1 300px', display: 'flex', alignItems: 'center', gap: 12, padding: '8px 12px', borderColor: n.color }}>
-          <span className="led" style={{ background: n.color }} />
+        <div key={n.id} className="plate" style={{ flex: '1 1 220px', minWidth: 0, display: 'flex', alignItems: 'center', gap: 12, padding: '8px 12px', borderColor: n.color }}>
+          <span className="led" style={{ background: n.color, flex: 'none' }} />
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div className="m" style={{ fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              {n.title}
-              {n.runId ? <span title={n.runId} style={{ color: 'var(--ink3)', fontWeight: 500, marginLeft: 6, fontSize: 10 }}>{n.runId}</span> : null}
-              {' '}<span style={{ color: 'var(--ink2)', fontWeight: 500 }}>{n.sub}</span>
+            <div className="m" title={n.titleId ?? undefined} style={{ fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {n.title} <span style={{ color: 'var(--ink2)', fontWeight: 500 }}>{n.sub}</span>
             </div>
             <div className="m" style={{ fontSize: 10, color: 'var(--ink2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
               {n.line}
               {n.more ? <> · <a style={{ color: 'var(--ink3)' }} onClick={n.more.onClick}>{n.more.label} ▸</a></> : null}
             </div>
           </div>
-          <span className={n.ctaCls} style={{ padding: '7px 11px', fontSize: '9.5px' }} onClick={n.onClick}>{n.cta}</span>
+          <span className={n.ctaCls} style={{ padding: '7px 11px', fontSize: '9.5px', flex: 'none', whiteSpace: 'nowrap' }} onClick={n.onClick}>{n.cta}</span>
         </div>
       ))}
     </div>

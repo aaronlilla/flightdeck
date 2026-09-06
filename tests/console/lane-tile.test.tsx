@@ -78,18 +78,19 @@ describe('LaneTile', () => {
     expect(screen.getByText('$5.60')).toHaveClass('ws');
   });
 
-  // POLISH-2 #1: a ticket heads the tile, with the run id small beneath it, truncated to
-  // one line with the full id in the title attribute so a long jira-style id never wraps.
-  it('shows the run id as the headline when there is no ticket', () => {
+  // Final fidelity sweep #1: the tile's headline is always one line, exactly as the
+  // prototype's `{{l.id}}` is -- a ticket heads it when the lane has one, otherwise
+  // the run id does, and the full run id lives only in the element's title attribute.
+  it('shows the run id as the headline, and its own title, when there is no ticket', () => {
     render(<LaneTile lane={lane({ ticket: null, id: 'jira_AB-12_1788460932645' })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
-    expect(screen.getByText('jira_AB-12_1788460932645')).toBeInTheDocument();
+    const headline = screen.getByText('jira_AB-12_1788460932645');
+    expect(headline).toHaveAttribute('title', 'jira_AB-12_1788460932645');
   });
 
-  it('heads with the ticket and keeps a long run id to one line with the full id in the title', () => {
+  it('heads with the ticket alone and carries the full run id only in the title attribute', () => {
     render(<LaneTile lane={lane({ ticket: 'AB-12', id: 'jira_AB-12_1788460932645' })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
-    expect(screen.getByText('AB-12')).toBeInTheDocument();
-    const runIdLine = screen.getByText('jira_AB-12_1788460932645');
-    expect(runIdLine).toHaveAttribute('title', 'jira_AB-12_1788460932645');
-    expect(runIdLine).toHaveStyle({ whiteSpace: 'nowrap', textOverflow: 'ellipsis' });
+    const headline = screen.getByText('AB-12');
+    expect(headline).toHaveAttribute('title', 'jira_AB-12_1788460932645');
+    expect(screen.queryByText('jira_AB-12_1788460932645')).not.toBeInTheDocument();
   });
 });

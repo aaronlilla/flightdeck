@@ -17,25 +17,28 @@ function lane(extra: Partial<Lane> = {}): Lane {
   };
 }
 
-// POLISH-2 #1: the ticket sheet band and the needs-you plates use the same headline rule.
+// Final fidelity sweep #1: the ticket sheet band and the needs-you plates use the
+// same headline rule, and the full run id shows up only in the title attribute --
+// never as a second visible line.
 describe('buildNeeds headline', () => {
   it('titles a parked plate with the run id when there is no ticket', () => {
     const items = buildNeeds([lane({ ticket: null })], [], vi.fn());
     expect(items[0]?.title).toBe('jira_AB-12_1788460932645');
-    expect(items[0]?.runId).toBeNull();
+    expect(items[0]?.titleId).toBe('jira_AB-12_1788460932645');
   });
 
-  it('titles a parked plate with the ticket, and keeps the run id as a small secondary field', () => {
+  it('titles a parked plate with the ticket, and carries the run id for the title attribute', () => {
     const items = buildNeeds([lane({ ticket: 'AB-12' })], [], vi.fn());
     expect(items[0]?.title).toBe('AB-12');
-    expect(items[0]?.runId).toBe('jira_AB-12_1788460932645');
+    expect(items[0]?.titleId).toBe('jira_AB-12_1788460932645');
   });
 
-  it('renders the run id next to the ticket title', () => {
+  it('never renders the full run id as its own visible text next to the ticket title', () => {
     const items = buildNeeds([lane({ ticket: 'AB-12' })], [], vi.fn());
     render(<NeedsYou items={items} />);
-    expect(screen.getByText('AB-12')).toBeInTheDocument();
-    expect(screen.getByText('jira_AB-12_1788460932645')).toBeInTheDocument();
+    const titleEl = screen.getByText('AB-12');
+    expect(titleEl).toHaveAttribute('title', 'jira_AB-12_1788460932645');
+    expect(screen.queryByText('jira_AB-12_1788460932645')).not.toBeInTheDocument();
   });
 });
 
