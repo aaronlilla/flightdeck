@@ -64,6 +64,18 @@ describe('ticketFor', () => {
   it('is null for a run name that names no ticket', () => {
     expect(ticketFor('alpha', undefined)).toBeNull();
   });
+
+  it('finds a ticket key as a whole underscore-delimited segment of a longer run name', () => {
+    expect(ticketFor('jira_AB-12_1788460932645', undefined)).toBe('AB-12');
+  });
+
+  it('reads a bare ticket-shaped run name, upper-cased', () => {
+    expect(ticketFor('ab-226', undefined)).toBe('AB-226');
+  });
+
+  it('is null for a hyphenated run name whose tail merely looks numbered', () => {
+    expect(ticketFor('forge-live-probe-10', undefined)).toBeNull();
+  });
 });
 
 describe('hopFor', () => {

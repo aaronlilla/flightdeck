@@ -32,14 +32,20 @@ export function meaningfulEvents(events: ForgeEvent[]): ForgeEvent[] {
  *  chain names a hop before it. */
 const CHAIN_HOP_ORDER: readonly string[] = ['unrouted', 'provision', 'launch', 'gate'];
 
-const TICKET_PATTERN = /^[a-z]+-\d+$/i;
+/** A ticket key as a whole `_`/`/`-delimited segment of a run name: 2 to 6 letters, no
+ *  digits, then a literal `-`, then digits, and nothing else in that segment. The `-`
+ *  inside the key is never a segment boundary itself (a ticket key always has one), so
+ *  `forge-live-probe-10` reads as a single segment that fails this pattern rather than
+ *  as `probe-10` -- there is nothing here to tell a real ticket-shaped run name apart
+ *  from a hyphenated one that merely ends in a number. */
+const TICKET_TOKEN_PATTERN = /^[A-Za-z]{2,6}-\d+$/;
 
-/** `RunState.ticket`, or the run's own name when it reads as a ticket key
- *  (`^[a-z]+-\d+$`), upper-cased. `null` when neither is true. */
+/** `RunState.ticket`, or the first `_`/`/`-delimited segment of the run's own name that
+ *  reads as a ticket key on its own, upper-cased. `null` when neither is true. */
 export function ticketFor(run: string, runState: RunState | undefined): string | null {
   if (runState?.ticket) return runState.ticket.toUpperCase();
-  if (TICKET_PATTERN.test(run)) return run.toUpperCase();
-  return null;
+  const token = run.split(/[_/]/).find((part) => TICKET_TOKEN_PATTERN.test(part));
+  return token ? token.toUpperCase() : null;
 }
 
 /** `claude-sonnet-5[...]` -> `sonnet-5`, `claude-opus-5` -> `opus-5`,
