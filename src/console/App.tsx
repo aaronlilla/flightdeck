@@ -45,12 +45,15 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   const mounted = useRef(true);
 
   const refresh = useCallback(async () => {
+    const startedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
     try {
       const [lanes, thread, journal, integrations, caps, proposals] = await Promise.all([
         api.getLanes(), api.getThread(), api.getJournal(), api.getIntegrations(), api.getCaps(), api.getProposals(),
       ]);
       if (!mounted.current) return;
       failCount.current = 0;
+      const endedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      dispatch({ type: 'fetch-latency', ms: Math.round(endedAt - startedAt) });
       dispatch({ type: 'lanes', lanes: lanes.lanes });
       dispatch({ type: 'thread', thread: thread.messages });
       dispatch({ type: 'journal', journal: journal.rows });
@@ -249,6 +252,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
         <TopBar
           view={state.view} settingsBadge={settingsBadge} reviewBadge={reviewBadge}
           caps={state.caps} spentTodayUsd={state.caps?.spentTodayUsd ?? 0} feed={state.feed} now={state.now}
+          fetchLatencyMs={state.fetchLatencyMs}
           theme={state.theme}
           onNav={(view) => dispatch({ type: 'view', view })}
           onOpenPalette={() => dispatch({ type: 'palette-open', open: true })}
