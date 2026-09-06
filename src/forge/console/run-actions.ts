@@ -11,18 +11,17 @@
  * (`forge gate`, `forge chain retry`) a person would type. Where nothing in this
  * repository does the thing yet, the handler answers 501 rather than pretending.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-
 import { asRunId, type Actuator } from '../contracts.js';
 import { foldChainState, type ChainPacketState } from '../chain.js';
 import { run as execRun, type RunRequest } from '../exec.js';
 import { replay } from '../journal.js';
+import { forgeHome } from '../paths.js';
 import type { Registry } from '../registry.js';
 import { RunInbox } from '../runinbox.js';
 import { HANDOFF_REQUEST } from '../worker.js';
 import type { Lanes } from '../supervisor.js';
-import { consoleDir, recordAction, type ActionsLedger } from './actions-ledger.js';
+import { recordAction, type ActionsLedger } from './actions-ledger.js';
+import { capsOverridesPath, readCapsOverrides, writeCapsOverrides } from './caps-read.js';
 import { laneStateNowFor } from './lanes.js';
 import type { ActionResult, LaneState } from '../../shared/console-model.js';
 
@@ -133,27 +132,11 @@ export async function resumeRun(run: string, deps: RunActionsDeps): Promise<RunA
   return { status: 200, body: { ok: true, jid, message: `resumed ${run}`, undoable: false } };
 }
 
-interface CapsOverrides {
-  overrides: Record<string, number>;
-}
-
-function readCapsOverrides(path: string): CapsOverrides {
-  if (!existsSync(path)) return { overrides: {} };
-  try {
-    const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<CapsOverrides>;
-    return { overrides: parsed.overrides ?? {} };
-  } catch {
-    return { overrides: {} };
-  }
-}
-
-function writeCapsOverrides(path: string, value: CapsOverrides): void {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(value, null, 2), 'utf8');
-}
-
+/** `~/.forge/console/caps.json` by default -- the same file, and the same
+ *  `caps-read.ts`-owned shape, `GET`/`POST /caps` reads and writes. Per-run overrides
+ *  live in its `perRun` field. */
 export function capOverridesPath(override?: string): string {
-  return override ?? join(consoleDir(), 'caps.json');
+  return override ?? capsOverridesPath(forgeHome());
 }
 
 export async function setRunCap(run: string, capUsd: number, deps: RunActionsDeps): Promise<RunActionResponse> {
@@ -166,9 +149,10 @@ export async function setRunCap(run: string, capUsd: number, deps: RunActionsDep
   }
   const path = capOverridesPath(deps.capsOverridesPath);
   const current = readCapsOverrides(path);
-  const previous = current.overrides[run] ?? null;
-  current.overrides[run] = capUsd;
-  writeCapsOverrides(path, current);
+  const perRun = { ...(current.perRun ?? {}) };
+  const previous = perRun[run] ?? null;
+  perRun[run] = capUsd;
+  writeCapsOverrides(path, { ...current, perRun });
   const { jid } = recordAction(deps.journalPath, deps.ledger, {
     kind: 'run-cap', run, text: `cap set to $${capUsd} for ${run}`,
     undo: { kind: 'restore-run-cap', payload: { run, capUsd: previous } },
@@ -182,9 +166,10 @@ export async function setRunCap(run: string, capUsd: number, deps: RunActionsDep
 export function restoreRunCap(run: string, capUsd: number | null, deps: Pick<RunActionsDeps, 'capsOverridesPath'>): void {
   const path = capOverridesPath(deps.capsOverridesPath);
   const current = readCapsOverrides(path);
-  if (capUsd === null) delete current.overrides[run];
-  else current.overrides[run] = capUsd;
-  writeCapsOverrides(path, current);
+  const perRun = { ...(current.perRun ?? {}) };
+  if (capUsd === null) delete perRun[run];
+  else perRun[run] = capUsd;
+  writeCapsOverrides(path, { ...current, perRun });
 }
 
 function findChainRowForRun(run: string, journalPath: string): (ChainPacketState & { packetId: string }) | undefined {

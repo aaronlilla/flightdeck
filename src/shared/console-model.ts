@@ -227,6 +227,11 @@ export interface Caps {
   spentTodayUsd: number;
   /** Per-run overrides the operator set from the console. */
   overrides: Record<string, number>;
+  /** Where each top-level figure came from: `console` once the operator has set it from
+   *  here (`~/.forge/console/caps.json`), `policy` while it is still whatever
+   *  `model-policy.json` says (or, for `hardUsd` with neither set, 5x the effective
+   *  daily cap). Lets the caps sheet say which numbers are actually theirs to change. */
+  sources: Record<'dailyUsd' | 'runUsd' | 'hardUsd', 'policy' | 'console'>;
 }
 
 export interface Rule {

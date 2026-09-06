@@ -26,13 +26,15 @@ import type { StuckSignal } from '../liveness.js';
 import type { Registry } from '../registry.js';
 import type { RunRequest } from '../exec.js';
 import type { Lanes } from '../supervisor.js';
-import { governorBudget, policyPath } from '../policy.js';
+import { governorBudget } from '../policy.js';
+import { forgeHome } from '../paths.js';
 import { consoleDir, recordAction, ActionsLedger, actionsLedgerPath } from './actions-ledger.js';
 import {
-  capOverridesPath, compactRun, killRun, mergeRun, pauseRun, reopenRun, restoreRunCap,
+  compactRun, killRun, mergeRun, pauseRun, reopenRun, restoreRunCap,
   resumeRun, setRunCap, verifyRun, type RunActionsDeps,
 } from './run-actions.js';
-import { hardUsdOf, restoreCaps, writeCaps, type CapsWriteDeps } from './caps-write.js';
+import { capsOverridesPath, effectiveHardUsd, readCapsOverrides } from './caps-read.js';
+import { restoreCaps, writeCaps, type CapsWriteDeps } from './caps-write.js';
 import { IntegrationsRegistry, type IntegrationsDeps } from './integrations.js';
 import { laneStateNowFor, meaningfulEvents, spentTodayUsd } from './lanes.js';
 import { textFor } from './journal-route.js';
@@ -259,11 +261,17 @@ export class ConsoleWrites {
     this.enforcement = undefined;
   }
 
+  /** `~/.forge/console/caps.json` (or a specimen's override) -- the one file every caps
+   *  read and write in this class goes through, policy file untouched. */
+  private overridesPath(): string {
+    return this.deps.capsOverridesPath ?? capsOverridesPath(forgeHome());
+  }
+
   private runActionsDeps(): RunActionsDeps {
     return {
       ledger: this.ledger, registry: this.deps.registry, actuator: this.deps.actuator,
       journalPath: this.deps.journalPath,
-      hardUsd: () => hardUsdOf(governorBudget(this.deps.modelPolicyPath)),
+      hardUsd: () => effectiveHardUsd(governorBudget(this.deps.modelPolicyPath), readCapsOverrides(this.overridesPath())),
       ...(this.deps.lanes ? { lanes: this.deps.lanes } : {}),
       ...(this.deps.spawnFn ? { spawnFn: this.deps.spawnFn } : {}),
       ...(this.deps.capsOverridesPath ? { capsOverridesPath: this.deps.capsOverridesPath } : {}),
@@ -274,6 +282,7 @@ export class ConsoleWrites {
     return {
       journalPath: this.deps.journalPath, ledger: this.ledger,
       ...(this.deps.modelPolicyPath ? { policyPath: this.deps.modelPolicyPath } : {}),
+      overridesPath: this.overridesPath(),
       spentTodayUsd: () => this.spendToday(),
     };
   }
@@ -322,9 +331,9 @@ export class ConsoleWrites {
       }
       case 'restore-caps': {
         restoreCaps({
-          dailyUsd: Number(undo.payload['dailyUsd']),
+          dailyUsd: (undo.payload['dailyUsd'] as number | null) ?? null,
           runUsd: (undo.payload['runUsd'] as number | null) ?? null,
-        }, this.deps.modelPolicyPath ?? policyPath());
+        }, this.overridesPath());
         const { jid } = recordAction(this.deps.journalPath, this.ledger, {
           kind: 'caps-undo', text: 'restored the previous caps', undo: null,
         });
