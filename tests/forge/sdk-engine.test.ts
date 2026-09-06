@@ -1332,6 +1332,28 @@ describe('F5: forge_done wins over a ceiling reached on its own closing message'
   });
 });
 
+describe('a worker session refuses the Monitor tool outright, the same as a websocket Monitor in a brief', () => {
+  it('denies a Monitor call regardless of its command, before any rule or ceiling check', async () => {
+    const parked = new Map<string, string>();
+    const journal = new Journal(journalPath);
+    const inbox = new Inbox(join(home, 'inbox-monitor-deny'));
+    const hook = buildPreToolUseHook({ run: 'r-mon', goal: 'r-mon', parked, journal, inbox, deliverVia: 'hook' });
+
+    const verdict = await hook({
+      toolName: 'Monitor',
+      input: { command: 'gh pr checks 37', description: 'watch CI', persistent: true, timeout_ms: 300000 },
+      toolUseId: 'tu-mon',
+    });
+
+    expect(verdict.decision).toBe('deny');
+    expect(verdict.reason).toMatch(/monitor/i);
+    journal.close();
+    const state = replay(journalPath);
+    expect(state.events.some((e) => e.event === 'permission.denied' && e.run === 'r-mon'
+      && e['tool'] === 'Monitor')).toBe(true);
+  });
+});
+
 describe('P4.7/I4: the Council rules library runs on every Bash and Edit/Write PreToolUse call', () => {
   it('denies a git push to main in a controlled repo, with the gitflow reason, and journals rule.denied', async () => {
     const parked = new Map<string, string>();

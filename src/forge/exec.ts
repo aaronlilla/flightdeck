@@ -134,6 +134,18 @@ export interface RunRequest {
    *  valid JSON -- sets this; everything else stays tail-bounded so a runaway command
    *  cannot grow this buffer without limit. */
   fullOutput?: boolean;
+  /** Skip `redact()` on `tail`/`full` entirely. For a caller that parses git or other
+   *  plumbing output as data rather than showing it to a person: `redact()`'s
+   *  24-character heuristic (see `redact.ts`) treats a long ticket id, a UUID-bearing
+   *  path segment, or a queue's own generated branch name as a secret and blanks it to
+   *  `[REDACTED]`, and a caller comparing that against a freshly computed string (never
+   *  itself redacted) can never match again. Confirmed live 2026-09-06:
+   *  `provisionWorktree`'s `git worktree list --porcelain` read a worktree it had
+   *  already created, lost the branch name to this exact redaction, decided nothing was
+   *  there, and reran `git worktree add` on a path that already existed. Never set this
+   *  for output a person or a dump file will actually read; that path still wants the
+   *  scrub. */
+  raw?: boolean;
   /** Overrides `child_process.spawn`. A specimen records what it was called with and
    *  resolves the run itself, rather than starting a real process. */
   spawnFn?: (command: string, args: string[], options: SpawnOptions) => ChildProcess;
@@ -256,8 +268,8 @@ export async function run(request: RunRequest): Promise<RunResult> {
       const durationMs = Date.now() - startedAt;
       // Redacted on the whole accumulated buffer, never per chunk: a token split across
       // two stdout reads would survive a redaction applied to each chunk on its own.
-      const tail = redact(buffer);
-      const full = request.fullOutput ? redact(fullBuffer) : undefined;
+      const tail = request.raw ? buffer : redact(buffer);
+      const full = request.fullOutput ? (request.raw ? fullBuffer : redact(fullBuffer)) : undefined;
       if (killed && dumpPath) {
         writeFileSync(dumpPath, [
           `owner: ${request.owner}`,

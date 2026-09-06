@@ -14,7 +14,8 @@ import { describe, expect, it } from 'vitest';
 
 import type { ChainCouncilFn, ChainGateFn, ChainGh, ChainLauncher, ChainRunStatus } from '../../../src/forge/chain.js';
 import {
-  addBacklogItems, addBriefItem, addQueryItems, addTicketItem, advanceItem, removeItem, retryItem, runQueueTick,
+  addBacklogItems, addBriefItem, addQueryItems, addTicketItem, advanceItem, QUEUE_IN_FLIGHT_STATES, removeItem,
+  retryItem, runQueueTick,
   type QueuePlanner, type QueueRuntimeDeps, type QueueTicketSearch,
 } from '../../../src/forge/intake/queue.js';
 import { QueueStore } from '../../../src/forge/intake/queueStore.js';
@@ -131,6 +132,25 @@ describe('removeItem / retryItem', () => {
     const store = tempStore();
     const item = addTicketItem(store, 'ABC-1', 1000);
     expect(retryItem(store, item.id, 2000)).toBeUndefined();
+  });
+
+  it('restores running, not queued, for an item retried with a run already in flight', () => {
+    // Confirmed live on a real queue run 2026-09-06: a retried item whose runKey was
+    // already set went back to 'queued' here, which QUEUE_IN_FLIGHT_STATES does not
+    // count as in-flight. Every tick after that re-added the same item to
+    // runQueueTick's advance list on top of the one already running, so the same PR
+    // got a second, fully concurrent council/gate pass -- a second real Codex
+    // subprocess for one item, spent for nothing.
+    const store = tempStore();
+    store.append({
+      id: 'q1', at: 1000, source: 'brief', input: 'do the thing', ticket: 'q-brief-1', repo: 'owner/name',
+      briefPath: 'C:/briefs/q-brief-1.md', branch: 'feature/q-brief-1', worktreePath: '/wt/q-brief-1', base: 'main',
+      state: 'parked', reason: 'FIX FIRST', runKey: 'q-brief-1', pr: null,
+      journalIds: [], createdAt: 1000, updatedAt: 1000,
+    });
+    const retried = retryItem(store, 'q1', 2000);
+    expect(retried?.state).toBe('running');
+    expect(QUEUE_IN_FLIGHT_STATES).toContain(retried?.state);
   });
 });
 
