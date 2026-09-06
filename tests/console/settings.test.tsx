@@ -86,6 +86,14 @@ describe('Settings section sidebar', () => {
     expect(screen.getByTestId('settings-nav-integrations')).toHaveStyle({ fontWeight: '700' });
   });
 
+  it('dims Caps & policies less than the other inactive sections, matching the prototype', () => {
+    renderSettings({ integrations: [] });
+    const caps = screen.getByTestId('settings-nav-caps');
+    const models = screen.getByTestId('settings-nav-models');
+    expect(caps).toHaveStyle({ color: 'var(--ink2)' });
+    expect(models).toHaveStyle({ color: 'var(--ink3)' });
+  });
+
   it('switches the center panel when a section is clicked, without touching the right rail', () => {
     renderSettings({ integrations: [] });
     fireEvent.click(screen.getByTestId('settings-nav-shortcuts'));

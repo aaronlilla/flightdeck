@@ -198,7 +198,7 @@ export function Settings(props: SettingsProps): JSX.Element {
               style={{
                 cursor: 'pointer',
                 fontWeight: section === item.id ? 700 : 400,
-                color: section === item.id ? undefined : (item.id === 'integrations' ? 'var(--ink2)' : 'var(--ink3)'),
+                color: section === item.id ? undefined : (item.id === 'caps' ? 'var(--ink2)' : 'var(--ink3)'),
                 borderLeft: section === item.id ? '2px solid var(--run)' : '2px solid transparent',
                 marginLeft: -22, paddingLeft: 20,
               }}
