@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import type { Server } from 'node:http';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { App } from '../../src/console/App.js';
-import { fleetStateFixture } from '../../src/console/fixtures/state.js';
-import { emptyInboxFixture, inboxFixture } from '../../src/console/fixtures/inbox.js';
+import { createStubServer, resetStubDb } from '../../src/console/stub-server.js';
 
 class FakeSocket {
   static instances: FakeSocket[] = [];
@@ -18,125 +18,65 @@ class FakeSocket {
 
   onerror: (() => void) | null = null;
 
-  constructor(public url: string) {
+  constructor(readonly url: string) {
     FakeSocket.instances.push(this);
   }
 
-  close(): void {
-    this.onclose?.();
-  }
+  close(): void { this.onclose?.(); }
+
+  send(): void {}
 }
 
-function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), { status });
-}
+let server: Server;
+let base: string;
+let originalFetch: typeof fetch;
 
-let fetchMock: ReturnType<typeof vi.fn>;
-
-beforeEach(() => {
-  FakeSocket.instances = [];
-  document.head.innerHTML = '<meta name="forge-token" content="tok" />';
-  fetchMock = vi.fn();
-  vi.stubGlobal('fetch', fetchMock);
+beforeEach(async () => {
+  resetStubDb();
+  server = createStubServer();
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  const port = typeof address === 'object' && address ? address.port : 0;
+  base = `http://127.0.0.1:${port}`;
+  originalFetch = global.fetch;
+  global.fetch = ((input: RequestInfo | URL, init?: RequestInit) => originalFetch(`${base}${String(input)}`, init)) as typeof fetch;
 });
 
-afterEach(() => {
-  cleanup();
-  vi.unstubAllGlobals();
-  vi.useRealTimers();
+afterEach(async () => {
+  global.fetch = originalFetch;
+  FakeSocket.instances = [];
+  await new Promise<void>((resolve) => server.close(() => resolve()));
 });
 
 describe('App', () => {
-  // W1: the scaffold renders the command bar and the lanes grid from fixtures.
-  it('renders lanes with model, context, cost per hour and state from /state', async () => {
-    fetchMock.mockImplementation((path: string) => {
-      if (path === '/state') return Promise.resolve(jsonResponse(fleetStateFixture));
-      if (path === '/inbox') return Promise.resolve(jsonResponse(emptyInboxFixture));
-      return Promise.resolve(jsonResponse({ ok: true }));
-    });
-
+  it('renders the 14-lane board and opens the ticket sheet for a lane', async () => {
     render(<App eventStreamOptions={{ WebSocketImpl: FakeSocket as unknown as typeof WebSocket }} />);
-
-    expect(await screen.findByText('card-network-glow')).toBeTruthy();
-    const tile = screen.getByText('card-network-glow').closest('.lane-tile')!;
-    expect(tile.textContent).toContain('implement');
-    expect(tile.textContent).toContain('claude-sonnet-5');
-    expect(tile.textContent).toContain('$6.17/h');
-    expect(screen.getByText('in-progress')).toBeTruthy();
-
-    // X3: the capacity chip says plainly that nothing computes it yet, and
-    // Start stays disabled since forge up is the process serving this page.
-    expect(screen.getByText('capacity: not wired')).toBeTruthy();
-    const startButton = screen.getByRole('button', { name: 'Start' }) as HTMLButtonElement;
-    expect(startButton.disabled).toBe(true);
+    await waitFor(() => expect(screen.getByTestId('lane-FLT-201')).toBeInTheDocument());
+    expect(screen.getAllByText(/FLT-|BBZ-/).length).toBeGreaterThan(0);
+    await userEvent.click(screen.getByTestId('lane-FLT-201'));
+    await waitFor(() => expect(screen.getByTestId('ticket-sheet')).toBeInTheDocument());
   });
 
-  // W3: an inbox entry renders as a card whose answer button posts to
-  // /answer and clears once the server acknowledges it.
-  it('answers an inbox card and clears it once the server responds', async () => {
-    let inboxState = inboxFixture;
-    fetchMock.mockImplementation((path: string, init?: RequestInit) => {
-      if (path === '/state') return Promise.resolve(jsonResponse(fleetStateFixture));
-      if (path === '/inbox') return Promise.resolve(jsonResponse(inboxState));
-      if (path === '/answer' && init?.method === 'POST') {
-        inboxState = { open: [], all: inboxState.all };
-        return Promise.resolve(jsonResponse({ key: 'a1b2c3d4e5f60718', answer: 'dev' }));
-      }
-      return Promise.resolve(jsonResponse({ ok: true }));
-    });
-
-    const user = userEvent.setup();
+  it('walks board -> answer a parked lane -> receipt card in the rail', async () => {
     render(<App eventStreamOptions={{ WebSocketImpl: FakeSocket as unknown as typeof WebSocket }} />);
-
-    const question = await screen.findByText(/dev tenant or the production Auth0 tenant/);
-    const card = question.closest('.inbox-card')!;
-    const devButton = card.querySelector('button')!;
-    await user.click(devButton);
-
-    await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith(
-        '/answer',
-        expect.objectContaining({ method: 'POST', body: JSON.stringify({ key: 'a1b2c3d4e5f60718', answer: 'dev' }) }),
-      );
-    });
-    await waitFor(() => {
-      expect(screen.queryByText(/dev tenant or the production Auth0 tenant/)).toBeNull();
-    });
+    await waitFor(() => expect(screen.getByText('NOT NULL')).toBeInTheDocument());
+    await userEvent.click(screen.getByText('NOT NULL'));
+    await waitFor(() => expect(screen.getByTestId('rail-thread').textContent).toMatch(/resumed/));
   });
 
-  // W4: the console never crashes when the server is unreachable, and shows
-  // a disconnected state instead.
-  it('shows a disconnected banner and disables Stop all when the server is unreachable', async () => {
-    fetchMock.mockRejectedValue(new Error('fetch failed'));
-
+  it('requires a confirm card before a kill goes through', async () => {
     render(<App eventStreamOptions={{ WebSocketImpl: FakeSocket as unknown as typeof WebSocket }} />);
-
-    expect((await screen.findByRole('status')).textContent).toContain('Lost the connection');
-    const stopButton = screen.getByRole('button', { name: /stop all/i });
-    expect((stopButton as HTMLButtonElement).disabled).toBe(true);
+    await waitFor(() => expect(screen.getByTestId('lane-FLT-204')).toBeInTheDocument());
+    await userEvent.click(within(screen.getByTestId('lane-FLT-204')).getByText('Kill attempt'));
+    expect(screen.getByText('Confirm — irreversible')).toBeInTheDocument();
+    await userEvent.click(screen.getByText('Confirm'));
+    await waitFor(() => expect(screen.getByTestId('lane-FLT-204')).toHaveAttribute('data-state', 'killed'));
   });
 
-  // W5: Stop all calls /stop through api.ts.
-  it('Stop all posts to /stop', async () => {
-    fetchMock.mockImplementation((path: string) => {
-      if (path === '/state') return Promise.resolve(jsonResponse(fleetStateFixture));
-      if (path === '/inbox') return Promise.resolve(jsonResponse(emptyInboxFixture));
-      return Promise.resolve(jsonResponse({ stopped: ['card-network-glow'] }));
-    });
-
-    const user = userEvent.setup();
+  it('shows the disconnected banner once the feed drops', async () => {
     render(<App eventStreamOptions={{ WebSocketImpl: FakeSocket as unknown as typeof WebSocket }} />);
-
-    const stopButton = await screen.findByRole('button', { name: /stop all/i });
-    await act(async () => {
-      await user.click(stopButton);
-    });
-
-    await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith(
-        '/stop',
-        expect.objectContaining({ method: 'POST' }),
-      );
-    });
-  });
+    await waitFor(() => expect(screen.getByTestId('lane-FLT-201')).toBeInTheDocument());
+    global.fetch = (() => Promise.reject(new Error('offline'))) as typeof fetch;
+    await waitFor(() => expect(screen.getByText(/live feed lost/)).toBeInTheDocument(), { timeout: 15_000 });
+  }, 20_000);
 });

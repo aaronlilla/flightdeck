@@ -172,6 +172,37 @@ the authorship guard has to refuse so the refusal is observed rather than
 assumed. `tests/interception.test.ts` holds the wiring in place, because guards
 that are never called look exactly like guards that found nothing wrong.
 
+## The console
+
+`npm run forge -- up` serves the board on http://127.0.0.1:4120. It is the
+Flightdeck prototype ported to React: lanes with one call to action per state, a
+needs-you strip, the Conductor rail, ticket, cost, journal and sandbox sheets,
+settings for integrations and spend caps, and the daily flight review. Every
+value on it is either verified (the feed is up and its source reported under
+15 s ago) or observed, computed per value from the journal.
+
+The server computes the board's shapes from the journal, the registry and the
+policy file. `src/shared/console-model.ts` holds those shapes and lists the
+routes; `src/forge/console/` implements them. A control whose mechanism does not
+exist yet answers 501 and the rail shows a refusal rather than a receipt.
+Merge, verify and reopen run the `gate` and `chain` commands in a child
+process, so the console never grows a second copy of that logic.
+
+State the console writes lives under `~/.forge/console/`: `thread.jsonl` (the
+rail), `actions.jsonl` (receipts and undo), `caps.json` (per-run overrides),
+`rules.json` (applied flight-review rules) and `integrations.json` (what to
+probe and how to reconnect it). `FORGE_HOME` moves the whole tree, which is
+how a build is smoke tested beside the live server: `FORGE_HOME=<copy>
+FORGE_PORT=4121 npm run forge -- up`. Probes read `FORGE_JIRA_*`,
+`FORGE_AWS_PROFILE` and `FORGE_CONFIG_DIR` from the environment and never from a
+tracked file.
+
+`npm run test:e2e` runs the Playwright suite against the stub server on 4130
+and writes screenshots at 1440 and 720 wide in both themes under
+`tests/e2e/__screenshots__/`. `scripts/proto-reference.mjs` renders the original
+prototype at the same sizes for a side-by-side look; it needs the design
+project's `support.js` copied under `~/.forge/console/reference/`.
+
 ## Status
 
 Early. The pieces work and are tested, including the keyboard loop and a live

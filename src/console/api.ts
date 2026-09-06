@@ -5,7 +5,20 @@
  * goal brief: "all of that lives behind one `api.ts`").
  */
 import { redactErrorBody } from './redact.js';
-import type { ForgeState, InboxEntry, InboxState, RouterResult, RunDetail } from './types.js';
+import type {
+  ActionResult,
+  Caps,
+  CommandResponse,
+  IntegrationsResponse,
+  JournalResponse,
+  LanesResponse,
+  ProposalsResponse,
+  ReconnectResponse,
+  RunPrResponse,
+  RunSandboxResponse,
+  RunThreadResponse,
+  ThreadResponse,
+} from '../shared/console-model.js';
 
 export class ApiError extends Error {
   constructor(readonly status: number, message: string) {
@@ -30,54 +43,111 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
-export function getState(): Promise<ForgeState> {
-  return call<ForgeState>('/state');
+export function getLanes(params?: { all?: boolean }): Promise<LanesResponse> {
+  return call<LanesResponse>(params?.all ? '/lanes?all=1' : '/lanes');
 }
 
-export function getInbox(): Promise<InboxState> {
-  return call<InboxState>('/inbox');
+export function getThread(): Promise<ThreadResponse> {
+  return call<ThreadResponse>('/thread');
 }
 
-export function answer(key: string, answerText: string): Promise<InboxEntry> {
-  return call<InboxEntry>('/answer', {
-    method: 'POST',
-    body: JSON.stringify({ key, answer: answerText }),
-  });
+export function getJournal(params?: { since?: number; run?: string; limit?: number }): Promise<JournalResponse> {
+  const query = new URLSearchParams();
+  if (params?.since !== undefined) query.set('since', String(params.since));
+  if (params?.run !== undefined) query.set('run', params.run);
+  if (params?.limit !== undefined) query.set('limit', String(params.limit));
+  const qs = query.toString();
+  return call<JournalResponse>(`/journal${qs ? `?${qs}` : ''}`);
 }
 
-export interface StopResult {
-  stopped: string[];
+export function getIntegrations(): Promise<IntegrationsResponse> {
+  return call<IntegrationsResponse>('/integrations');
 }
 
-/** Parks every run and engages the kill switch. Safe to call on an idle fleet. */
-export function stopAll(reason: string): Promise<StopResult> {
-  return call<StopResult>('/stop', { method: 'POST', body: JSON.stringify({ reason }) });
+export function getCaps(): Promise<Caps> {
+  return call<Caps>('/caps');
 }
 
-export function sendToRun(run: string, text: string): Promise<{ ok: boolean }> {
-  return call<{ ok: boolean }>('/send', { method: 'POST', body: JSON.stringify({ run, text }) });
+export function getProposals(): Promise<ProposalsResponse> {
+  return call<ProposalsResponse>('/proposals');
 }
 
-/** Clears one lane's breaker, or every lane's, when `target` is `'all'`. */
-export function clearLane(target: string): Promise<{ ok: boolean }> {
-  const body = target === 'all' ? { all: true } : { lane: target };
-  return call<{ ok: boolean }>('/clear', { method: 'POST', body: JSON.stringify(body) });
+export function getRunThread(id: string): Promise<RunThreadResponse> {
+  return call<RunThreadResponse>(`/run/${encodeURIComponent(id)}/thread`);
 }
 
-/** F3: retires one stale inbox ask (the console's Clear button on a dead-run entry).
- *  The server checks staleness again before moving anything -- this call only asks. */
-export function retireAsk(key: string): Promise<{ ok: boolean }> {
-  return call<{ ok: boolean }>('/clear', { method: 'POST', body: JSON.stringify({ inboxKey: key }) });
+export function getRunPr(id: string): Promise<RunPrResponse> {
+  return call<RunPrResponse>(`/run/${encodeURIComponent(id)}/pr`);
 }
 
-/** X3: the ticket sheet's own read -- packet, provenance, and the not-yet-wired
- *  plan/PR/council/comment fields, all `null` rather than omitted. */
-export function getRun(id: string): Promise<RunDetail> {
-  return call<RunDetail>(`/run/${encodeURIComponent(id)}`);
+export function getRunSandbox(id: string): Promise<RunSandboxResponse> {
+  return call<RunSandboxResponse>(`/run/${encodeURIComponent(id)}/sandbox`);
 }
 
-/** X4: a message typed into the rail thread. Answers `{ routed: false }` when the
- *  server's policy has the router off; the rail renders that as "router off". */
-export function sendToRouter(text: string): Promise<RouterResult> {
-  return call<RouterResult>('/router', { method: 'POST', body: JSON.stringify({ text }) });
+function post<T>(path: string, body?: unknown): Promise<T> {
+  return call<T>(path, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) });
+}
+
+export function killRun(id: string, reason: string): Promise<ActionResult> {
+  return post<ActionResult>(`/run/${encodeURIComponent(id)}/kill`, { reason });
+}
+
+export function pauseRun(id: string, reason?: string): Promise<ActionResult> {
+  return post<ActionResult>(`/run/${encodeURIComponent(id)}/pause`, reason ? { reason } : {});
+}
+
+export function resumeRun(id: string): Promise<ActionResult> {
+  return post<ActionResult>(`/run/${encodeURIComponent(id)}/resume`, {});
+}
+
+export function mergeRun(id: string): Promise<ActionResult> {
+  return post<ActionResult>(`/run/${encodeURIComponent(id)}/merge`, {});
+}
+
+export function reopenRun(id: string): Promise<ActionResult> {
+  return post<ActionResult>(`/run/${encodeURIComponent(id)}/reopen`, {});
+}
+
+export function compactRun(id: string): Promise<ActionResult> {
+  return post<ActionResult>(`/run/${encodeURIComponent(id)}/compact`, {});
+}
+
+export function verifyRun(id: string): Promise<ActionResult> {
+  return post<ActionResult>(`/run/${encodeURIComponent(id)}/verify`, {});
+}
+
+export function setRunCap(id: string, capUsd: number): Promise<ActionResult> {
+  return post<ActionResult>(`/run/${encodeURIComponent(id)}/cap`, { capUsd });
+}
+
+export function setCaps(body: { dailyUsd?: number; runUsd?: number }): Promise<Caps> {
+  return post<Caps>('/caps', body);
+}
+
+export function sendCommand(text: string): Promise<CommandResponse> {
+  return post<CommandResponse>('/command', { text });
+}
+
+export function checkIntegration(id: string): Promise<IntegrationsResponse> {
+  return post<IntegrationsResponse>(`/integrations/${encodeURIComponent(id)}/check`, {});
+}
+
+export function reconnectIntegration(id: string): Promise<ReconnectResponse> {
+  return post<ReconnectResponse>(`/integrations/${encodeURIComponent(id)}/reconnect`, {});
+}
+
+export function applyProposal(id: string): Promise<ActionResult> {
+  return post<ActionResult>(`/proposals/${encodeURIComponent(id)}/apply`, {});
+}
+
+export function dismissProposal(id: string): Promise<ActionResult> {
+  return post<ActionResult>(`/proposals/${encodeURIComponent(id)}/dismiss`, {});
+}
+
+export function restoreProposal(id: string): Promise<ActionResult> {
+  return post<ActionResult>(`/proposals/${encodeURIComponent(id)}/restore`, {});
+}
+
+export function undoJournal(jid: string): Promise<ActionResult> {
+  return post<ActionResult>(`/journal/${encodeURIComponent(jid)}/undo`, {});
 }

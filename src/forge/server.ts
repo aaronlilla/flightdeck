@@ -21,10 +21,14 @@ import { dirname, extname, join } from 'node:path';
 import type { Duplex } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
-import type { Reasoner } from './contracts.js';
+import { ConsoleReads } from './console/reads.js';
+import { HEARTBEAT_MS } from '../shared/console-model.js';
+import { ConsoleWrites } from './console/command.js';
+import type { Actuator, Reasoner } from './contracts.js';
 import { isAskStale, projectStaleness, type Inbox } from './inbox.js';
-import { appendOnce, JournalCache, type RangeReader } from './journal.js';
+import { appendOnce, Journal, JournalCache, type RangeReader } from './journal.js';
 import type { StuckSignal } from './liveness.js';
+import { WardenActuator } from './warden.js';
 import {
   killSwitchPath as defaultKillSwitchPath, packetsDir as defaultPacketsDir, registryDir,
   serverTokenPath,
@@ -127,6 +131,20 @@ export interface ForgeServerOptions {
    *  else that constructs a `ForgeServer` with the router turned on must supply one
    *  or `POST /router` answers 501 rather than throwing. */
   reasoner?: Reasoner;
+  /** Overrides the console's read routes (`/lanes`, `/thread`, `/journal`, `/caps`,
+   *  `/proposals`, `/run/:id/{thread,pr,sandbox}`). A specimen only: production always
+   *  gets the default, which reads the real `~/.forge` tree. */
+  consoleReads?: ConsoleReads;
+  /** What every console write (`ConsoleWrites`) drives kill/pause/resume through.
+   *  Defaults to a real `WardenActuator` over this server's own journal, registry and
+   *  lanes. A specimen overrides this with a fake, per this stream's rule that a test
+   *  never signals a real process. */
+  consoleActuator?: Actuator;
+  /** Where `GET`/`POST /caps` and `POST /run/:id/cap` read and write the Governor's
+   *  budget. Defaults to `policyPath()`, which -- unlike every other Forge path here --
+   *  does not follow `FORGE_HOME`, so a specimen always sets this or a caps read/write
+   *  reaches this repo's own tracked `model-policy.json`. */
+  modelPolicyPath?: string;
 }
 
 export class ForgeServer {
@@ -154,9 +172,13 @@ export class ForgeServer {
 
   private readonly reasoner: Reasoner | undefined;
 
+  private readonly consoleReads: ConsoleReads;
+
   private readonly wanted: number;
 
   private http: Server | undefined;
+
+  private heartbeatTimer: ReturnType<typeof setInterval> | undefined;
 
   private sockets = new Set<Duplex>();
 
@@ -175,12 +197,16 @@ export class ForgeServer {
 
   private readonly fleetFn: () => Array<Record<string, unknown>> | { ok: false; reason: string };
 
+  /** Every console write (`src/forge/console/command.ts`'s `ConsoleWrites`), plus
+   *  `GET /integrations`, which that module owns despite being a read. */
+  private readonly consoleWrites: ConsoleWrites;
+
   constructor(options: ForgeServerOptions) {
     this.lanes = options.lanes;
     this.inbox = options.inbox;
     this.journalPath = options.journalPath;
     this.journalCache = options.journalCache ?? new JournalCache(options.journalRangeReader);
-    this.wanted = options.port ?? FORGE_PORT;
+    this.wanted = options.port ?? Number(process.env['FORGE_PORT'] ?? FORGE_PORT);
     this.host = options.host ?? '127.0.0.1';
     this.stuckFn = options.stuck ?? (() => []);
     this.fleetFn = options.fleet ?? (() => []);
@@ -190,6 +216,22 @@ export class ForgeServer {
     this.consoleDistDir = options.consoleDistDir ?? defaultConsoleDistDir();
     this.packetsDirPath = options.packetsDir ?? defaultPacketsDir();
     this.reasoner = options.reasoner;
+    this.consoleReads = options.consoleReads
+      ?? new ConsoleReads(options.modelPolicyPath ? { modelPolicyPath: options.modelPolicyPath } : {});
+    this.consoleWrites = new ConsoleWrites({
+      journalPath: this.journalPath,
+      registry: this.registry,
+      lanes: this.lanes,
+      inbox: this.inbox,
+      actuator: options.consoleActuator ?? new WardenActuator({
+        journal: new Journal(this.journalPath), journalPath: this.journalPath,
+        registry: this.registry, lanes: this.lanes,
+      }),
+      authorized: (request, response) => this.authorized(request, response),
+      stuck: this.stuckFn,
+      lanesView: () => this.consoleReads.lanesResponse(),
+      ...(options.modelPolicyPath ? { modelPolicyPath: options.modelPolicyPath } : {}),
+    });
   }
 
   get listeners(): number {
@@ -197,7 +239,7 @@ export class ForgeServer {
   }
 
   async listen(): Promise<number> {
-    const server = createServer((request, response) => this.route(request, response));
+    const server = createServer((request, response) => { void this.route(request, response); });
     server.on('connection', (socket) => {
       this.accepted.add(socket as unknown as Duplex);
       socket.on('close', () => this.accepted.delete(socket as unknown as Duplex));
@@ -207,10 +249,22 @@ export class ForgeServer {
     await new Promise<void>((resolve) => server.listen(this.wanted, this.host, resolve));
     const address = server.address();
     this.port = typeof address === 'object' && address ? address.port : this.wanted;
+    // The console's own freshness contract (`VERIFIED_WINDOW_MS`, `console-model.ts`):
+    // a value is "verified" only while a heartbeat under 15s old is arriving, so a
+    // client with nothing else to poll still needs to hear from this process every 5s
+    // to know the feed itself is alive, distinct from any one lane going quiet.
+    this.heartbeatTimer = setInterval(() => this.publish({ type: 'heartbeat', at: Date.now() }), HEARTBEAT_MS);
+    this.heartbeatTimer.unref?.();
+    this.consoleWrites.start();
     return this.port;
   }
 
   async close(): Promise<void> {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = undefined;
+    }
+    this.consoleWrites.stop();
     for (const socket of this.sockets) socket.destroy();
     this.sockets.clear();
     const server = this.http;
@@ -359,8 +413,17 @@ export class ForgeServer {
     }
   }
 
-  private route(request: IncomingMessage, response: ServerResponse): void {
+  private async route(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const path = (request.url ?? '/').split('?')[0] ?? '/';
+
+    // The console's read routes (`/lanes`, `/thread`, `/journal`, `/caps`,
+    // `/proposals`, `/run/:id/{thread,pr,sandbox}`): all of them require the token like
+    // every route below except `/state`, checked here since `ConsoleReads` has no
+    // access to this server's own `authorized()`.
+    if (ConsoleReads.matches(path, request.method)) {
+      if (!this.authorized(request, response)) return;
+      if (await this.consoleReads.handle(path, request, response)) return;
+    }
 
     if (path === '/state' && request.method === 'GET') {
       return json(response, 200, this.state());
@@ -408,6 +471,7 @@ export class ForgeServer {
       }
       return this.routeMessage(request, response);
     }
+    if (await this.consoleWrites.handle(path, request, response)) return;
     if (request.method === 'GET') {
       return this.serveStatic(path, response);
     }

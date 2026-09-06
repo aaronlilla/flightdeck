@@ -33,7 +33,23 @@ for (const name of [
  * a production path that fell back to the real export, fails here instead of spending
  * money the next time it runs against a live login.
  */
-import { vi } from 'vitest';
+import '@testing-library/jest-dom/vitest';
+
+import { afterEach, vi } from 'vitest';
+
+/**
+ * React Testing Library only auto-registers its `cleanup` when it detects
+ * Jest-style globals; this suite imports `afterEach` per file instead, so
+ * nothing unmounted a previous test's tree without this. Every console
+ * component test would otherwise see the previous test's DOM stacked on top
+ * of its own.
+ */
+try {
+  const { cleanup } = await import('@testing-library/react');
+  afterEach(cleanup);
+} catch {
+  // Not every test file renders React; the module is optional here.
+}
 
 vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@anthropic-ai/claude-agent-sdk')>();

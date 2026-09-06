@@ -1,14 +1,10 @@
 /**
- * The fixture server cut 1 tests and screenshots against, standing in for
- * the real forge server on 4120 until PR #3 (B.3.9) merges and W6 wires the
- * console's routes into `src/forge/server.ts` for real.
- *
- * Serves the built `dist/console/` tree at `/`, injecting a token into the
- * `forge-token` meta tag the same way the real server will, plus the six
- * routes the console calls: `/state`, `/inbox`, `/answer`, `/stop`, `/send`,
- * `/clear`, and a minimal `/events` WebSocket. This file is never imported
- * by `src/forge/**` and never edits it; it is cut 1's own scaffolding, port
- * and all read from the environment so nothing machine-specific is baked in.
+ * The fixture server the UI, the vitest App test and the Playwright suite all
+ * run against until the real routes land in `src/forge/server.ts` (S2/S3).
+ * Serves every route in `src/shared/console-model.ts` from the seed fixtures
+ * under `src/console/fixtures/`, mutating them in memory so a write behaves
+ * the way the real server is meant to: kill kills, caps refuse above the hard
+ * limit, an answer resumes a parked lane.
  */
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
@@ -17,10 +13,30 @@ import { extname, join } from 'node:path';
 import type { Duplex } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
-import type { InboxEntry, InboxState } from './types.js';
+import { HEARTBEAT_MS } from '../shared/console-model.js';
+import type {
+  ActionResult, Caps, Integration, JournalEntry, Lane, Message, Rule,
+} from '../shared/console-model.js';
+import { seedCaps } from './fixtures/caps.js';
+import { seedIntegrations } from './fixtures/integrations.js';
+import { seedJournal } from './fixtures/journal.js';
+import { seedLanes } from './fixtures/lanes.js';
+import { seedRules } from './fixtures/proposals.js';
+import { seedThread } from './fixtures/thread.js';
 
-const HERE = fileURLToPath(new URL('.', import.meta.url));
-const DIST_DIR = join(HERE, '..', '..', 'dist', 'console');
+// `import.meta.url` is not always a `file:` URL under every test environment
+// (jsdom's module graph rewrites it); this only ever needs to resolve when
+// something actually asks for a static asset, so a bad URL here falls back
+// to the working directory instead of failing every route in the file.
+function distDir(): string {
+  try {
+    const here = fileURLToPath(new URL('.', import.meta.url));
+    return join(here, '..', '..', 'dist', 'console');
+  } catch {
+    return join(process.cwd(), 'dist', 'console');
+  }
+}
+const DIST_DIR = distDir();
 const PORT = Number(process.env['FORGE_STUB_PORT'] ?? 4130);
 const TOKEN = process.env['FORGE_STUB_TOKEN'] ?? 'stub-token';
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
@@ -33,96 +49,52 @@ const MIME: Record<string, string> = {
   '.json': 'application/json; charset=utf-8',
 };
 
-let inbox: InboxState = {
-  open: [
-    {
-      key: 'a1b2c3d4e5f60718',
-      question: 'dev tenant or the production Auth0 tenant for this run?',
-      options: ['dev', 'production'],
-      kind: 'question',
-      runs: ['withdrawal-fee'],
-      asked: 1,
-      at: Date.now() - 8 * 60_000,
-      disposition: 'park',
-      ticket: 'BBZ-412',
-    },
-  ],
-  all: [],
-};
-inbox.all = [...inbox.open];
+interface Db {
+  lanes: Lane[];
+  thread: Message[];
+  journal: JournalEntry[];
+  integrations: Integration[];
+  caps: Caps;
+  rules: Rule[];
+  jn: number;
+}
 
-function stateNow(): Record<string, unknown> {
-  const now = Date.now();
+function seedDb(): Db {
   return {
-    at: now,
-    lanes: {
-      value: [
-        {
-          slug: 'card-network-glow',
-          column: 'in-progress',
-          owner: 'forge',
-          session_id: 'sess-9f21',
-          claude_pid: 44821,
-          started: now - 42 * 60_000,
-          ended: null,
-          verdict: null,
-          position: 1,
-          note: null,
-          woken: 0,
-          model: 'claude-sonnet-5',
-          context: 86_000,
-          cost_usd: 4.32,
-          handoff: null,
-          usd_per_hour: 6.17,
-          verified_at: now - 4_000,
-          last_event_age_s: 12,
-          current_tool: { name: 'Bash', startedAt: now - 12_000 },
-          goal: 'card-network-glow-launch',
-          className: 'implement',
-          provider: 'anthropic',
-        },
-        {
-          slug: 'withdrawal-fee',
-          column: 'blocked',
-          owner: 'forge',
-          session_id: 'sess-7a03',
-          claude_pid: 44902,
-          started: now - 3 * 3_600_000,
-          ended: null,
-          verdict: null,
-          position: 2,
-          note: 'parked on a question',
-          woken: 1,
-          model: 'claude-sonnet-5',
-          context: 141_000,
-          cost_usd: 11.06,
-          handoff: null,
-          usd_per_hour: 3.69,
-          verified_at: now - 8 * 60_000,
-          last_event_age_s: 480,
-          current_tool: null,
-          goal: 'withdrawal-fee',
-          className: 'implement-hard',
-          provider: 'anthropic',
-        },
-      ],
-      verified_at: now,
-    },
-    burn: { value: { sonnet: 24.29, haiku: 1.04 }, observed_at: now - 30_000 },
-    handoffs: { value: 2, verified_at: now },
-    torn: { value: 0, verified_at: now },
-    inbox_open: { value: inbox.open.length, verified_at: now },
-    stuck: { value: [], verified_at: now },
-    fleet: { value: [{ name: 'warden', pid: 4021, alive: true }], verified_at: now },
+    lanes: seedLanes(),
+    thread: seedThread(),
+    journal: seedJournal(),
+    integrations: seedIntegrations(),
+    caps: seedCaps(),
+    rules: seedRules(),
+    jn: 40221,
   };
+}
+
+let db = seedDb();
+
+function nextJid(): string {
+  db.jn += 1;
+  return `J-${db.jn}`;
+}
+
+function journal(kind: string, text: string, run: string | null, undoable: boolean): string {
+  const jid = nextJid();
+  db.journal = [{ jid, ts: Date.now(), kind, text, actor: 'console', run, undoable, undone: false }, ...db.journal];
+  return jid;
+}
+
+function appendEvent(text: string, lane?: string): void {
+  db.thread = [...db.thread, { k: `evt-${Date.now()}-${Math.random()}`, type: 'event', text, ts: Date.now(), source: 'system', lane, verifiedAt: Date.now() }];
+}
+
+function findLane(id: string): Lane | undefined {
+  return db.lanes.find((l) => l.id === id);
 }
 
 function json(response: ServerResponse, status: number, body: unknown): void {
   const text = JSON.stringify(body);
-  response.writeHead(status, {
-    'content-type': 'application/json; charset=utf-8',
-    'content-length': Buffer.byteLength(text),
-  });
+  response.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(text) });
   response.end(text);
 }
 
@@ -132,6 +104,16 @@ function readBody(request: IncomingMessage): Promise<string> {
     request.on('data', (chunk) => { body += chunk; });
     request.on('end', () => resolve(body));
   });
+}
+
+async function readJson<T>(request: IncomingMessage): Promise<T> {
+  const raw = await readBody(request);
+  if (!raw) return {} as T;
+  return JSON.parse(raw) as T;
+}
+
+function ok(jid: string, message: string, undoable: boolean, lane?: Lane): ActionResult {
+  return { ok: true, jid, message, undoable, lane };
 }
 
 function serveStatic(request: IncomingMessage, response: ServerResponse, urlPath: string): void {
@@ -170,66 +152,341 @@ const sockets = new Set<Duplex>();
 function publish(event: Record<string, unknown>): void {
   const frame = textFrame(JSON.stringify(event));
   for (const socket of [...sockets]) {
-    try {
-      socket.write(frame);
-    } catch {
-      sockets.delete(socket);
-    }
+    try { socket.write(frame); } catch { sockets.delete(socket); }
   }
+}
+
+function runCommand(text: string): Message[] {
+  const t = text.trim();
+  const now = Date.now();
+  const laneRefMatch = /\b([a-z]{2,4}-\d{2,4})\b/i.exec(t);
+  const laneRef = laneRefMatch ? (laneRefMatch[1] as string).toUpperCase() : null;
+
+  if (/^confirm /i.test(t)) return []; // handled client-side against the local confirm card
+  if (/^kill\b/i.test(t) && laneRef) {
+    const lane = findLane(laneRef);
+    if (!lane) return [{ k: `c-${now}`, type: 'refusal', text: `no lane named ${laneRef}`, ts: now, source: 'conductor' }];
+    return [{
+      k: `confirm-${now}`, type: 'confirm', text: `Kill ${laneRef}?`, ts: now, source: 'conductor',
+      blast: 'discards the working diff and stops the sandbox.',
+    }];
+  }
+  if (/^merge ready lanes/i.test(t)) {
+    const ready = db.lanes.filter((l) => l.state === 'done');
+    if (ready.length === 0) return [{ k: `c-${now}`, type: 'reply', text: 'no lanes are ready to merge.', ts: now, source: 'conductor' }];
+    return [{
+      k: `plan-${now}`, type: 'plan', text: 'merge ready lanes', ts: now, source: 'conductor',
+      items: ready.map((l) => ({ text: `merge ${l.id}`, irreversible: true })),
+    }];
+  }
+  if (/^(raise|set) daily cap to \$?(\d+)/i.test(t)) {
+    const m = /\$?(\d+)/.exec(t);
+    const value = m ? Number(m[1]) : db.caps.dailyUsd;
+    if (value > db.caps.hardUsd) {
+      return [{ k: `c-${now}`, type: 'refusal', text: `refused: $${value} is above the org hard limit $${db.caps.hardUsd} (FD-7)`, ts: now, source: 'conductor' }];
+    }
+    db.caps = { ...db.caps, dailyUsd: value };
+    const jid = journal('caps.set', `daily cap set to $${value}`, null, true);
+    return [{ k: `r-${now}`, type: 'receipt', text: `daily cap set to $${value}`, ts: now, source: 'conductor', jid, undoable: true }];
+  }
+  if (/^cap\b/i.test(t) && laneRef) {
+    const m = /\$?(\d+)/.exec(t);
+    const value = m ? Number(m[1]) : 0;
+    if (value > db.caps.hardUsd) {
+      return [{ k: `c-${now}`, type: 'refusal', text: `refused: $${value} is above the org hard limit $${db.caps.hardUsd} (FD-7)`, ts: now, source: 'conductor' }];
+    }
+    const lane = findLane(laneRef);
+    if (lane) lane.capUsd = value;
+    const jid = journal('run.cap.set', `${laneRef} cap set to $${value}`, laneRef, true);
+    return [{ k: `r-${now}`, type: 'receipt', text: `${laneRef} cap set to $${value}`, ts: now, source: 'conductor', jid, undoable: true }];
+  }
+  if (/^answer\b/i.test(t)) {
+    const rest = t.replace(/^answer\s*/i, '');
+    const parked = db.lanes.find((l) => l.state === 'parked' && l.question);
+    if (!parked || !parked.question) return [{ k: `c-${now}`, type: 'reply', text: 'nothing is parked right now.', ts: now, source: 'conductor' }];
+    const answerText = rest.replace(new RegExp(`^${parked.question.key}\\s*`), '').trim() || rest.trim();
+    parked.state = 'running';
+    parked.heart = true;
+    parked.question = null;
+    const jid = journal('ask.answered', `${parked.id} answered: ${answerText}`, parked.id, false);
+    appendEvent(`${parked.id} resumed`, parked.id);
+    return [{ k: `r-${now}`, type: 'receipt', text: `${parked.id} resumed: ${answerText}`, ts: now, source: 'conductor', jid, undoable: false }];
+  }
+  if (/what's stuck|whats stuck/i.test(t)) {
+    const stuck = db.lanes.filter((l) => l.state === 'blocked' || l.state === 'parked');
+    return [{ k: `c-${now}`, type: 'reply', text: stuck.length ? stuck.map((l) => l.id).join(', ') : 'nothing is stuck.', ts: now, source: 'conductor' }];
+  }
+  if (/^why is/i.test(t) && laneRef) {
+    const lane = findLane(laneRef);
+    return [{ k: `c-${now}`, type: 'reply', text: lane?.reason ?? `${laneRef} has no recorded reason.`, ts: now, source: 'conductor' }];
+  }
+  if (/spend today/i.test(t)) {
+    return [{ k: `c-${now}`, type: 'reply', text: `$${db.caps.spentTodayUsd.toFixed(2)} of a $${db.caps.dailyUsd} daily cap.`, ts: now, source: 'conductor' }];
+  }
+  if (/^status/i.test(t)) {
+    const running = db.lanes.filter((l) => l.state === 'running').length;
+    return [{ k: `c-${now}`, type: 'reply', text: `${running} running, ${db.lanes.length} lanes total.`, ts: now, source: 'conductor' }];
+  }
+  return [{ k: `c-${now}`, type: 'reply', text: "I understand pause, resume, kill <lane>, merge ready lanes, cap <lane> at $N, answer, what's stuck, spend today, status.", ts: now, source: 'conductor' }];
 }
 
 export function createStubServer() {
   const server = createServer((request, response) => {
-    const urlPath = (request.url ?? '/').split('?')[0] ?? '/';
+    void (async () => {
+      const urlPath = (request.url ?? '/').split('?')[0] ?? '/';
+      const query = new URLSearchParams((request.url ?? '').split('?')[1] ?? '');
+      const method = request.method ?? 'GET';
 
-    if (urlPath === '/state' && request.method === 'GET') {
-      json(response, 200, stateNow());
-      return;
-    }
-    if (urlPath === '/inbox' && request.method === 'GET') {
-      json(response, 200, inbox);
-      return;
-    }
-    if (urlPath === '/answer' && request.method === 'POST') {
-      void readBody(request).then((raw) => {
-        let parsed: { key?: string; answer?: string };
-        try {
-          parsed = JSON.parse(raw) as typeof parsed;
-        } catch {
-          json(response, 400, { error: 'the body was not JSON' });
-          return;
-        }
-        if (!parsed.key || parsed.answer === undefined) {
-          json(response, 400, { error: 'an answer needs a key and an answer' });
-          return;
-        }
-        const found = inbox.open.find((entry) => entry.key === parsed.key);
-        if (!found) {
-          json(response, 404, { error: `nothing asked ${parsed.key}` });
-          return;
-        }
-        const answered: InboxEntry = { ...found, answer: parsed.answer, answeredAt: Date.now() };
-        inbox = { open: inbox.open.filter((entry) => entry.key !== parsed.key), all: inbox.all };
-        publish({ event: 'ask.answered', key: answered.key, runs: answered.runs });
-        json(response, 200, answered);
-      });
-      return;
-    }
-    if (urlPath === '/stop' && request.method === 'POST') {
-      publish({ event: 'run.parked', actor: 'console' });
-      json(response, 200, { stopped: ['card-network-glow', 'withdrawal-fee'] });
-      return;
-    }
-    if (urlPath === '/send' && request.method === 'POST') {
-      json(response, 200, { ok: true });
-      return;
-    }
-    if (urlPath === '/clear' && request.method === 'POST') {
-      json(response, 200, { ok: true });
-      return;
-    }
+      if (urlPath === '/lanes' && method === 'GET') {
+        const spentTodayUsd = db.lanes.reduce((sum, l) => sum + l.costUsd, 0);
+        const burnUsdPerMin = db.lanes.reduce((sum, l) => sum + (l.state === 'running' ? l.burnUsdPerMin : 0), 0);
+        json(response, 200, { at: Date.now(), lanes: db.lanes, spentTodayUsd, burnUsdPerMin });
+        return;
+      }
+      if (urlPath === '/thread' && method === 'GET') {
+        json(response, 200, { messages: db.thread });
+        return;
+      }
+      if (urlPath === '/journal' && method === 'GET') {
+        const since = query.has('since') ? Number(query.get('since')) : undefined;
+        const run = query.get('run') ?? undefined;
+        const limit = query.has('limit') ? Number(query.get('limit')) : undefined;
+        let rows = db.journal;
+        if (since !== undefined) rows = rows.filter((r) => r.ts >= since);
+        if (run !== undefined) rows = rows.filter((r) => r.run === run);
+        const total = rows.length;
+        if (limit !== undefined) rows = rows.slice(0, limit);
+        json(response, 200, { rows, total });
+        return;
+      }
+      if (urlPath === '/integrations' && method === 'GET') {
+        json(response, 200, { items: db.integrations, checkedAt: Date.now(), everyS: 30 });
+        return;
+      }
+      if (urlPath === '/caps' && method === 'GET') {
+        json(response, 200, db.caps);
+        return;
+      }
+      if (urlPath === '/proposals' && method === 'GET') {
+        const mergedToday = db.lanes.filter((l) => l.state === 'merged').length;
+        const metrics = { mergedToday, humanWaitMin: 8, costPerMergeUsd: mergedToday > 0 ? db.caps.spentTodayUsd / mergedToday : null, wastedUsd: 12.4 };
+        json(response, 200, { rules: db.rules, metrics, computedAt: Date.now() });
+        return;
+      }
 
-    serveStatic(request, response, urlPath);
+      const runThreadMatch = /^\/run\/([^/]+)\/thread$/.exec(urlPath);
+      if (runThreadMatch && method === 'GET') {
+        const id = decodeURIComponent(runThreadMatch[1] as string);
+        json(response, 200, { messages: db.thread.filter((m) => m.lane === id) });
+        return;
+      }
+      const runPrMatch = /^\/run\/([^/]+)\/pr$/.exec(urlPath);
+      if (runPrMatch && method === 'GET') {
+        const lane = findLane(decodeURIComponent(runPrMatch[1] as string));
+        json(response, 200, { pr: lane?.pr ?? null });
+        return;
+      }
+      const runSandboxMatch = /^\/run\/([^/]+)\/sandbox$/.exec(urlPath);
+      if (runSandboxMatch && method === 'GET') {
+        const lane = findLane(decodeURIComponent(runSandboxMatch[1] as string));
+        json(response, 200, { sandbox: lane?.sandbox ?? null, log: lane?.sandbox ? [`${new Date().toISOString()} sandbox ready`, `${lane.stepText}`] : [] });
+        return;
+      }
+
+      const runKillMatch = /^\/run\/([^/]+)\/kill$/.exec(urlPath);
+      if (runKillMatch && method === 'POST') {
+        const id = decodeURIComponent(runKillMatch[1] as string);
+        const lane = findLane(id);
+        if (!lane) { json(response, 404, { error: `no lane named ${id}` }); return; }
+        lane.state = 'killed'; lane.heart = false; lane.burnUsdPerMin = 0; lane.hopStatus = 'blocked';
+        const jid = journal('run.killed', `${id} killed`, id, false);
+        appendEvent(`${id} killed`, id);
+        publish({ type: 'run.killed', run: id });
+        json(response, 200, ok(jid, `${id} killed`, false, lane));
+        return;
+      }
+      const runPauseMatch = /^\/run\/([^/]+)\/pause$/.exec(urlPath);
+      if (runPauseMatch && method === 'POST') {
+        const id = decodeURIComponent(runPauseMatch[1] as string);
+        const lane = findLane(id);
+        if (!lane) { json(response, 404, { error: `no lane named ${id}` }); return; }
+        lane.state = 'paused'; lane.heart = false;
+        const jid = journal('run.paused', `${id} paused`, id, true);
+        json(response, 200, ok(jid, `${id} paused`, true, lane));
+        return;
+      }
+      const runResumeMatch = /^\/run\/([^/]+)\/resume$/.exec(urlPath);
+      if (runResumeMatch && method === 'POST') {
+        const id = decodeURIComponent(runResumeMatch[1] as string);
+        const lane = findLane(id);
+        if (!lane) { json(response, 404, { error: `no lane named ${id}` }); return; }
+        lane.state = 'running'; lane.heart = true; lane.verifiedAt = Date.now();
+        const jid = journal('run.resumed', `${id} resumed`, id, false);
+        json(response, 200, ok(jid, `${id} resumed`, false, lane));
+        return;
+      }
+      const runMergeMatch = /^\/run\/([^/]+)\/merge$/.exec(urlPath);
+      if (runMergeMatch && method === 'POST') {
+        const id = decodeURIComponent(runMergeMatch[1] as string);
+        const lane = findLane(id);
+        if (!lane) { json(response, 404, { error: `no lane named ${id}` }); return; }
+        lane.state = 'merged'; lane.hop = 5; lane.hopStatus = 'done';
+        const jid = journal('chain.merged', `${id} merged`, id, false);
+        appendEvent(`${id} merged`, id);
+        publish({ type: 'chain.merged', run: id });
+        json(response, 200, ok(jid, `${id} merged`, false, lane));
+        return;
+      }
+      const runReopenMatch = /^\/run\/([^/]+)\/reopen$/.exec(urlPath);
+      if (runReopenMatch && method === 'POST') {
+        const id = decodeURIComponent(runReopenMatch[1] as string);
+        const lane = findLane(id);
+        if (!lane) { json(response, 404, { error: `no lane named ${id}` }); return; }
+        lane.state = 'running'; lane.attempt += 1; lane.fails = 0; lane.runaway = false; lane.heart = true;
+        const jid = journal('run.reopened', `${id} reopened (attempt ${lane.attempt})`, id, false);
+        json(response, 200, ok(jid, `${id} reopened`, false, lane));
+        return;
+      }
+      const runCompactMatch = /^\/run\/([^/]+)\/compact$/.exec(urlPath);
+      if (runCompactMatch && method === 'POST') {
+        const id = decodeURIComponent(runCompactMatch[1] as string);
+        const lane = findLane(id);
+        if (!lane) { json(response, 404, { error: `no lane named ${id}` }); return; }
+        lane.ctxTokens = Math.round(lane.ctxCeiling * 0.45); lane.state = 'running'; lane.heart = true;
+        const jid = journal('run.compacted', `${id} compacted and resumed`, id, false);
+        json(response, 200, ok(jid, `${id} compacted and resumed`, false, lane));
+        return;
+      }
+      const runVerifyMatch = /^\/run\/([^/]+)\/verify$/.exec(urlPath);
+      if (runVerifyMatch && method === 'POST') {
+        const id = decodeURIComponent(runVerifyMatch[1] as string);
+        const lane = findLane(id);
+        if (!lane) { json(response, 404, { error: `no lane named ${id}` }); return; }
+        lane.state = 'done';
+        if (!lane.pr) lane.pr = { no: 900 + db.jn, url: 'https://example.invalid/pr/verify', files: 1, add: 1, del: 0, draft: true };
+        const jid = journal('run.verified', `${id} verified`, id, false);
+        json(response, 200, ok(jid, `${id} verified`, false, lane));
+        return;
+      }
+      const runCapMatch = /^\/run\/([^/]+)\/cap$/.exec(urlPath);
+      if (runCapMatch && method === 'POST') {
+        const id = decodeURIComponent(runCapMatch[1] as string);
+        const lane = findLane(id);
+        if (!lane) { json(response, 404, { error: `no lane named ${id}` }); return; }
+        const body = await readJson<{ capUsd?: number }>(request);
+        const capUsd = body.capUsd ?? 0;
+        if (capUsd > db.caps.hardUsd) { json(response, 422, { error: `above the org hard limit`, hardUsd: db.caps.hardUsd }); return; }
+        const previous = lane.capUsd;
+        lane.capUsd = capUsd;
+        const jid = journal('run.cap.set', `${id} cap set to $${capUsd}`, id, true);
+        db.journal[0]!.text += ` (was ${previous === null ? 'unset' : `$${previous}`})`;
+        json(response, 200, ok(jid, `${id} cap set to $${capUsd}`, true, lane));
+        return;
+      }
+
+      if (urlPath === '/caps' && method === 'POST') {
+        const body = await readJson<{ dailyUsd?: number; runUsd?: number }>(request);
+        if ((body.dailyUsd !== undefined && body.dailyUsd > db.caps.hardUsd) || (body.runUsd !== undefined && body.runUsd > db.caps.hardUsd)) {
+          json(response, 422, { error: 'above the org hard limit', hardUsd: db.caps.hardUsd });
+          return;
+        }
+        db.caps = { ...db.caps, dailyUsd: body.dailyUsd ?? db.caps.dailyUsd, runUsd: body.runUsd ?? db.caps.runUsd };
+        journal('caps.set', `caps updated: daily $${db.caps.dailyUsd}, per-run $${db.caps.runUsd}`, null, true);
+        json(response, 200, db.caps);
+        return;
+      }
+
+      if (urlPath === '/command' && method === 'POST') {
+        const body = await readJson<{ text?: string }>(request);
+        const cards = runCommand(body.text ?? '');
+        db.thread = [...db.thread, ...cards];
+        json(response, 200, { cards });
+        return;
+      }
+
+      const checkMatch = /^\/integrations\/([^/]+)\/check$/.exec(urlPath);
+      if (checkMatch && method === 'POST') {
+        const id = decodeURIComponent(checkMatch[1] as string);
+        db.integrations = db.integrations.map((i) => (i.id === id ? { ...i, checkedAt: Date.now() } : i));
+        json(response, 200, { items: db.integrations, checkedAt: Date.now(), everyS: 30 });
+        return;
+      }
+      const reconnectMatch = /^\/integrations\/([^/]+)\/reconnect$/.exec(urlPath);
+      if (reconnectMatch && method === 'POST') {
+        const id = decodeURIComponent(reconnectMatch[1] as string);
+        const integration = db.integrations.find((i) => i.id === id);
+        if (!integration) { json(response, 404, { error: `no integration named ${id}` }); return; }
+        integration.status = 'ok'; integration.since = null; integration.step = 3;
+        for (const lane of db.lanes) {
+          if (lane.blockedBy === id) { lane.state = 'running'; lane.heart = true; lane.blockedBy = null; }
+        }
+        const jid = journal('blocker.cleared', `${integration.name} reconnected`, null, false);
+        appendEvent(`${integration.name} reconnected`);
+        publish({ type: 'blocker.cleared', integration: id });
+        json(response, 200, {
+          ok: true, integration, steps: [{ text: 'open SSO', done: true }, { text: 'verify', done: true }, { text: 'resume lanes', done: true }],
+          message: `${integration.name} reconnected`, jid,
+        });
+        return;
+      }
+
+      const applyMatch = /^\/proposals\/([^/]+)\/apply$/.exec(urlPath);
+      if (applyMatch && method === 'POST') {
+        const id = decodeURIComponent(applyMatch[1] as string);
+        const rule = db.rules.find((r) => r.id === id);
+        if (!rule) { json(response, 404, { error: `no proposal named ${id}` }); return; }
+        const jid = journal('decision.made', `applied ${rule.title}`, null, true);
+        rule.status = 'applied'; rule.jid = jid;
+        if (id === 'kill3') {
+          const target = db.lanes.find((l) => l.fails >= 2);
+          if (target) { target.state = 'killed'; target.heart = false; appendEvent(`${target.id} killed by rule ${rule.title}`, target.id); }
+        }
+        if (id === 'autoans') {
+          const parked = db.lanes.find((l) => l.state === 'parked' && l.question);
+          if (parked && parked.question) {
+            parked.state = 'running'; parked.heart = true; parked.question = null;
+            appendEvent(`${parked.id} auto-answered by rule ${rule.title}`, parked.id);
+          }
+        }
+        json(response, 200, ok(jid, `applied ${rule.title}`, true, undefined));
+        return;
+      }
+      const dismissMatch = /^\/proposals\/([^/]+)\/dismiss$/.exec(urlPath);
+      if (dismissMatch && method === 'POST') {
+        const id = decodeURIComponent(dismissMatch[1] as string);
+        const rule = db.rules.find((r) => r.id === id);
+        if (!rule) { json(response, 404, { error: `no proposal named ${id}` }); return; }
+        rule.status = 'dismissed';
+        const jid = journal('decision.made', `dismissed ${rule.title}`, null, true);
+        json(response, 200, ok(jid, `dismissed ${rule.title}`, true));
+        return;
+      }
+      const restoreMatch = /^\/proposals\/([^/]+)\/restore$/.exec(urlPath);
+      if (restoreMatch && method === 'POST') {
+        const id = decodeURIComponent(restoreMatch[1] as string);
+        const rule = db.rules.find((r) => r.id === id);
+        if (!rule) { json(response, 404, { error: `no proposal named ${id}` }); return; }
+        rule.status = 'open';
+        json(response, 200, ok('', `restored ${rule.title}`, false));
+        return;
+      }
+
+      const undoMatch = /^\/journal\/([^/]+)\/undo$/.exec(urlPath);
+      if (undoMatch && method === 'POST') {
+        const jid = decodeURIComponent(undoMatch[1] as string);
+        const entry = db.journal.find((j) => j.jid === jid);
+        if (!entry || !entry.undoable || entry.undone) { json(response, 409, { error: `${jid} cannot be undone` }); return; }
+        entry.undone = true;
+        if (entry.kind === 'run.paused' && entry.run) {
+          const lane = findLane(entry.run);
+          if (lane) { lane.state = 'running'; lane.heart = true; }
+        }
+        json(response, 200, ok(jid, `undone ${jid}`, false));
+        return;
+      }
+
+      serveStatic(request, response, urlPath);
+    })();
   });
 
   server.on('upgrade', (request, socket) => {
@@ -247,13 +504,32 @@ export function createStubServer() {
     );
     sockets.add(duplex);
     duplex.on('close', () => sockets.delete(duplex));
+    // A page navigation or a Playwright route abort tears this socket down without a
+    // clean close; with no listener here Node treats that as an unhandled 'error' and
+    // takes the whole stub server down mid-suite (ECONNABORTED, seen 2026-09-05 killing
+    // every test after the first WS client left).
+    duplex.on('error', () => sockets.delete(duplex));
   });
+
+  const heartbeat = setInterval(() => publish({ type: 'heartbeat', at: Date.now() }), HEARTBEAT_MS);
+  server.on('close', () => clearInterval(heartbeat));
 
   return server;
 }
 
-// Guarded so importing this module for a test never starts a listening server.
-const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+/** Test-only: put the fixtures back to their seed shape between specs. */
+export function resetStubDb(): void {
+  db = seedDb();
+}
+
+function isMainModule(): boolean {
+  try {
+    return Boolean(process.argv[1]) && fileURLToPath(import.meta.url) === process.argv[1];
+  } catch {
+    return false;
+  }
+}
+const isMain = isMainModule();
 if (isMain) {
   const server = createStubServer();
   server.listen(PORT, '127.0.0.1', () => {

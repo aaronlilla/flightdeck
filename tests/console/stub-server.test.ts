@@ -1,88 +1,77 @@
-/**
- * The fixture stub server cut 1 builds, screenshots and tests against in
- * place of the real forge server. Runs under the default node environment,
- * same as the rest of the non-console suite: this file never touches the
- * DOM.
- */
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import type { Server } from 'node:http';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-let server: Server;
-let port: number;
-let distDir: string;
-let previousIndexHtml: string | undefined;
+import { createStubServer, resetStubDb } from '../../src/console/stub-server.js';
 
-async function json(path: string, init?: RequestInit): Promise<{ status: number; body: unknown }> {
-  const response = await fetch(`http://127.0.0.1:${port}${path}`, init);
-  const body = await response.json().catch(() => undefined);
-  return { status: response.status, body };
-}
+let server: Server;
+let base: string;
 
 beforeEach(async () => {
-  // `stub-server.ts` reads its dist directory relative to itself, two levels
-  // up. There is no way to point it at a temp directory without changing
-  // that path, so a fixture `dist/console/index.html` stands in for a real
-  // build here, saved and restored around the test instead of faking the
-  // module's own layout.
-  const here = fileURLToPath(new URL('../../src/console/', import.meta.url));
-  distDir = join(here, '..', '..', 'dist', 'console');
-  mkdirSync(distDir, { recursive: true });
-  const indexPath = join(distDir, 'index.html');
-  previousIndexHtml = existsSync(indexPath) ? readFileSync(indexPath, 'utf8') : undefined;
-  writeFileSync(
-    indexPath,
-    '<html><head><meta name="forge-token" content="" /></head><body>stub</body></html>',
-  );
-  const mod = await import('../../src/console/stub-server.js');
-  server = mod.createStubServer();
+  resetStubDb();
+  server = createStubServer();
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
-  port = typeof address === 'object' && address ? address.port : 0;
+  const port = typeof address === 'object' && address ? address.port : 0;
+  base = `http://127.0.0.1:${port}`;
 });
 
 afterEach(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
-  const indexPath = join(distDir, 'index.html');
-  if (previousIndexHtml === undefined) rmSync(indexPath, { force: true });
-  else writeFileSync(indexPath, previousIndexHtml);
 });
 
-describe('console stub server', () => {
-  it('injects the stub token into index.html', async () => {
-    const response = await fetch(`http://127.0.0.1:${port}/`);
-    const text = await response.text();
-    expect(text).toContain('content="stub-token"');
+async function get<T>(path: string): Promise<T> {
+  const response = await fetch(`${base}${path}`);
+  return (await response.json()) as T;
+}
+
+async function post<T>(path: string, body: unknown = {}): Promise<{ status: number; body: T }> {
+  const response = await fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  return { status: response.status, body: (await response.json()) as T };
+}
+
+describe('stub server', () => {
+  it('serves the 14-lane board with one lane per state', async () => {
+    const { lanes } = await get<{ lanes: { state: string }[] }>('/lanes');
+    expect(lanes.length).toBe(14);
+    const states = new Set(lanes.map((l) => l.state));
+    expect(states).toContain('running');
+    expect(states).toContain('parked');
+    expect(states).toContain('merged');
   });
 
-  it('serves a fleet state and an open inbox entry', async () => {
-    const state = await json('/state');
-    expect(state.status).toBe(200);
-    expect((state.body as { lanes: { value: unknown[] } }).lanes.value.length).toBeGreaterThan(0);
-
-    const inbox = await json('/inbox');
-    expect(inbox.status).toBe(200);
-    expect((inbox.body as { open: unknown[] }).open.length).toBe(1);
+  // POLISH-2 #4: the real /lanes?all=1 route lands server-side in parallel; the stub
+  // must not break on the query it doesn't otherwise act on.
+  it('accepts the all=1 query on /lanes without erroring', async () => {
+    const { lanes } = await get<{ lanes: { state: string }[] }>('/lanes?all=1');
+    expect(lanes.length).toBe(14);
   });
 
-  it('answers a question and the entry leaves /inbox open', async () => {
-    const answered = await json('/answer', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ key: 'a1b2c3d4e5f60718', answer: 'dev' }),
-    });
-    expect(answered.status).toBe(200);
-
-    const inbox = await json('/inbox');
-    expect((inbox.body as { open: unknown[] }).open).toEqual([]);
+  it('kills a run and journals it', async () => {
+    const { status, body } = await post<{ ok: boolean; jid: string }>('/run/FLT-201/kill', { reason: 'operator' });
+    expect(status).toBe(200);
+    expect(body.ok).toBe(true);
+    const { lanes } = await get<{ lanes: { id: string; state: string }[] }>('/lanes');
+    expect(lanes.find((l) => l.id === 'FLT-201')?.state).toBe('killed');
   });
 
-  it('accepts /stop, /send and /clear', async () => {
-    expect((await json('/stop', { method: 'POST' })).status).toBe(200);
-    expect((await json('/send', { method: 'POST', body: '{}' })).status).toBe(200);
-    expect((await json('/clear', { method: 'POST', body: '{}' })).status).toBe(200);
+  it('refuses a per-run cap above the hard limit', async () => {
+    const { status, body } = await post<{ error: string; hardUsd: number }>('/run/FLT-201/cap', { capUsd: 999 });
+    expect(status).toBe(422);
+    expect(body.hardUsd).toBe(100);
+  });
+
+  it('answers the parked lane through the command grammar and resumes it', async () => {
+    const { body } = await post<{ cards: { type: string }[] }>('/command', { text: 'answer nullable + backfill' });
+    expect(body.cards.some((c) => c.type === 'receipt')).toBe(true);
+    const { lanes } = await get<{ lanes: { id: string; state: string }[] }>('/lanes');
+    expect(lanes.find((l) => l.id === 'BBZ-118')?.state).toBe('running');
+  });
+
+  it('reconnects an integration and unblocks its dependents', async () => {
+    const before = await get<{ lanes: { id: string; state: string }[] }>('/lanes');
+    expect(before.lanes.find((l) => l.id === 'FLT-211')?.state).toBe('blocked');
+    await post('/integrations/aws/reconnect');
+    const after = await get<{ lanes: { id: string; state: string }[] }>('/lanes');
+    expect(after.lanes.find((l) => l.id === 'FLT-211')?.state).toBe('running');
   });
 });
