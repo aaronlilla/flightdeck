@@ -120,6 +120,39 @@ describe('budgets that run out', () => {
   }, 20_000);
 });
 
+describe('raw: a caller that must parse git plumbing verbatim asks out of redaction', () => {
+  it('without raw, a long ticket-shaped worktree path is corrupted by redact() before the caller can parse it', async () => {
+    // A real `git worktree list --porcelain` line for a queue-planned worktree: the
+    // branch name carries the queue's own ticket id, which is exactly the shape (24+
+    // alnum/hyphen characters, not pure hex) that `redact()`'s SECRET_PATTERN treats as
+    // a token. Reproduced live on 2026-09-06: `provisionWorktree`'s reuse check compares
+    // this parsed branch against a freshly computed one that is never redacted, so the
+    // two can never match once the ticket is long enough, and it re-attempts `git
+    // worktree add` on a worktree that already exists.
+    const porcelain = 'worktree C:/repos/worktrees/flightdeck--queue-brief-1788733695265\n'
+      + 'HEAD 5495ba6e306d35b754f4b4965ff74ad66b0e02bc\n'
+      + 'branch refs/heads/feature/queue-brief-1788733695265\n\n';
+    const script = `process.stdout.write(${JSON.stringify(porcelain)});`;
+
+    const result = await run({ argv: ['node', '-e', script], cwd: dir, owner: 'r1' });
+
+    expect(result.tail).not.toContain('feature/queue-brief-1788733695265');
+    expect(result.tail).toContain('[REDACTED]');
+  });
+
+  it('with raw, the same output survives untouched for a caller to parse', async () => {
+    const porcelain = 'worktree C:/repos/worktrees/flightdeck--queue-brief-1788733695265\n'
+      + 'HEAD 5495ba6e306d35b754f4b4965ff74ad66b0e02bc\n'
+      + 'branch refs/heads/feature/queue-brief-1788733695265\n\n';
+    const script = `process.stdout.write(${JSON.stringify(porcelain)});`;
+
+    const result = await run({ argv: ['node', '-e', script], cwd: dir, owner: 'r1', raw: true });
+
+    expect(result.tail).toBe(porcelain);
+    expect(result.tail).not.toContain('[REDACTED]');
+  });
+});
+
 describe('B.3.9: redact() reaches the dump and the tail, even split across chunks', () => {
   it('a synthetic token split across two writes never survives whole in the dump', async () => {
     const secret = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';

@@ -147,6 +147,23 @@ describe('provisionWorktree', () => {
     expect(calls.some((c) => c.argv[0] === 'npm ci')).toBe(true);
   });
 
+  it('D2: the worktree list read asks for raw output, so a long ticket id or a UUID-bearing path never gets redacted mid-parse', async () => {
+    const calls: RunRequest[] = [];
+    const chainEnv = envWith({ checkouts: [{ repo, value: checkout }] });
+    const exec = async (request: RunRequest): Promise<RunResult> => {
+      calls.push(request);
+      if (request.argv.includes('list')) {
+        return listResult(`worktree ${worktreePath}\nHEAD abcdef\nbranch refs/heads/${branch}\n`);
+      }
+      return { ok: true, tail: '' } as RunResult;
+    };
+
+    await provisionWorktree({ chainEnv, repo, ticket, exec, fs: fakeFs({ markerExists: true }) });
+
+    const list = calls.find((c) => c.argv.includes('list'));
+    expect(list?.raw).toBe(true);
+  });
+
   it('existing path on the branch reuses and skips the add', async () => {
     const calls: RunRequest[] = [];
     const chainEnv = envWith({ checkouts: [{ repo, value: checkout }] });

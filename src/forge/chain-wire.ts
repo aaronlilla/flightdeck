@@ -406,9 +406,15 @@ export async function provisionWorktree(input: {
   const runner = input.exec ?? execRun;
   const fs = input.fs ?? REAL_FS;
 
+  // D2, 2026-09-06: `raw: true` -- this listing is parsed as data by `parseWorktreeList`
+  // below, never shown to a person. Without it, `redact()` blanks a long ticket id or a
+  // UUID-bearing path segment to `[REDACTED]` in the branch/path text this function
+  // compares against a freshly computed (never-redacted) branch name, which can then
+  // never match; the reuse check falls through to `git worktree add` on a worktree that
+  // already exists. See exec.ts's `raw` option for the confirmed live failure.
   const list = await runner({
     argv: ['git', '-C', checkout, 'worktree', 'list', '--porcelain'],
-    cwd: checkout, owner: `chain-${input.ticket}`, cls: 'script',
+    cwd: checkout, owner: `chain-${input.ticket}`, cls: 'script', raw: true,
   });
   const entries = list.ok ? parseWorktreeList(list.tail) : [];
 
