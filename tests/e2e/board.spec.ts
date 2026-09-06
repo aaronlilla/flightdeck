@@ -33,11 +33,13 @@ test('command palette opens on cmd/ctrl+K and closes on Escape', async ({ page }
   await expect(page.getByTestId('command-palette')).toHaveCount(0);
 });
 
+// Row: the theme chip labels the mode a click switches TO, not the mode showing
+// now (script_wrapped.txt 303) -- so the chip reads "day mode" while dark.
 test('the theme toggle switches between dark and light', async ({ page }) => {
   await page.goto('/');
   const root = page.locator('.app');
   await expect(root).toHaveClass(/thD/);
-  await page.getByText('dark').click();
+  await page.getByText('day mode').click();
   await expect(root).toHaveClass(/thL/);
 });
 
@@ -60,11 +62,14 @@ test('kill shows a confirm card before anything happens', async ({ page }) => {
   await expect(page.getByTestId('lane-FLT-201')).toHaveAttribute('data-state', 'running');
 });
 
-test('a lane tile prefixes its step text with step N/M, and shows no cap text unless it is runaway', async ({ page }) => {
+// Row: cap text matches the prototype's own `'cap $'+cap+' · ×'+Math.round(cost/cap)`
+// (no word "exceeded", multiplier rounded), and shows once cost exceeds cap regardless
+// of the separate `runaway` flag.
+test('a lane tile prefixes its step text with step N/M, and shows cap text once cost exceeds cap', async ({ page }) => {
   await page.goto('/');
   const runaway = page.getByTestId('lane-FLT-204');
   await expect(runaway.getByText('step 2/6 · retrying a flaky build step')).toBeVisible();
-  await expect(runaway.getByText(/cap \$8 · exceeded/)).toBeVisible();
+  await expect(runaway.getByText('cap $8 · ×3')).toBeVisible();
   const normal = page.getByTestId('lane-FLT-201');
   await expect(normal.getByText(/cap \$/)).toHaveCount(0);
 });
@@ -84,12 +89,14 @@ test('the spend readout opens the fleet cost sheet', async ({ page }) => {
   await expect(sheet.getByText('FLT-204')).toBeVisible();
 });
 
-// POLISH-2 #4: "today" defaults once the fleet passes 12 lanes; "all" refetches
-// with ?all=1.
-test('today is the default filter past 12 lanes, and all refetches with ?all=1', async ({ page }) => {
+// POLISH-2 #4: "today" defaults once the fleet passes 12 lanes -- the filter row no
+// longer has a chip for it (the prototype never had one), so the only surface left
+// is that no base chip reads active until the operator picks one, and "all" refetches
+// with ?all=1 once clicked.
+test('no base filter chip is active by default past 12 lanes, and all refetches with ?all=1', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByTestId('lane-FLT-201')).toBeVisible();
-  await expect(page.locator('.chipOn', { hasText: 'today' })).toBeVisible();
+  await expect(page.locator('.chipOn', { hasText: /^all \d+$/ })).toHaveCount(0);
   const allRequest = page.waitForRequest((req) => req.url().includes('/lanes?all=1'));
   await page.locator('.chip', { hasText: /^all \d+$/ }).click();
   await allRequest;

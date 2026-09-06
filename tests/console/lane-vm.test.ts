@@ -57,14 +57,20 @@ describe('stepDisplay', () => {
   });
 });
 
-// POLISH-1 #2: the tile shows the cap only for a runaway lane; the sheets show it either way.
+// POLISH-1 #2, corrected: the tile shows the cap once cost exceeds it, whether or not
+// the lane also carries the separate `runaway` flag (prototype: `over=l.cost>l.cap`,
+// used unconditionally).
 describe('tileCapText / costClass', () => {
   it('shows no cap text on a normal tile', () => {
     expect(tileCapText(lane('running', { costUsd: 4.32, capUsd: 20, runaway: false }))).toBe('');
   });
 
-  it('shows cap $N · exceeded ×K only for a runaway lane', () => {
-    expect(tileCapText(lane('running', { costUsd: 27.5, capUsd: 8, runaway: true }))).toBe('cap $8 · exceeded ×3.4');
+  it('shows cap $N · ×K once cost exceeds cap, even without the runaway flag', () => {
+    expect(tileCapText(lane('running', { costUsd: 27.5, capUsd: 8, runaway: false }))).toBe('cap $8 · ×3');
+  });
+
+  it('shows the same cap text for a runaway lane', () => {
+    expect(tileCapText(lane('running', { costUsd: 27.5, capUsd: 8, runaway: true }))).toBe('cap $8 · ×3');
   });
 
   it('renders the cost readout phosphor-off when stale, regardless of amount', () => {
