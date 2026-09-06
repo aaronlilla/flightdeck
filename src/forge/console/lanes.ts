@@ -248,6 +248,11 @@ export function laneStateFor(input: {
     case 'paused': return { state: 'paused', reason: null };
     case 'parked': return { state: 'parked', reason: null };
     case 'handed-off': return { state: 'handed-off', reason: null };
+    // Belt-and-suspenders alongside the `lastOwnEvent` check above (I13): that check
+    // already catches the ordinary case where `run.killed` is the run's own last event,
+    // but `journal.ts`'s fold now carries `killed` as a `RunState.state` value in its own
+    // right, so a reader of the raw `RunState` (not this function) gets the same answer.
+    case 'killed': return { state: 'killed', reason: null };
     case 'finished': {
       const verdict = runState.verdict;
       if (verdict === 'killed' || verdict === 'skipped') return { state: 'killed', reason: null };

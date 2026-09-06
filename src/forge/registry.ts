@@ -17,7 +17,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 
-import { Journal } from './journal.js';
+import { Journal, replay } from './journal.js';
 import { DEFAULT_THRESHOLDS } from './liveness.js';
 import { clearParkRecord } from './parkrecord.js';
 import { modelFor, modelIdFor, tierOfBrief, turnsFor } from './policy.js';
@@ -176,8 +176,29 @@ export async function reconcileRegistry(
 ): Promise<ReconcileOutcome[]> {
   const outcomes: ReconcileOutcome[] = [];
   const now = Date.now();
+  // Read once, ahead of the loop: a `run.killed` row is what `WardenActuator.kill`
+  // journals (`warden.ts`), and it is the one fact that must outrank a recorded session
+  // id below. Kill only stops the OS process -- it never touches this registry's row --
+  // so a killed run's stale row looks, to everything else here, exactly like an ordinary
+  // crash: dead pid, session id on file, ready to resume. Without this check `forge up`
+  // resumed a run a person had deliberately killed, spent real API cost re-running it,
+  // and left the board reading it `running` forever once the resume's own fresh events
+  // pushed `run.killed` out of being the run's last event.
+  const killedGoals = new Set(
+    replay(journal.filePath).events
+      .filter((event) => event.event === 'run.killed' && typeof event.run === 'string')
+      .map((event) => event.run as string),
+  );
   for (const record of registry.all()) {
     if (alive(record.pid)) continue;
+
+    if (killedGoals.has(record.goal)) {
+      const reason = "the journal already recorded this run as killed, and a dead pid doesn't get to reverse that";
+      outcomes.push({ goal: record.goal, ok: false, reason });
+      clearParkRecord(record.goal);
+      registry.remove(record.goal);
+      continue;
+    }
 
     if (!record.sessionId) {
       const age = now - record.startedAt;

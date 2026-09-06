@@ -58,7 +58,7 @@ export interface ForgeEvent {
 
 export interface RunState {
   run: string;
-  state: 'started' | 'finished' | 'handed-off' | 'paused' | 'parked';
+  state: 'started' | 'finished' | 'handed-off' | 'paused' | 'parked' | 'killed';
   ticket?: string;
   verdict?: string;
   turns: number;
@@ -142,6 +142,14 @@ export class Journal {
   private lastSeq: number | undefined;
 
   constructor(private readonly path: string) {}
+
+  /** The file this instance appends to. Exposed so a caller that only holds the
+   *  `Journal` (never the raw path it was opened with) can still `replay()` it -- a
+   *  reconcile pass reading its own journal for a prior verdict, say, rather than
+   *  needing a second path threaded through just for that read. */
+  get filePath(): string {
+    return this.path;
+  }
 
   private handle(): number {
     if (this.fd === undefined) {
@@ -339,6 +347,19 @@ function foldLine(state: FleetState, line: string): void {
       case 'run.resumed':
         run.state = 'started';
         delete run.parkKey;
+        break;
+      case 'run.killed':
+        // Terminal, and never overwritten by anything folded after it in this same
+        // pass: `laneStateFor` (console/lanes.ts) already reads a run's own last event
+        // for exactly this reason, but `RunState.state` itself used to have no `killed`
+        // value at all, so a kill left the fold's own state stuck on whatever it was
+        // before, "started" for a run that was mid-turn. A `forge up` that resumes a
+        // stale registry row despite this (the bug `reconcileRegistry` now refuses) used
+        // to compound that: the resume's own fresh events pushed `run.killed` out of
+        // being the run's last event, and with no `killed` state to fall back on, the
+        // fold read the run as plain `running` forever, with no process behind it.
+        run.state = 'killed';
+        delete run.currentTool;
         break;
       case 'tool.start': {
         const toolName = String(row['tool'] ?? '');
