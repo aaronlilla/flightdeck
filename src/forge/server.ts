@@ -21,10 +21,12 @@ import { dirname, extname, join } from 'node:path';
 import type { Duplex } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
-import type { Reasoner } from './contracts.js';
+import { ConsoleWrites } from './console/command.js';
+import type { Actuator, Reasoner } from './contracts.js';
 import { isAskStale, projectStaleness, type Inbox } from './inbox.js';
-import { appendOnce, JournalCache, type RangeReader } from './journal.js';
+import { appendOnce, Journal, JournalCache, type RangeReader } from './journal.js';
 import type { StuckSignal } from './liveness.js';
+import { WardenActuator } from './warden.js';
 import {
   killSwitchPath as defaultKillSwitchPath, packetsDir as defaultPacketsDir, registryDir,
   serverTokenPath,
@@ -127,6 +129,11 @@ export interface ForgeServerOptions {
    *  else that constructs a `ForgeServer` with the router turned on must supply one
    *  or `POST /router` answers 501 rather than throwing. */
   reasoner?: Reasoner;
+  /** What every console write (`ConsoleWrites`) drives kill/pause/resume through.
+   *  Defaults to a real `WardenActuator` over this server's own journal, registry and
+   *  lanes. A specimen overrides this with a fake, per this stream's rule that a test
+   *  never signals a real process. */
+  consoleActuator?: Actuator;
 }
 
 export class ForgeServer {
@@ -175,6 +182,10 @@ export class ForgeServer {
 
   private readonly fleetFn: () => Array<Record<string, unknown>> | { ok: false; reason: string };
 
+  /** Every console write (`src/forge/console/command.ts`'s `ConsoleWrites`), plus
+   *  `GET /integrations`, which that module owns despite being a read. */
+  private readonly consoleWrites: ConsoleWrites;
+
   constructor(options: ForgeServerOptions) {
     this.lanes = options.lanes;
     this.inbox = options.inbox;
@@ -190,6 +201,18 @@ export class ForgeServer {
     this.consoleDistDir = options.consoleDistDir ?? defaultConsoleDistDir();
     this.packetsDirPath = options.packetsDir ?? defaultPacketsDir();
     this.reasoner = options.reasoner;
+    this.consoleWrites = new ConsoleWrites({
+      journalPath: this.journalPath,
+      registry: this.registry,
+      lanes: this.lanes,
+      inbox: this.inbox,
+      actuator: options.consoleActuator ?? new WardenActuator({
+        journal: new Journal(this.journalPath), journalPath: this.journalPath,
+        registry: this.registry, lanes: this.lanes,
+      }),
+      authorized: (request, response) => this.authorized(request, response),
+      stuck: this.stuckFn,
+    });
   }
 
   get listeners(): number {
@@ -359,7 +382,7 @@ export class ForgeServer {
     }
   }
 
-  private route(request: IncomingMessage, response: ServerResponse): void {
+  private async route(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const path = (request.url ?? '/').split('?')[0] ?? '/';
 
     if (path === '/state' && request.method === 'GET') {
@@ -408,6 +431,7 @@ export class ForgeServer {
       }
       return this.routeMessage(request, response);
     }
+    if (await this.consoleWrites.handle(path, request, response)) return;
     if (request.method === 'GET') {
       return this.serveStatic(path, response);
     }
