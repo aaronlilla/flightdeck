@@ -112,16 +112,29 @@ export function removeItem(store: QueueStore, id: string, now: number = Date.now
   return true;
 }
 
-/** Sends a `parked` or `failed` item back to `queued`, keeping whatever it already
- *  planned (ticket, repo, brief) -- a retry re-runs the hop that stopped it, never the
- *  whole item from scratch. Refuses on any other state: a `queued`/`planning`/`running`
- *  item is not stuck, and a `review`/`done` item already reached the end of what this
- *  queue does for it. */
+/** Sends a `parked` or `failed` item back to a working state, keeping whatever it
+ *  already planned (ticket, repo, brief, runKey) -- a retry re-runs the hop that stopped
+ *  it, never the whole item from scratch. Refuses on any other state: a
+ *  `queued`/`planning`/`running` item is not stuck, and a `review`/`done` item already
+ *  reached the end of what this queue does for it.
+ *
+ *  The state it lands on depends on how far the item had already gotten. `runKey` already
+ *  set means a run exists and this item is re-entering `advanceItem`'s status/gate hop,
+ *  not its plan/launch hop -- that is `running`, one of `QUEUE_IN_FLIGHT_STATES`, or
+ *  `runQueueTick` cannot tell this item apart from one nobody has touched yet. Confirmed
+ *  live 2026-09-06: landing every retry on `queued` regardless left a run mid-flight
+ *  invisible to that in-flight check, so the next tick (and the one after, since nothing
+ *  here waits for the last tick's advance to finish) added the same item back onto its
+ *  advance list on top of the pass already running -- a second full council/gate round,
+ *  a second real Codex subprocess, for the one item. No `runKey` yet means the item never
+ *  got past planning or launch, and `queued` is correct: there is nothing in flight for a
+ *  concurrent tick to collide with. */
 export function retryItem(store: QueueStore, id: string, now: number = Date.now()): QueueItem | undefined {
   const item = store.get(id);
   if (!item || (item.state !== 'parked' && item.state !== 'failed')) return undefined;
-  store.append({ id, at: now, state: 'queued', reason: null, updatedAt: now });
-  return { ...item, state: 'queued', reason: null, updatedAt: now };
+  const state: QueueItemState = item.runKey ? 'running' : 'queued';
+  store.append({ id, at: now, state, reason: null, updatedAt: now });
+  return { ...item, state, reason: null, updatedAt: now };
 }
 
 // ---------------------------------------------------------------------------------------
