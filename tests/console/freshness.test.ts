@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import { ago, computeFreshness, freshnessStamp, hm } from '../../src/console/freshness.js';
+import {
+  ago, compactFreshnessStamp, computeFreshness, freshnessStamp, hm,
+} from '../../src/console/freshness.js';
 import { VERIFIED_WINDOW_MS } from '../../src/shared/console-model.js';
 
 describe('computeFreshness', () => {
@@ -51,6 +53,24 @@ describe('computeFreshness', () => {
     expect(freshnessStamp(verified)).toBe('✓ verified 4s ago');
     const observed = computeFreshness(null, Date.parse('2026-01-01T09:05:00'), true, Date.parse('2026-01-01T09:05:00'));
     expect(freshnessStamp(observed)).toBe(`observed ${hm(Date.parse('2026-01-01T09:05:00'))}`);
+  });
+});
+
+// Final fidelity sweep #5: the tile and ticket-sheet band use the full
+// `✓ verified Ns ago` / `observed hh:mm` form (above); a rail chip or a card
+// corner uses the prototype's own `msgVM` form instead, which is shorter and
+// drops the word "verified".
+describe('compactFreshnessStamp', () => {
+  it('renders ✓ Ns/Nm/Nh with no "verified" while verified', () => {
+    const now = 1_000_000;
+    const verified = computeFreshness(now - 4_000, now, true, now);
+    expect(compactFreshnessStamp(verified)).toBe('✓ 4s');
+  });
+
+  it('renders obs hh:mm, not "observed hh:mm", once it is not verified', () => {
+    const at = Date.parse('2026-01-01T09:05:00');
+    const observed = computeFreshness(null, at, true, at);
+    expect(compactFreshnessStamp(observed)).toBe(`obs ${hm(at)}`);
   });
 });
 
