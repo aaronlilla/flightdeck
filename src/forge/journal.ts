@@ -208,7 +208,9 @@ export function appendOnce(path: string, event: Partial<ForgeEvent>): ForgeEvent
   return row;
 }
 
-function costOf(usage: Usage, alias: string): number {
+/** Exported so `console/cost-steps.ts` can price one turn's usage the same way `replay`
+ *  prices a run's total, instead of a second pricing formula drifting from this one. */
+export function costOf(usage: Usage, alias: string): number {
   const price = priceFor(alias);
   return (usage.input * price.input
     + usage.cacheRead * price.cacheRead

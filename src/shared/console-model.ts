@@ -52,6 +52,19 @@ export interface LaneSandbox {
   branch: string | null;
   pid: number | null;
   sessionId: string | null;
+  /** No cloud sandbox exists to name a region for, so this is `'local'` rather than a
+   *  fabricated AWS region string. */
+  region: string | null;
+  /** `${process.platform}/${process.arch}` of the machine running this worktree, the
+   *  nearest real fact to the prototype's EC2 instance type. */
+  instanceType: string | null;
+}
+
+export type SandboxLogSeverity = 'info' | 'progress' | 'retry' | 'error';
+
+export interface SandboxLogLine {
+  text: string;
+  severity: SandboxLogSeverity;
 }
 
 export interface Lane {
@@ -278,11 +291,42 @@ export interface RunPrResponse {
 
 export interface RunSandboxResponse {
   sandbox: LaneSandbox | null;
-  log: string[];
+  log: SandboxLogLine[];
 }
 
 export interface RunThreadResponse {
   messages: Message[];
+}
+
+/** One row of the cost sheet's "by step" table: what one turn cost, in real usage. */
+export interface CostStep {
+  t: number;
+  stepText: string;
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+}
+
+export interface RunCostResponse {
+  steps: CostStep[];
+  /** The jid of the last `rule.enforced` decision this run recorded, only when the run
+   *  is still runaway despite it -- the cap sheet's real analog of the prototype's
+   *  fabricated "cap event failed (J-40211)" line. `null` when no such attempt is on
+   *  record, which the sheet renders as no line at all rather than a made-up one. */
+  capEnforcementFailedJid: string | null;
+}
+
+/** One line of the ticket sheet's journal panel: the run's own timeline, not the
+ *  thread's reply/receipt cards. `color` is a CSS custom-property reference
+ *  (`var(--ink2)` etc.), matching how the rest of the console carries state color. */
+export interface JournalNarrativeEntry {
+  t: number;
+  text: string;
+  color: string;
+}
+
+export interface RunJournalResponse {
+  entries: JournalNarrativeEntry[];
 }
 
 /**
@@ -299,6 +343,8 @@ export interface RunThreadResponse {
  *   GET  /run/:id/thread                 RunThreadResponse
  *   GET  /run/:id/pr                     RunPrResponse
  *   GET  /run/:id/sandbox                RunSandboxResponse
+ *   GET  /run/:id/cost                   RunCostResponse
+ *   GET  /run/:id/journal                RunJournalResponse
  *   WS   /events                         frames; `{type:'heartbeat', at}` every HEARTBEAT_MS
  *
  * Writes

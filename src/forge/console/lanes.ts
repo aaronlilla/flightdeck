@@ -263,7 +263,9 @@ function sandboxFor(packet: ChainPacketState | undefined, registryRow: RegistryR
   const pid = registryRow?.pid ?? null;
   const sessionId = registryRow?.sessionId ?? null;
   if (!path && !branch && !pid && !sessionId) return null;
-  return { id, path, branch, pid, sessionId };
+  // Same region/instanceType facts `sandbox.ts#computeSandbox` reports: no cloud sandbox
+  // exists here, so `'local'` and this process's own platform/arch are the real answers.
+  return { id, path, branch, pid, sessionId, region: 'local', instanceType: `${process.platform}/${process.arch}` };
 }
 
 export function buildLane(input: LaneBuildInput): Lane {

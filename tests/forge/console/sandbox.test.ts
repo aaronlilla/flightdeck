@@ -5,19 +5,55 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import type { ChainPacketState } from '../../../src/forge/chain.js';
-import { computeSandbox, newestLogFile, tailLog } from '../../../src/forge/console/sandbox.js';
+import { classifyLogSeverity, computeSandbox, newestLogFile, tailLog, tailLogWithSeverity } from '../../../src/forge/console/sandbox.js';
 
 describe('computeSandbox', () => {
   it('is null with no provision row and no registry row', () => {
     expect(computeSandbox('alpha', new Map(), undefined)).toBeNull();
   });
 
-  it('carries path/branch from the chain provision row, pid/session from the registry', () => {
+  it('carries path/branch from the chain provision row, pid/session from the registry, and the real region/instance facts', () => {
     const chain = new Map<string, ChainPacketState>([
       ['p1', { packetId: 'p1', launched: { runKey: 'alpha' }, provisioned: { worktreePath: 'w', branch: 'feature/ab-1' } }],
     ]);
     const result = computeSandbox('alpha', chain, { goal: 'alpha', cwd: 'w', briefPath: 'b.md', pid: 42, startedAt: 0, sessionId: 's1' });
-    expect(result).toEqual({ id: 'alpha', path: 'w', branch: 'feature/ab-1', pid: 42, sessionId: 's1' });
+    expect(result).toEqual({
+      id: 'alpha', path: 'w', branch: 'feature/ab-1', pid: 42, sessionId: 's1',
+      region: 'local', instanceType: `${process.platform}/${process.arch}`,
+    });
+  });
+});
+
+describe('classifyLogSeverity', () => {
+  it('reads an error line as error', () => {
+    expect(classifyLogSeverity('2026-09-06T00:00:00Z build failed: exit 1')).toBe('error');
+  });
+  it('reads a retry line as retry', () => {
+    expect(classifyLogSeverity('retrying npm install (attempt 2)')).toBe('retry');
+  });
+  it('reads a build/progress line as progress', () => {
+    expect(classifyLogSeverity('installing dependencies…')).toBe('progress');
+  });
+  it('falls back to info for anything else', () => {
+    expect(classifyLogSeverity('sandbox ready')).toBe('info');
+  });
+});
+
+describe('tailLogWithSeverity', () => {
+  it('tags every tailed line with its severity', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'console-sandbox-sev-'));
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, 'run.log');
+    writeFileSync(file, ['sandbox ready', 'retrying git push', 'build failed: exit 1'].join('\n'));
+    expect(tailLogWithSeverity(file)).toEqual([
+      { text: 'sandbox ready', severity: 'info' },
+      { text: 'retrying git push', severity: 'retry' },
+      { text: 'build failed: exit 1', severity: 'error' },
+    ]);
+  });
+
+  it('is empty for no log file', () => {
+    expect(tailLogWithSeverity(undefined)).toEqual([]);
   });
 });
 
