@@ -140,6 +140,11 @@ export interface ForgeServerOptions {
    *  lanes. A specimen overrides this with a fake, per this stream's rule that a test
    *  never signals a real process. */
   consoleActuator?: Actuator;
+  /** Where `GET`/`POST /caps` and `POST /run/:id/cap` read and write the Governor's
+   *  budget. Defaults to `policyPath()`, which -- unlike every other Forge path here --
+   *  does not follow `FORGE_HOME`, so a specimen always sets this or a caps read/write
+   *  reaches this repo's own tracked `model-policy.json`. */
+  modelPolicyPath?: string;
 }
 
 export class ForgeServer {
@@ -211,7 +216,8 @@ export class ForgeServer {
     this.consoleDistDir = options.consoleDistDir ?? defaultConsoleDistDir();
     this.packetsDirPath = options.packetsDir ?? defaultPacketsDir();
     this.reasoner = options.reasoner;
-    this.consoleReads = options.consoleReads ?? new ConsoleReads();
+    this.consoleReads = options.consoleReads
+      ?? new ConsoleReads(options.modelPolicyPath ? { modelPolicyPath: options.modelPolicyPath } : {});
     this.consoleWrites = new ConsoleWrites({
       journalPath: this.journalPath,
       registry: this.registry,
@@ -224,6 +230,7 @@ export class ForgeServer {
       authorized: (request, response) => this.authorized(request, response),
       stuck: this.stuckFn,
       lanesView: () => this.consoleReads.lanesResponse(),
+      ...(options.modelPolicyPath ? { modelPolicyPath: options.modelPolicyPath } : {}),
     });
   }
 

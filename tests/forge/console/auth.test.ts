@@ -2,7 +2,7 @@
  * The console's read routes require the same `X-Forge-Token` bearer every write on this
  * server already does -- `/state` is the one open read, and none of these are it.
  */
-import { mkdirSync, mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -23,9 +23,14 @@ beforeEach(async () => {
   mkdirSync(join(dir, 'lanes'), { recursive: true });
   process.env['FORGE_HOME'] = dir;
   new Journal(join(dir, 'fleet.jsonl')).close();
+  // GET /caps reads (and, since FIXES-2, can write) the Governor's budget block --
+  // `modelPolicyPath` keeps it pointed at this test's own temp file rather than the
+  // real, tracked `model-policy.json` every other Forge path is never allowed near.
+  const modelPolicyPath = join(dir, 'model-policy.json');
+  writeFileSync(modelPolicyPath, JSON.stringify({ version: 1, classes: {} }), 'utf8');
   server = new ForgeServer({
     lanes: new Lanes(join(dir, 'lanes')), inbox: new Inbox(join(dir, 'inbox')),
-    journalPath: join(dir, 'fleet.jsonl'), port: 0, token,
+    journalPath: join(dir, 'fleet.jsonl'), port: 0, token, modelPolicyPath,
   });
   base = `http://127.0.0.1:${await server.listen()}`;
 });
