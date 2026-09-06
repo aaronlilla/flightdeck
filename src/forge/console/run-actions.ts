@@ -17,8 +17,6 @@ import { run as execRun, type RunRequest } from '../exec.js';
 import { replay } from '../journal.js';
 import { forgeHome } from '../paths.js';
 import type { Registry } from '../registry.js';
-import { RunInbox } from '../runinbox.js';
-import { HANDOFF_REQUEST } from '../worker.js';
 import type { Lanes } from '../supervisor.js';
 import { recordAction, type ActionsLedger } from './actions-ledger.js';
 import { capsOverridesPath, readCapsOverrides, writeCapsOverrides } from './caps-read.js';
@@ -279,25 +277,31 @@ export async function reopenRun(run: string, deps: RunActionsDeps): Promise<RunA
 }
 
 /**
- * Requests the same handoff a worker sends itself at the context ceiling
- * (`HANDOFF_REQUEST` in `worker.ts`), queued through the run's own inbox. Real, but
- * partial: nothing here launches the successor once the handoff lands -- that half of
- * "compact + resume" needs the chain to relaunch off the handoff packet, which this
- * write does not drive.
+ * "Compact + resume" would hand a run off at its context ceiling and launch a successor
+ * on the same model, the way `worker.ts`'s own ceiling branch does (`requestHandoff` ->
+ * `run.handoff` -> a fresh `runName`, all inside that one running session's own turn
+ * loop). This used to queue a copy of `HANDOFF_REQUEST` through the run's inbox and
+ * answer `ok: true` -- a receipt that read like success for a click that did nothing:
+ * `ceilingHit` in `sdkengine.ts` is set from the live context size alone, never from an
+ * inbox message, so the model's reply to an injected copy of that text is never captured
+ * as a packet, and no successor is ever started from it.
+ *
+ * There is no packet to hand a successor either way this action can reach: a `running`
+ * lane's handoff packet, if one ever comes, is produced by the session's own next reply,
+ * not synchronously inside this HTTP call; an `exhausted` lane never got one in the
+ * first place (`worker.ts` marks a run exhausted precisely when it ran out of sessions
+ * or turns without a ceiling hit to hand off from). Honest refusal, not a fake resume.
  */
 export async function compactRun(run: string, deps: RunActionsDeps): Promise<RunActionResponse> {
   if (!isRegistered(run, deps)) return notFound(run);
   const guard = guardState('compact', run, deps);
   if (guard) return guard;
-  new RunInbox(run).send(HANDOFF_REQUEST, 'console');
-  const { jid } = recordAction(deps.journalPath, deps.ledger, {
-    kind: 'compact', run, text: `requested a handoff at the context ceiling for ${run}`, undo: null,
-  });
   return {
-    status: 200,
+    status: 501,
     body: {
-      ok: true, jid, undoable: false,
-      message: `handoff requested for ${run}; resuming a successor is not automated from the console yet`,
+      error: 'not wired',
+      reason: `${run} has no handoff packet to resume a successor from, only the running session's own `
+        + 'reply to a context-ceiling handoff produces one, and the console cannot request that synchronously',
     },
   };
 }

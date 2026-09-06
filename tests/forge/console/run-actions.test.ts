@@ -11,7 +11,7 @@ import { appendOnce } from '../../../src/forge/journal.js';
 import { Registry } from '../../../src/forge/registry.js';
 import { ActionsLedger } from '../../../src/forge/console/actions-ledger.js';
 import {
-  capOverridesPath, killRun, mergeRun, pauseRun, resumeRun, setRunCap, verifyRun,
+  capOverridesPath, compactRun, killRun, mergeRun, pauseRun, resumeRun, setRunCap, verifyRun,
   type RunActionsDeps,
 } from '../../../src/forge/console/run-actions.js';
 
@@ -239,5 +239,42 @@ describe('mergeRun / verifyRun', () => {
     expect(calls).toBe(2);
     expect(result.status).toBe(200);
     expect(result.body).toMatchObject({ ok: true });
+  });
+});
+
+describe('compactRun', () => {
+  it('refuses an unknown run with 404', async () => {
+    const result = await compactRun('ghost', deps);
+    expect(result.status).toBe(404);
+  });
+
+  it('refuses a run that is neither running nor exhausted', async () => {
+    registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'alpha' });
+    appendOnce(journalPath, { event: 'run.paused', run: 'alpha' });
+
+    const result = await compactRun('alpha', deps);
+
+    expect(result.status).toBe(409);
+  });
+
+  it('answers 501 for a running lane rather than a receipt that reads like success, since no handoff packet exists yet to hand a successor', async () => {
+    registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'alpha' });
+
+    const result = await compactRun('alpha', deps);
+
+    expect(result.status).toBe(501);
+    expect(result.body).toMatchObject({ error: 'not wired' });
+  });
+
+  it('answers 501 for an exhausted run, which never gets a handoff packet at all', async () => {
+    registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'alpha' });
+    appendOnce(journalPath, { event: 'run.finished', run: 'alpha', verdict: 'exhausted' });
+
+    const result = await compactRun('alpha', deps);
+
+    expect(result.status).toBe(501);
   });
 });
