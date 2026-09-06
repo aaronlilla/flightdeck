@@ -22,6 +22,8 @@ import type { Duplex } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
 import type { Reasoner } from './contracts.js';
+import { ConsoleReads } from './console/reads.js';
+import { HEARTBEAT_MS } from '../shared/console-model.js';
 import { isAskStale, projectStaleness, type Inbox } from './inbox.js';
 import { appendOnce, JournalCache, type RangeReader } from './journal.js';
 import type { StuckSignal } from './liveness.js';
@@ -127,6 +129,10 @@ export interface ForgeServerOptions {
    *  else that constructs a `ForgeServer` with the router turned on must supply one
    *  or `POST /router` answers 501 rather than throwing. */
   reasoner?: Reasoner;
+  /** Overrides the console's read routes (`/lanes`, `/thread`, `/journal`, `/caps`,
+   *  `/proposals`, `/run/:id/{thread,pr,sandbox}`). A specimen only: production always
+   *  gets the default, which reads the real `~/.forge` tree. */
+  consoleReads?: ConsoleReads;
 }
 
 export class ForgeServer {
@@ -154,9 +160,13 @@ export class ForgeServer {
 
   private readonly reasoner: Reasoner | undefined;
 
+  private readonly consoleReads: ConsoleReads;
+
   private readonly wanted: number;
 
   private http: Server | undefined;
+
+  private heartbeatTimer: ReturnType<typeof setInterval> | undefined;
 
   private sockets = new Set<Duplex>();
 
@@ -190,6 +200,7 @@ export class ForgeServer {
     this.consoleDistDir = options.consoleDistDir ?? defaultConsoleDistDir();
     this.packetsDirPath = options.packetsDir ?? defaultPacketsDir();
     this.reasoner = options.reasoner;
+    this.consoleReads = options.consoleReads ?? new ConsoleReads();
   }
 
   get listeners(): number {
@@ -197,7 +208,7 @@ export class ForgeServer {
   }
 
   async listen(): Promise<number> {
-    const server = createServer((request, response) => this.route(request, response));
+    const server = createServer((request, response) => { void this.route(request, response); });
     server.on('connection', (socket) => {
       this.accepted.add(socket as unknown as Duplex);
       socket.on('close', () => this.accepted.delete(socket as unknown as Duplex));
@@ -207,10 +218,20 @@ export class ForgeServer {
     await new Promise<void>((resolve) => server.listen(this.wanted, this.host, resolve));
     const address = server.address();
     this.port = typeof address === 'object' && address ? address.port : this.wanted;
+    // The console's own freshness contract (`VERIFIED_WINDOW_MS`, `console-model.ts`):
+    // a value is "verified" only while a heartbeat under 15s old is arriving, so a
+    // client with nothing else to poll still needs to hear from this process every 5s
+    // to know the feed itself is alive, distinct from any one lane going quiet.
+    this.heartbeatTimer = setInterval(() => this.publish({ type: 'heartbeat', at: Date.now() }), HEARTBEAT_MS);
+    this.heartbeatTimer.unref?.();
     return this.port;
   }
 
   async close(): Promise<void> {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = undefined;
+    }
     for (const socket of this.sockets) socket.destroy();
     this.sockets.clear();
     const server = this.http;
@@ -359,8 +380,17 @@ export class ForgeServer {
     }
   }
 
-  private route(request: IncomingMessage, response: ServerResponse): void {
+  private async route(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const path = (request.url ?? '/').split('?')[0] ?? '/';
+
+    // The console's read routes (`/lanes`, `/thread`, `/journal`, `/caps`,
+    // `/proposals`, `/run/:id/{thread,pr,sandbox}`): all of them require the token like
+    // every route below except `/state`, checked here since `ConsoleReads` has no
+    // access to this server's own `authorized()`.
+    if (ConsoleReads.matches(path, request.method)) {
+      if (!this.authorized(request, response)) return;
+      if (await this.consoleReads.handle(path, request, response)) return;
+    }
 
     if (path === '/state' && request.method === 'GET') {
       return json(response, 200, this.state());
