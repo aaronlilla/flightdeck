@@ -5,7 +5,9 @@ import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { ActionsLedger } from '../../../src/forge/console/actions-ledger.js';
-import { hardUsdOf, restoreCaps, writeCaps, type CapsWriteDeps } from '../../../src/forge/console/caps-write.js';
+import {
+  ensureHardUsd, hardUsdOf, restoreCaps, writeCaps, type CapsWriteDeps,
+} from '../../../src/forge/console/caps-write.js';
 
 let dir: string;
 let policyPath: string;
@@ -60,6 +62,47 @@ describe('writeCaps', () => {
     const row = deps.ledger.all().at(-1);
 
     expect(row?.undo).toEqual({ kind: 'restore-caps', payload: { dailyUsd: 20, runUsd: 5 } });
+  });
+});
+
+describe('ensureHardUsd', () => {
+  it('writes 5x dailyUsd into the policy file governor block on first read', () => {
+    const result = ensureHardUsd(policyPath);
+
+    expect(result).toBe(100);
+    const policy = JSON.parse(readFileSync(policyPath, 'utf8'));
+    expect(policy.governor.hardUsd).toBe(100);
+  });
+
+  it('leaves an already-declared hardUsd untouched', () => {
+    writeFileSync(policyPath, JSON.stringify(basePolicy({ dailyUsd: 20, usdPerRun: {}, hardUsd: 40 })), 'utf8');
+
+    const result = ensureHardUsd(policyPath);
+
+    expect(result).toBe(40);
+    const policy = JSON.parse(readFileSync(policyPath, 'utf8'));
+    expect(policy.governor.hardUsd).toBe(40);
+  });
+
+  it('does not recompute a written hardUsd after dailyUsd changes', () => {
+    ensureHardUsd(policyPath);
+    const policy = JSON.parse(readFileSync(policyPath, 'utf8'));
+    policy.governor.dailyUsd = 5;
+    writeFileSync(policyPath, JSON.stringify(policy), 'utf8');
+
+    const result = ensureHardUsd(policyPath);
+
+    expect(result).toBe(100);
+  });
+
+  it('writes nothing and answers infinity for a policy file with no governor block at all', () => {
+    writeFileSync(policyPath, JSON.stringify({ version: 1, classes: {} }), 'utf8');
+
+    const result = ensureHardUsd(policyPath);
+
+    expect(result).toBe(Number.POSITIVE_INFINITY);
+    const policy = JSON.parse(readFileSync(policyPath, 'utf8'));
+    expect(policy.governor).toBeUndefined();
   });
 });
 

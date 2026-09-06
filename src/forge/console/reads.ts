@@ -15,7 +15,7 @@ import { Inbox } from '../inbox.js';
 import { JournalCache } from '../journal.js';
 import { forgeHome, inboxDir, lanesDir, registryDir, runDir, runsDir } from '../paths.js';
 import { foldChainState, type ChainPacketState } from '../chain.js';
-import { classFor, classNames, governorBudget } from '../policy.js';
+import { classFor, classNames, governorBudget, policyPath } from '../policy.js';
 import { Registry } from '../registry.js';
 import type { StuckSignal } from '../liveness.js';
 import { Lanes, type LaneRecord } from '../supervisor.js';
@@ -25,6 +25,7 @@ import type {
   RunThreadResponse, ThreadResponse,
 } from '../../shared/console-model.js';
 import { capsOverridesPath, computeCaps, readCapsOverrides } from './caps-read.js';
+import { ensureHardUsd } from './caps-write.js';
 import { actionsLedgerPath, computeJournal, readActionsLedger } from './journal-route.js';
 import { computeLanes, spentTodayUsd, windowLanes, type LanesInput } from './lanes.js';
 import { computeRunPr, prCachePath, readPrCache, writePrCache, type GhLookupFn, type GhPrLookup } from './pr.js';
@@ -226,8 +227,13 @@ export class ConsoleReads {
     // tell that apart from a real, deliberately-unbounded budget is that a configured
     // one always sets at least one of the two.
     const governorConfigured = Number.isFinite(budget.dailyUsd) || Object.keys(budget.usdPerRun).length > 0;
+    // `ensureHardUsd` writes 5x dailyUsd into the policy file's own governor block the
+    // first time it finds no hardUsd there, so the org hard limit (FD-7) the caps sheet
+    // shows is a real, stable number in model-policy.json rather than a fresh
+    // computation nobody editing that file by hand would ever see.
+    const hardUsd = governorConfigured ? ensureHardUsd(policyPath()) : Number.POSITIVE_INFINITY;
     return computeCaps({
-      governor: budget as ReturnType<typeof governorBudget> & { hardUsd?: number },
+      governor: { ...budget, hardUsd } as ReturnType<typeof governorBudget> & { hardUsd?: number },
       implementClassName,
       overrides,
       spentTodayUsd: spentTodayUsd(fleet.runs, now),

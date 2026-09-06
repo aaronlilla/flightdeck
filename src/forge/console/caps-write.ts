@@ -31,6 +31,31 @@ function writePolicy(path: string, policy: Policy): void {
   writeFileSync(path, `${JSON.stringify(policy, null, 2)}\n`, 'utf8');
 }
 
+/**
+ * `governor.hardUsd`, computing and writing it as 5x `dailyUsd` into the policy file the
+ * first time it is read absent, rather than recomputing it fresh (and invisibly) on
+ * every single `GET /caps`. A value only ever held in memory is not a number FD-7 can
+ * point at: nobody editing `model-policy.json` by hand would see it, and the moment
+ * `dailyUsd` changed the org hard limit would quietly move with it, with no line in the
+ * file recording that a limit was ever set at all. Written once, it survives edits: a
+ * later `dailyUsd` change does not recompute it again, the same way a person who
+ * actually typed a number would expect.
+ *
+ * Answers positive infinity, and writes nothing, for a policy file with no `governor`
+ * block at all (nothing here to make a hard limit stable against) or a non-finite
+ * `dailyUsd` -- `5 * Infinity` is not a number the file can hold.
+ */
+export function ensureHardUsd(path: string): number {
+  const policy = readPolicy(path);
+  const governor = policy.governor;
+  if (!governor) return Number.POSITIVE_INFINITY;
+  if (typeof governor.hardUsd === 'number') return governor.hardUsd;
+  if (!Number.isFinite(governor.dailyUsd)) return Number.POSITIVE_INFINITY;
+  const hardUsd = governor.dailyUsd * 5;
+  writePolicy(path, { ...policy, governor: { ...governor, hardUsd } });
+  return hardUsd;
+}
+
 export type CapsWriteResponse = { status: number; body: Caps | { error: string; hardUsd: number } };
 
 /**
