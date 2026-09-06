@@ -19,6 +19,7 @@ import { dirname, join } from 'node:path';
 
 import { forgeHome } from '../paths.js';
 import { appendOnce } from '../journal.js';
+import { jidFor } from './journal-route.js';
 
 export function consoleDir(): string {
   return join(forgeHome(), 'console');
@@ -114,13 +115,18 @@ export function recordAction(
     text: options.text,
     ...(options.extra ?? {}),
   });
+  // The id a receipt hands back has to be the id `journal-route.ts` renders for this
+  // same row (`J-` + the first 8 hex of its own uuid), or `GET /journal` shows one jid
+  // for a decision and `POST /journal/:jid/undo` is asked for a different one nobody
+  // wrote down.
+  const jid = jidFor(event);
   ledger.append({
-    jid: event.id,
+    jid,
     ts: event.at,
     kind: options.kind,
     run: options.run ?? null,
     text: options.text,
     undo: options.undo,
   });
-  return { jid: event.id, ts: event.at };
+  return { jid, ts: event.at };
 }

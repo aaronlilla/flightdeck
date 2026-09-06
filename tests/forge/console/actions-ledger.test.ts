@@ -4,7 +4,9 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { replay } from '../../../src/forge/journal.js';
 import { ActionsLedger, recordAction } from '../../../src/forge/console/actions-ledger.js';
+import { jidFor } from '../../../src/forge/console/journal-route.js';
 
 function tempJournal(): string {
   const dir = mkdtempSync(join(tmpdir(), 'forge-ledger-'));
@@ -23,8 +25,14 @@ describe('recordAction', () => {
     const journalLines = readFileSync(journalPath, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
     expect(journalLines).toHaveLength(1);
     expect(journalLines[0]).toMatchObject({
-      id: jid, event: 'decision.made', actor: 'console', action: 'kill', run: 'alpha',
+      event: 'decision.made', actor: 'console', action: 'kill', run: 'alpha',
     });
+
+    // The jid a write's own receipt carries has to be the jid journal-route.ts renders
+    // for that same row -- otherwise a receipt names an id the journal sheet, and
+    // POST /journal/:jid/undo, can never find.
+    expect(jid).toBe(jidFor(replay(journalPath).events[0]!));
+    expect(jid).not.toBe(journalLines[0].id);
 
     const row = ledger.get(jid);
     expect(row).toMatchObject({ jid, kind: 'kill', run: 'alpha', undo: null });
