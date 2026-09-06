@@ -282,6 +282,73 @@ export interface ProposalsResponse {
   computedAt: number;
 }
 
+// ---------------------------------------------------------------------------------------
+// Intake queue: the board's own way to hand Forge work, rather than only supervise it.
+// ---------------------------------------------------------------------------------------
+
+/** Where a queue item came from: a Jira ticket key, a pasted brief, a JQL query naming a
+ *  sprint or epic, or the backlog with an operator's own filter text. */
+export type QueueSource = 'ticket' | 'brief' | 'query' | 'backlog';
+
+/** `queued` waits for a slot; `planning` and `running` are the two the worker keeps
+ *  in flight; `parked` is a question, a refusal, or a gate that did not pass -- always a
+ *  person's call, never a retry loop; `review` has a draft PR waiting; `failed` is a hard
+ *  error (planning, provisioning, or launch itself threw); `done` is set only by an
+ *  operator, never by the worker -- every item stops at a draft PR. */
+export type QueueItemState = 'queued' | 'planning' | 'running' | 'parked' | 'review' | 'failed' | 'done';
+
+export interface QueueItem {
+  id: string;
+  source: QueueSource;
+  /** The raw input the item was added with: the ticket key, the pasted brief text, the
+   *  JQL the query/backlog source resolved against. */
+  input: string;
+  ticket: string | null;
+  /** The routed repository (`owner/name`), or `'unknown'` when nothing routed it. */
+  repo: string | null;
+  briefPath: string | null;
+  /** The provisioned worktree's own branch, path and base -- set once the launch hop
+   *  runs, null before. Carried on the item (not re-derived) so a restart's gate hop
+   *  can find the item's PR by head and pass the council its `cwd`/`baseRef` without
+   *  re-provisioning anything. */
+  branch: string | null;
+  worktreePath: string | null;
+  base: string | null;
+  state: QueueItemState;
+  /** Why the item is `parked` or `failed`, when the worker knows. */
+  reason: string | null;
+  runKey: string | null;
+  pr: LanePr | null;
+  /** Every journal row this item's own transitions wrote, in order -- the same audit
+   *  trail `GET /journal` renders, so a queue item's history is never a second ledger. */
+  journalIds: string[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface QueueResponse {
+  items: QueueItem[];
+  paused: boolean;
+  maxInFlight: number;
+}
+
+export interface QueueAddRequest {
+  source: QueueSource;
+  /** A ticket key, pasted brief text, a JQL query, or a backlog filter string,
+   *  depending on `source`. */
+  input: string;
+}
+
+export interface QueueAddResponse {
+  ok: boolean;
+  /** Every item the add created -- one for `ticket`/`brief`, one per matching ticket for
+   *  `query`/`backlog`. Empty alongside `ok: false`. */
+  items: QueueItem[];
+  /** Set on refusal -- most commonly a `query`/`backlog` add with no Jira credentials
+   *  configured, which says so exactly rather than failing silently. */
+  error?: string;
+}
+
 export interface ActionResult {
   ok: boolean;
   jid: string | null;
@@ -355,6 +422,7 @@ export interface RunJournalResponse {
  *   GET  /run/:id/sandbox                RunSandboxResponse
  *   GET  /run/:id/cost                   RunCostResponse
  *   GET  /run/:id/journal                RunJournalResponse
+ *   GET  /queue                          QueueResponse
  *   WS   /events                         frames; `{type:'heartbeat', at}` every HEARTBEAT_MS
  *
  * Writes
@@ -374,10 +442,15 @@ export interface RunJournalResponse {
  *   POST /proposals/:id/dismiss          ActionResult   undoable (restore)
  *   POST /proposals/:id/restore          ActionResult
  *   POST /journal/:jid/undo              ActionResult
+ *   POST /queue              {source, input}  QueueAddResponse   adds one item (query/backlog can add several)
+ *   POST /queue/:id/remove   {}           ActionResult
+ *   POST /queue/:id/retry    {}           ActionResult   sends a parked/failed item back to queued
+ *   POST /queue/pause        {}           ActionResult   stops the worker from starting anything new
+ *   POST /queue/resume       {}           ActionResult
  *
  * A write whose mechanism does not exist yet answers 501 `{error, reason}`; the rail
  * renders that as a refusal card and never pretends the action ran.
  */
 export const CONSOLE_ROUTES = [
-  '/lanes', '/thread', '/journal', '/integrations', '/caps', '/proposals', '/command',
+  '/lanes', '/thread', '/journal', '/integrations', '/caps', '/proposals', '/command', '/queue',
 ] as const;
