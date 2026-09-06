@@ -11,7 +11,7 @@ for (const size of SIZES) {
       await page.setViewportSize({ width: size.width, height: size.height });
       await page.goto('/');
       await expect(page.getByTestId('lane-FLT-201')).toBeVisible();
-      if (theme === 'light') await page.getByText('dark').click();
+      if (theme === 'light') await page.getByText('day mode').click();
       await page.screenshot({ path: `tests/e2e/__screenshots__/board-${size.name}-${theme}.png`, fullPage: false });
     });
   }

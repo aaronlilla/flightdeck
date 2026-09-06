@@ -39,10 +39,10 @@ export function TopBar(props: TopBarProps): JSX.Element {
       <div style={{ display: 'flex', gap: 16 }}>
         <a className={`nav ${view === 'board' ? 'navOn' : ''}`} onClick={() => onNav('board')}>Board</a>
         <a className={`nav ${view === 'settings' ? 'navOn' : ''}`} onClick={() => onNav('settings')}>
-          Settings{settingsBadge > 0 ? <span style={{ color: 'var(--block)' }}> · {settingsBadge} down</span> : null}
+          Settings{settingsBadge > 0 ? <span style={{ color: 'var(--block)' }}> ● {settingsBadge} down</span> : null}
         </a>
         <a className={`nav ${view === 'review' ? 'navOn' : ''}`} onClick={() => onNav('review')}>
-          Flight review{reviewBadge > 0 ? <span style={{ color: 'var(--park)' }}> · {reviewBadge} proposed</span> : null}
+          Flight review{reviewBadge > 0 ? <span style={{ color: 'var(--park)' }}> {reviewBadge} proposed</span> : null}
         </a>
       </div>
       <span style={{ flex: 1 }} />
@@ -58,10 +58,10 @@ export function TopBar(props: TopBarProps): JSX.Element {
         ${spentTodayUsd.toFixed(2)}{caps ? ` / $${caps.dailyUsd}` : ''}
       </span>
       <span className={feed.live ? 'stF' : 'stO'}>
-        {feed.live ? `■ live feed · ${latencyMs}ms` : `feed lost · retry in ${feed.retryInS ?? 0}s`}
+        {feed.live ? `■ live feed · ${latencyMs}ms` : `○ feed lost ${hm(feed.lostAt ?? now)}`}
       </span>
       <span className="m" style={{ fontSize: 11, color: 'var(--ink2)', minWidth: 62 }}>{hm(now)}</span>
-      <span className="chip chipB" onClick={onToggleTheme}>{theme === 'thD' ? 'dark' : 'light'}</span>
+      <span className="chip chipB" onClick={onToggleTheme}>{theme === 'thD' ? 'day mode' : 'night ops'}</span>
     </div>
   );
 }
