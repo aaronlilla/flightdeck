@@ -220,17 +220,30 @@ export class ConsoleWrites {
       ...(deps.integrationsConfigPath ? { configPath: deps.integrationsConfigPath } : {}),
       ...(deps.spawnFn ? { spawnFn: deps.spawnFn } : {}),
     });
+    // Not started here: `server.ts` starts it from `listen()` and stops it in `close()`,
+    // the same lifecycle the heartbeat timer already has. Starting it the moment a
+    // `ForgeServer` is merely constructed, listening or not, left a 10-second tick
+    // ticking against a journal a test's own temp dir had already been removed out from
+    // under.
+  }
+
+  /** Starts the 10-second rule-enforcement tick. Called once by `server.ts#listen()`;
+   *  a second call is a no-op. */
+  start(): void {
+    if (this.enforcement) return;
     this.enforcement = startEnforcementTick({
-      journalPath: deps.journalPath,
-      ...(deps.rulesConfigPath ? { rulesPath: deps.rulesConfigPath } : {}),
-      inbox: deps.inbox,
+      journalPath: this.deps.journalPath,
+      ...(this.deps.rulesConfigPath ? { rulesPath: this.deps.rulesConfigPath } : {}),
+      inbox: this.deps.inbox,
       runActions: this.runActionsDeps(),
     });
   }
 
-  /** Lets a caller (server shutdown, or a test) stop the 10-second rule tick. */
+  /** Lets a caller (server shutdown, or a test) stop the 10-second rule tick. A no-op
+   *  when `start()` was never called. */
   stop(): void {
     this.enforcement?.stop();
+    this.enforcement = undefined;
   }
 
   private runActionsDeps(): RunActionsDeps {

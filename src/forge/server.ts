@@ -248,6 +248,7 @@ export class ForgeServer {
     // to know the feed itself is alive, distinct from any one lane going quiet.
     this.heartbeatTimer = setInterval(() => this.publish({ type: 'heartbeat', at: Date.now() }), HEARTBEAT_MS);
     this.heartbeatTimer.unref?.();
+    this.consoleWrites.start();
     return this.port;
   }
 
@@ -256,6 +257,7 @@ export class ForgeServer {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = undefined;
     }
+    this.consoleWrites.stop();
     for (const socket of this.sockets) socket.destroy();
     this.sockets.clear();
     const server = this.http;
