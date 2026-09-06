@@ -10,7 +10,7 @@
  * Provider assignment lives in `policy.ts` (`providerFor`), not here, because it is a
  * property of one class and `policy.ts` already owns every other per-class fact.
  */
-import { aliasOf, classFor, governorBudget, modelIdFor, priceFor } from './policy.js';
+import { aliasOf, classFor, effectiveGovernorBudget, modelIdFor, priceFor } from './policy.js';
 import type { ForgeEvent, FleetState, Usage } from './journal.js';
 
 // ---------------------------------------------------------------------------------------
@@ -300,16 +300,21 @@ export interface BudgetDecision {
 
 /**
  * Whether a run may start, checked against the class's own per-run ceiling and the
- * fleet's daily cap, both read from `policy.ts`'s `governorBudget()`. Checked before any
- * spend happens: the caller passes what the run would spend, not what it already spent,
- * so a refusal here means the run never started rather than merely being logged after
- * the money left. A refusal parks with the same `run.parked` event kind conformance
- * parking uses, carrying a `reason` that tells the two apart.
+ * fleet's daily cap, both read from `policy.ts`'s `effectiveGovernorBudget()` -- the
+ * policy file's own numbers, merged with whatever the console has overridden in
+ * `~/.forge/console/caps.json`, so a cap raised or lowered from the board actually binds
+ * the next launch. Checked before any spend happens: the caller passes what the run
+ * would spend, not what it already spent, so a refusal here means the run never started
+ * rather than merely being logged after the money left. A refusal parks with the same
+ * `run.parked` event kind conformance parking uses, carrying a `reason` that tells the
+ * two apart.
  */
 export function checkBudget(
-  run: string, className: string, wouldSpendUsd: number, spentTodayUsd: number, path?: string,
+  run: string, className: string, wouldSpendUsd: number, spentTodayUsd: number, path?: string, forgeHomeDir?: string,
 ): BudgetDecision {
-  const budget = governorBudget(path);
+  const budget = forgeHomeDir !== undefined
+    ? effectiveGovernorBudget(path, forgeHomeDir)
+    : effectiveGovernorBudget(path);
   const perRunCap = budget.usdPerRun[className];
   if (perRunCap !== undefined && wouldSpendUsd > perRunCap) {
     return {

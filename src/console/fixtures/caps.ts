@@ -8,5 +8,6 @@ export function seedCaps(): Caps {
     enforcement: 'on',
     spentTodayUsd: 94.63,
     overrides: { 'FLT-204': 8 },
+    sources: { dailyUsd: 'policy', runUsd: 'policy', hardUsd: 'policy' },
   };
 }

@@ -229,7 +229,7 @@ export class ConsoleReads {
     const now = Date.now();
     const fleet = this.journalCache.read(this.journalPath);
     const budget = governorBudget(this.modelPolicyPath);
-    const overrides = readCapsOverrides(capsOverridesPath(this.forgeHomeDir));
+    const overridesPath = capsOverridesPath(this.forgeHomeDir);
     const implementClassName = classNames(this.modelPolicyPath).includes('implement')
       ? 'implement' : (classNames(this.modelPolicyPath)[0] ?? 'implement');
     // A policy file with no `governor` block reads back as `{ dailyUsd: Infinity,
@@ -237,13 +237,14 @@ export class ConsoleReads {
     // tell that apart from a real, deliberately-unbounded budget is that a configured
     // one always sets at least one of the two.
     const governorConfigured = Number.isFinite(budget.dailyUsd) || Object.keys(budget.usdPerRun).length > 0;
-    // `ensureHardUsd` writes 5x dailyUsd into the policy file's own governor block the
-    // first time it finds no hardUsd there, so the org hard limit (FD-7) the caps sheet
-    // shows is a real, stable number in model-policy.json rather than a fresh
-    // computation nobody editing that file by hand would ever see.
-    const hardUsd = governorConfigured ? ensureHardUsd(this.modelPolicyPath) : Number.POSITIVE_INFINITY;
+    // `ensureHardUsd` writes 5x the effective daily cap into `~/.forge/console/caps.json`
+    // the first time neither the policy file nor a console override declares one --
+    // FD-7 never writes into the tracked model-policy.json (round 3: it used to, and a
+    // smoke server running from a worktree dirtied that worktree's own tracked file).
+    if (governorConfigured) ensureHardUsd(this.modelPolicyPath, overridesPath);
+    const overrides = readCapsOverrides(overridesPath);
     return computeCaps({
-      governor: { ...budget, hardUsd } as ReturnType<typeof governorBudget> & { hardUsd?: number },
+      governor: budget,
       implementClassName,
       overrides,
       spentTodayUsd: spentTodayUsd(fleet.runs, now),

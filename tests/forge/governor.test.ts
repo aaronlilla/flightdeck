@@ -6,7 +6,7 @@
  * specimen never opens a live session, never calls a real model, and never touches a real
  * EAS build. That is what "zero-spend specimens" means for this stream.
  */
-import { mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -284,20 +284,25 @@ describe('EAS build coalescing, by head, platform and fingerprint', () => {
 });
 
 describe('budgets Aaron sets, queued against and never silently exceeded', () => {
+  // `checkBudget` reads `~/.forge/console/caps.json` (FIXES-3) on top of the policy
+  // file's own numbers, so every specimen here pins an empty, isolated home -- otherwise
+  // a real console override on this machine would change what these assert.
+  const isolatedHome = mkdtempSync(join(tmpdir(), 'governor-budget-'));
+
   it('allows a run under both the per-class and the daily ceiling', () => {
-    const result = checkBudget('r1', 'triage', 1, 0);
+    const result = checkBudget('r1', 'triage', 1, 0, undefined, isolatedHome);
     expect(result.allowed).toBe(true);
   });
 
   it('parks a run before it starts when it would cross its class ceiling', () => {
-    const result = checkBudget('r1', 'triage', 999, 0);
+    const result = checkBudget('r1', 'triage', 999, 0, undefined, isolatedHome);
     expect(result.allowed).toBe(false);
     expect(result.event?.event).toBe('governor.parked');
     expect(result.event?.['reason']).toBe('per-run-cap');
   });
 
   it('parks a run before it starts when it would cross the daily cap, even under its own ceiling', () => {
-    const result = checkBudget('r1', 'triage', 1, 1_000_000);
+    const result = checkBudget('r1', 'triage', 1, 1_000_000, undefined, isolatedHome);
     expect(result.allowed).toBe(false);
     expect(result.event?.['reason']).toBe('daily-cap');
   });
@@ -306,11 +311,27 @@ describe('budgets Aaron sets, queued against and never silently exceeded', () =>
     // The falsifier: a check that only logs after the money is already spent would still
     // pass a naive "was it flagged" specimen. This one insists the caller gets `allowed:
     // false` in hand before doing anything the budget would have refused.
-    const decision = checkBudget('r1', 'implement-hard', 1_000_000, 0);
+    const decision = checkBudget('r1', 'implement-hard', 1_000_000, 0, undefined, isolatedHome);
     expect(decision.allowed).toBe(false);
     // Nothing in the result carries a `spent` acknowledgement -- there is nothing to
     // acknowledge, because nothing was spent.
     expect(decision.event?.['wouldSpendUsd']).toBe(1_000_000);
+  });
+
+  it('refuses admission at a console-overridden daily cap, not the policy one', () => {
+    const home = mkdtempSync(join(tmpdir(), 'governor-budget-override-'));
+    mkdirSync(join(home, 'console'), { recursive: true });
+    // The policy's own daily cap easily covers this spend; only a console override
+    // lowering it should be able to refuse admission here.
+    writeFileSync(join(home, 'console', 'caps.json'), JSON.stringify({ dailyUsd: 2 }), 'utf8');
+
+    const allowedAtPolicy = checkBudget('r1', 'triage', 1, 0, undefined, isolatedHome);
+    expect(allowedAtPolicy.allowed).toBe(true);
+
+    const refusedAtOverride = checkBudget('r1', 'triage', 1, 1.5, undefined, home);
+    expect(refusedAtOverride.allowed).toBe(false);
+    expect(refusedAtOverride.event?.['reason']).toBe('daily-cap');
+    expect(refusedAtOverride.event?.['cap']).toBe(2);
   });
 });
 

@@ -182,7 +182,7 @@ describe('setRunCap', () => {
     const path = capOverridesPath(deps.capsOverridesPath);
     const first = await setRunCap('alpha', 5, deps);
     expect(first.status).toBe(200);
-    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ overrides: { alpha: 5 } });
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ perRun: { alpha: 5 } });
 
     const second = await setRunCap('alpha', 8, deps);
     const row = ledger.get((second.body as { jid: string }).jid);
