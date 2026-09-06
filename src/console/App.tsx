@@ -373,7 +373,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
                   onCommand={onCommand}
                   onOpenCost={(id) => dispatch({ type: 'sheet', sheet: { type: 'cost', id } })}
                   onOpenSandbox={(id) => dispatch({ type: 'sheet', sheet: { type: 'sandbox', id } })}
-                  onSendLane={(id, textMsg) => onRailSend(textMsg)}
+                  onSendLane={(id, textMsg) => runAction(() => api.sendToRun(id, textMsg))}
                   onOpenJournal={onOpenJournal}
                   onUndo={onUndo}
                 />

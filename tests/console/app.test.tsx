@@ -81,6 +81,27 @@ describe('App', () => {
     await waitFor(() => expect(screen.getByTestId('lane-FLT-204')).toHaveAttribute('data-state', 'killed'));
   });
 
+  it('delivers a ticket-sheet message to that run, not the board-wide command classifier', async () => {
+    // TicketSheet's composer is captioned "message {lane.id}...", so the operator has
+    // every reason to believe free text typed there reaches that one run. Wiring it
+    // through the same global router the rail composer uses (`onSendLane={(id, text) =>
+    // onRailSend(text)}`, discarding `id`) meant an unrecognized message instead earned
+    // the canned "I understand: pause, resume, kill..." refusal and reached no run at
+    // all -- confirmed live against a real run, whose own thread never showed it.
+    render(<App eventStreamOptions={{ WebSocketImpl: FakeSocket as unknown as typeof WebSocket }} />);
+    await waitFor(() => expect(screen.getByTestId('lane-FLT-201')).toBeInTheDocument());
+    await userEvent.click(screen.getByTestId('lane-FLT-201'));
+    await waitFor(() => expect(screen.getByTestId('ticket-sheet')).toBeInTheDocument());
+    const sheet = screen.getByTestId('ticket-sheet');
+    const input = within(sheet).getByPlaceholderText('message FLT-201…');
+    await userEvent.type(input, 'status of the migration?');
+    await userEvent.click(within(sheet).getByText('Send ⏎'));
+    await waitFor(() => expect(screen.getByTestId('ticket-sheet').textContent).toMatch(/status of the migration\?/));
+    // The canned command-not-understood reply must never appear: this text went to the
+    // run, not to the free-text command classifier.
+    expect(screen.queryByText(/I understand: pause, resume, kill/)).not.toBeInTheDocument();
+  });
+
   it('shows the disconnected banner once the feed drops', async () => {
     render(<App eventStreamOptions={{ WebSocketImpl: FakeSocket as unknown as typeof WebSocket }} />);
     await waitFor(() => expect(screen.getByTestId('lane-FLT-201')).toBeInTheDocument());

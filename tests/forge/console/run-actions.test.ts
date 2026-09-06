@@ -7,8 +7,9 @@ import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { Actuator, DecisionId, RunId } from '../../../src/forge/contracts.js';
-import { appendOnce } from '../../../src/forge/journal.js';
+import { appendOnce, Journal } from '../../../src/forge/journal.js';
 import { Registry } from '../../../src/forge/registry.js';
+import { findDecision, WardenActuator } from '../../../src/forge/warden.js';
 import { ActionsLedger } from '../../../src/forge/console/actions-ledger.js';
 import {
   capOverridesPath, compactRun, killRun, mergeRun, pauseRun, resumeRun, setRunCap, verifyRun,
@@ -88,10 +89,42 @@ describe('killRun', () => {
 
     expect(result.status).toBe(200);
     expect(result.body).toMatchObject({ ok: true, undoable: false });
-    expect(actuator.killed).toEqual([{ run: 'alpha', decisionId: (result.body as { jid: string }).jid }]);
 
     const rows = readFileSync(journalPath, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
     expect(rows[1]).toMatchObject({ event: 'decision.made', action: 'kill', run: 'alpha', actor: 'console' });
+    // The actuator must be handed the decision row's own full id (what `findDecision`
+    // actually matches on) -- never `jid`, the shortened "J-" + 8-hex display form the
+    // receipt carries. The two are never equal, so asserting `jid` here previously let
+    // this suite stay green on the same mismatch that made every board kill a no-op.
+    expect(actuator.killed).toEqual([{ run: 'alpha', decisionId: rows[1].id }]);
+  });
+
+  it('hands the real WardenActuator a decisionId that findDecision can actually locate', async () => {
+    // The fake actuator above just records whatever id it is given, so it never once
+    // caught the real bug: `killRun` was calling the actuator with `jid` ("J-" plus the
+    // first 8 hex characters of the decision row's id -- the short form every receipt
+    // and `GET /journal` row displays), while `findDecision`/`WardenActuator.kill`
+    // (and the documented `forge decide RUN kill "<reason>"` CLI, which prints the raw
+    // id) compare against the row's own full id. The two never matched, so a kill
+    // clicked and confirmed from the board always reported success and never touched
+    // the process -- confirmed live: `decision.made` landed in the journal, immediately
+    // followed by `warden.refused: "no decision.made row names this run and kill"`, and
+    // the run's own OS process kept running. This test exercises the real actuator so a
+    // format mismatch like that one cannot hide behind a fake that accepts anything.
+    registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'alpha' });
+    const journal = new Journal(journalPath);
+    const realActuator = new WardenActuator({ journal, journalPath, registry });
+    const realDeps: RunActionsDeps = { ...deps, actuator: realActuator };
+
+    const result = await killRun('alpha', 'over budget', realDeps);
+    journal.close();
+
+    expect(result.status).toBe(200);
+    const rows = readFileSync(journalPath, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    const decisionRow = rows.find((row) => row.event === 'decision.made');
+    expect(findDecision(journalPath, 'alpha', 'kill', decisionRow.id)).toBeDefined();
+    expect(rows.some((row) => row.event === 'warden.refused')).toBe(false);
   });
 
   it('is not undoable', async () => {

@@ -130,6 +130,17 @@ export function setRunCap(id: string, capUsd: number): Promise<ActionResult> {
   return post<ActionResult>(`/run/${encodeURIComponent(id)}/cap`, { capUsd });
 }
 
+/**
+ * The ticket sheet's own "message {lane.id}..." composer: `POST /send`, the server's
+ * run-scoped delivery (`RunInbox.send`), never the board-wide `/command` classifier.
+ * `/send` answers `{ ok: true }` only, so this shapes that into the same `ActionResult`
+ * every other run action already returns, for `runAction`'s one receipt path.
+ */
+export function sendToRun(run: string, text: string): Promise<ActionResult> {
+  return post<{ ok: boolean }>('/send', { run, text })
+    .then((result) => ({ ok: result.ok, jid: null, message: `sent to ${run}`, undoable: false }));
+}
+
 export function setCaps(body: { dailyUsd?: number; runUsd?: number }): Promise<Caps> {
   return post<Caps>('/caps', body);
 }

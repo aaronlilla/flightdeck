@@ -95,10 +95,16 @@ export async function killRun(run: string, reason: string, deps: RunActionsDeps)
   if (!isRegistered(run, deps)) return notFound(run);
   const guard = guardState('kill', run, deps);
   if (guard) return guard;
-  const { jid } = recordAction(deps.journalPath, deps.ledger, {
+  const { jid, id } = recordAction(deps.journalPath, deps.ledger, {
     kind: 'kill', run, text: `kill requested: ${reason}`, undo: null, extra: { reason },
   });
-  await deps.actuator.kill(asRunId(run), jid);
+  // The actuator's `findDecision` matches a `decision.made` row by its own full id, the
+  // same way the documented `forge decide RUN kill "<reason>"` CLI does -- never `jid`,
+  // which is a shortened display form (`"J-"` + 8 hex chars) built for a receipt or a
+  // `GET /journal` row. Passing `jid` here meant every board-driven kill recorded its
+  // decision, then had the actuator refuse it a line later for failing to find that exact
+  // decision -- reporting success to the operator while the process kept running.
+  await deps.actuator.kill(asRunId(run), id);
   return { status: 200, body: { ok: true, jid, message: `kill requested for ${run}`, undoable: false } };
 }
 

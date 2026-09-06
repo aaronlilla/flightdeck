@@ -1,0 +1,14 @@
+import { chromium } from '@playwright/test';
+const PORT = process.env.FORGE_PORT;
+const RUN = 'probe-e2e-2-pause';
+const browser = await chromium.launch();
+const page = await browser.newPage({ viewport: { width: 1440, height: 950 } });
+await page.goto(`http://127.0.0.1:${PORT}/`);
+await page.waitForSelector(`[data-testid="lane-${RUN}"]`, { timeout: 15000 });
+console.log('tile data-state:', await page.getAttribute(`[data-testid="lane-${RUN}"]`, 'data-state'));
+console.log('tile text:\n', await page.locator(`[data-testid="lane-${RUN}"]`).innerText());
+await page.locator(`[data-testid="lane-${RUN}"]`).click();
+await page.waitForSelector('[data-testid="ticket-sheet"]', { timeout: 10000 });
+console.log('ticket sheet text:\n', await page.locator('[data-testid="ticket-sheet"]').innerText());
+await page.screenshot({ path: 'C:/tmp/forge-e2e-shots/phase2/06-blocked-ticket-sheet.png', fullPage: true });
+await browser.close();

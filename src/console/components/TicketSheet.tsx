@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 import * as api from '../api.js';
 import { HOP_NAMES } from '../../shared/console-model.js';
@@ -16,7 +16,11 @@ export interface TicketSheetProps {
   onCommand: (id: string, cmd: string) => void;
   onOpenCost: (id: string) => void;
   onOpenSandbox: (id: string) => void;
-  onSendLane: (id: string, text: string) => void;
+  /** May return a promise (App's `runAction` does): the sheet awaits it before
+   *  re-fetching its own run thread, since the thread it already holds was fetched
+   *  once on open and a send otherwise never appears in it until the sheet is
+   *  closed and reopened. */
+  onSendLane: (id: string, text: string) => void | Promise<void>;
   onUndo: (jid: string) => void;
   onOpenJournal: (jid: string) => void;
 }
@@ -116,6 +120,16 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
     return () => { active = false; };
   }, [lane.id]);
 
+  // A send lands on the run's own thread server-side, but the thread above was fetched
+  // once on open and never polls -- without this, the message the operator just typed
+  // would silently vanish from the sheet until it was closed and reopened.
+  const sendAndRefetch = useCallback((text: string) => {
+    Promise.resolve(onSendLane(lane.id, text))
+      .then(() => api.getRunThread(lane.id))
+      .then((r) => setThread(r.messages))
+      .catch(() => undefined);
+  }, [onSendLane, lane.id]);
+
   const headline = laneHeadline(lane);
   const cta = laneCta(lane);
   const pct = ctxPercent(lane);
@@ -214,9 +228,9 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
             <input
               className="inp" placeholder={`message ${lane.id}…`} value={draft}
               onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter' && draft.trim()) { onSendLane(lane.id, draft); setDraft(''); } }}
+              onKeyDown={(e) => { if (e.key === 'Enter' && draft.trim()) { sendAndRefetch(draft); setDraft(''); } }}
             />
-            <span className="btnP" style={{ padding: '5px 10px', fontSize: '9.5px' }} onClick={() => { if (draft.trim()) { onSendLane(lane.id, draft); setDraft(''); } }}>Send ⏎</span>
+            <span className="btnP" style={{ padding: '5px 10px', fontSize: '9.5px' }} onClick={() => { if (draft.trim()) { sendAndRefetch(draft); setDraft(''); } }}>Send ⏎</span>
           </div>
         </div>
       </div>

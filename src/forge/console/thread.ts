@@ -10,6 +10,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 
 import type { ForgeEvent } from '../journal.js';
+import type { InboxEntry } from '../inbox.js';
 import type { RunMessage } from '../runinbox.js';
 import type { Message, ThreadResponse } from '../../shared/console-model.js';
 import { jidFor, textFor } from './journal-route.js';
@@ -55,18 +56,43 @@ function chipFor(row: ForgeEvent): Message {
   };
 }
 
+/** An open inbox ask, rendered as the rail's own answerable `question` card (the same
+ *  shape `MessageCard` already knows how to draw with clickable option buttons) --
+ *  otherwise a live parked run's question reached the needs-you plate (which reads
+ *  `lane.question` straight off `/lanes`) and nowhere else, leaving an operator with no
+ *  click-to-answer path at all, only the composer's `answer <key> <text>` typed by hand. */
+function questionMessageFor(entry: InboxEntry): Message {
+  return {
+    k: `question-${entry.key}`,
+    type: 'question',
+    text: entry.question,
+    ts: entry.at,
+    source: entry.runs[0] ?? 'system',
+    askKey: entry.key,
+    opts: entry.options,
+    verifiedAt: entry.at,
+  };
+}
+
 /**
- * The board-wide thread: every persisted rail message plus one system chip per matching
+ * The board-wide thread: every persisted rail message, one system chip per matching
  * journal row since the earliest persisted message (or since `now` when the thread is
  * still empty, so a fresh console does not replay the fleet's whole history as chips on
- * its very first read).
+ * its very first read), plus one answerable question card per still-open inbox ask that
+ * has not already been persisted under the same key.
  */
-export function computeThread(persisted: Message[], events: ForgeEvent[], now: number): ThreadResponse {
+export function computeThread(
+  persisted: Message[], events: ForgeEvent[], now: number, openAsks: InboxEntry[] = [],
+): ThreadResponse {
   const earliest = persisted.length ? Math.min(...persisted.map((message) => message.ts)) : now;
   const chips = events
     .filter((row) => CHIP_EVENTS.has(row.event) && row.at >= earliest)
     .map(chipFor);
-  const messages = [...persisted, ...chips].sort((a, b) => a.ts - b.ts);
+  const persistedKeys = new Set(persisted.map((message) => message.k));
+  const questions = openAsks
+    .map(questionMessageFor)
+    .filter((message) => !persistedKeys.has(message.k));
+  const messages = [...persisted, ...chips, ...questions].sort((a, b) => a.ts - b.ts);
   return { messages };
 }
 

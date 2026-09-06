@@ -97,6 +97,12 @@ export interface RecordActionOptions {
 export interface ActionRecord {
   jid: string;
   ts: number;
+  /** The `decision.made` row's own full id -- the form `findDecision`/`WardenActuator.kill`
+   *  (and the documented `forge decide RUN kill "<reason>"` CLI) actually compare against.
+   *  Never the same string as `jid`, which is `"J-"` plus only the first 8 hex characters,
+   *  built for display (a receipt, `GET /journal`) and never a match for the full id a kill
+   *  has to name. A caller authorising a kill must pass this, not `jid`. */
+  id: string;
 }
 
 /**
@@ -128,5 +134,5 @@ export function recordAction(
     text: options.text,
     undo: options.undo,
   });
-  return { jid, ts: event.at };
+  return { jid, ts: event.at, id: event.id };
 }

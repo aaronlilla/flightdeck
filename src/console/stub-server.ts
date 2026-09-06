@@ -467,6 +467,24 @@ export function createStubServer() {
         return;
       }
 
+      // `POST /send`: the real server's own run-scoped delivery (`ForgeServer.send`,
+      // `RunInbox.send`) -- a card lands on that one run's own thread, tagged with its
+      // `lane`, never routed through the free-text command classifier `/command` uses.
+      if (urlPath === '/send' && method === 'POST') {
+        const body = await readJson<{ run?: string; text?: string }>(request);
+        if (!body.run || !body.text) {
+          json(response, 400, { error: 'a send needs a run and text' });
+          return;
+        }
+        const now = Date.now();
+        db.thread = [...db.thread, {
+          k: `send-${now}-${Math.random()}`, type: 'operator', text: body.text, ts: now,
+          source: 'operator', lane: body.run,
+        }];
+        json(response, 200, { ok: true });
+        return;
+      }
+
       const checkMatch = /^\/integrations\/([^/]+)\/check$/.exec(urlPath);
       if (checkMatch && method === 'POST') {
         const id = decodeURIComponent(checkMatch[1] as string);
