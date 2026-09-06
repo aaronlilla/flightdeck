@@ -12,3 +12,9 @@ Thumbs.db
 
 # Machine-local, never committed: overlay manifest and any local state.
 .flightdeck-local/
+
+# Playwright output.
+test-results/
+playwright-report/
+tests/e2e/__screenshots__/*.png
+

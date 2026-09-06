@@ -25,7 +25,8 @@
     "console:dev": "vite --config vite.console.config.ts",
     "console:build": "vite build --config vite.console.config.ts",
     "console:preview": "vite preview --config vite.console.config.ts",
-    "console:stub": "tsx src/console/stub-server.ts"
+    "console:stub": "tsx src/console/stub-server.ts",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.229",
@@ -35,6 +36,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",
+    "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.3",
     "@testing-library/user-event": "^14.6.7",
     "@types/node": "^24.0.0",
