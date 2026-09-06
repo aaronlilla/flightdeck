@@ -35,13 +35,14 @@ test('the needs-you strip keeps all three plates on one row at 1440', async ({ p
   const strip = page.getByText('Needs you').locator('../..');
   const plates = strip.locator('.plate');
   await expect(plates).toHaveCount(3);
-  const count = await plates.count();
-  const tops: number[] = [];
-  for (let i = 0; i < count; i += 1) {
-    const box = await plates.nth(i).boundingBox();
-    if (box) tops.push(Math.round(box.y));
-  }
-  expect(new Set(tops).size).toBe(1);
+  // The web fonts land after the first paint and reflow the plates, so measure only once
+  // the layout has stopped moving; otherwise this reads a mid-reflow frame and flakes.
+  await page.evaluate(() => document.fonts.ready);
+  await expect.poll(async () => {
+    const boxes = await plates.evaluateAll((nodes) =>
+      nodes.map((node) => Math.round(node.getBoundingClientRect().y)));
+    return new Set(boxes).size;
+  }, { timeout: 5000 }).toBe(1);
 });
 
 test('command palette opens on cmd/ctrl+K and closes on Escape', async ({ page }) => {
@@ -109,16 +110,12 @@ test('the spend readout opens the fleet cost sheet', async ({ page }) => {
 });
 
 // POLISH-2 #4: "today" defaults once the fleet passes 12 lanes -- the filter row no
-// longer has a chip for it (the prototype never had one), so the only surface left
-// is that no base chip reads active until the operator picks one, and "all" refetches
-// with ?all=1 once clicked.
-test('no base filter chip is active by default past 12 lanes, and all refetches with ?all=1', async ({ page }) => {
+// The prototype's board opens on `all`, whatever the fleet's size, and the chip that is
+// active says so. Nothing switches the filter on the operator's behalf.
+test('the board opens on all, and all is the active chip', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByTestId('lane-FLT-201')).toBeVisible();
-  await expect(page.locator('.chipOn', { hasText: /^all \d+$/ })).toHaveCount(0);
-  const allRequest = page.waitForRequest((req) => req.url().includes('/lanes?all=1'));
-  await page.locator('.chip', { hasText: /^all \d+$/ }).click();
-  await allRequest;
+  await expect(page.locator('.chipOn', { hasText: /^all \d+$/ })).toHaveCount(1);
 });
 
 test('a dropped feed shows the disconnected banner and disables the composer', async ({ page }) => {
