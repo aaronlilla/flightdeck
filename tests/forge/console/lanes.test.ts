@@ -467,6 +467,27 @@ describe('observedAt vs the noise-refreshed RunState.lastEventAt', () => {
     const result = windowLanes(computeLanes(baseInput({ laneRecords: [lane], fleet }), now), now, false);
     expect(result.lanes).toHaveLength(0);
   });
+
+  // Triangulation against the live fleet caught a lane whose tile claimed it had been
+  // observed seconds ago on every request, hours after anything happened to it: the lane
+  // file carried no `started`, so the builder read the wall clock in its place and the
+  // stamp renewed itself forever. A freshness stamp that cannot go stale is worse than no
+  // stamp at all, so `observedAt` now comes from the newest real observation.
+  it('never stamps a lane with no start time using the current clock', () => {
+    const HOUR = 3_600_000;
+    const now = 100 * HOUR;
+    const dir = mkdtempSync(join(tmpdir(), 'lanes-noclock-'));
+    const path = join(dir, 'fleet.jsonl');
+    const journal = new Journal(path);
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner', at: now - 40 * HOUR });
+    journal.append({ event: 'run.parked', run: 'alpha', actor: 'runner', at: now - 37 * HOUR });
+    journal.close();
+    const fleet = replay(path);
+    const lane = laneRecord({ slug: 'alpha', column: 'c1', started: null });
+    const [built] = computeLanes(baseInput({ laneRecords: [lane], fleet }), now).lanes;
+    expect(built!.observedAt).toBe(now - 37 * HOUR);
+    expect(built!.observedAt).toBeLessThan(now);
+  });
 });
 
 describe('windowLanes', () => {

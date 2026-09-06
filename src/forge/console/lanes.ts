@@ -315,7 +315,13 @@ export function buildLane(input: LaneBuildInput): Lane {
   const lastMeaningfulEventAt = meaningfulRunEvents.length
     ? meaningfulRunEvents[meaningfulRunEvents.length - 1]!.at
     : undefined;
-  const mtime = lane.started ?? now;
+  // A lane with no `started` has no clock of its own, and reading `now` for it would
+  // stamp every request with the current time: the tile would claim it was observed
+  // seconds ago forever, which is the one thing a freshness stamp must never do. Fall
+  // back to the newest real observation instead, and only to `now` when a lane has
+  // never produced one.
+  const lastKnownAt = lastMeaningfulEventAt ?? runState?.lastEventAt ?? lane.ended ?? null;
+  const mtime = lane.started ?? lastKnownAt ?? now;
   const lastEventAt = lastMeaningfulEventAt ?? runState?.lastEventAt ?? mtime;
   const observedAt = Math.max(mtime, lastEventAt);
   const verifiedAt = runState?.lastEventAt ?? null;
