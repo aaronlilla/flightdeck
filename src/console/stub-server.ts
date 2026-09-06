@@ -92,6 +92,46 @@ function findLane(id: string): Lane | undefined {
   return db.lanes.find((l) => l.id === id);
 }
 
+/** A per-step cost breakdown built from the fixture lane's own turn count, the closest
+ *  the stub can get to the real server's per-turn usage rows without a real journal. */
+function stubCostSteps(lane: Lane): { t: number; stepText: string; inputTokens: number; outputTokens: number; costUsd: number }[] {
+  const n = Math.max(1, lane.stepN);
+  const steps = [];
+  for (let i = 1; i <= n; i += 1) {
+    const runaway = lane.runaway && i === n;
+    const frac = runaway ? 0.92 : 1 / n;
+    steps.push({
+      t: lane.startedAt + i * 8 * 60_000,
+      stepText: runaway ? `retry loop · ${lane.fails} failed builds` : `step ${i}/${lane.stepTotal}`,
+      inputTokens: Math.round(lane.costUsd * frac * 3400),
+      outputTokens: Math.round(lane.costUsd * frac * 900),
+      costUsd: Number((lane.costUsd * frac).toFixed(2)),
+    });
+  }
+  return steps;
+}
+
+/** The ticket sheet's journal narrative, built the same shape the real server computes
+ *  from the journal (see `src/forge/console/journal-narrative.ts`), off this fixture
+ *  lane's own fields since the stub has no real journal to read from. */
+function stubJournalNarrative(lane: Lane): { t: number; text: string; color: string }[] {
+  const entries: { t: number; text: string; color: string }[] = [
+    { t: lane.startedAt, text: `polled ${lane.id} from queue`, color: 'var(--ink2)' },
+  ];
+  if (!lane.sandbox) {
+    entries.push({ t: lane.startedAt + 60_000, text: 'provision failed · AWS sandboxes disconnected', color: 'var(--block)' });
+  } else {
+    entries.push({ t: lane.startedAt + 60_000, text: `sandbox ${lane.sandbox.id} provisioned`, color: 'var(--ink2)' });
+    entries.push({ t: lane.startedAt + 180_000, text: `branch ${lane.id.toLowerCase()} pushed · ${lane.model}`, color: 'var(--ink2)' });
+  }
+  if (lane.hop >= 3) entries.push({ t: lane.since - 60_000, text: 'gate opened · council judge ×3', color: 'var(--ink2)' });
+  if (lane.state === 'parked') entries.push({ t: lane.since, text: 'parked — needs human', color: 'var(--park)' });
+  else if (lane.state === 'merged') entries.push({ t: lane.since, text: 'merged → main · jira updated', color: 'var(--merge)' });
+  else if (lane.state === 'killed') entries.push({ t: lane.since, text: 'killed · diff discarded', color: 'var(--block)' });
+  else if (lane.runaway) entries.push({ t: Date.now(), text: `build failing ×${lane.fails} · $${lane.costUsd.toFixed(2)}`, color: 'var(--block)' });
+  return entries;
+}
+
 function json(response: ServerResponse, status: number, body: unknown): void {
   const text = JSON.stringify(body);
   response.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(text) });
@@ -289,7 +329,30 @@ export function createStubServer() {
       const runSandboxMatch = /^\/run\/([^/]+)\/sandbox$/.exec(urlPath);
       if (runSandboxMatch && method === 'GET') {
         const lane = findLane(decodeURIComponent(runSandboxMatch[1] as string));
-        json(response, 200, { sandbox: lane?.sandbox ?? null, log: lane?.sandbox ? [`${new Date().toISOString()} sandbox ready`, `${lane.stepText}`] : [] });
+        const log = lane?.sandbox
+          ? [
+            { text: `${new Date().toISOString()} sandbox ready`, severity: 'info' as const },
+            { text: `${new Date().toISOString()} ${lane.stepText}`, severity: 'progress' as const },
+            ...(lane.fails > 0 ? [{ text: `${new Date().toISOString()} retrying after a failed build`, severity: 'retry' as const }] : []),
+            ...(lane.runaway ? [{ text: `${new Date().toISOString()} build failed: exit 1`, severity: 'error' as const }] : []),
+          ]
+          : [];
+        json(response, 200, { sandbox: lane?.sandbox ?? null, log });
+        return;
+      }
+      const runCostMatch = /^\/run\/([^/]+)\/cost$/.exec(urlPath);
+      if (runCostMatch && method === 'GET') {
+        const lane = findLane(decodeURIComponent(runCostMatch[1] as string));
+        json(response, 200, {
+          steps: lane ? stubCostSteps(lane) : [],
+          capEnforcementFailedJid: lane?.runaway ? 'J-40211' : null,
+        });
+        return;
+      }
+      const runJournalMatch = /^\/run\/([^/]+)\/journal$/.exec(urlPath);
+      if (runJournalMatch && method === 'GET') {
+        const lane = findLane(decodeURIComponent(runJournalMatch[1] as string));
+        json(response, 200, { entries: lane ? stubJournalNarrative(lane) : [] });
         return;
       }
 
