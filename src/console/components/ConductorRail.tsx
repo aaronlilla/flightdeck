@@ -5,10 +5,32 @@ import { computeFreshness, freshnessClass, freshnessStamp } from '../freshness.j
 import type { Feed, Message } from '../../shared/console-model.js';
 
 const QUICK_COMMANDS = ["what's stuck", 'spend today', 'status', 'merge ready lanes'];
+const MAX_VISIBLE_MESSAGES = 200;
+
+export interface CollapsedMessage extends Message {
+  /** Set once a run of identical consecutive conductor replies collapses into one card. */
+  collapsedCount?: number;
+}
+
+/** A run of identical consecutive `reply` cards from the conductor becomes one card
+ *  with a `×N` count -- every other message type, and any reply that differs from
+ *  its predecessor, passes through untouched. */
+export function collapseReplies(thread: Message[]): CollapsedMessage[] {
+  const out: CollapsedMessage[] = [];
+  for (const m of thread) {
+    const prev = out[out.length - 1];
+    if (m.type === 'reply' && prev?.type === 'reply' && prev.text === m.text && prev.source === m.source) {
+      prev.collapsedCount = (prev.collapsedCount ?? 1) + 1;
+      continue;
+    }
+    out.push({ ...m });
+  }
+  return out;
+}
 
 function MessageCard({
   message, feedLive, now, onSend, onUndo,
-}: { message: Message; feedLive: boolean; now: number; onSend: (text: string) => void; onUndo: (jid: string) => void }): JSX.Element {
+}: { message: CollapsedMessage; feedLive: boolean; now: number; onSend: (text: string) => void; onUndo: (jid: string) => void }): JSX.Element {
   const [free, setFree] = useState('');
   const fresh = message.verifiedAt !== undefined
     ? computeFreshness(message.verifiedAt, message.ts, feedLive, now)
@@ -32,7 +54,9 @@ function MessageCard({
       return (
         <div style={{ maxWidth: '92%' }}>
           <div className="lbl" style={{ color: 'var(--ink3)', marginBottom: 3 }}>Conductor</div>
-          <div style={{ borderLeft: '2px solid var(--line2)', paddingLeft: 10, font: '13px/1.5 "IBM Plex Sans",sans-serif' }}>{message.text}</div>
+          <div style={{ borderLeft: '2px solid var(--line2)', paddingLeft: 10, font: '13px/1.5 "IBM Plex Sans",sans-serif' }}>
+            {message.text}{message.collapsedCount && message.collapsedCount > 1 ? ` ×${message.collapsedCount}` : ''}
+          </div>
           {message.btns && message.btns.length > 0 ? (
             <div style={{ display: 'flex', gap: 6, margin: '8px 0 0 12px', flexWrap: 'wrap' }}>
               {message.btns.map((b) => (
@@ -171,7 +195,11 @@ export interface ConductorRailProps {
 /** Right rail, single thread; composer disabled with a reason banner when the feed is down. */
 export function ConductorRail(props: ConductorRailProps): JSX.Element {
   const { thread, feed, now, composer, onComposerChange, onSend, onUndo } = props;
+  const [showEarlier, setShowEarlier] = useState(false);
   const pending = thread.filter((m) => m.type === 'question' && m.answer === undefined).length;
+  const collapsed = collapseReplies(thread);
+  const hiddenCount = Math.max(0, collapsed.length - MAX_VISIBLE_MESSAGES);
+  const visible = showEarlier || hiddenCount === 0 ? collapsed : collapsed.slice(-MAX_VISIBLE_MESSAGES);
   return (
     <div style={{ width: 'clamp(300px,30vw,390px)', flex: 'none', borderLeft: '2px solid var(--line2)', display: 'flex', flexDirection: 'column', background: 'var(--panel)', minHeight: 0 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid var(--line)' }}>
@@ -179,7 +207,12 @@ export function ConductorRail(props: ConductorRailProps): JSX.Element {
         <span className="m" style={{ fontSize: 10, fontWeight: 700, color: 'var(--block)' }}>{pending > 0 ? `${pending} pending` : ''}</span>
       </div>
       <div className="scroll" data-testid="rail-thread" style={{ flex: 1, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12, opacity: feed.live ? 1 : 0.6 }}>
-        {thread.map((m) => (
+        {hiddenCount > 0 && !showEarlier ? (
+          <a className="m" style={{ alignSelf: 'center', fontSize: '10.5px', color: 'var(--ink3)' }} onClick={() => setShowEarlier(true)}>
+            show earlier ({hiddenCount})
+          </a>
+        ) : null}
+        {visible.map((m) => (
           <MessageCard key={m.k} message={m} feedLive={feed.live} now={now} onSend={onSend} onUndo={onUndo} />
         ))}
       </div>

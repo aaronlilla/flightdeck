@@ -3,7 +3,7 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
-import { ConductorRail } from '../../src/console/components/ConductorRail.js';
+import { collapseReplies, ConductorRail } from '../../src/console/components/ConductorRail.js';
 import type { Feed, Message } from '../../src/shared/console-model.js';
 
 const feedUp: Feed = { live: true, lostAt: null, reason: null, retryInS: null, lastHeartbeatAt: Date.now() };
@@ -57,5 +57,56 @@ describe('ConductorRail', () => {
     );
     await userEvent.type(screen.getByPlaceholderText(/command…/), '{Enter}');
     expect(onSend).toHaveBeenCalledWith('status');
+  });
+
+  // POLISH-2 #5: a run of identical consecutive conductor replies collapses into one card.
+  describe('collapseReplies', () => {
+    it('collapses three identical consecutive replies into one card with the count', () => {
+      const reply = (k: string): Message => ({ k, type: 'reply', text: 'still working', ts: 1, source: 'conductor' });
+      const out = collapseReplies([reply('a'), reply('b'), reply('c')]);
+      expect(out).toHaveLength(1);
+      expect(out[0]?.collapsedCount).toBe(3);
+    });
+
+    it('does not collapse replies with different text, or across a different message type', () => {
+      const thread: Message[] = [
+        { k: 'a', type: 'reply', text: 'still working', ts: 1, source: 'conductor' },
+        { k: 'b', type: 'event', text: 'heartbeat', ts: 2, source: 'system' },
+        { k: 'c', type: 'reply', text: 'still working', ts: 3, source: 'conductor' },
+        { k: 'd', type: 'reply', text: 'done', ts: 4, source: 'conductor' },
+      ];
+      expect(collapseReplies(thread)).toHaveLength(4);
+    });
+
+    it('renders the ×N suffix on a collapsed reply card', () => {
+      const reply = (k: string): Message => ({ k, type: 'reply', text: 'still working', ts: 1, source: 'conductor' });
+      renderRail([reply('a'), reply('b'), reply('c')]);
+      expect(screen.getByText(/still working ×3/)).toBeInTheDocument();
+    });
+  });
+
+  // POLISH-2 #5: never render more than the last 200 messages; older ones sit behind "show earlier".
+  describe('the 200-message cap', () => {
+    function longThread(n: number): Message[] {
+      return Array.from({ length: n }, (_, i) => ({ k: `m${i}`, type: 'event', text: `event ${i}`, ts: i, source: 'system' }));
+    }
+
+    it('shows only the last 200 messages by default, with a show earlier link', () => {
+      renderRail(longThread(210));
+      expect(screen.queryByText('event 0')).not.toBeInTheDocument();
+      expect(screen.getByText('event 209')).toBeInTheDocument();
+      expect(screen.getByText(/show earlier/)).toBeInTheDocument();
+    });
+
+    it('reveals the earlier messages once show earlier is clicked', async () => {
+      renderRail(longThread(210));
+      await userEvent.click(screen.getByText(/show earlier/));
+      expect(screen.getByText('event 0')).toBeInTheDocument();
+    });
+
+    it('shows no show earlier link at or under 200 messages', () => {
+      renderRail(longThread(200));
+      expect(screen.queryByText(/show earlier/)).not.toBeInTheDocument();
+    });
   });
 });
