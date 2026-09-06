@@ -74,7 +74,7 @@ export interface State {
 }
 
 export type Action =
-  | { type: 'lanes'; lanes: Lane[]; spentTodayUsd?: number }
+  | { type: 'lanes'; lanes: Lane[]; tokensToday?: number }
   | { type: 'thread'; thread: Message[] }
   | { type: 'thread-append'; messages: Message[] }
   | { type: 'journal'; journal: JournalEntry[] }

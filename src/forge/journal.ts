@@ -64,6 +64,13 @@ export interface RunState {
   turns: number;
   context: number;
   costUsd: number;
+  /** Real cumulative tokens (input + output + cache read + cache write) across every
+   *  usage row this run has journaled -- the board's own honest total, tracked whether
+   *  or not the model is one this policy has a price for. `journal.ts`'s `costUsd`
+   *  answers "what would this cost at list price"; this answers "how many tokens did
+   *  this run actually use", which is the number the console shows instead of a dollar
+   *  figure this fleet's flat subscription never actually spends. */
+  tokensUsed: number;
   model?: string;
   successor?: string;
   predecessor?: string;
@@ -230,7 +237,7 @@ function runOf(state: FleetState, name: string): RunState {
   const found = state.runs[name];
   if (found) return found;
   const created: RunState = {
-    run: name, state: 'started', turns: 0, context: 0, costUsd: 0, lastEventAt: 0,
+    run: name, state: 'started', turns: 0, context: 0, costUsd: 0, tokensUsed: 0, lastEventAt: 0,
     cacheReadTokens: 0, totalReadTokens: 0, turnsSinceWrite: 0,
   };
   state.runs[name] = created;
@@ -278,6 +285,12 @@ function foldLine(state: FleetState, line: string): void {
 
   if (row.usage) {
     const alias = aliasOf(row.model ?? '');
+    // Real tokens moved whether or not this policy has a price for the model that
+    // billed them -- `tokensUsed` is the board's own honest total and never waits on
+    // a price table the way `costUsd`/`burn` (list-price-equivalent, still useful for
+    // the Governor's own dollar-denominated admission checks) do.
+    const tokensThisRow = row.usage.input + row.usage.cacheRead + row.usage.cacheCreation + row.usage.output;
+    if (row.run) runOf(state, row.run).tokensUsed += tokensThisRow;
     if (!isKnownAlias(alias)) {
       // Billed nothing rather than at whatever priceFor's fallback used to guess: the
       // model itself is named here so a person can add it to model-policy.json instead

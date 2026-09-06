@@ -18,6 +18,7 @@ import type {
   ActionResult, Caps, Integration, JournalEntry, Lane, Message, QueueAddRequest, QueueAddResponse,
   QueueItem, QueueSource, Rule,
 } from '../shared/console-model.js';
+import { fmtTokens } from '../shared/format-tokens.js';
 import { seedCaps } from './fixtures/caps.js';
 import { seedIntegrations } from './fixtures/integrations.js';
 import { seedJournal } from './fixtures/journal.js';
@@ -101,18 +102,24 @@ function findLane(id: string): Lane | undefined {
 
 /** A per-step cost breakdown built from the fixture lane's own turn count, the closest
  *  the stub can get to the real server's per-turn usage rows without a real journal. */
-function stubCostSteps(lane: Lane): { t: number; stepText: string; inputTokens: number; outputTokens: number; costUsd: number }[] {
+function stubCostSteps(lane: Lane): { t: number; stepText: string; inputTokens: number; outputTokens: number; tokens: number }[] {
   const n = Math.max(1, lane.stepN);
   const steps = [];
   for (let i = 1; i <= n; i += 1) {
     const runaway = lane.runaway && i === n;
     const frac = runaway ? 0.92 : 1 / n;
+    const stepTokens = Math.round(lane.tokens * frac);
+    // 4:1 input:output is a plausible agentic-coding split (a run reads far more than it
+    // writes) -- not measured, since the stub has no real per-turn usage rows, but real
+    // enough that the two halves sum back to `stepTokens` exactly, matching the real
+    // server's own invariant instead of two independently-guessed numbers.
+    const inputTokens = Math.round(stepTokens * 0.8);
     steps.push({
       t: lane.startedAt + i * 8 * 60_000,
       stepText: runaway ? `retry loop · ${lane.fails} failed builds` : `step ${i}/${lane.stepTotal}`,
-      inputTokens: Math.round(lane.costUsd * frac * 3400),
-      outputTokens: Math.round(lane.costUsd * frac * 900),
-      costUsd: Number((lane.costUsd * frac).toFixed(2)),
+      inputTokens,
+      outputTokens: stepTokens - inputTokens,
+      tokens: stepTokens,
     });
   }
   return steps;
@@ -135,7 +142,7 @@ function stubJournalNarrative(lane: Lane): { t: number; text: string; color: str
   if (lane.state === 'parked') entries.push({ t: lane.since, text: 'parked — needs human', color: 'var(--park)' });
   else if (lane.state === 'merged') entries.push({ t: lane.since, text: 'merged → main · jira updated', color: 'var(--merge)' });
   else if (lane.state === 'killed') entries.push({ t: lane.since, text: 'killed · diff discarded', color: 'var(--block)' });
-  else if (lane.runaway) entries.push({ t: Date.now(), text: `build failing ×${lane.fails} · $${lane.costUsd.toFixed(2)}`, color: 'var(--block)' });
+  else if (lane.runaway) entries.push({ t: Date.now(), text: `build failing ×${lane.fails} · ${fmtTokens(lane.tokens)} tokens`, color: 'var(--block)' });
   return entries;
 }
 
@@ -294,26 +301,26 @@ function runCommand(text: string): Message[] {
       items: ready.map((l) => ({ text: `merge ${l.id}`, irreversible: true })),
     }];
   }
-  if (/^(raise|set) daily cap to \$?(\d+)/i.test(t)) {
-    const m = /\$?(\d+)/.exec(t);
-    const value = m ? Number(m[1]) : db.caps.dailyUsd;
-    if (value > db.caps.hardUsd) {
-      return [{ k: `c-${now}`, type: 'refusal', text: `refused: $${value} is above the org hard limit $${db.caps.hardUsd} (FD-7)`, ts: now, source: 'conductor' }];
+  if (/^(raise|set) daily cap to (\d+)/i.test(t)) {
+    const m = /(\d+)/.exec(t);
+    const value = m ? Number(m[1]) : db.caps.dailyTokens;
+    if (value > db.caps.hardTokens) {
+      return [{ k: `c-${now}`, type: 'refusal', text: `refused: ${fmtTokens(value)} tokens is above the org hard limit ${fmtTokens(db.caps.hardTokens)} tokens (FD-7)`, ts: now, source: 'conductor' }];
     }
-    db.caps = { ...db.caps, dailyUsd: value };
-    const jid = journal('caps.set', `daily cap set to $${value}`, null, true);
-    return [{ k: `r-${now}`, type: 'receipt', text: `daily cap set to $${value}`, ts: now, source: 'conductor', jid, undoable: true }];
+    db.caps = { ...db.caps, dailyTokens: value };
+    const jid = journal('caps.set', `daily cap set to ${fmtTokens(value)} tokens`, null, true);
+    return [{ k: `r-${now}`, type: 'receipt', text: `daily cap set to ${fmtTokens(value)} tokens`, ts: now, source: 'conductor', jid, undoable: true }];
   }
   if (/^cap\b/i.test(t) && laneRef) {
-    const m = /\$?(\d+)/.exec(t);
+    const m = /(\d+)/.exec(t);
     const value = m ? Number(m[1]) : 0;
-    if (value > db.caps.hardUsd) {
-      return [{ k: `c-${now}`, type: 'refusal', text: `refused: $${value} is above the org hard limit $${db.caps.hardUsd} (FD-7)`, ts: now, source: 'conductor' }];
+    if (value > db.caps.hardTokens) {
+      return [{ k: `c-${now}`, type: 'refusal', text: `refused: ${fmtTokens(value)} tokens is above the org hard limit ${fmtTokens(db.caps.hardTokens)} tokens (FD-7)`, ts: now, source: 'conductor' }];
     }
     const lane = findLane(laneRef);
-    if (lane) lane.capUsd = value;
-    const jid = journal('run.cap.set', `${laneRef} cap set to $${value}`, laneRef, true);
-    return [{ k: `r-${now}`, type: 'receipt', text: `${laneRef} cap set to $${value}`, ts: now, source: 'conductor', jid, undoable: true }];
+    if (lane) lane.tokenCap = value;
+    const jid = journal('run.cap.set', `${laneRef} cap set to ${fmtTokens(value)} tokens`, laneRef, true);
+    return [{ k: `r-${now}`, type: 'receipt', text: `${laneRef} cap set to ${fmtTokens(value)} tokens`, ts: now, source: 'conductor', jid, undoable: true }];
   }
   if (/^answer\b/i.test(t)) {
     const rest = t.replace(/^answer\s*/i, '');
@@ -336,13 +343,13 @@ function runCommand(text: string): Message[] {
     return [{ k: `c-${now}`, type: 'reply', text: lane?.reason ?? `${laneRef} has no recorded reason.`, ts: now, source: 'conductor' }];
   }
   if (/spend today/i.test(t)) {
-    return [{ k: `c-${now}`, type: 'reply', text: `$${db.caps.spentTodayUsd.toFixed(2)} of a $${db.caps.dailyUsd} daily cap.`, ts: now, source: 'conductor' }];
+    return [{ k: `c-${now}`, type: 'reply', text: `${fmtTokens(db.caps.tokensToday)} tokens of a ${fmtTokens(db.caps.dailyTokens)} daily cap.`, ts: now, source: 'conductor' }];
   }
   if (/^status/i.test(t)) {
     const running = db.lanes.filter((l) => l.state === 'running').length;
     return [{ k: `c-${now}`, type: 'reply', text: `${running} running, ${db.lanes.length} lanes total.`, ts: now, source: 'conductor' }];
   }
-  return [{ k: `c-${now}`, type: 'reply', text: "I understand pause, resume, kill <lane>, merge ready lanes, cap <lane> at $N, answer, what's stuck, spend today, status.", ts: now, source: 'conductor' }];
+  return [{ k: `c-${now}`, type: 'reply', text: "I understand pause, resume, kill <lane>, merge ready lanes, cap <lane> at N tokens, answer, what's stuck, spend today, status.", ts: now, source: 'conductor' }];
 }
 
 export function createStubServer() {
@@ -353,9 +360,9 @@ export function createStubServer() {
       const method = request.method ?? 'GET';
 
       if (urlPath === '/lanes' && method === 'GET') {
-        const spentTodayUsd = db.lanes.reduce((sum, l) => sum + l.costUsd, 0);
-        const burnUsdPerMin = db.lanes.reduce((sum, l) => sum + (l.state === 'running' ? l.burnUsdPerMin : 0), 0);
-        json(response, 200, { at: Date.now(), lanes: db.lanes, spentTodayUsd, burnUsdPerMin });
+        const tokensToday = db.lanes.reduce((sum, l) => sum + l.tokens, 0);
+        const tokensPerMin = db.lanes.reduce((sum, l) => sum + (l.state === 'running' ? l.tokensPerMin : 0), 0);
+        json(response, 200, { at: Date.now(), lanes: db.lanes, tokensToday, tokensPerMin });
         return;
       }
       if (urlPath === '/thread' && method === 'GET') {
@@ -384,7 +391,7 @@ export function createStubServer() {
       }
       if (urlPath === '/proposals' && method === 'GET') {
         const mergedToday = db.lanes.filter((l) => l.state === 'merged').length;
-        const metrics = { mergedToday, humanWaitMin: 8, costPerMergeUsd: mergedToday > 0 ? db.caps.spentTodayUsd / mergedToday : null, wastedUsd: 12.4 };
+        const metrics = { mergedToday, humanWaitMin: 8, tokensPerMerge: mergedToday > 0 ? db.caps.tokensToday / mergedToday : null, tokensWasted: 2_480_000 };
         json(response, 200, { rules: db.rules, metrics, computedAt: Date.now() });
         return;
       }
@@ -440,7 +447,7 @@ export function createStubServer() {
         const id = decodeURIComponent(runKillMatch[1] as string);
         const lane = findLane(id);
         if (!lane) { json(response, 404, { error: `no lane named ${id}` }); return; }
-        lane.state = 'killed'; lane.heart = false; lane.burnUsdPerMin = 0; lane.hopStatus = 'blocked';
+        lane.state = 'killed'; lane.heart = false; lane.tokensPerMin = 0; lane.hopStatus = 'blocked';
         const jid = journal('run.killed', `${id} killed`, id, false);
         appendEvent(`${id} killed`, id);
         publish({ type: 'run.killed', run: id });
@@ -515,25 +522,25 @@ export function createStubServer() {
         const id = decodeURIComponent(runCapMatch[1] as string);
         const lane = findLane(id);
         if (!lane) { json(response, 404, { error: `no lane named ${id}` }); return; }
-        const body = await readJson<{ capUsd?: number }>(request);
-        const capUsd = body.capUsd ?? 0;
-        if (capUsd > db.caps.hardUsd) { json(response, 422, { error: `above the org hard limit`, hardUsd: db.caps.hardUsd }); return; }
-        const previous = lane.capUsd;
-        lane.capUsd = capUsd;
-        const jid = journal('run.cap.set', `${id} cap set to $${capUsd}`, id, true);
-        db.journal[0]!.text += ` (was ${previous === null ? 'unset' : `$${previous}`})`;
-        json(response, 200, ok(jid, `${id} cap set to $${capUsd}`, true, lane));
+        const body = await readJson<{ tokenCap?: number }>(request);
+        const tokenCap = body.tokenCap ?? 0;
+        if (tokenCap > db.caps.hardTokens) { json(response, 422, { error: `above the org hard limit`, hardTokens: db.caps.hardTokens }); return; }
+        const previous = lane.tokenCap;
+        lane.tokenCap = tokenCap;
+        const jid = journal('run.cap.set', `${id} cap set to ${fmtTokens(tokenCap)} tokens`, id, true);
+        db.journal[0]!.text += ` (was ${previous === null ? 'unset' : `${fmtTokens(previous)} tokens`})`;
+        json(response, 200, ok(jid, `${id} cap set to ${fmtTokens(tokenCap)} tokens`, true, lane));
         return;
       }
 
       if (urlPath === '/caps' && method === 'POST') {
-        const body = await readJson<{ dailyUsd?: number; runUsd?: number }>(request);
-        if ((body.dailyUsd !== undefined && body.dailyUsd > db.caps.hardUsd) || (body.runUsd !== undefined && body.runUsd > db.caps.hardUsd)) {
-          json(response, 422, { error: 'above the org hard limit', hardUsd: db.caps.hardUsd });
+        const body = await readJson<{ dailyTokens?: number; runTokens?: number }>(request);
+        if ((body.dailyTokens !== undefined && body.dailyTokens > db.caps.hardTokens) || (body.runTokens !== undefined && body.runTokens > db.caps.hardTokens)) {
+          json(response, 422, { error: 'above the org hard limit', hardTokens: db.caps.hardTokens });
           return;
         }
-        db.caps = { ...db.caps, dailyUsd: body.dailyUsd ?? db.caps.dailyUsd, runUsd: body.runUsd ?? db.caps.runUsd };
-        journal('caps.set', `caps updated: daily $${db.caps.dailyUsd}, per-run $${db.caps.runUsd}`, null, true);
+        db.caps = { ...db.caps, dailyTokens: body.dailyTokens ?? db.caps.dailyTokens, runTokens: body.runTokens ?? db.caps.runTokens };
+        journal('caps.set', `caps updated: daily ${fmtTokens(db.caps.dailyTokens)} tokens, per-run ${fmtTokens(db.caps.runTokens)} tokens`, null, true);
         json(response, 200, db.caps);
         return;
       }

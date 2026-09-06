@@ -2,6 +2,7 @@ import type { JSX } from 'react';
 
 import { hm } from '../freshness.js';
 import type { Caps, Feed } from '../../shared/console-model.js';
+import { fmtTokens } from '../../shared/format-tokens.js';
 import type { View } from '../store.js';
 
 export interface TopBarProps {
@@ -10,7 +11,7 @@ export interface TopBarProps {
   reviewBadge: number;
   queueBadge: number;
   caps: Caps | null;
-  spentTodayUsd: number;
+  tokensToday: number;
   feed: Feed;
   now: number;
   /** Duration of the last `/lanes` fetch, used when no heartbeat has arrived yet. */
@@ -24,8 +25,8 @@ export interface TopBarProps {
 
 /** Top nav: Board / Settings [n down] / Flight review [n proposed], ⌘K, spend today, feed stamp, clock, theme. */
 export function TopBar(props: TopBarProps): JSX.Element {
-  const { view, settingsBadge, reviewBadge, queueBadge, caps, spentTodayUsd, feed, now, fetchLatencyMs, theme, onNav, onOpenPalette, onOpenCost, onToggleTheme } = props;
-  const overDaily = caps ? spentTodayUsd > caps.dailyUsd : false;
+  const { view, settingsBadge, reviewBadge, queueBadge, caps, tokensToday, feed, now, fetchLatencyMs, theme, onNav, onOpenPalette, onOpenCost, onToggleTheme } = props;
+  const overDaily = caps ? tokensToday > caps.dailyTokens : false;
   // Latency prefers the age of the last heartbeat round trip; before one arrives (or once
   // the feed is driven by polling alone) it falls back to the last `/lanes` fetch duration.
   const latencyMs = feed.lastHeartbeatAt !== null ? Math.max(0, now - feed.lastHeartbeatAt) : (fetchLatencyMs ?? 0);
@@ -53,13 +54,13 @@ export function TopBar(props: TopBarProps): JSX.Element {
       <span className="m" style={{ fontSize: '10.5px', color: 'var(--ink3)', border: '1px solid var(--line2)', borderRadius: 3, padding: '4px 10px', cursor: 'pointer' }} onClick={onOpenPalette}>
         ⌘K jump
       </span>
-      <span className="lbl" style={{ color: 'var(--ink2)' }}>spend today</span>
+      <span className="lbl" style={{ color: 'var(--ink2)' }}>tokens today</span>
       <span
         className={overDaily ? 'w2' : 'w0'}
         style={{ fontSize: 14, padding: '2px 8px' }}
         onClick={onOpenCost}
       >
-        ${spentTodayUsd.toFixed(2)}{caps ? ` / $${caps.dailyUsd}` : ''}
+        {fmtTokens(tokensToday)}{caps && Number.isFinite(caps.dailyTokens) ? ` / ${fmtTokens(caps.dailyTokens)}` : ''}
       </span>
       <span className={feed.live ? 'stF' : 'stO'}>
         {feed.live ? `■ live feed · ${latencyMs}ms` : `○ feed lost ${hm(feed.lostAt ?? now)}`}

@@ -55,9 +55,9 @@ describe('stub server', () => {
   });
 
   it('refuses a per-run cap above the hard limit', async () => {
-    const { status, body } = await post<{ error: string; hardUsd: number }>('/run/FLT-201/cap', { capUsd: 999 });
+    const { status, body } = await post<{ error: string; hardTokens: number }>('/run/FLT-201/cap', { tokenCap: 99_000_000 });
     expect(status).toBe(422);
-    expect(body.hardUsd).toBe(100);
+    expect(body.hardTokens).toBe(20_000_000);
   });
 
   it('answers the parked lane through the command grammar and resumes it', async () => {

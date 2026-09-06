@@ -3,6 +3,7 @@ import type { JSX } from 'react';
 import { ago, hm } from '../freshness.js';
 import { laneHeadline } from '../laneVM.js';
 import type { Integration, Lane } from '../../shared/console-model.js';
+import { fmtTokens } from '../../shared/format-tokens.js';
 
 export interface NeedItem {
   id: string;
@@ -60,11 +61,11 @@ export function buildNeeds(
       });
     }
     if (lane.state === 'running' && lane.runaway) {
-      const cap = lane.capUsd ?? 0;
+      const cap = lane.tokenCap ?? 0;
       items.push({
         id: `over-${lane.id}`, color: 'var(--block)', title: headline.main, titleId: headline.runId,
-        sub: `$${lane.costUsd.toFixed(2)} / $${cap}`,
-        line: `retry loop ×${lane.fails} · burning $${lane.burnUsdPerMin.toFixed(2)}/min`, cta: 'Kill attempt', ctaCls: 'btnR',
+        sub: `${fmtTokens(lane.tokens)} / ${fmtTokens(cap)}`,
+        line: `retry loop ×${lane.fails} · burning ${fmtTokens(lane.tokensPerMin)} tokens/min`, cta: 'Kill attempt', ctaCls: 'btnR',
         onClick: () => onFix('lane', lane.id), more: null,
       });
     }

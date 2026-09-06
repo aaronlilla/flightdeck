@@ -50,7 +50,7 @@ function lane(overrides: Partial<Lane>): Lane {
   return {
     id: 'FLT-211', ticket: null, model: 'sonnet-5', modelId: 'claude-sonnet-5', className: 'implement',
     repo: 'flightdeck-api', attempt: 1, state: 'blocked', reason: 'aws down', stepN: 0, stepTotal: 6, stepText: 'blocked',
-    ctxTokens: 0, ctxCeiling: 200_000, ctxCompactAt: 180_000, costUsd: 0, capUsd: 10, burnUsdPerMin: 0,
+    ctxTokens: 0, ctxCeiling: 200_000, ctxCompactAt: 180_000, tokens: 0, tokenCap: 10, tokensPerMin: 0,
     fails: 0, hop: 0, hopStatus: 'blocked', observedAt: Date.now(), verifiedAt: null, heart: false, since: Date.now(),
     startedAt: Date.now(), endedAt: null, question: null, pr: null, sandbox: null, blockedBy: 'aws',
     runaway: false, needsAaron: null,
@@ -59,7 +59,7 @@ function lane(overrides: Partial<Lane>): Lane {
 }
 
 function lanesView(lanes: Lane[]): () => LanesResponse {
-  return () => ({ at: Date.now(), lanes, spentTodayUsd: 0, burnUsdPerMin: 0 });
+  return () => ({ at: Date.now(), lanes, tokensToday: 0, tokensPerMin: 0 });
 }
 
 describe('IntegrationsRegistry.list', () => {

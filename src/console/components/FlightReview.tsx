@@ -2,6 +2,7 @@ import type { JSX } from 'react';
 import { useState } from 'react';
 
 import type { ProposalsResponse, Rule } from '../../shared/console-model.js';
+import { fmtTokens } from '../../shared/format-tokens.js';
 import { hm } from '../freshness.js';
 
 export interface FlightReviewProps {
@@ -102,8 +103,8 @@ export function FlightReview({ proposals, now, onApply, onDismiss, onRestore, on
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 12, marginBottom: 22 }}>
         <div className="plate" style={{ padding: '12px 14px' }}><div className="lbl" style={{ color: 'var(--ink2)' }}>merged today</div><div className="m" style={{ fontSize: 22, fontWeight: 700, marginTop: 4, color: 'var(--run)' }}>{metrics?.mergedToday ?? 0}</div></div>
         <div className="plate" style={{ padding: '12px 14px' }}><div className="lbl" style={{ color: 'var(--ink2)' }}>human wait</div><div className="m" style={{ fontSize: 22, fontWeight: 700, marginTop: 4, color: 'var(--park)' }}>{metrics?.humanWaitMin ?? 0}m</div></div>
-        <div className="plate" style={{ padding: '12px 14px' }}><div className="lbl" style={{ color: 'var(--ink2)' }}>cost / merge</div><div className="m" style={{ fontSize: 22, fontWeight: 700, marginTop: 4 }}>{metrics?.costPerMergeUsd !== null && metrics?.costPerMergeUsd !== undefined ? `$${metrics.costPerMergeUsd.toFixed(2)}` : '--'}</div></div>
-        <div className="plate" style={{ padding: '12px 14px' }}><div className="lbl" style={{ color: 'var(--ink2)' }}>wasted spend</div><div className="m" style={{ fontSize: 22, fontWeight: 700, marginTop: 4, color: 'var(--block)' }}>${(metrics?.wastedUsd ?? 0).toFixed(2)}</div></div>
+        <div className="plate" style={{ padding: '12px 14px' }}><div className="lbl" style={{ color: 'var(--ink2)' }}>tokens / merge</div><div className="m" style={{ fontSize: 22, fontWeight: 700, marginTop: 4 }}>{metrics?.tokensPerMerge !== null && metrics?.tokensPerMerge !== undefined ? fmtTokens(metrics.tokensPerMerge) : '--'}</div></div>
+        <div className="plate" style={{ padding: '12px 14px' }}><div className="lbl" style={{ color: 'var(--ink2)' }}>wasted tokens</div><div className="m" style={{ fontSize: 22, fontWeight: 700, marginTop: 4, color: 'var(--block)' }}>{fmtTokens(metrics?.tokensWasted ?? 0)}</div></div>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         {rules.map((r) => <RuleCard key={r.id} rule={r} onApply={onApply} onDismiss={onDismiss} onRestore={onRestore} onUndo={onUndo} />)}

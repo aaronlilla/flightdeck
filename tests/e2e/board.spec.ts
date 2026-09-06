@@ -69,7 +69,7 @@ test('settings refuses a cap above the org hard limit', async ({ page }) => {
   await page.goto('/');
   await page.getByText('Settings').click();
   const dailyInput = page.locator('input').first();
-  await dailyInput.fill('9999');
+  await dailyInput.fill('99000000');
   await page.getByText('Save caps →').click();
   await expect(page.getByText(/refused above the org hard limit/)).toBeVisible();
 });
@@ -84,16 +84,17 @@ test('kill shows a confirm card before anything happens', async ({ page }) => {
   await expect(page.getByTestId('lane-FLT-201')).toHaveAttribute('data-state', 'running');
 });
 
-// Row: cap text matches the prototype's own `'cap $'+cap+' · ×'+Math.round(cost/cap)`
+// Row: cap text matches the prototype's own `'cap $'+cap+' · ×'+Math.round(cost/cap)`, in
+// tokens now rather than dollars
 // (no word "exceeded", multiplier rounded), and shows once cost exceeds cap regardless
 // of the separate `runaway` flag.
 test('a lane tile prefixes its step text with step N/M, and shows cap text once cost exceeds cap', async ({ page }) => {
   await page.goto('/');
   const runaway = page.getByTestId('lane-FLT-204');
   await expect(runaway.getByText('step 2/6 · retrying a flaky build step')).toBeVisible();
-  await expect(runaway.getByText('cap $8 · ×3')).toBeVisible();
+  await expect(runaway.getByText('cap 1.6M tokens · ×3')).toBeVisible();
   const normal = page.getByTestId('lane-FLT-201');
-  await expect(normal.getByText(/cap \$/)).toHaveCount(0);
+  await expect(normal.getByText(/cap \d/)).toHaveCount(0);
 });
 
 test('an observed tile dims and its cost readout loses its glow', async ({ page }) => {

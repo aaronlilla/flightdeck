@@ -12,7 +12,7 @@ function lane(extra: Partial<Lane> = {}): Lane {
   return {
     id: 'FLT-204', ticket: 'FLT-204', model: 'sonnet-5', modelId: 'claude-sonnet-5', className: 'implement',
     repo: 'flightdeck-api', attempt: 1, state: 'running', reason: null, stepN: 2, stepTotal: 6, stepText: 'working',
-    ctxTokens: 70_000, ctxCeiling: 200_000, ctxCompactAt: 180_000, costUsd: 27.5, capUsd: 8, burnUsdPerMin: 1.3,
+    ctxTokens: 70_000, ctxCeiling: 200_000, ctxCompactAt: 180_000, tokens: 5_500_000, tokenCap: 1_600_000, tokensPerMin: 260_000,
     fails: 2, hop: 2, hopStatus: 'live', observedAt: Date.now(), verifiedAt: Date.now(), heart: true, since: Date.now(),
     startedAt: Date.now(), endedAt: null, question: null, pr: null, sandbox: null, blockedBy: null, runaway: true,
     needsAaron: null,
@@ -32,23 +32,23 @@ describe('CostSheet', () => {
   });
 
   it('shows "—" for burn when the lane is not running', () => {
-    renderSheet({ state: 'done', burnUsdPerMin: 1.3 });
+    renderSheet({ state: 'done', tokensPerMin: 260_000 });
     expect(screen.getByText(/burn —\/min/)).toBeInTheDocument();
   });
 
   it('shows the real burn rate for a running lane', () => {
-    renderSheet({ state: 'running', burnUsdPerMin: 1.3 });
-    expect(screen.getByText(/burn \$1\.30\/min/)).toBeInTheDocument();
+    renderSheet({ state: 'running', tokensPerMin: 260_000 });
+    expect(screen.getByText(/burn 260k tokens\/min/)).toBeInTheDocument();
   });
 
   it('renders a by-step table from the real per-step data', async () => {
     renderSheet({}, [
-      { t: 1, stepText: 'FLT-204 finished a turn', inputTokens: 12_000, outputTokens: 900, costUsd: 0.42 },
-      { t: 2, stepText: 'FLT-204 finished a turn', inputTokens: 8_000, outputTokens: 600, costUsd: 0.31 },
+      { t: 1, stepText: 'FLT-204 finished a turn', inputTokens: 12_000, outputTokens: 900, tokens: 12_900 },
+      { t: 2, stepText: 'FLT-204 finished a turn', inputTokens: 8_000, outputTokens: 600, tokens: 8_600 },
     ]);
     await waitFor(() => expect(screen.getAllByText('FLT-204 finished a turn')).toHaveLength(2));
-    expect(screen.getByText('$0.42')).toBeInTheDocument();
-    expect(screen.getByText('$0.31')).toBeInTheDocument();
+    expect(screen.getByText('12,900')).toBeInTheDocument();
+    expect(screen.getByText('8,600')).toBeInTheDocument();
   });
 
   it('appends the real cap-enforcement-failure detail for a runaway lane, when the server names one', async () => {
@@ -58,7 +58,7 @@ describe('CostSheet', () => {
 
   it('never fabricates a cap-enforcement-failure jid when the server names none', async () => {
     renderSheet({ runaway: true }, [], null);
-    await waitFor(() => expect(screen.getByText(/\$27\.50/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/5,500,000 tokens/)).toBeInTheDocument());
     expect(screen.queryByText(/cap event failed/)).not.toBeInTheDocument();
   });
 });

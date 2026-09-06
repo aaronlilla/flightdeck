@@ -7,6 +7,7 @@ import { costClass, ctxPercent, laneCta, laneHeadline, stateOf } from '../laneVM
 import { computeFreshness, freshnessClass, freshnessStamp, hm } from '../freshness.js';
 import { MessageCard } from './ConductorRail.js';
 import type { JournalNarrativeEntry, Lane, Message } from '../../shared/console-model.js';
+import { fmtTokens } from '../../shared/format-tokens.js';
 
 export interface TicketSheetProps {
   lane: Lane;
@@ -82,7 +83,7 @@ function hopState(index: number, lane: Lane): keyof typeof HOP_STYLE {
  *  appended at all. */
 function bandFor(lane: Lane): { text: string; bg: string; ink: string } {
   const st = stateOf(lane.state);
-  const overCap = lane.capUsd !== null && lane.costUsd > lane.capUsd && lane.state === 'running';
+  const overCap = lane.tokenCap !== null && lane.tokens > lane.tokenCap && lane.state === 'running';
   if (lane.state === 'parked') {
     return { text: `◆ parked — human needed since ${hm(lane.since)}`, bg: 'var(--park)', ink: 'var(--aInk)' };
   }
@@ -164,8 +165,8 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 20, flexWrap: 'wrap' }}>
           <div style={{ textAlign: 'right' }}>
-            <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 3 }}>cost</div>
-            <span className={costClass(lane)} onClick={() => onOpenCost(lane.id)}>${lane.costUsd.toFixed(2)}</span>
+            <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 3 }}>tokens</div>
+            <span className={costClass(lane)} onClick={() => onOpenCost(lane.id)}>{fmtTokens(lane.tokens)}</span>
           </div>
           <div style={{ width: 140 }}>
             <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 4 }}>context {pct}% · ceiling 200k</div>

@@ -9,7 +9,7 @@ function lane(extra: Partial<Lane> = {}): Lane {
   return {
     id: 'jira_AB-12_1788460932645', ticket: null, model: 'sonnet-5', modelId: 'claude-sonnet-5', className: 'implement',
     repo: 'flightdeck-api', attempt: 1, state: 'parked', reason: null, stepN: 1, stepTotal: 6, stepText: 'working',
-    ctxTokens: 40_000, ctxCeiling: 200_000, ctxCompactAt: 180_000, costUsd: 1, capUsd: 10, burnUsdPerMin: 0,
+    ctxTokens: 40_000, ctxCeiling: 200_000, ctxCompactAt: 180_000, tokens: 1, tokenCap: 10, tokensPerMin: 0,
     fails: 0, hop: 0, hopStatus: 'live', observedAt: Date.now(), verifiedAt: Date.now(), heart: true, since: Date.now(),
     startedAt: Date.now(), endedAt: null, question: { key: 'ask', text: 'NOT NULL or nullable?', opts: [], askedAt: Date.now() },
     pr: null, sandbox: null, blockedBy: null, runaway: false, needsAaron: null,
@@ -105,10 +105,13 @@ describe('buildNeeds parked plate', () => {
 describe('buildNeeds over-cap plate', () => {
   it('shows spend vs cap in the sub line and the retry-loop detail in the line', () => {
     const items = buildNeeds(
-      [lane({ state: 'running', runaway: true, costUsd: 901.5, capUsd: 10, fails: 11, burnUsdPerMin: 1.3, question: null })],
+      [lane({
+        state: 'running', runaway: true, tokens: 1_840_000, tokenCap: 1_600_000, fails: 11, tokensPerMin: 260_000,
+        question: null,
+      })],
       [], vi.fn(),
     );
-    expect(items[0]?.sub).toBe('$901.50 / $10');
-    expect(items[0]?.line).toBe('retry loop ×11 · burning $1.30/min');
+    expect(items[0]?.sub).toBe('1.8M / 1.6M');
+    expect(items[0]?.line).toBe('retry loop ×11 · burning 260k tokens/min');
   });
 });

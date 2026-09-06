@@ -5,6 +5,7 @@ import { costClass, costTip, ctxPercent, ctxTip, laneCta, laneHeadline, modelTip
 import type { TipContent } from '../laneVM.js';
 import { computeFreshness, freshnessClass, freshnessStamp } from '../freshness.js';
 import type { Lane } from '../../shared/console-model.js';
+import { fmtTokens } from '../../shared/format-tokens.js';
 import type { TipSpec } from '../store.js';
 
 const HOVER_DELAY_MS = 250;
@@ -99,7 +100,7 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
           onMouseEnter={(e) => showTip('cost', e, costTip(lane, fresh))}
           onMouseLeave={() => hideTip('cost')}
         >
-          ${lane.costUsd.toFixed(2)}
+          {fmtTokens(lane.tokens)}
         </span>
         <span className="m" style={{ fontSize: '9.5px', fontWeight: 700, color: 'var(--block)', whiteSpace: 'nowrap' }}>
           {tileCapText(lane)}

@@ -33,16 +33,17 @@ import {
   compactRun, killRun, mergeRun, pauseRun, reopenRun, restoreRunCap,
   resumeRun, setRunCap, verifyRun, type RunActionsDeps,
 } from './run-actions.js';
-import { capsOverridesPath, effectiveHardUsd, readCapsOverrides } from './caps-read.js';
+import { capsOverridesPath, effectiveHardTokens, readCapsOverrides } from './caps-read.js';
 import { restoreCaps, writeCaps, type CapsWriteDeps } from './caps-write.js';
 import { IntegrationsRegistry, type IntegrationsDeps } from './integrations.js';
-import { laneStateNowFor, meaningfulEvents, spentTodayUsd } from './lanes.js';
+import { laneStateNowFor, meaningfulEvents, tokensToday } from './lanes.js';
 import { textFor } from './journal-route.js';
 import {
   applyRule, dismissRule, restoreRule, rulesPath, setRuleStatus, startEnforcementTick,
   type RulesDeps,
 } from './rules.js';
 import type { ActionResult, LanesResponse, Message, PlanItem } from '../../shared/console-model.js';
+import { fmtTokens } from '../../shared/format-tokens.js';
 
 /** Up to five lanes worth an operator's attention right now: parked, blocked, or
  *  running away on cost, labeled with whichever of those is true (a lane is never
@@ -61,7 +62,7 @@ function statusText(view: LanesResponse): string {
   const byState = [...counts.entries()].map(([state, n]) => `${n} ${state}`).join(', ') || 'no lanes';
   const attention = attentionLanes(view);
   const attentionText = attention.length ? ` needs attention: ${attention.join(', ')}.` : '';
-  return `${byState}. spent $${view.spentTodayUsd.toFixed(2)} today, burning $${view.burnUsdPerMin.toFixed(2)}/min.${attentionText}`;
+  return `${byState}. spent ${fmtTokens(view.tokensToday)} tokens today, burning ${fmtTokens(view.tokensPerMin)} tokens/min.${attentionText}`;
 }
 
 function threadPath(): string {
@@ -130,6 +131,17 @@ export type Intent =
   | { kind: 'cancel' }
   | { kind: 'unknown'; text: string };
 
+/** A token amount typed into the composer -- a plain number, or one with a `k`/`m`
+ *  suffix (`500k`, `2m`) the way an operator would actually type a cap rather than
+ *  spelling out every zero. Never a dollar sign: the grammar this replaces used to
+ *  accept an optional leading `$`, and this fleet has nothing left to price in it. */
+function tokenAmount(digits: string, suffix: string | undefined): number {
+  const base = Number(digits);
+  if (suffix?.toLowerCase() === 'k') return Math.round(base * 1_000);
+  if (suffix?.toLowerCase() === 'm') return Math.round(base * 1_000_000);
+  return base;
+}
+
 export function parseIntent(raw: string): Intent {
   const text = raw.trim();
   let match: RegExpMatchArray | null;
@@ -144,11 +156,11 @@ export function parseIntent(raw: string): Intent {
   if (/^resume$/i.test(text)) return { kind: 'resume' };
   if ((match = text.match(/^kill\s+(\S+)$/i))) return { kind: 'kill', lane: match[1]! };
   if (/^merge\s+ready\s+lanes?$/i.test(text)) return { kind: 'merge-ready' };
-  if ((match = text.match(/^(?:raise|set)\s+daily\s+cap\s+to\s+\$?(\d+(?:\.\d+)?)$/i))) {
-    return { kind: 'set-daily-cap', amount: Number(match[1]) };
+  if ((match = text.match(/^(?:raise|set)\s+daily\s+cap\s+to\s+(\d+(?:\.\d+)?)([km])?$/i))) {
+    return { kind: 'set-daily-cap', amount: tokenAmount(match[1]!, match[2]) };
   }
-  if ((match = text.match(/^cap\s+(\S+)\s+at\s+\$?(\d+(?:\.\d+)?)$/i))) {
-    return { kind: 'set-run-cap', lane: match[1]!, amount: Number(match[2]) };
+  if ((match = text.match(/^cap\s+(\S+)\s+at\s+(\d+(?:\.\d+)?)([km])?$/i))) {
+    return { kind: 'set-run-cap', lane: match[1]!, amount: tokenAmount(match[2]!, match[3]) };
   }
   if ((match = text.match(/^why\s+is\s+(?:lane\s+)?(\S+)\s+stuck\??$/i))) {
     return { kind: 'why-stuck', lane: match[1]! };
@@ -272,7 +284,7 @@ export class ConsoleWrites {
     return {
       ledger: this.ledger, registry: this.deps.registry, actuator: this.deps.actuator,
       journalPath: this.deps.journalPath,
-      hardUsd: () => effectiveHardUsd(governorBudget(this.deps.modelPolicyPath), readCapsOverrides(this.overridesPath())),
+      hardTokens: () => effectiveHardTokens(readCapsOverrides(this.overridesPath())),
       ...(this.deps.lanes ? { lanes: this.deps.lanes } : {}),
       ...(this.deps.spawnFn ? { spawnFn: this.deps.spawnFn } : {}),
       ...(this.deps.capsOverridesPath ? { capsOverridesPath: this.deps.capsOverridesPath } : {}),
@@ -282,9 +294,12 @@ export class ConsoleWrites {
   private capsWriteDeps(): CapsWriteDeps {
     return {
       journalPath: this.deps.journalPath, ledger: this.ledger,
-      ...(this.deps.modelPolicyPath ? { policyPath: this.deps.modelPolicyPath } : {}),
       overridesPath: this.overridesPath(),
-      spentTodayUsd: () => this.spendToday(),
+      tokensToday: () => this.spendToday(),
+      governorConfigured: () => {
+        const budget = governorBudget(this.deps.modelPolicyPath);
+        return Number.isFinite(budget.dailyUsd) || Object.keys(budget.usdPerRun).length > 0;
+      },
     };
   }
 
@@ -296,7 +311,7 @@ export class ConsoleWrites {
   }
 
   private spendToday(): number {
-    return spentTodayUsd(replay(this.deps.journalPath).runs, Date.now());
+    return tokensToday(replay(this.deps.journalPath).runs, Date.now());
   }
 
   private readyToMergeRuns(): string[] {
@@ -323,8 +338,8 @@ export class ConsoleWrites {
       }
       case 'restore-run-cap': {
         const run = String(undo.payload['run']);
-        const capUsd = (undo.payload['capUsd'] as number | null) ?? null;
-        restoreRunCap(run, capUsd, this.runActionsDeps());
+        const tokenCap = (undo.payload['tokenCap'] as number | null) ?? null;
+        restoreRunCap(run, tokenCap, this.runActionsDeps());
         const { jid } = recordAction(this.deps.journalPath, this.ledger, {
           kind: 'run-cap-undo', run, text: `restored ${run}'s cap`, undo: null,
         });
@@ -332,8 +347,8 @@ export class ConsoleWrites {
       }
       case 'restore-caps': {
         restoreCaps({
-          dailyUsd: (undo.payload['dailyUsd'] as number | null) ?? null,
-          runUsd: (undo.payload['runUsd'] as number | null) ?? null,
+          dailyTokens: (undo.payload['dailyTokens'] as number | null) ?? null,
+          runTokens: (undo.payload['runTokens'] as number | null) ?? null,
         }, this.overridesPath());
         const { jid } = recordAction(this.deps.journalPath, this.ledger, {
           kind: 'caps-undo', text: 'restored the previous caps', undo: null,
@@ -439,9 +454,9 @@ export class ConsoleWrites {
       }
 
       case 'set-daily-cap': {
-        const outcome = await writeCaps({ dailyUsd: intent.amount }, this.capsWriteDeps());
+        const outcome = await writeCaps({ dailyTokens: intent.amount }, this.capsWriteDeps());
         return [outcome.status === 200
-          ? replyCard(source, `daily cap set to $${intent.amount}`)
+          ? replyCard(source, `daily cap set to ${fmtTokens(intent.amount)} tokens`)
           : refusalCard(source, `${(outcome.body as { error: string }).error} (FD-7)`)];
       }
 
@@ -475,7 +490,7 @@ export class ConsoleWrites {
       }
 
       case 'spend-today':
-        return [replyCard(source, `spent $${this.spendToday().toFixed(2)} today`)];
+        return [replyCard(source, `spent ${fmtTokens(this.spendToday())} tokens today`)];
 
       case 'status': {
         const view = this.deps.lanesView?.();
@@ -500,7 +515,7 @@ export class ConsoleWrites {
       case 'unknown':
       default:
         return [replyCard(source, "I understand: pause, resume, kill <lane>, merge ready lanes, "
-          + "raise daily cap to $N, cap <lane> at $N, why is <lane> stuck, what's stuck, spend today, status, answer <text>.")];
+          + "raise daily cap to N tokens, cap <lane> at N tokens, why is <lane> stuck, what's stuck, spend today, status, answer <text>.")];
     }
   }
 
@@ -569,8 +584,8 @@ export class ConsoleWrites {
           outcome = await verifyRun(run, deps);
           break;
         case 'cap': {
-          const capUsd = Number(body?.['capUsd']);
-          outcome = await setRunCap(run, capUsd, deps);
+          const tokenCap = Number(body?.['tokenCap']);
+          outcome = await setRunCap(run, tokenCap, deps);
           break;
         }
         default:
@@ -582,7 +597,7 @@ export class ConsoleWrites {
 
     if (path === '/caps' && method === 'POST') {
       if (!this.deps.authorized(request, response)) return true;
-      const body = await readBody<{ dailyUsd?: number; runUsd?: number }>(request);
+      const body = await readBody<{ dailyTokens?: number; runTokens?: number }>(request);
       const outcome = await writeCaps(body, this.capsWriteDeps());
       respond(response, outcome.status, outcome.body);
       return true;

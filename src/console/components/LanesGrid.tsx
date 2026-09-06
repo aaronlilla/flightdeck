@@ -24,7 +24,7 @@ export function visibleLanes(lanes: Lane[], filter: Filter, sort: Sort, now: num
     filtered = lanes.filter((l) => l.repo === filter);
   }
   const sorted = [...filtered];
-  if (sort === 'cost') sorted.sort((a, b) => b.costUsd - a.costUsd);
+  if (sort === 'cost') sorted.sort((a, b) => b.tokens - a.tokens);
   else if (sort === 'age') sorted.sort((a, b) => a.startedAt - b.startedAt);
   else sorted.sort((a, b) => a.state.localeCompare(b.state));
   return sorted;

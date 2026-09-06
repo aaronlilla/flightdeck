@@ -13,7 +13,7 @@ export function seedThread(): Message[] {
       opts: ['NOT NULL', 'nullable + backfill', 'abort the migration'],
     },
     {
-      k: 'm3', type: 'reply', text: 'FLT-204 is running $1.30/min over its $8 cap and has failed twice. Recommend killing it.',
+      k: 'm3', type: 'reply', text: 'FLT-204 is running 260k tokens/min over its 1.6M token cap and has failed twice. Recommend killing it.',
       ts: now - 5 * 60_000, source: 'conductor',
       btns: [{ label: 'Kill FLT-204', cmd: 'kill FLT-204', cls: 'destroy' }],
     },

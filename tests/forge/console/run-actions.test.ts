@@ -69,7 +69,7 @@ beforeEach(() => {
   actuator = new FakeActuator();
   deps = {
     ledger, registry, actuator, journalPath,
-    hardUsd: () => 10,
+    hardTokens: () => 10,
     capsOverridesPath: join(dir, 'caps.json'),
   };
 });
@@ -243,7 +243,7 @@ describe('setRunCap', () => {
 
     const second = await setRunCap('alpha', 8, deps);
     const row = ledger.get((second.body as { jid: string }).jid);
-    expect(row?.undo).toEqual({ kind: 'restore-run-cap', payload: { run: 'alpha', capUsd: 5 } });
+    expect(row?.undo).toEqual({ kind: 'restore-run-cap', payload: { run: 'alpha', tokenCap: 5 } });
   });
 
   it('rejects a non-positive cap', async () => {

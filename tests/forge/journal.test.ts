@@ -153,6 +153,35 @@ describe('replay', () => {
     );
   });
 
+  it('tracks real cumulative tokens per run, separate from the priced dollar total', () => {
+    write(
+      { event: 'run.started', run: 'alpha', actor: 'runner' },
+      {
+        event: 'usage', run: 'alpha', actor: 'worker', model: 'claude-sonnet-5',
+        usage: { input: 100, cacheRead: 90_000, cacheCreation: 1_000, output: 500 },
+      },
+      {
+        event: 'usage', run: 'alpha', actor: 'worker', model: 'claude-opus-5',
+        usage: { input: 100, cacheRead: 90_000, cacheCreation: 1_000, output: 500 },
+      },
+    );
+    const state = replay(path);
+    // 2 rows x (100 + 90_000 + 1_000 + 500) = 183_200 real tokens, regardless of price.
+    expect(state.runs['alpha']?.tokensUsed).toBe(183_200);
+  });
+
+  it('counts tokens for a model this policy has no price for -- unpriced is not unused', () => {
+    write(
+      { event: 'run.started', run: 'alpha', actor: 'runner' },
+      {
+        event: 'usage', run: 'alpha', actor: 'worker', model: 'claude-mystery-9',
+        usage: { input: 100, cacheRead: 90_000, cacheCreation: 1_000, output: 500 },
+      },
+    );
+    const state = replay(path);
+    expect(state.runs['alpha']?.tokensUsed).toBe(91_600);
+  });
+
   it('B.3.9: an unknown model id bills nothing and is named rather than priced as Opus', () => {
     write(
       { event: 'run.started', run: 'alpha', actor: 'runner' },

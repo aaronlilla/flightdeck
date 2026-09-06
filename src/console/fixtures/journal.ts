@@ -4,7 +4,7 @@ export function seedJournal(): JournalEntry[] {
   const now = Date.now();
   return [
     {
-      jid: 'J-40220', ts: now - 30 * 60_000, kind: 'caps.set', text: 'daily cap set to $60',
+      jid: 'J-40220', ts: now - 30 * 60_000, kind: 'caps.set', text: 'daily cap set to 12M tokens',
       actor: 'operator', run: null, undoable: true, undone: false,
     },
     {

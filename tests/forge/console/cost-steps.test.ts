@@ -21,7 +21,7 @@ describe('computeCostSteps', () => {
     expect(computeCostSteps('alpha', replay(path).events)).toEqual([]);
   });
 
-  it('emits one row per usage-bearing turn, in order, priced the same way the run total is', () => {
+  it('emits one row per usage-bearing turn, in order, with the raw tokens that turn used', () => {
     const { path, journal } = tempJournal();
     journal.append({
       event: 'turn.end', run: 'alpha', actor: 'worker', model: 'claude-sonnet-5',
@@ -38,16 +38,18 @@ describe('computeCostSteps', () => {
     expect(steps).toHaveLength(2);
     expect(steps[0]!.inputTokens).toBe(1_000);
     expect(steps[0]!.outputTokens).toBe(500);
+    expect(steps[0]!.tokens).toBe(1_500);
     expect(steps[1]!.inputTokens).toBe(2_000);
     expect(steps[1]!.outputTokens).toBe(800);
-    // Same pricing formula `replay` used to fold the run's own total: the two steps'
-    // costs sum to it, give or take floating point.
-    const total = steps.reduce((sum, s) => sum + s.costUsd, 0);
-    expect(total).toBeCloseTo(fleet.runs['alpha']!.costUsd, 6);
+    expect(steps[1]!.tokens).toBe(2_800);
+    // No list price involved: the tokens shown here sum to the run's own real total,
+    // never a dollar figure this fleet's flat subscription never actually spends.
+    const total = steps.reduce((sum, s) => sum + s.tokens, 0);
+    expect(total).toBe(fleet.runs['alpha']!.tokensUsed);
     expect(steps[0]!.stepText).toBe('alpha finished a turn');
   });
 
-  it('never invents a price for a model this policy does not know', () => {
+  it('counts tokens for a model this policy has no price for -- unpriced is not unused', () => {
     const { path, journal } = tempJournal();
     journal.append({
       event: 'turn.end', run: 'alpha', actor: 'worker', model: 'claude-mystery-9',
@@ -57,7 +59,7 @@ describe('computeCostSteps', () => {
     const fleet = replay(path);
     const steps = computeCostSteps('alpha', fleet.events);
     expect(steps).toHaveLength(1);
-    expect(steps[0]!.costUsd).toBe(0);
+    expect(steps[0]!.tokens).toBe(1_500);
   });
 
   it('ignores rows belonging to another run', () => {

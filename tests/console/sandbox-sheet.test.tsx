@@ -12,7 +12,7 @@ function lane(extra: Partial<Lane> = {}): Lane {
   return {
     id: 'FLT-201', ticket: 'FLT-201', model: 'sonnet-5', modelId: 'claude-sonnet-5', className: 'implement',
     repo: 'flightdeck-api', attempt: 1, state: 'running', reason: null, stepN: 1, stepTotal: 6, stepText: 'working',
-    ctxTokens: 40_000, ctxCeiling: 200_000, ctxCompactAt: 180_000, costUsd: 1, capUsd: 10, burnUsdPerMin: 0,
+    ctxTokens: 40_000, ctxCeiling: 200_000, ctxCompactAt: 180_000, tokens: 1, tokenCap: 10, tokensPerMin: 0,
     fails: 0, hop: 2, hopStatus: 'live', observedAt: Date.now(), verifiedAt: Date.now(), heart: true, since: Date.now(),
     startedAt: Date.now(), endedAt: null, question: null, pr: null,
     sandbox: { id: 'fd-2201', path: null, branch: 'feature/flt-201', pid: 1, sessionId: null, region: 'local', instanceType: 'win32/x64' },

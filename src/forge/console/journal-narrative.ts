@@ -12,6 +12,7 @@
 import type { ChainPacketState } from '../chain.js';
 import type { ForgeEvent } from '../journal.js';
 import type { JournalNarrativeEntry, Lane } from '../../shared/console-model.js';
+import { fmtTokens } from '../../shared/format-tokens.js';
 
 function firstEventAt(events: ForgeEvent[], name: string, matches: (row: ForgeEvent) => boolean): number | undefined {
   for (const row of events) {
@@ -78,7 +79,7 @@ export function computeJournalNarrative(
   } else if (lane.state === 'killed') {
     entries.push({ t: lastByRun(events, lane.id, 'run.killed') ?? lane.endedAt ?? lane.since, text: 'killed · diff discarded', color: 'var(--block)' });
   } else if (lane.runaway) {
-    entries.push({ t: now, text: `build failing ×${lane.fails} · $${lane.costUsd.toFixed(2)}`, color: 'var(--block)' });
+    entries.push({ t: now, text: `build failing ×${lane.fails} · ${fmtTokens(lane.tokens)} tokens`, color: 'var(--block)' });
   }
 
   return entries;

@@ -17,7 +17,7 @@ function proposals(rules: Rule[]): ProposalsResponse {
   return {
     rules,
     metrics: {
-      mergedToday: 0, humanWaitMin: 0, costPerMergeUsd: null, wastedUsd: 0,
+      mergedToday: 0, humanWaitMin: 0, tokensPerMerge: null, tokensWasted: 0,
     },
     computedAt: Date.now(),
   };

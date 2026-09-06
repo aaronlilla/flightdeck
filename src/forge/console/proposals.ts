@@ -32,12 +32,12 @@ function startOfLocalDay(now: number): number {
 /**
  * Today's metrics, computed straight off the journal: `mergedToday` counts
  * `chain.merged` rows, `humanWaitMin` sums every `run.parked` -> `ask.answered` gap for a
- * key answered today, `costPerMergeUsd` divides today's spend by `mergedToday` (`null`
- * with nothing merged yet, never a division by zero wearing a number), and `wastedUsd`
+ * key answered today, `tokensPerMerge` divides today's spend by `mergedToday` (`null`
+ * with nothing merged yet, never a division by zero wearing a number), and `tokensWasted`
  * adds up the spend of every run whose last state today is `killed`, `exhausted` or
  * `blocked` (a run that finished `done` or is still going is never wasted spend).
  */
-export function computeMetrics(events: ForgeEvent[], now: number, costUsdByRun: Record<string, number>): ReviewMetrics {
+export function computeMetrics(events: ForgeEvent[], now: number, tokensByRun: Record<string, number>): ReviewMetrics {
   const since = startOfLocalDay(now);
   const today = events.filter((row) => row.at >= since);
 
@@ -58,13 +58,13 @@ export function computeMetrics(events: ForgeEvent[], now: number, costUsdByRun: 
     }
   }
 
-  // `costUsdByRun` carries each run's total spend for the whole journal, not just today,
-  // so "today's spend" sums it only over runs that produced at least one event today --
+  // `tokensByRun` carries each run's total tokens for the whole journal, not just today,
+  // so "today's tokens" sums it only over runs that produced at least one event today --
   // an approximation (a run started yesterday and still burning today counts its whole
   // total), named here rather than left silent, since nothing in `RunState` tracks
-  // spend by day.
+  // tokens by day.
   const runsActiveToday = new Set(today.filter((row) => row.run).map((row) => row.run as string));
-  const spendToday = [...runsActiveToday].reduce((sum, run) => sum + (costUsdByRun[run] ?? 0), 0);
+  const tokensToday = [...runsActiveToday].reduce((sum, run) => sum + (tokensByRun[run] ?? 0), 0);
 
   const lastStateByRun = new Map<string, string>();
   for (const row of today) {
@@ -73,18 +73,18 @@ export function computeMetrics(events: ForgeEvent[], now: number, costUsdByRun: 
     else if (row.event === 'run.finished' && row.verdict) lastStateByRun.set(row.run, String(row.verdict));
     else if (row.event === 'run.blocked') lastStateByRun.set(row.run, 'blocked');
   }
-  let wastedUsd = 0;
+  let tokensWasted = 0;
   for (const [run, state] of lastStateByRun) {
     if (state === 'killed' || state === 'exhausted' || state === 'blocked') {
-      wastedUsd += costUsdByRun[run] ?? 0;
+      tokensWasted += tokensByRun[run] ?? 0;
     }
   }
 
   return {
     mergedToday,
     humanWaitMin: Math.round(humanWaitMs / 60_000),
-    costPerMergeUsd: mergedToday > 0 ? Number((spendToday / mergedToday).toFixed(2)) : null,
-    wastedUsd: Number(wastedUsd.toFixed(2)),
+    tokensPerMerge: mergedToday > 0 ? Math.round(tokensToday / mergedToday) : null,
+    tokensWasted: Math.round(tokensWasted),
   };
 }
 
@@ -154,11 +154,11 @@ export function generatedProposals(events: ForgeEvent[], now: number, existingRu
 }
 
 export function computeProposals(
-  events: ForgeEvent[], now: number, costUsdByRun: Record<string, number>, existingRules: Rule[],
+  events: ForgeEvent[], now: number, tokensByRun: Record<string, number>, existingRules: Rule[],
 ): ProposalsResponse {
   return {
     rules: [...existingRules, ...generatedProposals(events, now, existingRules)],
-    metrics: computeMetrics(events, now, costUsdByRun),
+    metrics: computeMetrics(events, now, tokensByRun),
     computedAt: now,
   };
 }

@@ -312,7 +312,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
         <DisconnectedBanner feed={state.feed} onRetry={() => void refresh()} />
         <TopBar
           view={state.view} settingsBadge={settingsBadge} reviewBadge={reviewBadge} queueBadge={queueBadge}
-          caps={state.caps} spentTodayUsd={state.caps?.spentTodayUsd ?? 0} feed={state.feed} now={state.now}
+          caps={state.caps} tokensToday={state.caps?.tokensToday ?? 0} feed={state.feed} now={state.now}
           fetchLatencyMs={state.fetchLatencyMs}
           theme={state.theme}
           onNav={(view) => dispatch({ type: 'view', view })}
@@ -358,9 +358,9 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
               await refresh();
             })()}
             onCheckAll={() => void refresh()}
-            onSaveCaps={async (dailyUsd, runUsd) => {
+            onSaveCaps={async (dailyTokens, runTokens) => {
               try {
-                const caps = await api.setCaps({ dailyUsd, runUsd });
+                const caps = await api.setCaps({ dailyTokens, runTokens });
                 dispatch({ type: 'caps', caps });
               } catch (caught) {
                 appendReceipt(null, caught instanceof api.ApiError ? caught.message : 'caps did not save', false);
@@ -420,7 +420,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
               ) : null}
               {state.sheet.type === 'fleet-cost' ? (
                 <FleetCostSheet
-                  lanes={state.lanes} spentTodayUsd={state.caps?.spentTodayUsd ?? 0}
+                  lanes={state.lanes} tokensToday={state.caps?.tokensToday ?? 0}
                   onClose={() => dispatch({ type: 'sheet', sheet: null })}
                   onOpenLane={(id) => dispatch({ type: 'sheet', sheet: { type: 'ticket', id } })}
                 />
