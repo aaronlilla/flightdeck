@@ -44,12 +44,15 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   const [pendingConfirm, setPendingConfirm] = useState<{ k: string; id: string; cmd: 'kill' | 'merge' } | null>(null);
   const failCount = useRef(0);
   const mounted = useRef(true);
+  const stateRef = useRef(state);
+  stateRef.current = state;
 
   const refresh = useCallback(async () => {
     const startedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
     try {
       const [lanes, thread, journal, integrations, caps, proposals] = await Promise.all([
-        api.getLanes(), api.getThread(), api.getJournal(), api.getIntegrations(), api.getCaps(), api.getProposals(),
+        stateRef.current.filter === 'all' ? api.getLanes({ all: true }) : api.getLanes(),
+        api.getThread(), api.getJournal(), api.getIntegrations(), api.getCaps(), api.getProposals(),
       ]);
       if (!mounted.current) return;
       failCount.current = 0;
@@ -217,9 +220,6 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     })();
   });
 
-  const stateRef = useRef(state);
-  stateRef.current = state;
-
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent): void {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
@@ -265,8 +265,8 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
           <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
               <Filters
-                filter={state.filter} sort={state.sort} repos={repos} lanes={state.lanes}
-                onFilter={(filter) => dispatch({ type: 'filter', filter })}
+                filter={state.filter} sort={state.sort} repos={repos} lanes={state.lanes} now={state.now}
+                onFilter={(filter) => { dispatch({ type: 'filter', filter }); if (filter === 'all') void refresh(); }}
                 onSort={(sort) => dispatch({ type: 'sort', sort })}
               />
               <LanesGrid

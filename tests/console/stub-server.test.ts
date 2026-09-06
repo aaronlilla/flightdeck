@@ -39,6 +39,13 @@ describe('stub server', () => {
     expect(states).toContain('merged');
   });
 
+  // POLISH-2 #4: the real /lanes?all=1 route lands server-side in parallel; the stub
+  // must not break on the query it doesn't otherwise act on.
+  it('accepts the all=1 query on /lanes without erroring', async () => {
+    const { lanes } = await get<{ lanes: { state: string }[] }>('/lanes?all=1');
+    expect(lanes.length).toBe(14);
+  });
+
   it('kills a run and journals it', async () => {
     const { status, body } = await post<{ ok: boolean; jid: string }>('/run/FLT-201/kill', { reason: 'operator' });
     expect(status).toBe(200);

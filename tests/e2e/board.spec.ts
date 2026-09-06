@@ -84,6 +84,17 @@ test('the spend readout opens the fleet cost sheet', async ({ page }) => {
   await expect(sheet.getByText('FLT-204')).toBeVisible();
 });
 
+// POLISH-2 #4: "today" defaults once the fleet passes 12 lanes; "all" refetches
+// with ?all=1.
+test('today is the default filter past 12 lanes, and all refetches with ?all=1', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByTestId('lane-FLT-201')).toBeVisible();
+  await expect(page.locator('.chipOn', { hasText: 'today' })).toBeVisible();
+  const allRequest = page.waitForRequest((req) => req.url().includes('/lanes?all=1'));
+  await page.locator('.chip', { hasText: /^all \d+$/ }).click();
+  await allRequest;
+});
+
 test('a dropped feed shows the disconnected banner and disables the composer', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByTestId('lane-FLT-201')).toBeVisible();
