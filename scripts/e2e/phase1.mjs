@@ -28,7 +28,7 @@ async function main() {
 
   log('launching run', RUN);
   const launch = spawn('bash', ['scripts/e2e/launch-run.sh'], {
-    cwd: 'C:/dev/worktrees/flightdeck--e2e',
+    cwd: process.env.FORGE_REPO_DIR ?? process.cwd(),
     env: {
       ...process.env,
       RUN, BRIEF: 'scripts/e2e/probe-e2e-1.md', FORGE_HOME: HOME,
