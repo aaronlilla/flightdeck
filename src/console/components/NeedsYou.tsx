@@ -1,5 +1,6 @@
 import type { JSX } from 'react';
 
+import { hm } from '../freshness.js';
 import type { Integration, Lane } from '../../shared/console-model.js';
 
 export interface NeedItem {
@@ -21,24 +22,27 @@ export function buildNeeds(
   const items: NeedItem[] = [];
   for (const integration of integrations) {
     if (integration.status !== 'down') continue;
+    const since = integration.since !== null ? ` · since ${hm(integration.since)}` : '';
     items.push({
       id: `int-${integration.id}`, color: 'var(--block)', title: integration.name, sub: 'disconnected',
-      line: integration.effect ?? 'blocking dependent lanes', cta: integration.fixLabel ?? 'Reconnect →',
+      line: `${integration.dependents.length} lanes blocked${since}`, cta: integration.fixLabel ?? 'Reconnect →',
       ctaCls: 'btnR', onClick: () => onFix('integration', integration.id),
     });
   }
   for (const lane of lanes) {
     if (lane.state === 'parked') {
+      const question = lane.question?.text ?? '';
+      const asks = question.length > 60 ? `${question.slice(0, 60)}…` : question;
       items.push({
         id: `park-${lane.id}`, color: 'var(--park)', title: lane.id, sub: 'parked',
-        line: lane.question?.text ?? 'waiting on an answer', cta: 'Answer →', ctaCls: 'btnA',
+        line: `asks: ${asks}`, cta: 'Answer →', ctaCls: 'btnA',
         onClick: () => onFix('lane', lane.id),
       });
     }
     if (lane.state === 'running' && lane.runaway) {
       items.push({
         id: `over-${lane.id}`, color: 'var(--block)', title: lane.id, sub: 'over cap',
-        line: `$${lane.costUsd.toFixed(2)} of $${lane.capUsd ?? 0}`, cta: 'Kill attempt', ctaCls: 'btnR',
+        line: `burning $${lane.burnUsdPerMin.toFixed(2)}/min · ${lane.fails} fails`, cta: 'Kill attempt', ctaCls: 'btnR',
         onClick: () => onFix('lane', lane.id),
       });
     }
