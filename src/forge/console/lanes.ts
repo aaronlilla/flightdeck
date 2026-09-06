@@ -61,6 +61,46 @@ export function modelAlias(modelId: string | null | undefined): string {
   return base;
 }
 
+export interface ChainLink {
+  key: string;
+  runState: RunState | undefined;
+}
+
+/**
+ * `id`'s handoff chain, in order, following `RunState.successor` from `id` itself to
+ * the newest link the journal has folded a run state for.
+ *
+ * Stops the moment a successor is named but no run state has been folded for it yet --
+ * a handoff still in flight, its successor not journaled as started -- since that named
+ * run is not "newest" yet, the one that named it still is. Also stops on a repeated key,
+ * so a chain that only ever grows is walked exactly once per render.
+ */
+export function chainLinks(runs: FleetState['runs'], id: string): ChainLink[] {
+  const links: ChainLink[] = [];
+  const seen = new Set<string>();
+  let key = id;
+  let runState = runs[key];
+  links.push({ key, runState });
+  while (runState?.successor && !seen.has(key)) {
+    seen.add(key);
+    const next = runs[runState.successor];
+    if (!next) break;
+    key = runState.successor;
+    runState = next;
+    links.push({ key, runState });
+  }
+  return links;
+}
+
+/** Whether any link in a handoff chain has a live registry row -- a process that could
+ *  still spend. Backs both `heart` (I1) and `runaway` (I2): a chain whose last link
+ *  finished, or whose handoff stalled with nothing left running, is neither. */
+export function chainIsLive(
+  links: ChainLink[], registryGet: (run: string) => RegistryRecord | undefined,
+): boolean {
+  return links.some((link) => Boolean(registryGet(link.key)));
+}
+
 export function packetForRun(chain: Map<string, ChainPacketState>, run: string): ChainPacketState | undefined {
   for (const row of chain.values()) {
     if (row.launched?.runKey === run || row.packetId === run) return row;
@@ -200,6 +240,7 @@ export interface LaneBuildInput {
   fleet: FleetState;
   chain: Map<string, ChainPacketState>;
   registryRow: RegistryRecord | undefined;
+  registryGet: (run: string) => RegistryRecord | undefined;
   openAsks: InboxEntry[];
   stuck: StuckSignal[];
   classFor: (name: string) => ClassSpec | undefined;
@@ -228,8 +269,16 @@ function sandboxFor(packet: ChainPacketState | undefined, registryRow: RegistryR
 export function buildLane(input: LaneBuildInput): Lane {
   const { lane, now, fleet, chain, registryRow, openAsks, stuck, classFor, usdPerRun, capOverride, prFor } = input;
   const id = lane.slug;
-  const runState = fleet.runs[id];
-  const runEvents = fleet.events.filter((row) => row.run === id);
+  // I1: a run that has handed off is read through the whole chain its successors form,
+  // not just its own last journal line -- `fleet.runs[id]` never gets another event
+  // once `id` hands off, so reading it alone leaves a finished chain stuck reading
+  // `handed-off` forever. `terminal` is the newest link the journal has folded a run
+  // state for; every field below that describes "what is this lane doing right now"
+  // reads off it instead of off `id`'s own state.
+  const links = chainLinks(fleet.runs, id);
+  const terminal = links[links.length - 1]!;
+  const runState = terminal.runState;
+  const runEvents = fleet.events.filter((row) => row.run === terminal.key);
   const packet = packetForRun(chain, id);
 
   const { state, reason } = laneStateFor({ packet, lane, runState, runEvents });
@@ -242,17 +291,37 @@ export function buildLane(input: LaneBuildInput): Lane {
   const ctxCeiling = spec?.maxContext ?? 0;
   const ctxCompactAt = Math.round(ctxCeiling * 0.9);
   const capUsd = capOverride ?? (className ? usdPerRun[className] ?? null : null);
-  const costUsd = runState ? runState.costUsd : lane.cost_usd;
+  // I1: the chain's total spend, not just the newest link's -- every link in `links`
+  // has a defined `runState` once `runState` (the terminal's) does, since the walk in
+  // `chainLinks` only ever advances onto a link it already found a run state for.
+  const costUsd = runState
+    ? links.reduce((sum, link) => sum + (link.runState?.costUsd ?? 0), 0)
+    : lane.cost_usd;
   const running = state === 'running' || state === 'handed-off';
   const burnUsdPerMin = running ? Number((input.usdPerHourValue / 60).toFixed(4)) : 0;
 
   const fails = runEvents.filter((row) => row.event === 'run.blocked' || row.event === 'engine.error').length;
 
+  // I3: `lastEventAt` off the run's own last MEANINGFUL event, not `RunState.lastEventAt`
+  // (every event bumps that, noise included) -- the governor's `burn.mismatch` re-fires
+  // once per `forge up` restart for as long as a mismatch stays open (`reconcileBurnOnce`'s
+  // dedup `Set` is per-process, not persisted), which otherwise reads a lane that finished
+  // a day ago as observed seconds ago on every restart, defeating the 24h finished-lane
+  // window in `windowLanes` below.
+  const currentToolName = runState?.currentTool?.name;
+  const meaningfulRunEvents = meaningfulEvents(runEvents);
+  const lastMeaningfulEventAt = meaningfulRunEvents.length
+    ? meaningfulRunEvents[meaningfulRunEvents.length - 1]!.at
+    : undefined;
   const mtime = lane.started ?? now;
-  const lastEventAt = runState?.lastEventAt || mtime;
+  const lastEventAt = lastMeaningfulEventAt ?? runState?.lastEventAt ?? mtime;
   const observedAt = Math.max(mtime, lastEventAt);
   const verifiedAt = runState?.lastEventAt ?? null;
-  const heart = state === 'running' || state === 'handed-off';
+  // I1/I2: a process that could still spend -- any link in the chain with a live
+  // registry row, not just `id`'s own. Backs `heart` for a stalled handoff (running
+  // needs none of this: the terminal's own state already says so) and `runaway` below.
+  const chainLive = chainIsLive(links, input.registryGet);
+  const heart = state === 'running' || (state === 'handed-off' && chainLive);
   const since = sinceFor(state, runEvents, lastEventAt);
 
   const stuckHint = stuck.find((signal) => signal.key === id);
@@ -260,8 +329,6 @@ export function buildLane(input: LaneBuildInput): Lane {
     ? /\b(github|jira|aws|codex|model-provider)\b/i.exec(reason)?.[1]?.toLowerCase() ?? null
     : null;
 
-  const currentToolName = runState?.currentTool?.name;
-  const meaningfulRunEvents = meaningfulEvents(runEvents);
   const stepText = currentToolName
     ?? (meaningfulRunEvents.length ? textFor(meaningfulRunEvents[meaningfulRunEvents.length - 1]!) : '');
 
@@ -301,7 +368,14 @@ export function buildLane(input: LaneBuildInput): Lane {
     pr: prFor(id),
     sandbox: sandboxFor(packet, registryRow, id),
     blockedBy: blockedByIntegration ?? (stuckHint?.signal === 'fleet-unknown' ? 'fleet' : null),
-    runaway: running && capUsd !== null && costUsd > capUsd,
+    // I2: a `handed-off` lane also needs a live registry row -- a process that could
+    // still spend -- the same way `heart` does above; a genuinely `running` lane is
+    // already live by definition (`laneStateFor` only reads that off the journal's own
+    // `started` state) and needs no extra check. Combined with the chain fold above, a
+    // finished chain over its cap never reads `running` or `handed-off` here at all, and
+    // a stalled handoff over its cap with nothing left running shows its cost in amber
+    // with the cap text instead of the red runaway treatment.
+    runaway: running && capUsd !== null && costUsd > capUsd && (state === 'running' || chainLive),
     needsAaron: lane.needs_aaron ?? null,
   };
 }
@@ -345,6 +419,7 @@ export function computeLanes(input: LanesInput, now: number): LanesResponse {
     const usdPerHourValue = input.usdPerHour(lane);
     const built = buildLane({
       lane, now, fleet: input.fleet, chain: input.chain, registryRow: input.registryGet(lane.slug),
+      registryGet: input.registryGet,
       openAsks: input.openAsks, stuck: input.stuck, classFor: input.classFor,
       usdPerRun: input.usdPerRun, capOverride: input.capOverrides[lane.slug], prFor: input.prFor,
       attempt, usdPerHourValue,

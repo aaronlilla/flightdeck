@@ -341,6 +341,110 @@ describe('foldChainState + computeLanes', () => {
   });
 });
 
+describe('handoff chain folding', () => {
+  it('reads a finished successor as the chain lane state, never stuck at handed-off', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner', model: 'claude-sonnet-5' });
+    journal.append({ event: 'run.handoff', run: 'alpha', actor: 'worker', successor: 'alpha-2' });
+    journal.append({ event: 'run.started', run: 'alpha-2', actor: 'runner', model: 'claude-sonnet-5' });
+    journal.append({ event: 'run.finished', run: 'alpha-2', actor: 'worker', verdict: 'done' });
+    journal.close();
+    const fleet = replay(path);
+    const lane = laneRecord({ slug: 'alpha', column: 'c1' });
+    const built = computeLanes(baseInput({ laneRecords: [lane], fleet }), 1_000).lanes[0]!;
+    expect(built.state).toBe('done');
+  });
+
+  it('sums cost across the whole chain and reads context off the newest link', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner', model: 'claude-sonnet-5' });
+    journal.append({
+      event: 'result.usage', run: 'alpha', actor: 'runner', model: 'claude-sonnet-5',
+      usage: { input: 1_000_000, cacheRead: 0, cacheCreation: 0, output: 0 },
+    });
+    journal.append({ event: 'turn.end', run: 'alpha', actor: 'runner', context: 190_000 });
+    journal.append({ event: 'run.handoff', run: 'alpha', actor: 'worker', successor: 'alpha-2' });
+    journal.append({ event: 'run.started', run: 'alpha-2', actor: 'runner', model: 'claude-sonnet-5' });
+    journal.append({
+      event: 'result.usage', run: 'alpha-2', actor: 'runner', model: 'claude-sonnet-5',
+      usage: { input: 1_000_000, cacheRead: 0, cacheCreation: 0, output: 0 },
+    });
+    journal.append({ event: 'turn.end', run: 'alpha-2', actor: 'runner', context: 42_000 });
+    journal.close();
+    const fleet = replay(path);
+    const lane = laneRecord({ slug: 'alpha', column: 'c1' });
+    const built = computeLanes(baseInput({ laneRecords: [lane], fleet }), 1_000).lanes[0]!;
+    expect(built.state).toBe('running');
+    expect(built.ctxTokens).toBe(42_000);
+    const expectedTotal = fleet.runs['alpha']!.costUsd + fleet.runs['alpha-2']!.costUsd;
+    expect(built.costUsd).toBeCloseTo(expectedTotal, 6);
+    expect(built.costUsd).toBeGreaterThan(fleet.runs['alpha-2']!.costUsd);
+  });
+
+  it('heart is false for a stalled handoff with no live registry row anywhere in the chain', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.append({ event: 'run.handoff', run: 'alpha', actor: 'worker', successor: 'alpha-2' });
+    journal.close();
+    const fleet = replay(path);
+    const lane = laneRecord({ slug: 'alpha', column: 'c1' });
+    const built = computeLanes(baseInput({ laneRecords: [lane], fleet, registryGet: () => undefined }), 1_000).lanes[0]!;
+    expect(built.state).toBe('handed-off');
+    expect(built.heart).toBe(false);
+  });
+
+  it('heart is true for a stalled handoff whose base run still has a live registry row', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.append({ event: 'run.handoff', run: 'alpha', actor: 'worker', successor: 'alpha-2' });
+    journal.close();
+    const fleet = replay(path);
+    const lane = laneRecord({ slug: 'alpha', column: 'c1' });
+    const registryRow: RegistryRecord = { goal: 'alpha', cwd: '.', briefPath: 'b.md', pid: 123, startedAt: 0 };
+    const built = computeLanes(baseInput({
+      laneRecords: [lane], fleet, registryGet: (run) => (run === 'alpha' ? registryRow : undefined),
+    }), 1_000).lanes[0]!;
+    expect(built.state).toBe('handed-off');
+    expect(built.heart).toBe(true);
+  });
+
+  it('does not flag a finished chain over its cap as runaway, even before it ages off the board', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner', model: 'claude-sonnet-5' });
+    journal.append({
+      event: 'result.usage', run: 'alpha', actor: 'runner', model: 'claude-sonnet-5',
+      usage: { input: 100_000_000, cacheRead: 0, cacheCreation: 0, output: 0 },
+    });
+    journal.append({ event: 'run.handoff', run: 'alpha', actor: 'worker', successor: 'alpha-2' });
+    journal.append({ event: 'run.started', run: 'alpha-2', actor: 'runner', model: 'claude-sonnet-5' });
+    journal.append({ event: 'run.finished', run: 'alpha-2', actor: 'worker', verdict: 'unverified' });
+    journal.close();
+    const fleet = replay(path);
+    const lane = laneRecord({ slug: 'alpha', column: 'c1', className: 'implement' });
+    const built = computeLanes(baseInput({ laneRecords: [lane], fleet }), 1_000).lanes[0]!;
+    expect(built.state).toBe('unverified');
+    expect(built.costUsd).toBeGreaterThan(built.capUsd ?? 0);
+    expect(built.runaway).toBe(false);
+  });
+
+  it('does not flag a stalled handoff over its cap as runaway with no live registry row for it', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner', model: 'claude-sonnet-5' });
+    journal.append({
+      event: 'result.usage', run: 'alpha', actor: 'runner', model: 'claude-sonnet-5',
+      usage: { input: 100_000_000, cacheRead: 0, cacheCreation: 0, output: 0 },
+    });
+    journal.append({ event: 'run.handoff', run: 'alpha', actor: 'worker', successor: 'alpha-2' });
+    journal.close();
+    const fleet = replay(path);
+    const lane = laneRecord({ slug: 'alpha', column: 'c1', className: 'implement' });
+    const built = computeLanes(baseInput({ laneRecords: [lane], fleet, registryGet: () => undefined }), 1_000).lanes[0]!;
+    expect(built.state).toBe('handed-off');
+    expect(built.costUsd).toBeGreaterThan(built.capUsd ?? 0);
+    expect(built.runaway).toBe(false);
+  });
+});
+
 describe('windowLanes', () => {
   const HOUR = 3_600_000;
   const now = 100 * HOUR;
