@@ -5,6 +5,7 @@ import * as api from '../api.js';
 import { capText, costClass } from '../laneVM.js';
 import { hm } from '../freshness.js';
 import type { CostStep, Lane } from '../../shared/console-model.js';
+import { fmtTokens } from '../../shared/format-tokens.js';
 
 export interface CostSheetProps {
   lane: Lane;
@@ -28,10 +29,10 @@ export function CostSheet({ lane, onClose, onKill }: CostSheetProps): JSX.Elemen
     return () => { active = false; };
   }, [lane.id]);
 
-  const over = lane.capUsd !== null && lane.costUsd > lane.capUsd;
+  const over = lane.tokenCap !== null && lane.tokens > lane.tokenCap;
   const totalInput = steps.reduce((sum, s) => sum + s.inputTokens, 0);
   const totalOutput = steps.reduce((sum, s) => sum + s.outputTokens, 0);
-  const burnText = lane.state === 'running' ? `$${lane.burnUsdPerMin.toFixed(2)}/min` : '—/min';
+  const burnText = lane.state === 'running' ? `${fmtTokens(lane.tokensPerMin)} tokens/min` : '—/min';
 
   return (
     <div className="plate" data-testid="cost-sheet" style={{ width: 520, maxWidth: 'calc(100vw - 40px)' }}>
@@ -41,7 +42,10 @@ export function CostSheet({ lane, onClose, onKill }: CostSheetProps): JSX.Elemen
       </div>
       <div style={{ padding: '18px 22px', display: 'flex', flexDirection: 'column', gap: 14 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 18 }}>
-          <span className={costClass(lane)}>${lane.costUsd.toFixed(2)}</span>
+          {/* The one place the board shows the exact count: everywhere else renders
+              compact (`fmtTokens`), but the cost sheet's whole purpose is a precise
+              number to audit against. */}
+          <span className={costClass(lane)}>{lane.tokens.toLocaleString()} tokens</span>
           <div className="m" style={{ fontSize: 11, lineHeight: 1.8, color: 'var(--ink2)' }}>
             {Math.round(totalInput / 1000)}k input · {Math.round(totalOutput / 1000)}k output · {lane.model}<br />
             {capText(lane)}{capEnforcementFailedJid ? ` · cap event failed (${capEnforcementFailedJid})` : ''} · burn {burnText}
@@ -58,7 +62,7 @@ export function CostSheet({ lane, onClose, onKill }: CostSheetProps): JSX.Elemen
                   <span style={{ color: 'var(--ink3)', whiteSpace: 'nowrap' }}>{hm(step.t)}</span>
                   <span style={{ flex: 1 }}>{step.stepText}</span>
                   <span style={{ whiteSpace: 'nowrap' }}>{Math.round(step.inputTokens / 1000)}k in</span>
-                  <span style={{ whiteSpace: 'nowrap' }}>${step.costUsd.toFixed(2)}</span>
+                  <span style={{ whiteSpace: 'nowrap' }}>{step.tokens.toLocaleString()}</span>
                 </div>
               ))}
             </div>

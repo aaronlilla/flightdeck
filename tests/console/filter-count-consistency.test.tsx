@@ -37,7 +37,7 @@ function baseLane(id: string, overrides: Partial<Lane>): Lane {
   return {
     id, ticket: null, model: 'sonnet-5', modelId: 'claude-sonnet-5', className: 'implement',
     repo: 'flightdeck-api', attempt: 1, state: 'running', reason: null, stepN: 1, stepTotal: 6, stepText: 'working',
-    ctxTokens: 1000, ctxCeiling: 200_000, ctxCompactAt: 180_000, costUsd: 1, capUsd: 10, burnUsdPerMin: 0,
+    ctxTokens: 1000, ctxCeiling: 200_000, ctxCompactAt: 180_000, tokens: 1, tokenCap: 10, tokensPerMin: 0,
     fails: 0, hop: 0, hopStatus: 'live', observedAt: now, verifiedAt: now, heart: false,
     since: now, startedAt: now, endedAt: null, question: null, pr: null, sandbox: null,
     blockedBy: null, runaway: false, needsAaron: null,
@@ -68,15 +68,15 @@ beforeEach(async () => {
     response.setHeader('content-type', 'application/json');
     if (url.pathname === '/lanes') {
       const all = url.searchParams.get('all') === '1';
-      response.end(JSON.stringify({ at: Date.now(), lanes: all ? full : windowed, spentTodayUsd: 0, burnUsdPerMin: 0 }));
+      response.end(JSON.stringify({ at: Date.now(), lanes: all ? full : windowed, tokensToday: 0, tokensPerMin: 0 }));
       return;
     }
     if (url.pathname === '/thread') { response.end(JSON.stringify({ messages: [] })); return; }
     if (url.pathname === '/journal') { response.end(JSON.stringify({ rows: [], total: 0 })); return; }
     if (url.pathname === '/integrations') { response.end(JSON.stringify({ items: [], checkedAt: Date.now(), everyS: 30 })); return; }
-    if (url.pathname === '/caps') { response.end(JSON.stringify({ dailyUsd: 40, runUsd: 10, hardUsd: 100, spentTodayUsd: 0 })); return; }
+    if (url.pathname === '/caps') { response.end(JSON.stringify({ dailyTokens: 40, runTokens: 10, hardTokens: 100, tokensToday: 0 })); return; }
     if (url.pathname === '/proposals') {
-      response.end(JSON.stringify({ rules: [], metrics: { mergedToday: 0, humanWaitMin: 0, costPerMergeUsd: null, wastedUsd: 0 }, computedAt: Date.now() }));
+      response.end(JSON.stringify({ rules: [], metrics: { mergedToday: 0, humanWaitMin: 0, tokensPerMerge: null, tokensWasted: 0 }, computedAt: Date.now() }));
       return;
     }
     response.statusCode = 404;

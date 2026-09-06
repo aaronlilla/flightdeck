@@ -5,6 +5,15 @@ import type {
   Caps, Feed, Integration, JournalEntry, Lane, Rule,
 } from '../../shared/console-model.js';
 import { hm } from '../freshness.js';
+import { fmtTokens } from '../../shared/format-tokens.js';
+
+/** A cap this file reads as `Infinity` (no console override yet, and nothing this board
+ *  can honestly derive from the policy's own dollar-denominated defaults) prints as
+ *  "uncapped" rather than the literal word "Infinity". */
+function capText(value: number | undefined): string {
+  if (value === undefined || !Number.isFinite(value)) return 'uncapped';
+  return `${fmtTokens(value)} tokens`;
+}
 
 export interface SettingsProps {
   integrations: Integration[];
@@ -18,7 +27,7 @@ export interface SettingsProps {
   onCheck: (id: string) => void;
   onReconnect: (id: string) => void;
   onCheckAll: () => void;
-  onSaveCaps: (dailyUsd: number, runUsd: number) => Promise<void> | void;
+  onSaveCaps: (dailyTokens: number, runTokens: number) => Promise<void> | void;
   onOpenJournal: () => void;
 }
 
@@ -175,8 +184,8 @@ export function Settings(props: SettingsProps): JSX.Element {
     onCheck, onReconnect, onCheckAll, onSaveCaps, onOpenJournal,
   } = props;
   const [section, setSection] = useState<Section>('integrations');
-  const [dailyDraft, setDailyDraft] = useState(String(caps?.dailyUsd ?? ''));
-  const [runDraft, setRunDraft] = useState(String(caps?.runUsd ?? ''));
+  const [dailyDraft, setDailyDraft] = useState(caps && Number.isFinite(caps.dailyTokens) ? String(caps.dailyTokens) : '');
+  const [runDraft, setRunDraft] = useState(caps && Number.isFinite(caps.runTokens) ? String(caps.runTokens) : '');
   const [err, setErr] = useState('');
 
   const down = integrations.filter((i) => i.status === 'down');
@@ -189,7 +198,7 @@ export function Settings(props: SettingsProps): JSX.Element {
     const daily = Number(dailyDraft);
     const run = Number(runDraft);
     if (!Number.isFinite(daily) || !Number.isFinite(run)) { setErr('caps must be numbers'); return; }
-    if (caps && (daily > caps.hardUsd || run > caps.hardUsd)) { setErr(`refused above the org hard limit $${caps.hardUsd}`); return; }
+    if (caps && (daily > caps.hardTokens || run > caps.hardTokens)) { setErr(`refused above the org hard limit of ${capText(caps.hardTokens)}`); return; }
     setErr('');
     await onSaveCaps(daily, run);
   }
@@ -276,9 +285,9 @@ export function Settings(props: SettingsProps): JSX.Element {
             <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--line)' }}><span className="lbl">Per-run overrides</span></div>
             <div className="m" style={{ fontSize: '11.5px', padding: '10px 16px' }}>
               {caps && Object.keys(caps.overrides).length > 0 ? (
-                Object.entries(caps.overrides).map(([id, capUsd]) => (
+                Object.entries(caps.overrides).map(([id, tokenCap]) => (
                   <div key={id} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0' }}>
-                    <span>{id}</span><b>${capUsd}</b>
+                    <span>{id}</span><b>{fmtTokens(tokenCap)} tokens</b>
                   </div>
                 ))
               ) : (
@@ -286,9 +295,9 @@ export function Settings(props: SettingsProps): JSX.Element {
               )}
             </div>
             <div style={{ padding: '10px 16px', borderTop: '1px solid var(--line)' }}>
-              <span className="lbl">Spend today</span>
+              <span className="lbl">Tokens today</span>
               <div className="m" style={{ fontSize: '11.5px', marginTop: 6 }}>
-                ${caps?.spentTodayUsd.toFixed(2) ?? '0.00'} of ${caps?.dailyUsd ?? 0} daily · ${caps?.runUsd ?? 0} per run · ${caps?.hardUsd ?? 0} hard limit
+                {fmtTokens(caps?.tokensToday ?? 0)} of {capText(caps?.dailyTokens)} daily · {capText(caps?.runTokens)} per run · {capText(caps?.hardTokens)} hard limit
               </div>
             </div>
           </div>
@@ -356,14 +365,14 @@ export function Settings(props: SettingsProps): JSX.Element {
           <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 8 }}>Caps &amp; policies</div>
           <div className="m" style={{ fontSize: '11.5px', lineHeight: 2.4 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ color: 'var(--ink2)' }}>daily cap</span>
-              <span>$<input className="inp m" style={{ width: 50, fontSize: 12, fontWeight: 700, textAlign: 'right' }} value={dailyDraft} onChange={(e) => setDailyDraft(e.target.value)} /></span>
+              <span style={{ color: 'var(--ink2)' }}>daily cap (tokens)</span>
+              <span><input className="inp m" style={{ width: 90, fontSize: 12, fontWeight: 700, textAlign: 'right' }} value={dailyDraft} onChange={(e) => setDailyDraft(e.target.value)} /></span>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ color: 'var(--ink2)' }}>per-run cap</span>
-              <span>$<input className="inp m" style={{ width: 50, fontSize: 12, fontWeight: 700, textAlign: 'right' }} value={runDraft} onChange={(e) => setRunDraft(e.target.value)} /></span>
+              <span style={{ color: 'var(--ink2)' }}>per-run cap (tokens)</span>
+              <span><input className="inp m" style={{ width: 90, fontSize: 12, fontWeight: 700, textAlign: 'right' }} value={runDraft} onChange={(e) => setRunDraft(e.target.value)} /></span>
             </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: 'var(--ink2)' }}>org hard limit</span><b>${caps?.hardUsd ?? 0} · FD-7</b></div>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: 'var(--ink2)' }}>org hard limit</span><b>{capText(caps?.hardTokens)} · FD-7</b></div>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: 'var(--ink2)' }}>cap enforcement</span><span style={{ fontWeight: 700, color: enforcement.color }}>{enforcement.text}</span></div>
           </div>
           <span className="btnP" style={{ width: '100%', marginTop: 6 }} onClick={() => void save()}>Save caps →</span>

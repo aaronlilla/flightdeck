@@ -28,7 +28,7 @@ function lane(extra: Partial<Lane> = {}): Lane {
   return {
     id: 'FLT-1', ticket: null, model: 'sonnet-5', modelId: 'claude-sonnet-5', className: 'implement',
     repo: 'flightdeck-rn', attempt: 1, state: 'running', reason: null, stepN: 1, stepTotal: 6, stepText: 'working',
-    ctxTokens: 1000, ctxCeiling: 200_000, ctxCompactAt: 180_000, costUsd: 1, capUsd: 10, burnUsdPerMin: 0,
+    ctxTokens: 1000, ctxCeiling: 200_000, ctxCompactAt: 180_000, tokens: 1, tokenCap: 10, tokensPerMin: 0,
     fails: 0, hop: 0, hopStatus: 'live', observedAt: Date.now(), verifiedAt: Date.now(), heart: true, since: Date.now(),
     startedAt: Date.now(), endedAt: null, question: null, pr: null, sandbox: null, blockedBy: null,
     runaway: false, needsAaron: null,
@@ -143,8 +143,8 @@ describe('Settings cap enforcement status', () => {
     renderSettings({
       integrations: [], rules: [],
       caps: {
-        dailyUsd: 40, runUsd: 10, hardUsd: 100, enforcement: 'on', spentTodayUsd: 0, overrides: {},
-        sources: { dailyUsd: 'policy', runUsd: 'policy', hardUsd: 'policy' },
+        dailyTokens: 40, runTokens: 10, hardTokens: 100, enforcement: 'on', tokensToday: 0, overrides: {},
+        sources: { dailyTokens: 'policy', runTokens: 'policy', hardTokens: 'policy' },
       },
     });
     expect(screen.getByText('on')).toBeInTheDocument();

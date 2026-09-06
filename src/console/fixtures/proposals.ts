@@ -4,8 +4,8 @@ export function seedRules(): Rule[] {
   return [
     {
       id: 'kill3', kind: 'cost', title: 'Kill a run after 3 consecutive failed builds',
-      summary: 'FLT-204 would have stopped at $12 · est. -$890/week',
-      evidence: 'FLT-204: 2 build failures in the last 30 minutes, $1.30/min burn, over its $8 cap.',
+      summary: 'FLT-204 would have stopped at 2.4M tokens · est. -178M tokens/week',
+      evidence: 'FLT-204: 2 build failures in the last 30 minutes, 260k tokens/min burn, over its 1.6M token cap.',
       effect: 'Kills any run whose fails counter reaches 3, going forward.',
       status: 'open', jid: null, prUrl: null, expanded: true,
     },

@@ -7,7 +7,7 @@ function lane(state: LaneState, extra: Partial<Lane> = {}): Lane {
   return {
     id: 'FLT-1', ticket: 'FLT-1', model: 'sonnet-5', modelId: 'claude-sonnet-5', className: 'implement',
     repo: 'flightdeck-api', attempt: 1, state, reason: null, stepN: 1, stepTotal: 6, stepText: '',
-    ctxTokens: 1000, ctxCeiling: 200_000, ctxCompactAt: 180_000, costUsd: 1, capUsd: 10, burnUsdPerMin: 0,
+    ctxTokens: 1000, ctxCeiling: 200_000, ctxCompactAt: 180_000, tokens: 1, tokenCap: 10, tokensPerMin: 0,
     fails: 0, hop: 0, hopStatus: 'live', observedAt: 0, verifiedAt: 0, heart: false, since: 0, startedAt: 0,
     endedAt: null, question: null, pr: null, sandbox: null, blockedBy: null, runaway: false, needsAaron: null,
     ...extra,
@@ -62,20 +62,25 @@ describe('stepDisplay', () => {
 // used unconditionally).
 describe('tileCapText / costClass', () => {
   it('shows no cap text on a normal tile', () => {
-    expect(tileCapText(lane('running', { costUsd: 4.32, capUsd: 20, runaway: false }))).toBe('');
+    expect(tileCapText(lane('running', { tokens: 864_000, tokenCap: 4_000_000, runaway: false }))).toBe('');
   });
 
-  it('shows cap $N · ×K once cost exceeds cap, even without the runaway flag', () => {
-    expect(tileCapText(lane('running', { costUsd: 27.5, capUsd: 8, runaway: false }))).toBe('cap $8 · ×3');
+  it('shows cap Nk/M tokens · ×K once tokens exceed the cap, even without the runaway flag', () => {
+    expect(tileCapText(lane('running', { tokens: 5_500_000, tokenCap: 1_600_000, runaway: false }))).toBe('cap 1.6M tokens · ×3');
   });
 
   it('shows the same cap text for a runaway lane', () => {
-    expect(tileCapText(lane('running', { costUsd: 27.5, capUsd: 8, runaway: true }))).toBe('cap $8 · ×3');
+    expect(tileCapText(lane('running', { tokens: 5_500_000, tokenCap: 1_600_000, runaway: true }))).toBe('cap 1.6M tokens · ×3');
   });
 
   it('renders the cost readout phosphor-off when stale, regardless of amount', () => {
-    expect(costClass(lane('running', { costUsd: 27.5, capUsd: 8 }), true)).toBe('ws');
-    expect(costClass(lane('running', { costUsd: 27.5, capUsd: 8 }), false)).toBe('w2');
+    expect(costClass(lane('running', { tokens: 5_500_000, tokenCap: 1_600_000 }), true)).toBe('ws');
+    expect(costClass(lane('running', { tokens: 5_500_000, tokenCap: 1_600_000 }), false)).toBe('w2');
+  });
+
+  it('reads amber past 1,000,000 tokens with no cap set at all', () => {
+    expect(costClass(lane('running', { tokens: 1_200_000, tokenCap: null }))).toBe('w1');
+    expect(costClass(lane('running', { tokens: 900_000, tokenCap: null }))).toBe('w0');
   });
 });
 
@@ -100,11 +105,11 @@ describe('laneHeadline', () => {
 // POLISH-1 #6: hover cards carry a value, a source and a time, plus the click target.
 describe('costTip', () => {
   it('names the value, the source and the click target', () => {
-    const l = lane('running', { id: 'FLT-9', costUsd: 4.32, capUsd: 20 });
+    const l = lane('running', { id: 'FLT-9', tokens: 864_000, tokenCap: 4_000_000 });
     const fresh = { verified: true, at: 1_000, ageMs: 0 };
     const tip = costTip(l, fresh);
-    expect(tip.head).toBe('$4.32');
-    expect(tip.body).toContain('$4.32');
+    expect(tip.head).toBe('864k tokens');
+    expect(tip.body).toContain('864k tokens');
     expect(tip.body).toContain('FLT-9');
     expect(tip.click).toBe('Click → cost sheet');
   });

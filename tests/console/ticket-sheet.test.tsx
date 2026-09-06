@@ -16,7 +16,7 @@ function lane(extra: Partial<Lane> = {}): Lane {
   return {
     id: 'jira_AB-12_1788460932645', ticket: 'AB-12', model: 'sonnet-5', modelId: 'claude-sonnet-5', className: 'implement',
     repo: 'flightdeck-api', attempt: 1, state: 'running', reason: 'a schema question', stepN: 1, stepTotal: 6, stepText: 'working',
-    ctxTokens: 40_000, ctxCeiling: 200_000, ctxCompactAt: 180_000, costUsd: 1, capUsd: 10, burnUsdPerMin: 0,
+    ctxTokens: 40_000, ctxCeiling: 200_000, ctxCompactAt: 180_000, tokens: 1, tokenCap: 10, tokensPerMin: 0,
     fails: 0, hop: 0, hopStatus: 'live', observedAt: Date.now(), verifiedAt: Date.now(), heart: true, since: Date.now(),
     startedAt: Date.now(), endedAt: null, question: null, pr: null, sandbox: null, blockedBy: null, runaway: false,
     needsAaron: null,
@@ -75,10 +75,10 @@ describe('TicketSheet', () => {
   });
 
   it('never shows a repeated cap-text footer -- the prototype has no such row', () => {
-    renderSheet([], { costUsd: 20, capUsd: 10 });
-    // capText would read "cap $10 · exceeded ×2"; that string must not appear twice
-    // (once is fine, from the header cost readout's tooltip elsewhere; none here).
-    expect(screen.queryByText(/cap \$10/)).not.toBeInTheDocument();
+    renderSheet([], { tokens: 20, tokenCap: 10 });
+    // capText would read "cap 10 tokens · ×2"; that string must not appear twice (once
+    // is fine, from the header cost readout's tooltip elsewhere; none here).
+    expect(screen.queryByText(/cap 10 tokens/)).not.toBeInTheDocument();
   });
 
   it('always shows the literal "ceiling 200k", matching the prototype, never a computed figure', () => {
@@ -99,7 +99,7 @@ describe('TicketSheet', () => {
     });
 
     it('adds the over-cap suffix for a runaway running lane', () => {
-      renderSheet([], { state: 'running', runaway: true, costUsd: 20, capUsd: 10 });
+      renderSheet([], { state: 'running', runaway: true, tokens: 20, tokenCap: 10 });
       expect(screen.getByText('● running — over cap, retry loop')).toBeInTheDocument();
     });
 

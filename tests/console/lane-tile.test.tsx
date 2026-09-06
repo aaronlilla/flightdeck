@@ -10,7 +10,7 @@ function lane(extra: Partial<Lane> = {}): Lane {
   return {
     id: 'FLT-1', ticket: 'FLT-1', model: 'sonnet-5', modelId: 'claude-sonnet-5', className: 'implement',
     repo: 'flightdeck-api', attempt: 1, state: 'running', reason: null, stepN: 1, stepTotal: 6, stepText: 'working',
-    ctxTokens: 40_000, ctxCeiling: 200_000, ctxCompactAt: 180_000, costUsd: 1, capUsd: 10, burnUsdPerMin: 0,
+    ctxTokens: 40_000, ctxCeiling: 200_000, ctxCompactAt: 180_000, tokens: 200_000, tokenCap: 2_000_000, tokensPerMin: 0,
     fails: 0, hop: 0, hopStatus: 'live', observedAt: Date.now(), verifiedAt: Date.now(), heart: true, since: Date.now(),
     startedAt: Date.now(), endedAt: null, question: null, pr: null, sandbox: null, blockedBy: null, runaway: false,
     needsAaron: null,
@@ -55,12 +55,12 @@ describe('LaneTile', () => {
   // POLISH-1 #2, corrected: cap text shows whenever cost exceeds cap, not only when
   // the lane also carries the separate `runaway` flag.
   it('shows no cap text on a normal tile, and the exceeded form once cost crosses cap', () => {
-    const { rerender } = render(<LaneTile lane={lane({ costUsd: 4.32, capUsd: 20 })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
-    expect(screen.queryByText(/cap \$/)).not.toBeInTheDocument();
-    rerender(<LaneTile lane={lane({ costUsd: 27.5, capUsd: 8, runaway: false })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
-    expect(screen.getByText('cap $8 · ×3')).toBeInTheDocument();
-    rerender(<LaneTile lane={lane({ costUsd: 27.5, capUsd: 8, runaway: true })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
-    expect(screen.getByText('cap $8 · ×3')).toBeInTheDocument();
+    const { rerender } = render(<LaneTile lane={lane({ tokens: 864_000, tokenCap: 4_000_000 })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
+    expect(screen.queryByText(/cap /)).not.toBeInTheDocument();
+    rerender(<LaneTile lane={lane({ tokens: 5_500_000, tokenCap: 1_600_000, runaway: false })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
+    expect(screen.getByText('cap 1.6M tokens · ×3')).toBeInTheDocument();
+    rerender(<LaneTile lane={lane({ tokens: 5_500_000, tokenCap: 1_600_000, runaway: true })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
+    expect(screen.getByText('cap 1.6M tokens · ×3')).toBeInTheDocument();
   });
 
   // Prototype's `fresh(l)` requires the source's own heartbeat flag, not only a
@@ -73,9 +73,9 @@ describe('LaneTile', () => {
 
   // POLISH-1 #3: an observed tile dims to 60% opacity, and its cost readout goes phosphor-off.
   it('dims to 60% opacity and drops the cost glow once the value is only observed', () => {
-    render(<LaneTile lane={lane({ costUsd: 5.6 })} feedLive={false} now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
+    render(<LaneTile lane={lane({ tokens: 1_120_000 })} feedLive={false} now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
     expect(screen.getByTestId('lane-FLT-1')).toHaveStyle({ opacity: 0.6 });
-    expect(screen.getByText('$5.60')).toHaveClass('ws');
+    expect(screen.getByText('1.1M')).toHaveClass('ws');
   });
 
   // Final fidelity sweep #1: the tile's headline is always one line, exactly as the

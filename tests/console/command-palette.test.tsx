@@ -9,7 +9,7 @@ function lane(id: string, stepText: string): Lane {
   return {
     id, ticket: null, model: 'sonnet-5', modelId: null, className: null, repo: 'flightdeck-rn', attempt: 1,
     state: 'running', reason: null, stepN: 1, stepTotal: 3, stepText, ctxTokens: 0, ctxCeiling: 200_000,
-    ctxCompactAt: 180_000, costUsd: 0, capUsd: null, burnUsdPerMin: 0, fails: 0, hop: 1, hopStatus: 'live',
+    ctxCompactAt: 180_000, tokens: 0, tokenCap: null, tokensPerMin: 0, fails: 0, hop: 1, hopStatus: 'live',
     observedAt: Date.now(), verifiedAt: Date.now(), heart: true, since: Date.now(), startedAt: Date.now(),
     endedAt: null, question: null, pr: null, sandbox: null, blockedBy: null, runaway: false, needsAaron: null,
   };

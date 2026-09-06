@@ -7,6 +7,7 @@
 import { hm } from './freshness.js';
 import type { Freshness } from './freshness.js';
 import type { Lane, LaneState } from '../shared/console-model.js';
+import { fmtTokens } from '../shared/format-tokens.js';
 
 export interface StateGlyph {
   glyph: string;
@@ -102,32 +103,42 @@ export function stepDisplay(lane: Lane): string {
   return lane.stepTotal > 0 ? `step ${lane.stepN}/${lane.stepTotal} · ${lane.stepText}` : lane.stepText;
 }
 
+/** The amber line for a lane carrying no cap of its own: a token count past this reads
+ *  as "getting expensive" the same way the old `$5` threshold did. Chosen rather than
+ *  derived, because there is no single honest exchange rate any more (see
+ *  `console-model.ts`'s own note on why token caps carry no dollar default) -- but the
+ *  old `$5` threshold, at Sonnet's blended list rate (input $3/M, output $15/M), sat
+ *  somewhere between roughly 300k and 1.6M tokens depending on the input/output mix.
+ *  1,000,000 is a round number inside that band. */
+const EXPENSIVE_TOKENS = 1_000_000;
+
 /** `stale` renders the cost readout phosphor-off (dim, no glow) regardless of amount.
  *  The tile passes `true` for an observed value; other callers (cost sheet, ticket
  *  sheet) never pass it, so their readout still reflects the amount. */
 export function costClass(lane: Lane, stale = false): 'w0' | 'w1' | 'w2' | 'ws' {
   if (stale) return 'ws';
-  if (lane.capUsd !== null && lane.costUsd > lane.capUsd) return 'w2';
-  if (lane.costUsd >= 5) return 'w1';
+  if (lane.tokenCap !== null && lane.tokens > lane.tokenCap) return 'w2';
+  if (lane.tokens >= EXPENSIVE_TOKENS) return 'w1';
   return 'w0';
 }
 
-/** Matches the prototype's own `'cap $'+l.cap+' · ×'+Math.round(l.cost/l.cap)`: no
- *  word "exceeded", and the multiplier is rounded rather than shown to one decimal. */
+/** Matches the prototype's own `'cap $'+l.cap+' · ×'+Math.round(l.cost/l.cap)` in shape:
+ *  no word "exceeded", and the multiplier is rounded rather than shown to one decimal --
+ *  rendered in tokens, compact, since this fleet has nothing left to price in dollars. */
 export function capText(lane: Lane): string {
-  if (lane.capUsd === null) return '';
-  if (lane.costUsd > lane.capUsd) {
-    const times = Math.round(lane.costUsd / lane.capUsd);
-    return `cap $${lane.capUsd} · ×${times}`;
+  if (lane.tokenCap === null) return '';
+  if (lane.tokens > lane.tokenCap) {
+    const times = Math.round(lane.tokens / lane.tokenCap);
+    return `cap ${fmtTokens(lane.tokenCap)} tokens · ×${times}`;
   }
-  return `cap $${lane.capUsd}`;
+  return `cap ${fmtTokens(lane.tokenCap)} tokens`;
 }
 
 /** The tile shows the cap text whenever cost exceeds cap, not only for a lane also
  *  flagged `runaway`: a lane can quietly cross its cap without ever being marked
  *  runaway, and it still needs the warning. */
 export function tileCapText(lane: Lane): string {
-  return lane.capUsd !== null && lane.costUsd > lane.capUsd ? capText(lane) : '';
+  return lane.tokenCap !== null && lane.tokens > lane.tokenCap ? capText(lane) : '';
 }
 
 export interface TipContent {
@@ -144,10 +155,10 @@ function whenLabel(fresh: Freshness): string {
 /** Real hover cards (HANDOFF "Hover cards"): head, then a body carrying the value, its
  *  source and when it was last known, then a "Click → target" line. */
 export function costTip(lane: Lane, fresh: Freshness): TipContent {
-  const over = lane.capUsd !== null && lane.costUsd > lane.capUsd;
+  const over = lane.tokenCap !== null && lane.tokens > lane.tokenCap;
   return {
-    head: `$${lane.costUsd.toFixed(2)}${over ? ' · over cap' : ''}`,
-    body: `value $${lane.costUsd.toFixed(2)} · source ${lane.sandbox?.id ?? lane.id} · ${whenLabel(fresh)}`,
+    head: `${fmtTokens(lane.tokens)} tokens${over ? ' · over cap' : ''}`,
+    body: `value ${fmtTokens(lane.tokens)} tokens · source ${lane.sandbox?.id ?? lane.id} · ${whenLabel(fresh)}`,
     click: 'Click → cost sheet',
     color: over ? '#ff5c47' : '#9df598',
   };

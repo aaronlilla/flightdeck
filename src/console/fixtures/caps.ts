@@ -2,12 +2,12 @@ import type { Caps } from '../../shared/console-model.js';
 
 export function seedCaps(): Caps {
   return {
-    dailyUsd: 60,
-    runUsd: 20,
-    hardUsd: 100,
+    dailyTokens: 12_000_000,
+    runTokens: 4_000_000,
+    hardTokens: 20_000_000,
     enforcement: 'on',
-    spentTodayUsd: 94.63,
-    overrides: { 'FLT-204': 8 },
-    sources: { dailyUsd: 'policy', runUsd: 'policy', hardUsd: 'policy' },
+    tokensToday: 18_926_000,
+    overrides: { 'FLT-204': 1_600_000 },
+    sources: { dailyTokens: 'policy', runTokens: 'policy', hardTokens: 'policy' },
   };
 }

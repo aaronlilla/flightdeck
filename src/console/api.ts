@@ -126,8 +126,8 @@ export function verifyRun(id: string): Promise<ActionResult> {
   return post<ActionResult>(`/run/${encodeURIComponent(id)}/verify`, {});
 }
 
-export function setRunCap(id: string, capUsd: number): Promise<ActionResult> {
-  return post<ActionResult>(`/run/${encodeURIComponent(id)}/cap`, { capUsd });
+export function setRunCap(id: string, tokenCap: number): Promise<ActionResult> {
+  return post<ActionResult>(`/run/${encodeURIComponent(id)}/cap`, { tokenCap });
 }
 
 /**
@@ -141,7 +141,7 @@ export function sendToRun(run: string, text: string): Promise<ActionResult> {
     .then((result) => ({ ok: result.ok, jid: null, message: `sent to ${run}`, undoable: false }));
 }
 
-export function setCaps(body: { dailyUsd?: number; runUsd?: number }): Promise<Caps> {
+export function setCaps(body: { dailyTokens?: number; runTokens?: number }): Promise<Caps> {
   return post<Caps>('/caps', body);
 }
 
