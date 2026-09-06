@@ -5,7 +5,7 @@
  * contract's own null/0 rather than a guess wearing a number's shape.
  */
 import type { ForgeEvent, FleetState, RunState } from '../journal.js';
-import type { LaneRecord } from '../supervisor.js';
+import { laneRecord, type LaneRecord } from '../supervisor.js';
 import type { RegistryRecord } from '../registry.js';
 import type { InboxEntry } from '../inbox.js';
 import type { StuckSignal } from '../liveness.js';
@@ -13,6 +13,19 @@ import type { ChainPacketState } from '../chain.js';
 import type { ClassSpec } from '../policy.js';
 import type { Hop, Lane, LanePr, LaneQuestion, LaneSandbox, LaneState, LanesResponse } from '../../shared/console-model.js';
 import { textFor } from './journal-route.js';
+
+/** Journal rows that carry no narrative on their own: burn accounting, per-tool
+ *  chatter, warden health pings. `stepText` and the "why is X stuck" reply both skip
+ *  these unless nothing else is left to show, so a run's step text or its stuck
+ *  explanation never reads as three `burn.mismatch` rows in a row. */
+const NOISE_EVENTS = new Set(['burn.mismatch', 'result.usage', 'subagent.usage', 'warden.health', 'tool.end']);
+
+/** `events`, minus noise rows, unless that leaves nothing. A run whose only rows are
+ *  noise still needs something to render, not an empty step text. */
+export function meaningfulEvents(events: ForgeEvent[]): ForgeEvent[] {
+  const filtered = events.filter((row) => !NOISE_EVENTS.has(row.event));
+  return filtered.length ? filtered : events;
+}
 
 /** `ChainHop`'s own order, index 0..3 of the console's six-hop pipeline (poll, provision,
  *  launch, gate, merge, jira) -- `unrouted` fills the `poll` slot, since nothing in the
@@ -42,7 +55,7 @@ export function modelAlias(modelId: string | null | undefined): string {
   return base;
 }
 
-function packetForRun(chain: Map<string, ChainPacketState>, run: string): ChainPacketState | undefined {
+export function packetForRun(chain: Map<string, ChainPacketState>, run: string): ChainPacketState | undefined {
   for (const row of chain.values()) {
     if (row.launched?.runKey === run || row.packetId === run) return row;
   }
@@ -67,11 +80,18 @@ export interface HopInfo {
 }
 
 /** unrouted -> 0, provision -> 1, launch -> 2, gate -> 3, merged -> 4 (done), jira writes
- *  complete -> 5 (done). A run with no chain packet at all defaults to hop 2 (launch)
- *  while it is running, or hop 0 otherwise -- there is nothing chain-shaped to read for
- *  a run the chain never planned. */
-export function hopFor(packet: ChainPacketState | undefined, running: boolean, jiraDone: boolean): HopInfo {
-  if (!packet) return running ? { hop: 2, hopStatus: 'live' } : { hop: 0, hopStatus: 'live' };
+ *  complete -> 5 (done). A run with no chain packet at all reads its hop off its own
+ *  lane state instead, since there is nothing chain-shaped to read for a run the chain
+ *  never planned: running/handed-off -> 2 (launch) live, done/unverified/exhausted -> 2
+ *  done, blocked -> 3 blocked, and 0 only for a run that has not started anything yet
+ *  (paused, parked, merged, killed). */
+export function hopFor(packet: ChainPacketState | undefined, state: LaneState, jiraDone: boolean): HopInfo {
+  if (!packet) {
+    if (state === 'running' || state === 'handed-off') return { hop: 2, hopStatus: 'live' };
+    if (state === 'done' || state === 'unverified' || state === 'exhausted') return { hop: 2, hopStatus: 'done' };
+    if (state === 'blocked') return { hop: 3, hopStatus: 'blocked' };
+    return { hop: 0, hopStatus: 'live' };
+  }
   if (packet.blocked) {
     const index = CHAIN_HOP_ORDER.indexOf(packet.blocked.hop);
     return { hop: (index >= 0 ? index : 0) as Hop, hopStatus: 'blocked' };
@@ -235,11 +255,13 @@ export function buildLane(input: LaneBuildInput): Lane {
     : null;
 
   const currentToolName = runState?.currentTool?.name;
-  const stepText = currentToolName ?? (runEvents.length ? textFor(runEvents[runEvents.length - 1]!) : '');
+  const meaningfulRunEvents = meaningfulEvents(runEvents);
+  const stepText = currentToolName
+    ?? (meaningfulRunEvents.length ? textFor(meaningfulRunEvents[meaningfulRunEvents.length - 1]!) : '');
 
   const ticketForJira = ticket;
   const jiraDone = jiraWritesComplete(fleet.events, ticketForJira);
-  const { hop, hopStatus } = hopFor(packet, state === 'running', jiraDone);
+  const { hop, hopStatus } = hopFor(packet, state, jiraDone);
 
   return {
     id,
@@ -273,7 +295,7 @@ export function buildLane(input: LaneBuildInput): Lane {
     pr: prFor(id),
     sandbox: sandboxFor(packet, registryRow, id),
     blockedBy: blockedByIntegration ?? (stuckHint?.signal === 'fleet-unknown' ? 'fleet' : null),
-    runaway: capUsd !== null && costUsd > capUsd,
+    runaway: running && capUsd !== null && costUsd > capUsd,
     needsAaron: lane.needs_aaron ?? null,
   };
 }
@@ -298,6 +320,16 @@ function startOfLocalDay(now: number): number {
   return date.getTime();
 }
 
+/** The one spend-since-midnight figure every console read and write agrees on: `GET
+ *  /lanes`, `GET /caps`, `POST /caps` and the `spend today` command all call this
+ *  instead of each folding the journal their own way. */
+export function spentTodayUsd(runs: FleetState['runs'], now: number): number {
+  const since = startOfLocalDay(now);
+  return Object.values(runs)
+    .filter((run) => run.lastEventAt >= since)
+    .reduce((sum, run) => sum + run.costUsd, 0);
+}
+
 export function computeLanes(input: LanesInput, now: number): LanesResponse {
   const attempts = new Map<string, number>();
   let burnUsdPerMin = 0;
@@ -315,10 +347,25 @@ export function computeLanes(input: LanesInput, now: number): LanesResponse {
     return built;
   });
 
-  const since = startOfLocalDay(now);
-  const spentTodayUsd = Object.entries(input.fleet.runs)
-    .filter(([, run]) => run.lastEventAt >= since)
-    .reduce((sum, [, run]) => sum + run.costUsd, 0);
+  return {
+    at: now, lanes, spentTodayUsd: spentTodayUsd(input.fleet.runs, now),
+    burnUsdPerMin: Number(burnUsdPerMin.toFixed(4)),
+  };
+}
 
-  return { at: now, lanes, spentTodayUsd, burnUsdPerMin: Number(burnUsdPerMin.toFixed(4)) };
+/** The lane state (and why) for an arbitrary run right now, for a caller that only has
+ *  a run name and a journal path -- a command-grammar handler answering "why is X
+ *  stuck", or a write guarding what state an action is allowed from. Builds the same
+ *  minimal stand-in `LaneRecord` `laneRecord()` would when no real lane file exists, so
+ *  a run the lane store never wrote to still reads as `unverified` rather than throwing. */
+export function laneStateNowFor(run: string, opts: {
+  fleet: FleetState;
+  chain: Map<string, ChainPacketState>;
+  laneRecord?: LaneRecord;
+}): LaneStateResult {
+  const runEvents = opts.fleet.events.filter((row) => row.run === run);
+  const packet = packetForRun(opts.chain, run);
+  const runState = opts.fleet.runs[run];
+  const lane = opts.laneRecord ?? laneRecord({ slug: run, column: run });
+  return laneStateFor({ packet, lane, runState, runEvents });
 }
