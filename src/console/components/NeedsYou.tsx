@@ -1,12 +1,15 @@
 import type { JSX } from 'react';
 
 import { hm } from '../freshness.js';
+import { laneHeadline } from '../laneVM.js';
 import type { Integration, Lane } from '../../shared/console-model.js';
 
 export interface NeedItem {
   id: string;
   color: string;
   title: string;
+  /** The run id, shown small next to the title, only when the title is a ticket. */
+  runId: string | null;
   sub: string;
   line: string;
   cta: string;
@@ -24,24 +27,25 @@ export function buildNeeds(
     if (integration.status !== 'down') continue;
     const since = integration.since !== null ? ` · since ${hm(integration.since)}` : '';
     items.push({
-      id: `int-${integration.id}`, color: 'var(--block)', title: integration.name, sub: 'disconnected',
+      id: `int-${integration.id}`, color: 'var(--block)', title: integration.name, runId: null, sub: 'disconnected',
       line: `${integration.dependents.length} lanes blocked${since}`, cta: integration.fixLabel ?? 'Reconnect →',
       ctaCls: 'btnR', onClick: () => onFix('integration', integration.id),
     });
   }
   for (const lane of lanes) {
+    const headline = laneHeadline(lane);
     if (lane.state === 'parked') {
       const question = lane.question?.text ?? '';
       const asks = question.length > 60 ? `${question.slice(0, 60)}…` : question;
       items.push({
-        id: `park-${lane.id}`, color: 'var(--park)', title: lane.id, sub: 'parked',
+        id: `park-${lane.id}`, color: 'var(--park)', title: headline.main, runId: headline.sub, sub: 'parked',
         line: `asks: ${asks}`, cta: 'Answer →', ctaCls: 'btnA',
         onClick: () => onFix('lane', lane.id),
       });
     }
     if (lane.state === 'running' && lane.runaway) {
       items.push({
-        id: `over-${lane.id}`, color: 'var(--block)', title: lane.id, sub: 'over cap',
+        id: `over-${lane.id}`, color: 'var(--block)', title: headline.main, runId: headline.sub, sub: 'over cap',
         line: `burning $${lane.burnUsdPerMin.toFixed(2)}/min · ${lane.fails} fails`, cta: 'Kill attempt', ctaCls: 'btnR',
         onClick: () => onFix('lane', lane.id),
       });
@@ -68,7 +72,9 @@ export function NeedsYou({ items }: NeedsYouProps): JSX.Element | null {
           <span className="led" style={{ background: n.color }} />
           <div style={{ flex: 1, minWidth: 0 }}>
             <div className="m" style={{ fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              {n.title} <span style={{ color: 'var(--ink2)', fontWeight: 500 }}>{n.sub}</span>
+              {n.title}
+              {n.runId ? <span title={n.runId} style={{ color: 'var(--ink3)', fontWeight: 500, marginLeft: 6, fontSize: 10 }}>{n.runId}</span> : null}
+              {' '}<span style={{ color: 'var(--ink2)', fontWeight: 500 }}>{n.sub}</span>
             </div>
             <div className="m" style={{ fontSize: 10, color: 'var(--ink2)' }}>{n.line}</div>
           </div>

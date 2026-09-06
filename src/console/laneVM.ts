@@ -76,6 +76,22 @@ export function laneCta(lane: Lane): LaneCta {
   }
 }
 
+export interface LaneHeadline {
+  /** The big line: the ticket when the lane has one, the run id otherwise. */
+  main: string;
+  /** The small mono line beneath it, the run id, only when a ticket is showing. */
+  sub: string | null;
+}
+
+/** The one rule for what a lane's headline says, shared by the tile, the ticket
+ *  sheet band and the needs-you plates: a ticket outranks the run id, but the
+ *  run id only earns its own line when it actually says something the ticket
+ *  didn't -- most of today's lanes still key their ticket off their own id. */
+export function laneHeadline(lane: Lane): LaneHeadline {
+  if (lane.ticket && lane.ticket !== lane.id) return { main: lane.ticket, sub: lane.id };
+  return { main: lane.ticket ?? lane.id, sub: null };
+}
+
 export function ctxPercent(lane: Lane): number {
   if (lane.ctxCeiling <= 0) return 0;
   return Math.min(100, Math.round((lane.ctxTokens / lane.ctxCeiling) * 100));

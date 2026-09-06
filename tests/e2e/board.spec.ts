@@ -2,9 +2,19 @@ import { expect, test } from '@playwright/test';
 
 test.describe.configure({ mode: 'serial' });
 
-test('the board renders all 13 lanes', async ({ page }) => {
+test('the board renders all 14 lanes', async ({ page }) => {
   await page.goto('/');
-  await expect(page.locator('[data-testid^="lane-"]')).toHaveCount(13);
+  await expect(page.locator('[data-testid^="lane-"]')).toHaveCount(14);
+});
+
+// POLISH-2 #1: a lane with a ticket heads with the ticket; the long run id beneath
+// it stays to one line, with the full id in the title attribute.
+test('a lane with a ticket heads with the ticket and truncates the long run id beneath it', async ({ page }) => {
+  await page.goto('/');
+  const tile = page.getByTestId('lane-jira_AB-12_1788460932645');
+  await expect(tile.getByText('AB-12', { exact: true })).toBeVisible();
+  const runId = tile.getByText('jira_AB-12_1788460932645');
+  await expect(runId).toHaveAttribute('title', 'jira_AB-12_1788460932645');
 });
 
 test('the needs-you strip shows the three sources: a down integration, a parked lane, an over-cap lane', async ({ page }) => {
