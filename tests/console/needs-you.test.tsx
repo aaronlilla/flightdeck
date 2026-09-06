@@ -38,3 +38,15 @@ describe('buildNeeds headline', () => {
     expect(screen.getByText('jira_AB-12_1788460932645')).toBeInTheDocument();
   });
 });
+
+describe('buildNeeds asks line', () => {
+  it('carries the question text into the asks line, same as the prototype', () => {
+    const items = buildNeeds([lane({ question: { key: 'ask', text: 'NOT NULL or nullable?', opts: [], askedAt: 0 } })], [], vi.fn());
+    expect(items[0]?.line).toBe('asks: NOT NULL or nullable?');
+  });
+
+  it('never renders a bare "asks:" when the inbox entry has no readable question', () => {
+    const items = buildNeeds([lane({ question: { key: 'ask', text: '', opts: [], askedAt: 0 } })], [], vi.fn());
+    expect(items[0]?.line).not.toBe('asks: ');
+  });
+});

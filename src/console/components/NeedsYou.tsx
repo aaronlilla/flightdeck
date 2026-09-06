@@ -36,7 +36,12 @@ export function buildNeeds(
     const headline = laneHeadline(lane);
     if (lane.state === 'parked') {
       const question = lane.question?.text ?? '';
-      const asks = question.length > 60 ? `${question.slice(0, 60)}…` : question;
+      // The prototype's own plate: `asks: ` plus the question, truncated. It never
+      // covers an inbox entry with no readable question -- every fixture it ships
+      // with has one -- so a blank question here fell straight through as a bare
+      // `asks: `. The em dash keeps that same shape without putting words in the
+      // run's mouth for a question the console never actually read.
+      const asks = question.length > 60 ? `${question.slice(0, 60)}…` : (question || '—');
       items.push({
         id: `park-${lane.id}`, color: 'var(--park)', title: headline.main, runId: headline.sub, sub: 'parked',
         line: `asks: ${asks}`, cta: 'Answer →', ctaCls: 'btnA',

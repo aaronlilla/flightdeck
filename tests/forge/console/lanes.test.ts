@@ -14,6 +14,7 @@ import { Journal, replay } from '../../../src/forge/journal.js';
 import {
   computeLanes, hopFor, laneStateFor, meaningfulEvents, modelAlias, ticketFor, windowLanes, type LanesInput,
 } from '../../../src/forge/console/lanes.js';
+import type { RegistryRecord } from '../../../src/forge/registry.js';
 import type { Lane, LanesResponse } from '../../../src/shared/console-model.js';
 import { laneRecord, type LaneRecord } from '../../../src/forge/supervisor.js';
 
