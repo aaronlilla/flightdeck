@@ -12,13 +12,6 @@ function localMidnight(now: number): number {
   return d.getTime();
 }
 
-/** `today`'s cutoff only touches a lane that's actually finished; a running,
- *  parked or otherwise still-live lane never disappears just for being old. */
-function finishedBeforeToday(lane: Lane, now: number): boolean {
-  if (!FINISHED_STATES.has(lane.state)) return false;
-  return (lane.endedAt ?? lane.since) < localMidnight(now);
-}
-
 export function visibleLanes(lanes: Lane[], filter: Filter, sort: Sort, now: number = Date.now()): Lane[] {
   let filtered = lanes;
   if (filter === 'needs-me') {
@@ -27,8 +20,6 @@ export function visibleLanes(lanes: Lane[], filter: Filter, sort: Sort, now: num
     filtered = lanes.filter((l) => l.state === 'running' || l.state === 'handed-off');
   } else if (filter === 'finished') {
     filtered = lanes.filter((l) => FINISHED_STATES.has(l.state));
-  } else if (filter === 'today') {
-    filtered = lanes.filter((l) => !finishedBeforeToday(l, now));
   } else if (filter !== 'all') {
     filtered = lanes.filter((l) => l.repo === filter);
   }

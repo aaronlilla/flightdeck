@@ -123,12 +123,8 @@ export function initialState(): State {
 
 export function reducer(state: State, action: Action): State {
   switch (action.type) {
-    case 'lanes': {
-      // "today" hides lanes finished before local midnight, and is the sane default once
-      // a fleet has grown past a dozen lanes; a filter the operator already touched wins.
-      const filter = !state.loaded && state.filter === 'all' && action.lanes.length > 12 ? 'today' : state.filter;
-      return { ...state, lanes: action.lanes, loaded: true, filter };
-    }
+    case 'lanes':
+      return { ...state, lanes: action.lanes, loaded: true };
     case 'thread':
       return { ...state, thread: action.thread };
     case 'thread-append':

@@ -45,15 +45,8 @@ describe('store reducer', () => {
     expect(state.theme).toBe('thL');
   });
 
-  // POLISH-2 #4: "today" is the default filter once a fleet grows past 12 lanes.
   describe('default filter on first load', () => {
-    it('defaults to today when more than 12 lanes load', () => {
-      let state = initialState();
-      state = reducer(state, { type: 'lanes', lanes: lanes(13) });
-      expect(state.filter).toBe('today');
-    });
-
-    it('stays on all at 12 lanes or fewer', () => {
+    it('stays on all however many lanes load', () => {
       let state = initialState();
       state = reducer(state, { type: 'lanes', lanes: lanes(12) });
       expect(state.filter).toBe('all');
