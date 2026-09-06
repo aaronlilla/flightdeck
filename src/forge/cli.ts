@@ -51,8 +51,11 @@ import { checkLaunch, launchEnv, loginInFlight, pinnedRuntime, runtimeVersion } 
 import { assess, LivenessSupervisor } from './liveness.js';
 import {
   ensureHome, fleetConfigDirChoice, forgeHome, gotchasDir, inboxDir, intakeBriefsDir, journalPath,
-  killSwitchPath, lanesDir, registryDir, runsDir,
+  killSwitchPath, lanesDir, queuePath, registryDir, runsDir,
 } from './paths.js';
+import { runQueueTick } from './intake/queue.js';
+import { QueueStore } from './intake/queueStore.js';
+import { buildQueueRuntimeDeps } from './queue-wire.js';
 import { loadPolicy, modelFor, modelIdFor, tierOfBrief } from './policy.js';
 import { attestationCoversHead, checkHandoff, providerFor, redact, verified } from './contracts.js';
 import type { CouncilAttestation, HaipingHandoff, JoeHandoff } from './contracts.js';
@@ -387,6 +390,11 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       });
 
       const sharedJournalCache = new JournalCache();
+      // The intake queue's own log, shared between the board's routes (added below by
+      // `ForgeServer` itself) and the worker tick further down -- one `QueueStore`, so
+      // an add from the console and an advance from the worker are never reading two
+      // different views of the same file mid-tick.
+      const queueStore = new QueueStore(queuePath());
       const server = new ForgeServer({
         lanes, inbox, journalPath: journalPath(), journalCache: sharedJournalCache, registry,
         stuck: () => liveness.stuck(),
@@ -395,6 +403,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           const read = fleetSnapshot(deps);
           return Array.isArray(read) ? read.map((proc) => ({ ...proc })) : read;
         },
+        queueStore,
       });
       const livenessJournal = new Journal(journalPath());
       const liveness = new LivenessSupervisor(
@@ -496,6 +505,27 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         chainLine = `chain on, polling every ${chainEnv.pollSeconds}s`;
       }
 
+      // The intake queue's own worker: `FORGE_QUEUE=1` turns it on, the same opt-in
+      // shape as the chain above. Its own timer, at `FORGE_QUEUE_POLL_S` (default 15s)
+      // -- an operator adding a ticket wants it picked up quickly, unlike a poll cycle
+      // that already ran once before anything reached the chain.
+      let queueLine = '';
+      if (process.env['FORGE_QUEUE'] === '1') {
+        const queueJournal = new Journal(journalPath());
+        const queueDeps = buildQueueRuntimeDeps(chainEnv, fleetConfigDirChoice().dir, deps, queueStore);
+        const pollSeconds = Number(process.env['FORGE_QUEUE_POLL_S']) || 15;
+        const queueTick = setInterval(() => {
+          void runQueueTick(queueDeps, queueStore.all()).catch((error) => {
+            queueJournal.append({
+              event: 'queue.tick-error', actor: 'queue',
+              message: error instanceof Error ? error.message : String(error),
+            });
+          });
+        }, pollSeconds * 1000);
+        queueTick.unref();
+        queueLine = `queue on, polling every ${pollSeconds}s`;
+      }
+
       return {
         code: 0,
         lines: [
@@ -505,6 +535,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           ...reconcileLines,
           `inbox: ${inbox.open().length} waiting`,
           chainLine,
+          queueLine,
         ].filter(Boolean),
       };
     }
