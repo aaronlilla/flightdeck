@@ -13,9 +13,10 @@ import type {
   Lane,
   Message,
   ProposalsResponse,
+  QueueItem,
 } from '../shared/console-model.js';
 
-export type View = 'board' | 'settings' | 'review';
+export type View = 'board' | 'settings' | 'review' | 'queue';
 export type Filter = 'all' | 'needs-me' | 'running' | 'finished' | string;
 export type Sort = 'cost' | 'age' | 'state';
 
@@ -51,6 +52,9 @@ export interface State {
   integrations: Integration[];
   caps: Caps | null;
   proposals: ProposalsResponse | null;
+  queue: QueueItem[];
+  queuePaused: boolean;
+  queueMaxInFlight: number;
   loaded: boolean;
   now: number;
   /** Duration of the last `/lanes` fetch, for the feed stamp's latency fallback. */
@@ -77,6 +81,7 @@ export type Action =
   | { type: 'integrations'; integrations: Integration[] }
   | { type: 'caps'; caps: Caps }
   | { type: 'proposals'; proposals: ProposalsResponse }
+  | { type: 'queue'; items: QueueItem[]; paused: boolean; maxInFlight: number }
   | { type: 'loaded' }
   | { type: 'tick'; now: number }
   | { type: 'fetch-latency'; ms: number }
@@ -104,6 +109,9 @@ export function initialState(): State {
     integrations: [],
     caps: null,
     proposals: null,
+    queue: [],
+    queuePaused: false,
+    queueMaxInFlight: 2,
     loaded: false,
     now: Date.now(),
     fetchLatencyMs: null,
@@ -137,6 +145,8 @@ export function reducer(state: State, action: Action): State {
       return { ...state, caps: action.caps };
     case 'proposals':
       return { ...state, proposals: action.proposals };
+    case 'queue':
+      return { ...state, queue: action.items, queuePaused: action.paused, queueMaxInFlight: action.maxInFlight };
     case 'loaded':
       return { ...state, loaded: true };
     case 'tick':

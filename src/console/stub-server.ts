@@ -15,7 +15,8 @@ import { fileURLToPath } from 'node:url';
 
 import { HEARTBEAT_MS } from '../shared/console-model.js';
 import type {
-  ActionResult, Caps, Integration, JournalEntry, Lane, Message, Rule,
+  ActionResult, Caps, Integration, JournalEntry, Lane, Message, QueueAddRequest, QueueAddResponse,
+  QueueItem, QueueSource, Rule,
 } from '../shared/console-model.js';
 import { seedCaps } from './fixtures/caps.js';
 import { seedIntegrations } from './fixtures/integrations.js';
@@ -57,6 +58,9 @@ interface Db {
   caps: Caps;
   rules: Rule[];
   jn: number;
+  queue: QueueItem[];
+  queuePaused: boolean;
+  qn: number;
 }
 
 function seedDb(): Db {
@@ -68,6 +72,9 @@ function seedDb(): Db {
     caps: seedCaps(),
     rules: seedRules(),
     jn: 40221,
+    queue: [],
+    queuePaused: false,
+    qn: 0,
   };
 }
 
@@ -154,6 +161,74 @@ async function readJson<T>(request: IncomingMessage): Promise<T> {
 
 function ok(jid: string, message: string, undoable: boolean, lane?: Lane): ActionResult {
   return { ok: true, jid, message, undoable, lane };
+}
+
+function newQueueItem(source: QueueSource, input: string, ticket: string | null): QueueItem {
+  db.qn += 1;
+  const now = Date.now();
+  return {
+    id: `Q-stub-${db.qn}`, source, input, ticket, repo: null, briefPath: null, branch: null,
+    worktreePath: null, base: null, state: 'queued', reason: null, runKey: null, pr: null,
+    journalIds: [], createdAt: now, updatedAt: now,
+  };
+}
+
+/** The stub's own stand-in for a real JQL search: deterministic, no network, two ticket
+ *  keys derived from the query text so a `query`/`backlog` add has something to show. */
+function fakeSearchKeys(jql: string): string[] {
+  const slug = jql.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '').toUpperCase().slice(0, 12) || 'ITEM';
+  return [`${slug}-1`, `${slug}-2`];
+}
+
+/**
+ * The stub's own fake worker: a real `forge up` plans, provisions, launches and gates an
+ * item through `intake/queue.ts#advanceItem` against real dependencies; this stub has
+ * none of those, so it simulates the same three hops on a short timer instead --
+ * `queued` -> `running` -> `review`, with a fake draft PR -- so the console's own queue
+ * view can be driven end to end (add an item, watch it land in review) with nothing
+ * behind it but this fixture.
+ */
+function fakeAdvance(item: QueueItem): void {
+  setTimeout(() => {
+    const row = db.queue.find((q) => q.id === item.id);
+    if (!row || row.state !== 'queued') return;
+    row.state = 'running';
+    row.repo = 'example/repo';
+    row.updatedAt = Date.now();
+  }, 400);
+  setTimeout(() => {
+    const row = db.queue.find((q) => q.id === item.id);
+    if (!row || row.state !== 'running') return;
+    db.qn += 1;
+    row.state = 'review';
+    row.pr = { no: db.qn, url: `https://github.com/example/repo/pull/${db.qn}`, files: 3, add: 42, del: 6, draft: true };
+    row.updatedAt = Date.now();
+  }, 1200);
+}
+
+function addQueueItem(body: QueueAddRequest): QueueAddResponse {
+  if (!body || !body.input || !body.input.trim()) {
+    return { ok: false, items: [], error: 'a queue add needs a source and input' };
+  }
+  if (body.source === 'ticket') {
+    const item = newQueueItem('ticket', body.input.trim(), body.input.trim());
+    db.queue = [...db.queue, item];
+    fakeAdvance(item);
+    return { ok: true, items: [item] };
+  }
+  if (body.source === 'brief') {
+    const item = newQueueItem('brief', body.input, null);
+    db.queue = [...db.queue, item];
+    fakeAdvance(item);
+    return { ok: true, items: [item] };
+  }
+  if (body.source === 'query' || body.source === 'backlog') {
+    const items = fakeSearchKeys(body.input).map((key) => newQueueItem(body.source, body.input, key));
+    db.queue = [...db.queue, ...items];
+    for (const item of items) fakeAdvance(item);
+    return { ok: true, items };
+  }
+  return { ok: false, items: [], error: `unknown source ${String(body.source)}` };
 }
 
 function serveStatic(request: IncomingMessage, response: ServerResponse, urlPath: string): void {
@@ -313,6 +388,10 @@ export function createStubServer() {
         json(response, 200, { rules: db.rules, metrics, computedAt: Date.now() });
         return;
       }
+      if (urlPath === '/queue' && method === 'GET') {
+        json(response, 200, { items: db.queue, paused: db.queuePaused, maxInFlight: 2 });
+        return;
+      }
 
       const runThreadMatch = /^\/run\/([^/]+)\/thread$/.exec(urlPath);
       if (runThreadMatch && method === 'GET') {
@@ -464,6 +543,43 @@ export function createStubServer() {
         const cards = runCommand(body.text ?? '');
         db.thread = [...db.thread, ...cards];
         json(response, 200, { cards });
+        return;
+      }
+
+      if (urlPath === '/queue' && method === 'POST') {
+        const body = await readJson<QueueAddRequest>(request);
+        json(response, 200, addQueueItem(body));
+        return;
+      }
+      if (urlPath === '/queue/pause' && method === 'POST') {
+        db.queuePaused = true;
+        json(response, 200, { ok: true, jid: null, message: 'queue paused', undoable: true });
+        return;
+      }
+      if (urlPath === '/queue/resume' && method === 'POST') {
+        db.queuePaused = false;
+        json(response, 200, { ok: true, jid: null, message: 'queue resumed', undoable: false });
+        return;
+      }
+      const queueItemMatch = /^\/queue\/([^/]+)\/(remove|retry)$/.exec(urlPath);
+      if (queueItemMatch && method === 'POST') {
+        const id = decodeURIComponent(queueItemMatch[1] as string);
+        const action = queueItemMatch[2];
+        const item = db.queue.find((q) => q.id === id);
+        if (action === 'remove') {
+          if (!item) { json(response, 404, { ok: false, jid: null, message: `no queue item ${id}`, undoable: false }); return; }
+          db.queue = db.queue.filter((q) => q.id !== id);
+          json(response, 200, { ok: true, jid: null, message: `removed ${id}`, undoable: false });
+          return;
+        }
+        if (!item || (item.state !== 'parked' && item.state !== 'failed')) {
+          json(response, 409, { ok: false, jid: null, message: `${id} is not parked or failed`, undoable: false });
+          return;
+        }
+        item.state = 'queued';
+        item.reason = null;
+        item.updatedAt = Date.now();
+        json(response, 200, { ok: true, jid: null, message: `${id} is queued again`, undoable: false });
         return;
       }
 

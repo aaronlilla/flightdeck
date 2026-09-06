@@ -17,13 +17,11 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-import { forgeHome } from '../paths.js';
+import { consoleDir } from '../paths.js';
 import { appendOnce } from '../journal.js';
 import { jidFor } from './journal-route.js';
 
-export function consoleDir(): string {
-  return join(forgeHome(), 'console');
-}
+export { consoleDir };
 
 export function actionsLedgerPath(): string {
   return join(consoleDir(), 'actions.jsonl');

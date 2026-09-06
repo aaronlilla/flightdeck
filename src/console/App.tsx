@@ -20,6 +20,7 @@ import { JournalSheet } from './components/JournalSheet.js';
 import { ConductorRail } from './components/ConductorRail.js';
 import { LanesGrid } from './components/LanesGrid.js';
 import { NeedsYou, buildNeeds } from './components/NeedsYou.js';
+import { QueueView } from './components/QueueView.js';
 import { SandboxSheet } from './components/SandboxSheet.js';
 import { Settings } from './components/Settings.js';
 import { TicketSheet } from './components/TicketSheet.js';
@@ -75,9 +76,9 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       // chip's, since they all read the same array -- disagreeing with what the grid
       // actually renders. One dataset, filtered the same way everywhere, keeps every
       // chip's count equal to what clicking it would show (fidelity sweep #2).
-      const [lanes, thread, journal, integrations, caps, proposals] = await Promise.all([
+      const [lanes, thread, journal, integrations, caps, proposals, queue] = await Promise.all([
         api.getLanes({ all: true }),
-        api.getThread(), api.getJournal(), api.getIntegrations(), api.getCaps(), api.getProposals(),
+        api.getThread(), api.getJournal(), api.getIntegrations(), api.getCaps(), api.getProposals(), api.getQueue(),
       ]);
       if (!mounted.current) return;
       failCount.current = 0;
@@ -96,6 +97,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       dispatch({ type: 'integrations', integrations: integrations.items });
       dispatch({ type: 'caps', caps });
       dispatch({ type: 'proposals', proposals });
+      dispatch({ type: 'queue', items: queue.items, paused: queue.paused, maxInFlight: queue.maxInFlight });
       dispatch({ type: 'feed-live' });
     } catch {
       if (mounted.current) {
@@ -302,13 +304,14 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   const repos = [...new Set(state.lanes.map((l) => l.repo).filter((r): r is string => Boolean(r)))];
   const settingsBadge = state.integrations.filter((i) => i.status === 'down').length;
   const reviewBadge = state.proposals?.rules.filter((r) => r.status === 'open').length ?? 0;
+  const queueBadge = state.queue.filter((i) => i.state === 'parked' || i.state === 'failed').length;
 
   return (
     <StoreContext.Provider value={{ state, dispatch }}>
       <div className={`${state.theme} app`} tabIndex={-1}>
         <DisconnectedBanner feed={state.feed} onRetry={() => void refresh()} />
         <TopBar
-          view={state.view} settingsBadge={settingsBadge} reviewBadge={reviewBadge}
+          view={state.view} settingsBadge={settingsBadge} reviewBadge={reviewBadge} queueBadge={queueBadge}
           caps={state.caps} spentTodayUsd={state.caps?.spentTodayUsd ?? 0} feed={state.feed} now={state.now}
           fetchLatencyMs={state.fetchLatencyMs}
           theme={state.theme}
@@ -373,6 +376,24 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
             onDismiss={(id) => void runAction(() => api.dismissProposal(id))}
             onRestore={(id) => void runAction(() => api.restoreProposal(id))}
             onUndo={onUndo}
+          />
+        ) : null}
+        {state.view === 'queue' ? (
+          <QueueView
+            items={state.queue} paused={state.queuePaused} maxInFlight={state.queueMaxInFlight}
+            onAdd={(source, input) => void (async () => {
+              try {
+                const result = await api.addToQueue({ source, input });
+                if (!result.ok) { appendReceipt(null, result.error ?? 'the add did not go through', false); }
+              } catch (caught) {
+                appendReceipt(null, caught instanceof api.ApiError ? caught.message : 'the add did not go through', false);
+              }
+              await refresh();
+            })()}
+            onRemove={(id) => void runAction(() => api.removeQueueItem(id))}
+            onRetry={(id) => void runAction(() => api.retryQueueItem(id))}
+            onPause={() => void runAction(() => api.pauseQueue())}
+            onResume={() => void runAction(() => api.resumeQueue())}
           />
         ) : null}
 

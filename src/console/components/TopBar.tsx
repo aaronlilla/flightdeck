@@ -8,6 +8,7 @@ export interface TopBarProps {
   view: View;
   settingsBadge: number;
   reviewBadge: number;
+  queueBadge: number;
   caps: Caps | null;
   spentTodayUsd: number;
   feed: Feed;
@@ -23,7 +24,7 @@ export interface TopBarProps {
 
 /** Top nav: Board / Settings [n down] / Flight review [n proposed], ⌘K, spend today, feed stamp, clock, theme. */
 export function TopBar(props: TopBarProps): JSX.Element {
-  const { view, settingsBadge, reviewBadge, caps, spentTodayUsd, feed, now, fetchLatencyMs, theme, onNav, onOpenPalette, onOpenCost, onToggleTheme } = props;
+  const { view, settingsBadge, reviewBadge, queueBadge, caps, spentTodayUsd, feed, now, fetchLatencyMs, theme, onNav, onOpenPalette, onOpenCost, onToggleTheme } = props;
   const overDaily = caps ? spentTodayUsd > caps.dailyUsd : false;
   // Latency prefers the age of the last heartbeat round trip; before one arrives (or once
   // the feed is driven by polling alone) it falls back to the last `/lanes` fetch duration.
@@ -43,6 +44,9 @@ export function TopBar(props: TopBarProps): JSX.Element {
         </a>
         <a className={`nav ${view === 'review' ? 'navOn' : ''}`} onClick={() => onNav('review')}>
           Flight review{reviewBadge > 0 ? <span style={{ color: 'var(--park)' }}> {reviewBadge} proposed</span> : null}
+        </a>
+        <a className={`nav ${view === 'queue' ? 'navOn' : ''}`} onClick={() => onNav('queue')}>
+          Queue{queueBadge > 0 ? <span style={{ color: 'var(--park)' }}> {queueBadge}</span> : null}
         </a>
       </div>
       <span style={{ flex: 1 }} />

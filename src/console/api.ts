@@ -13,6 +13,9 @@ import type {
   JournalResponse,
   LanesResponse,
   ProposalsResponse,
+  QueueAddRequest,
+  QueueAddResponse,
+  QueueResponse,
   ReconnectResponse,
   RunCostResponse,
   RunJournalResponse,
@@ -171,4 +174,28 @@ export function restoreProposal(id: string): Promise<ActionResult> {
 
 export function undoJournal(jid: string): Promise<ActionResult> {
   return post<ActionResult>(`/journal/${encodeURIComponent(jid)}/undo`, {});
+}
+
+export function getQueue(): Promise<QueueResponse> {
+  return call<QueueResponse>('/queue');
+}
+
+export function addToQueue(body: QueueAddRequest): Promise<QueueAddResponse> {
+  return post<QueueAddResponse>('/queue', body);
+}
+
+export function removeQueueItem(id: string): Promise<ActionResult> {
+  return post<ActionResult>(`/queue/${encodeURIComponent(id)}/remove`, {});
+}
+
+export function retryQueueItem(id: string): Promise<ActionResult> {
+  return post<ActionResult>(`/queue/${encodeURIComponent(id)}/retry`, {});
+}
+
+export function pauseQueue(): Promise<ActionResult> {
+  return post<ActionResult>('/queue/pause', {});
+}
+
+export function resumeQueue(): Promise<ActionResult> {
+  return post<ActionResult>('/queue/resume', {});
 }

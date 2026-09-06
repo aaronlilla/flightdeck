@@ -24,14 +24,18 @@ import { fileURLToPath } from 'node:url';
 import { ConsoleReads } from './console/reads.js';
 import { HEARTBEAT_MS } from '../shared/console-model.js';
 import { ConsoleWrites } from './console/command.js';
+import { QueueRoutes } from './console/queue-route.js';
+import { readQueuePaused, writeQueuePaused } from './console/queue-pause.js';
 import type { Actuator, Reasoner } from './contracts.js';
 import { isAskStale, projectStaleness, type Inbox } from './inbox.js';
 import { appendOnce, Journal, JournalCache, type RangeReader } from './journal.js';
 import type { StuckSignal } from './liveness.js';
 import { WardenActuator } from './warden.js';
+import { QueueStore } from './intake/queueStore.js';
+import type { QueueTicketSearch } from './intake/queue.js';
 import {
-  killSwitchPath as defaultKillSwitchPath, packetsDir as defaultPacketsDir, registryDir,
-  serverTokenPath,
+  killSwitchPath as defaultKillSwitchPath, packetsDir as defaultPacketsDir, queuePath as defaultQueuePath,
+  registryDir, serverTokenPath,
 } from './paths.js';
 import { routerEnabled } from './policy.js';
 import { chainStatusRows, foldChainState } from './chain.js';
@@ -145,6 +149,17 @@ export interface ForgeServerOptions {
    *  does not follow `FORGE_HOME`, so a specimen always sets this or a caps read/write
    *  reaches this repo's own tracked `model-policy.json`. */
   modelPolicyPath?: string;
+  /** Overrides the intake queue's own log. Defaults to `queuePath()`, which follows
+   *  `FORGE_HOME`. A specimen only. */
+  queueStore?: QueueStore;
+  /** What `POST /queue` resolves a `query`/`backlog` add's JQL through. Defaults to a
+   *  function that always refuses with the missing-credential message requirement 2
+   *  asks for -- `forge up`'s own wiring (`queue-wire.ts#queueSearch`) is what a real
+   *  Jira credential makes reachable; this class never builds one itself. */
+  queueSearch?: QueueTicketSearch;
+  /** How many queue items `GET /queue` reports as the worker's own concurrency ceiling.
+   *  Purely informational here -- the worker enforces it, this class only echoes it. */
+  queueMaxInFlight?: number;
 }
 
 export class ForgeServer {
@@ -201,6 +216,8 @@ export class ForgeServer {
    *  `GET /integrations`, which that module owns despite being a read. */
   private readonly consoleWrites: ConsoleWrites;
 
+  private readonly queueRoutes: QueueRoutes;
+
   constructor(options: ForgeServerOptions) {
     this.lanes = options.lanes;
     this.inbox = options.inbox;
@@ -231,6 +248,18 @@ export class ForgeServer {
       stuck: this.stuckFn,
       lanesView: () => this.consoleReads.lanesResponse(),
       ...(options.modelPolicyPath ? { modelPolicyPath: options.modelPolicyPath } : {}),
+    });
+    this.queueRoutes = new QueueRoutes({
+      store: options.queueStore ?? new QueueStore(defaultQueuePath()),
+      search: options.queueSearch ?? {
+        searchKeys: async () => {
+          throw new Error('jira not configured: missing FORGE_JIRA_SITE, FORGE_JIRA_EMAIL, FORGE_JIRA_TOKEN');
+        },
+      },
+      authorized: (request, response) => this.authorized(request, response),
+      readPaused: () => readQueuePaused(),
+      writePaused: (paused) => writeQueuePaused(paused),
+      maxInFlight: options.queueMaxInFlight ?? 2,
     });
   }
 
@@ -472,6 +501,7 @@ export class ForgeServer {
       return this.routeMessage(request, response);
     }
     if (await this.consoleWrites.handle(path, request, response)) return;
+    if (await this.queueRoutes.handle(path, request, response)) return;
     if (request.method === 'GET') {
       return this.serveStatic(path, response);
     }

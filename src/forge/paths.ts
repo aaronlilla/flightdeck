@@ -66,6 +66,35 @@ export function intakeBriefsDir(): string {
   return join(forgeHome(), 'intake', 'briefs');
 }
 
+/** The console's own state: today, the intake queue's own log and its pause flag. */
+export function consoleDir(): string {
+  return join(forgeHome(), 'console');
+}
+
+/** The intake queue's append-only log -- one row per item transition, folded to the
+ *  current item list by `QueueStore`. Distinct from the fleet journal: every transition
+ *  also writes a `queue.*` row there, but this file is what the board reads to list the
+ *  queue itself, the same split `~/.forge/console/actions.jsonl` keeps from the journal
+ *  for every other console write. */
+export function queuePath(): string {
+  return join(consoleDir(), 'queue.jsonl');
+}
+
+/** Whether the queue worker is paused, as `{ paused: true }` or absent. Separate from
+ *  the kill switch (`killSwitchPath`): the kill switch stops every launch fleet-wide,
+ *  this stops only the queue from starting new work. */
+export function queuePausedPath(): string {
+  return join(consoleDir(), 'queue-paused.json');
+}
+
+/** Where a queue item's own planned brief lands, when its source is a pasted brief or a
+ *  ticket the queue planned itself rather than `forge intake`'s own poll. Kept apart from
+ *  `intakeBriefsDir()` so a queue-planned brief is never mistaken for one `forge intake`
+ *  wrote from a poll. */
+export function queueBriefsDir(): string {
+  return join(forgeHome(), 'queue', 'briefs');
+}
+
 /**
  * Where the probe briefs the regression corpus references by basename actually live.
  *

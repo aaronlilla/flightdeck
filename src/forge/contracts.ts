@@ -251,6 +251,14 @@ export const FORGE_EVENT_NAMES = [
   // tick runs the hop it stopped at again, the only way a `chain.blocked` packet ever
   // moves again once a person has looked at why.
   'chain.unblocked',
+  // The intake queue's own hop rows (`intake/queue.ts`), one per item transition --
+  // `queue.planning`/`queue.planned` for the plan hop, `queue.launched` for provision
+  // and launch together, `queue.parked` for an unrouted repo, a non-`done` verdict, a
+  // council that did not pass, or a finished run with no PR anywhere, `queue.failed`
+  // for a hop that threw outright, `queue.review` once a draft PR exists, and
+  // `queue.tick-error` for a worker tick that threw before any item advanced.
+  'queue.planning', 'queue.planned', 'queue.launched', 'queue.parked', 'queue.failed',
+  'queue.review', 'queue.tick-error',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];
