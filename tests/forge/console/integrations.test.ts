@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { ActionsLedger } from '../../../src/forge/console/actions-ledger.js';
-import { IntegrationsRegistry, type Probe } from '../../../src/forge/console/integrations.js';
+import { IntegrationsRegistry, modelProviderProbeResult, type Probe } from '../../../src/forge/console/integrations.js';
 
 let dir: string;
 let journalPath: string;
@@ -113,5 +113,59 @@ describe('IntegrationsRegistry.reconnect', () => {
 
     expect(result.ok).toBe(false);
     expect(result.message).toMatch(/not wired/);
+  });
+});
+
+describe('modelProviderProbeResult', () => {
+  it('is ok when the fleet config dir holds a credentials file', () => {
+    const result = modelProviderProbeResult({
+      exists: (path) => path.endsWith('.credentials.json'),
+      readdir: () => [],
+      processes: () => [],
+    });
+    expect(result).toBe(true);
+  });
+
+  it('is ok when the fleet config dir has a non-empty session store, with no credentials file', () => {
+    const result = modelProviderProbeResult({
+      exists: (path) => path.endsWith('projects'),
+      readdir: () => ['session-1.jsonl'],
+      processes: () => [],
+    });
+    expect(result).toBe(true);
+  });
+
+  it("is ok when forge status's own process classification sees a login or worker process", () => {
+    const result = modelProviderProbeResult({
+      exists: () => false,
+      readdir: () => [],
+      processes: () => [{ pid: 1, isLogin: true, kind: 'login' }],
+    });
+    expect(result).toBe(true);
+
+    const workerResult = modelProviderProbeResult({
+      exists: () => false,
+      readdir: () => [],
+      processes: () => [{ pid: 2, isLogin: false, kind: 'worker' }],
+    });
+    expect(workerResult).toBe(true);
+  });
+
+  it('is off when nothing on disk or in the process list backs a fleet login', () => {
+    const result = modelProviderProbeResult({
+      exists: () => false,
+      readdir: () => [],
+      processes: () => [{ pid: 3, isLogin: false, kind: 'interactive' }],
+    });
+    expect(result).toBe(false);
+  });
+
+  it('is off, not thrown, when the process probe itself failed', () => {
+    const result = modelProviderProbeResult({
+      exists: () => false,
+      readdir: () => [],
+      processes: () => ({ ok: false, reason: 'no process table' }),
+    });
+    expect(result).toBe(false);
   });
 });

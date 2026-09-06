@@ -11,11 +11,13 @@
  * written into source, per this repository's `check:agnostic` rule. A specimen replaces
  * the whole probe map, so no test here ever shells out or reaches the network.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import { run as execRun, type RunRequest } from '../exec.js';
-import { forgeHome } from '../paths.js';
+import { watchedProcesses } from '../fleetwatch.js';
+import type { FleetProcess } from '../liveness.js';
+import { fleetConfigDir } from '../paths.js';
 import { appendOnce } from '../journal.js';
 import { consoleDir, recordAction, type ActionsLedger } from './actions-ledger.js';
 import type { Integration, IntegrationsResponse, IntegrationStatus, ReconnectResponse } from '../../shared/console-model.js';
@@ -77,8 +79,43 @@ function jiraProbe(spawnFn?: RunRequest['spawnFn']): Probe {
   }, spawnFn);
 }
 
+/**
+ * `ok` when the fleet's own config dir (`FORGE_CONFIG_DIR`, default `~/.claude-fleet`)
+ * holds credentials or a session file, or `forge status`'s own process classification
+ * (`watchedProcesses`, `fleetwatch.ts`) sees a login or worker process; `off` only when
+ * none of those is true. `existsSync(join(forgeHome(), 'logins'))` used to answer this,
+ * which checks Forge's own single-flight login lock directory, not the fleet account at
+ * all -- it read `off` on a machine that had a real fleet login, since that directory
+ * only ever holds something during the few seconds a login flow is in flight.
+ */
+export function modelProviderProbeResult(deps: {
+  exists?: (path: string) => boolean;
+  readdir?: (path: string) => string[];
+  processes?: () => FleetProcess[] | { ok: false; reason: string };
+} = {}): boolean {
+  const exists = deps.exists ?? existsSync;
+  const readdir = deps.readdir ?? ((path: string) => readdirSync(path));
+  const processesFn = deps.processes ?? watchedProcesses;
+
+  const configDir = fleetConfigDir(exists);
+  if (exists(join(configDir, '.credentials.json'))) return true;
+  const sessionsDir = join(configDir, 'projects');
+  if (exists(sessionsDir)) {
+    try {
+      if (readdir(sessionsDir).length > 0) return true;
+    } catch {
+      // A directory that vanished between the exists() check and the read is not a
+      // session store to trust either way.
+    }
+  }
+
+  const processes = processesFn();
+  if (!Array.isArray(processes)) return false;
+  return processes.some((proc) => proc.kind === 'login' || proc.kind === 'worker');
+}
+
 function modelProviderProbe(spawnFn?: RunRequest['spawnFn']): Probe {
-  return () => timed(async () => existsSync(join(forgeHome(), 'logins')), spawnFn);
+  return () => timed(async () => modelProviderProbeResult(), spawnFn);
 }
 
 function codexProbe(spawnFn?: RunRequest['spawnFn']): Probe {
