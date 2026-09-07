@@ -116,3 +116,46 @@ describe('buildNeeds over-cap plate', () => {
     expect(items[0]?.line).toBe('retry loop ×11 · burning 260k tokens/min');
   });
 });
+
+// A stale ask (2026-09-07 live-board finding): a parked lane's question can come back
+// with no readable text at all -- there is nothing there for a person to answer, ever,
+// and it should stop reading as a normal ask the moment it's clearly abandoned (24h+).
+describe('buildNeeds stale ask plate', () => {
+  it('shows a stale ask as "stale ask from <lane>, <age>" with a Dismiss action once it is 24h+ old and empty', () => {
+    const now = 1_000_000_000;
+    const askedAt = now - 25 * 60 * 60_000;
+    const onDismissAsk = vi.fn();
+    const items = buildNeeds(
+      [lane({ ticket: 'FLT-9', question: { key: 'stale-key', text: '', opts: [], askedAt } })],
+      [], vi.fn(), undefined, now, onDismissAsk,
+    );
+    expect(items[0]?.title).toMatch(/^stale ask from /);
+    expect(items[0]?.title).toContain('FLT-9');
+    expect(items[0]?.cta).toBe('Dismiss');
+    items[0]?.onClick();
+    expect(onDismissAsk).toHaveBeenCalledWith('stale-key');
+  });
+
+  it('never puts a stale ask first when a normal need is also on the board', () => {
+    const now = 1_000_000_000;
+    const askedAt = now - 25 * 60 * 60_000;
+    const items = buildNeeds(
+      [
+        lane({ id: 'stale-lane', ticket: 'FLT-9', question: { key: 'stale-key', text: '', opts: [], askedAt } }),
+        lane({ id: 'normal-lane', ticket: 'FLT-10', question: { key: 'k2', text: 'dev or staging?', opts: [], askedAt: now } }),
+      ],
+      [], vi.fn(), undefined, now,
+    );
+    expect(items[0]?.cta).not.toBe('Dismiss');
+    expect(items[items.length - 1]?.cta).toBe('Dismiss');
+  });
+
+  it('a question under 24h old with empty text still reads as a normal ask, not stale', () => {
+    const now = 1_000_000_000;
+    const items = buildNeeds(
+      [lane({ ticket: 'FLT-9', question: { key: 'k', text: '', opts: [], askedAt: now - 60_000 } })],
+      [], vi.fn(), undefined, now,
+    );
+    expect(items[0]?.cta).not.toBe('Dismiss');
+  });
+});

@@ -239,6 +239,13 @@ export function undoJournal(jid: string): Promise<ActionResult> {
   return post<ActionResult>(`/journal/${encodeURIComponent(jid)}/undo`, {});
 }
 
+/** Needs-you fix: a stale ask (24h+ old, with no readable question) never resolves on
+ *  its own -- `Dismiss` retires it off the inbox through the same `/clear` path a
+ *  breaker-blocked lane already uses, so it stops sitting at the board forever. */
+export function dismissAsk(inboxKey: string): Promise<{ ok: boolean }> {
+  return post<{ ok: boolean }>('/clear', { inboxKey });
+}
+
 export function getQueue(): Promise<QueueResponse> {
   return call<QueueResponse>('/queue');
 }

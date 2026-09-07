@@ -22,14 +22,30 @@ export interface NeedItem {
   more: { label: string; onClick: () => void } | null;
 }
 
+/** An ask past this age with no readable question text is never going to become
+ *  answerable -- there is nothing there to answer, and it should stop presenting as
+ *  a normal question the moment it's clearly abandoned rather than sitting at the
+ *  top of the board forever. */
+const STALE_ASK_AGE_MS = 24 * 60 * 60_000;
+
+function isStaleAsk(question: { text: string; askedAt: number } | null, now: number): boolean {
+  if (!question) return false;
+  return question.text.trim() === '' && now - question.askedAt > STALE_ASK_AGE_MS;
+}
+
 export function buildNeeds(
   lanes: Lane[],
   integrations: Integration[],
   onFix: (item: 'integration' | 'lane', id: string) => void,
   onOpenSettings: () => void = () => undefined,
   now: number = Date.now(),
+  onDismissAsk: (key: string) => void = () => undefined,
 ): NeedItem[] {
   const items: NeedItem[] = [];
+  // Stale asks never lead the board -- collected separately and appended at the end,
+  // after every ordinary need, so a genuinely abandoned question never displaces a
+  // down integration or a live question someone can actually still answer.
+  const staleItems: NeedItem[] = [];
   for (const integration of integrations) {
     if (integration.status !== 'down') continue;
     const since = integration.since !== null ? ` · since ${hm(integration.since)}` : '';
@@ -43,7 +59,14 @@ export function buildNeeds(
   }
   for (const lane of lanes) {
     const headline = laneHeadline(lane);
-    if (lane.state === 'parked') {
+    if (lane.state === 'parked' && lane.question && isStaleAsk(lane.question, now)) {
+      const key = lane.question.key;
+      staleItems.push({
+        id: `stale-${lane.id}`, color: 'var(--ink3)', title: `stale ask from ${headline.main}, ${ago(now - lane.question.askedAt)}`,
+        titleId: headline.runId, sub: '', line: 'nothing readable was asked; this will never resolve on its own',
+        cta: 'Dismiss', ctaCls: 'btnS', onClick: () => onDismissAsk(key), more: null,
+      });
+    } else if (lane.state === 'parked') {
       const question = lane.question?.text ?? '';
       // The prototype's own plate: `asks: ` plus the question, truncated to 70 chars
       // with an unconditional "…" (script_wrapped.txt 199: `text.slice(0,70)+'…'`,
@@ -70,7 +93,7 @@ export function buildNeeds(
       });
     }
   }
-  return items;
+  return [...items, ...staleItems];
 }
 
 export interface NeedsYouProps {

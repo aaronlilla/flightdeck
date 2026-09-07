@@ -41,6 +41,13 @@ test('H1.3 fix: a PR the board has never read shows "checks not read yet" and no
   await expect(tile.getByText(/0 files/)).toHaveCount(0);
 });
 
+test('Needs-you fix: a stale ask shows as "stale ask from ..." with Dismiss, and Dismiss clears it', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByText(/stale ask from .*FLT-707/)).toBeVisible();
+  await page.getByText('Dismiss').first().click();
+  await expect(page.getByText(/stale ask from .*FLT-707/)).toHaveCount(0);
+});
+
 test('H2.2: the three-attempt chain ticket folds into one card with an attempt chip, and probes hide by default', async ({ page }) => {
   await page.goto('/');
   await expect(page.locator('[data-testid^="lane-chain-"]')).toHaveCount(1);

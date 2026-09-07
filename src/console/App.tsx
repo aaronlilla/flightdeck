@@ -376,7 +376,17 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       }
       await refresh();
     })();
-  }, () => dispatch({ type: 'view', view: 'settings' }), state.now);
+  }, () => dispatch({ type: 'view', view: 'settings' }), state.now, (key) => {
+    void (async () => {
+      try {
+        await api.dismissAsk(key);
+        appendReceipt(null, 'stale ask dismissed.', false);
+      } catch (caught) {
+        appendReceipt(null, caught instanceof api.ApiError ? caught.message : 'dismiss did not go through', false);
+      }
+      await refresh();
+    })();
+  });
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent): void {

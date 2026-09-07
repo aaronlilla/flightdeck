@@ -745,6 +745,22 @@ export function createStubServer() {
         return;
       }
 
+      // NeedsYou fix (2026-09-07): `Dismiss` on a stale ask goes through the same
+      // `/clear {inboxKey}` path the real server's breaker Clear button already uses --
+      // finds the lane still carrying that question and retires it, the stub's own
+      // stand-in for `Inbox.retire` + the `inbox.retired` journal event.
+      if (urlPath === '/clear' && method === 'POST') {
+        const body = await readJson<{ inboxKey?: string }>(request);
+        const key = body.inboxKey;
+        if (!key) { json(response, 400, { error: 'a clear needs an inboxKey' }); return; }
+        const lane = db.lanes.find((l) => l.question?.key === key);
+        if (!lane) { json(response, 404, { error: `nothing asked ${key}` }); return; }
+        lane.question = null;
+        const jid = journal('inbox.retired', `stale ask retired (${key})`, lane.id, false);
+        json(response, 200, { ok: true, jid });
+        return;
+      }
+
       if (urlPath === '/command' && method === 'POST') {
         const body = await readJson<{ text?: string }>(request);
         const cards = runCommand(body.text ?? '');

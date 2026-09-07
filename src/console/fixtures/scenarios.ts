@@ -308,6 +308,13 @@ export function humanBoardLanes(): Lane[] {
   }));
 
   out.push(lane({
+    id: 'stale-ask-1', ticket: 'FLT-707', kind: 'ticket', state: 'parked',
+    title: 'clean up the orphaned webhook subscriptions', sourceUrl: 'https://example.invalid/browse/FLT-707',
+    plain: 'Parked, waiting on you.',
+    question: { key: 'ask-707', text: '', opts: [], askedAt: now - 30 * 3_600_000 },
+  }));
+
+  out.push(lane({
     id: 'self-1', kind: 'self', ticket: null, state: 'blocked',
     title: 'self finding: the queue worker leaks a file handle on retry',
     plain: 'Self-analysis found a leaked file handle; blocked on your review.',

@@ -77,8 +77,15 @@ export interface InboxEntry {
  * because a run's registry row can disappear at any time with no new inbox event to mark
  * it: reading `stale` off a stored value would go stale itself.
  */
-export function isAskStale(entry: InboxEntry, hasRegistryRow: (run: string) => boolean): boolean {
+/** How old an ask has to be, with no readable question text at all, before answering
+ *  it is pointless regardless of whether a run is still alive to resume -- the
+ *  NeedsYou board's own "stale ask" reading (2026-09-07 live-board finding: a parked
+ *  lane's question came back with empty text and sat at the top of the board forever). */
+const EMPTY_ASK_STALE_AGE_MS = 24 * 60 * 60_000;
+
+export function isAskStale(entry: InboxEntry, hasRegistryRow: (run: string) => boolean, now: number = Date.now()): boolean {
   if (entry.answer !== undefined) return false;
+  if (entry.question.trim() === '' && now - entry.at > EMPTY_ASK_STALE_AGE_MS) return true;
   if (!entry.runs.length) return false;
   return entry.runs.every((run) => !hasRegistryRow(run));
 }
