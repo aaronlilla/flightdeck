@@ -52,6 +52,29 @@ export interface GhPrLookup {
 
 export type GhLookupFn = (branch: string) => Promise<GhPrLookup | undefined>;
 
+/** H1.3: `gh pr view --json isDraft,mergedAt,statusCheckRollup,title,headRefOid` --
+ *  the PR's own state as a person reads it on GitHub, distinct from `GhPrLookup`'s file
+ *  counts (which come from `gh pr list`). `headSha` is what an attestation is keyed by,
+ *  never the branch name. */
+export interface GhPrDetail {
+  headSha: string;
+  isDraft: boolean;
+  merged: boolean;
+  title: string;
+  checks: 'success' | 'failure' | 'pending';
+}
+
+export type GhDetailLookupFn = (repo: string, pr: number) => Promise<GhPrDetail | undefined>;
+
+/** H1.3: the council's own last verdict on this exact head, off the attestation the
+ *  gate wrote to disk. `undefined` when no attestation exists yet for this (repo, pr,
+ *  head) -- a PR the council has not reviewed reads as "no verdict yet", never a guess. */
+export interface AttestationVerdict {
+  verdict: string;
+}
+
+export type AttestationReaderFn = (repo: string, pr: number, head: string) => AttestationVerdict | undefined;
+
 /** Finds a chain packet whose `launched.runKey` (or `packetId`, for a run launched
  *  directly under its own name) matches `run`. */
 function packetForRun(chain: Map<string, ChainPacketState>, run: string): ChainPacketState | undefined {
@@ -77,6 +100,7 @@ function fromGh(found: GhPrLookup): LanePr {
  */
 export async function computeRunPr(
   run: string, chain: Map<string, ChainPacketState>, cache: Cache, now: number, lookup: GhLookupFn,
+  detailLookup?: GhDetailLookupFn, attestationReader?: AttestationReaderFn,
 ): Promise<{ pr: LanePr | null; cache: Cache }> {
   const cached = cache[run];
   if (cached && now - cached.at < PR_CACHE_TTL_MS) return { pr: cached.pr, cache };
@@ -86,6 +110,21 @@ export async function computeRunPr(
   if (!branch) return { pr: null, cache: { ...cache, [run]: { pr: null, at: now } } };
 
   const found = await lookup(branch);
-  const pr = found ? fromGh(found) : null;
+  if (!found) return { pr: null, cache: { ...cache, [run]: { pr: null, at: now } } };
+
+  let pr = fromGh(found);
+  // H1.3: the PR's own state as a person reads it on GitHub -- its checks, the
+  // council's last verdict on this head, and whether it has merged. Only fetched when
+  // this call is wired with both lookups (production always is; a specimen that omits
+  // either keeps the bare `fromGh` shape, per the existing test above).
+  if (detailLookup && packet?.repo) {
+    const detail = await detailLookup(packet.repo, found.number);
+    if (detail) {
+      const verdict = attestationReader?.(packet.repo, found.number, detail.headSha)?.verdict ?? null;
+      pr = { ...pr, checks: detail.checks, merged: detail.merged, title: detail.title, verdict };
+    } else {
+      pr = { ...pr, checks: null, merged: null, title: null, verdict: null };
+    }
+  }
   return { pr, cache: { ...cache, [run]: { pr, at: now } } };
 }

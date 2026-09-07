@@ -30,8 +30,12 @@ import { ensureHardTokens } from './caps-write.js';
 import { computeCostSteps, findCapEnforcementFailure } from './cost-steps.js';
 import { actionsLedgerPath, computeJournal, readActionsLedger } from './journal-route.js';
 import { computeJournalNarrative } from './journal-narrative.js';
+import { readAttestation } from '../council/attest.js';
 import { computeLanes, tokensToday, titleFor, titleFromHeading, windowLanes, type LanesInput } from './lanes.js';
-import { computeRunPr, prCachePath, readPrCache, writePrCache, type GhLookupFn, type GhPrLookup } from './pr.js';
+import {
+  computeRunPr, prCachePath, readPrCache, writePrCache,
+  type AttestationReaderFn, type GhDetailLookupFn, type GhLookupFn, type GhPrDetail, type GhPrLookup,
+} from './pr.js';
 import { computeProposals, readRules, rulesPath } from './proposals.js';
 import { computeSandbox, newestLogFile, packetForRun, tailLogWithSeverity } from './sandbox.js';
 import { computeRunThread, computeThread, readThread, threadPath } from './thread.js';
@@ -45,6 +49,12 @@ export interface ConsoleReadsOptions {
   forgeHomeDir?: string;
   /** Overrides `gh pr list`. A specimen never shells out. */
   ghLookup?: GhLookupFn;
+  /** H1.3: overrides `gh pr view`'s own checks/merged/title read. A specimen never
+   *  shells out. */
+  ghDetailLookup?: GhDetailLookupFn;
+  /** H1.3: overrides the attestation-on-disk read for a PR's own council verdict. A
+   *  specimen only. */
+  attestationReader?: AttestationReaderFn;
   /** Overrides the fleet-process probe `stuck` reads for `blockedBy` context. Defaults
    *  to reporting nothing stuck, the same conservative default `ForgeServer` uses. */
   stuck?: () => StuckSignal[];
@@ -91,6 +101,58 @@ function defaultGhLookup(): GhLookupFn {
   };
 }
 
+interface RawStatusCheckLike {
+  conclusion?: string | null;
+  status?: string | null;
+  state?: string | null;
+}
+
+function conclusionOf(rollup: RawStatusCheckLike[] | undefined): 'success' | 'failure' | 'pending' {
+  if (!rollup || rollup.length === 0) return 'pending';
+  const states = rollup.map((entry) => (entry.conclusion ?? entry.status ?? entry.state ?? '').toUpperCase());
+  if (states.some((state) => state === '' || state === 'PENDING' || state === 'IN_PROGRESS' || state === 'QUEUED')) {
+    return 'pending';
+  }
+  if (states.every((state) => state === 'SUCCESS')) return 'success';
+  return 'failure';
+}
+
+/** H1.3: `gh pr view --json isDraft,mergedAt,statusCheckRollup,title,headRefOid` --
+ *  the same checks-rollup reading `council/gh.ts#conclusionOf` uses, duplicated rather
+ *  than imported since that module belongs to the council's own gate, not the console. */
+function defaultGhDetailLookup(): GhDetailLookupFn {
+  return async (repo: string, pr: number): Promise<GhPrDetail | undefined> => {
+    const result = await execRun({
+      argv: [
+        'gh', 'pr', 'view', String(pr), '--repo', repo, '--json',
+        'isDraft,mergedAt,statusCheckRollup,title,headRefOid',
+      ],
+      cwd: process.cwd(), owner: 'console-pr-detail', cls: 'script', fullOutput: true,
+    });
+    if (!result.ok) return undefined;
+    try {
+      const parsed = JSON.parse(result.full ?? result.tail) as {
+        isDraft?: boolean; mergedAt?: string | null; statusCheckRollup?: RawStatusCheckLike[];
+        title?: string; headRefOid?: string;
+      };
+      if (!parsed.headRefOid) return undefined;
+      return {
+        headSha: parsed.headRefOid, isDraft: parsed.isDraft ?? false, merged: Boolean(parsed.mergedAt),
+        title: parsed.title ?? '', checks: conclusionOf(parsed.statusCheckRollup),
+      };
+    } catch {
+      return undefined;
+    }
+  };
+}
+
+function defaultAttestationReader(): AttestationReaderFn {
+  return (repo, pr, head) => {
+    const attestation = readAttestation(repo, pr, head);
+    return attestation ? { verdict: attestation.verdict } : undefined;
+  };
+}
+
 /** The runs `GET /run/:id` matches, and everything under it -- `/run/:id/thread`,
  *  `/run/:id/pr`, `/run/:id/sandbox`, `/run/:id/cost`, `/run/:id/journal`. */
 const RUN_SUBROUTE = /^\/run\/([^/]+)\/(thread|pr|sandbox|cost|journal)$/;
@@ -110,6 +172,10 @@ export class ConsoleReads {
 
   private readonly ghLookup: GhLookupFn;
 
+  private readonly ghDetailLookup: GhDetailLookupFn;
+
+  private readonly attestationReader: AttestationReaderFn;
+
   private readonly stuckFn: () => StuckSignal[];
 
   private readonly modelPolicyPath: string;
@@ -126,6 +192,8 @@ export class ConsoleReads {
     this.journalPath = options.journalPath ?? join(this.forgeHomeDir, 'fleet.jsonl');
     this.journalCache = options.journalCache ?? new JournalCache();
     this.ghLookup = options.ghLookup ?? defaultGhLookup();
+    this.ghDetailLookup = options.ghDetailLookup ?? defaultGhDetailLookup();
+    this.attestationReader = options.attestationReader ?? defaultAttestationReader();
     this.stuckFn = options.stuck ?? (() => []);
     this.modelPolicyPath = options.modelPolicyPath ?? policyPath();
     this.queueStore = options.queueStore ?? new QueueStore(defaultQueuePath());
@@ -319,7 +387,9 @@ export class ConsoleReads {
     const now = Date.now();
     const cachePath = prCachePath(this.forgeHomeDir);
     const cache = readPrCache(cachePath);
-    const { pr, cache: nextCache } = await computeRunPr(run, this.chain(), cache, now, this.ghLookup);
+    const { pr, cache: nextCache } = await computeRunPr(
+      run, this.chain(), cache, now, this.ghLookup, this.ghDetailLookup, this.attestationReader,
+    );
     if (nextCache !== cache) writePrCache(cachePath, nextCache);
     return { pr };
   }
