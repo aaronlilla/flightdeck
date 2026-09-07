@@ -14,6 +14,7 @@ import type { InboxEntry } from '../inbox.js';
 import type { RunMessage } from '../runinbox.js';
 import type { Message, ThreadResponse } from '../../shared/console-model.js';
 import { jidFor, textFor } from './journal-route.js';
+import { collapseWardenChips } from './journal-narrative.js';
 
 export function threadPath(forgeHomeDir: string): string {
   return `${forgeHomeDir}/console/thread.jsonl`;
@@ -44,6 +45,11 @@ const CHIP_EVENTS = new Set([
   'warden.parked', 'external.complete',
 ]);
 
+/** `liveness.stuck`/`warden.parked` chips go through `collapseWardenChips` instead of
+ *  the ordinary one-row-one-chip mapping below (H1.9) -- a stuck-session trip re-fires
+ *  the same row on every liveness tick, and the rail used to render every one of them. */
+const WARDEN_CHIP_EVENTS = new Set(['liveness.stuck', 'warden.parked']);
+
 function chipFor(row: ForgeEvent): Message {
   return {
     k: `chip-${row.id}`,
@@ -54,6 +60,18 @@ function chipFor(row: ForgeEvent): Message {
     lane: row.run,
     verifiedAt: row.at,
   };
+}
+
+function wardenChipMessages(events: ForgeEvent[]): Message[] {
+  return collapseWardenChips(events).map((chip) => ({
+    k: `chip-warden-${chip.lane}-${chip.at}`,
+    type: 'event',
+    text: chip.text,
+    ts: chip.at,
+    source: chip.lane,
+    lane: chip.lane,
+    verifiedAt: chip.at,
+  }));
 }
 
 /** An open inbox ask, rendered as the rail's own answerable `question` card (the same
@@ -85,9 +103,11 @@ export function computeThread(
   persisted: Message[], events: ForgeEvent[], now: number, openAsks: InboxEntry[] = [],
 ): ThreadResponse {
   const earliest = persisted.length ? Math.min(...persisted.map((message) => message.ts)) : now;
-  const chips = events
-    .filter((row) => CHIP_EVENTS.has(row.event) && row.at >= earliest)
+  const windowed = events.filter((row) => row.at >= earliest);
+  const ordinaryChips = windowed
+    .filter((row) => CHIP_EVENTS.has(row.event) && !WARDEN_CHIP_EVENTS.has(row.event))
     .map(chipFor);
+  const chips = [...ordinaryChips, ...wardenChipMessages(windowed.filter((row) => WARDEN_CHIP_EVENTS.has(row.event)))];
   const persistedKeys = new Set(persisted.map((message) => message.k));
   const questions = openAsks
     .map(questionMessageFor)

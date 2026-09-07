@@ -4,9 +4,9 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { Journal, replay } from '../../../src/forge/journal.js';
+import { Journal, replay, type ForgeEvent } from '../../../src/forge/journal.js';
 import { foldChainState } from '../../../src/forge/chain.js';
-import { computeJournalNarrative } from '../../../src/forge/console/journal-narrative.js';
+import { collapseWardenChips, computeJournalNarrative } from '../../../src/forge/console/journal-narrative.js';
 import { packetForRun } from '../../../src/forge/console/sandbox.js';
 import type { Lane } from '../../../src/shared/console-model.js';
 
@@ -97,5 +97,47 @@ describe('computeJournalNarrative', () => {
     const chain = foldChainState(fleet.events);
     const entries = computeJournalNarrative(lane(), fleet.events, packetForRun(chain, 'alpha'), 5_000);
     expect(entries).toHaveLength(1);
+  });
+});
+
+function parked(overrides: Partial<ForgeEvent> & { at: number }): ForgeEvent {
+  return {
+    id: `x-${Math.random()}`, seq: 1, version: 1, actor: 'warden', event: 'warden.parked', ...overrides,
+  } as ForgeEvent;
+}
+
+describe('collapseWardenChips (H1.9)', () => {
+  it('a single row for a real lane passes through with its ordinary text', () => {
+    const rows = [parked({ run: 'queue-BBZ-182', at: 1_000, signal: 'slow build' })];
+    const chips = collapseWardenChips(rows);
+    expect(chips).toHaveLength(1);
+    expect(chips[0]).toMatchObject({ lane: 'queue-BBZ-182', at: 1_000 });
+  });
+
+  it('twenty repeated rows for the same lane collapse into one, with the count and the latest time', () => {
+    const rows = Array.from({ length: 20 }, (_, index) => parked({
+      run: 'queue-BBZ-182', at: 1_000 + index * 1_000, signal: 'stale-session',
+    }));
+    const chips = collapseWardenChips(rows);
+    expect(chips).toHaveLength(1);
+    expect(chips[0]!.at).toBe(1_000 + 19 * 1_000);
+    expect(chips[0]!.text).toContain('×20');
+    expect(chips[0]!.text).toContain('queue-BBZ-182');
+  });
+
+  it('drops a bare PID row that names no real lane entirely', () => {
+    const rows = Array.from({ length: 20 }, (_, index) => parked({
+      run: 'PID:51340', at: 1_000 + index * 1_000, signal: 'stale-session',
+    }));
+    expect(collapseWardenChips(rows)).toEqual([]);
+  });
+
+  it('keeps a real lane\'s chip while dropping an unrelated bare-PID row in the same batch', () => {
+    const rows = [
+      parked({ run: 'PID:51340', at: 1_000, signal: 'stale-session' }),
+      parked({ event: 'liveness.stuck', run: 'queue-BBZ-96', at: 2_000, signal: 'idle' }),
+    ];
+    const chips = collapseWardenChips(rows);
+    expect(chips.map((chip) => chip.lane)).toEqual(['queue-BBZ-96']);
   });
 });

@@ -34,6 +34,32 @@ describe('computeThread', () => {
     expect(result.messages.filter((m) => m.type === 'event')).toHaveLength(1);
   });
 
+  it('H1.9: collapses a repeated warden.parked storm for one real lane into a single chip', () => {
+    const { path, journal } = tempJournal();
+    for (let i = 0; i < 20; i += 1) {
+      journal.append({ event: 'warden.parked', run: 'queue-BBZ-182', actor: 'warden', signal: 'stale-session' });
+    }
+    journal.close();
+    const fleet = replay(path);
+
+    const result = computeThread([], fleet.events, 10_000);
+    const eventMessages = result.messages.filter((m) => m.type === 'event');
+    expect(eventMessages).toHaveLength(1);
+    expect(eventMessages[0]!.text).toContain('×20');
+  });
+
+  it('H1.9: never puts a bare-PID stuck-session row on the rail at all', () => {
+    const { path, journal } = tempJournal();
+    for (let i = 0; i < 5; i += 1) {
+      journal.append({ event: 'warden.parked', run: 'PID:51340', actor: 'warden', signal: 'stale-session' });
+    }
+    journal.close();
+    const fleet = replay(path);
+
+    const result = computeThread([], fleet.events, 10_000);
+    expect(result.messages.filter((m) => m.type === 'event')).toHaveLength(0);
+  });
+
   it('shows no chips for an event before the earliest persisted message', () => {
     const { path, journal } = tempJournal();
     journal.append({ event: 'run.parked', run: 'alpha', actor: 'runner' });
