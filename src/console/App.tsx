@@ -56,6 +56,16 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   // with no dependency on it.
   const pendingConfirmRef = useRef(pendingConfirm);
   pendingConfirmRef.current = pendingConfirm;
+  // D2.1: `runAction` appends a receipt/refusal card (via `appendReceipt`) and then
+  // immediately awaits `refresh()`. `refresh()` replaces `state.thread` wholesale from
+  // `/thread`, which has no row for a client-only card the way it has none for the
+  // confirm card above -- so without this, a 501's refusal card renders for one tick
+  // and vanishes the instant that same `refresh()` call lands. Kept as a short-lived
+  // list (same mechanism as `pendingConfirmRef`) rather than merged in forever: a card
+  // ages out once the server's own thread has had a reasonable window to carry it, so
+  // this never grows into a second, unbounded copy of the thread.
+  const localCardsRef = useRef<Message[]>([]);
+  const LOCAL_CARD_TTL_MS = 30_000;
   // Load-verify finding: the 5s poll and every `/events` frame both call `refresh`, with
   // nothing stopping either from starting a second one while the first is still waiting
   // on a slow `/lanes` (the response that a few thousand lanes over a few hundred
@@ -89,9 +99,14 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       // rather than letting this refetch silently erase the last line of defence before
       // an irreversible action.
       const pending = pendingConfirmRef.current;
-      const incomingThread = pending && !thread.messages.some((m) => m.k === pending.k)
+      let incomingThread = pending && !thread.messages.some((m) => m.k === pending.k)
         ? [...thread.messages, pending.card]
         : thread.messages;
+      const cutoff = Date.now() - LOCAL_CARD_TTL_MS;
+      localCardsRef.current = localCardsRef.current.filter((card) => card.ts >= cutoff);
+      for (const card of localCardsRef.current) {
+        if (!incomingThread.some((m) => m.k === card.k)) incomingThread = [...incomingThread, card];
+      }
       dispatch({ type: 'thread', thread: incomingThread });
       dispatch({ type: 'journal', journal: journal.rows });
       dispatch({ type: 'integrations', integrations: integrations.items });
@@ -140,7 +155,9 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   }, [refresh]);
 
   const appendReceipt = useCallback((jid: string | null, text: string, undoable: boolean) => {
-    dispatch({ type: 'thread-append', messages: [receiptCard(jid, text, undoable)] });
+    const card = receiptCard(jid, text, undoable);
+    localCardsRef.current = [...localCardsRef.current, card];
+    dispatch({ type: 'thread-append', messages: [card] });
   }, []);
 
   const runAction = useCallback(async (fn: () => Promise<{ ok: boolean; jid: string | null; message: string; undoable: boolean }>) => {

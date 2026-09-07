@@ -126,4 +126,22 @@ describe('App', () => {
     global.fetch = (() => Promise.reject(new Error('offline'))) as typeof fetch;
     await waitFor(() => expect(screen.getByText(/live feed lost/)).toBeInTheDocument(), { timeout: 15_000 });
   }, 20_000);
+
+  it('D2.1: a 501 refusal card survives the refresh runAction fires right after appending it', async () => {
+    // `runAction` appends the refusal card via `appendReceipt`, then immediately calls
+    // `refresh()`. `refresh()` replaces `state.thread` wholesale from `/thread`, which
+    // has no row for a client-only refusal card -- so without a fix the card renders
+    // for one tick and is gone once the refresh's own `/thread` fetch lands.
+    await fetch('/__test/fixture?name=refusal-501', { method: 'POST' });
+    render(<App eventStreamOptions={{ WebSocketImpl: FakeSocket as unknown as typeof WebSocket }} />);
+    const tile = await screen.findByTestId('lane-FLT-401');
+    await userEvent.click(within(tile).getByText('Compact + resume →', { exact: true }));
+    await waitFor(() => expect(screen.getByText('Refused')).toBeInTheDocument());
+    // Give the `refresh()` that `runAction` awaits right after appending the card time
+    // to complete its own round trip and overwrite `state.thread`.
+    await new Promise((resolve) => { setTimeout(resolve, 500); });
+    expect(screen.getByText('Refused')).toBeInTheDocument();
+    expect(screen.getByText('compaction has no successor worker built yet')).toBeInTheDocument();
+    expect(tile).toHaveAttribute('data-state', 'exhausted');
+  });
 });
