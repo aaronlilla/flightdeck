@@ -151,6 +151,69 @@ export interface ReconcileOutcome {
   reason?: string;
 }
 
+export type RelaunchOutcome = 'relaunched' | 'skipped';
+
+const RELAUNCH_PROMPT = [
+  'The process running this session ended without a clean finish, mid-tool-call: a crash,',
+  'a kill, or a machine restart. You are resumed on the same session from where it left',
+  'off. Say briefly what you were doing, then carry on.',
+].join('\n');
+
+/**
+ * B.2: the live-tick counterpart to `reconcileRegistry` below, for a registry row whose
+ * process dies mid-tool while `forge up` is already running rather than only at its own
+ * startup. Resumes the same goal on the same worktree, by session id, exactly once. The
+ * row itself is left untouched either way: a second death under the same name trips the
+ * same `registry-abandoned` liveness signal again, so the caller (the Warden tick) can
+ * tell a first death from a second without any bookkeeping of its own on disk, and park
+ * the run rather than relaunch it a second time.
+ */
+export async function relaunchAbandonedGoal(
+  registry: Registry, engine: EngineLike, goal: string,
+): Promise<RelaunchOutcome> {
+  const record = registry.get(goal);
+  if (!record || !record.sessionId) return 'skipped';
+  try {
+    const brief = readFileSync(record.briefPath, 'utf8');
+    const className = tierOfBrief(brief);
+    const model = record.model ?? modelIdFor(modelFor(className));
+    await engine.run({
+      run: goal, model, prompt: RELAUNCH_PROMPT, env: process.env, cwd: record.cwd,
+      maxTurns: turnsFor(className), resume: record.sessionId,
+    });
+    clearParkRecord(goal);
+    return 'relaunched';
+  } catch {
+    return 'skipped';
+  }
+}
+
+/**
+ * B.3: which dead-pid registry rows are old enough, past their own park, to be reaped.
+ * No process is ever signalled here, so this never needs the `decision.made` row Aaron's
+ * 2026-09-04 rule reserves for a kill; it only ever acts on a row that is provably no
+ * longer live. A row with no park record at all is left alone: it is either still
+ * genuinely running (a live pid, filtered out by the caller before this even sees it) or
+ * a crash `reconcileRegistry` will pick up on the next `forge up`, not a row this tick has
+ * any standing to touch.
+ */
+export function reapableGoals(
+  rows: readonly RegistryRecord[],
+  isAlive: (pid: number) => boolean,
+  parkedAt: (goal: string) => number | undefined,
+  now: number,
+  afterMs = 4 * 60 * 60_000,
+): string[] {
+  const reaped: string[] = [];
+  for (const row of rows) {
+    if (isAlive(row.pid)) continue;
+    const at = parkedAt(row.goal);
+    if (at === undefined) continue;
+    if (now - at >= afterMs) reaped.push(row.goal);
+  }
+  return reaped;
+}
+
 const RESUME_PROMPT = [
   'The process running this session ended without a clean finish: a crash, a kill, or a',
   'machine restart, rather than forge_done or a park. You are resumed from where it left',

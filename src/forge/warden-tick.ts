@@ -16,6 +16,7 @@ import { assessCostShape, type CostShapeInput } from './cost-shape.js';
 import { reportFleetHealth } from './fleet-health.js';
 import type { Journal } from './journal.js';
 import { wardenConfig } from './policy.js';
+import { reapableGoals, type RegistryRecord, type RelaunchOutcome } from './registry.js';
 import type { WardenActuator } from './warden.js';
 
 export interface WardenTickRun {
@@ -65,6 +66,33 @@ export interface WardenTickDeps {
    *  of the checker itself. */
   dueForConformanceCheck?: (run: string) => boolean;
   onError?: (label: string, error: unknown) => void;
+
+  /** B.2: resumes one registry-abandoned goal, once, on the same worktree. Undefined
+   *  means the tick only journals the trip (today's behavior) and never relaunches
+   *  anything -- a caller that has not wired real relaunch mechanics keeps working
+   *  exactly as before this integration. */
+  relaunchAbandoned?: (goal: string) => Promise<RelaunchOutcome>;
+
+  /** B.3: every registry row currently on disk, for the reap sweep. Paired with `isAlive`
+   *  and `parkedAt`; all three undefined is a no-op, the same opt-in shape as everything
+   *  else on this tick. */
+  registryRows?: () => readonly RegistryRecord[];
+  isAlive?: (pid: number) => boolean;
+  /** When a goal was last parked, or undefined when it never was (or the record has
+   *  already been cleared). Read fresh every tick, the same as every other cross-process
+   *  fact this tick consults. */
+  parkedAt?: (goal: string) => number | undefined;
+  releaseRegistryRow?: (goal: string) => void;
+  /** Flags the row's lane `dead` the same way a board reads any other terminal state. */
+  markLaneDead?: (goal: string) => void;
+  /** Defaults to 4 hours, the bound named in the roadmap. */
+  reapAfterMs?: number;
+
+  /** B.6: the kill switch state, read fresh every tick. Engaged and nothing else wrong
+   *  still gets one `warden.health` line every 30 minutes, so a switch nobody remembers
+   *  engaging stays visible without this tick ever clearing it itself -- clearing stays a
+   *  person's call, per Aaron's 2026-09-04 rule. */
+  killSwitch?: () => { engaged: boolean; reason?: string };
 }
 
 /** Signals `assess()` can raise that name a run and are safe for a generic actuator park.
@@ -99,6 +127,14 @@ export class WardenTick {
    *  parked once, not once per tick, over however many ticks it stays open. */
   private readonly parkedTrips = new Set<string>();
 
+  /** B.2: goals already given their one relaunch. A registry-abandoned trip for a goal
+   *  in here means the relaunch itself died mid-tool too, and this time it parks. */
+  private readonly relaunchedGoals = new Set<string>();
+
+  /** B.6: the last time the kill switch got its visibility line, so it repeats on a
+   *  cadence rather than every 30 seconds this tick runs. */
+  private lastKillSwitchNoticeAt: number | undefined;
+
   constructor(private readonly deps: WardenTickDeps) {
     if (deps.reasoner) {
       const driftDeps: ConformanceDriftDeps = {
@@ -117,9 +153,79 @@ export class WardenTick {
     }, onError);
 
     await this.parkGenericTrips(onError);
+    await this.handleAbandoned(onError);
+    await this.reapDead(onError);
     await this.assessCostShapes(onError);
     await this.checkConformance(onError);
     await this.resumeClearedCredentials(onError);
+    await this.noteKillSwitch(onError);
+  }
+
+  /** B.2: one relaunch per goal, ever, then a park. */
+  private async handleAbandoned(onError?: (label: string, error: unknown) => void): Promise<void> {
+    const trips = this.deps.stuck().filter((trip) => trip.signal === 'registry-abandoned');
+    for (const trip of trips) {
+      const id = `${trip.key}:${trip.signal}`;
+      if (this.parkedTrips.has(id)) continue;
+
+      await guarded(`relaunch:${id}`, async () => {
+        if (this.relaunchedGoals.has(trip.key) || !this.deps.relaunchAbandoned) {
+          const parked = await this.deps.actuator.park(trip.key, trip.hint);
+          if (!parked) return;
+          this.deps.journal.append({
+            event: 'warden.parked', run: trip.key, actor: 'warden', signal: trip.signal, evidence: trip,
+          });
+          this.parkedTrips.add(id);
+          return;
+        }
+
+        const outcome = await this.deps.relaunchAbandoned(trip.key);
+        if (outcome === 'relaunched') {
+          this.relaunchedGoals.add(trip.key);
+          this.deps.journal.append({
+            event: 'run.relaunched', run: trip.key, actor: 'warden', reason: trip.hint,
+          });
+        }
+      }, onError);
+    }
+  }
+
+  /** B.3: a dead pid whose park is older than the bound is released, never signalled. */
+  private async reapDead(onError?: (label: string, error: unknown) => void): Promise<void> {
+    if (!this.deps.registryRows) return;
+    await guarded('reapDead', async () => {
+      const isAlive = this.deps.isAlive ?? (() => true);
+      const parkedAt = this.deps.parkedAt ?? (() => undefined);
+      const goals = reapableGoals(
+        this.deps.registryRows!(), isAlive, parkedAt, this.deps.now(), this.deps.reapAfterMs,
+      );
+      for (const goal of goals) {
+        this.deps.releaseRegistryRow?.(goal);
+        this.deps.markLaneDead?.(goal);
+        this.deps.journal.append({ event: 'registry.reaped', run: goal, actor: 'warden' });
+      }
+    }, onError);
+  }
+
+  /** B.6: engaged and quiet still gets a line on the board every 30 minutes. */
+  private async noteKillSwitch(onError?: (label: string, error: unknown) => void): Promise<void> {
+    if (!this.deps.killSwitch) return;
+    await guarded('killSwitchVisibility', () => {
+      const state = this.deps.killSwitch!();
+      if (!state.engaged) {
+        this.lastKillSwitchNoticeAt = undefined;
+        return;
+      }
+      const now = this.deps.now();
+      if (this.lastKillSwitchNoticeAt !== undefined && now - this.lastKillSwitchNoticeAt < 30 * 60_000) {
+        return;
+      }
+      this.lastKillSwitchNoticeAt = now;
+      this.deps.journal.append({
+        event: 'warden.health', actor: 'warden', key: 'kill-switch', signal: 'kill-switch',
+        evidence: state,
+      });
+    }, onError);
   }
 
   private async parkGenericTrips(onError?: (label: string, error: unknown) => void): Promise<void> {
@@ -214,5 +320,30 @@ export class WardenTick {
         await this.deps.credentialHorizon!.tick(account, probeValid);
       }, onError);
     }
+  }
+}
+
+/**
+ * B.9: the conformance drift cadence -- every 10 turns or every 5 minutes per run,
+ * whichever comes first, in place of the "always due" default `WardenTickDeps` falls back
+ * to when nothing tracks it. A run never checked before is due at once, which also seeds
+ * the baseline the next call measures against.
+ */
+export class DriftCadenceTracker {
+  private readonly lastChecked = new Map<string, { turns: number; at: number }>();
+
+  constructor(private readonly turnInterval = 10, private readonly minMs = 5 * 60_000) {}
+
+  isDue(run: string, turns: number, now: number): boolean {
+    const last = this.lastChecked.get(run);
+    if (!last) {
+      this.lastChecked.set(run, { turns, at: now });
+      return true;
+    }
+    const dueByTurns = turns - last.turns >= this.turnInterval;
+    const dueByTime = now - last.at >= this.minMs;
+    if (!dueByTurns && !dueByTime) return false;
+    this.lastChecked.set(run, { turns, at: now });
+    return true;
   }
 }

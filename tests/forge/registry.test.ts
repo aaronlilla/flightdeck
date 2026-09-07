@@ -12,7 +12,9 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { Journal, replay } from '../../src/forge/journal.js';
 import { readParkRecord, writeParkRecord } from '../../src/forge/parkrecord.js';
-import { processAlive, reconcileRegistry, Registry } from '../../src/forge/registry.js';
+import {
+  processAlive, reapableGoals, reconcileRegistry, relaunchAbandonedGoal, Registry,
+} from '../../src/forge/registry.js';
 import type { EngineLike, SessionRequest } from '../../src/forge/worker.js';
 
 let dir: string;
@@ -227,5 +229,109 @@ describe('B.3.5: forge up reconciles a dead pid', () => {
     expect(outcomes).toEqual([{ goal: 'young', ok: false, reason: expect.stringContaining('session id') }]);
     const state = replay(journalPath);
     expect(state.events.some((e) => e.event === 'registry.abandoned')).toBe(false);
+  });
+});
+
+describe('B.2: relaunchAbandonedGoal', () => {
+  function fakeEngine(): EngineLike & { started: SessionRequest[] } {
+    return {
+      started: [],
+      async run(config: SessionRequest) {
+        this.started.push(config);
+        return { sessionId: config.resume ?? 'new-session', turns: [] };
+      },
+    };
+  }
+
+  it('resumes by session id, on the same cwd, and leaves the registry row untouched', async () => {
+    const briefPath = join(dir, 'mid-tool.md');
+    writeFileSync(briefPath, '# Goal\n\nDo the thing.\n', 'utf8');
+    const registry = new Registry(join(dir, 'registry'));
+    registry.admit({ goal: 'mid-tool', cwd: dir, briefPath, pid: 999_999 });
+    registry.setSession('mid-tool', 'sess-mid-tool', 'claude-sonnet-5');
+
+    const engine = fakeEngine();
+    const outcome = await relaunchAbandonedGoal(registry, engine, 'mid-tool');
+
+    expect(outcome).toBe('relaunched');
+    expect(engine.started).toHaveLength(1);
+    expect(engine.started[0]?.resume).toBe('sess-mid-tool');
+    expect(engine.started[0]?.cwd).toBe(dir);
+    // The row survives: a second death under the same name must still be able to trip
+    // the same registry-abandoned signal, which needs the row to still be there.
+    expect(registry.get('mid-tool')).toBeDefined();
+  });
+
+  it('skips a goal with no registry row at all', async () => {
+    const registry = new Registry(join(dir, 'registry'));
+    const engine = fakeEngine();
+    const outcome = await relaunchAbandonedGoal(registry, engine, 'nowhere');
+    expect(outcome).toBe('skipped');
+    expect(engine.started).toHaveLength(0);
+  });
+
+  it('skips a goal with a row but no recorded session id -- nothing to resume by', async () => {
+    const briefPath = join(dir, 'no-session-mid-tool.md');
+    writeFileSync(briefPath, '# Goal\n\nDo the thing.\n', 'utf8');
+    const registry = new Registry(join(dir, 'registry'));
+    registry.admit({ goal: 'no-session-mid-tool', cwd: dir, briefPath, pid: 999_999 });
+
+    const engine = fakeEngine();
+    const outcome = await relaunchAbandonedGoal(registry, engine, 'no-session-mid-tool');
+    expect(outcome).toBe('skipped');
+    expect(engine.started).toHaveLength(0);
+  });
+
+  it('a throwing engine reads as skipped rather than propagating', async () => {
+    const briefPath = join(dir, 'throws.md');
+    writeFileSync(briefPath, '# Goal\n\nDo the thing.\n', 'utf8');
+    const registry = new Registry(join(dir, 'registry'));
+    registry.admit({ goal: 'throws', cwd: dir, briefPath, pid: 999_999 });
+    registry.setSession('throws', 'sess-throws', 'claude-sonnet-5');
+
+    const engine: EngineLike = { started: [], run: async () => { throw new Error('sdk exploded'); } };
+    const outcome = await relaunchAbandonedGoal(registry, engine, 'throws');
+    expect(outcome).toBe('skipped');
+  });
+});
+
+describe('B.3: reapableGoals', () => {
+  const FOUR_HOURS = 4 * 60 * 60_000;
+
+  it('never reaps a row whose pid is alive', () => {
+    const rows = [{ goal: 'a', cwd: dir, briefPath: 'x', pid: 1, startedAt: 0 }];
+    const goals = reapableGoals(rows, () => true, () => 0, FOUR_HOURS + 1, FOUR_HOURS);
+    expect(goals).toEqual([]);
+  });
+
+  it('never reaps a dead row with no park record at all', () => {
+    const rows = [{ goal: 'a', cwd: dir, briefPath: 'x', pid: 1, startedAt: 0 }];
+    const goals = reapableGoals(rows, () => false, () => undefined, FOUR_HOURS + 1, FOUR_HOURS);
+    expect(goals).toEqual([]);
+  });
+
+  it('never reaps a dead, parked row younger than the bound', () => {
+    const rows = [{ goal: 'a', cwd: dir, briefPath: 'x', pid: 1, startedAt: 0 }];
+    const goals = reapableGoals(rows, () => false, () => FOUR_HOURS - 1_000, FOUR_HOURS, FOUR_HOURS);
+    expect(goals).toEqual([]);
+  });
+
+  it('reaps a dead, parked row at or past the 4 hour bound', () => {
+    const rows = [{ goal: 'a', cwd: dir, briefPath: 'x', pid: 1, startedAt: 0 }];
+    const goals = reapableGoals(rows, () => false, () => 0, FOUR_HOURS, FOUR_HOURS);
+    expect(goals).toEqual(['a']);
+  });
+
+  it('reaps only the dead, old-enough rows out of a mixed set', () => {
+    const rows = [
+      { goal: 'alive', cwd: dir, briefPath: 'x', pid: 1, startedAt: 0 },
+      { goal: 'young', cwd: dir, briefPath: 'x', pid: 2, startedAt: 0 },
+      { goal: 'old', cwd: dir, briefPath: 'x', pid: 3, startedAt: 0 },
+    ];
+    const parkAt: Record<string, number | undefined> = { young: FOUR_HOURS - 1, old: 0 };
+    const goals = reapableGoals(
+      rows, (pid) => pid === 1, (goal) => parkAt[goal], FOUR_HOURS, FOUR_HOURS,
+    );
+    expect(goals).toEqual(['old']);
   });
 });

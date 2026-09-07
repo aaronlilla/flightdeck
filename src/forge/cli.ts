@@ -61,14 +61,15 @@ import { loadPolicy, modelFor, modelIdFor, tierOfBrief } from './policy.js';
 import { attestationCoversHead, checkHandoff, providerFor, redact, verified } from './contracts.js';
 import type { CouncilAttestation, HaipingHandoff, JoeHandoff } from './contracts.js';
 import { evaluateAction } from './rules/index.js';
-import { processAlive, reconcileRegistry, Registry } from './registry.js';
+import { readParkRecord } from './parkrecord.js';
+import { processAlive, reconcileRegistry, Registry, relaunchAbandonedGoal } from './registry.js';
 import { reasonerFor } from './reasoner-claude.js';
 import { deliverAnswer, RunInbox } from './runinbox.js';
 import { SdkEngine } from './sdkengine.js';
 import { FORGE_PORT, ForgeServer } from './server.js';
 import { Breaker, clearKillSwitch, Fleet, Lanes, readKillSwitch } from './supervisor.js';
 import { WardenActuator } from './warden.js';
-import { WardenTick, type WardenTickRun } from './warden-tick.js';
+import { DriftCadenceTracker, WardenTick, type WardenTickRun } from './warden-tick.js';
 import { Worker, type EngineLike, type WorkerConfig } from './worker.js';
 import {
   chainStatusLines, foldChainState, runChainTick, runKeyForBrief,
@@ -425,6 +426,15 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         journal: wardenJournal, journalPath: journalPath(), registry, lanes,
       });
       const wardenBlockers = new BlockerBoard({ journal: wardenJournal, actuator: wardenActuator });
+      // B.9: every 10 turns or 5 minutes per run, replacing the "always due" default.
+      const driftCadence = new DriftCadenceTracker();
+      // B.2: a fresh engine for the one relaunch a registry-abandoned goal ever gets from
+      // this tick -- built once, reused across every relaunch this `forge up` process
+      // ever attempts, the same as the reconcile engine above but kept open for the
+      // process's lifetime rather than closed after the startup pass.
+      const relaunchEngine = deps.engine ?? new SdkEngine({
+        journalPath: journalPath(), inboxDir: inboxDir(), gotchasDir: gotchasDir(),
+      });
       const wardenTick = new WardenTick({
         journal: wardenJournal,
         actuator: wardenActuator,
@@ -433,6 +443,17 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         now: () => Date.now(),
         stuck: () => liveness.stuck(),
         isRegisteredRun: (key: string) => Boolean(registry.get(key)) || Boolean(lanes.get(key)),
+        relaunchAbandoned: (goal: string) => relaunchAbandonedGoal(registry, relaunchEngine, goal),
+        registryRows: () => registry.all(),
+        isAlive: (pid) => (deps.alive ?? processAlive)(pid),
+        parkedAt: (goal) => readParkRecord(goal)?.at,
+        releaseRegistryRow: (goal) => registry.remove(goal),
+        markLaneDead: (goal) => { lanes.put(goal, { verdict: 'dead' }); },
+        killSwitch: () => readKillSwitch(killSwitchPath()),
+        dueForConformanceCheck: (run) => {
+          const fleetState = sharedJournalCache.read(journalPath());
+          return driftCadence.isDue(run, fleetState.runs[run]?.turns ?? 0, Date.now());
+        },
         liveRuns: (): WardenTickRun[] => {
           const fleetState = sharedJournalCache.read(journalPath());
           return Object.values(fleetState.runs)

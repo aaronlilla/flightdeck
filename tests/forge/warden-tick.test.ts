@@ -14,9 +14,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ExtendedStuckSignal, Reasoner } from '../../src/forge/contracts.js';
 import { BlockerBoard } from '../../src/forge/blockers.js';
 import { Journal, replay } from '../../src/forge/journal.js';
-import { Registry } from '../../src/forge/registry.js';
+import { Registry, type RelaunchOutcome } from '../../src/forge/registry.js';
 import { WardenActuator } from '../../src/forge/warden.js';
-import { WardenTick } from '../../src/forge/warden-tick.js';
+import { DriftCadenceTracker, WardenTick } from '../../src/forge/warden-tick.js';
 import { readParkRecord } from '../../src/forge/parkrecord.js';
 
 let dir: string;
@@ -248,5 +248,189 @@ describe('WardenTick.run', () => {
     await tick.run();
     const state = replay(journalPath);
     expect(state.events.some((event) => event.event === 'warden.parked' && event.run === 'good')).toBe(true);
+  });
+
+  describe('B.2: registry-abandoned relaunch', () => {
+    it('relaunches once and journals run.relaunched, never warden.parked, on the first death', async () => {
+      let calls = 0;
+      const tick = new WardenTick({
+        journal, actuator, blockers: new BlockerBoard({ journal, actuator }),
+        now: () => Date.now(),
+        stuck: () => [makeStuck({
+          key: 'r1', signal: 'registry-abandoned',
+          hint: 'run r1 has a registry row from a process that is no longer alive',
+        })],
+        liveRuns: () => [],
+        reportFleetHealth: () => 0,
+        relaunchAbandoned: async (): Promise<RelaunchOutcome> => { calls += 1; return 'relaunched'; },
+      });
+
+      await tick.run();
+
+      expect(calls).toBe(1);
+      const state = replay(journalPath);
+      expect(state.events.some((e) => e.event === 'run.relaunched' && e.run === 'r1')).toBe(true);
+      expect(state.events.some((e) => e.event === 'warden.parked')).toBe(false);
+    });
+
+    it('parks on a second death under the same goal, without relaunching again', async () => {
+      let calls = 0;
+      const tick = new WardenTick({
+        journal, actuator, blockers: new BlockerBoard({ journal, actuator }),
+        now: () => Date.now(),
+        stuck: () => [makeStuck({
+          key: 'r1', signal: 'registry-abandoned',
+          hint: 'run r1 has a registry row from a process that is no longer alive',
+        })],
+        liveRuns: () => [],
+        reportFleetHealth: () => 0,
+        relaunchAbandoned: async (): Promise<RelaunchOutcome> => { calls += 1; return 'relaunched'; },
+      });
+
+      await tick.run(); // first death: relaunches
+      await tick.run(); // the same trip is still open (relaunch is quiet on how it went)
+
+      expect(calls).toBe(1);
+      const state = replay(journalPath);
+      expect(state.events.filter((e) => e.event === 'run.relaunched')).toHaveLength(1);
+      const parkedRows = state.events.filter((e) => e.event === 'warden.parked' && e.run === 'r1');
+      expect(parkedRows).toHaveLength(1);
+    });
+
+    it('with no relaunchAbandoned wired at all, parks on the very first sighting', async () => {
+      const tick = new WardenTick({
+        journal, actuator, blockers: new BlockerBoard({ journal, actuator }),
+        now: () => Date.now(),
+        stuck: () => [makeStuck({
+          key: 'r1', signal: 'registry-abandoned',
+          hint: 'run r1 has a registry row from a process that is no longer alive',
+        })],
+        liveRuns: () => [],
+        reportFleetHealth: () => 0,
+      });
+
+      await tick.run();
+
+      const state = replay(journalPath);
+      expect(state.events.some((e) => e.event === 'run.relaunched')).toBe(false);
+      expect(state.events.some((e) => e.event === 'warden.parked' && e.run === 'r1')).toBe(true);
+    });
+  });
+
+  describe('B.3: reap the provably dead', () => {
+    it('reaps a dead, long-parked row and journals registry.reaped, signalling no process', async () => {
+      let released: string | undefined;
+      let laneMarked: string | undefined;
+      const tick = new WardenTick({
+        journal, actuator, blockers: new BlockerBoard({ journal, actuator }),
+        now: () => 5 * 60 * 60_000,
+        stuck: () => [],
+        liveRuns: () => [],
+        reportFleetHealth: () => 0,
+        registryRows: () => [{ goal: 'r1', cwd: 'nowhere/r1', briefPath: 'nowhere/brief.md', pid: 1, startedAt: 0 }],
+        isAlive: () => false,
+        parkedAt: () => 0,
+        releaseRegistryRow: (goal) => { released = goal; },
+        markLaneDead: (goal) => { laneMarked = goal; },
+      });
+
+      await tick.run();
+
+      expect(killed).toHaveLength(0);
+      expect(released).toBe('r1');
+      expect(laneMarked).toBe('r1');
+      const state = replay(journalPath);
+      expect(state.events.some((e) => e.event === 'registry.reaped' && e.run === 'r1')).toBe(true);
+    });
+
+    it('never reaps a live pid or a row younger than the bound', async () => {
+      let released = false;
+      const tick = new WardenTick({
+        journal, actuator, blockers: new BlockerBoard({ journal, actuator }),
+        now: () => 1_000_000,
+        stuck: () => [],
+        liveRuns: () => [],
+        reportFleetHealth: () => 0,
+        registryRows: () => [
+          { goal: 'alive', cwd: 'x', briefPath: 'x', pid: 1, startedAt: 0 },
+          { goal: 'young', cwd: 'x', briefPath: 'x', pid: 2, startedAt: 0 },
+        ],
+        isAlive: (pid) => pid === 1,
+        parkedAt: () => 999_000,
+        releaseRegistryRow: () => { released = true; },
+      });
+
+      await tick.run();
+
+      expect(released).toBe(false);
+      const state = replay(journalPath);
+      expect(state.events.some((e) => e.event === 'registry.reaped')).toBe(false);
+    });
+  });
+
+  describe('B.6: stale kill switch visibility', () => {
+    it('journals warden.health once immediately while engaged, then again only after 30 minutes', async () => {
+      let now = 0;
+      const tick = new WardenTick({
+        journal, actuator, blockers: new BlockerBoard({ journal, actuator }),
+        now: () => now,
+        stuck: () => [],
+        liveRuns: () => [],
+        reportFleetHealth: () => 0,
+        killSwitch: () => ({ engaged: true, reason: 'stop --all' }),
+      });
+
+      await tick.run();
+      now += 5 * 60_000;
+      await tick.run();
+      now += 30 * 60_000;
+      await tick.run();
+
+      const state = replay(journalPath);
+      const rows = state.events.filter((e) => e.event === 'warden.health' && e['key'] === 'kill-switch');
+      expect(rows).toHaveLength(2);
+    });
+
+    it('never journals anything while disengaged', async () => {
+      const tick = new WardenTick({
+        journal, actuator, blockers: new BlockerBoard({ journal, actuator }),
+        now: () => Date.now(),
+        stuck: () => [],
+        liveRuns: () => [],
+        reportFleetHealth: () => 0,
+        killSwitch: () => ({ engaged: false }),
+      });
+
+      await tick.run();
+      await tick.run();
+
+      const state = replay(journalPath);
+      expect(state.events.some((e) => e.event === 'warden.health' && e['key'] === 'kill-switch')).toBe(false);
+    });
+  });
+});
+
+describe('DriftCadenceTracker (B.9)', () => {
+  it('is due the first time a run is asked about, then not again until 10 turns pass', () => {
+    const cadence = new DriftCadenceTracker(10, 5 * 60_000);
+    expect(cadence.isDue('r1', 0, 0)).toBe(true);
+    expect(cadence.isDue('r1', 3, 1_000)).toBe(false);
+    expect(cadence.isDue('r1', 9, 2_000)).toBe(false);
+    expect(cadence.isDue('r1', 10, 3_000)).toBe(true);
+  });
+
+  it('is also due once 5 minutes pass with no new turns', () => {
+    const cadence = new DriftCadenceTracker(10, 5 * 60_000);
+    expect(cadence.isDue('r1', 0, 0)).toBe(true);
+    expect(cadence.isDue('r1', 1, 4 * 60_000)).toBe(false);
+    expect(cadence.isDue('r1', 1, 5 * 60_000)).toBe(true);
+  });
+
+  it('tracks each run independently', () => {
+    const cadence = new DriftCadenceTracker(10, 5 * 60_000);
+    expect(cadence.isDue('r1', 0, 0)).toBe(true);
+    expect(cadence.isDue('r2', 0, 0)).toBe(true);
+    expect(cadence.isDue('r1', 5, 1_000)).toBe(false);
+    expect(cadence.isDue('r2', 10, 1_000)).toBe(true);
   });
 });
