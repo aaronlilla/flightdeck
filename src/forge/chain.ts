@@ -127,6 +127,13 @@ export interface ChainGh {
 export interface ChainCouncilResult {
   verdict: string;
   attestationPath?: string;
+  /** GATE.md item 4: `forge council`'s own `coverageNote` (from its `data`), set only
+   *  when the round required a member that never answered even after a retry -- e.g.
+   *  "reviewed by 1 of 3 (missing: regression-risk, scope-conformance)". The queue's
+   *  `advanceItem` folds this into a parked item's own `reason`, so the gap is on the
+   *  board rather than only recoverable from an attestation file (which a coverage-
+   *  caused FIX FIRST never even writes). */
+  coverageNote?: string;
 }
 
 export type ChainCouncilFn = (input: {

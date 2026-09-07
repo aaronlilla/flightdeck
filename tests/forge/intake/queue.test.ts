@@ -245,6 +245,26 @@ describe('advanceItem', () => {
     expect(result.reason).toBe('FIX FIRST');
   });
 
+  it('GATE.md item 4: a council parked on missing coverage carries that in the reason, not just the bare verdict', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({
+        verdict: 'FIX FIRST', coverageNote: 'reviewed by 1 of 3 (missing: regression-risk, scope-conformance)',
+      }),
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    const result = await advanceItem(current, deps);
+    expect(result.state).toBe('parked');
+    expect(result.reason).toContain('FIX FIRST');
+    expect(result.reason).toContain('reviewed by 1 of 3');
+    expect(result.reason).toContain('regression-risk');
+  });
+
   it('parks an item whose run finished but no verdict was done', async () => {
     const store = tempStore();
     const item = addTicketItem(store, 'ABC-1', 1000);

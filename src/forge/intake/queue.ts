@@ -311,7 +311,11 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
   });
   const councilCleared = council.verdict === 'PASS' || council.verdict === 'PASS WITH NOTES';
   if (!councilCleared) {
-    return writeTransition(item, { state: 'parked', reason: council.verdict }, deps, 'queue.parked', { hop: 'gate' });
+    // GATE.md item 4: when the council itself named which members never answered, that
+    // rides along on the parked reason -- a bare "FIX FIRST" tells nobody whether the
+    // diff had a real problem or the round never got read.
+    const reason = council.coverageNote ? `${council.verdict}: ${council.coverageNote}` : council.verdict;
+    return writeTransition(item, { state: 'parked', reason }, deps, 'queue.parked', { hop: 'gate' });
   }
 
   // The one line that makes "every item stops at a draft PR" true: `merge` is always

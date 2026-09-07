@@ -116,6 +116,9 @@ describe('forge council', () => {
     const attestation = JSON.parse(readFileSync(attPath, 'utf8'));
     expect(attestation.verdict).toBe('PASS');
     expect(attestation.head).toBe('head-1');
+    // GATE.md item 4: full coverage is on the attestation too, not only inferable from
+    // an absent finding -- "reviewed by 1 of 1" should be as readable as "reviewed by 2 of 4".
+    expect(attestation.coverage).toEqual({ total: 1, missing: [] });
 
     const state = replay(join(home, 'fleet.jsonl'));
     expect(state.events.some((e) => e.event === 'council.lens')).toBe(true);
@@ -223,6 +226,11 @@ describe('forge council', () => {
     // is decided in code before the verdict is trusted, so this is FIX FIRST, not PASS.
     expect(result.code).toBe(1);
     expect(result.lines.join(' ')).toMatch(/verdict: FIX FIRST/);
+    // GATE.md item 4: the gap is on the round's own result, not only recoverable by
+    // reading the attestation file (which this verdict never even writes) -- a queue
+    // item that parks on this can carry "reviewed by 0 of 1" as its own reason.
+    expect(result.data?.['coverageNote']).toContain('reviewed by 0 of 1');
+    expect(result.data?.['coverageNote']).toContain('correctness');
 
     // FIX FIRST writes no attestation: nothing here could ever have cleared the gate.
     const attPath = attestationPath(REPO, PR, 'head-1');

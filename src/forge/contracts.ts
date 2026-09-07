@@ -1215,6 +1215,14 @@ export interface CouncilAttestation {
   judge: { model: string; verdict: CouncilVerdict };
   ci: { runId: string; headSha: string };
   at: VerifiedField<number>;
+  /** GATE.md item 4: which members this round required and which of those never
+   *  answered, even after a retry -- carried on the attestation itself so "reviewed by 2
+   *  of 4" reads straight off this record rather than only being inferable from an
+   *  absent finding. An attestation only ever exists for a verdict that cleared, so
+   *  `missing` is always empty here in practice; the field still ships on every
+   *  attestation, not only a short one, so a reader never has to wonder whether its
+   *  absence means full coverage or an older record. */
+  coverage: { total: number; missing: string[] };
 }
 
 export const CouncilAttestationSchema = z.object({
@@ -1230,6 +1238,7 @@ export const CouncilAttestationSchema = z.object({
   judge: z.object({ model: z.string().min(1), verdict: CouncilVerdictSchema }),
   ci: z.object({ runId: z.string().min(1), headSha: z.string().min(1) }),
   at: VerifiedFieldSchema(z.number()),
+  coverage: z.object({ total: z.number().int().nonnegative(), missing: z.array(z.string()) }),
 });
 
 /**

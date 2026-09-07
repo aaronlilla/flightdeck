@@ -33,6 +33,7 @@ function fixtureAttestation(overrides: Partial<CouncilAttestation> = {}): Counci
     judge: { model: 'claude-opus-5', verdict: 'PASS' },
     ci: { runId: 'run-1', headSha: 'aaaaaaa' },
     at: verified(Date.now(), 'journal:council.attested'),
+    coverage: { total: 3, missing: [] },
     ...overrides,
   };
 }

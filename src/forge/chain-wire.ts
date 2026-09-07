@@ -610,6 +610,7 @@ export function chainCouncil(deps: ForgeDeps): ChainCouncilFn {
     return {
       verdict,
       ...(result.data?.['attestationPath'] ? { attestationPath: result.data['attestationPath'] as string } : {}),
+      ...(result.data?.['coverageNote'] ? { coverageNote: result.data['coverageNote'] as string } : {}),
     };
   };
 }

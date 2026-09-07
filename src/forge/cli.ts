@@ -1161,6 +1161,16 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           .sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity])
           .map((f) => `  [${f.severity}/${f.confidence}] ${f.file}:${f.line} -- ${f.claim}`);
 
+        // GATE.md item 4: a member missing from this round is on the board, not only
+        // recoverable by reading a file -- `coverageNote` reaches `forge council`'s own
+        // `data`, which `chain-wire.ts`'s `chainCouncil` and the queue's `advanceItem`
+        // read to name the gap in a parked item's own reason, and `coverage` below lands
+        // on the attestation itself for a round that did clear.
+        const membersRan = round.membersTotal - round.missingMembers.length;
+        const coverageNote = round.missingMembers.length
+          ? `reviewed by ${membersRan} of ${round.membersTotal} (missing: ${round.missingMembers.join(', ')})`
+          : undefined;
+
         // FIX FIRST re-enters the worker (`rounds.ts`'s own state machine) rather than
         // clearing the gate; an attestation exists only for a verdict that could ever
         // clear it, so a FIX FIRST round writes none (acceptance specimen: exit 1, no
@@ -1172,7 +1182,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
               `verdict: ${round.verdict}`,
               ...(findingLines.length ? findingLines : ['no deciding findings']),
             ],
-            data: { verdict: round.verdict },
+            data: { verdict: round.verdict, ...(coverageNote ? { coverageNote } : {}) },
           };
         }
 
@@ -1183,6 +1193,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           judge: { model: modelIdFor(modelFor('audit-judge')), verdict: round.verdict },
           ci: { runId: snapshot.checks.runId, headSha: snapshot.checks.headSha },
           at: verified(Date.now(), 'gh pr view'),
+          coverage: { total: round.membersTotal, missing: round.missingMembers },
         };
         const attPath = writeAttestation(attestation);
         councilJournal.append({
@@ -1197,7 +1208,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
             ...(findingLines.length ? findingLines : ['no deciding findings']),
             `attestation: ${attPath}`,
           ],
-          data: { verdict: round.verdict, attestationPath: attPath },
+          data: { verdict: round.verdict, attestationPath: attPath, ...(coverageNote ? { coverageNote } : {}) },
         };
       } finally {
         councilJournal.close();

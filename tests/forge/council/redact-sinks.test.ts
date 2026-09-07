@@ -28,6 +28,7 @@ function attestation(): CouncilAttestation {
     judge: { model: 'claude-opus-5', verdict: 'PASS' },
     ci: { runId: 'r', headSha: 'a' },
     at: verified(Date.now(), 'test'),
+    coverage: { total: 0, missing: [] },
   };
 }
 

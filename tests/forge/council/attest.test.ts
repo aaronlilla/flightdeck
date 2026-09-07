@@ -33,6 +33,7 @@ function attestation(overrides: Partial<CouncilAttestation> = {}): CouncilAttest
     judge: { model: 'claude-opus-5', verdict: 'PASS' },
     ci: { runId: 'run-1', headSha: 'headsha1' },
     at: verified(1000, 'gh pr view'),
+    coverage: { total: 0, missing: [] },
     ...overrides,
   };
 }
