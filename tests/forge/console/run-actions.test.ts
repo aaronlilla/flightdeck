@@ -143,6 +143,18 @@ describe('killRun', () => {
     expect(row?.undo).toBeNull();
   });
 
+  it('kills the live successor of a handed-off chain, not only the root the tile names', async () => {
+    registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'alpha' });
+    appendOnce(journalPath, { event: 'run.handoff', run: 'alpha', successor: 'alpha-2', reason: 'context ceiling' });
+    appendOnce(journalPath, { event: 'run.started', run: 'alpha-2' });
+
+    const result = await killRun('alpha', 'stop it', deps);
+
+    expect(result.status).toBe(200);
+    expect(actuator.killed.map((k) => k.run)).toEqual(['alpha-2', 'alpha']);
+  });
+
   it('allows a kill on a blocked run, so blocked is never a dead end', async () => {
     // A run parked by liveness's stuck-session signal, or by a stale cross-process park
     // record, reads as `blocked` (`needs_aaron`/`run.blocked`), and that state's own

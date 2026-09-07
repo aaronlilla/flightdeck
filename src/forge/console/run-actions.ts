@@ -15,6 +15,7 @@ import { asRunId, type Actuator } from '../contracts.js';
 import { foldChainState, type ChainPacketState } from '../chain.js';
 import { run as execRun, type RunRequest } from '../exec.js';
 import { replay } from '../journal.js';
+import { chainLinks } from './lanes.js';
 import { forgeHome } from '../paths.js';
 import type { Registry } from '../registry.js';
 import type { Lanes } from '../supervisor.js';
@@ -115,7 +116,18 @@ export async function killRun(run: string, reason: string, deps: RunActionsDeps)
   // `GET /journal` row. Passing `jid` here meant every board-driven kill recorded its
   // decision, then had the actuator refuse it a line later for failing to find that exact
   // decision -- reporting success to the operator while the process kept running.
-  await deps.actuator.kill(asRunId(run), id);
+  // A lane is a chain: after a context handoff the live process belongs to the newest
+  // successor, not the run id the tile carries. Killing only the root left a handed-off
+  // worker running under a lane that read `running` with no way to stop it (2026-09-07).
+  // Every link that is not already over gets the same decision, newest first.
+  const fleet = replay(deps.journalPath);
+  const links = chainLinks(fleet.runs, run).map((link) => link.key);
+  const targets = [...new Set([...links.reverse(), run])];
+  for (const target of targets) {
+    const state = fleet.runs[target]?.state;
+    if (state === 'killed' || state === 'finished') continue;
+    await deps.actuator.kill(asRunId(target), id);
+  }
   return { status: 200, body: { ok: true, jid, message: `kill requested for ${run}`, undoable: false } };
 }
 
