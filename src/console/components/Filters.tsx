@@ -19,6 +19,8 @@ export interface FiltersProps {
   onFilter: (filter: Filter) => void;
   onSort: (sort: Sort) => void;
   onToggleProbes: () => void;
+  onCleanUp: () => void;
+  onMergeReady: () => void;
 }
 
 const BASE_FILTERS: { key: Filter; label: string }[] = [
@@ -39,7 +41,7 @@ function groupCount(lanes: Lane[], filter: Filter, sort: Sort, now: number, show
 }
 
 export function Filters({
-  filter, sort, repos, lanes, archivedLanes, showProbes, now, onFilter, onSort, onToggleProbes,
+  filter, sort, repos, lanes, archivedLanes, showProbes, now, onFilter, onSort, onToggleProbes, onCleanUp, onMergeReady,
 }: FiltersProps): JSX.Element {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 16px 0', flexWrap: 'wrap' }}>
@@ -67,6 +69,8 @@ export function Filters({
         Probes
       </span>
       <span style={{ flex: 1 }} />
+      <span className="btnS" style={{ padding: '6px 10px', fontSize: '9.5px' }} onClick={onCleanUp}>Clean up</span>
+      <span className="btnP" style={{ padding: '6px 10px', fontSize: '9.5px' }} onClick={onMergeReady}>Merge ready</span>
       <span className="m" style={{ fontSize: '10.5px', color: 'var(--ink2)', whiteSpace: 'nowrap' }}>
         sort:
         {SORTS.map((s) => (

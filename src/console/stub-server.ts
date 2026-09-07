@@ -197,6 +197,31 @@ function stubJournalNarrative(lane: Lane): { t: number; text: string; color: str
   return entries;
 }
 
+/** H2.4: the ticket sheet's Story section (`GET /run/:id/story`) -- built off this
+ *  fixture lane's own fields, the same stand-in approach `stubJournalNarrative`
+ *  already takes for the journal panel. */
+function stubStory(lane: Lane | undefined, id: string): import('../shared/console-model.js').LaneStory {
+  if (!lane) {
+    return { id, title: null, kind: 'manual', ticket: null, brief: null, entries: [] };
+  }
+  const entries: import('../shared/console-model.js').LaneStoryEntry[] = [
+    { at: lane.startedAt, kind: 'ticket', text: `started on ${lane.ticket ?? lane.id}`, url: lane.sourceUrl },
+  ];
+  if (lane.sandbox) entries.push({ at: lane.startedAt + 60_000, kind: 'branch', text: `branch ${lane.sandbox.branch ?? lane.id.toLowerCase()} pushed`, url: null });
+  if (lane.pr) entries.push({ at: lane.since - 30_000, kind: 'pr', text: `opened PR #${lane.pr.no}`, url: lane.pr.url });
+  if (lane.state === 'parked' && lane.question) entries.push({ at: lane.since, kind: 'park', text: `parked: ${lane.question.text}`, url: null });
+  else if (lane.state === 'merged') entries.push({ at: lane.since, kind: 'merge', text: 'merged into develop', url: lane.pr?.url ?? null });
+  else if (lane.state === 'killed') entries.push({ at: lane.since, kind: 'end', text: 'killed', url: null });
+  return {
+    id: lane.id,
+    title: lane.title,
+    kind: lane.kind,
+    ticket: lane.ticket ? { key: lane.ticket, url: lane.sourceUrl, summary: lane.title } : null,
+    brief: lane.title ? { path: `briefs/${lane.ticket ?? lane.id}.md`, excerpt: lane.title } : null,
+    entries,
+  };
+}
+
 function json(response: ServerResponse, status: number, body: unknown): void {
   const text = JSON.stringify(body);
   response.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(text) });
@@ -492,6 +517,60 @@ export function createStubServer() {
         json(response, 200, { rules: db.rules, metrics, computedAt: Date.now() });
         return;
       }
+      // H2.3: `/retire-finished` -- a done/merged/killed/probe lane with no open PR is
+      // a candidate. GET previews it, POST retires it (sets `retiredAt`).
+      const RETIRABLE_STATES = new Set(['done', 'merged', 'killed']);
+      const retirable = (): Lane[] => db.lanes.filter((l) => (
+        l.retiredAt === null && (RETIRABLE_STATES.has(l.state) || l.kind === 'probe') && (!l.pr || l.pr.merged !== false)
+      ));
+      if (urlPath === '/retire-finished' && method === 'GET') {
+        json(response, 200, { items: retirable().map((l) => ({ id: l.id, title: l.title })) });
+        return;
+      }
+      if (urlPath === '/retire-finished' && method === 'POST') {
+        const targets = retirable();
+        const now = Date.now();
+        for (const l of targets) l.retiredAt = now;
+        json(response, 200, { ok: true, retired: targets.map((l) => l.id) });
+        return;
+      }
+      // H2.3: `/merge-ready` -- a `done` lane is ready when it carries no `mergeable`
+      // refusal; GET previews the split, POST merges every ready one.
+      const mergeSplit = (): { ready: Lane[]; notReady: { lane: Lane; why: string }[] } => {
+        const ready: Lane[] = [];
+        const notReady: { lane: Lane; why: string }[] = [];
+        for (const l of db.lanes) {
+          if (l.state !== 'done') continue;
+          if (l.mergeable && l.mergeable.ok === false) notReady.push({ lane: l, why: l.mergeable.why });
+          else ready.push(l);
+        }
+        return { ready, notReady };
+      };
+      if (urlPath === '/merge-ready' && method === 'GET') {
+        const { ready, notReady } = mergeSplit();
+        json(response, 200, {
+          ready: ready.map((l) => ({ id: l.id, title: l.title, pr: l.pr })),
+          notReady: notReady.map(({ lane: l, why }) => ({ id: l.id, title: l.title, pr: l.pr, why })),
+        });
+        return;
+      }
+      if (urlPath === '/merge-ready' && method === 'POST') {
+        const { ready, notReady } = mergeSplit();
+        for (const l of ready) { l.state = 'merged'; l.hop = 5; l.hopStatus = 'done'; journal('chain.merged', `${l.id} merged`, l.id, false); }
+        json(response, 200, {
+          ok: true, merged: ready.map((l) => l.id), failed: notReady.map(({ lane: l, why }) => ({ id: l.id, why })),
+        });
+        return;
+      }
+
+      const runStoryMatch = /^\/run\/([^/]+)\/story$/.exec(urlPath);
+      if (runStoryMatch && method === 'GET') {
+        const id = decodeURIComponent(runStoryMatch[1] as string);
+        const l = findLane(id);
+        json(response, 200, stubStory(l, id));
+        return;
+      }
+
       if (urlPath === '/queue' && method === 'GET') {
         json(response, 200, { items: db.queue, paused: db.queuePaused, maxInFlight: 2, pauseReason: db.queuePauseReason });
         return;
