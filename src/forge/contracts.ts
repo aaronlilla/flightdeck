@@ -272,6 +272,12 @@ export const FORGE_EVENT_NAMES = [
   // C.1: `POST /amend` correcting a running item's brief mid-flight (adding only this one
   // name here -- this file is shared across streams).
   'brief.amended',
+  // F, 2026-09-07: the self-iteration stream's own rows (`src/forge/self/**`).
+  // `self.finding` for one `SelfFinding` `analyze()` surfaced; `self.enqueued` when a
+  // finding becomes a queue item; `self.merged`/`self.merge-refused` for
+  // `selfMergeAllowed`'s own decision on a self-repo item; `self.restart` when
+  // `cutoverDue` finds the fleet idle on a moved `origin/main` and pulls it in.
+  'self.finding', 'self.enqueued', 'self.merged', 'self.merge-refused', 'self.restart',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];
