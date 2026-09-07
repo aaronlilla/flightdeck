@@ -49,6 +49,14 @@ export interface GhWriter {
   mergePr(repo: string, pr: number, subject: string, body: string): Promise<GhWriteResult>;
   readyPr(repo: string, pr: number): Promise<GhWriteResult>;
   viewPrState(repo: string, pr: number): Promise<GhPrView>;
+  /** A.2: `gh pr comment`, gated through `evaluateAction` (a `pr`/`comment` action,
+   *  always allowed even on a controlled-code repo) so the queue exercises the same
+   *  rule every other write here does. Best effort at the call site -- a comment failing
+   *  never blocks an item from reaching `review`. */
+  commentPr(repo: string, pr: number, body: string): Promise<GhWriteResult>;
+  /** A.4: `gh pr edit --add-reviewer`, for the backend handoff -- requesting the backend
+   *  owner as a reviewer on a draft PR this queue will never merge itself. */
+  requestReviewer(repo: string, pr: number, reviewer: string): Promise<GhWriteResult>;
 }
 
 /**
@@ -157,6 +165,22 @@ export const REAL_GH: GhReader & GhWriter = {
   async readyPr(repo, pr) {
     const result = await execRun({
       argv: ['gh', 'pr', 'ready', String(pr), '--repo', repo],
+      cwd: process.cwd(), owner: 'council', cls: 'script',
+    });
+    return { returncode: result.returncode ?? -1, stderr: result.tail };
+  },
+
+  async commentPr(repo, pr, body) {
+    const result = await execRun({
+      argv: ['gh', 'pr', 'comment', String(pr), '--repo', repo, '--body', body],
+      cwd: process.cwd(), owner: 'council', cls: 'script',
+    });
+    return { returncode: result.returncode ?? -1, stderr: result.tail };
+  },
+
+  async requestReviewer(repo, pr, reviewer) {
+    const result = await execRun({
+      argv: ['gh', 'pr', 'edit', String(pr), '--repo', repo, '--add-reviewer', reviewer],
       cwd: process.cwd(), owner: 'council', cls: 'script',
     });
     return { returncode: result.returncode ?? -1, stderr: result.tail };

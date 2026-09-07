@@ -389,6 +389,47 @@ describe('fix round: FIX FIRST relaunches once, a second parks', () => {
   });
 });
 
+describe('review comment: A.2', () => {
+  it('posts the council notes on the PR before the item reaches review', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let commented: { repo: string; pr: number; body: string } | undefined;
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS WITH NOTES', findingsText: '[low/medium] src/x.ts:2 -- a small nit' }),
+    });
+    deps.commentOnPr = async (input) => { commented = input; };
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('review');
+    expect(commented?.repo).toBe('owner/name');
+    expect(commented?.pr).toBe(1);
+    expect(commented?.body).toContain('PASS WITH NOTES');
+    expect(commented?.body).toContain('a small nit');
+  });
+
+  it('a failing comment call never keeps a cleared item off review', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS' }),
+    });
+    deps.commentOnPr = async () => { throw new Error('gh: rate limited'); };
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('review');
+  });
+});
+
 describe('runQueueTick', () => {
   it('refuses to start anything while the kill switch is engaged', async () => {
     const store = tempStore();

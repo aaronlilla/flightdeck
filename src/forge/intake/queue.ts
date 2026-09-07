@@ -19,6 +19,8 @@ import { randomUUID } from 'node:crypto';
 
 import type { ChainCouncilFn, ChainGateFn, ChainGh, ChainLauncher } from '../chain.js';
 import type { QueueItem, QueueItemState, QueueSource } from '../../shared/console-model.js';
+import { evaluateAction } from '../rules/index.js';
+import { renderNotes } from '../council/renderNotes.js';
 import type { QueueStore } from './queueStore.js';
 
 /**
@@ -182,6 +184,10 @@ export interface QueueRuntimeDeps {
    *  environment never wires a fix round; a FIX FIRST then always parks, the behaviour
    *  every specimen before this stream already proved. */
   relaunchForFixRound?: (input: { item: QueueItem; findings: string }) => Promise<{ runKey: string }>;
+  /** A.2: posts the council's own notes on the PR before the item reaches `review`.
+   *  Best effort -- a comment failing never blocks the item; absent means this
+   *  environment never wires the write, and no comment is attempted. */
+  commentOnPr?: (input: { repo: string; pr: number; body: string }) => Promise<void>;
   /** Reused from `chain.ts` unchanged, but `advanceItem` never passes `merge: true` --
    *  the queue's own decision (every item stops at a draft PR) lives in this file, not
    *  in whatever the caller wires this to. */
@@ -357,6 +363,24 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
   // The one line that makes "every item stops at a draft PR" true: `merge` is always
   // `false`, never `deps.mergeAllowed`-derived or otherwise conditional.
   await deps.gate({ repo: item.repo!, pr: pr.number, merge: false });
+
+  // A.2: the council's own notes land on the PR before the item shows as `review`, so a
+  // reviewer never has to go dig an attestation file out of `~/.forge` to see what was
+  // found. Gated through `evaluateAction` (a `pr`/`comment` action is always allowed,
+  // even on a controlled-code repo -- `rules/gitflow.ts`'s own carve-out) so the write
+  // exercises the same rule every other Council write does. Best effort: a comment that
+  // fails must never keep an otherwise-cleared item off `review`.
+  if (deps.commentOnPr) {
+    const verdict = evaluateAction({ kind: 'pr', op: 'comment', repo: item.repo!, cwd: '' });
+    if (verdict.allow) {
+      const body = renderNotes({ verdict: council.verdict, coverageNote: council.coverageNote, findingsText: council.findingsText });
+      try {
+        await deps.commentOnPr({ repo: item.repo!, pr: pr.number, body });
+      } catch {
+        // Best effort, per A.2: the comment is a courtesy, not a gate.
+      }
+    }
+  }
 
   return writeTransition(
     item, { state: 'review', pr: { no: pr.number, url: pr.url, files: 0, add: 0, del: 0, draft: true } },
