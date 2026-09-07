@@ -12,6 +12,10 @@ export interface QueueViewProps {
   onRetry: (id: string) => void;
   onPause: () => void;
   onResume: () => void;
+  /** A.7: Merge and Promote are optional -- a caller that hasn't wired them yet still
+   *  gets a working board, just without those two buttons on a review/done card. */
+  onMerge?: (id: string) => void;
+  onPromote?: (id: string) => void;
 }
 
 interface StateTaxon {
@@ -31,11 +35,12 @@ const STATE_TAXONOMY: Record<QueueItemState, StateTaxon> = {
 };
 
 const SOURCE_LABEL: Record<QueueSource, string> = {
-  ticket: 'ticket', brief: 'brief', query: 'query', backlog: 'backlog',
+  ticket: 'ticket', brief: 'brief', query: 'query', backlog: 'backlog', hotfix: 'hotfix',
 };
 
-function QueueCard({ item, onRemove, onRetry }: {
+function QueueCard({ item, onRemove, onRetry, onMerge, onPromote }: {
   item: QueueItem; onRemove: (id: string) => void; onRetry: (id: string) => void;
+  onMerge?: (id: string) => void; onPromote?: (id: string) => void;
 }): JSX.Element {
   const taxon = STATE_TAXONOMY[item.state];
   return (
@@ -50,9 +55,23 @@ function QueueCard({ item, onRemove, onRetry }: {
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 7, borderTop: '1px solid var(--line)', paddingTop: 7 }}>
         {item.state === 'review' && item.pr ? (
-          <a href={item.pr.url} target="_blank" rel="noopener noreferrer" className="btnP" style={{ padding: '7px 9px', fontSize: 9.5, width: '100%', textAlign: 'center' }}>
-            Open PR #{item.pr.no} →
-          </a>
+          <>
+            <a href={item.pr.url} target="_blank" rel="noopener noreferrer" className="btnP" style={{ padding: '7px 9px', fontSize: 9.5, width: '100%', textAlign: 'center' }}>
+              Open PR #{item.pr.no} →
+            </a>
+            <div className="m" style={{ fontSize: 9.5, color: 'var(--ink3)', textAlign: 'center' }}>
+              {item.pr.files} file{item.pr.files === 1 ? '' : 's'}, +{item.pr.add}/-{item.pr.del}
+            </div>
+            {onMerge ? (
+              <span className="btnA" style={{ padding: '7px 9px', fontSize: 9.5, width: '100%', textAlign: 'center' }} onClick={() => onMerge(item.id)}>
+                Merge
+              </span>
+            ) : null}
+          </>
+        ) : item.state === 'done' && item.source === 'hotfix' && onPromote ? (
+          <span className="btnA" style={{ padding: '7px 9px', fontSize: 9.5, width: '100%', textAlign: 'center' }} onClick={() => onPromote(item.id)}>
+            Promote to production
+          </span>
         ) : (
           <span
             className={taxon.cta.cls}
@@ -72,7 +91,15 @@ const SOURCE_PLACEHOLDER: Record<QueueSource, string> = {
   brief: '# Goal: ...',
   query: 'sprint = 42 or "epic link" = BB-1',
   backlog: 'project = BB and status = Backlog',
+  hotfix: 'what\'s broken in production right now',
 };
+
+/** A.5: two quick-fill chips that build the query source's own JQL, rather than
+ *  requiring an operator to remember `sprint in openSprints()` by hand. */
+const QUERY_TEMPLATES: { label: string; jql: string }[] = [
+  { label: 'this sprint', jql: 'sprint in openSprints()' },
+  { label: 'epic…', jql: 'parent = KEY' },
+];
 
 function AddWork({ onAdd }: { onAdd: (source: QueueSource, input: string) => void }): JSX.Element {
   const [source, setSource] = useState<QueueSource>('ticket');
@@ -85,14 +112,28 @@ function AddWork({ onAdd }: { onAdd: (source: QueueSource, input: string) => voi
   return (
     <div className="plate" style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
       <div style={{ display: 'flex', gap: 8 }}>
-        {(['ticket', 'brief', 'query', 'backlog'] as const).map((s) => (
+        {(['ticket', 'brief', 'query', 'backlog', 'hotfix'] as const).map((s) => (
           <span key={s} className={`chip chipB ${source === s ? 'chipOn' : ''}`} onClick={() => setSource(s)}>
             {SOURCE_LABEL[s]}
           </span>
         ))}
       </div>
+      {source === 'query' ? (
+        <div style={{ display: 'flex', gap: 8 }}>
+          {QUERY_TEMPLATES.map((t) => (
+            <span key={t.label} className="chip" style={{ cursor: 'pointer' }} onClick={() => setInput(t.jql)}>
+              {t.label}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {source === 'hotfix' ? (
+        <div className="m" style={{ fontSize: 10.5, color: 'var(--ink3)' }}>
+          A hotfix ships to dev on Merge and to production only on a separate Promote click.
+        </div>
+      ) : null}
       <div style={{ background: 'var(--well)', boxShadow: 'inset 0 2px 5px rgba(0,0,0,.6)', borderRadius: 3, padding: '8px 10px', display: 'flex', gap: 8 }}>
-        {source === 'brief' ? (
+        {source === 'brief' || source === 'hotfix' ? (
           <textarea
             className="inp m" style={{ fontSize: 11.5, minHeight: 70, resize: 'vertical' }}
             placeholder={SOURCE_PLACEHOLDER[source]} value={input} onChange={(e) => setInput(e.target.value)}
@@ -114,7 +155,7 @@ function AddWork({ onAdd }: { onAdd: (source: QueueSource, input: string) => voi
  *  `.lane` shape, grouped by nothing but state color -- the same flat grid `LanesGrid`
  *  already uses for the run board. */
 export function QueueView(props: QueueViewProps): JSX.Element {
-  const { items, paused, maxInFlight, onAdd, onRemove, onRetry, onPause, onResume } = props;
+  const { items, paused, maxInFlight, onAdd, onRemove, onRetry, onPause, onResume, onMerge, onPromote } = props;
   const inFlight = items.filter((i) => i.state === 'planning' || i.state === 'running').length;
 
   return (
@@ -143,7 +184,7 @@ export function QueueView(props: QueueViewProps): JSX.Element {
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(215px,1fr))', gap: 10 }}>
           {items.map((item) => (
-            <QueueCard key={item.id} item={item} onRemove={onRemove} onRetry={onRetry} />
+            <QueueCard key={item.id} item={item} onRemove={onRemove} onRetry={onRetry} onMerge={onMerge} onPromote={onPromote} />
           ))}
         </div>
       )}

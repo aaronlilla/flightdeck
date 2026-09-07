@@ -14,8 +14,8 @@ import { describe, expect, it } from 'vitest';
 
 import type { ChainCouncilFn, ChainGateFn, ChainGh, ChainLauncher, ChainRunStatus } from '../../../src/forge/chain.js';
 import {
-  addBacklogItems, addBriefItem, addQueryItems, addTicketItem, advanceItem, QUEUE_IN_FLIGHT_STATES, removeItem,
-  retryItem, runQueueTick,
+  addBacklogItems, addBriefItem, addHotfixItem, addQueryItems, addTicketItem, advanceItem, mergeItem, promoteItem,
+  QUEUE_IN_FLIGHT_STATES, removeItem, retryItem, runQueueTick,
   type QueuePlanner, type QueueRuntimeDeps, type QueueTicketSearch,
 } from '../../../src/forge/intake/queue.js';
 import { QueueStore } from '../../../src/forge/intake/queueStore.js';
@@ -89,6 +89,12 @@ describe('addTicketItem / addBriefItem', () => {
     const store = tempStore();
     const item = addBriefItem(store, '# Goal: fix the thing', 1000);
     expect(item).toMatchObject({ source: 'brief', input: '# Goal: fix the thing', ticket: null, state: 'queued' });
+  });
+
+  it('A.6: adds a queued item for a typed hotfix with no ticket yet', () => {
+    const store = tempStore();
+    const item = addHotfixItem(store, 'null check crashes the login screen', 1000);
+    expect(item).toMatchObject({ source: 'hotfix', input: 'null check crashes the login screen', ticket: null, state: 'queued' });
   });
 });
 
@@ -305,6 +311,448 @@ describe('advanceItem', () => {
     expect(result.state).toBe('running');
     expect(result.briefPath).toBe('C:/briefs/ABC-2.md');
   });
+
+  // A.5: `advanceItem` had never been exercised end to end for a brief, a query or a
+  // backlog sourced item before this stream -- only `ticket` items ever reached it in a
+  // specimen, even though the same planning branch (`item.source === 'brief' ? planBrief
+  // : planTicket`) already handled all four.
+  it('walks a pasted brief through planBrief, never planTicket, to review', async () => {
+    const store = tempStore();
+    const item = addBriefItem(store, '# Goal: fix the null check', 1000);
+    let planTicketCalls = 0;
+    const { deps } = buildDeps(store, {
+      planner: {
+        planTicket: async (ticket) => { planTicketCalls += 1; return { ticket, repo: 'owner/name', briefPath: 'x' }; },
+      },
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/3' }) },
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    expect(current.ticket).toBe('BRIEF-1');
+    expect(current.briefPath).toBe('C:/briefs/brief-1.md');
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('review');
+    expect(planTicketCalls).toBe(0);
+  });
+
+  it('walks a query-resolved ticket through planTicket, the same as a ticket-sourced item, to review', async () => {
+    const store = tempStore();
+    const search: QueueTicketSearch = { searchKeys: async () => ['ABC-1'] };
+    const [item] = await addQueryItems(store, 'sprint = 42', search, 1000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/4' }) },
+    });
+
+    let current = item!;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('review');
+    expect(current.source).toBe('query');
+    expect(current.ticket).toBe('ABC-1');
+  });
+
+  it('walks a backlog-resolved ticket to review the same way', async () => {
+    const store = tempStore();
+    const search: QueueTicketSearch = { searchKeys: async () => ['ABC-9'] };
+    const [item] = await addBacklogItems(store, 'project = BB AND text ~ "flaky"', search, 1000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/5' }) },
+    });
+
+    let current = item!;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('review');
+    expect(current.source).toBe('backlog');
+    expect(current.ticket).toBe('ABC-9');
+  });
+
+  it('A.6: a hotfix routes through planHotfix, never planTicket or planBrief', async () => {
+    const store = tempStore();
+    const item = addHotfixItem(store, 'null check crashes the login screen', 1000);
+    let planBriefCalls = 0;
+    let planTicketCalls = 0;
+    let planHotfixInput: string | undefined;
+    const { deps } = buildDeps(store, {
+      planner: {
+        planBrief: async (text) => { planBriefCalls += 1; return { ticket: 'x', repo: 'owner/name', briefPath: 'x' }; },
+        planTicket: async (ticket) => { planTicketCalls += 1; return { ticket, repo: 'owner/name', briefPath: 'x' }; },
+      },
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/6' }) },
+    });
+    deps.planner.planHotfix = async (text) => {
+      planHotfixInput = text;
+      return { ticket: 'hotfix-null-check-1', repo: 'owner/name', briefPath: 'C:/briefs/hotfix-null-check-1.md' };
+    };
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    expect(current.ticket).toBe('hotfix-null-check-1');
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('review');
+    expect(planBriefCalls).toBe(0);
+    expect(planTicketCalls).toBe(0);
+    expect(planHotfixInput).toBe('null check crashes the login screen');
+  });
+
+  it('A.6: a hotfix falls back to planBrief when planHotfix is not wired', async () => {
+    const store = tempStore();
+    const item = addHotfixItem(store, 'null check crashes the login screen', 1000);
+    let planBriefInput: string | undefined;
+    const { deps } = buildDeps(store, {
+      planner: { planBrief: async (text) => { planBriefInput = text; return { ticket: 'x', repo: 'owner/name', briefPath: 'x' }; } },
+    });
+
+    const result = await advanceItem(item, deps);
+    expect(result.ticket).toBe('x');
+    expect(planBriefInput).toBe('null check crashes the login screen');
+  });
+});
+
+describe('fix round: FIX FIRST relaunches once, a second parks', () => {
+  it('relaunches the worker on the first FIX FIRST, carrying the findings as its brief', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let relaunchInput: { item: { id: string }; findings: string } | undefined;
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'FIX FIRST', findingsText: '[high/high] src/x.ts:1 -- bad thing' }),
+    });
+    deps.relaunchForFixRound = async (input) => { relaunchInput = input; return { runKey: 'abc-1-fix-1' }; };
+
+    let current = item;
+    current = await advanceItem(current, deps); // plan
+    current = await advanceItem(current, deps); // launch
+    const result = await advanceItem(current, deps); // gate -> fix round
+
+    expect(result.state).toBe('running');
+    expect(result.fixRoundsUsed).toBe(1);
+    expect(result.runKey).toBe('abc-1-fix-1');
+    expect(relaunchInput?.findings).toContain('bad thing');
+    expect(relaunchInput?.item.id).toBe(item.id);
+  });
+
+  it('parks on a second consecutive FIX FIRST rather than relaunching a second time', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'FIX FIRST' }),
+    });
+    let relaunchCalls = 0;
+    deps.relaunchForFixRound = async () => { relaunchCalls += 1; return { runKey: `fix-${relaunchCalls}` }; };
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps); // first FIX FIRST -> fix round
+    current = await advanceItem(current, deps); // second FIX FIRST -> park
+
+    expect(current.state).toBe('parked');
+    expect(current.fixRoundsUsed).toBe(1);
+    expect(relaunchCalls).toBe(1);
+    expect(current.reason).toContain('FIX FIRST');
+  });
+
+  it('coverage-missing always parks, never spawns a fix round', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let relaunchCalls = 0;
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'FIX FIRST', coverageNote: 'reviewed by 1 of 3 (missing: regression-risk)' }),
+    });
+    deps.relaunchForFixRound = async () => { relaunchCalls += 1; return { runKey: 'x' }; };
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('parked');
+    expect(relaunchCalls).toBe(0);
+    expect(current.reason).toContain('reviewed by 1 of 3');
+  });
+
+  it('a FIX FIRST with no relaunchForFixRound dep wired still parks (no environment ever hard-fails)', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'FIX FIRST' }),
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('parked');
+  });
+});
+
+describe('review comment: A.2', () => {
+  it('posts the council notes on the PR before the item reaches review', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let commented: { repo: string; pr: number; body: string } | undefined;
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS WITH NOTES', findingsText: '[low/medium] src/x.ts:2 -- a small nit' }),
+    });
+    deps.commentOnPr = async (input) => { commented = input; };
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('review');
+    expect(commented?.repo).toBe('owner/name');
+    expect(commented?.pr).toBe(1);
+    expect(commented?.body).toContain('PASS WITH NOTES');
+    expect(commented?.body).toContain('a small nit');
+  });
+
+  it('a failing comment call never keeps a cleared item off review', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS' }),
+    });
+    deps.commentOnPr = async () => { throw new Error('gh: rate limited'); };
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('review');
+  });
+});
+
+describe('backend path: A.4', () => {
+  it('pings the backend owner in Jira and requests them as a reviewer for a backend item', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'BBMS-1', 1000);
+    let handoffInput: { item: { ticket: string | null }; pr: { no: number } } | undefined;
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS' }),
+    });
+    deps.repoKindFor = () => 'backend';
+    deps.backendHandoff = async (input) => { handoffInput = input; };
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('review');
+    expect(handoffInput?.item.ticket).toBe('BBMS-1');
+    expect(handoffInput?.pr.no).toBe(1);
+  });
+
+  it('never pings the backend owner for a frontend item', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let calls = 0;
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS' }),
+    });
+    deps.repoKindFor = () => 'frontend';
+    deps.backendHandoff = async () => { calls += 1; };
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('review');
+    expect(calls).toBe(0);
+  });
+
+  it('a failing backend ping never keeps the item off review', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'BBMS-1', 1000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS' }),
+    });
+    deps.repoKindFor = () => 'backend';
+    deps.backendHandoff = async () => { throw new Error('jira down'); };
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('review');
+  });
+});
+
+describe('Jira write-back at review: A.3', () => {
+  it('runs the handoff once, at the transition into review, and stamps handoffAt', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'BBZ-226', 1000);
+    let handoffCalls = 0;
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS' }),
+    });
+    deps.jiraHandoff = async () => { handoffCalls += 1; };
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('review');
+    expect(handoffCalls).toBe(1);
+    expect(current.handoffAt).toBeTypeOf('number');
+  });
+
+  it('a failing handoff never keeps the item off review, and leaves handoffAt unset', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'BBZ-226', 1000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS' }),
+    });
+    deps.jiraHandoff = async () => { throw new Error('jira down'); };
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('review');
+    expect(current.handoffAt).toBeUndefined();
+  });
+});
+
+describe('real PR figures: A.8', () => {
+  it('carries the real files/add/del onto the review pr, not the honest-zero placeholder', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS' }),
+    });
+    deps.prSnapshot = async () => ({ files: ['src/a.ts', 'src/b.ts'], add: 12, del: 3 });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.pr).toMatchObject({ files: 2, add: 12, del: 3 });
+  });
+
+  it('stays honest zeros when no prSnapshot dep is wired', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS' }),
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.pr).toMatchObject({ files: 0, add: 0, del: 0 });
+  });
+});
+
+describe('pre-council overlap check: A.9', () => {
+  it('parks the later item when its changed files overlap an item already reviewing in the same repo', async () => {
+    const store = tempStore();
+    // The earlier item is already in review, carrying its own changed files.
+    store.append({
+      id: 'q-early', at: 1000, source: 'ticket', input: 'ABC-1', ticket: 'ABC-1', repo: 'owner/name',
+      briefPath: 'C:/briefs/abc-1.md', branch: 'feature/abc-1', worktreePath: 'C:/worktrees/repo--abc-1',
+      base: 'develop', state: 'review', runKey: 'abc-1', reason: null,
+      pr: { no: 1, url: 'https://github.com/owner/name/pull/1', files: 1, add: 1, del: 0, draft: true },
+      changedFiles: ['src/shared.ts'], journalIds: [], createdAt: 1000, updatedAt: 1000,
+    });
+    const item = addTicketItem(store, 'ABC-2', 2000);
+    let councilCalls = 0;
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/2' }) },
+      council: async () => { councilCalls += 1; return { verdict: 'PASS' as const }; },
+    });
+    deps.prSnapshot = async () => ({ files: ['src/shared.ts', 'src/other.ts'], add: 5, del: 1 });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('parked');
+    expect(current.reason).toContain('src/shared.ts');
+    expect(councilCalls).toBe(0);
+  });
+
+  it('never parks two items in the same repo that touch disjoint files', async () => {
+    const store = tempStore();
+    store.append({
+      id: 'q-early', at: 1000, source: 'ticket', input: 'ABC-1', ticket: 'ABC-1', repo: 'owner/name',
+      briefPath: 'C:/briefs/abc-1.md', branch: 'feature/abc-1', worktreePath: 'C:/worktrees/repo--abc-1',
+      base: 'develop', state: 'review', runKey: 'abc-1', reason: null,
+      pr: { no: 1, url: 'https://github.com/owner/name/pull/1', files: 1, add: 1, del: 0, draft: true },
+      changedFiles: ['src/shared.ts'], journalIds: [], createdAt: 1000, updatedAt: 1000,
+    });
+    const item = addTicketItem(store, 'ABC-2', 2000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/2' }) },
+      council: async () => ({ verdict: 'PASS' }),
+    });
+    deps.prSnapshot = async () => ({ files: ['src/unrelated.ts'], add: 2, del: 0 });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('review');
+  });
+
+  it('never parks two items in different repos, even on the same file path', async () => {
+    const store = tempStore();
+    store.append({
+      id: 'q-early', at: 1000, source: 'ticket', input: 'ABC-1', ticket: 'ABC-1', repo: 'owner/other',
+      briefPath: 'C:/briefs/abc-1.md', branch: 'feature/abc-1', worktreePath: 'C:/worktrees/other--abc-1',
+      base: 'develop', state: 'review', runKey: 'abc-1', reason: null,
+      pr: { no: 1, url: 'https://github.com/owner/other/pull/1', files: 1, add: 1, del: 0, draft: true },
+      changedFiles: ['src/shared.ts'], journalIds: [], createdAt: 1000, updatedAt: 1000,
+    });
+    const item = addTicketItem(store, 'ABC-2', 2000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/2' }) },
+      council: async () => ({ verdict: 'PASS' }),
+    });
+    deps.prSnapshot = async () => ({ files: ['src/shared.ts'], add: 2, del: 0 });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('review');
+  });
 });
 
 describe('runQueueTick', () => {
@@ -435,3 +883,126 @@ describe('a branch must sit on the latest base before anyone reviews it', () => 
   });
 });
 
+
+describe('mergeItem: A.7', () => {
+  function reviewItem(): ReturnType<typeof addTicketItem> {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    store.append({
+      id: item.id, at: 2000, state: 'review', repo: 'owner/name', branch: 'feature/abc-1',
+      pr: { no: 9, url: 'https://github.com/owner/name/pull/9', files: 1, add: 1, del: 0, draft: true },
+    });
+    return store.get(item.id)!;
+  }
+
+  it('refuses an item that is not in review', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const result = await mergeItem(item, {
+      mergeAllowed: () => true, gate: async () => ({ merged: true }), clock: () => 3000, store,
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it('refuses a repo not on the queue\'s merge allow-list', async () => {
+    const item = reviewItem();
+    const result = await mergeItem(item, {
+      mergeAllowed: () => false, gate: async () => ({ merged: true }), clock: () => 3000,
+      store: { append: () => {} } as never,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('allow-list');
+  });
+
+  it('calls gate with merge:true, sets done, and never touches unrelated fields', async () => {
+    const item = reviewItem();
+    let gateInput: { repo: string; pr: number; merge: boolean } | undefined;
+    const result = await mergeItem(item, {
+      mergeAllowed: () => true,
+      gate: async (input) => { gateInput = input; return { merged: true }; },
+      clock: () => 3000,
+      store: { append: () => {} } as never,
+    });
+    expect(gateInput).toEqual({ repo: 'owner/name', pr: 9, merge: true });
+    expect(result.ok).toBe(true);
+    expect(result.item?.state).toBe('done');
+  });
+
+  it('carries the per-platform OTA outcome in the item\'s reason', async () => {
+    const item = reviewItem();
+    const result = await mergeItem(item, {
+      mergeAllowed: () => true,
+      gate: async () => ({ merged: true }),
+      postMergeVerify: async () => ({ android: 'update', ios: 'update' }),
+      clock: () => 3000,
+      store: { append: () => {} } as never,
+    });
+    expect(result.item?.reason).toBe('OTA landed ios=update android=update');
+  });
+
+  it('reports a merge that did not complete, without setting done', async () => {
+    const item = reviewItem();
+    const result = await mergeItem(item, {
+      mergeAllowed: () => true, gate: async () => ({ merged: false }), clock: () => 3000,
+      store: { append: () => {} } as never,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.item).toBeUndefined();
+  });
+});
+
+describe('promoteItem: A.7', () => {
+  function doneHotfix(): ReturnType<typeof addHotfixItem> {
+    const store = tempStore();
+    const item = addHotfixItem(store, 'crash fix', 1000);
+    store.append({ id: item.id, at: 2000, state: 'done', repo: 'owner/name', source: 'hotfix' });
+    return store.get(item.id)!;
+  }
+
+  it('refuses anything but a hotfix item', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const result = await promoteItem(item, { version: '1.0.0', message: 'x' }, {
+      productionWorkflowExists: async () => true,
+    });
+    expect(result).toMatchObject({ ok: false, code: 400 });
+  });
+
+  it('refuses a hotfix that has not shipped to dev yet', async () => {
+    const store = tempStore();
+    const item = addHotfixItem(store, 'crash fix', 1000);
+    const result = await promoteItem(item, { version: '1.0.0', message: 'x' }, {
+      productionWorkflowExists: async () => true,
+    });
+    expect(result).toMatchObject({ ok: false, code: 409 });
+  });
+
+  it('501s by name when the production workflow is not on develop', async () => {
+    const item = doneHotfix();
+    const result = await promoteItem(item, { version: '1.0.0', message: 'x' }, {
+      productionWorkflowExists: async () => false,
+    });
+    expect(result).toMatchObject({ ok: false, code: 501 });
+    expect(result.message).toContain('production publish workflow');
+  });
+
+  it('501s when the workflow exists but no dispatch is wired', async () => {
+    const item = doneHotfix();
+    const result = await promoteItem(item, { version: '1.0.0', message: 'x' }, {
+      productionWorkflowExists: async () => true,
+    });
+    expect(result).toMatchObject({ ok: false, code: 501 });
+    expect(result.message).toContain('no production publish wiring');
+  });
+
+  it('dispatches when the workflow exists and a promote dep is wired', async () => {
+    const item = doneHotfix();
+    let promoted: { item: { id: string }; version: string; message: string } | undefined;
+    const result = await promoteItem(item, { version: '1.3.1', message: 'crash fix' }, {
+      productionWorkflowExists: async () => true,
+      promote: async (input) => { promoted = input; },
+    });
+    expect(result).toMatchObject({ ok: true, code: 200 });
+    expect(promoted?.version).toBe('1.3.1');
+  });
+});

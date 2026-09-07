@@ -298,8 +298,11 @@ export interface ProposalsResponse {
 // ---------------------------------------------------------------------------------------
 
 /** Where a queue item came from: a Jira ticket key, a pasted brief, a JQL query naming a
- *  sprint or epic, or the backlog with an operator's own filter text. */
-export type QueueSource = 'ticket' | 'brief' | 'query' | 'backlog';
+ *  sprint or epic, the backlog with an operator's own filter text, or a typed hotfix
+ *  (A.6) -- no Jira ticket at all, branching off the repo's hotfix base rather than its
+ *  ordinary one. A hotfix ships to dev on Merge and to production on a separate Promote
+ *  click (A.7); it is never merged straight to production. */
+export type QueueSource = 'ticket' | 'brief' | 'query' | 'backlog' | 'hotfix';
 
 /** `queued` waits for a slot; `planning` and `running` are the two the worker keeps
  *  in flight; `parked` is a question, a refusal, or a gate that did not pass -- always a
@@ -335,6 +338,16 @@ export interface QueueItem {
   journalIds: string[];
   createdAt: number;
   updatedAt: number;
+  /** A.1: how many times this item has been relaunched on a FIX FIRST round -- 0 or
+   *  absent means the fix round hasn't been used yet, and it's capped at one. */
+  fixRoundsUsed?: number;
+  /** A.3: when the Jira write-back at review ran for this item -- absent means it
+   *  hasn't fired yet. Set once, alongside the transition into `review`. */
+  handoffAt?: number;
+  /** A.8/A.9: the PR's own changed-file paths, fetched once the item has a PR and
+   *  before the council reads it -- shared by A.8's real figures at `review` and A.9's
+   *  overlap check against every other item running or in review on the same repo. */
+  changedFiles?: string[] | null;
 }
 
 export interface QueueResponse {

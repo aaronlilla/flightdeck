@@ -1118,6 +1118,12 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         const ruleVerdict = evaluateAction({
           kind: 'pr', op: 'merge', repo, title: snapshot.title, body: snapshot.body, cwd: process.cwd(),
         });
+        // Rival account 3 (2026-09-07 plan): the chain sets `deps.forceCodexLane` itself
+        // from `FORGE_COUNCIL_CODEX=always`, but a bare hand-typed `forge council` never
+        // read the environment variable at all -- it only ever saw whatever `deps`
+        // supplied. Falling back to the env var here is what makes the CLI case honour
+        // the same setting the chain already did.
+        const forceCodexLane = deps.forceCodexLane ?? process.env['FORGE_COUNCIL_CODEX'] === 'always';
         // Item 7, 2026-09-05: the PR this round is reasoning about, so a reasoner spend
         // for either role attributes back to it rather than showing up as unattributed
         // cost on the fleet's burn ledger.
@@ -1125,7 +1131,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         const roles = {
           lensRunner: reasonerLensRunner(reasoner, [ruleVerdict], councilRun),
           codexLane: codexLaneFor(
-            deps.forceCodexLane ? { ...policy, codex: 'on' } : policy,
+            forceCodexLane ? { ...policy, codex: 'on' } : policy,
             { journal: councilJournal, run: councilRun },
           ),
           judge: reasonerJudge(reasoner, councilRun),
@@ -1145,7 +1151,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
               brief: snapshot.body, diffSummary: snapshot.diffText, changedLines: snapshot.changedLines,
               paths: snapshot.files, ci: { runId: snapshot.checks.runId, headSha: snapshot.checks.headSha },
               cwd: councilCwd, baseRef: councilBaseRef,
-              ...(deps.forceCodexLane ? { forceCodex: true } : {}),
+              ...(forceCodexLane ? { forceCodex: true } : {}),
             },
             roles,
           );

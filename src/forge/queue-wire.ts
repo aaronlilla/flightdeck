@@ -15,11 +15,14 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { chainCouncil, chainGate, chainGh, chainRebase, chainLauncher } from './chain-wire.js';
-import type { ChainEnv } from './chain-env.js';
+import { checkoutFor, repoKindFor as repoKindForEnv, type ChainEnv } from './chain-env.js';
 import type { CliResult, ForgeDeps } from './cli.js';
+import { countAddDel, REAL_GH } from './council/gh.js';
 import type { Packet, PollSourceName, Watermark } from './contracts.js';
-import type { QueuePlannedBrief, QueuePlanner, QueueRuntimeDeps, QueueTicketSearch } from './intake/queue.js';
-import { createJiraFeed, type JiraConfig } from './intake/jira.js';
+import { run as execRun } from './exec.js';
+import type { QueueMergeDeps, QueuePlannedBrief, QueuePlanner, QueueRuntimeDeps, QueueTicketSearch } from './intake/queue.js';
+import { createJiraFeed, createJiraWriteClient, type JiraConfig } from './intake/jira.js';
+import { runQueueHandoff } from './intake/queueHandoff.js';
 import type { PollItemDetail } from './intake/poller.js';
 import { planFromPacket } from './intake/planner.js';
 import { resolvePlanProvider } from './intake/reasoner.js';
@@ -45,6 +48,20 @@ export function jiraConfigFromEnv(env: NodeJS.ProcessEnv = process.env): JiraCon
 }
 
 const EMPTY_WATERMARK: Watermark = { source: 'jira' as PollSourceName, committedAt: 0, idsAtCommittedAt: [] };
+
+/** A.5: `backlog` is an operator's own filter text, never raw JQL on its own -- it is
+ *  always joined onto a project's own backlog JQL before it reaches `searchKeys`, so a
+ *  filter of "flaky" cannot accidentally sweep another team's board. `query` (a sprint
+ *  or an epic) stays raw JQL, untouched by this function: the operator is expected to
+ *  already know the JQL for those. Throws naming the missing variable rather than
+ *  silently searching every project, the same honesty `queueSearch` already keeps for a
+ *  missing Jira credential. */
+export function buildBacklogJql(filter: string, env: NodeJS.ProcessEnv = process.env): string {
+  const project = env['FORGE_BACKLOG_PROJECT'];
+  if (!project) throw new Error('backlog: missing FORGE_BACKLOG_PROJECT');
+  const escaped = filter.replace(/"/g, '\\"');
+  return `project = ${project} AND statusCategory != Done AND text ~ "${escaped}"`;
+}
 
 /**
  * `queueSearch`: a `query`/`backlog` add resolves its JQL through the same
@@ -139,6 +156,129 @@ export function queuePlanner(configFn: () => JiraConfig | undefined = jiraConfig
       const briefPath = await writeBrief(id, text);
       return { ticket: id, repo, briefPath };
     },
+
+    // A.6: the `hotfix-` prefix is load-bearing -- `chain-env.ts#branchFor` reads it off
+    // the ticket string to route this item onto `hotfix/<slug>` instead of an ordinary
+    // feature branch.
+    async planHotfix(text): Promise<QueuePlannedBrief> {
+      const id = `hotfix-${Date.now()}`;
+      const repo = routeRepo(repoRules, { ticket: id, labels: [], components: [], issuetype: '' });
+      const briefPath = await writeBrief(
+        id,
+        `${text}\n\nThis is a hotfix: it ships to dev on Merge and to production only on a `
+          + 'separate Promote click.',
+      );
+      return { ticket: id, repo, briefPath };
+    },
+  };
+}
+
+/** A.2: posts the council's own notes on the PR, through `REAL_GH.commentPr` --
+ *  `advanceItem` itself never touches `gh`, so every real write funnels through here. */
+export function queueCommentOnPr(): NonNullable<QueueRuntimeDeps['commentOnPr']> {
+  return async ({ repo, pr, body }) => {
+    await REAL_GH.commentPr(repo, pr, body);
+  };
+}
+
+/** A.4: the backend ping -- a Jira assign to `FORGE_JIRA_BACKEND_OWNER_ACCOUNT` and a PR
+ *  reviewer request naming `FORGE_GH_BACKEND_OWNER`, both skipped honestly (rather than
+ *  guessed at) when the relevant environment variable is unset. */
+export function queueBackendHandoff(
+  configFn: () => JiraConfig | undefined = jiraConfigFromEnv,
+): NonNullable<QueueRuntimeDeps['backendHandoff']> {
+  return async ({ item, pr }) => {
+    const ownerAccount = process.env['FORGE_JIRA_BACKEND_OWNER_ACCOUNT'];
+    const ghReviewer = process.env['FORGE_GH_BACKEND_OWNER'];
+    const config = configFn();
+    if (ownerAccount && config && item.ticket) {
+      await createJiraWriteClient(config).assign(item.ticket, ownerAccount);
+    }
+    if (ghReviewer && item.repo) {
+      await REAL_GH.requestReviewer(item.repo, pr.no, ghReviewer);
+    }
+  };
+}
+
+/** A.3: the Jira write-back at review -- a comment in Aaron's voice, a QA assign/
+ *  transition when those variables are set, and a remote link to the PR. Skipped
+ *  honestly (never a guessed write) when no Jira credential is configured. */
+export function queueJiraHandoff(
+  configFn: () => JiraConfig | undefined = jiraConfigFromEnv,
+): NonNullable<QueueRuntimeDeps['jiraHandoff']> {
+  return async ({ item, pr }) => {
+    const config = configFn();
+    if (!config || !item.ticket) return;
+    const journal = new Journal(journalPath());
+    try {
+      await runQueueHandoff(
+        createJiraWriteClient(config),
+        {
+          ticket: item.ticket, prUrl: pr.url,
+          what: `${item.ticket} reached review through the queue.`,
+          testPlan: [],
+        },
+        {
+          qaAccountId: process.env['FORGE_JIRA_QA_ACCOUNT'],
+          qaTransitionId: process.env['FORGE_JIRA_QA_TRANSITION'],
+        },
+        (handoffEvent) => journal.append({ actor: 'queue', ...handoffEvent }),
+      );
+    } finally {
+      journal.close();
+    }
+  };
+}
+
+/** A.8/A.9: the PR's own changed files and add/del counts, off `REAL_GH.viewPr` --
+ *  the same read Council's own gate already makes for this PR, just made available to
+ *  the queue itself rather than only living inside the `forge council` subprocess. */
+export function queuePrSnapshot(): NonNullable<QueueRuntimeDeps['prSnapshot']> {
+  return async (repo, pr) => {
+    const snapshot = await REAL_GH.viewPr(repo, pr);
+    return { files: snapshot.files, ...countAddDel(snapshot.diffText) };
+  };
+}
+
+/** A.7: the Merge click's own allow-list, separate from `FORGE_CHAIN_MERGE` (which
+ *  gates the unattended chain, a different decision) -- `FORGE_QUEUE_MERGE_REPOS`,
+ *  comma-separated `owner/name` entries. */
+export function queueMergeAllowed(env: NodeJS.ProcessEnv = process.env): (repo: string) => boolean {
+  const repos = (env['FORGE_QUEUE_MERGE_REPOS'] ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+  return (repo) => repos.includes(repo);
+}
+
+/** A.7: whether `.eas/workflows/publish-production.yml` exists on a repo's `develop`
+ *  tip, read off the local checkout `FORGE_REPO_CHECKOUTS` already names for it --
+ *  `Promote` reads this fresh on every click rather than assuming the workflow is
+ *  there once and staying wrong after it lands (or is removed). No checkout configured
+ *  for the repo reads as `false`, the same honest refusal as a genuinely missing file. */
+export function queueProductionWorkflowExists(chainEnv: ChainEnv): (repo: string) => Promise<boolean> {
+  return async (repo) => {
+    const checkout = checkoutFor(chainEnv, repo);
+    if (!checkout) return false;
+    const result = await execRun({
+      argv: ['git', '-C', checkout, 'cat-file', '-e', 'origin/develop:.eas/workflows/publish-production.yml'],
+      cwd: checkout, owner: 'queue', cls: 'script',
+    });
+    return result.ok;
+  };
+}
+
+/**
+ * A.7: builds the Merge click's own dependencies -- ready for a caller with a
+ * `ForgeDeps` in hand (`forge up`'s own wiring, `cli.ts`'s `up` case) to hand to
+ * `QueueRoutesOptions.mergeDeps`. Not called by anything in this stream's own files:
+ * `QueueRoutes` is constructed in `server.ts`, which this stream does not own, so
+ * wiring this into a live route is the next hop for whichever stream builds that
+ * construction call.
+ */
+export function queueMergeDeps(deps: ForgeDeps, store: QueueRuntimeDeps['store']): QueueMergeDeps {
+  return {
+    mergeAllowed: queueMergeAllowed(),
+    gate: chainGate(deps),
+    clock: () => Date.now(),
+    store,
   };
 }
 
@@ -165,6 +305,11 @@ export function buildQueueRuntimeDeps(
       }
     },
     store,
+    commentOnPr: queueCommentOnPr(),
+    repoKindFor: (repo) => repoKindForEnv(chainEnv, repo),
+    backendHandoff: queueBackendHandoff(),
+    jiraHandoff: queueJiraHandoff(),
+    prSnapshot: queuePrSnapshot(),
   };
 }
 

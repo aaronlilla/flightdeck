@@ -51,6 +51,34 @@ describe('QueueView item states', () => {
     expect(link.closest('a')).toHaveAttribute('href', 'https://github.com/o/n/pull/42');
   });
 
+  it('A.8: shows the real files/add/del figures on a review card', () => {
+    renderQueue([item({ state: 'review', pr: { no: 42, url: 'https://github.com/o/n/pull/42', files: 3, add: 12, del: 4, draft: true } })]);
+    expect(screen.getByText('3 files, +12/-4')).toBeInTheDocument();
+  });
+
+  it('A.7: shows a Merge action on a review card only when onMerge is wired, and fires it', () => {
+    const onMerge = vi.fn();
+    renderQueue(
+      [item({ state: 'review', pr: { no: 9, url: 'https://github.com/o/n/pull/9', files: 1, add: 1, del: 0, draft: true } })],
+      { onMerge },
+    );
+    fireEvent.click(screen.getByText('Merge'));
+    expect(onMerge).toHaveBeenCalledWith('Q-1');
+  });
+
+  it('A.7: shows a Promote action on a done hotfix card only when onPromote is wired, and fires it', () => {
+    const onPromote = vi.fn();
+    renderQueue([item({ id: 'Q-2', source: 'hotfix', state: 'done' })], { onPromote });
+    fireEvent.click(screen.getByText('Promote to production'));
+    expect(onPromote).toHaveBeenCalledWith('Q-2');
+  });
+
+  it('A.7: never shows Promote on a done item that is not a hotfix', () => {
+    const onPromote = vi.fn();
+    renderQueue([item({ state: 'done' })], { onPromote });
+    expect(screen.queryByText('Promote to production')).not.toBeInTheDocument();
+  });
+
   it('retries a parked item on click', () => {
     const { onRetry } = renderQueue([item({ id: 'Q-2', state: 'parked', reason: 'FIX FIRST' })]);
     fireEvent.click(screen.getByText('Retry →'));
@@ -111,6 +139,28 @@ describe('QueueView add work', () => {
     renderQueue([]);
     fireEvent.click(screen.getByText('backlog'));
     expect(screen.getByPlaceholderText(/status = Backlog/)).toBeInTheDocument();
+  });
+
+  it('A.6: switches to the hotfix source and shows the ships-to-dev-then-production copy', () => {
+    renderQueue([]);
+    fireEvent.click(screen.getByText('hotfix'));
+    expect(screen.getByText(/ships to dev on Merge/)).toBeInTheDocument();
+  });
+
+  it('A.6: adds a hotfix by typing and clicking Add', () => {
+    const { onAdd } = renderQueue([]);
+    fireEvent.click(screen.getByText('hotfix'));
+    const textarea = screen.getByPlaceholderText(/what's broken/);
+    fireEvent.change(textarea, { target: { value: 'login crashes' } });
+    fireEvent.click(screen.getByText('Add ⏎'));
+    expect(onAdd).toHaveBeenCalledWith('hotfix', 'login crashes');
+  });
+
+  it('A.5: a query template chip fills the JQL input', () => {
+    renderQueue([]);
+    fireEvent.click(screen.getByText('query'));
+    fireEvent.click(screen.getByText('this sprint'));
+    expect(screen.getByPlaceholderText(/sprint = 42/)).toHaveValue('sprint in openSprints()');
   });
 
   it('never calls onAdd for blank input', () => {

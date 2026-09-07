@@ -19,7 +19,22 @@ import { randomUUID } from 'node:crypto';
 
 import type { ChainCouncilFn, ChainGateFn, ChainGh, ChainLauncher } from '../chain.js';
 import type { QueueItem, QueueItemState, QueueSource } from '../../shared/console-model.js';
+import { evaluateAction } from '../rules/index.js';
+import { renderNotes } from '../council/renderNotes.js';
+import { terminalStateFor, type RepoKind } from './handoff.js';
 import type { QueueStore } from './queueStore.js';
+
+/**
+ * A.1: `ChainCouncilResult` (`chain.ts`) carries no findings text, only a verdict and an
+ * optional coverage note -- there was never a caller before this one that needed to
+ * reread a FIX FIRST round's own claims. `findingsText` is optional, so every existing
+ * `ChainCouncilFn` (the chain's own, wired in `chain-wire.ts`) is still a valid
+ * `QueueCouncilFn` unchanged; only a caller that actually supplies the field (this
+ * stream's own wiring, once it exists) gets a real fix-round brief instead of the bare
+ * word "FIX FIRST".
+ */
+export type QueueCouncilResult = Awaited<ReturnType<ChainCouncilFn>> & { findingsText?: string };
+export type QueueCouncilFn = (input: Parameters<ChainCouncilFn>[0]) => Promise<QueueCouncilResult>;
 
 export const QUEUE_IN_FLIGHT_STATES: readonly QueueItemState[] = ['planning', 'running'];
 
@@ -61,6 +76,12 @@ export interface QueuePlanner {
    *  passes the queue item's own id) so the rest of the pipeline has something to name
    *  the branch and the run after. */
   planBrief(text: string): Promise<QueuePlannedBrief>;
+  /** A.6: a typed hotfix, same shape as a pasted brief (no Jira ticket, the planner
+   *  mints one) -- kept a separate method so the minted ticket can carry a marker
+   *  (`chain-env.ts#branchFor`'s own `hotfix-` prefix check) that routes it onto
+   *  `hotfix/<slug>` instead of `feature/<ticket>`. Absent falls back to `planBrief`,
+   *  which still queues the item, just onto an ordinary feature branch. */
+  planHotfix?(text: string): Promise<QueuePlannedBrief>;
 }
 
 export function addTicketItem(store: QueueStore, ticket: string, now: number = Date.now()): QueueItem {
@@ -71,6 +92,15 @@ export function addTicketItem(store: QueueStore, ticket: string, now: number = D
 
 export function addBriefItem(store: QueueStore, briefText: string, now: number = Date.now()): QueueItem {
   const item = blankItem(newItemId(), 'brief', briefText, null, now);
+  store.append({ ...item, at: now });
+  return item;
+}
+
+/** A.6: a typed hotfix -- no Jira ticket, same "queued with no ticket yet" shape as a
+ *  pasted brief. `advanceItem` routes it through `QueuePlanner.planHotfix` instead of
+ *  `planBrief`, which is the whole difference: the base and branch this item lands on. */
+export function addHotfixItem(store: QueueStore, text: string, now: number = Date.now()): QueueItem {
+  const item = blankItem(newItemId(), 'hotfix', text, null, now);
   store.append({ ...item, at: now });
   return item;
 }
@@ -164,7 +194,37 @@ export interface QueueRuntimeDeps {
    *  ordinary case on a busy repository; one that cannot be replayed cleanly is a real
    *  conflict, and the item parks for a person rather than anything being forced. */
   rebaseOnBase?: (input: { worktreePath: string; base: string }) => Promise<RebaseOutcome>;
-  council: ChainCouncilFn;
+  council: QueueCouncilFn;
+  /** A.1: relaunches the worker on the item's own worktree with the round's findings as
+   *  its brief -- one fix round, never a from-scratch replan. Absent means this
+   *  environment never wires a fix round; a FIX FIRST then always parks, the behaviour
+   *  every specimen before this stream already proved. */
+  relaunchForFixRound?: (input: { item: QueueItem; findings: string }) => Promise<{ runKey: string }>;
+  /** A.2: posts the council's own notes on the PR before the item reaches `review`.
+   *  Best effort -- a comment failing never blocks the item; absent means this
+   *  environment never wires the write, and no comment is attempted. */
+  commentOnPr?: (input: { repo: string; pr: number; body: string }) => Promise<void>;
+  /** A.4: which side of `handoff.ts#terminalStateFor` an item's routed repository is on.
+   *  Absent means every item is treated as frontend -- the terminal state every specimen
+   *  before this stream already assumed. */
+  repoKindFor?: (repo: string) => RepoKind;
+  /** A.4: the backend ping itself -- a Jira assign to the backend owner and a PR
+   *  reviewer request, run only for a `terminalStateFor('backend')` item at `review`.
+   *  Best effort, the same as the review comment: a failed ping never blocks review,
+   *  since the controlled-code merge denial (`rules/gitflow.ts`) is what actually keeps
+   *  the repo safe, not this notification. */
+  backendHandoff?: (input: { item: QueueItem; pr: { no: number } }) => Promise<void>;
+  /** A.3: the Jira write-back at review -- a comment, a QA assign, a QA transition and
+   *  a remote link, all in Aaron's voice. Runs once per item, guarded by `handoffAt`;
+   *  absent means this environment never wires it, and no Jira write happens at all. */
+  jiraHandoff?: (input: { item: QueueItem; pr: { no: number; url: string } }) => Promise<void>;
+  /** A.8/A.9: the PR's own changed files and line counts. Fetched once per item, right
+   *  after the PR is found and before the council reads it, so A.9's overlap check runs
+   *  against real data and A.8's figures at `review` need no second fetch. Absent means
+   *  this environment never wires it -- an item then carries no changed-files list, the
+   *  overlap check never fires, and `review`'s figures stay the honest zeros they always
+   *  were. */
+  prSnapshot?: (repo: string, pr: number) => Promise<{ files: string[]; add: number; del: number }>;
   /** Reused from `chain.ts` unchanged, but `advanceItem` never passes `merge: true` --
    *  the queue's own decision (every item stops at a draft PR) lives in this file, not
    *  in whatever the caller wires this to. */
@@ -234,7 +294,9 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
     try {
       planned = item.source === 'brief'
         ? await deps.planner.planBrief(item.input)
-        : await deps.planner.planTicket(item.ticket ?? item.input);
+        : item.source === 'hotfix'
+          ? await (deps.planner.planHotfix ?? deps.planner.planBrief)(item.input)
+          : await deps.planner.planTicket(item.ticket ?? item.input);
     } catch (error) {
       return writeTransition(item, { state: 'failed', reason: tailOf(messageOf(error)) }, deps, 'queue.failed', { hop: 'plan' });
     }
@@ -287,6 +349,39 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
     );
   }
 
+  // A.8/A.9: one fetch of the PR's own changed files and line counts, right after the PR
+  // is found and before the council or the overlap check reads either -- shared by A.9's
+  // overlap check below and A.8's real figures once the item reaches `review`, so this
+  // never fetches the same PR's diff twice within one call.
+  let prAdd = 0;
+  let prDel = 0;
+  if (deps.prSnapshot) {
+    const snapshot = await deps.prSnapshot(item.repo!, pr.number);
+    prAdd = snapshot.add;
+    prDel = snapshot.del;
+    item = writeTransition(item, { changedFiles: snapshot.files }, deps, 'queue.pr-files', {});
+
+    // A.9, moved from stream B to keep this file single-owner: an item whose changed
+    // files overlap another item already running or in review on the same repo parks
+    // rather than reviewing a diff two workers are racing on. Only the later-created
+    // item ever parks itself here -- the earlier one is left untouched, since by
+    // construction it reached this check first and has nothing to answer for.
+    const overlap = deps.store.all().find((other) => (
+      other.id !== item.id && other.repo === item.repo
+      && (other.state === 'running' || other.state === 'review')
+      && other.changedFiles && other.changedFiles.some((file) => snapshot.files.includes(file))
+      && other.createdAt <= item.createdAt
+    ));
+    if (overlap) {
+      const shared = (overlap.changedFiles ?? []).filter((file) => snapshot.files.includes(file));
+      return writeTransition(
+        item,
+        { state: 'parked', reason: `overlaps ${overlap.ticket ?? overlap.id} on ${shared.join(', ')}` },
+        deps, 'queue.parked', { hop: 'overlap', with: overlap.id },
+      );
+    }
+  }
+
   // Aaron, 2026-09-07: every branch must sit on the latest base before anyone reviews or
   // merges it, so a queue that runs for hours cannot hand back a pile of conflicts. The
   // replay happens here, after the work is done and before the gate reads the diff.
@@ -311,10 +406,29 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
   });
   const councilCleared = council.verdict === 'PASS' || council.verdict === 'PASS WITH NOTES';
   if (!councilCleared) {
+    // A.1: a FIX FIRST on an item that has not already used its one fix round relaunches
+    // the worker on the same worktree instead of parking outright -- the findings are a
+    // fixable problem, not a question for a person, and asking a person for every one of
+    // those defeats the point of the queue. Coverage-missing never gets a fix round: a
+    // member that did not answer says nothing about whether the code has a problem, so
+    // relaunching against it would be guessing at a "fix" for no claim at all.
+    if (council.verdict === 'FIX FIRST' && !council.coverageNote && !item.fixRoundsUsed && deps.relaunchForFixRound) {
+      const findings = council.findingsText
+        ?? 'the council returned FIX FIRST with no findings text carried on this result';
+      const relaunched = await deps.relaunchForFixRound({ item, findings });
+      return writeTransition(
+        item, { runKey: relaunched.runKey, fixRoundsUsed: 1 }, deps, 'queue.fix-round',
+        { previousRunKey: item.runKey, findings },
+      );
+    }
     // GATE.md item 4: when the council itself named which members never answered, that
     // rides along on the parked reason -- a bare "FIX FIRST" tells nobody whether the
     // diff had a real problem or the round never got read.
-    const reason = council.coverageNote ? `${council.verdict}: ${council.coverageNote}` : council.verdict;
+    const reason = council.coverageNote
+      ? `${council.verdict}: ${council.coverageNote}`
+      : item.fixRoundsUsed
+        ? `${council.verdict} after ${item.fixRoundsUsed} fix round(s), parking rather than relaunching again`
+        : council.verdict;
     return writeTransition(item, { state: 'parked', reason }, deps, 'queue.parked', { hop: 'gate' });
   }
 
@@ -322,8 +436,64 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
   // `false`, never `deps.mergeAllowed`-derived or otherwise conditional.
   await deps.gate({ repo: item.repo!, pr: pr.number, merge: false });
 
+  // A.2: the council's own notes land on the PR before the item shows as `review`, so a
+  // reviewer never has to go dig an attestation file out of `~/.forge` to see what was
+  // found. Gated through `evaluateAction` (a `pr`/`comment` action is always allowed,
+  // even on a controlled-code repo -- `rules/gitflow.ts`'s own carve-out) so the write
+  // exercises the same rule every other Council write does. Best effort: a comment that
+  // fails must never keep an otherwise-cleared item off `review`.
+  if (deps.commentOnPr) {
+    const verdict = evaluateAction({ kind: 'pr', op: 'comment', repo: item.repo!, cwd: '' });
+    if (verdict.allow) {
+      const body = renderNotes({ verdict: council.verdict, coverageNote: council.coverageNote, findingsText: council.findingsText });
+      try {
+        await deps.commentOnPr({ repo: item.repo!, pr: pr.number, body });
+      } catch {
+        // Best effort, per A.2: the comment is a courtesy, not a gate.
+      }
+    }
+  }
+
+  // A.4: a backend item ends at "draft PR open, backend owner pinged" -- restated here
+  // as a call to `handoff.ts#terminalStateFor` rather than a scattered
+  // `if (repo === ...)`, so which repos are backend stays this environment's own
+  // `repoKindFor` wiring, never a name baked into this file (agnostic check).
+  if (deps.repoKindFor) {
+    const terminal = terminalStateFor(deps.repoKindFor(item.repo!));
+    if (terminal.pings === 'backend-owner' && deps.backendHandoff) {
+      try {
+        await deps.backendHandoff({ item, pr: { no: pr.number } });
+      } catch {
+        // Best effort, same as the review comment above: a failed ping never blocks
+        // review -- the controlled-code merge denial is the real safety net here.
+      }
+    }
+  }
+
+  // A.3: the Jira write-back fires once per item, guarded by `handoffAt` rather than by
+  // this being the only tick that can ever reach here (belt and braces: `review` is not
+  // an in-flight state, so `runQueueTick` never re-enters `advanceItem` for it, but the
+  // guard keeps the intent honest even if that ever changes).
+  let handoffAt = item.handoffAt;
+  if (deps.jiraHandoff && !handoffAt && item.ticket) {
+    try {
+      await deps.jiraHandoff({ item, pr: { no: pr.number, url: pr.url } });
+      handoffAt = deps.clock();
+    } catch {
+      // Best effort, same discipline as the review comment and the backend ping above.
+    }
+  }
+
   return writeTransition(
-    item, { state: 'review', pr: { no: pr.number, url: pr.url, files: 0, add: 0, del: 0, draft: true } },
+    item,
+    {
+      // A.8: real figures off the snapshot fetched above, when one was fetched -- the
+      // honest zeros from before this stream stand unchanged when `deps.prSnapshot`
+      // isn't wired.
+      state: 'review',
+      pr: { no: pr.number, url: pr.url, files: item.changedFiles?.length ?? 0, add: prAdd, del: prDel, draft: true },
+      ...(handoffAt ? { handoffAt } : {}),
+    },
     deps, 'queue.review', {},
   );
 }
@@ -372,4 +542,101 @@ export async function runQueueTick(deps: QueueRuntimeDeps, items: QueueItem[]): 
     }
   }
   return { started, advanced, killSwitchEngaged: false, paused: false };
+}
+
+// ---------------------------------------------------------------------------------------
+// A.7: Merge and Promote -- always a click, never automatic.
+// ---------------------------------------------------------------------------------------
+
+export interface QueueMergeDeps {
+  /** The queue's own allow-list, separate from `ChainEnv.mergeRepos` -- a repo the queue
+   *  may merge through a click is this environment's own decision, read fresh so an
+   *  operator changing it takes effect on the next click. */
+  mergeAllowed: (repo: string) => boolean;
+  gate: ChainGateFn;
+  /** Polls the develop deploy for its per-platform OTA outcome, once the merge itself
+   *  landed. Absent means this environment never wires it, and the item still lands on
+   *  `done`, just without an OTA line in its reason. */
+  postMergeVerify?: (input: { repo: string; branch: string }) => Promise<{ android: string; ios: string } | undefined>;
+  clock(): number;
+  store: QueueStore;
+}
+
+export interface QueueMergeResult {
+  ok: boolean;
+  message: string;
+  item?: QueueItem;
+}
+
+/** A.7: the Merge click. Refuses outright on anything but a `review` item with a PR, and
+ *  on a repo this environment hasn't allow-listed -- `gate({merge:true})` is the one
+ *  place in this whole file that can ever pass `merge: true`, and it is reached only
+ *  from here, only on an operator's own click. */
+export async function mergeItem(item: QueueItem, deps: QueueMergeDeps): Promise<QueueMergeResult> {
+  if (item.state !== 'review' || !item.pr) {
+    return { ok: false, message: `${item.id} is not in review` };
+  }
+  if (!deps.mergeAllowed(item.repo ?? '')) {
+    return { ok: false, message: `${item.repo ?? 'this repo'} is not on the queue's merge allow-list` };
+  }
+
+  const result = await deps.gate({ repo: item.repo!, pr: item.pr.no, merge: true });
+  if (!result.merged) {
+    return { ok: false, message: 'the merge did not complete -- see the journal for the gate\'s own reason' };
+  }
+
+  let otaLine: string | undefined;
+  if (deps.postMergeVerify && item.branch) {
+    const outcome = await deps.postMergeVerify({ repo: item.repo!, branch: item.branch });
+    if (outcome) otaLine = `OTA landed ios=${outcome.ios} android=${outcome.android}`;
+  }
+
+  const now = deps.clock();
+  const patch: Partial<QueueItem> = { state: 'done', reason: otaLine ?? null, updatedAt: now };
+  deps.store.append({ id: item.id, at: now, ...patch });
+  return { ok: true, message: otaLine ?? 'merged', item: { ...item, ...patch } };
+}
+
+export interface QueuePromoteDeps {
+  /** Whether the production publish workflow exists on this repo's develop tip --
+   *  checked fresh on every click, per the plan: Promote 501s with a reason rather than
+   *  dispatching into a workflow that was never provisioned. */
+  productionWorkflowExists: (repo: string) => Promise<boolean>;
+  /** The dispatch itself. Deliberately absent in this stream's own production wiring --
+   *  a real production publish is a decision an operator makes explicitly, not a
+   *  default this queue ships wired to fire on a click alone (standing order 9). Wiring
+   *  it is a follow-up once that decision is made. */
+  promote?: (input: { item: QueueItem; version: string; message: string }) => Promise<void>;
+}
+
+export interface QueuePromoteResult {
+  ok: boolean;
+  code: number;
+  message: string;
+}
+
+/** A.7: the Promote click -- production only, and only for a hotfix item that already
+ *  shipped to dev on Merge. 501s by name, never a bare failure, when the production
+ *  workflow isn't on develop yet or this environment never wired the dispatch. */
+export async function promoteItem(
+  item: QueueItem, input: { version: string; message: string }, deps: QueuePromoteDeps,
+): Promise<QueuePromoteResult> {
+  if (item.source !== 'hotfix') {
+    return { ok: false, code: 400, message: 'only a hotfix item can be promoted to production' };
+  }
+  if (item.state !== 'done') {
+    return { ok: false, code: 409, message: `${item.id} has not shipped to dev yet -- Merge it first` };
+  }
+  const exists = await deps.productionWorkflowExists(item.repo ?? '');
+  if (!exists) {
+    return {
+      ok: false, code: 501,
+      message: `the production publish workflow is not on ${item.repo ?? 'this repo'}'s develop yet`,
+    };
+  }
+  if (!deps.promote) {
+    return { ok: false, code: 501, message: 'no production publish wiring is configured for this environment' };
+  }
+  await deps.promote({ item, version: input.version, message: input.message });
+  return { ok: true, code: 200, message: `production publish dispatched for ${input.version}` };
 }

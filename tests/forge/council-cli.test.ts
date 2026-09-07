@@ -22,6 +22,7 @@ beforeEach(() => {
   process.env['FORGE_HOME'] = home;
   delete process.env['FORGE_COUNCIL_REPOS'];
   delete process.env['FORGE_COUNCIL_AUTOMERGE'];
+  delete process.env['FORGE_COUNCIL_CODEX'];
   for (const name of ['FORGE_JIRA_SITE', 'FORGE_JIRA_EMAIL', 'FORGE_JIRA_TOKEN', 'FORGE_JIRA_QA_ACCOUNT', 'FORGE_JIRA_QA_TRANSITION']) {
     delete process.env[name];
   }
@@ -54,6 +55,8 @@ function fakeGh(snapshots: PrSnapshot[], overrides: Partial<GhWriter> = {}): GhR
     async mergePr() { return { returncode: 0, stderr: '' }; /* overridden per test when exercised */ },
     async readyPr() { return { returncode: 0, stderr: '' }; },
     async viewPrState() { return { prState: 'OPEN' }; },
+    async commentPr() { return { returncode: 0, stderr: '' }; },
+    async requestReviewer() { return { returncode: 0, stderr: '' }; },
     ...overrides,
   };
 }
@@ -278,6 +281,30 @@ describe('forge council', () => {
     expect(result.code).toBe(2);
     expect(result.lines.join(' ')).toMatch(/not green/);
   });
+
+  // Rival account 3, this plan: a bare hand-typed `forge council` never read
+  // `FORGE_COUNCIL_CODEX`, so an operator setting it by hand got a round that looked
+  // clean while the Codex lane never ran. Only the chain (`forceCodexLane` on `deps`)
+  // honoured it before this. No `--cwd`/`--base` is passed, so the lane reports
+  // `ran: false` without spawning anything, and a forced round can never clear on a
+  // lane that stayed silent (`orchestrate.ts`'s own gap finding).
+  it('honours FORGE_COUNCIL_CODEX=always on a bare CLI call with no forceCodexLane dep', async () => {
+    process.env['FORGE_COUNCIL_REPOS'] = REPO;
+    process.env['FORGE_COUNCIL_CODEX'] = 'always';
+    const reasonerQueryFn = fakeQueryByModel({
+      [LENS_MODEL]: JSON.stringify({ findings: [] }),
+      [JUDGE_MODEL]: JSON.stringify({ verdict: 'PASS', decidingFindings: [] }),
+    });
+
+    const result = await forge(['council', '--repo', REPO, '--pr', String(PR)], {
+      councilGh: fakeGh([smallSnapshot()]),
+      reasonerQueryFn,
+    });
+
+    expect(result.code).toBe(1);
+    expect(result.lines.join(' ')).toMatch(/FIX FIRST/);
+    expect(result.lines.join(' ')).toMatch(/Codex lane did not run/);
+  });
 });
 
 const HAIPING_HANDOFF = {
@@ -490,6 +517,7 @@ describe('Forge Jira stream: J3, the handoff writes at forge gate --merge', () =
         async comment(key) { calls.push(`comment:${key}`); return { ok: true }; },
         async assign(key, accountId) { calls.push(`assign:${key}:${accountId}`); return { ok: true }; },
         async transition(key, transitionId) { calls.push(`transition:${key}:${transitionId}`); return { ok: true }; },
+        async link(key, url) { calls.push(`link:${key}:${url}`); return { ok: true }; },
       },
     });
 
@@ -523,6 +551,7 @@ describe('Forge Jira stream: J3, the handoff writes at forge gate --merge', () =
         async comment() { return { ok: false, status: 500, body: 'server error' }; },
         async assign() { return { ok: true }; },
         async transition() { return { ok: true }; },
+        async link() { return { ok: true }; },
       },
     });
 
