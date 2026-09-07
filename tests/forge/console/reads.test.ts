@@ -200,4 +200,51 @@ describe('ConsoleReads.lanesResponse: title and sourceUrl', () => {
     expect(lane!.plain).toBe('In review: council PASS WITH NOTES, 4 of 4 reviewed; draft PR #119 is waiting for your Merge.');
     expect(lane!.plain).not.toMatch(/queue-|-\d+$/);
   });
+
+  it('H1.9 fix: GET /thread rail chips read the lane\'s own title, off the same lookup GET /lanes uses', () => {
+    const forgeHomeDir = tempDir('console-reads-');
+    const briefsDir = join(forgeHomeDir, 'briefs');
+    mkdirSync(briefsDir, { recursive: true });
+    const briefPath = join(briefsDir, 'BBZ-99.md');
+    writeFileSync(briefPath, '# BBZ-99: reconcile stale wallet holds\n', 'utf8');
+
+    const queueStore = new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl'));
+    queueStore.append({
+      id: 'Q-1', at: 1, source: 'ticket', input: 'BBZ-99', ticket: 'BBZ-99', repo: 'o/n',
+      briefPath, branch: 'feature/bbz-99', worktreePath: 'w', base: 'develop',
+      state: 'running', reason: null, runKey: 'queue-BBZ-99', pr: null, journalIds: [],
+      createdAt: 1, updatedAt: 1,
+    });
+
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'queue-BBZ-99', actor: 'runner' });
+    journal.append({ event: 'liveness.stuck', run: 'queue-BBZ-99', actor: 'warden', signal: 'context' });
+    journal.close();
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put('queue-BBZ-99', { column: 'BBZ-99' });
+
+    // A fresh console with no persisted rail history windows chips to "since the
+    // earliest persisted message" -- one operator bubble here is enough to pull the
+    // journal's own events (all older) into that window.
+    const threadDir = join(forgeHomeDir, 'console');
+    mkdirSync(threadDir, { recursive: true });
+    writeFileSync(
+      join(threadDir, 'thread.jsonl'),
+      `${JSON.stringify({ k: 'm1', type: 'operator', text: 'hi', ts: 0, source: 'operator' })}\n`,
+      'utf8',
+    );
+
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore, jiraSite: null,
+    });
+
+    const server = reads as unknown as { threadResponse(): { messages: Array<{ text: string }> } };
+    const thread = server.threadResponse();
+    const chip = thread.messages.find((m) => m.text.includes('context ceiling'));
+    expect(chip?.text).toBe('reconcile stale wallet holds: context ceiling reached, handed off to a fresh session.');
+    expect(chip?.text).not.toMatch(/queue-|STUCK/i);
+  });
 });

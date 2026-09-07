@@ -14,6 +14,7 @@ import type { ForgeEvent } from '../journal.js';
 import type { JournalNarrativeEntry, Lane } from '../../shared/console-model.js';
 import { fmtTokens } from '../../shared/format-tokens.js';
 import { textFor } from './journal-route.js';
+import { laneKindFor, ticketFor } from './lanes.js';
 
 function firstEventAt(events: ForgeEvent[], name: string, matches: (row: ForgeEvent) => boolean): number | undefined {
   for (const row of events) {
@@ -100,6 +101,71 @@ export interface WardenChip {
   text: string;
 }
 
+/** Looks a lane up by id and answers its human title, when the caller has one on
+ *  hand -- filled in by the reads layer (`ConsoleReads`), which already knows how to
+ *  title a lane. `null` when nothing is known, in which case a rail chip falls back to
+ *  the lane's own ticket key or its kind, never its raw run id. */
+export type TitleForFn = (id: string) => string | null;
+
+/** A rail chip's label for a lane: its title when the caller supplies one, else its
+ *  ticket key, else "Live probe" for a probe, else a bare "a lane" -- never the raw
+ *  run id or a pid, which is the machine text this fix replaces. */
+function labelFor(id: string, titleFor: TitleForFn): string {
+  const title = titleFor(id);
+  if (title) return title;
+  const ticket = ticketFor(id, undefined);
+  if (ticket) return ticket;
+  if (laneKindFor(id) === 'probe') return 'Live probe';
+  return 'a lane';
+}
+
+const SIGNAL_PHRASES: Record<string, string> = {
+  context: 'context ceiling reached, handed off to a fresh session',
+  idle: 'went quiet for too long',
+  'tool-budget': 'a tool call ran past its time budget',
+  'stale-session': 'its session stalled and needed a fresh one',
+  'login-stuck': 'stuck waiting on a login prompt',
+  'fleet-unknown': 'the fleet lost track of it',
+  'registry-abandoned': 'its process record was abandoned',
+};
+
+function signalPhrase(signal: string): string {
+  return SIGNAL_PHRASES[signal] ?? 'tripped a health check';
+}
+
+/** A rail chip's own human sentence for one event -- the lane's key or title, never
+ *  its raw run id, an ask key or a pid. `null` for an event kind this has no dedicated
+ *  phrasing for, so the caller can fall back to `textFor`'s own technical rendering
+ *  (used for the audit-trail Journal panel, which this never replaces). */
+export function railChipText(row: ForgeEvent, titleFor: TitleForFn): string | null {
+  const id = typeof row.run === 'string' ? row.run : '';
+  const label = id ? labelFor(id, titleFor) : null;
+  switch (row.event) {
+    case 'run.parked':
+      return label ? `${label} parked, waiting on you.` : 'Parked, waiting on you.';
+    case 'run.killed': {
+      const reason = typeof row.reason === 'string' ? row.reason : null;
+      return `${label ?? 'The run'} killed${reason ? `: ${reason}` : ''}.`;
+    }
+    case 'chain.merged':
+      return `${label ?? 'The change'} merged.`;
+    case 'ask.answered':
+      return 'Question answered.';
+    case 'external.complete': {
+      const kind = typeof row.kind === 'string' ? row.kind : 'write';
+      return `${kind} complete${row.ticket ? ` on ${String(row.ticket)}` : ''}.`;
+    }
+    case 'liveness.stuck': {
+      const signal = typeof row.signal === 'string' ? row.signal : 'unknown';
+      return `${label ?? 'A lane'}: ${signalPhrase(signal)}.`;
+    }
+    case 'warden.parked':
+      return `${label ?? 'A lane'}: parked by the warden.`;
+    default:
+      return null;
+  }
+}
+
 function clockTime(at: number): string {
   return new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
@@ -116,7 +182,7 @@ function clockTime(at: number): string {
  * chip, though it stays exactly as it was in the raw `/journal` feed, which this
  * function never touches.
  */
-export function collapseWardenChips(events: ForgeEvent[]): WardenChip[] {
+export function collapseWardenChips(events: ForgeEvent[], titleFor: TitleForFn = () => null): WardenChip[] {
   const order: string[] = [];
   const byLane = new Map<string, ForgeEvent[]>();
   for (const row of events) {
@@ -135,13 +201,14 @@ export function collapseWardenChips(events: ForgeEvent[]): WardenChip[] {
     if (BARE_PID_PATTERN.test(lane)) continue;
     const rows = byLane.get(lane)!;
     const latest = rows[rows.length - 1]!;
+    const text = railChipText(latest, titleFor) ?? textFor(latest);
     if (rows.length === 1) {
-      chips.push({ at: latest.at, lane, text: textFor(latest) });
+      chips.push({ at: latest.at, lane, text });
       continue;
     }
     chips.push({
       at: latest.at, lane,
-      text: `${textFor(latest)} (×${rows.length}, latest ${clockTime(latest.at)})`,
+      text: `${text} (×${rows.length}, latest ${clockTime(latest.at)})`,
     });
   }
   return chips;

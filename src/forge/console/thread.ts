@@ -14,7 +14,7 @@ import type { InboxEntry } from '../inbox.js';
 import type { RunMessage } from '../runinbox.js';
 import type { Message, ThreadResponse } from '../../shared/console-model.js';
 import { jidFor, textFor } from './journal-route.js';
-import { collapseWardenChips } from './journal-narrative.js';
+import { collapseWardenChips, railChipText, type TitleForFn } from './journal-narrative.js';
 
 export function threadPath(forgeHomeDir: string): string {
   return `${forgeHomeDir}/console/thread.jsonl`;
@@ -50,11 +50,11 @@ const CHIP_EVENTS = new Set([
  *  the same row on every liveness tick, and the rail used to render every one of them. */
 const WARDEN_CHIP_EVENTS = new Set(['liveness.stuck', 'warden.parked']);
 
-function chipFor(row: ForgeEvent): Message {
+function chipFor(row: ForgeEvent, titleFor: TitleForFn): Message {
   return {
     k: `chip-${row.id}`,
     type: 'event',
-    text: textFor(row),
+    text: railChipText(row, titleFor) ?? textFor(row),
     ts: row.at,
     source: row.run ?? 'system',
     lane: row.run,
@@ -62,8 +62,8 @@ function chipFor(row: ForgeEvent): Message {
   };
 }
 
-function wardenChipMessages(events: ForgeEvent[]): Message[] {
-  return collapseWardenChips(events).map((chip) => ({
+function wardenChipMessages(events: ForgeEvent[], titleFor: TitleForFn): Message[] {
+  return collapseWardenChips(events, titleFor).map((chip) => ({
     k: `chip-warden-${chip.lane}-${chip.at}`,
     type: 'event',
     text: chip.text,
@@ -101,13 +101,14 @@ function questionMessageFor(entry: InboxEntry): Message {
  */
 export function computeThread(
   persisted: Message[], events: ForgeEvent[], now: number, openAsks: InboxEntry[] = [],
+  titleFor: TitleForFn = () => null,
 ): ThreadResponse {
   const earliest = persisted.length ? Math.min(...persisted.map((message) => message.ts)) : now;
   const windowed = events.filter((row) => row.at >= earliest);
   const ordinaryChips = windowed
     .filter((row) => CHIP_EVENTS.has(row.event) && !WARDEN_CHIP_EVENTS.has(row.event))
-    .map(chipFor);
-  const chips = [...ordinaryChips, ...wardenChipMessages(windowed.filter((row) => WARDEN_CHIP_EVENTS.has(row.event)))];
+    .map((row) => chipFor(row, titleFor));
+  const chips = [...ordinaryChips, ...wardenChipMessages(windowed.filter((row) => WARDEN_CHIP_EVENTS.has(row.event)), titleFor)];
   const persistedKeys = new Set(persisted.map((message) => message.k));
   const questions = openAsks
     .map(questionMessageFor)

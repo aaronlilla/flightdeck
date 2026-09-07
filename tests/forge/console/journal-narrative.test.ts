@@ -122,7 +122,6 @@ describe('collapseWardenChips (H1.9)', () => {
     expect(chips).toHaveLength(1);
     expect(chips[0]!.at).toBe(1_000 + 19 * 1_000);
     expect(chips[0]!.text).toContain('×20');
-    expect(chips[0]!.text).toContain('queue-BBZ-182');
   });
 
   it('drops a bare PID row that names no real lane entirely', () => {
@@ -139,5 +138,22 @@ describe('collapseWardenChips (H1.9)', () => {
     ];
     const chips = collapseWardenChips(rows);
     expect(chips.map((chip) => chip.lane)).toEqual(['queue-BBZ-96']);
+  });
+
+  // Rail chip fix (2026-09-07 live-board finding): a chip must read as a sentence
+  // about the lane, with its key or title, never the raw run id shouting in caps or
+  // the raw signal word sitting in parens, and never a pid.
+  it('phrases a context trip as a sentence naming the ticket key, never the raw run id or the bare signal word', () => {
+    const rows = [parked({ event: 'liveness.stuck', run: 'queue-BBZ-99', at: 1_000, signal: 'context' })];
+    const chips = collapseWardenChips(rows);
+    expect(chips[0]!.text).toBe('BBZ-99: context ceiling reached, handed off to a fresh session.');
+    expect(chips[0]!.text).not.toMatch(/queue-|STUCK|\(context\)/i);
+  });
+
+  it('uses the titleFor seam when the lane carries no ticket-shaped id, e.g. a probe', () => {
+    const rows = [parked({ event: 'warden.parked', run: 'forge-live-probe-b', at: 1_000, signal: 'stale-session' })];
+    const chips = collapseWardenChips(rows, (id) => (id === 'forge-live-probe-b' ? 'Live probe' : null));
+    expect(chips[0]!.text).toBe('Live probe: parked by the warden.');
+    expect(chips[0]!.text).not.toMatch(/forge-live-probe-b/i);
   });
 });

@@ -425,7 +425,12 @@ export class ConsoleReads {
     const now = Date.now();
     const persisted = readThread(threadPath(this.forgeHomeDir));
     const fleet = this.journalCache.read(this.journalPath);
-    return computeThread(persisted, fleet.events, now, this.inbox.open());
+    // H1.9 fix: a rail chip's `titleFor` seam -- the same title `GET /lanes` already
+    // computed for this lane, so a chip reads "BBZ-99: ..." instead of shouting its
+    // raw run id. `lanesResponse` is already the shared lookup every other run-scoped
+    // route here uses (`runJournalResponse`, `runStoryResponse`).
+    const titleFor = (id: string): string | null => this.lanesResponse(true, true).lanes.find((l) => l.id === id)?.title ?? null;
+    return computeThread(persisted, fleet.events, now, this.inbox.open(), titleFor);
   }
 
   private journalResponse(query: { since?: number; run?: string; limit?: number }): JournalResponse {

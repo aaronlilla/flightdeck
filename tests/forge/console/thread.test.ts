@@ -48,6 +48,21 @@ describe('computeThread', () => {
     expect(eventMessages[0]!.text).toContain('×20');
   });
 
+  // Rail chip fix (2026-09-07 live-board finding): "FORGE-LIVE-PROBE-B PARKED ON
+  // e047516204ee5d00" -- a run.parked chip must never print the ask key, and should
+  // use the titleFor seam rather than the raw run id.
+  it('phrases a run.parked chip with the lane\'s title and never the ask key', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.parked', run: 'forge-live-probe-b', actor: 'runner', key: 'e047516204ee5d00' });
+    journal.close();
+    const fleet = replay(path);
+
+    const result = computeThread([], fleet.events, 10_000, [], (id) => (id === 'forge-live-probe-b' ? 'Live probe' : null));
+    const chip = result.messages.find((m) => m.type === 'event');
+    expect(chip?.text).toBe('Live probe parked, waiting on you.');
+    expect(chip?.text).not.toMatch(/e047516204ee5d00|forge-live-probe-b/i);
+  });
+
   it('H1.9: never puts a bare-PID stuck-session row on the rail at all', () => {
     const { path, journal } = tempJournal();
     for (let i = 0; i < 5; i += 1) {
