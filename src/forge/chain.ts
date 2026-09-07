@@ -58,6 +58,14 @@ export function completeBriefWithVerification(brief: string, input: {
     'typed Haiping handoff (`HaipingHandoffSchema`) in the PR body as a fenced JSON block,',
     'and name this PR\'s URL in the `forge_done` evidence.',
     '',
+    '## How this run ends',
+    '',
+    'Commit, push the branch, open the draft PR and call `forge_done`. Never ask whether',
+    'to commit or whether to open the PR: that is this run\'s whole job. Do not write to',
+    'the ticket tracker from this run, and do not stop because it is unreachable: the',
+    'pipeline comments on the ticket, assigns it and links the PR once the review is',
+    'done. Park only for a product or scope question the ticket itself does not answer.',
+    '',
   ];
   return `${brief}\n${lines.join('\n')}`;
 }

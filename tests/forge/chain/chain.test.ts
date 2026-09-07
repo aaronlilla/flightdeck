@@ -362,6 +362,11 @@ describe('completeBriefWithVerification', () => {
     expect(completed).toContain('ABC-1');
     expect(completed).toContain('HaipingHandoffSchema');
     expect(completed).toContain('forge_done');
+    // A worker asked, live on 2026-09-07, whether to commit and whether to touch the
+    // ticket tracker it could not reach. Both answers now travel with every brief.
+    expect(completed).toContain('## How this run ends');
+    expect(completed).toContain('Never ask whether');
+    expect(completed).toContain('Do not write to');
   });
 
   it('leaves a brief that already carries a Verification block unchanged', () => {
