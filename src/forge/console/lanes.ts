@@ -13,6 +13,7 @@ import type { ChainPacketState } from '../chain.js';
 import type { ClassSpec } from '../policy.js';
 import type { Hop, Lane, LaneKind, LanePr, LaneQuestion, LaneSandbox, LaneState, LanesResponse } from '../../shared/console-model.js';
 import { textFor } from './journal-route.js';
+import { plainStatus } from './plain.js';
 
 /** Journal rows that carry no narrative on their own: burn accounting, per-tool
  *  chatter, warden health pings. `stepText` and the "why is X stuck" reply both skip
@@ -472,11 +473,13 @@ export function buildLane(input: LaneBuildInput): Lane {
   const jiraDone = jiraWritesComplete(input.jiraCompleteTickets, ticketForJira);
   const { hop, hopStatus } = hopFor(packet, state, jiraDone);
 
-  return {
+  const built: Lane = {
     id,
     ticket,
-    // The human-facing layer (console-model.ts, 2026-09-07). Filled by the reads that
-    // know the queue store and the packet files; this fold alone knows only the id.
+    // `title`/`sourceUrl` are filled in by the reads that know the queue store and the
+    // packet files (2026-09-07); this fold alone knows only the id. `mergeable` is
+    // filled in the same way, once the reads that know the merge allow-list and the
+    // latest attestation are available.
     title: null,
     kind: laneKindFor(id),
     sourceUrl: null,
@@ -523,6 +526,8 @@ export function buildLane(input: LaneBuildInput): Lane {
     runaway: running && tokenCap !== null && tokens > tokenCap && (state === 'running' || chainLive),
     needsAaron: lane.needs_aaron ?? null,
   };
+  built.plain = plainStatus(built, { now });
+  return built;
 }
 
 export interface LanesInput {
