@@ -187,7 +187,18 @@ describe('prSummaryParts', () => {
 
   it('omits the council segment when there is no verdict yet', () => {
     const pr = { no: 5, url: 'https://example.invalid/pr/5', files: 1, add: 1, del: 0, draft: false, checks: 'pending' as const, verdict: null, merged: false };
-    expect(prSummaryParts(pr).rest).toBe('open · checks … · 1 files +1 −0');
+    expect(prSummaryParts(pr).rest).toBe('open · checks running · 1 files +1 −0');
+  });
+
+  // H1.3 fix: a PR the board has never actually read (queue-sourced, no /run/:id/pr
+  // detail fetched yet) carries no `checks`/`files`/`add`/`del` at all -- never a
+  // guessed 0, and never the word "pending", which means something different (the
+  // board DID read it, and CI is still running).
+  it('says checks not read yet, and drops the diff segment entirely, for a PR with no checks and no file counts', () => {
+    const pr = { no: 119, url: 'https://example.invalid/pr/119', draft: true, merged: false, verdict: null };
+    expect(prSummaryParts(pr).rest).toBe('draft · checks not read yet');
+    expect(prSummaryParts(pr).rest).not.toMatch(/files/);
+    expect(prSummaryParts(pr).rest).not.toContain('0 files');
   });
 });
 

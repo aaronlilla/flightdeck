@@ -717,7 +717,10 @@ describe('real PR figures: A.8', () => {
     expect(current.pr).toMatchObject({ files: 2, add: 12, del: 3 });
   });
 
-  it('stays honest zeros when no prSnapshot dep is wired', async () => {
+  // H1.3 fix: a fabricated 0 read as a real diff (the live board's own "0 files +0 -0"
+  // on a PR nobody had actually read) -- with no `prSnapshot` dep wired, the fields
+  // are absent instead, so the board can tell "not read" apart from "empty diff".
+  it('omits files/add/del entirely when no prSnapshot dep is wired, rather than a fabricated 0', async () => {
     const store = tempStore();
     const item = addTicketItem(store, 'ABC-1', 1000);
     const { deps } = buildDeps(store, {
@@ -730,7 +733,9 @@ describe('real PR figures: A.8', () => {
     current = await advanceItem(current, deps);
     current = await advanceItem(current, deps);
 
-    expect(current.pr).toMatchObject({ files: 0, add: 0, del: 0 });
+    expect(current.pr?.files).toBeUndefined();
+    expect(current.pr?.add).toBeUndefined();
+    expect(current.pr?.del).toBeUndefined();
   });
 });
 

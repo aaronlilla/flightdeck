@@ -139,10 +139,19 @@ export function plainLine(lane: Lane): string {
  *  the rest as plain text: `draft|open · checks <glyph> · council <verdict> ·
  *  N files +A −D`. The council segment is omitted while there is no verdict yet. */
 export function prSummaryParts(pr: LanePr): { no: number; url: string; rest: string } {
-  const checksGlyph = pr.checks === 'success' ? '✓' : pr.checks === 'failure' ? '✗' : pr.checks === 'pending' ? '…' : '?';
-  const parts = [pr.draft ? 'draft' : 'open', `checks ${checksGlyph}`];
+  // H1.3 fix: `checks` null/absent means the board has never actually read this PR's
+  // own state (a queue-sourced lane before its first `/run/:id/pr` fetch), which is a
+  // different fact from "pending" (read, and CI is still running) -- the two must never
+  // collapse into the same word.
+  const checksText = pr.checks === 'success' ? 'checks ✓'
+    : pr.checks === 'failure' ? 'checks ✗'
+      : pr.checks === 'pending' ? 'checks running'
+        : 'checks not read yet';
+  const parts = [pr.draft ? 'draft' : 'open', checksText];
   if (pr.verdict) parts.push(`council ${pr.verdict}`);
-  parts.push(`${pr.files} files +${pr.add} −${pr.del}`);
+  if (pr.files !== undefined && pr.add !== undefined && pr.del !== undefined) {
+    parts.push(`${pr.files} files +${pr.add} −${pr.del}`);
+  }
   return { no: pr.no, url: pr.url, rest: parts.join(' · ') };
 }
 

@@ -32,6 +32,15 @@ test('H2.1 fix: a long title wraps onto its own second line under the key, never
   expect(keyRowText ?? '').not.toContain('withdrawal fee');
 });
 
+test('H1.3 fix: a PR the board has never read shows "checks not read yet" and no fabricated 0 files +0 -0', async ({ page }) => {
+  await page.goto('/');
+  const tile = page.getByTestId('lane-unread-pr-1');
+  await expect(tile).toBeVisible();
+  await expect(tile.getByRole('link', { name: 'PR #121' })).toBeVisible();
+  await expect(tile.getByText(/checks not read yet/)).toBeVisible();
+  await expect(tile.getByText(/0 files/)).toHaveCount(0);
+});
+
 test('H2.2: the three-attempt chain ticket folds into one card with an attempt chip, and probes hide by default', async ({ page }) => {
   await page.goto('/');
   await expect(page.locator('[data-testid^="lane-chain-"]')).toHaveCount(1);

@@ -32,9 +32,12 @@ export const HOP_NAMES = ['poll', 'provision', 'launch', 'gate', 'merge', 'jira'
 export interface LanePr {
   no: number;
   url: string;
-  files: number;
-  add: number;
-  del: number;
+  /** H1.3 fix: absent until the board has actually read the PR's own diff -- never a
+   *  guessed 0. A tile with no `files`/`add`/`del` shows "files not read yet" rather
+   *  than a fabricated empty diff. */
+  files?: number;
+  add?: number;
+  del?: number;
   draft: boolean;
   /** The PR's own state as a person reads it on GitHub (2026-09-07): its checks, the
    *  council's last verdict on this head, and whether it has merged. Null fields mean

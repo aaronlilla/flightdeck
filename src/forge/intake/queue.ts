@@ -365,8 +365,8 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
   // is found and before the council or the overlap check reads either -- shared by A.9's
   // overlap check below and A.8's real figures once the item reaches `review`, so this
   // never fetches the same PR's diff twice within one call.
-  let prAdd = 0;
-  let prDel = 0;
+  let prAdd: number | undefined;
+  let prDel: number | undefined;
   if (deps.prSnapshot) {
     const snapshot = await deps.prSnapshot(item.repo!, pr.number);
     prAdd = snapshot.add;
@@ -502,11 +502,16 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
   return writeTransition(
     item,
     {
-      // A.8: real figures off the snapshot fetched above, when one was fetched -- the
-      // honest zeros from before this stream stand unchanged when `deps.prSnapshot`
-      // isn't wired.
+      // A.8/H1.3 fix: real figures off the snapshot fetched above, when one was
+      // fetched -- omitted (never a guessed 0) when `deps.prSnapshot` isn't wired, so
+      // the board reads "checks/files not read yet" instead of a fabricated zero diff.
       state: 'review',
-      pr: { no: pr.number, url: pr.url, files: item.changedFiles?.length ?? 0, add: prAdd, del: prDel, draft: true },
+      pr: {
+        no: pr.number, url: pr.url, draft: true,
+        ...(item.changedFiles ? { files: item.changedFiles.length } : {}),
+        ...(prAdd !== undefined ? { add: prAdd } : {}),
+        ...(prDel !== undefined ? { del: prDel } : {}),
+      },
       ...(handoffAt ? { handoffAt } : {}),
       ...(council.attestationPath ? { attestationPath: council.attestationPath } : {}),
     },

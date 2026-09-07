@@ -294,6 +294,13 @@ export function humanBoardLanes(): Lane[] {
   }));
 
   out.push(lane({
+    id: 'unread-pr-1', ticket: 'FLT-706', kind: 'ticket', state: 'done',
+    title: 'wire the retry backoff into the sync job', sourceUrl: 'https://example.invalid/browse/FLT-706',
+    plain: 'Draft PR #121 is open; the queue never merges on its own, so it is waiting for your Merge.',
+    pr: { no: 121, url: 'https://example.invalid/pr/121', draft: true },
+  }));
+
+  out.push(lane({
     id: 'long-title-1', ticket: 'FLT-705', kind: 'ticket', state: 'running',
     title: 'the withdrawal fee rounds down instead of to the nearest cent on every payout over five hundred dollars, which the finance team flagged after last week\'s reconciliation',
     sourceUrl: 'https://example.invalid/browse/FLT-705',
