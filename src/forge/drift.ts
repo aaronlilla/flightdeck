@@ -52,6 +52,69 @@ export function driftBlocker(run: string, state: Mergeable, base = 'the base bra
 }
 
 /**
+ * B.5: why a mergeable read came back UNKNOWN, when it is readable at all -- distinct from
+ * a genuinely undecided state (GitHub still computing it right after a push or a PR open,
+ * `resolveMergeable`'s own retry window below) from a `gh` call that never got a real
+ * answer at all. `auth` and `rate-limit` are both a credential lapse, not a base-drift
+ * problem the branch itself did anything to cause, and both auto-clear once `gh auth
+ * status` passes again -- so a caller with `CredentialHorizon` wired up (`credential-
+ * horizon.ts`) can park the run behind that instead of raising a base-drift blocker no
+ * rebase will ever answer.
+ */
+export type UnknownReason = 'auth' | 'rate-limit' | 'other';
+
+const AUTH_PATTERNS = [
+  /not logged into any github hosts/i, /gh auth login/i, /authentication/i,
+  /bad credentials/i, /401/,
+];
+const RATE_LIMIT_PATTERNS = [/rate limit/i, /403/];
+
+export function classifyUnknown(output: string): UnknownReason {
+  if (AUTH_PATTERNS.some((pattern) => pattern.test(output))) return 'auth';
+  if (RATE_LIMIT_PATTERNS.some((pattern) => pattern.test(output))) return 'rate-limit';
+  return 'other';
+}
+
+export interface MergeableRead {
+  state: Mergeable;
+  /** Only set when `state` is UNKNOWN for a classifiable reason -- an ordinary
+   *  still-computing UNKNOWN carries none, since there is nothing to classify. */
+  reason?: Exclude<UnknownReason, 'other'>;
+}
+
+/** `readMergeable` plus the reason, when the output itself explains the failure rather
+ *  than the state genuinely being undecided. */
+export function readMergeableDetailed(output: string): MergeableRead {
+  const state = readMergeable(output);
+  if (state !== 'UNKNOWN') return { state };
+  const reason = classifyUnknown(output ?? '');
+  return reason === 'other' ? { state } : { state, reason };
+}
+
+export type DriftOutcome =
+  | { kind: 'clear' }
+  | { kind: 'credential-lapse'; account: string }
+  | { kind: 'blocker'; ask: Ask };
+
+/**
+ * The full drift decision for one read: MERGEABLE clears, an auth or rate-limit UNKNOWN is
+ * a credential lapse rather than a blocker, and everything else is `driftBlocker` as
+ * before. `ghAccount` names the credential a caller's `CredentialHorizon` should park
+ * behind; the queue's own `gh` account, by default.
+ */
+export function classifyDrift(
+  run: string, output: string, base = 'the base branch', ghAccount = 'gh',
+): DriftOutcome {
+  const { state, reason } = readMergeableDetailed(output);
+  if (state === 'MERGEABLE') return { kind: 'clear' };
+  if (reason === 'auth' || reason === 'rate-limit') return { kind: 'credential-lapse', account: ghAccount };
+  const ask = driftBlocker(run, state, base);
+  // driftBlocker only returns undefined for MERGEABLE, already handled above, but the
+  // type still allows it -- fall back to a blocker rather than silently clearing.
+  return { kind: 'blocker', ask: ask ?? { run, kind: 'blocker', question: `Base drift against ${base}: unknown state.`, options: ['rebase and continue', 'stop and leave it for review'] } };
+}
+
+/**
  * `now()`/`sleep()`, injected so a specimen can drive the retry window below without a
  * real wait (I16's own falsifier: "the retry sleeps for real in the specimen").
  * Production gets the real clock; a fake advances its own virtual clock on `sleep`
