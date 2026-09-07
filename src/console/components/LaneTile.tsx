@@ -20,11 +20,10 @@ export interface LaneTileProps {
   onTip: (tip: TipSpec | null) => void;
   /** C.1: a quick correction that should not wait on opening the full ticket sheet.
    *  Optional so every other caller of this tile keeps working unchanged. */
-  onAmend?: (id: string, text: string) => void;
 }
 
 /** One board tile: id, model chip, state, step, context gauge, cost readout, freshness, one CTA. */
-export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, onTip, onAmend }: LaneTileProps): JSX.Element {
+export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, onTip }: LaneTileProps): JSX.Element {
   const st = stateOf(lane.state);
   const headline = laneHeadline(lane);
   const cta = laneCta(lane);
@@ -119,19 +118,6 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
           >
             {cta.label}
           </span>
-          {onAmend ? (
-            <span
-              className="btnS"
-              style={{ padding: '7px 9px', fontSize: '9.5px', flex: 'none' }}
-              onClick={(e) => {
-                e.stopPropagation();
-                const text = window.prompt(`amend ${lane.id}…`);
-                if (text) onAmend(lane.id, text);
-              }}
-            >
-              Amend
-            </span>
-          ) : null}
         </div>
       </div>
     </div>

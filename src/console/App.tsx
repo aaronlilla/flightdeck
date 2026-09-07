@@ -335,7 +335,6 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
                 onOpenCost={(id) => dispatch({ type: 'sheet', sheet: { type: 'cost', id } })}
                 onCommand={onCommand}
                 onTip={(tip) => dispatch({ type: 'tip', tip })}
-                onAmend={(id, textMsg) => void runAction(() => api.amendRun(id, textMsg))}
               />
             </div>
             <ConductorRail
