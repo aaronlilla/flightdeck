@@ -15,11 +15,12 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { chainCouncil, chainGate, chainGh, chainRebase, chainLauncher } from './chain-wire.js';
-import type { ChainEnv } from './chain-env.js';
+import { repoKindFor as repoKindForEnv, type ChainEnv } from './chain-env.js';
 import type { CliResult, ForgeDeps } from './cli.js';
+import { REAL_GH } from './council/gh.js';
 import type { Packet, PollSourceName, Watermark } from './contracts.js';
 import type { QueuePlannedBrief, QueuePlanner, QueueRuntimeDeps, QueueTicketSearch } from './intake/queue.js';
-import { createJiraFeed, type JiraConfig } from './intake/jira.js';
+import { createJiraFeed, createJiraWriteClient, type JiraConfig } from './intake/jira.js';
 import type { PollItemDetail } from './intake/poller.js';
 import { planFromPacket } from './intake/planner.js';
 import { resolvePlanProvider } from './intake/reasoner.js';
@@ -142,6 +143,33 @@ export function queuePlanner(configFn: () => JiraConfig | undefined = jiraConfig
   };
 }
 
+/** A.2: posts the council's own notes on the PR, through `REAL_GH.commentPr` --
+ *  `advanceItem` itself never touches `gh`, so every real write funnels through here. */
+export function queueCommentOnPr(): NonNullable<QueueRuntimeDeps['commentOnPr']> {
+  return async ({ repo, pr, body }) => {
+    await REAL_GH.commentPr(repo, pr, body);
+  };
+}
+
+/** A.4: the backend ping -- a Jira assign to `FORGE_JIRA_BACKEND_OWNER_ACCOUNT` and a PR
+ *  reviewer request naming `FORGE_GH_BACKEND_OWNER`, both skipped honestly (rather than
+ *  guessed at) when the relevant environment variable is unset. */
+export function queueBackendHandoff(
+  configFn: () => JiraConfig | undefined = jiraConfigFromEnv,
+): NonNullable<QueueRuntimeDeps['backendHandoff']> {
+  return async ({ item, pr }) => {
+    const ownerAccount = process.env['FORGE_JIRA_BACKEND_OWNER_ACCOUNT'];
+    const ghReviewer = process.env['FORGE_GH_BACKEND_OWNER'];
+    const config = configFn();
+    if (ownerAccount && config && item.ticket) {
+      await createJiraWriteClient(config).assign(item.ticket, ownerAccount);
+    }
+    if (ghReviewer && item.repo) {
+      await REAL_GH.requestReviewer(item.repo, pr.no, ghReviewer);
+    }
+  };
+}
+
 export function buildQueueRuntimeDeps(
   chainEnv: ChainEnv, fleetConfigDir: string, deps: ForgeDeps, store: QueueRuntimeDeps['store'], maxInFlight = 2,
 ): QueueRuntimeDeps {
@@ -165,6 +193,9 @@ export function buildQueueRuntimeDeps(
       }
     },
     store,
+    commentOnPr: queueCommentOnPr(),
+    repoKindFor: (repo) => repoKindForEnv(chainEnv, repo),
+    backendHandoff: queueBackendHandoff(),
   };
 }
 

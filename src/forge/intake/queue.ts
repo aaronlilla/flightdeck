@@ -21,6 +21,7 @@ import type { ChainCouncilFn, ChainGateFn, ChainGh, ChainLauncher } from '../cha
 import type { QueueItem, QueueItemState, QueueSource } from '../../shared/console-model.js';
 import { evaluateAction } from '../rules/index.js';
 import { renderNotes } from '../council/renderNotes.js';
+import { terminalStateFor, type RepoKind } from './handoff.js';
 import type { QueueStore } from './queueStore.js';
 
 /**
@@ -188,6 +189,16 @@ export interface QueueRuntimeDeps {
    *  Best effort -- a comment failing never blocks the item; absent means this
    *  environment never wires the write, and no comment is attempted. */
   commentOnPr?: (input: { repo: string; pr: number; body: string }) => Promise<void>;
+  /** A.4: which side of `handoff.ts#terminalStateFor` an item's routed repository is on.
+   *  Absent means every item is treated as frontend -- the terminal state every specimen
+   *  before this stream already assumed. */
+  repoKindFor?: (repo: string) => RepoKind;
+  /** A.4: the backend ping itself -- a Jira assign to the backend owner and a PR
+   *  reviewer request, run only for a `terminalStateFor('backend')` item at `review`.
+   *  Best effort, the same as the review comment: a failed ping never blocks review,
+   *  since the controlled-code merge denial (`rules/gitflow.ts`) is what actually keeps
+   *  the repo safe, not this notification. */
+  backendHandoff?: (input: { item: QueueItem; pr: { no: number } }) => Promise<void>;
   /** Reused from `chain.ts` unchanged, but `advanceItem` never passes `merge: true` --
    *  the queue's own decision (every item stops at a draft PR) lives in this file, not
    *  in whatever the caller wires this to. */
@@ -378,6 +389,22 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
         await deps.commentOnPr({ repo: item.repo!, pr: pr.number, body });
       } catch {
         // Best effort, per A.2: the comment is a courtesy, not a gate.
+      }
+    }
+  }
+
+  // A.4: a backend item ends at "draft PR open, backend owner pinged" -- restated here
+  // as a call to `handoff.ts#terminalStateFor` rather than a scattered
+  // `if (repo === ...)`, so which repos are backend stays this environment's own
+  // `repoKindFor` wiring, never a name baked into this file (agnostic check).
+  if (deps.repoKindFor) {
+    const terminal = terminalStateFor(deps.repoKindFor(item.repo!));
+    if (terminal.pings === 'backend-owner' && deps.backendHandoff) {
+      try {
+        await deps.backendHandoff({ item, pr: { no: pr.number } });
+      } catch {
+        // Best effort, same as the review comment above: a failed ping never blocks
+        // review -- the controlled-code merge denial is the real safety net here.
       }
     }
   }

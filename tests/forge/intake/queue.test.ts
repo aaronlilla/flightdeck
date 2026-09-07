@@ -430,6 +430,67 @@ describe('review comment: A.2', () => {
   });
 });
 
+describe('backend path: A.4', () => {
+  it('pings the backend owner in Jira and requests them as a reviewer for a backend item', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'BBMS-1', 1000);
+    let handoffInput: { item: { ticket: string | null }; pr: { no: number } } | undefined;
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS' }),
+    });
+    deps.repoKindFor = () => 'backend';
+    deps.backendHandoff = async (input) => { handoffInput = input; };
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('review');
+    expect(handoffInput?.item.ticket).toBe('BBMS-1');
+    expect(handoffInput?.pr.no).toBe(1);
+  });
+
+  it('never pings the backend owner for a frontend item', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let calls = 0;
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS' }),
+    });
+    deps.repoKindFor = () => 'frontend';
+    deps.backendHandoff = async () => { calls += 1; };
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('review');
+    expect(calls).toBe(0);
+  });
+
+  it('a failing backend ping never keeps the item off review', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'BBMS-1', 1000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS' }),
+    });
+    deps.repoKindFor = () => 'backend';
+    deps.backendHandoff = async () => { throw new Error('jira down'); };
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('review');
+  });
+});
+
 describe('runQueueTick', () => {
   it('refuses to start anything while the kill switch is engaged', async () => {
     const store = tempStore();
