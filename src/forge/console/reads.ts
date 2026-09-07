@@ -448,7 +448,11 @@ export class ConsoleReads {
       // The checks clause reads the lane's own PR facts (the cache), which the queue
       // item never carries.
       const withChecks = pr && queueItem.pr ? { ...queueItem, pr: { ...queueItem.pr, ...(pr.checks !== undefined ? { checks: pr.checks } : {}), ...(pr.merged !== undefined ? { merged: pr.merged } : {}) } } : queueItem;
-      const queuePlain = plainForQueueItem(withChecks as typeof queueItem, verdict);
+      // Only a repo that is off the allow-list AND has a named owner reads as
+      // controlled code; an unconfigured allow-list alone is not a fact about the repo.
+      const backendOwner = process.env['FORGE_GH_BACKEND_OWNER'];
+      const controlledOwner = repo && backendOwner && !this.mergeAllowedFn(repo) ? backendOwner : null;
+      const queuePlain = plainForQueueItem(withChecks as typeof queueItem, verdict, controlledOwner);
       if (queuePlain) patched.plain = queuePlain;
     }
     // Item 7: a queue lane's repo+PR number are known the moment the queue item

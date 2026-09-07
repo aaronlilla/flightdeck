@@ -256,3 +256,14 @@ describe('costTip', () => {
     expect(tip.click).toBe('Click → cost sheet');
   });
 });
+
+describe('laneCta: mergeability outranks the run state', () => {
+  it('offers Merge on an unverified lane whose PR the board knows is ready', async () => {
+    const { laneCta } = await import('../../src/console/laneVM.js');
+    const lane = {
+      id: 'x', state: 'unverified', retiredAt: null, runaway: false,
+      mergeable: { ok: true }, pr: { no: 9, url: 'u', files: 1, add: 1, del: 0, draft: true, merged: false },
+    } as never;
+    expect(laneCta(lane).cmd).toBe('merge');
+  });
+});

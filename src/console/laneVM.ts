@@ -51,6 +51,10 @@ export function laneCta(lane: Lane): LaneCta {
   // H2.2/H2.3: a retired lane's only action is to come back, whatever its own state.
   if (lane.retiredAt !== null) return { label: 'Unretire', cmd: 'unretire', cls: 'btnS' };
   if (lane.state === 'running' && lane.runaway) return { label: 'Kill attempt', cmd: 'kill', cls: 'btnR' };
+  // The board's own mergeability verdict outranks the run's state: a PR that is
+  // reviewed, green and on the allow-list is ready whether the session behind it ended
+  // `done`, `unverified` or `killed` (seen live 2026-09-07: a ready PR under Verify).
+  if (lane.mergeable?.ok && lane.pr && !lane.pr.merged) return { label: 'Merge now →', cmd: 'merge', cls: 'btnP' };
   switch (lane.state) {
     case 'running':
       return { label: 'Watch live', cmd: 'watch', cls: 'btnS' };

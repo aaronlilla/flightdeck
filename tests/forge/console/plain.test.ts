@@ -167,3 +167,12 @@ describe('running sentence never echoes a run id', () => {
     expect(text).not.toMatch(/[0-9a-f]{8,}/);
   });
 });
+
+describe('review sentence on controlled code', () => {
+  it('names the owner who lands the PR instead of asking for a Merge click', async () => {
+    const { plainForQueueItem } = await import('../../../src/forge/console/plain.js');
+    const item = { state: 'review', pr: { no: 80, url: 'u', files: 2, add: 79, del: 12, draft: true, checks: 'success' } } as never;
+    const text = plainForQueueItem(item, { verdict: 'PASS WITH NOTES', reviewed: 2, total: 2 }, 'joe');
+    expect(text).toBe('In review: council PASS WITH NOTES, 2 of 2 reviewed, checks green; draft PR #80 waits for joe to land it.');
+  });
+});

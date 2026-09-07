@@ -136,7 +136,7 @@ export interface QueueVerdict {
  * a council verdict word, a coverage count or the item's own reason, in a full sentence
  * a person can act on.
  */
-export function plainForQueueItem(item: QueueItem, verdict: QueueVerdict | null): string | null {
+export function plainForQueueItem(item: QueueItem, verdict: QueueVerdict | null, owner: string | null = null): string | null {
   switch (item.state) {
     case 'review': {
       const pr = item.pr;
@@ -148,7 +148,9 @@ export function plainForQueueItem(item: QueueItem, verdict: QueueVerdict | null)
         : pr.checks === 'failure' ? ', checks red'
           : pr.checks === 'pending' ? ', checks pending'
             : '';
-      return `In review: ${verdictClause}${checksClause}; draft PR #${pr.no} is waiting for your Merge.`;
+      // A repo the queue may not merge (controlled code) waits on its owner, not on a click.
+      const waits = owner ? `draft PR #${pr.no} waits for ${owner} to land it` : `draft PR #${pr.no} is waiting for your Merge`;
+      return `In review: ${verdictClause}${checksClause}; ${waits}.`;
     }
     case 'done': {
       const pr = item.pr;
