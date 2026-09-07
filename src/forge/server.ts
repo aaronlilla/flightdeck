@@ -255,6 +255,8 @@ export class ForgeServer {
   private readonly consoleWrites: ConsoleWrites;
 
   private readonly queueRoutes: QueueRoutes;
+  /** Set by `forge up` once the self loop exists; read fresh on every `/state`. */
+  selfStatus: (() => unknown) | undefined;
 
   constructor(options: ForgeServerOptions) {
     this.lanes = options.lanes;
@@ -471,6 +473,9 @@ export class ForgeServer {
       // window and the console's top bar both need to say when the queue subsystem is
       // not running at all, distinct from a running queue that is merely paused.
       queue_on: process.env['FORGE_QUEUE'] === '1',
+      // The self loop's own count of what it found, queued and merged about this fleet
+      // (`self-wire.ts`); absent when FORGE_SELF_REPO is unset.
+      self: this.selfStatus?.() ?? null,
       // P5.7: the same rows `forge status` prints, folded fresh off the journal on
       // every call -- present whether or not FORGE_CHAIN is on, since a packet already
       // in flight still belongs on the console.

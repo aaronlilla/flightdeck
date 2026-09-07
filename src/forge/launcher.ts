@@ -138,6 +138,19 @@ let cachedVersion: string | undefined;
 /** Flightdeck's own source directory, whatever a worker's cwd happens to be. */
 const FLIGHTDECK_SRC = dirname(fileURLToPath(import.meta.url));
 
+/** The full sha of the checkout this process runs from, for a comparison against a
+ *  remote ref (`self-wire.ts`'s cutover); `runtimeVersion()` is the short form for
+ *  people. Empty when git cannot answer. */
+export function runtimeHead(): string {
+  try {
+    return execFileSync('git', ['rev-parse', 'HEAD'], {
+      encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'], cwd: FLIGHTDECK_SRC,
+    }).trim();
+  } catch {
+    return '';
+  }
+}
+
 export function runtimeVersion(): string {
   if (cachedVersion) return cachedVersion;
   if (process.env['FORGE_RUNTIME']) {

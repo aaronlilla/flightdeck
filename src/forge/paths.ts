@@ -7,6 +7,7 @@
  * overridable, which is also what lets a specimen point the whole tree at a temporary
  * directory.
  */
+import { fileURLToPath } from 'node:url';
 import { existsSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -157,4 +158,13 @@ export function ensureHome(): string {
     mkdirSync(dir, { recursive: true });
   }
   return root;
+}
+
+/** The routine store (`routines/*.md`) shipped in the checkout this process runs from --
+ *  tracked files, reviewed like code, never a per-machine directory. `FORGE_ROUTINES_DIR`
+ *  overrides it for a specimen. */
+export function routinesDir(): string {
+  const override = process.env['FORGE_ROUTINES_DIR'];
+  if (override) return override;
+  return fileURLToPath(new URL('../../routines/', import.meta.url));
 }

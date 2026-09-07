@@ -47,7 +47,7 @@ import { readProcessList, watchedProcesses } from './fleetwatch.js';
 import { Gotchas } from './gotcha.js';
 import { Inbox, isAskStale } from './inbox.js';
 import { replay, Journal, JournalCache } from './journal.js';
-import { checkLaunch, launchEnv, loginInFlight, pinnedRuntime, runtimeVersion } from './launcher.js';
+import { checkLaunch, launchEnv, loginInFlight, pinnedRuntime, runtimeHead, runtimeVersion } from './launcher.js';
 import { assess, LivenessSupervisor } from './liveness.js';
 import {
   ensureHome, fleetConfigDirChoice, forgeHome, gotchasDir, inboxDir, intakeBriefsDir, journalPath,
@@ -57,6 +57,7 @@ import { runQueueTick } from './intake/queue.js';
 import { acquireQueueLock } from './intake/queueLock.js';
 import { QueueStore } from './intake/queueStore.js';
 import { buildQueueRuntimeDeps, queueMergeDeps, queuePromoteDeps } from './queue-wire.js';
+import { buildSelfLoop } from './self-wire.js';
 import { QueueTickBackoff } from './queue-backoff.js';
 import { loadPolicy, modelFor, modelIdFor, tierOfBrief } from './policy.js';
 import { attestationCoversHead, checkHandoff, providerFor, redact, verified } from './contracts.js';
@@ -570,6 +571,36 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         queueLine = `queue on, polling every ${pollSeconds}s`;
       }
 
+      // The self loop (`self-wire.ts`): findings about the fleet become queue items on
+      // FORGE_SELF_REPO, a self item whose gate cleared merges, and once trunk has moved
+      // this process asks its launcher for a restart by exiting 75 -- only while nothing
+      // is in flight, and never by touching a worker.
+      let selfLine = '';
+      const selfLoop = buildSelfLoop({
+        chainEnv: readChainEnv(), store: queueStore,
+        mergeDeps: queueMergeDeps(deps, queueStore, readChainEnv()), runningHead: runtimeHead(),
+      });
+      if (selfLoop.enabled && queueLock?.ok) {
+        const selfSeconds = Number(process.env['FORGE_SELF_POLL_S']) || 300;
+        const selfJournal = new Journal(journalPath());
+        const selfTick = setInterval(() => {
+          void selfLoop.tick().then((result) => {
+            if (!result.restart) return;
+            clearInterval(selfTick);
+            process.stdout.write(`self: trunk moved past ${runtimeVersion()}, restarting onto it
+`);
+            void server.close().finally(() => process.exit(75));
+          }).catch((error) => {
+            selfJournal.append({ event: 'self.tick-error', actor: 'self', message: error instanceof Error ? error.message : String(error) } as never);
+          });
+        }, selfSeconds * 1000);
+        selfTick.unref();
+        selfLine = `self loop on for ${selfLoop.selfRepo}, every ${selfSeconds}s`;
+      } else if (selfLoop.enabled) {
+        selfLine = 'self loop NOT started: the queue lock is held elsewhere';
+      }
+      server.selfStatus = () => selfLoop.status();
+
       return {
         code: 0,
         lines: [
@@ -580,6 +611,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           `inbox: ${inbox.open().length} waiting`,
           chainLine,
           queueLine,
+          selfLine,
         ].filter(Boolean),
       };
     }

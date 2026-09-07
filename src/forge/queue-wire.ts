@@ -22,6 +22,8 @@ import type { Packet, PollSourceName, Watermark } from './contracts.js';
 import { run as execRun } from './exec.js';
 import type { QueueMergeDeps, QueuePlannedBrief, QueuePlanner, QueuePromoteDeps, QueueRuntimeDeps, QueueTicketSearch } from './intake/queue.js';
 import { developDeployVerifier } from './intake/otaVerify.js';
+import { appendRoutinesSection, loadRoutines, matchRoutines } from './self/routines.js';
+import { routinesDir } from './paths.js';
 import { createJiraFeed, createJiraWriteClient, type JiraConfig } from './intake/jira.js';
 import { runQueueHandoff } from './intake/queueHandoff.js';
 import type { PollItemDetail } from './intake/poller.js';
@@ -118,9 +120,15 @@ export function queuePlanner(configFn: () => JiraConfig | undefined = jiraConfig
   const briefsDir = queueBriefsDir();
   mkdirSync(briefsDir, { recursive: true });
 
-  async function writeBrief(id: string, text: string): Promise<string> {
+  // F.6: routines are the things this fleet has done more than once, written down once.
+  // Every brief the queue writes carries the ones whose tags match the brief's own
+  // words, so the worker reads them before it repeats the work.
+  const routines = loadRoutines(routinesDir());
+  async function writeBrief(id: string, text: string, repoKind?: string): Promise<string> {
     const path = join(briefsDir, `${id.replace(/[^A-Za-z0-9._-]/g, '_')}.md`);
-    writeFileSync(path, text, 'utf8');
+    const keywords = [...new Set(text.toLowerCase().match(/[a-z][a-z0-9-]{2,}/g) ?? [])];
+    const matched = matchRoutines({ ...(repoKind ? { repoKind } : {}), keywords: ['general', ...keywords] }, routines);
+    writeFileSync(path, appendRoutinesSection(text, matched), 'utf8');
     return path;
   }
 

@@ -513,6 +513,13 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
  *  owns one queue. */
 const advancing = new Set<string>();
 
+/** True while any item is mid-advance in this process (a council round, a launch, a
+ *  handoff). The self loop's cutover reads it so a restart never lands on a hop half
+ *  done. */
+export function queueBusy(): boolean {
+  return advancing.size > 0;
+}
+
 export async function runQueueTick(deps: QueueRuntimeDeps, items: QueueItem[]): Promise<QueueTickResult> {
   if (deps.killSwitch()) return { started: 0, advanced: 0, killSwitchEngaged: true, paused: false };
   if (deps.paused()) return { started: 0, advanced: 0, killSwitchEngaged: false, paused: true };
