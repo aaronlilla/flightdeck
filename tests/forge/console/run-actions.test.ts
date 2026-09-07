@@ -358,3 +358,26 @@ describe('compactRun', () => {
     expect(result.status).toBe(501);
   });
 });
+
+describe('action guards judge the chain, not the root', () => {
+  it('lets Kill through when the root is killed but its successor still runs', async () => {
+    const { mkdtempSync, writeFileSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'forge-guard-'));
+    const journalPath = join(dir, 'fleet.jsonl');
+    const rows = [
+      { event: 'run.started', run: 'alpha' },
+      { event: 'run.handoff', run: 'alpha', successor: 'alpha-2', reason: 'ceiling' },
+      { event: 'run.started', run: 'alpha-2' },
+      { event: 'run.killed', run: 'alpha' },
+    ];
+    writeFileSync(journalPath, rows.map((r, i) => JSON.stringify({ id: `e${i}`, seq: i + 1, at: 1000 + i, version: 1, actor: 'runner', ...r })).join('\n') + '\n');
+    const { laneStateNowFor } = await import('../../../src/forge/console/lanes.js');
+    const { replay } = await import('../../../src/forge/journal.js');
+    const { foldChainState } = await import('../../../src/forge/chain.js');
+    const fleet = replay(journalPath);
+    const { state } = laneStateNowFor('alpha', { fleet, chain: foldChainState(fleet.events) });
+    expect(state).toBe('running');
+  });
+});

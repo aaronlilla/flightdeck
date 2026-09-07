@@ -684,9 +684,14 @@ export function laneStateNowFor(run: string, opts: {
   chain: Map<string, ChainPacketState>;
   laneRecord?: LaneRecord;
 }): LaneStateResult {
-  const runEvents = opts.fleet.events.filter((row) => row.run === run);
+  // A lane is its chain's newest link: the state a person sees on the tile, and the
+  // state every action guard must judge. Judging the root alone read a handed-off
+  // chain as `killed` while its successor still ran (2026-09-07).
+  const links = chainLinks(opts.fleet.runs, run);
+  const terminal = links.length ? links[links.length - 1]!.key : run;
+  const runEvents = opts.fleet.events.filter((row) => row.run === terminal);
   const packet = packetForRun(opts.chain, run);
-  const runState = opts.fleet.runs[run];
+  const runState = opts.fleet.runs[terminal];
   const lane = opts.laneRecord ?? laneRecord({ slug: run, column: run });
   return laneStateFor({ packet, lane, runState, runEvents });
 }
