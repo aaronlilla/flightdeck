@@ -143,7 +143,7 @@
   "council": {
     "smallMaxLines": 100,
     "largeMinLines": 500,
-    "riskyPaths": ["**/features/wallet/**", "**/features/auth/**", "**/Financial/**"],
+    "riskyPaths": ["**/features/wallet/**", "**/features/auth/**", "**/features/machine/**", "**/Financial/**", "**/*Financial*", "**/*Withdraw*", "**/*Deposit*", "**/*Fee*", "**/*Transfer*", "**/*Payment*", "**/*Auth*", "**/*Kyc*", "**/*Plaid*", "**/*plaid*", "**/*Sila*", "**/*sila*", "**/*Worldpay*", "**/*worldpay*", "**/*Auth0*", "**/*auth0*"],
     "codex": "off",
     "allowedRepos": [],
     "autoMerge": []
