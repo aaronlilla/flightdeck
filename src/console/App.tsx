@@ -236,7 +236,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
         const preview = await api.getMergeReadyPreview();
         if (preview.ready.length === 0 && preview.notReady.length === 0) { appendReceipt(null, 'nothing is ready to merge.', false); return; }
         const k = `confirm-merge-ready-${Date.now()}`;
-        const readyPart = preview.ready.map((r) => `${r.title ?? r.id} (PR #${r.pr.no})`).join(', ');
+        const readyPart = preview.ready.map((r) => (r.pr ? `${r.title ?? r.id} (PR #${r.pr.no})` : (r.title ?? r.id))).join(', ');
         const notReadyPart = preview.notReady.map((r) => `${r.title ?? r.id}: ${r.why}`).join('; ');
         const blast = [
           preview.ready.length > 0 ? `ready: ${readyPart}` : null,

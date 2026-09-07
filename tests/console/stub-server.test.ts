@@ -109,4 +109,17 @@ describe('stub server', () => {
     expect(story.entries.some((e) => e.kind === 'pr')).toBe(true);
     expect(story.entries.some((e) => e.kind === 'merge')).toBe(true);
   });
+
+  // H2.7
+  it('serves the human-board fixture: 31 lanes, 4 probes, a three-attempt chain ticket, all titled and plained', async () => {
+    await post('/__test/fixture?name=human-board');
+    const { lanes } = await get<{ lanes: { id: string; kind: string; ticket: string | null; attempt: number; title: string | null; plain: string }[] }>('/lanes');
+    expect(lanes).toHaveLength(31);
+    expect(lanes.filter((l) => l.kind === 'probe')).toHaveLength(4);
+    const chain = lanes.filter((l) => l.ticket === 'FLT-700');
+    expect(chain).toHaveLength(3);
+    expect(chain.map((l) => l.attempt).sort()).toEqual([1, 2, 3]);
+    expect(lanes.some((l) => l.kind === 'self')).toBe(true);
+    expect(lanes.every((l) => l.title !== null && l.plain !== '')).toBe(true);
+  });
 });

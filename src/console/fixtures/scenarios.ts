@@ -238,6 +238,85 @@ export function healthyIntegrations(seed: Integration[]): Integration[] {
   }));
 }
 
+/** H2.7: a board shaped like the real one the human-UI work was reported against --
+ *  31 lanes, 4 probes, a ticket retried three times, a draft PR in review, a
+ *  done-and-merged lane, a killed lane, a lane parked on a question, and a self
+ *  item, every lane carrying a title and a plain sentence so H2.1 through H2.6 all
+ *  have something real to render against in one place. */
+export function humanBoardLanes(): Lane[] {
+  const now = Date.now();
+  const out: Lane[] = [];
+
+  for (let i = 0; i < 4; i += 1) {
+    out.push(lane({
+      id: `probe-${i}`, state: i === 3 ? 'blocked' : 'done', kind: 'probe', ticket: null,
+      title: 'Live probe of the runner', plain: i === 3 ? 'Probe blocked: the runner never answered.' : `Probe passed at ${new Date(now - i * 3_600_000).toISOString().slice(11, 16)}.`,
+      stepText: 'probing', hop: 3, hopStatus: i === 3 ? 'blocked' : 'done',
+    }));
+  }
+
+  const chainTicket = 'FLT-700';
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    out.push(lane({
+      id: `chain-${chainTicket}-${attempt}`, ticket: chainTicket, kind: 'chain', attempt,
+      state: attempt === 3 ? 'running' : 'blocked',
+      title: 'nightly chain: reconcile stale wallet holds',
+      plain: attempt === 3 ? 'Working since 08:00 on a Sonnet session, 12 turns in, last did: re-ran the reconciliation job.' : `Blocked since attempt ${attempt}: the reconciliation job failed the gate.`,
+      startedAt: now - (4 - attempt) * 3_600_000, heart: attempt === 3,
+    }));
+  }
+
+  out.push(lane({
+    id: 'review-1', ticket: 'FLT-701', kind: 'ticket', state: 'handed-off', hop: 3,
+    title: 'show a spinner while the wallet balance refreshes', sourceUrl: 'https://example.invalid/browse/FLT-701',
+    plain: 'Draft PR #119 is open with checks green and the council still reviewing.',
+    pr: { no: 119, url: 'https://example.invalid/pr/119', files: 2, add: 41, del: 3, draft: true, checks: 'success', verdict: null, merged: false },
+  }));
+
+  out.push(lane({
+    id: 'merged-1', ticket: 'FLT-702', kind: 'ticket', state: 'merged', hop: 5, hopStatus: 'done',
+    title: 'fix the withdrawal fee rounding error', sourceUrl: 'https://example.invalid/browse/FLT-702',
+    plain: 'Merged into develop at 20:27; dev OTA ios=update android=update.',
+    pr: { no: 120, url: 'https://example.invalid/pr/120', files: 3, add: 18, del: 2, draft: false, checks: 'success', verdict: 'PASS', merged: true },
+  }));
+
+  out.push(lane({
+    id: 'killed-1', ticket: 'FLT-703', kind: 'ticket', state: 'killed',
+    title: 'add a retry to the Plaid webhook', sourceUrl: 'https://example.invalid/browse/FLT-703',
+    plain: 'Stopped by you at 12:48 (duplicate of FLT-701).',
+  }));
+
+  out.push(lane({
+    id: 'parked-1', ticket: 'FLT-704', kind: 'ticket', state: 'parked',
+    title: 'the migration column should be NOT NULL or nullable', sourceUrl: 'https://example.invalid/browse/FLT-704',
+    plain: 'Waiting for your answer: the migration column should be NOT NULL or nullable with a backfill job?',
+    question: { key: 'ask-704', text: 'the migration column should be NOT NULL or nullable with a backfill job?', opts: ['NOT NULL', 'nullable + backfill'], askedAt: now },
+  }));
+
+  out.push(lane({
+    id: 'self-1', kind: 'self', ticket: null, state: 'blocked',
+    title: 'self finding: the queue worker leaks a file handle on retry',
+    plain: 'Self-analysis found a leaked file handle; blocked on your review.',
+  }));
+
+  const fillerKinds: Lane['kind'][] = ['ticket', 'hotfix', 'brief', 'manual'];
+  const fillerStates: Lane['state'][] = ['running', 'paused', 'blocked', 'done', 'exhausted', 'unverified'];
+  const fillerCount = 31 - out.length;
+  for (let i = 0; i < fillerCount; i += 1) {
+    const kind = fillerKinds[i % fillerKinds.length] as Lane['kind'];
+    const state = fillerStates[i % fillerStates.length] as Lane['state'];
+    const ticket = kind === 'manual' ? null : `FLT-${800 + i}`;
+    out.push(lane({
+      id: `filler-${i}`, ticket, kind, state,
+      title: `board item ${i}: a plain one-line title`,
+      plain: `Working on board item ${i}, last did: ran the suite.`,
+      sourceUrl: ticket ? `https://example.invalid/browse/${ticket}` : null,
+    }));
+  }
+
+  return out;
+}
+
 /** Empty proposal list, paired with `emptyLanes` for the empty-fleet scenario --
  *  a rule pointing at `mergedToday`/`fails` figures a fleet with nothing running
  *  can't honestly have. */

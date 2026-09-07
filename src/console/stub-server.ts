@@ -25,7 +25,7 @@ import { seedJournal } from './fixtures/journal.js';
 import { seedLanes } from './fixtures/lanes.js';
 import { seedRules } from './fixtures/proposals.js';
 import {
-  bigLanes, emptyLanes, emptyRules, galleryThread, healthyIntegrations, matrixQueue, raceThread,
+  bigLanes, emptyLanes, emptyRules, galleryThread, healthyIntegrations, humanBoardLanes, matrixQueue, raceThread,
   refusalLanes, resumedRaceLanes, statesLanes, UNBUILT_REPO,
 } from './fixtures/scenarios.js';
 import { seedThread } from './fixtures/thread.js';
@@ -113,6 +113,9 @@ const FIXTURES: Record<string, () => Db> = {
   'resume-race': () => ({ ...seedDb(), lanes: resumedRaceLanes(), thread: raceThread() }),
   'message-gallery': () => ({ ...seedDb(), thread: galleryThread() }),
   'big-fleet': () => ({ ...seedDb(), lanes: bigLanes() }),
+  // H2.7: the human-UI board -- 31 lanes shaped like the real one this whole
+  // stream was reported against, for every H2.1-H2.6 spec to share.
+  'human-board': () => ({ ...seedDb(), lanes: humanBoardLanes() }),
   'queue-matrix': () => ({
     ...seedDb(),
     lanes: [],
