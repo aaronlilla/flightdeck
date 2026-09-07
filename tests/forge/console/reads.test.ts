@@ -82,6 +82,29 @@ describe('ConsoleReads.lanesResponse: title and sourceUrl', () => {
     expect(lane!.sourceUrl).toBeNull();
   });
 
+  it('mergeable reads the queue\'s own merge allow-list for the lane\'s repo (H1.4)', () => {
+    const forgeHomeDir = tempDir('console-reads-');
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.append({ event: 'run.finished', run: 'alpha', actor: 'runner', verdict: 'done' });
+    journal.close();
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put('alpha', { column: 'alpha' });
+
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore: new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl')),
+      jiraSite: null, mergeAllowed: () => false,
+    });
+
+    const [lane] = reads.lanesResponse().lanes;
+    // No PR at all is the reason that actually applies here, and outranks the
+    // allow-list check -- there is nothing yet for the allow-list to refuse.
+    expect(lane!.mergeable).toEqual({ ok: false, why: 'no PR yet' });
+  });
+
   it('titles a probe lane with no lookup at all', () => {
     const forgeHomeDir = tempDir('console-reads-');
     const journalPath = join(forgeHomeDir, 'fleet.jsonl');

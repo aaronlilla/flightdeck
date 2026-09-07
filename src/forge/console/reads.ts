@@ -31,7 +31,8 @@ import { computeCostSteps, findCapEnforcementFailure } from './cost-steps.js';
 import { actionsLedgerPath, computeJournal, readActionsLedger } from './journal-route.js';
 import { computeJournalNarrative } from './journal-narrative.js';
 import { readAttestation } from '../council/attest.js';
-import { computeLanes, tokensToday, titleFor, titleFromHeading, windowLanes, type LanesInput } from './lanes.js';
+import { queueMergeAllowed } from '../queue-wire.js';
+import { computeLanes, mergeableFor, tokensToday, titleFor, titleFromHeading, windowLanes, type LanesInput } from './lanes.js';
 import {
   computeRunPr, prCachePath, readPrCache, writePrCache,
   type AttestationReaderFn, type GhDetailLookupFn, type GhLookupFn, type GhPrDetail, type GhPrLookup,
@@ -72,6 +73,10 @@ export interface ConsoleReadsOptions {
   /** Overrides `FORGE_JIRA_SITE` for `GET /lanes`'s own title/sourceUrl fields. A
    *  specimen only -- production always reads the real environment. */
   jiraSite?: string | null;
+  /** H1.4: overrides the queue's own merge allow-list (`FORGE_QUEUE_MERGE_REPOS`) for
+   *  `GET /lanes`'s `mergeable` field. A specimen only -- production always reads the
+   *  real environment. */
+  mergeAllowed?: (repo: string) => boolean;
 }
 
 /** The lane's own burn rate in tokens/hour, off the journal's real cumulative total for
@@ -184,6 +189,8 @@ export class ConsoleReads {
 
   private readonly jiraSite: string | null;
 
+  private readonly mergeAllowedFn: (repo: string) => boolean;
+
   constructor(options: ConsoleReadsOptions = {}) {
     this.forgeHomeDir = options.forgeHomeDir ?? forgeHome();
     this.lanes = options.lanes ?? new Lanes(lanesDir());
@@ -198,6 +205,7 @@ export class ConsoleReads {
     this.modelPolicyPath = options.modelPolicyPath ?? policyPath();
     this.queueStore = options.queueStore ?? new QueueStore(defaultQueuePath());
     this.jiraSite = options.jiraSite !== undefined ? options.jiraSite : (process.env['FORGE_JIRA_SITE'] ?? null);
+    this.mergeAllowedFn = options.mergeAllowed ?? queueMergeAllowed();
   }
 
   private chain(): Map<string, ChainPacketState> {
@@ -329,7 +337,8 @@ export class ConsoleReads {
 
     const briefHeading = briefPath ? readBriefHeading(briefPath, lane.ticket) : null;
     const { title, sourceUrl } = titleFor({ kind: lane.kind, ticket: lane.ticket, briefHeading, jiraSite: this.jiraSite, prUrl });
-    return { ...lane, title, sourceUrl };
+    const mergeable = mergeableFor({ pr: lane.pr, repo: lane.repo, mergeAllowed: this.mergeAllowedFn });
+    return { ...lane, title, sourceUrl, mergeable };
   }
 
   private threadResponse(): ThreadResponse {

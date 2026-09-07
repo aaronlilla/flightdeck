@@ -13,7 +13,7 @@ import { foldChainState, type ChainPacketState } from '../../../src/forge/chain.
 import { Journal, replay } from '../../../src/forge/journal.js';
 import {
   computeLanes, hopFor, laneStateFor, meaningfulEvents, modelAlias, ticketFor, windowLanes, type LanesInput, laneKindFor,
-  titleFromHeading, titleFor } from '../../../src/forge/console/lanes.js';
+  titleFromHeading, titleFor, mergeableFor } from '../../../src/forge/console/lanes.js';
 import type { RegistryRecord } from '../../../src/forge/registry.js';
 import type { Lane, LanesResponse } from '../../../src/shared/console-model.js';
 import { laneRecord, type LaneRecord } from '../../../src/forge/supervisor.js';
@@ -657,5 +657,47 @@ describe('computeLanes: attempts', () => {
     const lane = laneRecord({ slug: 'alpha', column: 'alpha' });
     const result = computeLanes(baseInput({ laneRecords: [lane] }), 1_000);
     expect(result.lanes[0]!.attempts).toBe(1);
+  });
+});
+
+describe('mergeableFor', () => {
+  const allow = (allowed: string[]) => (repo: string) => allowed.includes(repo);
+
+  it('no PR yet', () => {
+    expect(mergeableFor({ pr: null, repo: 'o/n', mergeAllowed: allow(['o/n']) }))
+      .toEqual({ ok: false, why: 'no PR yet' });
+  });
+
+  it('already merged', () => {
+    const pr = { no: 1, url: 'x', files: 0, add: 0, del: 0, draft: false, merged: true, checks: 'success' as const, verdict: 'PASS' };
+    expect(mergeableFor({ pr, repo: 'o/n', mergeAllowed: allow(['o/n']) })).toEqual({ ok: false, why: 'already merged' });
+  });
+
+  it('checks pending, including a card that has not read checks yet', () => {
+    const pending = { no: 1, url: 'x', files: 0, add: 0, del: 0, draft: true, merged: false, checks: 'pending' as const };
+    expect(mergeableFor({ pr: pending, repo: 'o/n', mergeAllowed: allow(['o/n']) })).toEqual({ ok: false, why: 'checks pending' });
+    const unread = { no: 1, url: 'x', files: 0, add: 0, del: 0, draft: true, merged: false };
+    expect(mergeableFor({ pr: unread, repo: 'o/n', mergeAllowed: allow(['o/n']) })).toEqual({ ok: false, why: 'checks pending' });
+  });
+
+  it('a draft with green checks and a clearing verdict is mergeable -- draft is never a reason', () => {
+    const pr = { no: 1, url: 'x', files: 0, add: 0, del: 0, draft: true, merged: false, checks: 'success' as const, verdict: 'PASS' };
+    expect(mergeableFor({ pr, repo: 'o/n', mergeAllowed: allow(['o/n']) })).toEqual({ ok: true });
+  });
+
+  it('the council said FIX FIRST', () => {
+    const pr = { no: 1, url: 'x', files: 0, add: 0, del: 0, draft: true, merged: false, checks: 'success' as const, verdict: 'FIX FIRST' };
+    expect(mergeableFor({ pr, repo: 'o/n', mergeAllowed: allow(['o/n']) })).toEqual({ ok: false, why: 'council said FIX FIRST' });
+  });
+
+  it('controlled code: the repo is not on the merge allow-list', () => {
+    const pr = { no: 1, url: 'x', files: 0, add: 0, del: 0, draft: true, merged: false, checks: 'success' as const, verdict: 'PASS' };
+    expect(mergeableFor({ pr, repo: 'o/controlled', mergeAllowed: allow(['o/n']), controlledOwner: 'its own team' }))
+      .toEqual({ ok: false, why: 'controlled code: only its own team merges this repo' });
+  });
+
+  it('PASS WITH NOTES clears the same as a bare PASS', () => {
+    const pr = { no: 1, url: 'x', files: 0, add: 0, del: 0, draft: false, merged: false, checks: 'success' as const, verdict: 'PASS WITH NOTES' };
+    expect(mergeableFor({ pr, repo: 'o/n', mergeAllowed: allow(['o/n']) })).toEqual({ ok: true });
   });
 });

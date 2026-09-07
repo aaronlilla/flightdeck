@@ -139,6 +139,42 @@ export function titleFor(input: TitleInput): { title: string | null; sourceUrl: 
   }
 }
 
+export interface MergeableInput {
+  pr: LanePr | null;
+  repo: string | null;
+  mergeAllowed: (repo: string) => boolean;
+  /** The named owner of a controlled-code repo, when this environment knows one --
+   *  folded into the refusal text instead of a bare "not on the allow-list" when it is
+   *  set. */
+  controlledOwner?: string | null;
+}
+
+const CLEARING_VERDICTS = new Set(['PASS', 'PASS WITH NOTES']);
+
+/** `mergeable` (H1.4): whether the board's own Merge action would do anything, and the
+ *  exact missing thing in words when it would not. A draft is never a reason on its own
+ *  -- the queue merges drafts -- so this checks a PR's real readiness instead of its
+ *  draft flag. */
+export function mergeableFor(input: MergeableInput): { ok: true } | { ok: false; why: string } {
+  const { pr } = input;
+  if (!pr) return { ok: false, why: 'no PR yet' };
+  if (pr.merged) return { ok: false, why: 'already merged' };
+  if (pr.checks === 'failure') return { ok: false, why: 'checks failed' };
+  if (pr.checks !== 'success') return { ok: false, why: 'checks pending' };
+  if (!pr.verdict || !CLEARING_VERDICTS.has(pr.verdict)) {
+    return { ok: false, why: pr.verdict ? `council said ${pr.verdict}` : 'no council verdict yet' };
+  }
+  if (!input.repo || !input.mergeAllowed(input.repo)) {
+    return {
+      ok: false,
+      why: input.controlledOwner
+        ? `controlled code: only ${input.controlledOwner} merges this repo`
+        : 'controlled code: not on this queue\'s merge allow-list',
+    };
+  }
+  return { ok: true };
+}
+
 export interface ChainLink {
   key: string;
   runState: RunState | undefined;
