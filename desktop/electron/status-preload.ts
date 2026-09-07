@@ -1,7 +1,11 @@
 /**
- * Preload for the status window only. Exposes exactly the four calls the
- * status page needs and nothing else of Node or Electron, matching the main
- * window's own no-Node-access posture.
+ * Preload shared by the status window and the Settings window. Each side calls
+ * `contextBridge.exposeInMainWorld` with its own name, so a window that never
+ * loads `settingsPageHtml()` simply never touches `window.settingsBridge` and a
+ * window that never loads `statusPageHtml()` never touches `window.statusBridge`
+ * -- one compiled preload script, per `package.json`'s `build:preload`, rather
+ * than a second esbuild entry for what is otherwise the same no-Node-access
+ * posture the main window already keeps.
  */
 import { contextBridge, ipcRenderer } from 'electron';
 
@@ -15,5 +19,15 @@ contextBridge.exposeInMainWorld('statusBridge', {
   onNeedFolder: (handler: () => void) => {
     ipcRenderer.on('need-folder', () => handler());
   },
+  // C.3: whether the queue subsystem is running at all, pushed once at bootstrap
+  // and again on every restart -- distinct from the ephemeral status/log lines,
+  // which the next message always overwrites.
+  onQueueState: (handler: (queueOn: boolean) => void) => {
+    ipcRenderer.on('queue-state', (_event, queueOn: boolean) => handler(queueOn));
+  },
   pickFolder: () => ipcRenderer.send('pick-folder'),
+});
+
+contextBridge.exposeInMainWorld('settingsBridge', {
+  save: (entries: Record<string, string>) => ipcRenderer.send('save-forge-env', entries),
 });

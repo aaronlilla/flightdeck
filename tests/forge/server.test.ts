@@ -267,6 +267,35 @@ describe('GET /state', () => {
     expect(state['router_enabled']).toBe(false);
   });
 
+  // C.3: the desktop status window and the console's top bar both need to say when the
+  // queue subsystem is not running at all, distinct from a queue that is running but
+  // paused -- read fresh off the environment on every call, the same as router_enabled.
+  describe('C.3: carries queue_on, read fresh from FORGE_QUEUE', () => {
+    const original = process.env['FORGE_QUEUE'];
+    afterEach(() => {
+      if (original === undefined) delete process.env['FORGE_QUEUE'];
+      else process.env['FORGE_QUEUE'] = original;
+    });
+
+    it('reads false when FORGE_QUEUE is unset', async () => {
+      delete process.env['FORGE_QUEUE'];
+      const state = await (await fetch(`${base}/state`)).json() as Record<string, unknown>;
+      expect(state['queue_on']).toBe(false);
+    });
+
+    it('reads true only when FORGE_QUEUE is exactly "1"', async () => {
+      process.env['FORGE_QUEUE'] = '1';
+      const state = await (await fetch(`${base}/state`)).json() as Record<string, unknown>;
+      expect(state['queue_on']).toBe(true);
+    });
+
+    it('reads false for any other value, never truthy-coerced', async () => {
+      process.env['FORGE_QUEUE'] = 'true';
+      const state = await (await fetch(`${base}/state`)).json() as Record<string, unknown>;
+      expect(state['queue_on']).toBe(false);
+    });
+  });
+
   // X1: a lane can carry a stale verdict from an earlier chain (parked, or otherwise
   // finished) while a fresh run for the same slug is genuinely live. A tile driven off
   // the lane record alone would show the dead chain's verdict beside a running tool; the

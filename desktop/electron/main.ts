@@ -7,15 +7,19 @@ import { join, dirname } from 'node:path';
 import { get as httpGet, type IncomingMessage } from 'node:http';
 
 import { locateCheckout, type LocateFs } from './locate-checkout';
-import { readSettings, updateSettings, type SettingsFs, type WindowBounds } from './settings';
+import {
+  mergeForgeEnv, readSettings, updateSettings, type SettingsFs, type WindowBounds,
+} from './settings';
 import { bringUpConsole, type Spawned, type SupervisorDeps } from './console-supervisor';
 import { probeConsole, waitUntilReachable } from './probe';
 import { decideQuitAction } from './quit-rule';
 import { hasLiveRun } from './fleet-state';
 import { readGitHead } from './git-head';
 import { consoleLabel } from './labels';
+import { queueIsOn } from './queue-state';
 import { WINDOW_OPTIONS, STATUS_WINDOW_OPTIONS } from './window-options';
 import { statusPageHtml } from './status-page';
+import { settingsPageHtml } from './settings-page';
 
 const CONSOLE_ORIGIN = 'http://127.0.0.1:4120';
 
@@ -68,6 +72,7 @@ function spawnChild(command: string, args: string[], cwd: string, env: Record<st
 
 let mainWindow: BrowserWindow | undefined;
 let statusWindow: BrowserWindow | undefined;
+let settingsWindow: BrowserWindow | undefined;
 let tray: Tray | undefined;
 let startedByThisApp = false;
 let spawnedProcess: Spawned | undefined;
@@ -94,6 +99,51 @@ function createStatusWindow(): BrowserWindow {
   void win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(statusPageHtml())}`);
   win.once('ready-to-show', () => win.show());
   return win;
+}
+
+/**
+ * C.3: a plain key/value form over `settings.json`'s own `forgeEnv`, the same small
+ * data-URL window `createStatusWindow` already uses. `ipcMain.once` mirrors
+ * `resolveCheckoutDir`'s own one-shot `pick-folder` handler below -- a fresh listener
+ * per open, since a closed window's stale one must never fire against a window that no
+ * longer exists.
+ */
+function createSettingsWindow(): BrowserWindow {
+  const current = readSettings(fsAdapter, settingsPath()).forgeEnv ?? {};
+  const win = new BrowserWindow({
+    ...STATUS_WINDOW_OPTIONS,
+    title: 'Forge — environment',
+    webPreferences: {
+      ...STATUS_WINDOW_OPTIONS.webPreferences,
+      preload: join(__dirname, 'status-preload.cjs'),
+    },
+  });
+  win.setMenu(null);
+  void win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(settingsPageHtml(current))}`);
+  win.once('ready-to-show', () => win.show());
+
+  const onSave = (_event: unknown, entries: Record<string, string>): void => {
+    updateSettings(fsAdapter, settingsPath(), { forgeEnv: entries });
+    void dialog.showMessageBox(win, {
+      type: 'info',
+      message: 'Saved. Restart the server (Forge menu) for the new environment to take effect.',
+    });
+  };
+  ipcMain.on('save-forge-env', onSave);
+  win.on('closed', () => {
+    ipcMain.removeListener('save-forge-env', onSave);
+    if (settingsWindow === win) settingsWindow = undefined;
+  });
+  return win;
+}
+
+function openSettingsWindow(): void {
+  if (settingsWindow) {
+    settingsWindow.show();
+    settingsWindow.focus();
+    return;
+  }
+  settingsWindow = createSettingsWindow();
 }
 
 function createMainWindow(): BrowserWindow {
@@ -190,9 +240,19 @@ async function bootstrap(): Promise<void> {
     return;
   }
 
+  // C.3: settings.json's own forgeEnv (FORGE_QUEUE, FORGE_JIRA_*, FORGE_REPO_*,
+  // FORGE_PORT, ...) merged over this process's own environment for the child the
+  // supervisor spawns -- a setting always wins, since a shortcut launch has no other
+  // way to carry one. Read fresh here rather than cached, so a save from the Settings
+  // window before a restart is picked up without relaunching the whole app.
+  const forgeEnv = readSettings(fsAdapter, settingsPath()).forgeEnv;
+  const mergedEnv = mergeForgeEnv(process.env, forgeEnv);
+  const queueOn = queueIsOn(mergedEnv);
+  statusWindow?.webContents.send('queue-state', queueOn);
+
   const deps: SupervisorDeps = {
     probe: probeConsole,
-    spawn: spawnChild,
+    spawn: (command, args, cwd, env) => spawnChild(command, args, cwd, { ...env, ...forgeEnv }),
     fs: fsAdapter,
     join,
     nodeExecPath: process.execPath,
@@ -231,6 +291,7 @@ function buildTray(): Tray {
   trayInstance.setContextMenu(Menu.buildFromTemplate([
     { label: 'Show', click: focusExisting },
     { label: 'Open in browser', click: () => void shell.openExternal(`${CONSOLE_ORIGIN}/`) },
+    { label: 'Settings…', click: openSettingsWindow },
     { type: 'separator' },
     { label: 'Quit', click: () => void handleQuitRequest() },
   ]));
@@ -250,6 +311,7 @@ function buildAppMenu(): void {
           click: () => void shell.openPath(process.env['FORGE_HOME'] ?? join(app.getPath('home'), '.forge')),
         },
         { label: 'Restart the server', click: () => void restartServer() },
+        { label: 'Settings…', click: openSettingsWindow },
         { type: 'separator' },
         { label: 'Quit', click: () => void handleQuitRequest() },
       ],

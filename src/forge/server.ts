@@ -454,6 +454,10 @@ export class ForgeServer {
       // `router.enabled` in the policy file takes effect on the console's next poll
       // without restarting the server.
       router_enabled: routerEnabled(),
+      // C.3: read fresh on every call, same as router_enabled -- the desktop status
+      // window and the console's top bar both need to say when the queue subsystem is
+      // not running at all, distinct from a running queue that is merely paused.
+      queue_on: process.env['FORGE_QUEUE'] === '1',
       // P5.7: the same rows `forge status` prints, folded fresh off the journal on
       // every call -- present whether or not FORGE_CHAIN is on, since a packet already
       // in flight still belongs on the console.

@@ -17,10 +17,12 @@ export function statusPageHtml(): string {
   #picker { display: none; margin-top: 10px; }
   button { background: #1c2030; color: #e6e8ef; border: 1px solid #2c3150; border-radius: 4px; padding: 6px 12px; cursor: pointer; }
   button:hover { background: #262c47; }
+  #queue-banner { display: none; margin-bottom: 10px; padding: 6px 10px; border-radius: 4px; background: #3a2d10; color: #f0c674; font-size: 12px; }
 </style>
 </head>
 <body>
 <div id="wrap">
+  <div id="queue-banner">Queue is off — set FORGE_QUEUE=1 in Settings to hand it work from the board.</div>
   <div id="message">Starting Forge…</div>
   <div id="log"></div>
   <div id="picker"><button id="pick-folder">Choose the Forge checkout…</button></div>
@@ -29,12 +31,18 @@ export function statusPageHtml(): string {
   const messageEl = document.getElementById('message');
   const logEl = document.getElementById('log');
   const pickerEl = document.getElementById('picker');
+  const queueBannerEl = document.getElementById('queue-banner');
   window.statusBridge.onStatus((text) => { messageEl.textContent = text; });
   window.statusBridge.onLog((line) => {
     logEl.textContent += line + '\\n';
     logEl.scrollTop = logEl.scrollHeight;
   });
   window.statusBridge.onNeedFolder(() => { pickerEl.style.display = 'block'; });
+  // C.3: persistent, unlike the status/log lines above -- it stays up for the whole
+  // time this window is open, not just until the next status message overwrites it.
+  window.statusBridge.onQueueState((queueOn) => {
+    queueBannerEl.style.display = queueOn ? 'none' : 'block';
+  });
   document.getElementById('pick-folder').addEventListener('click', () => {
     window.statusBridge.pickFolder();
   });
