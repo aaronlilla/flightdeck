@@ -15,7 +15,7 @@
  * The engine is injected. Every specimen runs against a fake stream, so the suite spends
  * nothing and still exercises the loop that decides the money.
  */
-import { tierOfBrief, contextFor, effortFor, modelFor, modelIdFor, turnsFor } from './policy.js';
+import { tierOfBrief, chainTokensFor, contextFor, effortFor, modelFor, modelIdFor, turnsFor } from './policy.js';
 import { Journal, replay } from './journal.js';
 import { run as execRun, type RunRequest, type RunResult } from './exec.js';
 import { parseShellPrefix } from './chain-env.js';
@@ -147,6 +147,11 @@ export interface WorkerConfig {
   maxTurns?: number;
   /** How many successors a chain may have before it parks rather than continuing. */
   maxSessions?: number;
+  /** The chain's own real-token ceiling, summed across every session a handoff has
+   *  opened, never reset by a commit the way the stuck rule's counter is. Overrides the
+   *  class's `maxChainTokens`; undefined falls back to the class, and a class with none
+   *  keeps this brake off entirely. */
+  maxChainTokens?: number;
   parentEnv?: NodeJS.ProcessEnv;
   ticket?: string;
   /** Runs a brief's declared verification commands. Overridable so a specimen can record
@@ -344,6 +349,7 @@ export class Worker {
     const maxTurns = this.config.maxTurns
       ?? (isImplementClass ? undefined : turnsFor(className));
     const maxSessions = this.config.maxSessions ?? (isImplementClass ? Number.POSITIVE_INFINITY : 10);
+    const chainTokenCeiling = this.config.maxChainTokens ?? chainTokensFor(className);
     const env = workerEnv(this.config.parentEnv ?? process.env);
 
     const journal = new Journal(this.config.journalPath);
@@ -359,6 +365,11 @@ export class Worker {
     // off or stopping without ever committing is going nowhere, whatever its budget says.
     let sessionsSinceCommit = 0;
     const staleSessions: string[] = [];
+    // The second brake alongside the stuck rule: a running total of real tokens spent
+    // across the whole chain, independent of whether a session commits. B.3.8 left a
+    // chain that commits every session with nothing bounding it but the class ceiling,
+    // and `2026-09-04-forge-c2-rn` ran away that way (the token-outlier self finding).
+    let chainTokens = 0;
     // I13: a park record is cross-process ownership of `runs/<run>/park.json`, keyed by
     // name -- it has to be cleared here, the moment the name it names is done with, or a
     // resume of the same goal (`reconcileRegistry`) or a mid-loop answer-resume inherits
@@ -422,6 +433,10 @@ export class Worker {
         // a packet and exits 2 rather than treating the segment as a plain stop or
         // continuing to a successor the way an ordinary ceiling hit would.
         let killedMidTurn = false;
+        // Set when this session's turns push the chain past `chainTokenCeiling`; checked
+        // after `done` and the class ceiling so a turn that already finished for its own
+        // reason is not relabelled, same ordering the kill switch uses below.
+        let chainCapped = false;
         let pendingTurns = session.turns;
         // I14: per session (this outer loop's own iteration), not per run -- a successor
         // opened after a handoff gets its own fresh count, the same as a resumed one.
@@ -447,6 +462,10 @@ export class Worker {
               ...(turn.model ? { messageModel: turn.model } : {}),
               ...(turn.usage ? { usage: turn.usage } : {}),
             });
+            const turnTokens = turn.usage
+              ? turn.usage.input + turn.usage.cacheRead + turn.usage.cacheCreation + turn.usage.output
+              : turn.context;
+            chainTokens += turnTokens;
             // P4.7/I3: the Governor's per-turn conformance check, in the very turn a
             // served model stops matching this run's class -- never after N turns.
             // Undefined `turn.model` (a fake with no messageModel, or a fallback the SDK
@@ -468,6 +487,10 @@ export class Worker {
               ceilingHit = true;
               break;
             }
+            if (chainTokenCeiling !== undefined && chainTokens > chainTokenCeiling) {
+              chainCapped = true;
+              break;
+            }
             // P4.7/I8: checked after done and the ceiling, so a turn that already
             // finished or already needs a handoff for its own reason is not relabelled a
             // kill; checked every turn, not only once, since `forge stop --all` can land
@@ -479,6 +502,7 @@ export class Worker {
           }
           if (conformanceMismatch) break;
           if (killedMidTurn) break;
+          if (chainCapped) break;
           if (finished || ceilingHit) break;
 
           const key = this.engine.parkedOn?.(runName);
@@ -562,6 +586,13 @@ export class Worker {
             reason: 'kill switch engaged', packet,
           });
           finishRun({ verdict: 'parked' });
+          verdict = 'parked';
+          break;
+        }
+
+        if (chainCapped) {
+          const report = `chain used ${chainTokens} tokens, over the ${chainTokenCeiling} token ceiling for class ${className}`;
+          finishRun({ verdict: 'parked', report });
           verdict = 'parked';
           break;
         }

@@ -40,6 +40,15 @@ export interface ClassSpec {
    *  change. A class carrying none (every class before this field existed) falls back to
    *  `DEFAULT_MAX_DIFF_LINES`. */
   maxDiffLines?: number;
+  /** The chain's own token ceiling, summed across every session a handoff has opened --
+   *  never reset by a commit the way the stuck rule's counter is. B.3.8 (2026-09-04)
+   *  removed both the turn cap and the session cap for the implement classes, leaving the
+   *  stuck rule (three sessions without a commit) as the only brake; a chain that commits
+   *  every session never trips it and, with no session cap either, can hand off forever.
+   *  `2026-09-04-forge-c2-rn` did exactly that: 62,202,184 tokens against a class median
+   *  of 1,383,074 (the token-outlier self finding). Missing reads as no cap at all, the
+   *  same "unset means unlimited" every other optional field on this type already uses. */
+  maxChainTokens?: number;
 }
 
 /**
@@ -192,6 +201,12 @@ export function contextFor(name: string, path?: string): number {
 
 export function turnsFor(name: string, path?: string): number {
   return classFor(name, path).maxTurns;
+}
+
+/** The chain-wide token ceiling for a class, or `undefined` when the class carries none
+ *  (unset means unlimited, same as every other optional field on `ClassSpec`). */
+export function chainTokensFor(name: string, path?: string): number | undefined {
+  return classFor(name, path).maxChainTokens;
 }
 
 export function effortFor(name: string, path?: string): ClassSpec['effort'] {

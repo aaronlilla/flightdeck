@@ -635,6 +635,50 @@ describe('B.3.8: no caps on implementation', () => {
   });
 });
 
+describe('the chain token ceiling', () => {
+  it('parks a chain that keeps committing but never stops burning tokens', async () => {
+    // B.3.8 removed the session cap for implement classes, leaving the stuck rule (three
+    // sessions without a commit) as the only brake. A chain that commits every session
+    // never trips that rule and, with no session cap, can hand off forever -- exactly what
+    // 2026-09-04-forge-c2-rn did (62,202,184 tokens against a class median of 1,383,074,
+    // the token-outlier self finding). This is the second brake: a running total of real
+    // tokens spent across the whole chain, independent of the stuck rule.
+    let index = 0;
+    const engine = {
+      started: [] as unknown[],
+      async run() {
+        index += 1;
+        this.started.push({});
+        return {
+          sessionId: `session-${index}`,
+          turns: Array.from({ length: 4 }, (_unused, i) => ({
+            text: `turn ${i}`,
+            context: 30_000 * (i + 1),
+            usage: { input: 300_000, cacheRead: 0, cacheCreation: 0, output: 0 },
+          })),
+          committed: true,
+          async send(_prompt: string) {
+            return [{ text: 'packet', context: 0 }];
+          },
+        };
+      },
+    };
+    const worker = new Worker({
+      run: 'alpha', brief: '# Goal\n\nDo the thing.\n', briefPath: join(dir, 'brief.md'),
+      cwd: dir, journalPath, engine: engine as never, maxContext: 60_000,
+      maxChainTokens: 1_000_000,
+    } as never);
+
+    const result = await worker.run();
+
+    expect(result.verdict).toBe('parked');
+    expect((engine.started as unknown[]).length).toBeLessThan(10);
+    const state = replay(journalPath);
+    const parked = state.events.find((e) => e.event === 'run.finished' && e['verdict'] === 'parked');
+    expect(parked?.['report']).toMatch(/chain/i);
+  });
+});
+
 describe('F1: a segment that ends while parked keeps waiting, not stopped', () => {
   it('resumes the same session once a second Inbox instance writes the answer, and ends done', async () => {
     const inboxDir = join(dir, 'inbox');
