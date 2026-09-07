@@ -51,6 +51,34 @@ describe('QueueView item states', () => {
     expect(link.closest('a')).toHaveAttribute('href', 'https://github.com/o/n/pull/42');
   });
 
+  it('A.8: shows the real files/add/del figures on a review card', () => {
+    renderQueue([item({ state: 'review', pr: { no: 42, url: 'https://github.com/o/n/pull/42', files: 3, add: 12, del: 4, draft: true } })]);
+    expect(screen.getByText('3 files, +12/-4')).toBeInTheDocument();
+  });
+
+  it('A.7: shows a Merge action on a review card only when onMerge is wired, and fires it', () => {
+    const onMerge = vi.fn();
+    renderQueue(
+      [item({ state: 'review', pr: { no: 9, url: 'https://github.com/o/n/pull/9', files: 1, add: 1, del: 0, draft: true } })],
+      { onMerge },
+    );
+    fireEvent.click(screen.getByText('Merge'));
+    expect(onMerge).toHaveBeenCalledWith('Q-1');
+  });
+
+  it('A.7: shows a Promote action on a done hotfix card only when onPromote is wired, and fires it', () => {
+    const onPromote = vi.fn();
+    renderQueue([item({ id: 'Q-2', source: 'hotfix', state: 'done' })], { onPromote });
+    fireEvent.click(screen.getByText('Promote to production'));
+    expect(onPromote).toHaveBeenCalledWith('Q-2');
+  });
+
+  it('A.7: never shows Promote on a done item that is not a hotfix', () => {
+    const onPromote = vi.fn();
+    renderQueue([item({ state: 'done' })], { onPromote });
+    expect(screen.queryByText('Promote to production')).not.toBeInTheDocument();
+  });
+
   it('retries a parked item on click', () => {
     const { onRetry } = renderQueue([item({ id: 'Q-2', state: 'parked', reason: 'FIX FIRST' })]);
     fireEvent.click(screen.getByText('Retry →'));

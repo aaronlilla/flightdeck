@@ -6,7 +6,10 @@
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { buildBacklogJql, queueBackendHandoff, queueCommentOnPr } from '../../src/forge/queue-wire.ts';
+import {
+  buildBacklogJql, queueBackendHandoff, queueCommentOnPr, queueMergeAllowed, queueProductionWorkflowExists,
+} from '../../src/forge/queue-wire.ts';
+import { readChainEnv } from '../../src/forge/chain-env.ts';
 
 const calls: { url: string; init?: RequestInit }[] = [];
 
@@ -58,6 +61,27 @@ describe('buildBacklogJql: A.5', () => {
   it('escapes an embedded double quote so the JQL stays well-formed', () => {
     const jql = buildBacklogJql('says "urgent"', { FORGE_BACKLOG_PROJECT: 'BBZ' } as NodeJS.ProcessEnv);
     expect(jql).toBe('project = BBZ AND statusCategory != Done AND text ~ "says \\"urgent\\""');
+  });
+});
+
+describe('queueMergeAllowed: A.7', () => {
+  it('allows only the repos named in FORGE_QUEUE_MERGE_REPOS', () => {
+    const allowed = queueMergeAllowed({ FORGE_QUEUE_MERGE_REPOS: 'acme/rn, acme/other' } as NodeJS.ProcessEnv);
+    expect(allowed('acme/rn')).toBe(true);
+    expect(allowed('acme/backend')).toBe(false);
+  });
+
+  it('allows nothing when the variable is unset', () => {
+    const allowed = queueMergeAllowed({} as NodeJS.ProcessEnv);
+    expect(allowed('acme/rn')).toBe(false);
+  });
+});
+
+describe('queueProductionWorkflowExists: A.7', () => {
+  it('reads false honestly when the repo has no configured checkout', async () => {
+    const chainEnv = readChainEnv({});
+    const exists = await queueProductionWorkflowExists(chainEnv);
+    expect(await exists('acme/rn')).toBe(false);
   });
 });
 

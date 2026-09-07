@@ -14,8 +14,8 @@ import { describe, expect, it } from 'vitest';
 
 import type { ChainCouncilFn, ChainGateFn, ChainGh, ChainLauncher, ChainRunStatus } from '../../../src/forge/chain.js';
 import {
-  addBacklogItems, addBriefItem, addHotfixItem, addQueryItems, addTicketItem, advanceItem, QUEUE_IN_FLIGHT_STATES, removeItem,
-  retryItem, runQueueTick,
+  addBacklogItems, addBriefItem, addHotfixItem, addQueryItems, addTicketItem, advanceItem, mergeItem, promoteItem,
+  QUEUE_IN_FLIGHT_STATES, removeItem, retryItem, runQueueTick,
   type QueuePlanner, type QueueRuntimeDeps, type QueueTicketSearch,
 } from '../../../src/forge/intake/queue.js';
 import { QueueStore } from '../../../src/forge/intake/queueStore.js';
@@ -883,3 +883,126 @@ describe('a branch must sit on the latest base before anyone reviews it', () => 
   });
 });
 
+
+describe('mergeItem: A.7', () => {
+  function reviewItem(): ReturnType<typeof addTicketItem> {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    store.append({
+      id: item.id, at: 2000, state: 'review', repo: 'owner/name', branch: 'feature/abc-1',
+      pr: { no: 9, url: 'https://github.com/owner/name/pull/9', files: 1, add: 1, del: 0, draft: true },
+    });
+    return store.get(item.id)!;
+  }
+
+  it('refuses an item that is not in review', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const result = await mergeItem(item, {
+      mergeAllowed: () => true, gate: async () => ({ merged: true }), clock: () => 3000, store,
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it('refuses a repo not on the queue\'s merge allow-list', async () => {
+    const item = reviewItem();
+    const result = await mergeItem(item, {
+      mergeAllowed: () => false, gate: async () => ({ merged: true }), clock: () => 3000,
+      store: { append: () => {} } as never,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('allow-list');
+  });
+
+  it('calls gate with merge:true, sets done, and never touches unrelated fields', async () => {
+    const item = reviewItem();
+    let gateInput: { repo: string; pr: number; merge: boolean } | undefined;
+    const result = await mergeItem(item, {
+      mergeAllowed: () => true,
+      gate: async (input) => { gateInput = input; return { merged: true }; },
+      clock: () => 3000,
+      store: { append: () => {} } as never,
+    });
+    expect(gateInput).toEqual({ repo: 'owner/name', pr: 9, merge: true });
+    expect(result.ok).toBe(true);
+    expect(result.item?.state).toBe('done');
+  });
+
+  it('carries the per-platform OTA outcome in the item\'s reason', async () => {
+    const item = reviewItem();
+    const result = await mergeItem(item, {
+      mergeAllowed: () => true,
+      gate: async () => ({ merged: true }),
+      postMergeVerify: async () => ({ android: 'update', ios: 'update' }),
+      clock: () => 3000,
+      store: { append: () => {} } as never,
+    });
+    expect(result.item?.reason).toBe('OTA landed ios=update android=update');
+  });
+
+  it('reports a merge that did not complete, without setting done', async () => {
+    const item = reviewItem();
+    const result = await mergeItem(item, {
+      mergeAllowed: () => true, gate: async () => ({ merged: false }), clock: () => 3000,
+      store: { append: () => {} } as never,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.item).toBeUndefined();
+  });
+});
+
+describe('promoteItem: A.7', () => {
+  function doneHotfix(): ReturnType<typeof addHotfixItem> {
+    const store = tempStore();
+    const item = addHotfixItem(store, 'crash fix', 1000);
+    store.append({ id: item.id, at: 2000, state: 'done', repo: 'owner/name', source: 'hotfix' });
+    return store.get(item.id)!;
+  }
+
+  it('refuses anything but a hotfix item', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const result = await promoteItem(item, { version: '1.0.0', message: 'x' }, {
+      productionWorkflowExists: async () => true,
+    });
+    expect(result).toMatchObject({ ok: false, code: 400 });
+  });
+
+  it('refuses a hotfix that has not shipped to dev yet', async () => {
+    const store = tempStore();
+    const item = addHotfixItem(store, 'crash fix', 1000);
+    const result = await promoteItem(item, { version: '1.0.0', message: 'x' }, {
+      productionWorkflowExists: async () => true,
+    });
+    expect(result).toMatchObject({ ok: false, code: 409 });
+  });
+
+  it('501s by name when the production workflow is not on develop', async () => {
+    const item = doneHotfix();
+    const result = await promoteItem(item, { version: '1.0.0', message: 'x' }, {
+      productionWorkflowExists: async () => false,
+    });
+    expect(result).toMatchObject({ ok: false, code: 501 });
+    expect(result.message).toContain('production publish workflow');
+  });
+
+  it('501s when the workflow exists but no dispatch is wired', async () => {
+    const item = doneHotfix();
+    const result = await promoteItem(item, { version: '1.0.0', message: 'x' }, {
+      productionWorkflowExists: async () => true,
+    });
+    expect(result).toMatchObject({ ok: false, code: 501 });
+    expect(result.message).toContain('no production publish wiring');
+  });
+
+  it('dispatches when the workflow exists and a promote dep is wired', async () => {
+    const item = doneHotfix();
+    let promoted: { item: { id: string }; version: string; message: string } | undefined;
+    const result = await promoteItem(item, { version: '1.3.1', message: 'crash fix' }, {
+      productionWorkflowExists: async () => true,
+      promote: async (input) => { promoted = input; },
+    });
+    expect(result).toMatchObject({ ok: true, code: 200 });
+    expect(promoted?.version).toBe('1.3.1');
+  });
+});

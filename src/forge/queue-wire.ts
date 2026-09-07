@@ -15,11 +15,12 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { chainCouncil, chainGate, chainGh, chainRebase, chainLauncher } from './chain-wire.js';
-import { repoKindFor as repoKindForEnv, type ChainEnv } from './chain-env.js';
+import { checkoutFor, repoKindFor as repoKindForEnv, type ChainEnv } from './chain-env.js';
 import type { CliResult, ForgeDeps } from './cli.js';
 import { countAddDel, REAL_GH } from './council/gh.js';
 import type { Packet, PollSourceName, Watermark } from './contracts.js';
-import type { QueuePlannedBrief, QueuePlanner, QueueRuntimeDeps, QueueTicketSearch } from './intake/queue.js';
+import { run as execRun } from './exec.js';
+import type { QueueMergeDeps, QueuePlannedBrief, QueuePlanner, QueueRuntimeDeps, QueueTicketSearch } from './intake/queue.js';
 import { createJiraFeed, createJiraWriteClient, type JiraConfig } from './intake/jira.js';
 import { runQueueHandoff } from './intake/queueHandoff.js';
 import type { PollItemDetail } from './intake/poller.js';
@@ -236,6 +237,48 @@ export function queuePrSnapshot(): NonNullable<QueueRuntimeDeps['prSnapshot']> {
   return async (repo, pr) => {
     const snapshot = await REAL_GH.viewPr(repo, pr);
     return { files: snapshot.files, ...countAddDel(snapshot.diffText) };
+  };
+}
+
+/** A.7: the Merge click's own allow-list, separate from `FORGE_CHAIN_MERGE` (which
+ *  gates the unattended chain, a different decision) -- `FORGE_QUEUE_MERGE_REPOS`,
+ *  comma-separated `owner/name` entries. */
+export function queueMergeAllowed(env: NodeJS.ProcessEnv = process.env): (repo: string) => boolean {
+  const repos = (env['FORGE_QUEUE_MERGE_REPOS'] ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+  return (repo) => repos.includes(repo);
+}
+
+/** A.7: whether `.eas/workflows/publish-production.yml` exists on a repo's `develop`
+ *  tip, read off the local checkout `FORGE_REPO_CHECKOUTS` already names for it --
+ *  `Promote` reads this fresh on every click rather than assuming the workflow is
+ *  there once and staying wrong after it lands (or is removed). No checkout configured
+ *  for the repo reads as `false`, the same honest refusal as a genuinely missing file. */
+export function queueProductionWorkflowExists(chainEnv: ChainEnv): (repo: string) => Promise<boolean> {
+  return async (repo) => {
+    const checkout = checkoutFor(chainEnv, repo);
+    if (!checkout) return false;
+    const result = await execRun({
+      argv: ['git', '-C', checkout, 'cat-file', '-e', 'origin/develop:.eas/workflows/publish-production.yml'],
+      cwd: checkout, owner: 'queue', cls: 'script',
+    });
+    return result.ok;
+  };
+}
+
+/**
+ * A.7: builds the Merge click's own dependencies -- ready for a caller with a
+ * `ForgeDeps` in hand (`forge up`'s own wiring, `cli.ts`'s `up` case) to hand to
+ * `QueueRoutesOptions.mergeDeps`. Not called by anything in this stream's own files:
+ * `QueueRoutes` is constructed in `server.ts`, which this stream does not own, so
+ * wiring this into a live route is the next hop for whichever stream builds that
+ * construction call.
+ */
+export function queueMergeDeps(deps: ForgeDeps, store: QueueRuntimeDeps['store']): QueueMergeDeps {
+  return {
+    mergeAllowed: queueMergeAllowed(),
+    gate: chainGate(deps),
+    clock: () => Date.now(),
+    store,
   };
 }
 

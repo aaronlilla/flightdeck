@@ -12,6 +12,10 @@ export interface QueueViewProps {
   onRetry: (id: string) => void;
   onPause: () => void;
   onResume: () => void;
+  /** A.7: Merge and Promote are optional -- a caller that hasn't wired them yet still
+   *  gets a working board, just without those two buttons on a review/done card. */
+  onMerge?: (id: string) => void;
+  onPromote?: (id: string) => void;
 }
 
 interface StateTaxon {
@@ -34,8 +38,9 @@ const SOURCE_LABEL: Record<QueueSource, string> = {
   ticket: 'ticket', brief: 'brief', query: 'query', backlog: 'backlog', hotfix: 'hotfix',
 };
 
-function QueueCard({ item, onRemove, onRetry }: {
+function QueueCard({ item, onRemove, onRetry, onMerge, onPromote }: {
   item: QueueItem; onRemove: (id: string) => void; onRetry: (id: string) => void;
+  onMerge?: (id: string) => void; onPromote?: (id: string) => void;
 }): JSX.Element {
   const taxon = STATE_TAXONOMY[item.state];
   return (
@@ -50,9 +55,23 @@ function QueueCard({ item, onRemove, onRetry }: {
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 7, borderTop: '1px solid var(--line)', paddingTop: 7 }}>
         {item.state === 'review' && item.pr ? (
-          <a href={item.pr.url} target="_blank" rel="noopener noreferrer" className="btnP" style={{ padding: '7px 9px', fontSize: 9.5, width: '100%', textAlign: 'center' }}>
-            Open PR #{item.pr.no} →
-          </a>
+          <>
+            <a href={item.pr.url} target="_blank" rel="noopener noreferrer" className="btnP" style={{ padding: '7px 9px', fontSize: 9.5, width: '100%', textAlign: 'center' }}>
+              Open PR #{item.pr.no} →
+            </a>
+            <div className="m" style={{ fontSize: 9.5, color: 'var(--ink3)', textAlign: 'center' }}>
+              {item.pr.files} file{item.pr.files === 1 ? '' : 's'}, +{item.pr.add}/-{item.pr.del}
+            </div>
+            {onMerge ? (
+              <span className="btnA" style={{ padding: '7px 9px', fontSize: 9.5, width: '100%', textAlign: 'center' }} onClick={() => onMerge(item.id)}>
+                Merge
+              </span>
+            ) : null}
+          </>
+        ) : item.state === 'done' && item.source === 'hotfix' && onPromote ? (
+          <span className="btnA" style={{ padding: '7px 9px', fontSize: 9.5, width: '100%', textAlign: 'center' }} onClick={() => onPromote(item.id)}>
+            Promote to production
+          </span>
         ) : (
           <span
             className={taxon.cta.cls}
@@ -136,7 +155,7 @@ function AddWork({ onAdd }: { onAdd: (source: QueueSource, input: string) => voi
  *  `.lane` shape, grouped by nothing but state color -- the same flat grid `LanesGrid`
  *  already uses for the run board. */
 export function QueueView(props: QueueViewProps): JSX.Element {
-  const { items, paused, maxInFlight, onAdd, onRemove, onRetry, onPause, onResume } = props;
+  const { items, paused, maxInFlight, onAdd, onRemove, onRetry, onPause, onResume, onMerge, onPromote } = props;
   const inFlight = items.filter((i) => i.state === 'planning' || i.state === 'running').length;
 
   return (
@@ -165,7 +184,7 @@ export function QueueView(props: QueueViewProps): JSX.Element {
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(215px,1fr))', gap: 10 }}>
           {items.map((item) => (
-            <QueueCard key={item.id} item={item} onRemove={onRemove} onRetry={onRetry} />
+            <QueueCard key={item.id} item={item} onRemove={onRemove} onRetry={onRetry} onMerge={onMerge} onPromote={onPromote} />
           ))}
         </div>
       )}

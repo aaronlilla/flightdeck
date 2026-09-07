@@ -543,3 +543,100 @@ export async function runQueueTick(deps: QueueRuntimeDeps, items: QueueItem[]): 
   }
   return { started, advanced, killSwitchEngaged: false, paused: false };
 }
+
+// ---------------------------------------------------------------------------------------
+// A.7: Merge and Promote -- always a click, never automatic.
+// ---------------------------------------------------------------------------------------
+
+export interface QueueMergeDeps {
+  /** The queue's own allow-list, separate from `ChainEnv.mergeRepos` -- a repo the queue
+   *  may merge through a click is this environment's own decision, read fresh so an
+   *  operator changing it takes effect on the next click. */
+  mergeAllowed: (repo: string) => boolean;
+  gate: ChainGateFn;
+  /** Polls the develop deploy for its per-platform OTA outcome, once the merge itself
+   *  landed. Absent means this environment never wires it, and the item still lands on
+   *  `done`, just without an OTA line in its reason. */
+  postMergeVerify?: (input: { repo: string; branch: string }) => Promise<{ android: string; ios: string } | undefined>;
+  clock(): number;
+  store: QueueStore;
+}
+
+export interface QueueMergeResult {
+  ok: boolean;
+  message: string;
+  item?: QueueItem;
+}
+
+/** A.7: the Merge click. Refuses outright on anything but a `review` item with a PR, and
+ *  on a repo this environment hasn't allow-listed -- `gate({merge:true})` is the one
+ *  place in this whole file that can ever pass `merge: true`, and it is reached only
+ *  from here, only on an operator's own click. */
+export async function mergeItem(item: QueueItem, deps: QueueMergeDeps): Promise<QueueMergeResult> {
+  if (item.state !== 'review' || !item.pr) {
+    return { ok: false, message: `${item.id} is not in review` };
+  }
+  if (!deps.mergeAllowed(item.repo ?? '')) {
+    return { ok: false, message: `${item.repo ?? 'this repo'} is not on the queue's merge allow-list` };
+  }
+
+  const result = await deps.gate({ repo: item.repo!, pr: item.pr.no, merge: true });
+  if (!result.merged) {
+    return { ok: false, message: 'the merge did not complete -- see the journal for the gate\'s own reason' };
+  }
+
+  let otaLine: string | undefined;
+  if (deps.postMergeVerify && item.branch) {
+    const outcome = await deps.postMergeVerify({ repo: item.repo!, branch: item.branch });
+    if (outcome) otaLine = `OTA landed ios=${outcome.ios} android=${outcome.android}`;
+  }
+
+  const now = deps.clock();
+  const patch: Partial<QueueItem> = { state: 'done', reason: otaLine ?? null, updatedAt: now };
+  deps.store.append({ id: item.id, at: now, ...patch });
+  return { ok: true, message: otaLine ?? 'merged', item: { ...item, ...patch } };
+}
+
+export interface QueuePromoteDeps {
+  /** Whether the production publish workflow exists on this repo's develop tip --
+   *  checked fresh on every click, per the plan: Promote 501s with a reason rather than
+   *  dispatching into a workflow that was never provisioned. */
+  productionWorkflowExists: (repo: string) => Promise<boolean>;
+  /** The dispatch itself. Deliberately absent in this stream's own production wiring --
+   *  a real production publish is a decision an operator makes explicitly, not a
+   *  default this queue ships wired to fire on a click alone (standing order 9). Wiring
+   *  it is a follow-up once that decision is made. */
+  promote?: (input: { item: QueueItem; version: string; message: string }) => Promise<void>;
+}
+
+export interface QueuePromoteResult {
+  ok: boolean;
+  code: number;
+  message: string;
+}
+
+/** A.7: the Promote click -- production only, and only for a hotfix item that already
+ *  shipped to dev on Merge. 501s by name, never a bare failure, when the production
+ *  workflow isn't on develop yet or this environment never wired the dispatch. */
+export async function promoteItem(
+  item: QueueItem, input: { version: string; message: string }, deps: QueuePromoteDeps,
+): Promise<QueuePromoteResult> {
+  if (item.source !== 'hotfix') {
+    return { ok: false, code: 400, message: 'only a hotfix item can be promoted to production' };
+  }
+  if (item.state !== 'done') {
+    return { ok: false, code: 409, message: `${item.id} has not shipped to dev yet -- Merge it first` };
+  }
+  const exists = await deps.productionWorkflowExists(item.repo ?? '');
+  if (!exists) {
+    return {
+      ok: false, code: 501,
+      message: `the production publish workflow is not on ${item.repo ?? 'this repo'}'s develop yet`,
+    };
+  }
+  if (!deps.promote) {
+    return { ok: false, code: 501, message: 'no production publish wiring is configured for this environment' };
+  }
+  await deps.promote({ item, version: input.version, message: input.message });
+  return { ok: true, code: 200, message: `production publish dispatched for ${input.version}` };
+}

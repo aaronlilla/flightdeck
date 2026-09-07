@@ -15,7 +15,7 @@ import { QueueStore } from '../../../src/forge/intake/queueStore.js';
 import type { QueueTicketSearch } from '../../../src/forge/intake/queue.js';
 import { ForgeServer } from '../../../src/forge/server.js';
 import { Lanes } from '../../../src/forge/supervisor.js';
-import type { QueueAddResponse, QueueResponse } from '../../../src/shared/console-model.js';
+import type { ActionResult, QueueAddResponse, QueueResponse } from '../../../src/shared/console-model.js';
 
 let dir: string;
 let server: ForgeServer;
@@ -172,6 +172,43 @@ describe('POST /queue/:id/remove and /retry', () => {
 
     const retried = await fetch(`${base}/queue/${id}/retry`, authed({ method: 'POST' }));
     expect(retried.status).toBe(409);
+  });
+});
+
+describe('POST /queue/:id/merge and /promote: A.7', () => {
+  it('501s a merge when this environment has no merge wiring configured', async () => {
+    const response = await fetch(`${base}/queue`, authed({
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ source: 'ticket', input: 'ABC-1' }),
+    }));
+    const added = await response.json() as QueueAddResponse;
+    const id = added.items[0]!.id;
+
+    const merge = await fetch(`${base}/queue/${id}/merge`, authed({ method: 'POST' }));
+    expect(merge.status).toBe(501);
+    const body = await merge.json() as ActionResult;
+    expect(body.message).toContain('no merge wiring');
+  });
+
+  it('501s a promote when this environment has no production publish wiring configured', async () => {
+    const response = await fetch(`${base}/queue`, authed({
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ source: 'hotfix', input: 'login crashes' }),
+    }));
+    const added = await response.json() as QueueAddResponse;
+    const id = added.items[0]!.id;
+
+    const promote = await fetch(`${base}/queue/${id}/promote`, authed({
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ version: '1.0.0', message: 'x' }),
+    }));
+    expect(promote.status).toBe(501);
+    const body = await promote.json() as ActionResult;
+    expect(body.message).toContain('no production publish wiring');
+  });
+
+  it('404s a merge for an id the queue has never seen', async () => {
+    const merge = await fetch(`${base}/queue/nope/merge`, authed({ method: 'POST' }));
+    expect(merge.status).toBe(404);
   });
 });
 

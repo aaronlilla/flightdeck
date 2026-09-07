@@ -12,8 +12,8 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import {
-  addBacklogItems, addBriefItem, addHotfixItem, addQueryItems, addTicketItem, removeItem, retryItem,
-  type QueueTicketSearch,
+  addBacklogItems, addBriefItem, addHotfixItem, addQueryItems, addTicketItem, mergeItem, promoteItem, removeItem,
+  retryItem, type QueueMergeDeps, type QueuePromoteDeps, type QueueTicketSearch,
 } from '../intake/queue.js';
 import { buildBacklogJql as defaultBuildBacklogJql } from '../queue-wire.js';
 import type { QueueStore } from '../intake/queueStore.js';
@@ -23,11 +23,18 @@ import type {
 
 const QUEUE_SOURCES: readonly QueueSource[] = ['ticket', 'brief', 'query', 'backlog', 'hotfix'];
 
-const ITEM_ROUTE = /^\/queue\/([^/]+)\/(remove|retry)$/;
+const ITEM_ROUTE = /^\/queue\/([^/]+)\/(remove|retry|merge|promote)$/;
 
 export interface QueueRoutesOptions {
   store: QueueStore;
   search: QueueTicketSearch;
+  /** A.7: the Merge click's own dependencies. Absent means `/queue/:id/merge` refuses
+   *  outright -- never a silent no-op, and never a default that merges anything. */
+  mergeDeps?: QueueMergeDeps;
+  /** A.7: the Promote click's own dependencies. Absent means `/queue/:id/promote`
+   *  501s, the same honest refusal `promoteItem` itself gives when the production
+   *  workflow isn't wired -- this route never guesses at a production dispatch. */
+  promoteDeps?: QueuePromoteDeps;
   authorized: (request: IncomingMessage, response: ServerResponse) => boolean;
   readPaused: () => boolean;
   writePaused: (paused: boolean) => void;
@@ -148,12 +155,52 @@ export class QueueRoutes {
         respond(response, removed ? 200 : 404, result);
         return true;
       }
-      // retry
-      const retried = retryItem(this.opts.store, id);
-      const result: ActionResult = retried
-        ? { ok: true, jid: null, message: `${id} is queued again`, undoable: false }
-        : { ok: false, jid: null, message: `${id} is not parked or failed`, undoable: false };
-      respond(response, retried ? 200 : 409, result);
+
+      if (action === 'retry') {
+        const retried = retryItem(this.opts.store, id);
+        const result: ActionResult = retried
+          ? { ok: true, jid: null, message: `${id} is queued again`, undoable: false }
+          : { ok: false, jid: null, message: `${id} is not parked or failed`, undoable: false };
+        respond(response, retried ? 200 : 409, result);
+        return true;
+      }
+
+      // A.7: Merge and Promote are always a click -- neither one is reached by anything
+      // this file's own worker does on its own.
+      if (action === 'merge') {
+        const item = this.opts.store.get(id);
+        if (!item) {
+          respond(response, 404, { ok: false, jid: null, message: `no queue item ${id}`, undoable: false });
+          return true;
+        }
+        if (!this.opts.mergeDeps) {
+          respond(response, 501, { ok: false, jid: null, message: 'no merge wiring is configured for this environment', undoable: false });
+          return true;
+        }
+        const outcome = await mergeItem(item, this.opts.mergeDeps);
+        const result: ActionResult = { ok: outcome.ok, jid: null, message: outcome.message, undoable: false };
+        respond(response, outcome.ok ? 200 : 409, result);
+        return true;
+      }
+
+      // promote
+      const item = this.opts.store.get(id);
+      if (!item) {
+        respond(response, 404, { ok: false, jid: null, message: `no queue item ${id}`, undoable: false });
+        return true;
+      }
+      const body = await readBody<{ version: string; message: string }>(request);
+      if (!this.opts.promoteDeps) {
+        respond(response, 501, { ok: false, jid: null, message: 'no production publish wiring is configured for this environment', undoable: false });
+        return true;
+      }
+      if (!body?.version || !body.message) {
+        respond(response, 400, { ok: false, jid: null, message: 'a promote needs a version and a message', undoable: false });
+        return true;
+      }
+      const outcome = await promoteItem(item, body, this.opts.promoteDeps);
+      const result: ActionResult = { ok: outcome.ok, jid: null, message: outcome.message, undoable: false };
+      respond(response, outcome.code, result);
       return true;
     }
 
