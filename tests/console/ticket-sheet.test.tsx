@@ -9,6 +9,7 @@ import type { Lane, Message } from '../../src/shared/console-model.js';
 vi.mock('../../src/console/api.js', () => ({
   getRunThread: vi.fn(),
   getRunJournal: vi.fn(),
+  getRunStory: vi.fn(),
 }));
 
 import * as api from '../../src/console/api.js';
@@ -31,9 +32,14 @@ const noop = vi.fn();
 function renderSheet(
   messages: Message[], laneExtra: Partial<Lane> = {},
   journal: { t: number; text: string; color: string }[] = [], onAmendLane = noop,
+  story: { entries: { at: number; kind: string; text: string; url: string | null }[]; brief: { path: string; excerpt: string } | null } = { entries: [], brief: null },
 ) {
   vi.mocked(api.getRunThread).mockResolvedValue({ messages });
   vi.mocked(api.getRunJournal).mockResolvedValue({ entries: journal });
+  vi.mocked(api.getRunStory).mockResolvedValue({
+    id: laneExtra.id ?? 'jira_AB-12_1788460932645', title: laneExtra.title ?? null, kind: laneExtra.kind ?? 'manual',
+    ticket: null, brief: story.brief, entries: story.entries,
+  });
   return render(
     <TicketSheet
       lane={lane(laneExtra)} feedLive now={Date.now()}
@@ -211,5 +217,52 @@ describe('TicketSheet', () => {
     renderSheet([], {}, [], onAmendLane);
     await userEvent.click(screen.getByText('Amend'));
     expect(onAmendLane).not.toHaveBeenCalled();
+  });
+
+  // H2.4
+  it('shows the kind chip and a source link when the lane carries a sourceUrl', () => {
+    renderSheet([], { kind: 'ticket', sourceUrl: 'https://example.invalid/browse/AB-12' });
+    expect(screen.getByText('ticket')).toBeInTheDocument();
+    const link = screen.getByText('source ↗');
+    expect(link.closest('a')).toHaveAttribute('href', 'https://example.invalid/browse/AB-12');
+  });
+
+  it('renders no source link when the lane has none', () => {
+    renderSheet([], { sourceUrl: null });
+    expect(screen.queryByText('source ↗')).not.toBeInTheDocument();
+  });
+
+  it('renders the Story section as a dated list of sentences, before the journal panel', async () => {
+    renderSheet([], {}, [], noop, {
+      entries: [
+        { at: 1, kind: 'ticket', text: 'started on AB-12', url: null },
+        { at: 2, kind: 'pr', text: 'opened PR #42', url: 'https://example.invalid/pr/42' },
+      ],
+      brief: null,
+    });
+    await waitFor(() => expect(screen.getByText('started on AB-12')).toBeInTheDocument());
+    const prLine = screen.getByText('opened PR #42');
+    expect(prLine.closest('a')).toHaveAttribute('href', 'https://example.invalid/pr/42');
+  });
+
+  it('shows a Why not merged line when the lane has a PR and mergeable says no', () => {
+    renderSheet([], {
+      pr: { no: 42, url: 'https://example.test/pr/42', files: 1, add: 1, del: 0, draft: true },
+      mergeable: { ok: false, why: 'checks are still running' },
+    });
+    expect(screen.getByText(/Why not merged/)).toHaveTextContent('Why not merged: checks are still running');
+  });
+
+  it('renders no Why not merged line when the lane has no PR', () => {
+    renderSheet([], { pr: null, mergeable: { ok: false, why: 'checks are still running' } });
+    expect(screen.queryByText(/Why not merged/)).not.toBeInTheDocument();
+  });
+
+  it('renders the brief excerpt collapsed by default, in a disclosure', async () => {
+    renderSheet([], {}, [], noop, { entries: [], brief: { path: 'briefs/AB-12.md', excerpt: 'fix the withdrawal fee rounding' } });
+    await waitFor(() => expect(screen.getByText('brief')).toBeInTheDocument());
+    expect(screen.queryByText('fix the withdrawal fee rounding')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByText('brief'));
+    expect(screen.getByText('fix the withdrawal fee rounding')).toBeInTheDocument();
   });
 });
