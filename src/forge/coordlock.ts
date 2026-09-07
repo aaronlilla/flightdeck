@@ -1,6 +1,7 @@
 /**
- * B.7: Forge honouring the workspace's own multi-session coordination locks
- * (`C:/dev/.claude/coordination/locks/*.json`, read by `coordlib.py` and its guard).
+ * B.7: Forge honouring the workspace's own multi-session coordination locks -- one JSON
+ * file per held lock under the coordination root's own `locks/` directory, read by
+ * `coordlib.py` and its guard.
  *
  * `coordlib.py`'s liveness rule reads a lock's holder against the harness's own record at
  * `~/.claude/sessions/<pid>.json`: live iff that file exists for the lock's `pid` and both
@@ -41,10 +42,9 @@ export interface CoordSessionRecord {
 }
 
 export interface CoordLockDeps {
-  /** The coordination root, e.g. `C:/dev/.claude/coordination`. Locks live under
-   *  `<coordDir>/locks/<name>.json`. */
+  /** The coordination root. Locks live under `<coordDir>/locks/<name>.json`. */
   coordDir: string;
-  /** The harness session registry, e.g. `~/.claude/sessions`. */
+  /** The harness session registry directory. */
   sessionsDir: string;
   pid?: number;
   now?: () => number;
