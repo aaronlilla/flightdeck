@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest';
 
 import { synthesizeFindings } from '../../../src/forge/council/synthesis.ts';
 import { evaluateFixRounds } from '../../../src/forge/council/rounds.ts';
-import { rnMergeGate, backendGate, buildSquashMergeCall, buildJudgeInput } from '../../../src/forge/council/gate.ts';
+import { rnMergeGate, backendGate, buildSquashMergeCall, buildJudgeInput, verdictForRound } from '../../../src/forge/council/gate.ts';
 import { diffRisk, lensCountFor } from '../../../src/forge/council/risk.ts';
 import type { CouncilFinding, CouncilLensReport } from '../../../src/forge/contracts.ts';
 
@@ -167,6 +167,28 @@ describe('buildSquashMergeCall: never inherits the default (acceptance specimen 
     expect(call.args).toContain('--subject');
     expect(call.args).toContain('--body');
     expect(call.args.join(' ')).not.toContain('commit message number 1\n');
+  });
+});
+
+describe('verdictForRound: coverage decided in code, never left to the judge (GATE.md item 1)', () => {
+  it('the BBZ-99 shape -- judge says PASS WITH NOTES, two members never answered -- still cannot clear', () => {
+    const verdict = verdictForRound('PASS WITH NOTES', { missingMembers: ['correctness', 'scope-conformance'] });
+    expect(verdict).toBe('FIX FIRST');
+  });
+
+  it('a judge PASS with full coverage clears unchanged', () => {
+    const verdict = verdictForRound('PASS', { missingMembers: [] });
+    expect(verdict).toBe('PASS');
+  });
+
+  it('a judge FIX FIRST with full coverage stays FIX FIRST (coverage never loosens a verdict either)', () => {
+    const verdict = verdictForRound('FIX FIRST', { missingMembers: [] });
+    expect(verdict).toBe('FIX FIRST');
+  });
+
+  it('one missing member out of many is still enough to block', () => {
+    const verdict = verdictForRound('PASS', { missingMembers: ['codex'] });
+    expect(verdict).toBe('FIX FIRST');
   });
 });
 

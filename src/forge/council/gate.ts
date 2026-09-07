@@ -55,6 +55,31 @@ export function reconcileJudgeAndCodex(judgeVerdict: CouncilVerdict, codexVerdic
 }
 
 // -------------------------------------------------------------------------------------
+// Coverage decides the verdict, in code, before the judge's own answer is trusted
+// (BBZ-99 evidence: two lenses timed out, the judge still said PASS WITH NOTES, and
+// CLEARS_GATE let it through with half its reviewers never having read the diff).
+// -------------------------------------------------------------------------------------
+
+export interface RoundCoverage {
+  /** Names of every lens or lane that never returned a usable reply for this round,
+   *  after its one retry. Empty means every member the round required actually ran. */
+  missingMembers: string[];
+}
+
+/**
+ * A round with any missing member can never clear the gate, whatever the judge said --
+ * coverage is not a finding for a judge to weigh against code quality, it is the judge
+ * having read less than it was told to. This function is the one place that decision is
+ * made, so `orchestrate.ts` never has to ask the judge more nicely to get it right, and a
+ * caller can prove the rule with no model call at all. Coverage only ever tightens a
+ * verdict -- full coverage never loosens whatever the judge or a prior override decided.
+ */
+export function verdictForRound(judgeVerdict: CouncilVerdict, coverage: RoundCoverage): CouncilVerdict {
+  if (coverage.missingMembers.length > 0) return 'FIX FIRST';
+  return judgeVerdict;
+}
+
+// -------------------------------------------------------------------------------------
 // RN merge gate (specimen 5): judge PASS, Codex PASS, checks green ON THE HEAD BEING MERGED
 // -------------------------------------------------------------------------------------
 
