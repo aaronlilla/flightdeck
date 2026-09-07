@@ -336,12 +336,21 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
   const status = await deps.launcher.status(item.runKey);
   if (!status.finished) return item;
 
-  if (status.verdict !== 'done') {
-    return writeTransition(item, { state: 'parked', reason: status.verdict ?? 'unknown' }, deps, 'queue.parked', { hop: 'gate' });
-  }
-
+  // A run that ended `unverified` (its session finished without `forge_done`) may still
+  // have pushed and opened its PR first -- seen live on 2026-09-07, where a successor
+  // session answered its ask and then ended on empty turns with PR #119 already open.
+  // The PR is the deliverable; the council and green checks are the referee. So an
+  // unverified run whose branch carries a PR goes on to the gate, with the verdict
+  // recorded, instead of parking on a state a person could not act on.
   let pr = status.prUrl ? prFromUrl(status.prUrl) : undefined;
   if (!pr && item.branch) pr = await deps.gh.findPrByHead(item.repo!, item.branch);
+  if (status.verdict !== 'done') {
+    if (status.verdict === 'unverified' && pr) {
+      deps.append({ event: 'queue.unverified-pr', actor: 'queue', itemId: item.id, pr: pr.number, url: pr.url });
+    } else {
+      return writeTransition(item, { state: 'parked', reason: status.verdict ?? 'unknown' }, deps, 'queue.parked', { hop: 'gate' });
+    }
+  }
   if (!pr) {
     return writeTransition(
       item, { state: 'parked', reason: 'run finished done but no PR was found in its evidence or on its branch' },

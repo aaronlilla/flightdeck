@@ -217,6 +217,17 @@ describe('pauseRun / resumeRun', () => {
     expect(actuator.resumed[0]!.run).toBe('alpha');
   });
 
+  it('resumes a run the warden blocked on a tool-budget trip', async () => {
+    registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'alpha' });
+    appendOnce(journalPath, { event: 'run.parked', run: 'alpha', key: 'warden:alpha', reason: 'run alpha Bash call has run 143s past the script command class budget' });
+
+    const result = await resumeRun('alpha', deps);
+
+    expect(result.status).toBe(200);
+    expect(actuator.resumed.map((r) => r.run)).toEqual(['alpha']);
+  });
+
   it('refuses to resume a run that is not paused or parked', async () => {
     registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
     appendOnce(journalPath, { event: 'run.started', run: 'alpha' });

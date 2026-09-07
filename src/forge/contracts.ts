@@ -277,7 +277,7 @@ export const FORGE_EVENT_NAMES = [
   // finding becomes a queue item; `self.merged`/`self.merge-refused` for
   // `selfMergeAllowed`'s own decision on a self-repo item; `self.restart` when
   // `cutoverDue` finds the fleet idle on a moved `origin/main` and pulls it in.
-  'self.finding', 'self.enqueued', 'self.merged', 'self.merge-refused', 'self.restart', 'self.tick-error',
+  'self.finding', 'self.enqueued', 'self.merged', 'self.merge-refused', 'self.restart', 'self.tick-error', 'queue.unverified-pr',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];

@@ -286,6 +286,41 @@ describe('advanceItem', () => {
     expect(result.reason).toBe('blocked');
   });
 
+  it('takes an unverified run on to the gate when its branch already carries a PR', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const events: string[] = [];
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'unverified' }) },
+      gh: { findPrByHead: async () => ({ number: 119, url: 'https://example.invalid/pr/119' }) },
+    });
+    const base = deps.append;
+    deps.append = (event) => { events.push(String(event['event'])); return base(event); };
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    const result = await advanceItem(current, deps);
+    expect(events).toContain('queue.unverified-pr');
+    expect(result.state).not.toBe('parked');
+    expect(result.pr?.no).toBe(119);
+  });
+
+  it('still parks an unverified run that opened no PR', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'unverified' }) },
+      gh: { findPrByHead: async () => undefined },
+    });
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    const result = await advanceItem(current, deps);
+    expect(result.state).toBe('parked');
+    expect(result.reason).toBe('unverified');
+  });
+
   it('fails an item whose provisioning throws', async () => {
     const store = tempStore();
     const item = addTicketItem(store, 'ABC-1', 1000);

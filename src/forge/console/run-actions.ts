@@ -61,7 +61,12 @@ function notFound(run: string): RunActionResponse {
  *  the lane's own state before driving the actuator or the CLI. */
 const ALLOWED_STATES: Record<'pause' | 'resume' | 'kill' | 'compact' | 'merge' | 'reopen', LaneState[]> = {
   pause: ['running', 'handed-off'],
-  resume: ['paused', 'parked'],
+  // `blocked` too: a warden trip (a tool call past its class budget, a stuck-session
+  // signal) reads as blocked on the board, and once its cause is gone -- the budget
+  // class was wrong, the process is back -- the only way onward was Kill. Seen live on
+  // 2026-09-07 with a backend build parked for being slow. Resume relaunches from the
+  // run's session; a run whose blocker still stands blocks again and says why.
+  resume: ['paused', 'parked', 'blocked'],
   // `blocked` covers a liveness stuck-session signal, a stale cross-process park record,
   // and a chain-level block alike, and none of those give a blocked lane's own tile CTA
   // ("Gate log ->") anywhere to go besides reopening the same sheet. Confirmed live as a
