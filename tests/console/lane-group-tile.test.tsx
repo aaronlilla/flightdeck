@@ -40,4 +40,27 @@ describe('LaneGroupTile', () => {
     await userEvent.click(screen.getByText('attempt 2 of 2'));
     expect(screen.getByText('first attempt failed the gate.')).toBeInTheDocument();
   });
+
+  it('never reads the position off Lane.attempt (the reopen counter) -- a lane reopened 25 times in a group of 4 still reads attempt 4 of 4', () => {
+    const groups = groupLanesByTicket([
+      lane({ id: 'r1', attempt: 25, startedAt: 1, plain: 'first attempt.' }),
+      lane({ id: 'r2', attempt: 25, startedAt: 2, plain: 'second attempt.' }),
+      lane({ id: 'r3', attempt: 25, startedAt: 3, plain: 'third attempt.' }),
+      lane({ id: 'r4', attempt: 25, startedAt: 4, plain: 'fourth attempt, running now.' }),
+    ]);
+    render(<LaneGroupTile group={groups[0]!} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
+    expect(screen.getByText('attempt 4 of 4')).toBeInTheDocument();
+  });
+
+  it('lists the earlier attempts oldest first in the disclosure', async () => {
+    const groups = groupLanesByTicket([
+      lane({ id: 'r1', attempt: 1, startedAt: 1, plain: 'oldest attempt.' }),
+      lane({ id: 'r2', attempt: 2, startedAt: 2, plain: 'middle attempt.' }),
+      lane({ id: 'r3', attempt: 3, startedAt: 3, plain: 'newest attempt, running now.' }),
+    ]);
+    render(<LaneGroupTile group={groups[0]!} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
+    await userEvent.click(screen.getByText('attempt 3 of 3'));
+    const texts = screen.getAllByText(/oldest attempt\.|middle attempt\./).map((el) => el.textContent);
+    expect(texts).toEqual(['oldest attempt.', 'middle attempt.']);
+  });
 });

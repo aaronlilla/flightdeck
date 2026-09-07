@@ -24,7 +24,16 @@ export interface LaneGroupTileProps {
  *  tiles fighting for the same grid cell. */
 export function LaneGroupTile({ group, feedLive, now, onOpen, onOpenCost, onCommand, onTip }: LaneGroupTileProps): JSX.Element {
   const [open, setOpen] = useState(false);
-  const [newest, ...earlier] = group.lanes as [Lane, ...Lane[]];
+  // H2.2 fix: the position shown (and the split between "newest" and "the others")
+  // comes from sorting the group's own lanes by when they actually started, never
+  // from `Lane.attempt` -- that field is the server's reopen counter and can run far
+  // ahead of how many attempts are actually on the board (a lane reopened 25 times in
+  // a group of 4 must still read "attempt 4 of 4"). Oldest first, so the newest lane
+  // -- the one the main tile renders -- is last, and the disclosure below already
+  // lists the rest oldest first with no further reordering.
+  const byStartedAt = [...group.lanes].sort((a, b) => a.startedAt - b.startedAt);
+  const [earlier, newest] = [byStartedAt.slice(0, -1), byStartedAt[byStartedAt.length - 1] as Lane];
+  const position = byStartedAt.length;
   return (
     <div>
       <LaneTile lane={newest} feedLive={feedLive} now={now} onOpen={onOpen} onOpenCost={onOpenCost} onCommand={onCommand} onTip={onTip} />
@@ -35,7 +44,7 @@ export function LaneGroupTile({ group, feedLive, now, onOpen, onOpenCost, onComm
             data-testid={`group-attempts-${group.key}`}
             onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
           >
-            attempt {newest.attempt} of {group.lanes.length}
+            attempt {position} of {group.lanes.length}
           </span>
           {open ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 6 }}>
