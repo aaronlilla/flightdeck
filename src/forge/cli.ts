@@ -372,17 +372,27 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       const reconcileEngine = deps.engine ?? new SdkEngine({
         journalPath: journalPath(), inboxDir: inboxDir(), gotchasDir: gotchasDir(),
       });
+      // A resume runs the crashed session to its next stop inside this process, which can
+      // be a whole working session. Seen live on 2026-09-07: `forge up` sat for minutes
+      // with no listener while a resumed run worked, so the board was dark and a second
+      // launch was tempting. The reconcile therefore runs in the background; the server
+      // listens first, and each outcome lands in the journal as it happens.
       const reconcileJournal = new Journal(journalPath());
-      let reconciled: Awaited<ReturnType<typeof reconcileRegistry>>;
-      try {
-        reconciled = await reconcileRegistry(registry, reconcileEngine, reconcileJournal, deps.alive);
-      } finally {
-        reconcileJournal.close();
-        await reconcileEngine.close?.();
-      }
-      const reconcileLines = reconciled.map((outcome) => (outcome.ok
-        ? `reconciled ${outcome.goal}: resumed by session id`
-        : `could not reconcile ${outcome.goal}: ${outcome.reason}`));
+      const reconcileLines = [`reconciling ${registry.all().length} registry row(s) in the background`];
+      const reconciling = reconcileRegistry(registry, reconcileEngine, reconcileJournal, deps.alive)
+        .then((reconciled) => {
+          for (const outcome of reconciled) {
+            reconcileJournal.append({
+              event: 'note', actor: 'runner', run: outcome.goal,
+              message: outcome.ok ? 'reconciled: resumed by session id' : `could not reconcile: ${outcome.reason}`,
+            } as never);
+          }
+        })
+        .catch((error: unknown) => {
+          reconcileJournal.append({ event: 'note', actor: 'runner', message: `reconcile failed: ${error instanceof Error ? error.message : String(error)}` } as never);
+        })
+        .finally(() => { reconcileJournal.close(); void reconcileEngine.close?.(); });
+      if (deps.engine) await reconciling; // a specimen's fake engine resolves at once; keep its ordering
 
       // P4.7/I4: the `claude` provider behind every `Reasoner` seam this process wires
       // up below -- the router here and the Warden tick's conformance drift further
