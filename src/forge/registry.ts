@@ -236,6 +236,11 @@ const RESUME_PROMPT = [
 export async function reconcileRegistry(
   registry: Registry, engine: EngineLike, journal: Journal, alive: (pid: number) => boolean = processAlive,
   abandonAfterMs: number = DEFAULT_THRESHOLDS.idleMs,
+  /** Whether this run is parked on a question nobody has answered yet. A worker that
+   *  parked on an ask exits on purpose, so its row shows a dead pid; resuming it here
+   *  re-asks the same question with nothing new (seen live twice on 2026-09-07). Such a
+   *  row is left for the answer to resume. */
+  openAsk: (goal: string) => boolean = () => false,
 ): Promise<ReconcileOutcome[]> {
   const outcomes: ReconcileOutcome[] = [];
   const now = Date.now();
@@ -260,6 +265,11 @@ export async function reconcileRegistry(
       outcomes.push({ goal: record.goal, ok: false, reason });
       clearParkRecord(record.goal);
       registry.remove(record.goal);
+      continue;
+    }
+
+    if (openAsk(record.goal)) {
+      outcomes.push({ goal: record.goal, ok: false, reason: 'parked on an open ask; the answer resumes it' });
       continue;
     }
 

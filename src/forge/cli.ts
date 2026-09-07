@@ -379,7 +379,11 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       // listens first, and each outcome lands in the journal as it happens.
       const reconcileJournal = new Journal(journalPath());
       const reconcileLines = [`reconciling ${registry.all().length} registry row(s) in the background`];
-      const reconciling = reconcileRegistry(registry, reconcileEngine, reconcileJournal, deps.alive)
+      const reconcileInbox = new Inbox(inboxDir());
+      const reconciling = reconcileRegistry(
+        registry, reconcileEngine, reconcileJournal, deps.alive, undefined,
+        (goal) => reconcileInbox.open().some((entry) => entry.runs.includes(goal) || entry.goals.includes(goal)),
+      )
         .then((reconciled) => {
           for (const outcome of reconciled) {
             reconcileJournal.append({

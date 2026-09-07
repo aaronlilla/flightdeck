@@ -120,6 +120,23 @@ describe('B.3.5: forge up reconciles a dead pid', () => {
     expect(state.events.some((e) => e.event === 'run.resumed' && e.run === 'crashed')).toBe(true);
   });
 
+  it('leaves a run parked on an open ask alone: the answer resumes it, not the reconcile', async () => {
+    const briefPath = join(dir, 'asking.md');
+    writeFileSync(briefPath, '# Goal', 'utf8');
+    const registry = new Registry(join(dir, 'registry'));
+    registry.admit({ goal: 'asking', cwd: dir, briefPath, pid: 999_999 });
+    registry.setSession('asking', 'sess-asking', 'claude-sonnet-5');
+
+    const engine = fakeEngine();
+    const journal = new Journal(journalPath);
+    const outcomes = await reconcileRegistry(registry, engine, journal, undefined, undefined, (goal) => goal === 'asking');
+    journal.close();
+
+    expect(outcomes).toEqual([{ goal: 'asking', ok: false, reason: 'parked on an open ask; the answer resumes it' }]);
+    expect(engine.started).toHaveLength(0);
+    expect(registry.get('asking')).toBeDefined();
+  });
+
   it('I13: clears a stale park record when resuming a crashed run under the same name', async () => {
     const briefPath = join(dir, 'was-parked.md');
     writeFileSync(briefPath, '# Goal\n\nDo the thing.\n', 'utf8');
