@@ -112,7 +112,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       dispatch({ type: 'integrations', integrations: integrations.items });
       dispatch({ type: 'caps', caps });
       dispatch({ type: 'proposals', proposals });
-      dispatch({ type: 'queue', items: queue.items, paused: queue.paused, maxInFlight: queue.maxInFlight });
+      dispatch({ type: 'queue', items: queue.items, paused: queue.paused, maxInFlight: queue.maxInFlight, pauseReason: queue.pauseReason });
       dispatch({ type: 'feed-live' });
     } catch {
       if (mounted.current) {
@@ -406,7 +406,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
         ) : null}
         {state.view === 'queue' ? (
           <QueueView
-            items={state.queue} paused={state.queuePaused} maxInFlight={state.queueMaxInFlight}
+            items={state.queue} paused={state.queuePaused} pauseReason={state.queuePauseReason} maxInFlight={state.queueMaxInFlight}
             onAdd={(source, input) => void (async () => {
               try {
                 const result = await api.addToQueue({ source, input });
@@ -420,6 +420,8 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
             onRetry={(id) => void runAction(() => api.retryQueueItem(id))}
             onPause={() => void runAction(() => api.pauseQueue())}
             onResume={() => void runAction(() => api.resumeQueue())}
+            onMerge={(id) => void runAction(() => api.mergeQueueItem(id))}
+            onPromote={(id) => void runAction(() => api.promoteQueueItem(id))}
           />
         ) : null}
 

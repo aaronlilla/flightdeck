@@ -65,6 +65,9 @@ interface Db {
   jn: number;
   queue: QueueItem[];
   queuePaused: boolean;
+  /** D2.3: set alongside `queuePaused` only when the (simulated) worker itself paused
+   *  the queue, never an operator's own Pause click -- null the rest of the time. */
+  queuePauseReason: string | null;
   qn: number;
 }
 
@@ -79,6 +82,7 @@ function seedDb(): Db {
     jn: 40221,
     queue: [],
     queuePaused: false,
+    queuePauseReason: null,
     qn: 0,
   };
 }
@@ -104,7 +108,15 @@ const FIXTURES: Record<string, () => Db> = {
   'resume-race': () => ({ ...seedDb(), lanes: resumedRaceLanes(), thread: raceThread() }),
   'message-gallery': () => ({ ...seedDb(), thread: galleryThread() }),
   'big-fleet': () => ({ ...seedDb(), lanes: bigLanes() }),
-  'queue-matrix': () => ({ ...seedDb(), lanes: [], queue: matrixQueue() }),
+  'queue-matrix': () => ({
+    ...seedDb(),
+    lanes: [],
+    queue: matrixQueue(),
+    // D2.3: stands in for A.2's own backoff -- three consecutive tick errors pausing
+    // the queue on its own, distinct from an operator's own Pause click.
+    queuePaused: true,
+    queuePauseReason: 'tick-error backoff (3 consecutive failures)',
+  }),
 };
 
 function resetToFixture(name: string): void {
@@ -459,7 +471,7 @@ export function createStubServer() {
         return;
       }
       if (urlPath === '/queue' && method === 'GET') {
-        json(response, 200, { items: db.queue, paused: db.queuePaused, maxInFlight: 2 });
+        json(response, 200, { items: db.queue, paused: db.queuePaused, maxInFlight: 2, pauseReason: db.queuePauseReason });
         return;
       }
 
@@ -631,15 +643,17 @@ export function createStubServer() {
       }
       if (urlPath === '/queue/pause' && method === 'POST') {
         db.queuePaused = true;
+        db.queuePauseReason = null;
         json(response, 200, { ok: true, jid: null, message: 'queue paused', undoable: true });
         return;
       }
       if (urlPath === '/queue/resume' && method === 'POST') {
         db.queuePaused = false;
+        db.queuePauseReason = null;
         json(response, 200, { ok: true, jid: null, message: 'queue resumed', undoable: false });
         return;
       }
-      const queueItemMatch = /^\/queue\/([^/]+)\/(remove|retry)$/.exec(urlPath);
+      const queueItemMatch = /^\/queue\/([^/]+)\/(remove|retry|merge|promote)$/.exec(urlPath);
       if (queueItemMatch && method === 'POST') {
         const id = decodeURIComponent(queueItemMatch[1] as string);
         const action = queueItemMatch[2];
@@ -650,14 +664,36 @@ export function createStubServer() {
           json(response, 200, { ok: true, jid: null, message: `removed ${id}`, undoable: false });
           return;
         }
-        if (!item || (item.state !== 'parked' && item.state !== 'failed')) {
-          json(response, 409, { ok: false, jid: null, message: `${id} is not parked or failed`, undoable: false });
+        if (action === 'retry') {
+          if (!item || (item.state !== 'parked' && item.state !== 'failed')) {
+            json(response, 409, { ok: false, jid: null, message: `${id} is not parked or failed`, undoable: false });
+            return;
+          }
+          item.state = 'queued';
+          item.reason = null;
+          item.updatedAt = Date.now();
+          json(response, 200, { ok: true, jid: null, message: `${id} is queued again`, undoable: false });
           return;
         }
-        item.state = 'queued';
-        item.reason = null;
+        // A.7: Merge ships a hotfix to dev; Promote is the separate click that puts an
+        // already-merged hotfix into production. Neither is reached by `fakeAdvance`;
+        // both are always a click.
+        if (action === 'merge') {
+          if (!item || item.state !== 'review') {
+            json(response, 409, { ok: false, jid: null, message: `${id} is not in review`, undoable: false });
+            return;
+          }
+          item.state = 'done';
+          item.updatedAt = Date.now();
+          json(response, 200, { ok: true, jid: null, message: `${id} merged`, undoable: false });
+          return;
+        }
+        if (!item || item.state !== 'done' || item.source !== 'hotfix') {
+          json(response, 409, { ok: false, jid: null, message: `${id} is not a merged hotfix`, undoable: false });
+          return;
+        }
         item.updatedAt = Date.now();
-        json(response, 200, { ok: true, jid: null, message: `${id} is queued again`, undoable: false });
+        json(response, 200, { ok: true, jid: null, message: `${id} promoted to production`, undoable: false });
         return;
       }
 

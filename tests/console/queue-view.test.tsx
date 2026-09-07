@@ -69,14 +69,14 @@ describe('QueueView item states', () => {
   it('A.7: shows a Promote action on a done hotfix card only when onPromote is wired, and fires it', () => {
     const onPromote = vi.fn();
     renderQueue([item({ id: 'Q-2', source: 'hotfix', state: 'done' })], { onPromote });
-    fireEvent.click(screen.getByText('Promote to production'));
+    fireEvent.click(screen.getByText('Promote'));
     expect(onPromote).toHaveBeenCalledWith('Q-2');
   });
 
   it('A.7: never shows Promote on a done item that is not a hotfix', () => {
     const onPromote = vi.fn();
     renderQueue([item({ state: 'done' })], { onPromote });
-    expect(screen.queryByText('Promote to production')).not.toBeInTheDocument();
+    expect(screen.queryByText('Promote')).not.toBeInTheDocument();
   });
 
   it('retries a parked item on click', () => {

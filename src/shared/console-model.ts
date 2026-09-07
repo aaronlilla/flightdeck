@@ -348,12 +348,19 @@ export interface QueueItem {
    *  before the council reads it -- shared by A.8's real figures at `review` and A.9's
    *  overlap check against every other item running or in review on the same repo. */
   changedFiles?: string[] | null;
+  /** D2.3: the council's own findings against this item's draft PR, one line each --
+   *  absent or empty means the council hasn't posted a note (or none is due) yet. */
+  councilNotes?: string[] | null;
 }
 
 export interface QueueResponse {
   items: QueueItem[];
   paused: boolean;
   maxInFlight: number;
+  /** D2.3: set alongside `paused` when the worker itself paused the queue (three
+   *  consecutive tick errors), rather than an operator's own Pause click -- absent or
+   *  null means whatever `paused` says was an operator's own doing. */
+  pauseReason?: string | null;
 }
 
 export interface QueueAddRequest {

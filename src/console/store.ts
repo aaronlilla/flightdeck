@@ -54,6 +54,7 @@ export interface State {
   proposals: ProposalsResponse | null;
   queue: QueueItem[];
   queuePaused: boolean;
+  queuePauseReason: string | null;
   queueMaxInFlight: number;
   loaded: boolean;
   now: number;
@@ -81,7 +82,7 @@ export type Action =
   | { type: 'integrations'; integrations: Integration[] }
   | { type: 'caps'; caps: Caps }
   | { type: 'proposals'; proposals: ProposalsResponse }
-  | { type: 'queue'; items: QueueItem[]; paused: boolean; maxInFlight: number }
+  | { type: 'queue'; items: QueueItem[]; paused: boolean; maxInFlight: number; pauseReason?: string | null }
   | { type: 'loaded' }
   | { type: 'tick'; now: number }
   | { type: 'fetch-latency'; ms: number }
@@ -111,6 +112,7 @@ export function initialState(): State {
     proposals: null,
     queue: [],
     queuePaused: false,
+    queuePauseReason: null,
     queueMaxInFlight: 2,
     loaded: false,
     now: Date.now(),
@@ -146,7 +148,10 @@ export function reducer(state: State, action: Action): State {
     case 'proposals':
       return { ...state, proposals: action.proposals };
     case 'queue':
-      return { ...state, queue: action.items, queuePaused: action.paused, queueMaxInFlight: action.maxInFlight };
+      return {
+        ...state, queue: action.items, queuePaused: action.paused, queueMaxInFlight: action.maxInFlight,
+        queuePauseReason: action.pauseReason ?? null,
+      };
     case 'loaded':
       return { ...state, loaded: true };
     case 'tick':

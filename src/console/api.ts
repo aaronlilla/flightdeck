@@ -210,3 +210,11 @@ export function pauseQueue(): Promise<ActionResult> {
 export function resumeQueue(): Promise<ActionResult> {
   return post<ActionResult>('/queue/resume', {});
 }
+
+export function mergeQueueItem(id: string): Promise<ActionResult> {
+  return post<ActionResult>(`/queue/${encodeURIComponent(id)}/merge`, {});
+}
+
+export function promoteQueueItem(id: string): Promise<ActionResult> {
+  return post<ActionResult>(`/queue/${encodeURIComponent(id)}/promote`, {});
+}

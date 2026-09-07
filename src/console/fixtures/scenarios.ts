@@ -187,9 +187,20 @@ export function matrixQueue(): QueueItem[] {
       n += 1;
       const id = `Q-matrix-${n}`;
       const ticket = source === 'ticket' ? `FLT-${600 + n}` : source === 'query' || source === 'backlog' ? `FLT-${600 + n}` : null;
+      // D2.3: the very first `failed` item stands in for A.1's fix round -- one
+      // relaunch used, and the findings it is retrying against carried the same
+      // place every other reason already renders. The very first `review` item
+      // carries the council's own notes. The very first `done` item is a hotfix
+      // instead of its source group's own `ticket`, since a hotfix (A.6/A.7) is
+      // the only source `done` ever offers Promote for -- none of the three swaps
+      // changes the total item count or which source/state chips show up at least
+      // once, so they leave every already-green spec in this fixture untouched.
+      const isFirstFailed = source === 'ticket' && state === 'failed';
+      const isFirstReview = source === 'ticket' && state === 'review';
+      const isFirstDone = source === 'ticket' && state === 'done';
       out.push({
         id,
-        source,
+        source: isFirstDone ? 'hotfix' : source,
         input: source === 'brief' ? '# Goal: fix the thing' : source === 'query' ? 'sprint in openSprints()' : source === 'backlog' ? 'project = FLT and status = Backlog' : `FLT-${600 + n}`,
         ticket,
         repo: state === 'queued' || state === 'planning' ? null : 'example/repo',
@@ -198,12 +209,16 @@ export function matrixQueue(): QueueItem[] {
         worktreePath: null,
         base: null,
         state,
-        reason: state === 'parked' ? 'blocked on a schema question' : state === 'failed' ? 'launch threw: worktree setup failed' : null,
+        reason: isFirstFailed
+          ? 'fix round 1 -- retrying against: missing null check on line 42, unhandled promise rejection'
+          : state === 'parked' ? 'blocked on a schema question' : state === 'failed' ? 'launch threw: worktree setup failed' : null,
         runKey: null,
         pr: state === 'review' ? { no: 100 + n, url: `https://example.invalid/pr/${100 + n}`, files: 3, add: 30, del: 4, draft: true } : null,
         journalIds: [],
         createdAt: now - n * 60_000,
         updatedAt: now - n * 30_000,
+        fixRoundsUsed: isFirstFailed ? 1 : undefined,
+        councilNotes: isFirstReview ? ['needs a regression test for the null-check path', 'add input validation on the new endpoint'] : undefined,
       });
     }
   }
