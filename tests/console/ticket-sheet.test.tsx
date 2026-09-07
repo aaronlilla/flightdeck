@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
 import { TicketSheet } from '../../src/console/components/TicketSheet.js';
@@ -26,13 +27,17 @@ function lane(extra: Partial<Lane> = {}): Lane {
 
 const noop = vi.fn();
 
-function renderSheet(messages: Message[], laneExtra: Partial<Lane> = {}, journal: { t: number; text: string; color: string }[] = []) {
+function renderSheet(
+  messages: Message[], laneExtra: Partial<Lane> = {},
+  journal: { t: number; text: string; color: string }[] = [], onAmendLane = noop,
+) {
   vi.mocked(api.getRunThread).mockResolvedValue({ messages });
   vi.mocked(api.getRunJournal).mockResolvedValue({ entries: journal });
   return render(
     <TicketSheet
       lane={lane(laneExtra)} feedLive now={Date.now()}
-      onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop} onSendLane={noop} onUndo={noop} onOpenJournal={noop}
+      onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop} onSendLane={noop}
+      onAmendLane={onAmendLane} onUndo={noop} onOpenJournal={noop}
     />,
   );
 }
@@ -187,5 +192,23 @@ describe('TicketSheet', () => {
   it('offers Kill on an exhausted run, whose own action cannot resume it', async () => {
     renderSheet([], { state: 'exhausted', runaway: false });
     expect(await screen.findByText('Kill')).toBeInTheDocument();
+  });
+
+  // C.1: an Amend action beside Send, sharing the composer's draft text but reaching
+  // the run through the brief-amendment path rather than a plain inbox message.
+  it('C.1: shows an Amend action beside Send and posts the composer\'s draft through onAmendLane', async () => {
+    const onAmendLane = vi.fn();
+    renderSheet([], {}, [], onAmendLane);
+    const input = screen.getByPlaceholderText(/message /);
+    await userEvent.type(input, 'also handle the null case');
+    await userEvent.click(screen.getByText('Amend'));
+    expect(onAmendLane).toHaveBeenCalledWith('jira_AB-12_1788460932645', 'also handle the null case');
+  });
+
+  it('C.1: does nothing when Amend is clicked with an empty draft', async () => {
+    const onAmendLane = vi.fn();
+    renderSheet([], {}, [], onAmendLane);
+    await userEvent.click(screen.getByText('Amend'));
+    expect(onAmendLane).not.toHaveBeenCalled();
   });
 });

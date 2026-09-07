@@ -16,6 +16,12 @@ export interface WindowBounds {
 export interface Settings {
   checkoutDir?: string;
   windowBounds?: WindowBounds;
+  /** C.3: environment merged into the spawned console's own env at launch --
+   *  FORGE_QUEUE, FORGE_JIRA_*, FORGE_REPO_*, FORGE_PORT and anything else the
+   *  operator wants without setting a user-level environment variable, edited
+   *  from the app's own Settings panel. A key set here always wins over one
+   *  already in this process's own environment (see `mergeForgeEnv`). */
+  forgeEnv?: Record<string, string>;
 }
 
 export interface SettingsFs {
@@ -46,6 +52,21 @@ export function readSettings(fs: SettingsFs, filePath: string): Settings {
 export function writeSettings(fs: SettingsFs, filePath: string, settings: Settings): void {
   fs.mkdirSync(dirOf(filePath), { recursive: true });
   fs.writeFileSync(filePath, JSON.stringify(settings, null, 2), 'utf8');
+}
+
+/**
+ * C.3: `forgeEnv` merged onto a base environment (this process's own `process.env`) for
+ * the spawned console -- the same spot `FORGE_REPO_DIR` is already set in `main.ts`'s
+ * `resolveCheckoutDir`. A setting always wins over a value already in the base env, since
+ * the whole point of the panel is to let an operator override a shortcut launch's bare
+ * environment without setting one at the user level. Never mutates either argument.
+ */
+export function mergeForgeEnv(
+  base: Record<string, string | undefined>,
+  forgeEnv: Record<string, string> | undefined,
+): Record<string, string | undefined> {
+  if (!forgeEnv || Object.keys(forgeEnv).length === 0) return base;
+  return { ...base, ...forgeEnv };
 }
 
 export function updateSettings(

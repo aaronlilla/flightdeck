@@ -27,9 +27,17 @@ function buildPlannerPrompt(packet: Packet): string {
   ].join('\n');
 }
 
-/** One queued packet through the Reasoner. Never writes a file itself. */
-export async function planFromPacket(packet: Packet, reasoner: Reasoner): Promise<PlannedBrief> {
+/**
+ * One queued packet through the Reasoner. Never writes a file itself.
+ *
+ * `className` defaults to `'plan'`, unchanged from before this parameter existed. C.2:
+ * a pasted brief or a typed hotfix has no ticket to triangulate, so planning it does not
+ * need `plan`'s full budget -- the queue's own planner (`queue-wire.ts`'s `queuePlanner`,
+ * stream A's file) is where a `brief`/`hotfix` source decides to pass `'triage'` instead;
+ * this function only has to accept the choice, never make it.
+ */
+export async function planFromPacket(packet: Packet, reasoner: Reasoner, className = 'plan'): Promise<PlannedBrief> {
   const prompt = buildPlannerPrompt(packet);
-  const result = await reasoner.call({ className: 'plan', prompt });
+  const result = await reasoner.call({ className, prompt });
   return { packetId: packet.id, ticket: packet.ticket, text: result.text };
 }

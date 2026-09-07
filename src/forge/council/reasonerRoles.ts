@@ -23,6 +23,7 @@ import type { JudgeInput } from './gate.ts';
 import { councilPolicy, type CouncilPolicy } from './risk.ts';
 import { makeCodexLane } from './codexLane.ts';
 import type { Journal } from '../journal.ts';
+import { maxDiffLinesFor } from '../policy.ts';
 
 const FINDINGS_ARRAY_SCHEMA = z.array(CouncilFindingSchema);
 
@@ -45,6 +46,51 @@ function parseFindings(text: string): CouncilFinding[] {
   if (candidate === undefined) return [];
   const result = FINDINGS_ARRAY_SCHEMA.safeParse(candidate);
   return result.success ? result.data : [];
+}
+
+/**
+ * C.2: caps the diff a lens is asked to read, per hunk (a line starting `@@`), so one
+ * outsized hunk does not blow the token budget for a call that only needs to spot a
+ * pattern, not transcribe every line back. A hunk within `maxHunkLines` is passed through
+ * untouched; a hunk past it keeps its first `maxHunkLines` lines and folds the rest into
+ * one summary line naming how many were cut. Lines before the first `@@` (a diff's own
+ * header) are always kept, uncapped.
+ */
+export function capDiffForLens(diffSummary: string, maxHunkLines: number): string {
+  const lines = diffSummary.split('\n');
+  const out: string[] = [];
+  let inHunk = false;
+  let hunkLineCount = 0;
+  let cutCount = 0;
+
+  const flushCut = () => {
+    if (cutCount > 0) {
+      out.push(`… ${cutCount} more line(s) of this hunk summarised for token budget …`);
+      cutCount = 0;
+    }
+  };
+
+  for (const line of lines) {
+    if (line.startsWith('@@')) {
+      flushCut();
+      out.push(line);
+      inHunk = true;
+      hunkLineCount = 0;
+      continue;
+    }
+    if (!inHunk) {
+      out.push(line);
+      continue;
+    }
+    hunkLineCount += 1;
+    if (hunkLineCount <= maxHunkLines) {
+      out.push(line);
+    } else {
+      cutCount += 1;
+    }
+  }
+  flushCut();
+  return out.join('\n');
 }
 
 export function buildLensPrompt(input: LensInput & { ruleVerdicts: RuleVerdict[] }): string {
@@ -85,7 +131,8 @@ export function reasonerLensRunner(
 ): LensRunner {
   return {
     async run(input) {
-      const prompt = buildLensPrompt({ ...input, ruleVerdicts });
+      const cappedDiff = capDiffForLens(input.diffSummary, maxDiffLinesFor('audit-lens'));
+      const prompt = buildLensPrompt({ ...input, diffSummary: cappedDiff, ruleVerdicts });
       let result: { text: string };
       try {
         result = await reasoner.call({ className: 'audit-lens', prompt, replyShape: 'array', run });

@@ -147,9 +147,15 @@ describe('forge council', () => {
 
   it('a judge FIX FIRST yields exit 1 and no attestation file', async () => {
     process.env['FORGE_COUNCIL_REPOS'] = REPO;
+    // C.2: a round with no lens finding never calls the judge at all, so this needs a
+    // real finding on the wire to exercise a judge FIX FIRST in the first place.
+    const finding = {
+      member: 'correctness', file: 'src/x.ts', line: 1, claim: 'off by one',
+      failureScenario: 'boundary miscount', severity: 'high', confidence: 'high',
+    };
     const reasonerQueryFn = fakeQueryByModel({
-      [LENS_MODEL]: JSON.stringify({ findings: [] }),
-      [JUDGE_MODEL]: JSON.stringify({ verdict: 'FIX FIRST', decidingFindings: [] }),
+      [LENS_MODEL]: JSON.stringify({ findings: [finding] }),
+      [JUDGE_MODEL]: JSON.stringify({ verdict: 'FIX FIRST', decidingFindings: [finding] }),
     });
 
     const result = await forge(['council', '--repo', REPO, '--pr', String(PR)], {
@@ -248,8 +254,14 @@ describe('forge council', () => {
 
   it('the judge itself failing to answer at all (not a verdict, a hard failure) exits 1 with no attestation, and never crashes the process', async () => {
     process.env['FORGE_COUNCIL_REPOS'] = REPO;
+    // C.2: a round with no lens finding never calls the judge at all, so this needs a
+    // real finding on the wire to exercise a hard judge failure in the first place.
+    const finding = {
+      member: 'correctness', file: 'src/x.ts', line: 1, claim: 'off by one',
+      failureScenario: 'boundary miscount', severity: 'high', confidence: 'high',
+    };
     const reasonerQueryFn = fakeQueryByModel({
-      [LENS_MODEL]: JSON.stringify({ findings: [] }),
+      [LENS_MODEL]: JSON.stringify({ findings: [finding] }),
       [JUDGE_MODEL]: 'sorry, I am not able to reach a verdict on this one',
     });
 

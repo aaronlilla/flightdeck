@@ -267,6 +267,35 @@ describe('GET /state', () => {
     expect(state['router_enabled']).toBe(false);
   });
 
+  // C.3: the desktop status window and the console's top bar both need to say when the
+  // queue subsystem is not running at all, distinct from a queue that is running but
+  // paused -- read fresh off the environment on every call, the same as router_enabled.
+  describe('C.3: carries queue_on, read fresh from FORGE_QUEUE', () => {
+    const original = process.env['FORGE_QUEUE'];
+    afterEach(() => {
+      if (original === undefined) delete process.env['FORGE_QUEUE'];
+      else process.env['FORGE_QUEUE'] = original;
+    });
+
+    it('reads false when FORGE_QUEUE is unset', async () => {
+      delete process.env['FORGE_QUEUE'];
+      const state = await (await fetch(`${base}/state`)).json() as Record<string, unknown>;
+      expect(state['queue_on']).toBe(false);
+    });
+
+    it('reads true only when FORGE_QUEUE is exactly "1"', async () => {
+      process.env['FORGE_QUEUE'] = '1';
+      const state = await (await fetch(`${base}/state`)).json() as Record<string, unknown>;
+      expect(state['queue_on']).toBe(true);
+    });
+
+    it('reads false for any other value, never truthy-coerced', async () => {
+      process.env['FORGE_QUEUE'] = 'true';
+      const state = await (await fetch(`${base}/state`)).json() as Record<string, unknown>;
+      expect(state['queue_on']).toBe(false);
+    });
+  });
+
   // X1: a lane can carry a stale verdict from an earlier chain (parked, or otherwise
   // finished) while a fresh run for the same slug is genuinely live. A tile driven off
   // the lane record alone would show the dead chain's verdict beside a running tool; the
@@ -768,6 +797,95 @@ describe('POST /send', () => {
       body: 'not json',
     });
     expect(response.status).toBe(400);
+  });
+});
+
+describe('POST /amend', () => {
+  it('C.1: appends an Amendment section, folds the text into Definition of Done, '
+    + 'delivers it through the run inbox, and journals brief.amended', async () => {
+    const briefPath = join(dir, 'alpha.md');
+    writeFileSync(briefPath, [
+      '# alpha',
+      '',
+      '## Definition of Done',
+      '- ship it',
+      '',
+      '## Notes',
+      'stuff',
+      '',
+    ].join('\n'), 'utf8');
+
+    const response = await fetch(`${base}/amend`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forge-token': server.token },
+      body: JSON.stringify({ run: 'alpha', text: 'also handle the null case' }),
+    });
+    expect(response.status).toBe(200);
+
+    const updated = readFileSync(briefPath, 'utf8');
+    expect(updated).toMatch(/## Amendment \(/);
+    const dodSection = updated.slice(
+      updated.indexOf('## Definition of Done'), updated.indexOf('## Notes'),
+    );
+    expect(dodSection).toContain('also handle the null case');
+
+    expect(
+      new RunInbox('alpha').all().map((message) => message.text)
+        .some((text) => text.includes('also handle the null case')),
+    ).toBe(true);
+
+    const journalText = readFileSync(join(dir, 'fleet.jsonl'), 'utf8');
+    const rows = journalText.split('\n').filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(rows.some((row) => row['event'] === 'brief.amended' && row['run'] === 'alpha')).toBe(true);
+  });
+
+  it('refuses without a token', async () => {
+    const response = await fetch(`${base}/amend`, {
+      method: 'POST',
+      body: JSON.stringify({ run: 'alpha', text: 'hi' }),
+    });
+    expect(response.status).toBe(401);
+  });
+
+  it('refuses a different Origin', async () => {
+    const response = await fetch(`${base}/amend`, {
+      method: 'POST',
+      headers: { 'x-forge-token': server.token, origin: 'http://evil.example' },
+      body: JSON.stringify({ run: 'alpha', text: 'hi' }),
+    });
+    expect(response.status).toBe(403);
+  });
+
+  it('refuses a body missing run or text', async () => {
+    const response = await fetch(`${base}/amend`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forge-token': server.token },
+      body: JSON.stringify({ run: 'alpha' }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it('refuses a body it cannot parse', async () => {
+    const response = await fetch(`${base}/amend`, {
+      method: 'POST',
+      headers: { 'x-forge-token': server.token },
+      body: 'not json',
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it('404s a run with no registry row rather than guessing a brief path', async () => {
+    const response = await fetch(`${base}/amend`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forge-token': server.token },
+      body: JSON.stringify({ run: 'nobody', text: 'hi' }),
+    });
+    expect(response.status).toBe(404);
+  });
+
+  it('refuses a GET, because amending is not a safe method', async () => {
+    const response = await fetch(`${base}/amend`, { method: 'GET' });
+    expect(response.status).toBe(405);
   });
 });
 

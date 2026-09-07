@@ -35,6 +35,11 @@ export interface ClassSpec {
    *  `reasoner.timeoutMs`. A class carrying none (every class an older policy file
    *  shipped with) falls back to that fleet-wide value, unchanged. */
   timeoutMs?: number;
+  /** C.2: the per-hunk line cap a council lens's diff is read at before the rest of that
+   *  hunk is summarised away, tuning a token spend as a data change rather than a code
+   *  change. A class carrying none (every class before this field existed) falls back to
+   *  `DEFAULT_MAX_DIFF_LINES`. */
+  maxDiffLines?: number;
 }
 
 /**
@@ -283,6 +288,19 @@ export function reasonerTimeoutMs(path?: string): number {
  */
 export function reasonerTimeoutMsFor(className: string, path?: string): number {
   return loadPolicy(path).classes[className]?.timeoutMs ?? reasonerTimeoutMs(path);
+}
+
+/** The default when a class names no `maxDiffLines` of its own. */
+export const DEFAULT_MAX_DIFF_LINES = 400;
+
+/**
+ * C.2: the per-hunk line cap `reasonerLensRunner` reads a lens's diff at before
+ * summarising the rest of that hunk away, read from `classes.audit-lens.maxDiffLines` so
+ * tuning it is a data change. A class that sets none (every class before this field
+ * existed) reads as `DEFAULT_MAX_DIFF_LINES`, same shape as `reasonerTimeoutMsFor`.
+ */
+export function maxDiffLinesFor(className: string, path?: string): number {
+  return loadPolicy(path).classes[className]?.maxDiffLines ?? DEFAULT_MAX_DIFF_LINES;
 }
 
 /**

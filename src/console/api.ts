@@ -144,6 +144,17 @@ export function sendToRun(run: string, text: string): Promise<ActionResult> {
     .then((result) => ({ ok: result.ok, jid: null, message: `sent to ${run}`, undoable: false }));
 }
 
+/**
+ * C.1's Amend action: `POST /amend`, which appends the text to the run's own brief (and
+ * its Definition of Done) and delivers it through the run's inbox. Same `{ ok: true }`
+ * shape as `/send`, folded into `ActionResult` the same way for `runAction`'s one
+ * receipt path.
+ */
+export function amendRun(run: string, text: string): Promise<ActionResult> {
+  return post<{ ok: boolean }>('/amend', { run, text })
+    .then((result) => ({ ok: result.ok, jid: null, message: `amended ${run}`, undoable: false }));
+}
+
 export function setCaps(body: { dailyTokens?: number; runTokens?: number }): Promise<Caps> {
   return post<Caps>('/caps', body);
 }
