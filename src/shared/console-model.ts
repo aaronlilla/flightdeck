@@ -348,12 +348,19 @@ export interface QueueItem {
    *  before the council reads it -- shared by A.8's real figures at `review` and A.9's
    *  overlap check against every other item running or in review on the same repo. */
   changedFiles?: string[] | null;
+  /** D2.3: the council's own findings against this item's draft PR, one line each --
+   *  absent or empty means the council hasn't posted a note (or none is due) yet. */
+  councilNotes?: string[] | null;
 }
 
 export interface QueueResponse {
   items: QueueItem[];
   paused: boolean;
   maxInFlight: number;
+  /** D2.3: set alongside `paused` when the worker itself paused the queue (three
+   *  consecutive tick errors), rather than an operator's own Pause click -- absent or
+   *  null means whatever `paused` says was an operator's own doing. */
+  pauseReason?: string | null;
 }
 
 export interface QueueAddRequest {
@@ -434,10 +441,22 @@ export interface RunJournalResponse {
 }
 
 /**
+ * D2.4: the one field of the real server's own (much larger) `/state` the web console
+ * needs -- whether the queue subsystem is running at all, distinct from a queue that is
+ * running but merely paused (the desktop status window already reads this same flag off
+ * the real server; see `desktop/electron/queue-state.ts`). The console never reads the
+ * rest of `/state`'s per-run truth, so this type carries only the one field it does.
+ */
+export interface ConsoleStateSummary {
+  queue_on: boolean;
+}
+
+/**
  * The routes. Reads carry the token like every other read except `/state`; writes carry
  * it and are refused without it. Every write journals a row and returns its jid.
  *
  * Reads
+ *   GET  /state                          ConsoleStateSummary (no token required)
  *   GET  /lanes                          LanesResponse
  *   GET  /thread                         ThreadResponse   (the Conductor rail, persisted)
  *   GET  /journal?since=&run=&limit=     JournalResponse

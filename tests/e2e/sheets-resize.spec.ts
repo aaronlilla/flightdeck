@@ -82,18 +82,12 @@ test('the journal sheet stays visible and un-overflowed across a resize', async 
   await assertNoOverflow(page);
 });
 
-// Real defect, reproduced here rather than in App.tsx (owned by no stream in
-// this plan): the ticket sheet's run-thread `MessageCard` wires `onCommand` to
-// `(text) => onCommand(lane.id, text)`, which App.tsx routes through the same
-// exact-match switch its CTA buttons use ('kill' | 'merge' | 'watch' | ... |
-// 'reopen'). A question/plan/confirm card's own button sends free text like
-// `answer ask-bbz-118 nullable + backfill`, which matches none of those exact
-// strings and falls through with no else branch -- a silent no-op. The rail's
-// identical click works, because ConductorRail routes the same text through
-// `onRailCommand` -> `processCommand` -> `POST /command`, never through this
-// switch. Confirmed: clicking the option inside the ticket sheet leaves the
-// lane `parked`; the identical click in the rail leaves it `running`.
-test.fixme('answering a question from inside its own ticket sheet resumes the lane, same as answering from the rail', async ({ page }) => {
+// D2.2: fixed in App.tsx -- `onCommand`'s exact-match CTA switch now falls
+// through to `processCommand` for anything it doesn't recognize as one of the
+// board's own CTA commands, so the sheet's `answer ask-bbz-118 nullable +
+// backfill` reaches the same `POST /command` path the rail's identical click
+// already used.
+test('answering a question from inside its own ticket sheet resumes the lane, same as answering from the rail', async ({ page }) => {
   await page.goto('/');
   await page.getByTestId('lane-BBZ-118').click();
   await page.getByTestId('ticket-sheet').getByText('nullable + backfill', { exact: true }).click();

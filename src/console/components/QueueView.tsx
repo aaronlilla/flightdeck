@@ -6,6 +6,11 @@ import type { QueueItem, QueueItemState, QueueSource } from '../../shared/consol
 export interface QueueViewProps {
   items: QueueItem[];
   paused: boolean;
+  /** D2.3: set when the worker itself paused the queue (three consecutive tick
+   *  errors), rather than an operator's own Pause click -- undefined or null means
+   *  `paused` was an operator's own doing, so the header shows the plain "paused"
+   *  chip it always has. */
+  pauseReason?: string | null;
   maxInFlight: number;
   onAdd: (source: QueueSource, input: string) => void;
   onRemove: (id: string) => void;
@@ -45,14 +50,27 @@ function QueueCard({ item, onRemove, onRetry, onMerge, onPromote }: {
   const taxon = STATE_TAXONOMY[item.state];
   return (
     <div className="lane" style={{ borderColor: taxon.color }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
         <a className="m" style={{ fontSize: 13, fontWeight: 700 }}>{item.ticket ?? item.id}</a>
-        <span className="chip">{SOURCE_LABEL[item.source]}</span>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {/* D2.3: A.1's fix round -- the round count and the findings it is retrying
+              against, the latter carried in `reason` the same way a parked/failed
+              item already shows its own reason below. */}
+          {item.fixRoundsUsed ? (
+            <span className="chip" style={{ borderColor: 'var(--park)', color: 'var(--park)' }}>fix round {item.fixRoundsUsed}</span>
+          ) : null}
+          <span className="chip">{SOURCE_LABEL[item.source]}</span>
+        </div>
       </div>
       <div className="lbl" style={{ color: taxon.color }}>{taxon.label}</div>
       <div className="m" style={{ fontSize: 11.5, color: 'var(--ink2)', minHeight: 32, overflow: 'hidden', textOverflow: 'ellipsis' }}>
         {item.reason ?? item.repo ?? item.input}
       </div>
+      {item.state === 'review' && item.councilNotes && item.councilNotes.length > 0 ? (
+        <div className="m" style={{ fontSize: 9.5, color: 'var(--ink3)' }}>
+          council notes: {item.councilNotes.join('; ')}
+        </div>
+      ) : null}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 7, borderTop: '1px solid var(--line)', paddingTop: 7 }}>
         {item.state === 'review' && item.pr ? (
           <>
@@ -70,7 +88,7 @@ function QueueCard({ item, onRemove, onRetry, onMerge, onPromote }: {
           </>
         ) : item.state === 'done' && item.source === 'hotfix' && onPromote ? (
           <span className="btnA" style={{ padding: '7px 9px', fontSize: 9.5, width: '100%', textAlign: 'center' }} onClick={() => onPromote(item.id)}>
-            Promote to production
+            Promote
           </span>
         ) : (
           <span
@@ -155,7 +173,7 @@ function AddWork({ onAdd }: { onAdd: (source: QueueSource, input: string) => voi
  *  `.lane` shape, grouped by nothing but state color -- the same flat grid `LanesGrid`
  *  already uses for the run board. */
 export function QueueView(props: QueueViewProps): JSX.Element {
-  const { items, paused, maxInFlight, onAdd, onRemove, onRetry, onPause, onResume, onMerge, onPromote } = props;
+  const { items, paused, pauseReason, maxInFlight, onAdd, onRemove, onRetry, onPause, onResume, onMerge, onPromote } = props;
   const inFlight = items.filter((i) => i.state === 'planning' || i.state === 'running').length;
 
   return (
@@ -166,7 +184,9 @@ export function QueueView(props: QueueViewProps): JSX.Element {
           <span className="m" style={{ fontSize: 11, color: 'var(--ink2)' }}>{inFlight} / {maxInFlight} in flight</span>
           {paused ? (
             <>
-              <span className="chip" style={{ color: 'var(--park)', borderColor: 'var(--park)' }}>paused</span>
+              <span className="chip" style={{ color: 'var(--park)', borderColor: 'var(--park)' }}>
+                {pauseReason ? `paused — ${pauseReason}` : 'paused'}
+              </span>
               <span className="btnP" style={{ padding: '6px 10px', fontSize: 9.5 }} onClick={onResume}>Resume queue</span>
             </>
           ) : (

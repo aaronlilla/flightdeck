@@ -120,10 +120,44 @@ describe('App', () => {
     expect(screen.queryByText(/I understand: pause, resume, kill/)).not.toBeInTheDocument();
   });
 
+  it('D2.2: answering a question from inside its own ticket sheet resumes the lane, same as answering from the rail', async () => {
+    // TicketSheet's own run-thread MessageCard wired `onCommand` to `(text) =>
+    // onCommand(lane.id, text)`, which App.tsx routed through the exact-match CTA
+    // switch its board tiles use ('kill' | 'merge' | 'watch' | ... | 'reopen'). A
+    // question card's own option button sends free text like `answer ask-bbz-118
+    // nullable + backfill`, which matches none of those exact strings and fell
+    // through with no else branch -- a silent no-op, leaving the lane parked.
+    render(<App eventStreamOptions={{ WebSocketImpl: FakeSocket as unknown as typeof WebSocket }} />);
+    await waitFor(() => expect(screen.getByTestId('lane-BBZ-118')).toBeInTheDocument());
+    await userEvent.click(screen.getByTestId('lane-BBZ-118'));
+    await waitFor(() => expect(screen.getByTestId('ticket-sheet')).toBeInTheDocument());
+    const sheet = screen.getByTestId('ticket-sheet');
+    await userEvent.click(within(sheet).getByText('nullable + backfill', { exact: true }));
+    await waitFor(() => expect(screen.getByTestId('lane-BBZ-118')).toHaveAttribute('data-state', 'running'));
+  });
+
   it('shows the disconnected banner once the feed drops', async () => {
     render(<App eventStreamOptions={{ WebSocketImpl: FakeSocket as unknown as typeof WebSocket }} />);
     await waitFor(() => expect(screen.getByTestId('lane-FLT-201')).toBeInTheDocument());
     global.fetch = (() => Promise.reject(new Error('offline'))) as typeof fetch;
     await waitFor(() => expect(screen.getByText(/live feed lost/)).toBeInTheDocument(), { timeout: 15_000 });
   }, 20_000);
+
+  it('D2.1: a 501 refusal card survives the refresh runAction fires right after appending it', async () => {
+    // `runAction` appends the refusal card via `appendReceipt`, then immediately calls
+    // `refresh()`. `refresh()` replaces `state.thread` wholesale from `/thread`, which
+    // has no row for a client-only refusal card -- so without a fix the card renders
+    // for one tick and is gone once the refresh's own `/thread` fetch lands.
+    await fetch('/__test/fixture?name=refusal-501', { method: 'POST' });
+    render(<App eventStreamOptions={{ WebSocketImpl: FakeSocket as unknown as typeof WebSocket }} />);
+    const tile = await screen.findByTestId('lane-FLT-401');
+    await userEvent.click(within(tile).getByText('Compact + resume →', { exact: true }));
+    await waitFor(() => expect(screen.getByText('Refused')).toBeInTheDocument());
+    // Give the `refresh()` that `runAction` awaits right after appending the card time
+    // to complete its own round trip and overwrite `state.thread`.
+    await new Promise((resolve) => { setTimeout(resolve, 500); });
+    expect(screen.getByText('Refused')).toBeInTheDocument();
+    expect(screen.getByText('compaction has no successor worker built yet')).toBeInTheDocument();
+    expect(tile).toHaveAttribute('data-state', 'exhausted');
+  });
 });

@@ -54,7 +54,11 @@ export interface State {
   proposals: ProposalsResponse | null;
   queue: QueueItem[];
   queuePaused: boolean;
+  queuePauseReason: string | null;
   queueMaxInFlight: number;
+  /** D2.4: `/state`'s own `queue_on` flag. Starts `true` so the "Queue is off" banner
+   *  never flashes before the console's first `/state` fetch lands. */
+  queueOn: boolean;
   loaded: boolean;
   now: number;
   /** Duration of the last `/lanes` fetch, for the feed stamp's latency fallback. */
@@ -81,7 +85,8 @@ export type Action =
   | { type: 'integrations'; integrations: Integration[] }
   | { type: 'caps'; caps: Caps }
   | { type: 'proposals'; proposals: ProposalsResponse }
-  | { type: 'queue'; items: QueueItem[]; paused: boolean; maxInFlight: number }
+  | { type: 'queue'; items: QueueItem[]; paused: boolean; maxInFlight: number; pauseReason?: string | null }
+  | { type: 'queue-on'; on: boolean }
   | { type: 'loaded' }
   | { type: 'tick'; now: number }
   | { type: 'fetch-latency'; ms: number }
@@ -111,7 +116,9 @@ export function initialState(): State {
     proposals: null,
     queue: [],
     queuePaused: false,
+    queuePauseReason: null,
     queueMaxInFlight: 2,
+    queueOn: true,
     loaded: false,
     now: Date.now(),
     fetchLatencyMs: null,
@@ -146,7 +153,12 @@ export function reducer(state: State, action: Action): State {
     case 'proposals':
       return { ...state, proposals: action.proposals };
     case 'queue':
-      return { ...state, queue: action.items, queuePaused: action.paused, queueMaxInFlight: action.maxInFlight };
+      return {
+        ...state, queue: action.items, queuePaused: action.paused, queueMaxInFlight: action.maxInFlight,
+        queuePauseReason: action.pauseReason ?? null,
+      };
+    case 'queue-on':
+      return { ...state, queueOn: action.on };
     case 'loaded':
       return { ...state, loaded: true };
     case 'tick':

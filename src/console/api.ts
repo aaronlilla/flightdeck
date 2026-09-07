@@ -9,6 +9,7 @@ import type {
   ActionResult,
   Caps,
   CommandResponse,
+  ConsoleStateSummary,
   IntegrationsResponse,
   JournalResponse,
   LanesResponse,
@@ -46,6 +47,13 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiError(response.status, redactErrorBody(body));
   }
   return (await response.json()) as T;
+}
+
+/** D2.4: `/state`'s own `queue_on` flag -- the one field the web console needs out of
+ *  the real server's much larger `/state`. Never carries the token: same rule the real
+ *  server (and this stub) already apply to `/state`. */
+export function getState(): Promise<ConsoleStateSummary> {
+  return call<ConsoleStateSummary>('/state');
 }
 
 export function getLanes(params?: { all?: boolean }): Promise<LanesResponse> {
@@ -209,4 +217,12 @@ export function pauseQueue(): Promise<ActionResult> {
 
 export function resumeQueue(): Promise<ActionResult> {
   return post<ActionResult>('/queue/resume', {});
+}
+
+export function mergeQueueItem(id: string): Promise<ActionResult> {
+  return post<ActionResult>(`/queue/${encodeURIComponent(id)}/merge`, {});
+}
+
+export function promoteQueueItem(id: string): Promise<ActionResult> {
+  return post<ActionResult>(`/queue/${encodeURIComponent(id)}/promote`, {});
 }

@@ -12,16 +12,11 @@ test.afterAll(async ({ request }) => {
   await request.post('/__test/fixture?name=default');
 });
 
-// Real defect, reproduced here rather than in App.tsx (owned by no stream in
-// this plan, so this spec stays red until it's fixed there): `runAction`
-// appends the refusal card via `appendReceipt`, then immediately calls
-// `refresh()`. `refresh()` replaces `state.thread` wholesale from `/thread`
-// and only reattaches an unconfirmed *confirm* card (`pendingConfirmRef`) --
-// never the receipt/refusal card `runAction` itself just appended. A 501's
-// refusal card (with no server-side journal row behind it) renders and is
-// wiped within the same tick; confirmed with `page.waitForResponse` on the
-// 501 and reading `rail-thread` the instant it lands, still empty.
-test.fixme('a 501 write renders as a dashed refusal card, and the lane never flips to done', async ({ page }) => {
+// D2.1: fixed in App.tsx -- `runAction` now keeps every receipt/refusal card it
+// appends in a short-lived local list (`localCardsRef`) and `refresh()` merges any
+// of those still missing from the server's own `/thread` back in, the same way it
+// already did for the unconfirmed confirm card.
+test('a 501 write renders as a dashed refusal card, and the lane never flips to done', async ({ page }) => {
   await page.goto('/');
   const tile = page.getByTestId('lane-FLT-401');
   await expect(tile).toBeVisible();
