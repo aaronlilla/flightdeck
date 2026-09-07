@@ -32,7 +32,7 @@ import { appendOnce, Journal, JournalCache, type RangeReader } from './journal.j
 import type { StuckSignal } from './liveness.js';
 import { WardenActuator } from './warden.js';
 import { QueueStore } from './intake/queueStore.js';
-import type { QueueTicketSearch } from './intake/queue.js';
+import type { QueueMergeDeps, QueuePromoteDeps, QueueTicketSearch } from './intake/queue.js';
 import {
   killSwitchPath as defaultKillSwitchPath, packetsDir as defaultPacketsDir, queuePath as defaultQueuePath,
   registryDir, serverTokenPath,
@@ -192,6 +192,12 @@ export interface ForgeServerOptions {
   /** How many queue items `GET /queue` reports as the worker's own concurrency ceiling.
    *  Purely informational here -- the worker enforces it, this class only echoes it. */
   queueMaxInFlight?: number;
+  /** A.7: the Merge click's dependencies (`queue-wire.ts#queueMergeDeps`). Absent means
+   *  `POST /queue/:id/merge` answers 501 with that reason, which is what a console with
+   *  no chain environment should say. */
+  queueMergeDeps?: QueueMergeDeps;
+  /** A.7: the Promote click's dependencies (`queue-wire.ts#queuePromoteDeps`). */
+  queuePromoteDeps?: QueuePromoteDeps;
 }
 
 export class ForgeServer {
@@ -292,6 +298,8 @@ export class ForgeServer {
       readPaused: () => readQueuePaused(),
       writePaused: (paused) => writeQueuePaused(paused),
       maxInFlight: options.queueMaxInFlight ?? 2,
+      ...(options.queueMergeDeps ? { mergeDeps: options.queueMergeDeps } : {}),
+      ...(options.queuePromoteDeps ? { promoteDeps: options.queuePromoteDeps } : {}),
     });
   }
 

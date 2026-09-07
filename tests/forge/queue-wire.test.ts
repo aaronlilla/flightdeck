@@ -90,3 +90,26 @@ describe('queueCommentOnPr', () => {
     expect(typeof queueCommentOnPr()).toBe('function');
   });
 });
+
+describe('queueMergeDeps and queuePromoteDeps: A.7 wiring', () => {
+  it('carries a post-merge verifier only when a chain environment is given', async () => {
+    const { queueMergeDeps, queuePromoteDeps } = await import('../../src/forge/queue-wire.js');
+    const { readChainEnv } = await import('../../src/forge/chain-env.js');
+    const deps = {} as never;
+    const store = {} as never;
+    expect(queueMergeDeps(deps, store).postMergeVerify).toBeUndefined();
+    const chainEnv = readChainEnv({ FORGE_REPO_CHECKOUTS: 'owner/name=/tmp/checkout' } as NodeJS.ProcessEnv);
+    expect(typeof queueMergeDeps(deps, store, chainEnv).postMergeVerify).toBe('function');
+    const promote = queuePromoteDeps(chainEnv);
+    expect(typeof promote.productionWorkflowExists).toBe('function');
+    // The production dispatch stays unwired until that decision is made.
+    expect(promote.promote).toBeUndefined();
+  });
+
+  it('answers undefined for a repo with no checkout instead of running the CLI', async () => {
+    const { queuePostMergeVerify } = await import('../../src/forge/queue-wire.js');
+    const { readChainEnv } = await import('../../src/forge/chain-env.js');
+    const verify = queuePostMergeVerify(readChainEnv({} as NodeJS.ProcessEnv));
+    expect(await verify({ repo: 'owner/none', branch: 'feature/x' })).toBeUndefined();
+  });
+});

@@ -585,16 +585,26 @@ export async function mergeItem(item: QueueItem, deps: QueueMergeDeps): Promise<
     return { ok: false, message: 'the merge did not complete -- see the journal for the gate\'s own reason' };
   }
 
-  let otaLine: string | undefined;
-  if (deps.postMergeVerify && item.branch) {
-    const outcome = await deps.postMergeVerify({ repo: item.repo!, branch: item.branch });
-    if (outcome) otaLine = `OTA landed ios=${outcome.ios} android=${outcome.android}`;
-  }
-
+  // The item is done the moment the merge lands. The develop deploy takes minutes, so
+  // the per-platform OTA outcome is written as a second row when the verifier answers,
+  // and the click's own response never waits on it. A verifier that finds no run says
+  // so in the reason, so 'OTA pending' can never be the item's last word.
   const now = deps.clock();
-  const patch: Partial<QueueItem> = { state: 'done', reason: otaLine ?? null, updatedAt: now };
+  const verifying = Boolean(deps.postMergeVerify && item.branch);
+  const patch: Partial<QueueItem> = { state: 'done', reason: verifying ? 'merged; OTA pending' : null, updatedAt: now };
   deps.store.append({ id: item.id, at: now, ...patch });
-  return { ok: true, message: otaLine ?? 'merged', item: { ...item, ...patch } };
+  if (deps.postMergeVerify && item.branch) {
+    void deps.postMergeVerify({ repo: item.repo!, branch: item.branch })
+      .then((outcome) => outcome
+        ? `OTA landed ios=${outcome.ios} android=${outcome.android}`
+        : 'merged; no develop deploy run was found for this merge')
+      .catch((error: unknown) => `merged; OTA check failed: ${error instanceof Error ? error.message : String(error)}`)
+      .then((reason) => {
+        const at = deps.clock();
+        deps.store.append({ id: item.id, at, reason, updatedAt: at });
+      });
+  }
+  return { ok: true, message: patch.reason ?? 'merged', item: { ...item, ...patch } };
 }
 
 export interface QueuePromoteDeps {

@@ -20,7 +20,8 @@ import type { CliResult, ForgeDeps } from './cli.js';
 import { countAddDel, REAL_GH } from './council/gh.js';
 import type { Packet, PollSourceName, Watermark } from './contracts.js';
 import { run as execRun } from './exec.js';
-import type { QueueMergeDeps, QueuePlannedBrief, QueuePlanner, QueueRuntimeDeps, QueueTicketSearch } from './intake/queue.js';
+import type { QueueMergeDeps, QueuePlannedBrief, QueuePlanner, QueuePromoteDeps, QueueRuntimeDeps, QueueTicketSearch } from './intake/queue.js';
+import { developDeployVerifier } from './intake/otaVerify.js';
 import { createJiraFeed, createJiraWriteClient, type JiraConfig } from './intake/jira.js';
 import { runQueueHandoff } from './intake/queueHandoff.js';
 import type { PollItemDetail } from './intake/poller.js';
@@ -273,13 +274,43 @@ export function queueProductionWorkflowExists(chainEnv: ChainEnv): (repo: string
  * wiring this into a live route is the next hop for whichever stream builds that
  * construction call.
  */
-export function queueMergeDeps(deps: ForgeDeps, store: QueueRuntimeDeps['store']): QueueMergeDeps {
+export function queueMergeDeps(deps: ForgeDeps, store: QueueRuntimeDeps['store'], chainEnv?: ChainEnv): QueueMergeDeps {
   return {
     mergeAllowed: queueMergeAllowed(),
     gate: chainGate(deps),
     clock: () => Date.now(),
     store,
+    ...(chainEnv ? { postMergeVerify: queuePostMergeVerify(chainEnv) } : {}),
   };
+}
+
+/** A.7: after a Merge lands, read the develop deploy's per-platform outcome off the EAS
+ *  CLI (`intake/otaVerify.ts`), from the checkout `FORGE_REPO_CHECKOUTS` names for the
+ *  repo. A repo with no checkout, or no workflow run inside the wait, answers undefined
+ *  and the item's reason says so. Each CLI call is capped at 90 s, the whole wait at
+ *  15 min -- a deploy that builds instead of publishing runs longer than that, and its
+ *  `build` action is already the answer once the decide job has spoken. */
+export function queuePostMergeVerify(chainEnv: ChainEnv): NonNullable<QueueMergeDeps['postMergeVerify']> {
+  return async ({ repo, branch }) => {
+    const checkout = checkoutFor(chainEnv, repo);
+    if (!checkout) return undefined;
+    const verify = developDeployVerifier({
+      checkout,
+      workflow: process.env['FORGE_DEPLOY_WORKFLOW'] ?? 'deploy-develop.yml',
+      exec: async (argv, cwd) => {
+        const result = await execRun({ argv, cwd, owner: 'queue', cls: 'script', fullOutput: true, raw: true, wall: 90_000 });
+        return result.full ?? result.tail ?? '';
+      },
+    });
+    return verify({ repo, branch, mergedAt: Date.now() });
+  };
+}
+
+/** A.7: the Promote click's dependencies. The production dispatch itself is deliberately
+ *  absent until the operator decides it should fire from a click (standing order 9), so
+ *  Promote answers with the workflow's presence and a refusal naming that decision. */
+export function queuePromoteDeps(chainEnv: ChainEnv): QueuePromoteDeps {
+  return { productionWorkflowExists: queueProductionWorkflowExists(chainEnv) };
 }
 
 export function buildQueueRuntimeDeps(

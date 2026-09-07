@@ -928,16 +928,40 @@ describe('mergeItem: A.7', () => {
     expect(result.item?.state).toBe('done');
   });
 
-  it('carries the per-platform OTA outcome in the item\'s reason', async () => {
+  it('sets done at once with the OTA pending, then writes the per-platform outcome when the deploy answers', async () => {
     const item = reviewItem();
+    const rows: Array<Record<string, unknown>> = [];
+    let settle: (v: { android: string; ios: string }) => void = () => {};
+    const outcome = new Promise<{ android: string; ios: string }>((resolve) => { settle = resolve; });
     const result = await mergeItem(item, {
       mergeAllowed: () => true,
       gate: async () => ({ merged: true }),
-      postMergeVerify: async () => ({ android: 'update', ios: 'update' }),
+      postMergeVerify: () => outcome,
       clock: () => 3000,
-      store: { append: () => {} } as never,
+      store: { append: (row: Record<string, unknown>) => { rows.push(row); } } as never,
     });
-    expect(result.item?.reason).toBe('OTA landed ios=update android=update');
+    // The click returns before the deploy finishes: a develop deploy takes minutes and a
+    // request must not wait on it.
+    expect(result.item?.state).toBe('done');
+    expect(result.item?.reason).toBe('merged; OTA pending');
+    expect(rows).toHaveLength(1);
+    settle({ android: 'update 10cbd28a', ios: 'update 12cd45b8' });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(rows[1]).toMatchObject({ id: item.id, reason: 'OTA landed ios=update 12cd45b8 android=update 10cbd28a' });
+  });
+
+  it('records a deploy that never answered rather than leaving OTA pending forever', async () => {
+    const item = reviewItem();
+    const rows: Array<Record<string, unknown>> = [];
+    await mergeItem(item, {
+      mergeAllowed: () => true,
+      gate: async () => ({ merged: true }),
+      postMergeVerify: async () => undefined,
+      clock: () => 3000,
+      store: { append: (row: Record<string, unknown>) => { rows.push(row); } } as never,
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(rows[1]).toMatchObject({ id: item.id, reason: 'merged; no develop deploy run was found for this merge' });
   });
 
   it('reports a merge that did not complete, without setting done', async () => {

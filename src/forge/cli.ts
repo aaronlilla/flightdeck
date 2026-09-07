@@ -55,7 +55,7 @@ import {
 } from './paths.js';
 import { runQueueTick } from './intake/queue.js';
 import { QueueStore } from './intake/queueStore.js';
-import { buildQueueRuntimeDeps } from './queue-wire.js';
+import { buildQueueRuntimeDeps, queueMergeDeps, queuePromoteDeps } from './queue-wire.js';
 import { QueueTickBackoff } from './queue-backoff.js';
 import { loadPolicy, modelFor, modelIdFor, tierOfBrief } from './policy.js';
 import { attestationCoversHead, checkHandoff, providerFor, redact, verified } from './contracts.js';
@@ -406,6 +406,12 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           return Array.isArray(read) ? read.map((proc) => ({ ...proc })) : read;
         },
         queueStore,
+        // A.7: Merge and Promote are clicks. Merge reuses the gate with `merge: true` for
+        // repos on FORGE_QUEUE_MERGE_REPOS and then reads the develop deploy's outcome per
+        // platform; Promote reports whether the production workflow exists and refuses
+        // the dispatch until that decision is wired.
+        queueMergeDeps: queueMergeDeps(deps, queueStore, readChainEnv()),
+        queuePromoteDeps: queuePromoteDeps(readChainEnv()),
       });
       const livenessJournal = new Journal(journalPath());
       const liveness = new LivenessSupervisor(
