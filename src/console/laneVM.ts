@@ -40,7 +40,7 @@ export interface LaneCta {
 
 export type LaneCommand =
   | 'watch' | 'kill' | 'answer' | 'council' | 'resume' | 'merge'
-  | 'gate-log' | 'reconnect-aws' | 'compact' | 'verify' | 'open-pr' | 'reopen';
+  | 'gate-log' | 'reconnect-aws' | 'compact' | 'verify' | 'open-pr' | 'reopen' | 'unretire';
 
 /**
  * Exactly one CTA per lane state (HANDOFF "Board" section). `runaway` overrides
@@ -48,6 +48,8 @@ export type LaneCommand =
  * offers reconnect instead of the gate log.
  */
 export function laneCta(lane: Lane): LaneCta {
+  // H2.2/H2.3: a retired lane's only action is to come back, whatever its own state.
+  if (lane.retiredAt !== null) return { label: 'Unretire', cmd: 'unretire', cls: 'btnS' };
   if (lane.state === 'running' && lane.runaway) return { label: 'Kill attempt', cmd: 'kill', cls: 'btnR' };
   switch (lane.state) {
     case 'running':
@@ -191,6 +193,30 @@ export function capText(lane: Lane): string {
  *  runaway, and it still needs the warning. */
 export function tileCapText(lane: Lane): string {
   return lane.tokenCap !== null && lane.tokens > lane.tokenCap ? capText(lane) : '';
+}
+
+/** H2.2: lanes sharing a ticket key fold into one group, newest attempt first --
+ *  `Lane.attempts` is the server's own count of how many runs share the ticket;
+ *  `lanes` here is whatever subset the caller actually fetched, so a group's own
+ *  `lanes.length` (not `attempts`) is what the board can actually show a
+ *  disclosure for. A lane with no ticket never groups with anything. */
+export interface LaneGroup {
+  key: string;
+  lanes: Lane[];
+}
+
+export function groupLanesByTicket(lanes: Lane[]): LaneGroup[] {
+  const groups: LaneGroup[] = [];
+  const seen = new Set<string>();
+  for (const l of lanes) {
+    const key = l.ticket ?? l.id;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const members = l.ticket ? lanes.filter((m) => m.ticket === l.ticket) : [l];
+    members.sort((a, b) => (b.attempt - a.attempt) || (b.startedAt - a.startedAt));
+    groups.push({ key, lanes: members });
+  }
+  return groups;
 }
 
 export interface TipContent {

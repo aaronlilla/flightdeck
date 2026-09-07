@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  costClass, costTip, kindLabel, laneCta, laneHeadline, mergeableWhy, plainLine, prSummaryParts, stepDisplay,
-  tileCapText, tileHeadlineParts,
+  costClass, costTip, groupLanesByTicket, kindLabel, laneCta, laneHeadline, mergeableWhy, plainLine, prSummaryParts,
+  stepDisplay, tileCapText, tileHeadlineParts,
 } from '../../src/console/laneVM.js';
 import type { Lane, LaneState } from '../../src/shared/console-model.js';
 
@@ -188,6 +188,24 @@ describe('prSummaryParts', () => {
   it('omits the council segment when there is no verdict yet', () => {
     const pr = { no: 5, url: 'https://example.invalid/pr/5', files: 1, add: 1, del: 0, draft: false, checks: 'pending' as const, verdict: null, merged: false };
     expect(prSummaryParts(pr).rest).toBe('open · checks … · 1 files +1 −0');
+  });
+});
+
+// H2.2
+describe('groupLanesByTicket', () => {
+  it('folds three attempts of the same ticket into one group, newest first', () => {
+    const groups = groupLanesByTicket([
+      lane('blocked', { id: 'r1', ticket: 'FLT-9', attempt: 1, startedAt: 1 }),
+      lane('blocked', { id: 'r2', ticket: 'FLT-9', attempt: 2, startedAt: 2 }),
+      lane('running', { id: 'r3', ticket: 'FLT-9', attempt: 3, startedAt: 3 }),
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.lanes.map((l) => l.id)).toEqual(['r3', 'r2', 'r1']);
+  });
+
+  it('never groups two lanes with no ticket, even if their ids collide with nothing else', () => {
+    const groups = groupLanesByTicket([lane('running', { id: 'a', ticket: null }), lane('running', { id: 'b', ticket: null })]);
+    expect(groups).toHaveLength(2);
   });
 });
 

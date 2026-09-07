@@ -56,7 +56,8 @@ export function getState(): Promise<ConsoleStateSummary> {
   return call<ConsoleStateSummary>('/state');
 }
 
-export function getLanes(params?: { all?: boolean }): Promise<LanesResponse> {
+export function getLanes(params?: { all?: boolean; archived?: boolean }): Promise<LanesResponse> {
+  if (params?.archived) return call<LanesResponse>('/lanes?archived=1');
   return call<LanesResponse>(params?.all ? '/lanes?all=1' : '/lanes');
 }
 
@@ -127,6 +128,10 @@ export function mergeRun(id: string): Promise<ActionResult> {
 
 export function reopenRun(id: string): Promise<ActionResult> {
   return post<ActionResult>(`/run/${encodeURIComponent(id)}/reopen`, {});
+}
+
+export function unretireRun(id: string): Promise<ActionResult> {
+  return post<ActionResult>(`/run/${encodeURIComponent(id)}/unretire`, {});
 }
 
 export function compactRun(id: string): Promise<ActionResult> {

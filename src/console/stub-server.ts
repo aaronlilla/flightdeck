@@ -450,6 +450,13 @@ export function createStubServer() {
       }
 
       if (urlPath === '/lanes' && method === 'GET') {
+        // H2.2: `archived=1` answers only the retired lanes -- a separate slot from the
+        // live board, never mixed into the default/`all=1` response.
+        if (query.get('archived') === '1') {
+          const archived = db.lanes.filter((l) => l.retiredAt !== null);
+          json(response, 200, { at: Date.now(), lanes: archived, tokensToday: 0, tokensPerMin: 0 });
+          return;
+        }
         const tokensToday = db.lanes.reduce((sum, l) => sum + l.tokens, 0);
         const tokensPerMin = db.lanes.reduce((sum, l) => sum + (l.state === 'running' ? l.tokensPerMin : 0), 0);
         json(response, 200, { at: Date.now(), lanes: db.lanes, tokensToday, tokensPerMin });
@@ -574,6 +581,19 @@ export function createStubServer() {
         appendEvent(`${id} merged`, id);
         publish({ type: 'chain.merged', run: id });
         json(response, 200, ok(jid, `${id} merged`, false, lane));
+        return;
+      }
+      // H2.2/H2.3: a per-lane undo of a retire -- not in the frozen contract (only
+      // the bulk `/retire-finished` is), a stub-only convenience the real server
+      // needs an equivalent route for once it grows a single-lane retire of its own.
+      const runUnretireMatch = /^\/run\/([^/]+)\/unretire$/.exec(urlPath);
+      if (runUnretireMatch && method === 'POST') {
+        const id = decodeURIComponent(runUnretireMatch[1] as string);
+        const lane = findLane(id);
+        if (!lane) { json(response, 404, { error: `no lane named ${id}` }); return; }
+        lane.retiredAt = null;
+        const jid = journal('run.unretired', `${id} unretired`, id, false);
+        json(response, 200, ok(jid, `${id} unretired`, false, lane));
         return;
       }
       const runReopenMatch = /^\/run\/([^/]+)\/reopen$/.exec(urlPath);

@@ -264,7 +264,11 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     else if (cmd === 'compact') void runAction(() => api.compactRun(id));
     else if (cmd === 'verify') void runAction(() => api.verifyRun(id));
     else if (cmd === 'reopen') void runAction(() => api.reopenRun(id));
-    else processCommand(cmd);
+    else if (cmd === 'unretire') {
+      void runAction(() => api.unretireRun(id)).then(() => {
+        void api.getLanes({ archived: true }).then((r) => dispatch({ type: 'archived-lanes', lanes: r.lanes })).catch(() => undefined);
+      });
+    } else processCommand(cmd);
   }, [state.lanes, appendReceipt, refresh, runAction, processCommand]);
 
   // Typed composer text (and the rail's quick-command chips, which the prototype
@@ -355,12 +359,21 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
           <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
               <Filters
-                filter={state.filter} sort={state.sort} repos={repos} lanes={state.lanes} now={state.now}
-                onFilter={(filter) => { dispatch({ type: 'filter', filter }); if (filter === 'all') void refresh(); }}
+                filter={state.filter} sort={state.sort} repos={repos} lanes={state.lanes}
+                archivedLanes={state.archivedLanes} showProbes={state.showProbes} now={state.now}
+                onFilter={(filter) => {
+                  dispatch({ type: 'filter', filter });
+                  if (filter === 'all') void refresh();
+                  if (filter === 'archived') {
+                    void api.getLanes({ archived: true }).then((r) => dispatch({ type: 'archived-lanes', lanes: r.lanes })).catch(() => undefined);
+                  }
+                }}
                 onSort={(sort) => dispatch({ type: 'sort', sort })}
+                onToggleProbes={() => dispatch({ type: 'toggle-probes' })}
               />
               <LanesGrid
-                lanes={state.lanes} filter={state.filter} sort={state.sort} feedLive={state.feed.live} now={state.now}
+                lanes={state.filter === 'archived' ? state.archivedLanes : state.lanes}
+                filter={state.filter} sort={state.sort} feedLive={state.feed.live} now={state.now} showProbes={state.showProbes}
                 onOpen={(id) => dispatch({ type: 'sheet', sheet: { type: 'ticket', id } })}
                 onOpenCost={(id) => dispatch({ type: 'sheet', sheet: { type: 'cost', id } })}
                 onCommand={onCommand}
