@@ -22,7 +22,7 @@ import type { StuckSignal } from '../liveness.js';
 import { Lanes, type LaneRecord } from '../supervisor.js';
 import { RunInbox } from '../runinbox.js';
 import type {
-  Caps, JournalResponse, Lane, LaneStory, LanesResponse, ProposalsResponse, QueueItem, RunCostResponse,
+  Caps, JournalResponse, Lane, LanePr, LaneStory, LanesResponse, ProposalsResponse, QueueItem, RunCostResponse,
   RunJournalResponse, RunPrResponse, RunSandboxResponse, RunThreadResponse, ThreadResponse,
 } from '../../shared/console-model.js';
 import { capsOverridesPath, computeCaps, readCapsOverrides } from './caps-read.js';
@@ -38,8 +38,8 @@ import { readRetired, retiredPath } from './retire.js';
 import { plainForQueueItem, plainStatus, type QueueVerdict } from './plain.js';
 import { readAttestationAtPath } from '../council/attest.js';
 import {
-  computeRunPr, prCachePath, readPrCache, writePrCache,
-  type AttestationReaderFn, type GhDetailLookupFn, type GhLookupFn, type GhPrDetail, type GhPrLookup,
+  computeQueuePr, computeRunPr, PR_CACHE_TTL_MS, prCachePath, readPrCache, writePrCache,
+  type AttestationReaderFn, type Cache, type GhDetailLookupFn, type GhLookupFn, type GhPrDetail, type GhPrLookup,
 } from './pr.js';
 import { computeProposals, readRules, rulesPath } from './proposals.js';
 import { computeSandbox, newestLogFile, packetForRun, tailLogWithSeverity } from './sandbox.js';
@@ -218,6 +218,15 @@ export class ConsoleReads {
 
   private readonly gitLogFn: (worktreePath: string) => Promise<GitCommit[]>;
 
+  /** Item 7: run ids a background PR-detail refresh is already in flight for, so a
+   *  lane polled again before the first `gh` read lands never queues a second one. */
+  private readonly prRefreshInFlight = new Set<string>();
+
+  /** Item 7: every background PR-detail refresh `GET /lanes` has kicked off so far,
+   *  for `settlePrRefreshes()` (tests only) to wait on. Production never awaits this --
+   *  a poll must never block on `gh`. */
+  private pendingPrRefreshes: Promise<void>[] = [];
+
   constructor(options: ConsoleReadsOptions = {}) {
     this.forgeHomeDir = options.forgeHomeDir ?? forgeHome();
     this.lanes = options.lanes ?? new Lanes(lanesDir());
@@ -238,6 +247,40 @@ export class ConsoleReads {
 
   private chain(): Map<string, ChainPacketState> {
     return foldChainState(this.journalCache.read(this.journalPath).events);
+  }
+
+  /** Item 7: a queue-sourced lane's `repo` and PR number are already on the queue item
+   *  the moment it is routed and provisioned -- `computeRunPr` never finds them, because
+   *  it only ever looks for a chain packet's `provisioned.branch`, and a queue lane has
+   *  no chain packet. Without this, `checks`/`verdict`/`merged`/`title` stayed unset
+   *  forever, `mergeable` answered "checks pending" for every queue PR for good, and
+   *  `GET /merge-ready` never saw one. Fires the detail read in the background (never
+   *  awaited by `GET /lanes` itself, so a poll never blocks on `gh`) and writes the
+   *  answer into the same `run`-keyed cache `GET /run/:id/pr` reads, so the next poll
+   *  (or the 60-second TTL's own re-check) sees it. */
+  private scheduleQueuePrRefresh(run: string, repo: string, basic: LanePr): void {
+    if (this.prRefreshInFlight.has(run)) return;
+    this.prRefreshInFlight.add(run);
+    const cachePath = prCachePath(this.forgeHomeDir);
+    const task = (async () => {
+      try {
+        const cache = readPrCache(cachePath);
+        const { cache: nextCache } = await computeQueuePr(
+          run, repo, basic, cache, Date.now(), this.ghDetailLookup, this.attestationReader,
+        );
+        writePrCache(cachePath, nextCache);
+      } finally {
+        this.prRefreshInFlight.delete(run);
+      }
+    })();
+    this.pendingPrRefreshes.push(task);
+  }
+
+  /** Test seam only (item 7): waits for every background PR-detail refresh `GET /lanes`
+   *  has kicked off so far. Production code never calls this. */
+  async settlePrRefreshes(): Promise<void> {
+    await Promise.all(this.pendingPrRefreshes);
+    this.pendingPrRefreshes = [];
   }
 
   /** Whether `path`/`method` names one of this class's own routes, with no side effect --
@@ -349,7 +392,7 @@ export class ConsoleReads {
     const response = windowLanes(computeLanes(input, now), now, all);
     const retired = readRetired(retiredPath(this.forgeHomeDir));
     const lanes = response.lanes
-      .map((lane) => this.withHumanFields(lane, chain))
+      .map((lane) => this.withHumanFields(lane, chain, prCache, now))
       .map((lane) => ({ ...lane, retiredAt: retired.get(lane.id) ?? null }))
       .filter((lane) => archived || lane.retiredAt === null);
     return { ...response, lanes };
@@ -359,7 +402,7 @@ export class ConsoleReads {
    *  queue item (by `runKey`), a chain packet (by `launched.runKey`), or a registered
    *  run's own briefPath for a manual one. A probe needs none of these and titles the
    *  same way every time. */
-  private withHumanFields(lane: Lane, chain: Map<string, ChainPacketState>): Lane {
+  private withHumanFields(lane: Lane, chain: Map<string, ChainPacketState>, prCache: Cache, now: number): Lane {
     let briefPath: string | null = null;
     let prUrl: string | null = lane.pr?.url ?? null;
     // A queue item carries its own `repo` and a bare `pr` (no/url/draft) straight off
@@ -403,6 +446,17 @@ export class ConsoleReads {
       const verdict = this.queueVerdictFor(queueItem);
       const queuePlain = plainForQueueItem(queueItem, verdict);
       if (queuePlain) patched.plain = queuePlain;
+    }
+    // Item 7: a queue lane's repo+PR number are known the moment the queue item
+    // exists, so a checks/verdict/merged read can be kicked off right here rather
+    // than waiting for something to call `GET /run/:id/pr` first (which, for a queue
+    // lane, nothing on the board ever does). A cache entry still inside its TTL means
+    // a read has already landed recently -- no need to fire another one.
+    if (queueItem && repo && pr?.no) {
+      const cached = prCache[lane.id];
+      if (!cached || now - cached.at >= PR_CACHE_TTL_MS) {
+        this.scheduleQueuePrRefresh(lane.id, repo, pr);
+      }
     }
     return patched;
   }
@@ -484,8 +538,26 @@ export class ConsoleReads {
     const { pr, cache: nextCache } = await computeRunPr(
       run, this.chain(), cache, now, this.ghLookup, this.ghDetailLookup, this.attestationReader,
     );
+    if (pr) {
+      if (nextCache !== cache) writePrCache(cachePath, nextCache);
+      return { pr };
+    }
+    // Item 7: `computeRunPr` only ever finds a PR through a chain packet's
+    // `provisioned.branch`; a queue-sourced lane has no chain packet at all, so this
+    // route answered `{ pr: null }` for one forever even with a real, open PR. Its
+    // queue item already carries `repo` and a bare `pr` off the queue's own log --
+    // read the detail straight off those instead of a branch lookup that never had
+    // anything to find.
+    const item = this.queueStore.all().find((row) => row.runKey === run);
+    if (item?.repo && item.pr) {
+      const { pr: queuePr, cache: queueCache } = await computeQueuePr(
+        run, item.repo, item.pr, cache, now, this.ghDetailLookup, this.attestationReader,
+      );
+      writePrCache(cachePath, queueCache);
+      return { pr: queuePr };
+    }
     if (nextCache !== cache) writePrCache(cachePath, nextCache);
-    return { pr };
+    return { pr: null };
   }
 
   private runSandboxResponse(run: string): RunSandboxResponse {

@@ -19,7 +19,7 @@ interface CacheRow {
   at: number;
 }
 
-type Cache = Record<string, CacheRow>;
+export type Cache = Record<string, CacheRow>;
 
 export function prCachePath(forgeHomeDir: string): string {
   return join(forgeHomeDir, 'console', 'pr-cache.json');
@@ -126,5 +126,27 @@ export async function computeRunPr(
       pr = { ...pr, checks: null, merged: null, title: null, verdict: null };
     }
   }
+  return { pr, cache: { ...cache, [run]: { pr, at: now } } };
+}
+
+/**
+ * Item 7: a queue-sourced lane already carries its own `repo` and PR number straight
+ * off the queue's own log the moment the item is routed and provisioned -- no chain
+ * packet, and no `gh pr list --head <branch>` lookup, is needed to find the PR at all.
+ * `computeRunPr` above answers `null` for exactly this case (it only ever looks at a
+ * chain packet's `provisioned.branch`), which is why `checks`/`verdict`/`merged`/`title`
+ * never arrived for a queue lane: nothing ever called the detail read for one. This
+ * reads the detail (and the attestation on disk for the PR's head) directly off the
+ * `repo`/`basic` the caller already has, and caches the answer under the same `run`-keyed
+ * cache `computeRunPr` uses so both routes agree.
+ */
+export async function computeQueuePr(
+  run: string, repo: string, basic: LanePr, cache: Cache, now: number,
+  detailLookup: GhDetailLookupFn, attestationReader?: AttestationReaderFn,
+): Promise<{ pr: LanePr; cache: Cache }> {
+  const detail = await detailLookup(repo, basic.no);
+  if (!detail) return { pr: basic, cache: { ...cache, [run]: { pr: basic, at: now } } };
+  const verdict = attestationReader?.(repo, basic.no, detail.headSha)?.verdict ?? null;
+  const pr: LanePr = { ...basic, checks: detail.checks, merged: detail.merged, title: detail.title, verdict };
   return { pr, cache: { ...cache, [run]: { pr, at: now } } };
 }

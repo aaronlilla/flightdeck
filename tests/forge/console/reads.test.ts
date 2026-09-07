@@ -247,4 +247,101 @@ describe('ConsoleReads.lanesResponse: title and sourceUrl', () => {
     expect(chip?.text).toBe('reconcile stale wallet holds: context ceiling reached, handed off to a fresh session.');
     expect(chip?.text).not.toMatch(/queue-|STUCK/i);
   });
+
+  it('item 7: GET /lanes reads a queue lane\'s checks/verdict/merged in the background, off repo+PR alone, with no chain packet at all', async () => {
+    const forgeHomeDir = tempDir('console-reads-');
+    const { writeAttestation } = await import('../../../src/forge/council/attest.js');
+    writeAttestation({
+      repo: 'o/n', pr: 119, head: 'deadbeef', base: 'develop', round: 1, verdict: 'PASS WITH NOTES',
+      decidingFindings: [], lenses: [], judge: { model: 'sonnet-5', verdict: 'PASS WITH NOTES' },
+      ci: { runId: 'r1', headSha: 'deadbeef' }, at: { value: 1, observed_at: 1 },
+      coverage: { total: 4, missing: [] },
+    } as never);
+
+    const queueStore = new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl'));
+    queueStore.append({
+      id: 'Q-1', at: 1, source: 'ticket', input: 'BBZ-96', ticket: 'BBZ-96', repo: 'o/n',
+      briefPath: null, branch: 'feature/bbz-96', worktreePath: 'w', base: 'develop',
+      state: 'review', reason: null, runKey: 'queue-BBZ-96',
+      pr: { no: 119, url: 'https://github.com/o/n/pull/119', files: 6, add: 360, del: 5, draft: true },
+      journalIds: [], createdAt: 1, updatedAt: 1,
+    });
+
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'queue-BBZ-96', actor: 'runner' });
+    journal.close();
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put('queue-BBZ-96', { column: 'BBZ-96' });
+
+    let ghCalls = 0;
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore, jiraSite: null,
+      mergeAllowed: (repo) => repo === 'o/n',
+      ghDetailLookup: async (repo, pr) => {
+        ghCalls += 1;
+        expect(repo).toBe('o/n');
+        expect(pr).toBe(119);
+        return { headSha: 'deadbeef', isDraft: true, merged: false, title: 'add the merge chip', checks: 'success' };
+      },
+    });
+
+    // First call: no `gh` read has ever landed for this lane, so it reads exactly what
+    // the queue item itself carries -- no checks/verdict/merged yet -- and kicks a
+    // detail read off in the background rather than blocking this response on `gh`.
+    const first = reads.lanesResponse().lanes[0]!;
+    expect(first.pr).toEqual({ no: 119, url: 'https://github.com/o/n/pull/119', files: 6, add: 360, del: 5, draft: true });
+    expect(first.mergeable).toEqual({ ok: false, why: 'checks pending' });
+
+    const server = reads as unknown as { settlePrRefreshes(): Promise<void> };
+    await server.settlePrRefreshes();
+
+    // Second call, after the background read has landed: checks, verdict and merged
+    // are all filled in, and mergeable now says yes.
+    const second = reads.lanesResponse().lanes[0]!;
+    expect(second.pr).toEqual({
+      no: 119, url: 'https://github.com/o/n/pull/119', files: 6, add: 360, del: 5, draft: true,
+      checks: 'success', merged: false, title: 'add the merge chip', verdict: 'PASS WITH NOTES',
+    });
+    expect(second.mergeable).toEqual({ ok: true });
+    expect(ghCalls).toBe(1);
+  });
+
+  it('item 7: GET /run/:id/pr answers for a queue lane with no chain packet, off the queue item\'s own repo and PR', async () => {
+    const forgeHomeDir = tempDir('console-reads-');
+    const queueStore = new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl'));
+    queueStore.append({
+      id: 'Q-1', at: 1, source: 'ticket', input: 'BBZ-96', ticket: 'BBZ-96', repo: 'o/n',
+      briefPath: null, branch: 'feature/bbz-96', worktreePath: 'w', base: 'develop',
+      state: 'review', reason: null, runKey: 'queue-BBZ-96',
+      pr: { no: 119, url: 'https://github.com/o/n/pull/119', files: 6, add: 360, del: 5, draft: true },
+      journalIds: [], createdAt: 1, updatedAt: 1,
+    });
+
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'queue-BBZ-96', actor: 'runner' });
+    journal.close();
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put('queue-BBZ-96', { column: 'BBZ-96' });
+
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore, jiraSite: null,
+      ghDetailLookup: async () => ({
+        headSha: 'deadbeef', isDraft: true, merged: false, title: 'add the merge chip', checks: 'success',
+      }),
+      attestationReader: () => ({ verdict: 'PASS WITH NOTES' }),
+    });
+
+    const server = reads as unknown as { runPrResponse(run: string): Promise<{ pr: unknown }> };
+    const result = await server.runPrResponse('queue-BBZ-96');
+    expect(result.pr).toEqual({
+      no: 119, url: 'https://github.com/o/n/pull/119', files: 6, add: 360, del: 5, draft: true,
+      checks: 'success', merged: false, title: 'add the merge chip', verdict: 'PASS WITH NOTES',
+    });
+  });
 });

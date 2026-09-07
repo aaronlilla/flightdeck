@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ChainPacketState } from '../../../src/forge/chain.js';
-import { computeRunPr, PR_CACHE_TTL_MS } from '../../../src/forge/console/pr.js';
+import { computeQueuePr, computeRunPr, PR_CACHE_TTL_MS } from '../../../src/forge/console/pr.js';
 import type { AttestationReaderFn, GhDetailLookupFn } from '../../../src/forge/console/pr.js';
 
 function chainWith(row: ChainPacketState): Map<string, ChainPacketState> {
@@ -90,5 +90,34 @@ describe('computeRunPr', () => {
     });
     const result = await computeRunPr('alpha', chain, {}, 1_000, lookup);
     expect(result.pr).toEqual({ no: 12, url: 'https://example/pull/12', files: 2, add: 3, del: 1, draft: true });
+  });
+});
+
+describe('computeQueuePr', () => {
+  const basic = { no: 119, url: 'https://github.com/o/n/pull/119', files: 6, add: 360, del: 5, draft: true };
+
+  it('item 7: reads checks/verdict/merged/title straight off repo+PR number, with no chain packet and no gh pr list', async () => {
+    const detailLookup: GhDetailLookupFn = async (repo, pr) => {
+      expect(repo).toBe('o/n');
+      expect(pr).toBe(119);
+      return { headSha: 'deadbeef', isDraft: true, merged: false, title: 'add the merge chip', checks: 'success' };
+    };
+    const attestationReader: AttestationReaderFn = (repo, pr, head) => {
+      expect(repo).toBe('o/n');
+      expect(pr).toBe(119);
+      expect(head).toBe('deadbeef');
+      return { verdict: 'PASS WITH NOTES' };
+    };
+    const result = await computeQueuePr('queue-BBZ-96', 'o/n', basic, {}, 1_000, detailLookup, attestationReader);
+    expect(result.pr).toEqual({
+      ...basic, checks: 'success', merged: false, title: 'add the merge chip', verdict: 'PASS WITH NOTES',
+    });
+    expect(result.cache['queue-BBZ-96']).toEqual({ pr: result.pr, at: 1_000 });
+  });
+
+  it('item 7: leaves the basic PR fields alone when the detail lookup finds nothing', async () => {
+    const detailLookup: GhDetailLookupFn = async () => undefined;
+    const result = await computeQueuePr('queue-BBZ-96', 'o/n', basic, {}, 1_000, detailLookup);
+    expect(result.pr).toEqual(basic);
   });
 });
