@@ -31,6 +31,10 @@ export interface ClassSpec {
   maxTurns: number;
   /** Data-driven per P3.2. Missing on an older policy fixture reads as `claude`. */
   provider?: Provider;
+  /** GATE.md item 3: this class's own `Reasoner.call` budget, overriding the fleet-wide
+   *  `reasoner.timeoutMs`. A class carrying none (every class an older policy file
+   *  shipped with) falls back to that fleet-wide value, unchanged. */
+  timeoutMs?: number;
 }
 
 /**
@@ -267,6 +271,18 @@ export const DEFAULT_REASONER_TIMEOUT_MS = 120_000;
  *  reads as `DEFAULT_REASONER_TIMEOUT_MS`, never as an error. */
 export function reasonerTimeoutMs(path?: string): number {
   return loadPolicy(path).reasoner?.timeoutMs ?? DEFAULT_REASONER_TIMEOUT_MS;
+}
+
+/**
+ * How long a single `Reasoner.call` for `className` may run, per GATE.md item 3: the
+ * BBZ-99 round's `correctness` and `scope-conformance` lenses both timed out at the bare
+ * fleet-wide 120s while the same round's Codex lane was budgeted 900s for the identical
+ * diff. `classes.<name>.timeoutMs` overrides `reasonerTimeoutMs()` for one class; a class
+ * that sets none (every class before this field existed) keeps the fleet-wide value
+ * exactly as before.
+ */
+export function reasonerTimeoutMsFor(className: string, path?: string): number {
+  return loadPolicy(path).classes[className]?.timeoutMs ?? reasonerTimeoutMs(path);
 }
 
 /**

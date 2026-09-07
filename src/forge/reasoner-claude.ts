@@ -20,7 +20,7 @@ import { z } from 'zod';
 import { Engine, type QueryFn } from '../adapter/engine.js';
 import type { Provider, Reasoner } from './contracts.js';
 import type { Journal } from './journal.js';
-import { modelFor, modelIdFor, reasonerTimeoutMs } from './policy.js';
+import { modelFor, modelIdFor, reasonerTimeoutMsFor } from './policy.js';
 import { fleetConfigDir } from './paths.js';
 import { workerEnv } from './worker.js';
 
@@ -126,7 +126,7 @@ export class ClaudeReasoner implements Reasoner {
     const { className, prompt, run } = input;
     const { policyPath } = this.deps;
     const model = modelIdFor(modelFor(className, policyPath), policyPath);
-    const timeoutMs = reasonerTimeoutMs(policyPath);
+    const timeoutMs = reasonerTimeoutMsFor(className, policyPath);
     const now = this.deps.now ?? Date.now;
     const setTimeoutFn = this.deps.setTimeoutFn ?? setTimeout;
     const clearTimeoutFn = this.deps.clearTimeoutFn ?? clearTimeout;

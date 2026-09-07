@@ -25,6 +25,7 @@ import {
   priceFor,
   providerFor,
   reasonerTimeoutMs,
+  reasonerTimeoutMsFor,
   tierOfBrief,
   turnsFor,
 } from '../../src/forge/policy.js';
@@ -247,5 +248,31 @@ describe('reasonerTimeoutMs', () => {
     const withOverride = { ...loadPolicy(), reasoner: { astra: 'off' as const, timeoutMs: 5000 } };
     writeFileSync(fixture, JSON.stringify(withOverride));
     expect(reasonerTimeoutMs(fixture)).toBe(5000);
+  });
+});
+
+describe('reasonerTimeoutMsFor: a class may need longer than the fleet-wide default (GATE.md item 3)', () => {
+  it('the checked-in audit-lens class gets more than the bare 120s default -- BBZ-99 timed out at exactly that', () => {
+    expect(reasonerTimeoutMsFor('audit-lens')).toBeGreaterThan(DEFAULT_REASONER_TIMEOUT_MS);
+  });
+
+  it('a class with no timeoutMs of its own falls back to the fleet-wide reasoner.timeoutMs', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'forge-policy-'));
+    const fixture = join(dir, 'model-policy.json');
+    const policy = { ...loadPolicy(), reasoner: { astra: 'off' as const, timeoutMs: 7000 } };
+    writeFileSync(fixture, JSON.stringify(policy));
+    expect(reasonerTimeoutMsFor('audit-judge', fixture)).toBe(7000);
+  });
+
+  it('a class that names its own timeoutMs overrides the fleet-wide default', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'forge-policy-'));
+    const fixture = join(dir, 'model-policy.json');
+    const base = loadPolicy();
+    const policy = {
+      ...base,
+      classes: { ...base.classes, 'audit-lens': { ...base.classes['audit-lens']!, timeoutMs: 42_000 } },
+    };
+    writeFileSync(fixture, JSON.stringify(policy));
+    expect(reasonerTimeoutMsFor('audit-lens', fixture)).toBe(42_000);
   });
 });
