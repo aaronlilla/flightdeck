@@ -15,11 +15,13 @@ import {
   classFor,
   classNames,
   contextFor,
+  DEFAULT_MAX_DIFF_LINES,
   DEFAULT_REASONER_TIMEOUT_MS,
   effectiveGovernorBudget,
   effortFor,
   governorBudget,
   loadPolicy,
+  maxDiffLinesFor,
   modelFor,
   modelIdFor,
   priceFor,
@@ -274,5 +276,33 @@ describe('reasonerTimeoutMsFor: a class may need longer than the fleet-wide defa
     };
     writeFileSync(fixture, JSON.stringify(policy));
     expect(reasonerTimeoutMsFor('audit-lens', fixture)).toBe(42_000);
+  });
+});
+
+// C.2: the diff a lens reads is capped per hunk, N read from the audit-lens class so
+// tuning it is a data change, never a code change -- same shape as timeoutMs above.
+describe('maxDiffLinesFor: the per-hunk cap a lens\'s diff is read at', () => {
+  it('falls back to 400 when the checked-in policy names no maxDiffLines of its own', () => {
+    expect(maxDiffLinesFor('audit-lens')).toBe(DEFAULT_MAX_DIFF_LINES);
+    expect(DEFAULT_MAX_DIFF_LINES).toBe(400);
+  });
+
+  it('honours a maxDiffLines the audit-lens class sets', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'forge-policy-'));
+    const fixture = join(dir, 'model-policy.json');
+    const base = loadPolicy();
+    const policy = {
+      ...base,
+      classes: { ...base.classes, 'audit-lens': { ...base.classes['audit-lens']!, maxDiffLines: 250 } },
+    };
+    writeFileSync(fixture, JSON.stringify(policy));
+    expect(maxDiffLinesFor('audit-lens', fixture)).toBe(250);
+  });
+
+  it('a class with no maxDiffLines of its own still falls back to the default', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'forge-policy-'));
+    const fixture = join(dir, 'model-policy.json');
+    writeFileSync(fixture, JSON.stringify(loadPolicy()));
+    expect(maxDiffLinesFor('audit-judge', fixture)).toBe(DEFAULT_MAX_DIFF_LINES);
   });
 });

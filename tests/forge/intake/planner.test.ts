@@ -28,6 +28,20 @@ describe('planFromPacket', () => {
     expect(result.text).toContain('# Goal:');
   });
 
+  // C.2: brief and hotfix planning is cheaper work than a ticket triangulation and does
+  // not need the full `plan` class's budget. `planFromPacket` never decides which source
+  // gets which class itself (that is the queue's own call, stream A's file) -- it only
+  // has to let a caller ask for a different one.
+  it('C.2: calls the reasoner with a caller-supplied className when one is given', async () => {
+    let seenClassName: string | undefined;
+    const reasoner: Reasoner = {
+      provider: 'claude',
+      async call(input) { seenClassName = input.className; return { text: '# Goal: fix it\n' }; },
+    };
+    await planFromPacket(packet(), reasoner, 'triage');
+    expect(seenClassName).toBe('triage');
+  });
+
   it('never writes a file itself', async () => {
     // No fs import in this test at all -- planFromPacket has no side effect to check
     // for, which is the point: writing the brief is cli.ts's job, not this module's.

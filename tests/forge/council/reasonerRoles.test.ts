@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { Reasoner } from '../../../src/forge/contracts.ts';
 import { buildJudgeInput } from '../../../src/forge/council/gate.ts';
-import { codexLaneFor, reasonerJudge, reasonerLensRunner } from '../../../src/forge/council/reasonerRoles.ts';
+import { capDiffForLens, codexLaneFor, reasonerJudge, reasonerLensRunner } from '../../../src/forge/council/reasonerRoles.ts';
 import { ReasonerParseError } from '../../../src/forge/reasoner-claude.ts';
 
 function fakeReasoner(reply: string): Reasoner {
@@ -71,6 +71,52 @@ describe('reasonerLensRunner', () => {
     const runner = reasonerLensRunner(fakeReasoner(JSON.stringify({ findings: [finding] })));
     const report = await runner.run({ lens: 'scope-conformance', brief: 'b', diffSummary: 'd' });
     expect(report.findings).toEqual([finding]);
+  });
+
+  // C.2: a lens's diff is capped before it reaches the prompt, at the audit-lens class's
+  // own maxDiffLines (400 by default) -- a large hunk costs a summary line, not a full
+  // read, and a small one is untouched.
+  it('C.2: caps a lens\'s diff at the audit-lens class\'s maxDiffLines before building the prompt', async () => {
+    const bigHunkBody = Array.from({ length: 500 }, (_, i) => `+line ${i}`).join('\n');
+    const diffSummary = ['@@ -1,500 +1,500 @@', bigHunkBody].join('\n');
+    let seenPrompt = '';
+    const runner = reasonerLensRunner({
+      provider: 'claude',
+      async call(input) { seenPrompt = input.prompt; return { text: '[]' }; },
+    });
+    await runner.run({ lens: 'correctness', brief: 'b', diffSummary });
+    expect(seenPrompt).toContain('+line 0');
+    expect(seenPrompt).toContain('+line 399');
+    expect(seenPrompt).not.toContain('+line 400');
+    expect(seenPrompt).not.toContain('+line 499');
+    expect(seenPrompt).toMatch(/summarised/);
+  });
+});
+
+describe('capDiffForLens', () => {
+  it('leaves a hunk under the cap untouched', () => {
+    const diff = ['@@ -1,3 +1,3 @@', '+a', '+b', '+c'].join('\n');
+    expect(capDiffForLens(diff, 400)).toBe(diff);
+  });
+
+  it('summarises a hunk past the cap, keeping only its first N lines', () => {
+    const hunkBody = Array.from({ length: 10 }, (_, i) => `+line ${i}`);
+    const diff = ['@@ -1,10 +1,10 @@', ...hunkBody].join('\n');
+    const capped = capDiffForLens(diff, 3);
+    expect(capped).toContain('+line 0');
+    expect(capped).toContain('+line 2');
+    expect(capped).not.toContain('+line 3');
+    expect(capped).toMatch(/7.*summarised/);
+  });
+
+  it('caps each hunk independently -- a second small hunk is untouched by the first one\'s cap', () => {
+    const bigHunk = ['@@ -1,10 +1,10 @@', ...Array.from({ length: 10 }, (_, i) => `+big ${i}`)];
+    const smallHunk = ['@@ -50,2 +50,2 @@', '+small 0', '+small 1'];
+    const diff = [...bigHunk, ...smallHunk].join('\n');
+    const capped = capDiffForLens(diff, 3);
+    expect(capped).toContain('+small 0');
+    expect(capped).toContain('+small 1');
+    expect(capped).not.toContain('+big 3');
   });
 });
 

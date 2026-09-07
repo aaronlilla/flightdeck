@@ -56,7 +56,17 @@ describe('runCouncilRound', () => {
   });
 
   it('the judge input never carries the raw diffSummary text', async () => {
-    const lensRunner = fakeLensRunner({});
+    // C.2 means a clean lens report never reaches the judge at all, so this specimen
+    // needs a real finding to exercise the judge's input shape in the first place.
+    const lensRunner = fakeLensRunner({
+      correctness: {
+        lens: 'correctness',
+        findings: [{
+          member: 'correctness', file: 'src/x.ts', line: 1, claim: 'off by one',
+          failureScenario: 'boundary miscount', severity: 'high', confidence: 'high',
+        }],
+      },
+    });
     const codexLane = fakeCodexLane([]);
     let seenInput: unknown;
     const judge: Judge = { async decide(input) { seenInput = input; return { verdict: 'PASS', decidingFindings: [] }; } };
@@ -178,9 +188,21 @@ describe('runCouncilRound', () => {
     });
 
     it('a lens failure never reaches the judge as one of its packets', async () => {
+      // C.2 means a round with nothing left to judge skips the judge call entirely, so
+      // this needs a second, real finding to keep the judge in the loop while still
+      // proving the failed lens's own packet never reaches it.
       const lensRunner: LensRunner = {
         async run(input) {
           if (input.lens === 'correctness') return { lens: input.lens, failed: true, rawReply: 'bad', findings: [] };
+          if (input.lens === 'scope-conformance') {
+            return {
+              lens: input.lens,
+              findings: [{
+                member: input.lens, file: 'src/x.ts', line: 1, claim: 'out of scope',
+                failureScenario: 'touches a file the brief never named', severity: 'medium', confidence: 'high',
+              }],
+            };
+          }
           return { lens: input.lens, findings: [] };
         },
       };
@@ -189,12 +211,73 @@ describe('runCouncilRound', () => {
       const judge: Judge = { async decide(input) { seenInput = input; return { verdict: 'PASS', decidingFindings: [] }; } };
 
       await runCouncilRound(
-        { brief: 'x', diffSummary: 'y', changedLines: 10, paths: ['src/x.ts'], ci: { runId: 'r', headSha: 'a' } },
+        { brief: 'x', diffSummary: 'y', changedLines: 200, paths: ['src/x.ts'], ci: { runId: 'r', headSha: 'a' } },
         { lensRunner, codexLane, judge },
       );
 
       expect(JSON.stringify(seenInput)).not.toContain('unparseable');
       expect(JSON.stringify(seenInput)).not.toContain('coverage is missing');
+      expect(JSON.stringify(seenInput)).not.toContain('bad');
+    });
+
+    // C.2: an Opus judge call is the round's single most expensive step. A round where
+    // every lens came back clean has nothing for a judge to weigh -- calling one anyway
+    // is a token spend with no decision behind it, since `verdictForRound` already
+    // clears a round with no findings and no missing member.
+    it('C.2: skips the judge call entirely when no lens produced a finding, reading PASS', async () => {
+      const lensRunner = fakeLensRunner({ correctness: { lens: 'correctness', findings: [] } });
+      const codexLane = fakeCodexLane([]);
+      let judgeCalled = false;
+      const judge: Judge = { async decide() { judgeCalled = true; return { verdict: 'FIX FIRST', decidingFindings: [] }; } };
+
+      const result = await runCouncilRound(
+        { brief: 'x', diffSummary: 'y', changedLines: 10, paths: ['src/x.ts'], ci: { runId: 'r', headSha: 'a' } },
+        { lensRunner, codexLane, judge },
+      );
+
+      expect(judgeCalled).toBe(false);
+      expect(result.verdict).toBe('PASS');
+    });
+
+    it('C.2: coverage still overrides a skipped judge -- a missing lens still forces FIX FIRST', async () => {
+      const lensRunner: LensRunner = {
+        async run(input) { return { lens: input.lens, failed: true, rawReply: 'not json', findings: [] }; },
+      };
+      const codexLane = fakeCodexLane([]);
+      let judgeCalled = false;
+      const judge: Judge = { async decide() { judgeCalled = true; return { verdict: 'PASS', decidingFindings: [] }; } };
+
+      const result = await runCouncilRound(
+        { brief: 'x', diffSummary: 'y', changedLines: 10, paths: ['src/x.ts'], ci: { runId: 'r', headSha: 'a' } },
+        { lensRunner, codexLane, judge },
+      );
+
+      expect(judgeCalled).toBe(false);
+      expect(result.verdict).toBe('FIX FIRST');
+      expect(result.missingMembers).toEqual(['correctness']);
+    });
+
+    it('C.2: still calls the judge when a lens produced a real finding', async () => {
+      const lensRunner = fakeLensRunner({
+        correctness: {
+          lens: 'correctness',
+          findings: [{
+            member: 'correctness', file: 'src/x.ts', line: 1, claim: 'off by one',
+            failureScenario: 'boundary miscount', severity: 'high', confidence: 'high',
+          }],
+        },
+      });
+      const codexLane = fakeCodexLane([]);
+      let judgeCalled = false;
+      const judge: Judge = { async decide() { judgeCalled = true; return { verdict: 'PASS WITH NOTES', decidingFindings: [] }; } };
+
+      const result = await runCouncilRound(
+        { brief: 'x', diffSummary: 'y', changedLines: 10, paths: ['src/x.ts'], ci: { runId: 'r', headSha: 'a' } },
+        { lensRunner, codexLane, judge },
+      );
+
+      expect(judgeCalled).toBe(true);
+      expect(result.verdict).toBe('PASS WITH NOTES');
     });
 
     it('full coverage reports zero missing members', async () => {

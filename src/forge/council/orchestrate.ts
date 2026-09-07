@@ -132,13 +132,19 @@ export async function runCouncilRound(input: CouncilRoundInput, roles: CouncilRo
 
   const synthesis = synthesizeFindings(usableLensReports, codexResult.findings);
 
-  const judgeInput = buildJudgeInput({
-    lenses: judgeLensReports,
-    brief: input.brief,
-    ci: input.ci,
-    diff: input.diffSummary,
-  });
-  const judgment = await roles.judge.decide(judgeInput);
+  // C.2: an Opus judge call is the round's single most expensive step. A round with no
+  // finding anywhere in what the judge would read has nothing to weigh -- `PASS` here
+  // costs no call, and `verdictForRound` below still tightens it to `FIX FIRST` on its
+  // own if coverage is short, exactly as it would have if the judge had said `PASS` too.
+  const hasJudgeableFinding = judgeLensReports.some((report) => report.findings.length > 0);
+  const judgment = hasJudgeableFinding
+    ? await roles.judge.decide(buildJudgeInput({
+        lenses: judgeLensReports,
+        brief: input.brief,
+        ci: input.ci,
+        diff: input.diffSummary,
+      }))
+    : { verdict: 'PASS' as CouncilVerdict, decidingFindings: [] as CouncilFinding[] };
 
   const missingMembers = [
     ...lensReports.filter((report) => report.failed).map((report) => report.lens),
