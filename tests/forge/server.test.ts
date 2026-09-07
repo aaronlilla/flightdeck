@@ -1094,3 +1094,26 @@ function readTextFrames(buffer: Buffer): string[] {
   }
   return frames;
 }
+
+describe('listen: a port already held', () => {
+  it('rejects with the bind error instead of resolving', async () => {
+    const { createServer } = await import('node:net');
+    const { ForgeServer } = await import('../../src/forge/server.js');
+    const { mkdtempSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const holder = createServer();
+    await new Promise<void>((resolve) => holder.listen(0, '127.0.0.1', resolve));
+    const address = holder.address();
+    const port = typeof address === 'object' && address ? address.port : 0;
+    const home = mkdtempSync(join(tmpdir(), 'forge-listen-'));
+    const server = new ForgeServer({
+      port, host: '127.0.0.1',
+      lanes: { list: () => [] } as never, inbox: {} as never, journalPath: join(home, 'fleet.jsonl'),
+      registry: {} as never, stuck: () => [], reasoner: undefined as never, fleet: () => [],
+      tokenPath: join(home, 'token'),
+    } as never);
+    await expect(server.listen()).rejects.toMatchObject({ code: expect.stringMatching(/EADDRINUSE|EACCES/) });
+    holder.close();
+  });
+});

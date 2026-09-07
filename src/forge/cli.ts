@@ -16,7 +16,7 @@
  * it. A stop that lost an afternoon is a stop nobody dares press.
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import type { QueryFn } from '../adapter/engine.js';
 import { BlockerBoard } from './blockers.js';
@@ -54,6 +54,7 @@ import {
   killSwitchPath, lanesDir, queuePath, registryDir, runsDir,
 } from './paths.js';
 import { runQueueTick } from './intake/queue.js';
+import { acquireQueueLock } from './intake/queueLock.js';
 import { QueueStore } from './intake/queueStore.js';
 import { buildQueueRuntimeDeps, queueMergeDeps, queuePromoteDeps } from './queue-wire.js';
 import { QueueTickBackoff } from './queue-backoff.js';
@@ -538,7 +539,16 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       // -- an operator adding a ticket wants it picked up quickly, unlike a poll cycle
       // that already ran once before anything reached the chain.
       let queueLine = '';
-      if (process.env['FORGE_QUEUE'] === '1') {
+      // One process ticks this queue at a time (`intake/queueLock.ts`): a second `forge up`
+      // on a port the platform let it share would otherwise plan every item twice.
+      const queueLock = process.env['FORGE_QUEUE'] === '1'
+        ? acquireQueueLock({ path: join(dirname(queuePath()), 'queue.lock'), pid: process.pid, alive: processAlive })
+        : undefined;
+      if (queueLock && !queueLock.ok) {
+        queueLine = `queue NOT started: ${queueLock.reason}`;
+      }
+      if (queueLock?.ok) {
+        process.once('exit', () => queueLock.release());
         const queueJournal = new Journal(journalPath());
         const queueDeps = buildQueueRuntimeDeps(chainEnv, fleetConfigDirChoice().dir, deps, queueStore);
         const pollSeconds = Number(process.env['FORGE_QUEUE_POLL_S']) || 15;

@@ -315,7 +315,12 @@ export class ForgeServer {
     });
     server.on('upgrade', (request, socket) => this.upgrade(request, socket as Duplex));
     this.http = server;
-    await new Promise<void>((resolve) => server.listen(this.wanted, this.host, resolve));
+    // A bind that fails (the port held by another process) rejects here, so `forge up`
+    // exits with that reason instead of running its timers against a port it never got.
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(this.wanted, this.host, () => { server.off('error', reject); resolve(); });
+    });
     const address = server.address();
     this.port = typeof address === 'object' && address ? address.port : this.wanted;
     // The console's own freshness contract (`VERIFIED_WINDOW_MS`, `console-model.ts`):
