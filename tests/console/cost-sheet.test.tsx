@@ -10,6 +10,7 @@ import * as api from '../../src/console/api.js';
 
 function lane(extra: Partial<Lane> = {}): Lane {
   return {
+    title: null, kind: 'manual', sourceUrl: null, plain: '', mergeable: null, attempts: 1, retiredAt: null,
     id: 'FLT-204', ticket: 'FLT-204', model: 'sonnet-5', modelId: 'claude-sonnet-5', className: 'implement',
     repo: 'flightdeck-api', attempt: 1, state: 'running', reason: null, stepN: 2, stepTotal: 6, stepText: 'working',
     ctxTokens: 70_000, ctxCeiling: 200_000, ctxCompactAt: 180_000, tokens: 5_500_000, tokenCap: 1_600_000, tokensPerMin: 260_000,

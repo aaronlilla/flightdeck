@@ -7,6 +7,7 @@ import type { JournalEntry, Lane } from '../../src/shared/console-model.js';
 
 function lane(id: string, stepText: string): Lane {
   return {
+    title: null, kind: 'manual', sourceUrl: null, plain: '', mergeable: null, attempts: 1, retiredAt: null,
     id, ticket: null, model: 'sonnet-5', modelId: null, className: null, repo: 'flightdeck-rn', attempt: 1,
     state: 'running', reason: null, stepN: 1, stepTotal: 3, stepText, ctxTokens: 0, ctxCeiling: 200_000,
     ctxCompactAt: 180_000, tokens: 0, tokenCap: null, tokensPerMin: 0, fails: 0, hop: 1, hopStatus: 'live',

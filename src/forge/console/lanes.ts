@@ -11,7 +11,7 @@ import type { InboxEntry } from '../inbox.js';
 import type { StuckSignal } from '../liveness.js';
 import type { ChainPacketState } from '../chain.js';
 import type { ClassSpec } from '../policy.js';
-import type { Hop, Lane, LanePr, LaneQuestion, LaneSandbox, LaneState, LanesResponse } from '../../shared/console-model.js';
+import type { Hop, Lane, LaneKind, LanePr, LaneQuestion, LaneSandbox, LaneState, LanesResponse } from '../../shared/console-model.js';
 import { textFor } from './journal-route.js';
 
 /** Journal rows that carry no narrative on their own: burn accounting, per-tool
@@ -42,10 +42,27 @@ const TICKET_TOKEN_PATTERN = /^[A-Za-z]{2,6}-\d+$/;
 
 /** `RunState.ticket`, or the first `_`/`/`-delimited segment of the run's own name that
  *  reads as a ticket key on its own, upper-cased. `null` when neither is true. */
+/** Where a run came from, read off the id shapes the launchers use: `queue-<KEY>` and
+ *  `queue-brief-*` from the intake queue, `hotfix-*` typed on the board, `S-*` from the
+ *  self loop, `jira_*` from the unattended chain, `forge-live-probe*` and `*-smoke-*`
+ *  from the runner's own probes, anything else started by hand. */
+export function laneKindFor(id: string): LaneKind {
+  if (/^queue-brief-/.test(id)) return 'brief';
+  if (/^hotfix-/.test(id)) return 'hotfix';
+  if (/^queue-/.test(id)) return 'ticket';
+  if (/^S-[0-9a-f]{8,}/.test(id)) return 'self';
+  if (/^jira_/.test(id)) return 'chain';
+  if (/live-probe|-smoke-|-probe-|^probe-/.test(id)) return 'probe';
+  return 'manual';
+}
+
 export function ticketFor(run: string, runState: RunState | undefined): string | null {
   if (runState?.ticket) return runState.ticket.toUpperCase();
   const token = run.split(/[_/]/).find((part) => TICKET_TOKEN_PATTERN.test(part));
-  return token ? token.toUpperCase() : null;
+  if (token) return token.toUpperCase();
+  // `queue-BBZ-96`, `queue-BBZ-96-2`: the key sits inside a dash-joined id.
+  const inside = /(?:^|[-_])([A-Z]{2,6}-\d+)(?=$|[-_])/.exec(run);
+  return inside ? inside[1]!.toUpperCase() : null;
 }
 
 /** `claude-sonnet-5[...]` -> `sonnet-5`, `claude-opus-5` -> `opus-5`,
@@ -398,6 +415,15 @@ export function buildLane(input: LaneBuildInput): Lane {
   return {
     id,
     ticket,
+    // The human-facing layer (console-model.ts, 2026-09-07). Filled by the reads that
+    // know the queue store and the packet files; this fold alone knows only the id.
+    title: null,
+    kind: laneKindFor(id),
+    sourceUrl: null,
+    plain: '',
+    mergeable: null,
+    attempts: 1,
+    retiredAt: null,
     model: modelAlias(modelId),
     modelId,
     className,

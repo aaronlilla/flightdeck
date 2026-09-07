@@ -48,6 +48,7 @@ function down(): Probe {
 
 function lane(overrides: Partial<Lane>): Lane {
   return {
+    title: null, kind: 'manual', sourceUrl: null, plain: '', mergeable: null, attempts: 1, retiredAt: null,
     id: 'FLT-211', ticket: null, model: 'sonnet-5', modelId: 'claude-sonnet-5', className: 'implement',
     repo: 'flightdeck-api', attempt: 1, state: 'blocked', reason: 'aws down', stepN: 0, stepTotal: 6, stepText: 'blocked',
     ctxTokens: 0, ctxCeiling: 200_000, ctxCompactAt: 180_000, tokens: 0, tokenCap: 10, tokensPerMin: 0,

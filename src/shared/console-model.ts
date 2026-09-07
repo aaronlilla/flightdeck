@@ -36,6 +36,41 @@ export interface LanePr {
   add: number;
   del: number;
   draft: boolean;
+  /** The PR's own state as a person reads it on GitHub (2026-09-07): its checks, the
+   *  council's last verdict on this head, and whether it has merged. Null fields mean
+   *  the board has not read that fact yet, never that it is fine. */
+  checks?: 'success' | 'failure' | 'pending' | null;
+  verdict?: string | null;
+  merged?: boolean | null;
+  title?: string | null;
+}
+
+/** One lane's record in order, as a person would tell it: what it is, what was done,
+ *  what was decided and by whom (`GET /run/:id/story`). Each entry is one plain
+ *  sentence with the moment it happened and, when there is one, the thing to open. */
+export interface LaneStoryEntry {
+  at: number;
+  /** ticket | plan | branch | commit | pr | council | jira | park | answer | warden | merge | end */
+  kind: string;
+  text: string;
+  url?: string | null;
+}
+
+export interface LaneStory {
+  id: string;
+  title: string | null;
+  kind: LaneKind;
+  ticket: { key: string; url: string | null; summary: string | null } | null;
+  brief: { path: string; excerpt: string } | null;
+  entries: LaneStoryEntry[];
+}
+
+/** What a bulk merge would do, listed before it does it (`GET /merge-ready`): every lane
+ *  whose PR is ready by the queue's own rules, and every lane with a PR that is not,
+ *  each with the reason in words. */
+export interface MergeReadyReport {
+  ready: Array<{ id: string; title: string | null; pr: LanePr }>;
+  notReady: Array<{ id: string; title: string | null; pr: LanePr; why: string }>;
 }
 
 export interface LaneQuestion {
@@ -113,7 +148,28 @@ export interface Lane {
   blockedBy: string | null;
   runaway: boolean;
   needsAaron: string | null;
+  /** What a person needs to recognise this lane without decoding its run id
+   *  (2026-09-07, after the board was read as thirty-one identical machine names).
+   *  `title` is the ticket's own summary, the brief's first heading, or a label for a
+   *  probe or a self item; `kind` is where the lane came from; `sourceUrl` is the ticket
+   *  or brief it came from; `plain` is one sentence on where it stands and what happens
+   *  next; `mergeable` says whether Merge would act and, when not, why; `attempts` is
+   *  how many runs share this ticket, so repeated tries fold into one card. */
+  title: string | null;
+  kind: LaneKind;
+  sourceUrl: string | null;
+  plain: string;
+  mergeable: { ok: true } | { ok: false; why: string } | null;
+  attempts: number;
+  /** Set once an operator retired the lane off the default board (`POST /run/:id/retire`
+   *  or the bulk retire); it stays readable under the Archived filter. */
+  retiredAt: number | null;
 }
+
+/** Where a lane came from: a queued Jira ticket, a typed hotfix, a pasted brief, a
+ *  self-analysis finding, the unattended chain, a live probe of the runner itself, or
+ *  a run started by hand at the CLI. */
+export type LaneKind = 'ticket' | 'hotfix' | 'brief' | 'self' | 'chain' | 'probe' | 'manual';
 
 export interface Feed {
   live: boolean;
@@ -499,4 +555,7 @@ export interface ConsoleStateSummary {
  */
 export const CONSOLE_ROUTES = [
   '/lanes', '/thread', '/journal', '/integrations', '/caps', '/proposals', '/command', '/queue',
+  // 2026-09-07: the human-readable layer. `/merge-ready` lists what a bulk merge would
+  // do; `/retire-finished` retires every finished, killed or probe lane with no open PR.
+  '/merge-ready', '/retire-finished',
 ] as const;

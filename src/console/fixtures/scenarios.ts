@@ -14,6 +14,7 @@ const T0 = Date.parse('2026-01-06T14:07:52Z');
 function lane(partial: Partial<Lane> & Pick<Lane, 'id' | 'state'>): Lane {
   return {
     ticket: null,
+    title: null, kind: 'manual', sourceUrl: null, plain: '', mergeable: null, attempts: 1, retiredAt: null,
     model: 'sonnet-5',
     modelId: 'claude-sonnet-5',
     className: 'implement',

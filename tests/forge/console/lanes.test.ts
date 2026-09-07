@@ -12,8 +12,7 @@ import { describe, expect, it } from 'vitest';
 import { foldChainState, type ChainPacketState } from '../../../src/forge/chain.js';
 import { Journal, replay } from '../../../src/forge/journal.js';
 import {
-  computeLanes, hopFor, laneStateFor, meaningfulEvents, modelAlias, ticketFor, windowLanes, type LanesInput,
-} from '../../../src/forge/console/lanes.js';
+  computeLanes, hopFor, laneStateFor, meaningfulEvents, modelAlias, ticketFor, windowLanes, type LanesInput, laneKindFor } from '../../../src/forge/console/lanes.js';
 import type { RegistryRecord } from '../../../src/forge/registry.js';
 import type { Lane, LanesResponse } from '../../../src/shared/console-model.js';
 import { laneRecord, type LaneRecord } from '../../../src/forge/supervisor.js';
@@ -495,6 +494,7 @@ describe('windowLanes', () => {
 
   function laneWith(overrides: Partial<Lane>): Lane {
     return {
+      title: null, kind: 'manual', sourceUrl: null, plain: '', mergeable: null, attempts: 1, retiredAt: null,
       id: 'alpha', ticket: null, model: 'sonnet-5', modelId: null, className: null, repo: null,
       attempt: 1, state: 'running', reason: null, stepN: 0, stepTotal: 0, stepText: '',
       ctxTokens: 0, ctxCeiling: 0, ctxCompactAt: 0, tokens: 0, tokenCap: null, tokensPerMin: 0,
@@ -544,5 +544,25 @@ describe('windowLanes', () => {
     const result = windowLanes(response, now, false);
     expect(result.tokensToday).toBe(12.5);
     expect(result.tokensPerMin).toBe(0.4);
+  });
+});
+
+describe('ticketFor: a key inside a dash-joined queue id', () => {
+  it('reads BBZ-96 out of queue-BBZ-96 and its successor', () => {
+    expect(ticketFor('queue-BBZ-96', undefined)).toBe('BBZ-96');
+    expect(ticketFor('queue-BBZ-96-2', undefined)).toBe('BBZ-96');
+  });
+  it('does not mistake a lower-case probe suffix for a key', () => {
+    expect(ticketFor('forge-live-probe-b3', undefined)).toBeNull();
+  });
+});
+
+describe('laneKindFor', () => {
+  it.each([
+    ['queue-BBZ-96', 'ticket'], ['queue-brief-1788', 'brief'], ['hotfix-1788', 'hotfix'],
+    ['S-1a2fccf17648f178', 'self'], ['jira_BBZ-89_1788460932645', 'chain'],
+    ['forge-live-probe-b3', 'probe'], ['2026-09-04-forge-smoke-b', 'probe'], ['alpha', 'manual'],
+  ])('%s is %s', (id, kind) => {
+    expect(laneKindFor(id)).toBe(kind);
   });
 });
