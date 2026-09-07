@@ -441,10 +441,22 @@ export interface RunJournalResponse {
 }
 
 /**
+ * D2.4: the one field of the real server's own (much larger) `/state` the web console
+ * needs -- whether the queue subsystem is running at all, distinct from a queue that is
+ * running but merely paused (the desktop status window already reads this same flag off
+ * the real server; see `desktop/electron/queue-state.ts`). The console never reads the
+ * rest of `/state`'s per-run truth, so this type carries only the one field it does.
+ */
+export interface ConsoleStateSummary {
+  queue_on: boolean;
+}
+
+/**
  * The routes. Reads carry the token like every other read except `/state`; writes carry
  * it and are refused without it. Every write journals a row and returns its jid.
  *
  * Reads
+ *   GET  /state                          ConsoleStateSummary (no token required)
  *   GET  /lanes                          LanesResponse
  *   GET  /thread                         ThreadResponse   (the Conductor rail, persisted)
  *   GET  /journal?since=&run=&limit=     JournalResponse

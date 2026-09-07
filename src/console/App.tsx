@@ -20,6 +20,7 @@ import { JournalSheet } from './components/JournalSheet.js';
 import { ConductorRail } from './components/ConductorRail.js';
 import { LanesGrid } from './components/LanesGrid.js';
 import { NeedsYou, buildNeeds } from './components/NeedsYou.js';
+import { QueueOffBanner } from './components/QueueOffBanner.js';
 import { QueueView } from './components/QueueView.js';
 import { SandboxSheet } from './components/SandboxSheet.js';
 import { Settings } from './components/Settings.js';
@@ -86,9 +87,10 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       // chip's, since they all read the same array -- disagreeing with what the grid
       // actually renders. One dataset, filtered the same way everywhere, keeps every
       // chip's count equal to what clicking it would show (fidelity sweep #2).
-      const [lanes, thread, journal, integrations, caps, proposals, queue] = await Promise.all([
+      const [lanes, thread, journal, integrations, caps, proposals, queue, consoleState] = await Promise.all([
         api.getLanes({ all: true }),
         api.getThread(), api.getJournal(), api.getIntegrations(), api.getCaps(), api.getProposals(), api.getQueue(),
+        api.getState(),
       ]);
       if (!mounted.current) return;
       failCount.current = 0;
@@ -113,6 +115,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       dispatch({ type: 'caps', caps });
       dispatch({ type: 'proposals', proposals });
       dispatch({ type: 'queue', items: queue.items, paused: queue.paused, maxInFlight: queue.maxInFlight, pauseReason: queue.pauseReason });
+      dispatch({ type: 'queue-on', on: consoleState.queue_on });
       dispatch({ type: 'feed-live' });
     } catch {
       if (mounted.current) {
@@ -336,6 +339,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     <StoreContext.Provider value={{ state, dispatch }}>
       <div className={`${state.theme} app`} tabIndex={-1}>
         <DisconnectedBanner feed={state.feed} onRetry={() => void refresh()} />
+        <QueueOffBanner queueOn={state.queueOn} />
         <TopBar
           view={state.view} settingsBadge={settingsBadge} reviewBadge={reviewBadge} queueBadge={queueBadge}
           caps={state.caps} tokensToday={state.caps?.tokensToday ?? 0} feed={state.feed} now={state.now}

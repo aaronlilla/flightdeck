@@ -69,6 +69,10 @@ interface Db {
    *  the queue, never an operator's own Pause click -- null the rest of the time. */
   queuePauseReason: string | null;
   qn: number;
+  /** D2.4: `/state`'s own `queue_on` flag. Defaults `true` so every existing scenario
+   *  and spec, none of which cares about this field, never sees the "Queue is off"
+   *  banner it never asked for. */
+  queueOn: boolean;
 }
 
 function seedDb(): Db {
@@ -84,6 +88,7 @@ function seedDb(): Db {
     queuePaused: false,
     queuePauseReason: null,
     qn: 0,
+    queueOn: true,
   };
 }
 
@@ -117,6 +122,9 @@ const FIXTURES: Record<string, () => Db> = {
     queuePaused: true,
     queuePauseReason: 'tick-error backoff (3 consecutive failures)',
   }),
+  // D2.4: the queue subsystem itself off, distinct from `queue-matrix`'s worker-paused
+  // scenario above -- `/state`'s own `queue_on: false`.
+  'queue-off': () => ({ ...seedDb(), queueOn: false }),
 };
 
 function resetToFixture(name: string): void {
@@ -431,6 +439,13 @@ export function createStubServer() {
       const sentToken = request.headers['x-forge-token'];
       if (!isStaticAsset && sentToken && sentToken !== TOKEN) {
         json(response, 401, { error: 'missing or wrong X-Forge-Token' });
+        return;
+      }
+
+      // D2.4: the one field of the real server's own `/state` the web console needs.
+      // Not in `CONSOLE_ROUTES` (same as the real server: `/state` carries no token).
+      if (urlPath === '/state' && method === 'GET') {
+        json(response, 200, { queue_on: db.queueOn });
         return;
       }
 

@@ -83,6 +83,7 @@ beforeEach(async () => {
       response.end(JSON.stringify({ items: [], paused: false, maxInFlight: 2 }));
       return;
     }
+    if (url.pathname === '/state') { response.end(JSON.stringify({ queue_on: true })); return; }
     response.statusCode = 404;
     response.end('{}');
   });
