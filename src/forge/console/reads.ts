@@ -22,7 +22,7 @@ import type { StuckSignal } from '../liveness.js';
 import { Lanes, type LaneRecord } from '../supervisor.js';
 import { RunInbox } from '../runinbox.js';
 import type {
-  Caps, JournalResponse, Lane, LanesResponse, ProposalsResponse, RunCostResponse, RunJournalResponse,
+  Caps, JournalResponse, Lane, LaneStory, LanesResponse, ProposalsResponse, RunCostResponse, RunJournalResponse,
   RunPrResponse, RunSandboxResponse, RunThreadResponse, ThreadResponse,
 } from '../../shared/console-model.js';
 import { capsOverridesPath, computeCaps, readCapsOverrides } from './caps-read.js';
@@ -32,7 +32,8 @@ import { actionsLedgerPath, computeJournal, readActionsLedger } from './journal-
 import { computeJournalNarrative } from './journal-narrative.js';
 import { readAttestation } from '../council/attest.js';
 import { queueMergeAllowed } from '../queue-wire.js';
-import { computeLanes, mergeableFor, tokensToday, titleFor, titleFromHeading, windowLanes, type LanesInput } from './lanes.js';
+import { chainLinks, computeLanes, mergeableFor, tokensToday, titleFor, titleFromHeading, windowLanes, type LanesInput } from './lanes.js';
+import { computeLaneStory, type GitCommit } from './story.js';
 import {
   computeRunPr, prCachePath, readPrCache, writePrCache,
   type AttestationReaderFn, type GhDetailLookupFn, type GhLookupFn, type GhPrDetail, type GhPrLookup,
@@ -77,6 +78,9 @@ export interface ConsoleReadsOptions {
    *  `GET /lanes`'s `mergeable` field. A specimen only -- production always reads the
    *  real environment. */
   mergeAllowed?: (repo: string) => boolean;
+  /** H1.6: overrides `git log` of a lane's own worktree for `GET /run/:id/story`'s
+   *  commit entries. A specimen never shells out. */
+  gitLog?: (worktreePath: string) => Promise<GitCommit[]>;
 }
 
 /** The lane's own burn rate in tokens/hour, off the journal's real cumulative total for
@@ -151,6 +155,24 @@ function defaultGhDetailLookup(): GhDetailLookupFn {
   };
 }
 
+/** H1.6: `git log`, subjects only, oldest first -- the ticket sheet's own commit list.
+ *  A worktree that no longer exists (a lane long since cleaned up) reads as no commits
+ *  rather than throwing. */
+function defaultGitLog(): (worktreePath: string) => Promise<GitCommit[]> {
+  return async (worktreePath: string): Promise<GitCommit[]> => {
+    const result = await execRun({
+      argv: ['git', 'log', '--reverse', '--format=%H%x09%ct%x09%s'],
+      cwd: worktreePath, owner: 'console-story-gitlog', cls: 'script', fullOutput: true,
+    });
+    if (!result.ok) return [];
+    const text = result.full ?? result.tail;
+    return text.split('\n').filter(Boolean).map((line) => {
+      const [sha, ctSeconds, ...rest] = line.split('\t');
+      return { sha: sha ?? '', at: Number(ctSeconds ?? 0) * 1000, subject: rest.join('\t') };
+    }).filter((commit) => commit.sha);
+  };
+}
+
 function defaultAttestationReader(): AttestationReaderFn {
   return (repo, pr, head) => {
     const attestation = readAttestation(repo, pr, head);
@@ -160,7 +182,7 @@ function defaultAttestationReader(): AttestationReaderFn {
 
 /** The runs `GET /run/:id` matches, and everything under it -- `/run/:id/thread`,
  *  `/run/:id/pr`, `/run/:id/sandbox`, `/run/:id/cost`, `/run/:id/journal`. */
-const RUN_SUBROUTE = /^\/run\/([^/]+)\/(thread|pr|sandbox|cost|journal)$/;
+const RUN_SUBROUTE = /^\/run\/([^/]+)\/(thread|pr|sandbox|cost|journal|story)$/;
 
 export class ConsoleReads {
   private readonly lanes: Lanes;
@@ -191,6 +213,8 @@ export class ConsoleReads {
 
   private readonly mergeAllowedFn: (repo: string) => boolean;
 
+  private readonly gitLogFn: (worktreePath: string) => Promise<GitCommit[]>;
+
   constructor(options: ConsoleReadsOptions = {}) {
     this.forgeHomeDir = options.forgeHomeDir ?? forgeHome();
     this.lanes = options.lanes ?? new Lanes(lanesDir());
@@ -206,6 +230,7 @@ export class ConsoleReads {
     this.queueStore = options.queueStore ?? new QueueStore(defaultQueuePath());
     this.jiraSite = options.jiraSite !== undefined ? options.jiraSite : (process.env['FORGE_JIRA_SITE'] ?? null);
     this.mergeAllowedFn = options.mergeAllowed ?? queueMergeAllowed();
+    this.gitLogFn = options.gitLog ?? defaultGitLog();
   }
 
   private chain(): Map<string, ChainPacketState> {
@@ -260,7 +285,7 @@ export class ConsoleReads {
     const runMatch = RUN_SUBROUTE.exec(path);
     if (runMatch) {
       const id = runMatch[1] ?? '';
-      const sub = runMatch[2] as 'thread' | 'pr' | 'sandbox' | 'cost' | 'journal';
+      const sub = runMatch[2] as 'thread' | 'pr' | 'sandbox' | 'cost' | 'journal' | 'story';
       const run = decodeURIComponent(id);
       if (sub === 'thread') {
         json(response, 200, this.runThreadResponse(run));
@@ -276,6 +301,10 @@ export class ConsoleReads {
       }
       if (sub === 'journal') {
         json(response, 200, this.runJournalResponse(run));
+        return true;
+      }
+      if (sub === 'story') {
+        json(response, 200, await this.runStoryResponse(run));
         return true;
       }
       json(response, 200, this.runSandboxResponse(run));
@@ -428,6 +457,50 @@ export class ConsoleReads {
     const lane = this.lanesResponse(true).lanes.find((l) => l.id === run);
     if (!lane) return { entries: [] };
     return { entries: computeJournalNarrative(lane, fleet.events, packetForRun(chain, run), now) };
+  }
+
+  /** `GET /run/:id/story`: the ticket sheet's own narrative, folded from the same real
+   *  sources every other route here reads -- the journal, the queue item, the
+   *  attestation the gate wrote, and the worktree's own `git log`. A run this server
+   *  has never heard of still answers with an empty story rather than a 404, the same
+   *  honesty `runDetail` in `server.ts` already keeps for a packet that has not landed. */
+  private async runStoryResponse(run: string): Promise<LaneStory> {
+    const fleet = this.journalCache.read(this.journalPath);
+    const chain = this.chain();
+    const lane = this.lanesResponse(true).lanes.find((l) => l.id === run);
+    const queueItem = this.queueStore.all().find((item) => item.runKey === run);
+    const packet = packetForRun(chain, run);
+
+    const links = chainLinks(fleet.runs, run);
+    const runKeys = new Set(links.map((link) => link.key));
+    const events = fleet.events.filter((row) => (row.run && runKeys.has(row.run)) || row.packetId === packet?.packetId);
+
+    const briefPath = queueItem?.briefPath ?? packet?.briefPath ?? this.registry.get(run)?.briefPath ?? null;
+    const briefText = briefPath && existsSync(briefPath) ? readFileSync(briefPath, 'utf8') : null;
+
+    const worktreePath = queueItem?.worktreePath ?? packet?.provisioned?.worktreePath ?? null;
+    const gitCommits = worktreePath && existsSync(worktreePath) ? await this.gitLogFn(worktreePath) : [];
+
+    let attestation;
+    const repo = queueItem?.repo ?? packet?.repo ?? null;
+    const prNo = queueItem?.pr?.no ?? lane?.pr?.no ?? null;
+    if (repo && prNo) {
+      const detail = await this.ghDetailLookup(repo, prNo);
+      if (detail) {
+        const found = readAttestation(repo, prNo, detail.headSha);
+        attestation = found;
+      }
+    }
+
+    const ticket = lane?.ticket
+      ? { key: lane.ticket, url: lane.sourceUrl, summary: lane.title }
+      : null;
+
+    return computeLaneStory({
+      id: run, title: lane?.title ?? null, kind: lane?.kind ?? 'manual', ticket, events,
+      ...(queueItem ? { queueItem } : {}), ...(attestation ? { attestation } : {}),
+      gitCommits, ...(briefPath ? { briefPath } : {}), ...(briefText ? { briefText } : {}),
+    });
   }
 }
 

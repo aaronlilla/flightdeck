@@ -105,6 +105,43 @@ describe('ConsoleReads.lanesResponse: title and sourceUrl', () => {
     expect(lane!.mergeable).toEqual({ ok: false, why: 'no PR yet' });
   });
 
+  it('GET /run/:id/story folds the queue item and the journal into one narrative (H1.6)', async () => {
+    const forgeHomeDir = tempDir('console-reads-');
+    const briefsDir = join(forgeHomeDir, 'briefs');
+    mkdirSync(briefsDir, { recursive: true });
+    const briefPath = join(briefsDir, 'BBZ-96.md');
+    writeFileSync(briefPath, '# BBZ-96: add the merge chip\n\nbody text\n', 'utf8');
+
+    const queueStore = new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl'));
+    queueStore.append({
+      id: 'Q-1', at: 1, source: 'ticket', input: 'BBZ-96', ticket: 'BBZ-96', repo: 'o/n',
+      briefPath, branch: 'feature/bbz-96', worktreePath: 'w', base: 'develop',
+      state: 'review', reason: null, runKey: 'queue-BBZ-96',
+      pr: { no: 119, url: 'https://github.com/o/n/pull/119', files: 1, add: 1, del: 0, draft: true },
+      journalIds: [], createdAt: 500, updatedAt: 1_500,
+    });
+
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'queue-BBZ-96', actor: 'runner' });
+    journal.close();
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put('queue-BBZ-96', { column: 'BBZ-96' });
+
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore, jiraSite: 'https://x.atlassian.net',
+      gitLog: async () => [],
+    });
+
+    const server = reads as unknown as { runStoryResponse(run: string): Promise<{ entries: Array<{ text: string }> }> };
+    const story = await server.runStoryResponse('queue-BBZ-96');
+    expect(story.entries.map((e) => e.text)).toContain('Queued from Jira as BBZ-96 at ' + new Date(500).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }));
+    expect(story.entries.map((e) => e.text)).toContain('Draft PR #119 opened');
+    expect(story.entries.map((e) => e.text)).toContain('Branch feature/bbz-96 off develop');
+  });
+
   it('titles a probe lane with no lookup at all', () => {
     const forgeHomeDir = tempDir('console-reads-');
     const journalPath = join(forgeHomeDir, 'fleet.jsonl');

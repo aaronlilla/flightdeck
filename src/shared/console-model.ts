@@ -524,6 +524,7 @@ export interface ConsoleStateSummary {
  *   GET  /run/:id/sandbox                RunSandboxResponse
  *   GET  /run/:id/cost                   RunCostResponse
  *   GET  /run/:id/journal                RunJournalResponse
+ *   GET  /run/:id/story                  LaneStory
  *   GET  /queue                          QueueResponse
  *   WS   /events                         frames; `{type:'heartbeat', at}` every HEARTBEAT_MS
  *
