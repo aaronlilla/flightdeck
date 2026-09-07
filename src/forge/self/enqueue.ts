@@ -72,6 +72,10 @@ function newSelfItemId(findingId: string): string {
  * no-op), then enqueues as many of the still-unenqueued ones as fit under `maxInFlight`,
  * in the order they were given. Returns only the items actually created this call.
  */
+/** Kinds that describe how the fleet behaved, not a change to make: they stay in the
+ *  findings ledger for a person to read and never become queue items. */
+export const OBSERVATION_KINDS: ReadonlySet<string> = new Set(['token-outlier']);
+
 export function enqueueFindings(findings: SelfFinding[], deps: SelfEnqueueDeps): QueueItem[] {
   if (!deps.selfRepo) return [];
   mkdirSync(deps.briefsDir, { recursive: true });
@@ -83,6 +87,11 @@ export function enqueueFindings(findings: SelfFinding[], deps: SelfEnqueueDeps):
     const now = deps.clock();
     const row = deps.ledger.record(found, now);
     if (row.enqueuedItemId) continue;
+    // A finding that is an observation rather than a defect is recorded in the ledger
+    // and never handed to a worker. The first live token-outlier item (2026-09-07)
+    // spent a session proving the number was by design, and the loop then queued one
+    // per large run; each parked or blocked, and each was a card on the board.
+    if (OBSERVATION_KINDS.has(found.kind)) continue;
     if (inFlight >= deps.maxInFlight) continue;
 
     const written = deps.append({ event: 'self.finding', actor: 'self', findingId: found.id, kind: found.kind });

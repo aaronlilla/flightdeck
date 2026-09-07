@@ -157,3 +157,13 @@ describe('the human-board fixture never leaks a run id, a successor id or a hop 
     }
   });
 });
+
+describe('running sentence never echoes a run id', () => {
+  it('drops the successor id from the step text', async () => {
+    const { plainStatus } = await import('../../../src/forge/console/plain.js');
+    const lane = { state: 'running', model: 'sonnet-5', since: 1_000_000, stepN: 0, stepText: 'S-5226b2bfa2730dc8-3 running Bash' } as never;
+    const text = plainStatus(lane, { now: 1_100_000 });
+    expect(text).toMatch(/last did: Bash\.$/);
+    expect(text).not.toMatch(/[0-9a-f]{8,}/);
+  });
+});

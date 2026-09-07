@@ -55,7 +55,10 @@ export function plainStatus(lane: Lane, context: PlainContext): string {
     case 'running':
     case 'handed-off': {
       const model = modelName(lane.model);
-      const last = lane.stepText ? `, last did: ${lane.stepText}` : '';
+      // The step text can carry a successor's run id ("S-…-3 running Bash"); keep only
+      // the tool or verb after the last id-shaped token.
+      const step = lane.stepText.replace(/[A-Za-z0-9_-]*[0-9a-f]{8,}[A-Za-z0-9_-]*\s*/g, '').replace(/^\s*(running|resumed)\s+/i, '').trim();
+      const last = step ? `, last did: ${step}` : '';
       return `Working since ${clockTime(lane.since)} on a ${model} session, ${lane.stepN} turns in${last}.`;
     }
     case 'paused':

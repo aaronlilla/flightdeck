@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { run as execRun } from '../exec.js';
 import { Inbox } from '../inbox.js';
 import { JournalCache } from '../journal.js';
+import { readdirSync } from 'node:fs';
 import { forgeHome, inboxDir, lanesDir, queuePath as defaultQueuePath, registryDir, runDir, runsDir } from '../paths.js';
 import { foldChainState, type ChainPacketState } from '../chain.js';
 import { classFor, classNames, governorBudget, policyPath } from '../policy.js';
@@ -443,8 +444,11 @@ export class ConsoleReads {
     // `null` for every queue state it has no stronger opinion about (`queued`,
     // `planning`, `running`, `failed`), and the run-based sentence above stands there.
     if (queueItem) {
-      const verdict = this.queueVerdictFor(queueItem);
-      const queuePlain = plainForQueueItem(queueItem, verdict);
+      const verdict = this.queueVerdictFor({ ...queueItem, ...(repo ? { repo } : {}) });
+      // The checks clause reads the lane's own PR facts (the cache), which the queue
+      // item never carries.
+      const withChecks = pr && queueItem.pr ? { ...queueItem, pr: { ...queueItem.pr, ...(pr.checks !== undefined ? { checks: pr.checks } : {}), ...(pr.merged !== undefined ? { merged: pr.merged } : {}) } } : queueItem;
+      const queuePlain = plainForQueueItem(withChecks as typeof queueItem, verdict);
       if (queuePlain) patched.plain = queuePlain;
     }
     // Item 7: a queue lane's repo+PR number are known the moment the queue item
@@ -464,9 +468,14 @@ export class ConsoleReads {
   /** The council's verdict and coverage for a queue item's own review round, off the
    *  attestation the gate wrote at `item.attestationPath` -- `null` for an item with no
    *  attestation on record yet (never a council round, or the file has gone missing). */
-  private queueVerdictFor(item: { attestationPath?: string | null }): QueueVerdict | null {
-    if (!item.attestationPath) return null;
-    const attestation = readAttestationAtPath(item.attestationPath);
+  private queueVerdictFor(item: { attestationPath?: string | null; repo?: string | null; pr?: { no: number } | null }): QueueVerdict | null {
+    // The queue item rarely carries the attestation path itself; the newest attestation
+    // under attestations/<owner>/<name>/<pr>/ is the same record the PR facts read, so
+    // the sentence and the PR line can never disagree about the verdict (seen live on
+    // 2026-09-07: "the council has not posted a verdict yet" above "council PASS WITH NOTES").
+    const path = item.attestationPath ?? (item.repo && item.pr?.no ? newestAttestationPath(item.repo, item.pr.no) : null);
+    if (!path) return null;
+    const attestation = readAttestationAtPath(path);
     if (!attestation) return null;
     return {
       verdict: attestation.verdict,
@@ -657,4 +666,23 @@ function json(response: ServerResponse, status: number, body: unknown): void {
     'content-length': Buffer.byteLength(text),
   });
   response.end(text);
+}
+
+/** The newest attestation file for a PR, by its recorded time, or null when none. */
+function newestAttestationPath(repo: string, pr: number): string | null {
+  const dir = join(forgeHome(), 'attestations', ...repo.split('/'), String(pr));
+  if (!existsSync(dir)) return null;
+  let best: { path: string; at: number } | null = null;
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith('.json')) continue;
+    const path = join(dir, name);
+    try {
+      const parsed = JSON.parse(readFileSync(path, 'utf8')) as { at?: { value?: number } | number };
+      const at = typeof parsed.at === 'number' ? parsed.at : parsed.at?.value ?? 0;
+      if (!best || at >= best.at) best = { path, at };
+    } catch {
+      // an unreadable record is not evidence of anything
+    }
+  }
+  return best?.path ?? null;
 }

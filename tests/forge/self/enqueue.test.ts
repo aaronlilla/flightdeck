@@ -89,3 +89,24 @@ describe('enqueueFindings', () => {
     expect(items).toHaveLength(0);
   });
 });
+
+describe('observation kinds never become queue items', () => {
+  it('records a token-outlier in the ledger and queues nothing for it', async () => {
+    const { enqueueFindings, OBSERVATION_KINDS } = await import('../../../src/forge/self/enqueue.js');
+    expect(OBSERVATION_KINDS.has('token-outlier')).toBe(true);
+    const { mkdtempSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { QueueStore } = await import('../../../src/forge/intake/queueStore.js');
+    const { FindingsLedger } = await import('../../../src/forge/self/ledger.js');
+    const dir = mkdtempSync(join(tmpdir(), 'forge-obs-'));
+    const store = new QueueStore(join(dir, 'q.jsonl'));
+    const ledger = new FindingsLedger(join(dir, 'f.jsonl'));
+    const created = enqueueFindings([
+      { id: 'abcdef0123456789', kind: 'token-outlier', signature: 'x', summary: 'run used 12M tokens', evidence: ['12M'] } as never,
+    ], { store, briefsDir: join(dir, 'briefs'), ledger, selfRepo: 'owner/self', maxInFlight: 1, clock: () => 1000, append: () => ({ id: 'e' }) });
+    expect(created).toEqual([]);
+    expect(store.all()).toEqual([]);
+    expect(ledger.all().map((r) => r.kind)).toEqual(['token-outlier']);
+  });
+});
