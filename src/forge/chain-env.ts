@@ -125,6 +125,24 @@ export function worktreePathFor(checkout: string, repo: string, ticket: string):
   return `${parentDir}${sep}worktrees${sep}${name}--${ticket.toLowerCase()}`;
 }
 
+const HOTFIX_TICKET_PREFIX = 'hotfix-';
+
+/** A.6: a hotfix's own minted ticket (`queue-wire.ts#queuePlanner().planHotfix`, prefix
+ *  `hotfix-`) branches onto `hotfix/<slug>` instead of `feature/<ticket>` -- read off
+ *  the ticket string itself rather than a `source` argument threaded through
+ *  `ChainLauncher.provision` (`chain-wire.ts`, provisioning's own file), so this stays a
+ *  one-line, no-interface-change change here. */
 export function branchFor(ticket: string): string {
+  if (ticket.toLowerCase().startsWith(HOTFIX_TICKET_PREFIX)) {
+    return `hotfix/${ticket.slice(HOTFIX_TICKET_PREFIX.length).toLowerCase()}`;
+  }
   return `feature/${ticket.toLowerCase()}`;
+}
+
+/** A.6: `FORGE_HOTFIX_BASE`, falling back to the repo's ordinary base
+ *  (`baseFor`) when unset -- ready for a hotfix-aware provisioning call to use once one
+ *  exists; nothing in this stream's own files calls `ChainLauncher.provision` with a
+ *  ticket-aware base today. */
+export function hotfixBaseFor(chainEnv: ChainEnv, repo: string, env: NodeJS.ProcessEnv = process.env): string {
+  return env['FORGE_HOTFIX_BASE'] ?? baseFor(chainEnv, repo);
 }

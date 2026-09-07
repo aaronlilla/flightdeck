@@ -14,7 +14,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { ChainCouncilFn, ChainGateFn, ChainGh, ChainLauncher, ChainRunStatus } from '../../../src/forge/chain.js';
 import {
-  addBacklogItems, addBriefItem, addQueryItems, addTicketItem, advanceItem, QUEUE_IN_FLIGHT_STATES, removeItem,
+  addBacklogItems, addBriefItem, addHotfixItem, addQueryItems, addTicketItem, advanceItem, QUEUE_IN_FLIGHT_STATES, removeItem,
   retryItem, runQueueTick,
   type QueuePlanner, type QueueRuntimeDeps, type QueueTicketSearch,
 } from '../../../src/forge/intake/queue.js';
@@ -89,6 +89,12 @@ describe('addTicketItem / addBriefItem', () => {
     const store = tempStore();
     const item = addBriefItem(store, '# Goal: fix the thing', 1000);
     expect(item).toMatchObject({ source: 'brief', input: '# Goal: fix the thing', ticket: null, state: 'queued' });
+  });
+
+  it('A.6: adds a queued item for a typed hotfix with no ticket yet', () => {
+    const store = tempStore();
+    const item = addHotfixItem(store, 'null check crashes the login screen', 1000);
+    expect(item).toMatchObject({ source: 'hotfix', input: 'null check crashes the login screen', ticket: null, state: 'queued' });
   });
 });
 
@@ -366,6 +372,49 @@ describe('advanceItem', () => {
     expect(current.state).toBe('review');
     expect(current.source).toBe('backlog');
     expect(current.ticket).toBe('ABC-9');
+  });
+
+  it('A.6: a hotfix routes through planHotfix, never planTicket or planBrief', async () => {
+    const store = tempStore();
+    const item = addHotfixItem(store, 'null check crashes the login screen', 1000);
+    let planBriefCalls = 0;
+    let planTicketCalls = 0;
+    let planHotfixInput: string | undefined;
+    const { deps } = buildDeps(store, {
+      planner: {
+        planBrief: async (text) => { planBriefCalls += 1; return { ticket: 'x', repo: 'owner/name', briefPath: 'x' }; },
+        planTicket: async (ticket) => { planTicketCalls += 1; return { ticket, repo: 'owner/name', briefPath: 'x' }; },
+      },
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/6' }) },
+    });
+    deps.planner.planHotfix = async (text) => {
+      planHotfixInput = text;
+      return { ticket: 'hotfix-null-check-1', repo: 'owner/name', briefPath: 'C:/briefs/hotfix-null-check-1.md' };
+    };
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    expect(current.ticket).toBe('hotfix-null-check-1');
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('review');
+    expect(planBriefCalls).toBe(0);
+    expect(planTicketCalls).toBe(0);
+    expect(planHotfixInput).toBe('null check crashes the login screen');
+  });
+
+  it('A.6: a hotfix falls back to planBrief when planHotfix is not wired', async () => {
+    const store = tempStore();
+    const item = addHotfixItem(store, 'null check crashes the login screen', 1000);
+    let planBriefInput: string | undefined;
+    const { deps } = buildDeps(store, {
+      planner: { planBrief: async (text) => { planBriefInput = text; return { ticket: 'x', repo: 'owner/name', briefPath: 'x' }; } },
+    });
+
+    const result = await advanceItem(item, deps);
+    expect(result.ticket).toBe('x');
+    expect(planBriefInput).toBe('null check crashes the login screen');
   });
 });
 

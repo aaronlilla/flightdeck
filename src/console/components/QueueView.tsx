@@ -31,7 +31,7 @@ const STATE_TAXONOMY: Record<QueueItemState, StateTaxon> = {
 };
 
 const SOURCE_LABEL: Record<QueueSource, string> = {
-  ticket: 'ticket', brief: 'brief', query: 'query', backlog: 'backlog',
+  ticket: 'ticket', brief: 'brief', query: 'query', backlog: 'backlog', hotfix: 'hotfix',
 };
 
 function QueueCard({ item, onRemove, onRetry }: {
@@ -72,7 +72,15 @@ const SOURCE_PLACEHOLDER: Record<QueueSource, string> = {
   brief: '# Goal: ...',
   query: 'sprint = 42 or "epic link" = BB-1',
   backlog: 'project = BB and status = Backlog',
+  hotfix: 'what\'s broken in production right now',
 };
+
+/** A.5: two quick-fill chips that build the query source's own JQL, rather than
+ *  requiring an operator to remember `sprint in openSprints()` by hand. */
+const QUERY_TEMPLATES: { label: string; jql: string }[] = [
+  { label: 'this sprint', jql: 'sprint in openSprints()' },
+  { label: 'epic…', jql: 'parent = KEY' },
+];
 
 function AddWork({ onAdd }: { onAdd: (source: QueueSource, input: string) => void }): JSX.Element {
   const [source, setSource] = useState<QueueSource>('ticket');
@@ -85,14 +93,28 @@ function AddWork({ onAdd }: { onAdd: (source: QueueSource, input: string) => voi
   return (
     <div className="plate" style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
       <div style={{ display: 'flex', gap: 8 }}>
-        {(['ticket', 'brief', 'query', 'backlog'] as const).map((s) => (
+        {(['ticket', 'brief', 'query', 'backlog', 'hotfix'] as const).map((s) => (
           <span key={s} className={`chip chipB ${source === s ? 'chipOn' : ''}`} onClick={() => setSource(s)}>
             {SOURCE_LABEL[s]}
           </span>
         ))}
       </div>
+      {source === 'query' ? (
+        <div style={{ display: 'flex', gap: 8 }}>
+          {QUERY_TEMPLATES.map((t) => (
+            <span key={t.label} className="chip" style={{ cursor: 'pointer' }} onClick={() => setInput(t.jql)}>
+              {t.label}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {source === 'hotfix' ? (
+        <div className="m" style={{ fontSize: 10.5, color: 'var(--ink3)' }}>
+          A hotfix ships to dev on Merge and to production only on a separate Promote click.
+        </div>
+      ) : null}
       <div style={{ background: 'var(--well)', boxShadow: 'inset 0 2px 5px rgba(0,0,0,.6)', borderRadius: 3, padding: '8px 10px', display: 'flex', gap: 8 }}>
-        {source === 'brief' ? (
+        {source === 'brief' || source === 'hotfix' ? (
           <textarea
             className="inp m" style={{ fontSize: 11.5, minHeight: 70, resize: 'vertical' }}
             placeholder={SOURCE_PLACEHOLDER[source]} value={input} onChange={(e) => setInput(e.target.value)}

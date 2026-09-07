@@ -6,8 +6,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  baseFor, branchFor, checkoutFor, mergeAllowedFor, parseRepoScoped, readChainEnv,
-  verifyCommandFor, worktreePathFor, worktreeSetupFor,
+  baseFor, branchFor, checkoutFor, hotfixBaseFor, mergeAllowedFor, parseRepoScoped, readChainEnv,
+  repoKindFor, verifyCommandFor, worktreePathFor, worktreeSetupFor,
 } from '../../../src/forge/chain-env.js';
 
 describe('C1: FORGE_WORKTREE_SHELL', () => {
@@ -82,5 +82,33 @@ describe('worktreePathFor', () => {
 describe('branchFor', () => {
   it('lowercases the ticket', () => {
     expect(branchFor('ABC-1')).toBe('feature/abc-1');
+  });
+
+  it('A.6: a hotfix-minted ticket branches onto hotfix/<slug>, not feature/<ticket>', () => {
+    expect(branchFor('hotfix-null-check-1699999')).toBe('hotfix/null-check-1699999');
+  });
+});
+
+describe('hotfixBaseFor: A.6', () => {
+  it('uses FORGE_HOTFIX_BASE when set', () => {
+    const env = readChainEnv({});
+    expect(hotfixBaseFor(env, 'owner/name', { FORGE_HOTFIX_BASE: 'develop-hotfix' } as NodeJS.ProcessEnv)).toBe('develop-hotfix');
+  });
+
+  it('falls back to the repo\'s ordinary base when unset', () => {
+    const env = readChainEnv({ FORGE_REPO_BASE: 'owner/name=main' });
+    expect(hotfixBaseFor(env, 'owner/name', {} as NodeJS.ProcessEnv)).toBe('main');
+  });
+});
+
+describe('repoKindFor: A.4', () => {
+  it('reads a repo as backend from FORGE_REPO_KIND', () => {
+    const env = readChainEnv({ FORGE_REPO_KIND: 'owner/name=backend' });
+    expect(repoKindFor(env, 'owner/name')).toBe('backend');
+  });
+
+  it('defaults to frontend when the repo has no entry', () => {
+    const env = readChainEnv({});
+    expect(repoKindFor(env, 'owner/unset')).toBe('frontend');
   });
 });

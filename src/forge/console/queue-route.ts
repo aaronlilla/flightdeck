@@ -12,7 +12,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import {
-  addBacklogItems, addBriefItem, addQueryItems, addTicketItem, removeItem, retryItem,
+  addBacklogItems, addBriefItem, addHotfixItem, addQueryItems, addTicketItem, removeItem, retryItem,
   type QueueTicketSearch,
 } from '../intake/queue.js';
 import { buildBacklogJql as defaultBuildBacklogJql } from '../queue-wire.js';
@@ -21,7 +21,7 @@ import type {
   ActionResult, QueueAddRequest, QueueAddResponse, QueueResponse, QueueSource,
 } from '../../shared/console-model.js';
 
-const QUEUE_SOURCES: readonly QueueSource[] = ['ticket', 'brief', 'query', 'backlog'];
+const QUEUE_SOURCES: readonly QueueSource[] = ['ticket', 'brief', 'query', 'backlog', 'hotfix'];
 
 const ITEM_ROUTE = /^\/queue\/([^/]+)\/(remove|retry)$/;
 
@@ -91,6 +91,8 @@ export class QueueRoutes {
           return { ok: true, items: [addTicketItem(this.opts.store, body.input.trim())] };
         case 'brief':
           return { ok: true, items: [addBriefItem(this.opts.store, body.input)] };
+        case 'hotfix':
+          return { ok: true, items: [addHotfixItem(this.opts.store, body.input)] };
         case 'query':
           return { ok: true, items: await addQueryItems(this.opts.store, body.input, this.opts.search) };
         case 'backlog': {

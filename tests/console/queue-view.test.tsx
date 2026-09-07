@@ -113,6 +113,28 @@ describe('QueueView add work', () => {
     expect(screen.getByPlaceholderText(/status = Backlog/)).toBeInTheDocument();
   });
 
+  it('A.6: switches to the hotfix source and shows the ships-to-dev-then-production copy', () => {
+    renderQueue([]);
+    fireEvent.click(screen.getByText('hotfix'));
+    expect(screen.getByText(/ships to dev on Merge/)).toBeInTheDocument();
+  });
+
+  it('A.6: adds a hotfix by typing and clicking Add', () => {
+    const { onAdd } = renderQueue([]);
+    fireEvent.click(screen.getByText('hotfix'));
+    const textarea = screen.getByPlaceholderText(/what's broken/);
+    fireEvent.change(textarea, { target: { value: 'login crashes' } });
+    fireEvent.click(screen.getByText('Add ⏎'));
+    expect(onAdd).toHaveBeenCalledWith('hotfix', 'login crashes');
+  });
+
+  it('A.5: a query template chip fills the JQL input', () => {
+    renderQueue([]);
+    fireEvent.click(screen.getByText('query'));
+    fireEvent.click(screen.getByText('this sprint'));
+    expect(screen.getByPlaceholderText(/sprint = 42/)).toHaveValue('sprint in openSprints()');
+  });
+
   it('never calls onAdd for blank input', () => {
     const { onAdd } = renderQueue([]);
     fireEvent.click(screen.getByText('Add ⏎'));

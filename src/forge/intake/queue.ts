@@ -76,6 +76,12 @@ export interface QueuePlanner {
    *  passes the queue item's own id) so the rest of the pipeline has something to name
    *  the branch and the run after. */
   planBrief(text: string): Promise<QueuePlannedBrief>;
+  /** A.6: a typed hotfix, same shape as a pasted brief (no Jira ticket, the planner
+   *  mints one) -- kept a separate method so the minted ticket can carry a marker
+   *  (`chain-env.ts#branchFor`'s own `hotfix-` prefix check) that routes it onto
+   *  `hotfix/<slug>` instead of `feature/<ticket>`. Absent falls back to `planBrief`,
+   *  which still queues the item, just onto an ordinary feature branch. */
+  planHotfix?(text: string): Promise<QueuePlannedBrief>;
 }
 
 export function addTicketItem(store: QueueStore, ticket: string, now: number = Date.now()): QueueItem {
@@ -86,6 +92,15 @@ export function addTicketItem(store: QueueStore, ticket: string, now: number = D
 
 export function addBriefItem(store: QueueStore, briefText: string, now: number = Date.now()): QueueItem {
   const item = blankItem(newItemId(), 'brief', briefText, null, now);
+  store.append({ ...item, at: now });
+  return item;
+}
+
+/** A.6: a typed hotfix -- no Jira ticket, same "queued with no ticket yet" shape as a
+ *  pasted brief. `advanceItem` routes it through `QueuePlanner.planHotfix` instead of
+ *  `planBrief`, which is the whole difference: the base and branch this item lands on. */
+export function addHotfixItem(store: QueueStore, text: string, now: number = Date.now()): QueueItem {
+  const item = blankItem(newItemId(), 'hotfix', text, null, now);
   store.append({ ...item, at: now });
   return item;
 }
@@ -279,7 +294,9 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
     try {
       planned = item.source === 'brief'
         ? await deps.planner.planBrief(item.input)
-        : await deps.planner.planTicket(item.ticket ?? item.input);
+        : item.source === 'hotfix'
+          ? await (deps.planner.planHotfix ?? deps.planner.planBrief)(item.input)
+          : await deps.planner.planTicket(item.ticket ?? item.input);
     } catch (error) {
       return writeTransition(item, { state: 'failed', reason: tailOf(messageOf(error)) }, deps, 'queue.failed', { hop: 'plan' });
     }

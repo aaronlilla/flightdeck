@@ -155,6 +155,20 @@ export function queuePlanner(configFn: () => JiraConfig | undefined = jiraConfig
       const briefPath = await writeBrief(id, text);
       return { ticket: id, repo, briefPath };
     },
+
+    // A.6: the `hotfix-` prefix is load-bearing -- `chain-env.ts#branchFor` reads it off
+    // the ticket string to route this item onto `hotfix/<slug>` instead of an ordinary
+    // feature branch.
+    async planHotfix(text): Promise<QueuePlannedBrief> {
+      const id = `hotfix-${Date.now()}`;
+      const repo = routeRepo(repoRules, { ticket: id, labels: [], components: [], issuetype: '' });
+      const briefPath = await writeBrief(
+        id,
+        `${text}\n\nThis is a hotfix: it ships to dev on Merge and to production only on a `
+          + 'separate Promote click.',
+      );
+      return { ticket: id, repo, briefPath };
+    },
   };
 }
 
