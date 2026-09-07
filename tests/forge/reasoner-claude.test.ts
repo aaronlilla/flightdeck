@@ -16,7 +16,8 @@ import type { Options } from '@anthropic-ai/claude-agent-sdk';
 
 import type { QueryFn } from '../../src/adapter/engine.js';
 import {
-  ClaudeReasoner, CodexReasoner, ReasonerParseError, ReasonerTimeoutError, reasonerFor,
+  ClaudeReasoner, CodexReasoner, ReasonerParseError, ReasonerTimeoutError, ReasonerTurnError,
+  reasonerFor,
 } from '../../src/forge/reasoner-claude.js';
 import { Journal, replay } from '../../src/forge/journal.js';
 import { modelFor, modelIdFor } from '../../src/forge/policy.js';
@@ -84,6 +85,31 @@ function hangingQuery() {
     return generate() as unknown as ReturnType<QueryFn>;
   }) as QueryFn;
   return { fn, calls };
+}
+
+/**
+ * A fake `query` whose turn ends on an error subtype (e.g. `error_max_turns`) with no
+ * assistant text at all -- the shape a real audit-lens session hit on 2026-09-07 when
+ * it opened a tool call mid-turn and burned its one bounded turn on it instead of an
+ * answer, so `turn-complete` arrived `isError: true` with nothing to parse.
+ */
+function errorTurnQuery(subtype: string) {
+  const fn = ((params: { prompt: string | AsyncIterable<unknown>; options?: Options }) => {
+    const promptIter = params.prompt as AsyncIterable<unknown>;
+    async function* generate() {
+      yield {
+        type: 'system', subtype: 'init', session_id: 'reasoner-error-turn-session',
+        model: params.options?.model ?? '', cwd: params.options?.cwd ?? '',
+        tools: [], slash_commands: [],
+      };
+      for await (const _pushed of promptIter) {
+        yield { type: 'result', subtype, is_error: true, duration_ms: 5, total_cost_usd: 0 };
+        return;
+      }
+    }
+    return generate() as unknown as ReturnType<QueryFn>;
+  }) as QueryFn;
+  return { fn };
 }
 
 /** A clock that fires every scheduled timeout immediately, so the timeout specimen
@@ -221,6 +247,28 @@ describe('ClaudeReasoner', () => {
     journal.close();
   });
 
+  // 2026-09-07 escape: an audit-lens round against real PR #118 journaled `parsed: false`
+  // with `raw` an empty string on four of five lens calls. A live repro through this
+  // exact class (`ClaudeReasoner.call`) showed why: the session opened a `Bash`/`Read`
+  // tool call, burned its one bounded turn on it, and the SDK ended the session on
+  // `error_max_turns` with no assistant text at all -- not a reply that failed to parse.
+  it('rejects with a typed turn error, not a parse error, when the turn ends with no text and reports its own failure', async () => {
+    const { fn } = errorTurnQuery('error_max_turns');
+    const journal = new Journal(journalPath);
+    const reasoner = new ClaudeReasoner({ journal, queryFn: fn, existsConfigDir: () => false });
+
+    const rejection = expect(reasoner.call({ className: 'audit-lens', prompt: 'x', replyShape: 'array' }))
+      .rejects;
+    await rejection.toBeInstanceOf(ReasonerTurnError);
+    await rejection.toThrow(/error_max_turns/);
+    journal.close();
+
+    const state = replay(journalPath);
+    const row = state.events.find((event) => event.event === 'reasoner.call');
+    expect(row?.['parsed']).toBe(false);
+    expect(row?.['turnSubtype']).toBe('error_max_turns');
+  });
+
   it('times out inside the injected clock\'s budget and journals reasoner.timeout, on a query that never resolves', async () => {
     const { fn } = hangingQuery();
     const { setTimeoutFn, clearTimeoutFn } = instantClock();
@@ -260,6 +308,22 @@ describe('ClaudeReasoner', () => {
     expect(calls[0]?.options.allowedTools).toEqual([]);
     expect(calls[0]?.options.maxTurns).toBe(1);
     expect(calls[0]?.options.permissionMode).toBe('bypassPermissions');
+  });
+
+  // 2026-09-07 escape: a live audit-lens call against a real diff opened a Bash/Read
+  // tool call under `bypassPermissions`, because `allowedTools: []` only skips a
+  // permission prompt -- it never disables a tool the way the reasoner's own doc
+  // comment assumed. `tools: []` (engine.ts's own "disable every built-in tool" field)
+  // is the one that actually stops the model from reaching a tool at all, regardless of
+  // `permissionMode`.
+  it('disables every built-in tool outright, not only via the permission allowlist', async () => {
+    const { fn, calls } = fakeQuery('{"text": "ok"}');
+    const journal = new Journal(journalPath);
+    const reasoner = new ClaudeReasoner({ journal, queryFn: fn, existsConfigDir: () => false });
+    await reasoner.call({ className: 'evaluate', prompt: 'x' });
+    journal.close();
+
+    expect(calls[0]?.options.tools).toEqual([]);
   });
 
   // I17: a live check against a real Haiku showed a 23,261-token cache creation on a

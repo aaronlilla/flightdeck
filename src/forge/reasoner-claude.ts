@@ -95,6 +95,25 @@ export class ReasonerTimeoutError extends Error {
   }
 }
 
+/**
+ * Raised when the SDK ends the turn with no text at all and the turn itself reports an
+ * error (`turn-complete`'s `isError`, e.g. `subtype: 'error_max_turns'`). Kept distinct
+ * from `ReasonerParseError`, which means "the model answered, and the answer was not
+ * JSON": here the model never got to answer -- live evidence (2026-09-07) was a lens
+ * session that opened a `Bash`/`Read` tool call mid-turn (`allowedTools: []` does not
+ * disable tools; see `EngineConfig.tools` in `engine.ts`) and used up the one bounded
+ * turn on that call, so the SDK ended the session on `error_max_turns` before any
+ * findings text was produced. A caller that only ever sees an empty `raw` string for
+ * this case cannot tell "the model refused to answer" from "the model never got to
+ * answer" -- this error names the SDK's own subtype instead.
+ */
+export class ReasonerTurnError extends Error {
+  constructor(public readonly subtype: string) {
+    super(`claude reasoner: the turn ended with no reply (${subtype})`);
+    this.name = 'ReasonerTurnError';
+  }
+}
+
 export interface ClaudeReasonerDeps {
   journal: Pick<Journal, 'append'>;
   /** The SDK's own `query`, or a fake. Every test in this suite injects one; production
@@ -158,6 +177,15 @@ export class ClaudeReasoner implements Reasoner {
           case 'turn-complete': {
             off();
             const trimmed = text.trim();
+            if (event.isError && trimmed.length === 0) {
+              // The turn itself reports failure (e.g. `error_max_turns`) and produced
+              // no text to even attempt parsing -- a distinct shape from "the model
+              // answered with something that was not JSON", so it gets its own error
+              // rather than a `ReasonerParseError` whose `raw` would be an empty string
+              // for a reason that error class was never meant to describe.
+              reject(new ReasonerTurnError(event.subtype));
+              return;
+            }
             let parsedJson: unknown;
             try {
               parsedJson = JSON.parse(stripFence(trimmed));
@@ -205,6 +233,7 @@ export class ClaudeReasoner implements Reasoner {
       model,
       permissionMode: 'bypassPermissions',
       allowedTools: [],
+      tools: [],
       maxTurns: 1,
       settingSources: [],
       systemPrompt: SYSTEM_INSTRUCTIONS,
@@ -244,6 +273,13 @@ export class ClaudeReasoner implements Reasoner {
           event: 'reasoner.call', actor: 'reasoner', provider: this.provider,
           class: className, model: servingModel ?? model, usage, durationMs,
           parsed: false, raw: truncatedRaw(error.raw),
+          ...(run ? { run } : {}),
+        });
+      } else if (error instanceof ReasonerTurnError) {
+        this.deps.journal.append({
+          event: 'reasoner.call', actor: 'reasoner', provider: this.provider,
+          class: className, model: servingModel ?? model, usage, durationMs,
+          parsed: false, error: error.message, turnSubtype: error.subtype,
           ...(run ? { run } : {}),
         });
       } else {
