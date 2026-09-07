@@ -162,6 +162,7 @@ export function bigLanes(count = 2000): Lane[] {
     const state = states[i % states.length] as Lane['state'];
     out.push(lane({
       id: `FLT-${9000 + i}`,
+      ticket: `FLT-${9000 + i}`,
       state,
       heart: state === 'running',
       repo: i % 3 === 0 ? 'flightdeck-api' : i % 3 === 1 ? 'flightdeck-rn' : 'flightdeck-docs',
