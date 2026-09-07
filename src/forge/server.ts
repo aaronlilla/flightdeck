@@ -34,10 +34,11 @@ import { WardenActuator } from './warden.js';
 import { QueueStore } from './intake/queueStore.js';
 import type { QueueMergeDeps, QueuePromoteDeps, QueueTicketSearch } from './intake/queue.js';
 import {
-  killSwitchPath as defaultKillSwitchPath, packetsDir as defaultPacketsDir, queuePath as defaultQueuePath,
+  forgeHome, killSwitchPath as defaultKillSwitchPath, packetsDir as defaultPacketsDir, queuePath as defaultQueuePath,
   registryDir, serverTokenPath,
 } from './paths.js';
 import { routerEnabled } from './policy.js';
+import { retireEligible, retireFinished, retiredPath, retireRun, unretireRun } from './console/retire.js';
 import { chainStatusRows, foldChainState } from './chain.js';
 import { Registry } from './registry.js';
 import { route as routeMessage } from './router.js';
@@ -160,6 +161,10 @@ export interface ForgeServerOptions {
   /** Overrides where `GET /run/:id` reads a handoff packet from. Defaults to
    *  `packetsDir()`, which itself follows `FORGE_HOME`. A specimen only. */
   packetsDir?: string;
+  /** H1.7: overrides where `POST /run/:id/retire` and `POST /retire-finished` write the
+   *  console's own retired-lane log. Defaults to `forgeHome()`, which follows
+   *  `FORGE_HOME`. A specimen only. */
+  forgeHomeDir?: string;
   /** X4: what `POST /router` calls to classify and act on a message. No default is
    *  wired: `router.enabled` in the model policy is `false` out of the box, and
    *  `/router` never reaches this at all while it is off, so a real implementation
@@ -223,6 +228,8 @@ export class ForgeServer {
 
   private readonly packetsDirPath: string;
 
+  private readonly forgeHomeDir: string;
+
   private readonly reasoner: Reasoner | undefined;
 
   private readonly consoleReads: ConsoleReads;
@@ -272,6 +279,7 @@ export class ForgeServer {
     this.registry = options.registry ?? new Registry(registryDir());
     this.consoleDistDir = options.consoleDistDir ?? defaultConsoleDistDir();
     this.packetsDirPath = options.packetsDir ?? defaultPacketsDir();
+    this.forgeHomeDir = options.forgeHomeDir ?? forgeHome();
     this.reasoner = options.reasoner;
     this.consoleReads = options.consoleReads
       ?? new ConsoleReads(options.modelPolicyPath ? { modelPolicyPath: options.modelPolicyPath } : {});
@@ -560,6 +568,19 @@ export class ForgeServer {
       }
       return this.routeMessage(request, response);
     }
+    const retireMatch = /^\/run\/([^/]+)\/(retire|unretire)$/.exec(path);
+    if (retireMatch) {
+      if (request.method !== 'POST') {
+        return json(response, 405, { error: 'retiring a lane is not a safe method' });
+      }
+      return this.retireOne(request, response, decodeURIComponent(retireMatch[1]!), retireMatch[2] === 'retire');
+    }
+    if (path === '/retire-finished') {
+      if (request.method !== 'POST') {
+        return json(response, 405, { error: 'retiring lanes is not a safe method' });
+      }
+      return this.retireFinishedRoute(request, response);
+    }
     if (await this.consoleWrites.handle(path, request, response)) return;
     if (await this.queueRoutes.handle(path, request, response)) return;
     if (request.method === 'GET') {
@@ -760,6 +781,48 @@ export class ForgeServer {
       new Breaker(this.lanes).clear(parsed.lane);
       json(response, 200, { ok: true });
     });
+  }
+
+  /**
+   * `POST /run/:id/retire` and `POST /run/:id/unretire` (H1.7): moves one lane off, or
+   * back onto, the board's default view. Retiring an ineligible lane (still running, an
+   * open unmerged PR, a live process behind it) is refused outright rather than quietly
+   * hiding something unresolved; unretiring is never refused, since undoing a retire
+   * can never itself lose anything.
+   */
+  private retireOne(request: IncomingMessage, response: ServerResponse, id: string, retiring: boolean): void {
+    if (!this.authorized(request, response)) return;
+    if (retiring) {
+      const lane = this.consoleReads.lanesResponse(true, true).lanes.find((row) => row.id === id);
+      if (!lane) {
+        json(response, 404, { error: `${id} is not a registered run` });
+        return;
+      }
+      if (!retireEligible(lane)) {
+        json(response, 409, { error: `${id} is still open -- retiring only removes a finished lane from the board` });
+        return;
+      }
+    }
+    const at = Date.now();
+    if (retiring) retireRun(retiredPath(this.forgeHomeDir), id, at);
+    else unretireRun(retiredPath(this.forgeHomeDir), id, at);
+    appendOnce(this.journalPath, { event: 'lane.retired', run: id, actor: 'console', retired: retiring });
+    json(response, 200, { ok: true, jid: null, message: `${retiring ? 'retired' : 'unretired'} ${id}`, undoable: retiring });
+  }
+
+  /**
+   * `POST /retire-finished` (H1.7): retires every lane that is done, merged, killed, or
+   * a finished probe, with no open unmerged PR and no live process, in one call -- the
+   * bulk equivalent of clicking Retire on each one by hand.
+   */
+  private retireFinishedRoute(request: IncomingMessage, response: ServerResponse): void {
+    if (!this.authorized(request, response)) return;
+    const lanes = this.consoleReads.lanesResponse(true, true).lanes;
+    const retired = retireFinished(retiredPath(this.forgeHomeDir), lanes, Date.now());
+    for (const id of retired) {
+      appendOnce(this.journalPath, { event: 'lane.retired', run: id, actor: 'console', retired: true });
+    }
+    json(response, 200, { ok: true, jid: null, message: `retired ${retired.length} lane(s)`, undoable: false, retired });
   }
 
   /**

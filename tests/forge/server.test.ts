@@ -984,6 +984,63 @@ describe('GET / (the built console)', () => {
   });
 });
 
+describe('POST /run/:id/retire and /run/:id/unretire (H1.7)', () => {
+  it('refuses to retire a lane that is still running', async () => {
+    const response = await fetch(`${base}/run/alpha/retire`, {
+      method: 'POST', headers: { 'x-forge-token': server.token },
+    });
+    expect(response.status).toBe(409);
+  });
+
+  it('retires a finished lane, drops it from /lanes, and unretire brings it back', async () => {
+    const journal = new Journal(join(dir, 'fleet.jsonl'));
+    journal.append({ event: 'run.started', run: 'beta', actor: 'runner' });
+    journal.append({ event: 'run.finished', run: 'beta', actor: 'runner', verdict: 'done' });
+    journal.close();
+    const lanes = new Lanes(join(dir, 'lanes'));
+    lanes.put('beta', { column: 'c2' });
+
+    const retire = await fetch(`${base}/run/beta/retire`, {
+      method: 'POST', headers: { 'x-forge-token': server.token },
+    });
+    expect(retire.status).toBe(200);
+
+    const afterRetire = await (await fetch(`${base}/lanes`, { headers: { 'x-forge-token': server.token } })).json() as { lanes: Array<{ id: string }> };
+    expect(afterRetire.lanes.map((lane) => lane.id)).not.toContain('beta');
+
+    const archived = await (await fetch(`${base}/lanes?archived=1`, { headers: { 'x-forge-token': server.token } })).json() as { lanes: Array<{ id: string; retiredAt: number | null }> };
+    const betaArchived = archived.lanes.find((lane) => lane.id === 'beta');
+    expect(betaArchived?.retiredAt).not.toBeNull();
+
+    const unretire = await fetch(`${base}/run/beta/unretire`, {
+      method: 'POST', headers: { 'x-forge-token': server.token },
+    });
+    expect(unretire.status).toBe(200);
+
+    const afterUnretire = await (await fetch(`${base}/lanes`, { headers: { 'x-forge-token': server.token } })).json() as { lanes: Array<{ id: string }> };
+    expect(afterUnretire.lanes.map((lane) => lane.id)).toContain('beta');
+  });
+});
+
+describe('POST /retire-finished (H1.7)', () => {
+  it('retires every finished lane and leaves the running one alone', async () => {
+    const journal = new Journal(join(dir, 'fleet.jsonl'));
+    journal.append({ event: 'run.started', run: 'beta', actor: 'runner' });
+    journal.append({ event: 'run.finished', run: 'beta', actor: 'runner', verdict: 'done' });
+    journal.close();
+    const lanes = new Lanes(join(dir, 'lanes'));
+    lanes.put('beta', { column: 'c2' });
+
+    const response = await fetch(`${base}/retire-finished`, {
+      method: 'POST', headers: { 'x-forge-token': server.token },
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json() as { retired: string[] };
+    expect(body.retired).toContain('beta');
+    expect(body.retired).not.toContain('alpha');
+  });
+});
+
 describe('anything else', () => {
   it('is a 404 rather than a stack trace', async () => {
     const response = await fetch(`${base}/nope`);

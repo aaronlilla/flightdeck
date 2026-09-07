@@ -34,6 +34,7 @@ import { readAttestation } from '../council/attest.js';
 import { queueMergeAllowed } from '../queue-wire.js';
 import { chainLinks, computeLanes, mergeableFor, tokensToday, titleFor, titleFromHeading, windowLanes, type LanesInput } from './lanes.js';
 import { computeLaneStory, type GitCommit } from './story.js';
+import { readRetired, retiredPath } from './retire.js';
 import {
   computeRunPr, prCachePath, readPrCache, writePrCache,
   type AttestationReaderFn, type GhDetailLookupFn, type GhLookupFn, type GhPrDetail, type GhPrLookup,
@@ -257,7 +258,7 @@ export class ConsoleReads {
 
     if (path === '/lanes') {
       const url = new URL(request.url ?? '/', 'http://localhost');
-      json(response, 200, this.lanesResponse(url.searchParams.get('all') === '1'));
+      json(response, 200, this.lanesResponse(url.searchParams.get('all') === '1', url.searchParams.get('archived') === '1'));
       return true;
     }
     if (path === '/thread') {
@@ -317,8 +318,10 @@ export class ConsoleReads {
   /** Public so `command.ts`'s `status` intent can answer from the same lane counts and
    *  spend the board itself shows, rather than a figure of its own. `all` bypasses the
    *  24-hour finished-lane window (`GET /lanes?all=1`); `status` calls this with the
-   *  window on, the same default the board itself renders. */
-  lanesResponse(all = false): LanesResponse {
+   *  window on, the same default the board itself renders. `archived` (H1.7) includes a
+   *  retired lane (`GET /lanes?archived=1`); a caller looking up one specific run by id
+   *  always passes it, since a retired lane still answers on its own `/run/:id/*` routes. */
+  lanesResponse(all = false, archived = false): LanesResponse {
     const now = Date.now();
     const fleet = this.journalCache.read(this.journalPath);
     const chain = this.chain();
@@ -342,7 +345,12 @@ export class ConsoleReads {
       tokensPerHour: (lane) => tokensPerHour(lane, fleet.runs[lane.slug]?.tokensUsed ?? 0, now),
     };
     const response = windowLanes(computeLanes(input, now), now, all);
-    return { ...response, lanes: response.lanes.map((lane) => this.withHumanFields(lane, chain)) };
+    const retired = readRetired(retiredPath(this.forgeHomeDir));
+    const lanes = response.lanes
+      .map((lane) => this.withHumanFields(lane, chain))
+      .map((lane) => ({ ...lane, retiredAt: retired.get(lane.id) ?? null }))
+      .filter((lane) => archived || lane.retiredAt === null);
+    return { ...response, lanes };
   }
 
   /** H1.1: `title`/`sourceUrl`, off whichever source actually named this lane -- a
@@ -440,7 +448,7 @@ export class ConsoleReads {
 
   private runCostResponse(run: string): RunCostResponse {
     const fleet = this.journalCache.read(this.journalPath);
-    const runaway = this.lanesResponse(true).lanes.find((l) => l.id === run)?.runaway ?? false;
+    const runaway = this.lanesResponse(true, true).lanes.find((l) => l.id === run)?.runaway ?? false;
     return {
       steps: computeCostSteps(run, fleet.events),
       capEnforcementFailedJid: findCapEnforcementFailure(run, fleet.events, runaway),
@@ -454,7 +462,7 @@ export class ConsoleReads {
     const now = Date.now();
     const fleet = this.journalCache.read(this.journalPath);
     const chain = this.chain();
-    const lane = this.lanesResponse(true).lanes.find((l) => l.id === run);
+    const lane = this.lanesResponse(true, true).lanes.find((l) => l.id === run);
     if (!lane) return { entries: [] };
     return { entries: computeJournalNarrative(lane, fleet.events, packetForRun(chain, run), now) };
   }
@@ -467,7 +475,7 @@ export class ConsoleReads {
   private async runStoryResponse(run: string): Promise<LaneStory> {
     const fleet = this.journalCache.read(this.journalPath);
     const chain = this.chain();
-    const lane = this.lanesResponse(true).lanes.find((l) => l.id === run);
+    const lane = this.lanesResponse(true, true).lanes.find((l) => l.id === run);
     const queueItem = this.queueStore.all().find((item) => item.runKey === run);
     const packet = packetForRun(chain, run);
 

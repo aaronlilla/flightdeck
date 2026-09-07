@@ -278,6 +278,10 @@ export const FORGE_EVENT_NAMES = [
   // `selfMergeAllowed`'s own decision on a self-repo item; `self.restart` when
   // `cutoverDue` finds the fleet idle on a moved `origin/main` and pulls it in.
   'self.finding', 'self.enqueued', 'self.merged', 'self.merge-refused', 'self.restart', 'self.tick-error', 'queue.unverified-pr',
+  // H1.7: a lane moved off (or back onto) the board's default view by an operator's own
+  // Retire/Unretire click or the bulk `POST /retire-finished` -- never written by any
+  // worker or automation.
+  'lane.retired',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];

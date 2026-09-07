@@ -550,6 +550,9 @@ export interface ConsoleStateSummary {
  *   POST /queue/:id/retry    {}           ActionResult   sends a parked/failed item back to queued
  *   POST /queue/pause        {}           ActionResult   stops the worker from starting anything new
  *   POST /queue/resume       {}           ActionResult
+ *   POST /run/:id/retire     {}           ActionResult   undoable (unretire); refused on an unfinished lane
+ *   POST /run/:id/unretire   {}           ActionResult
+ *   POST /retire-finished    {}           ActionResult & { retired: string[] }
  *
  * A write whose mechanism does not exist yet answers 501 `{error, reason}`; the rail
  * renders that as a refusal card and never pretends the action ran.
