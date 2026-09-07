@@ -48,6 +48,20 @@ export function jiraConfigFromEnv(env: NodeJS.ProcessEnv = process.env): JiraCon
 
 const EMPTY_WATERMARK: Watermark = { source: 'jira' as PollSourceName, committedAt: 0, idsAtCommittedAt: [] };
 
+/** A.5: `backlog` is an operator's own filter text, never raw JQL on its own -- it is
+ *  always joined onto a project's own backlog JQL before it reaches `searchKeys`, so a
+ *  filter of "flaky" cannot accidentally sweep another team's board. `query` (a sprint
+ *  or an epic) stays raw JQL, untouched by this function: the operator is expected to
+ *  already know the JQL for those. Throws naming the missing variable rather than
+ *  silently searching every project, the same honesty `queueSearch` already keeps for a
+ *  missing Jira credential. */
+export function buildBacklogJql(filter: string, env: NodeJS.ProcessEnv = process.env): string {
+  const project = env['FORGE_BACKLOG_PROJECT'];
+  if (!project) throw new Error('backlog: missing FORGE_BACKLOG_PROJECT');
+  const escaped = filter.replace(/"/g, '\\"');
+  return `project = ${project} AND statusCategory != Done AND text ~ "${escaped}"`;
+}
+
 /**
  * `queueSearch`: a `query`/`backlog` add resolves its JQL through the same
  * `createJiraFeed` a poll cycle already uses -- `fetchSince` ignores whatever

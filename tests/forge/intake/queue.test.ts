@@ -305,6 +305,68 @@ describe('advanceItem', () => {
     expect(result.state).toBe('running');
     expect(result.briefPath).toBe('C:/briefs/ABC-2.md');
   });
+
+  // A.5: `advanceItem` had never been exercised end to end for a brief, a query or a
+  // backlog sourced item before this stream -- only `ticket` items ever reached it in a
+  // specimen, even though the same planning branch (`item.source === 'brief' ? planBrief
+  // : planTicket`) already handled all four.
+  it('walks a pasted brief through planBrief, never planTicket, to review', async () => {
+    const store = tempStore();
+    const item = addBriefItem(store, '# Goal: fix the null check', 1000);
+    let planTicketCalls = 0;
+    const { deps } = buildDeps(store, {
+      planner: {
+        planTicket: async (ticket) => { planTicketCalls += 1; return { ticket, repo: 'owner/name', briefPath: 'x' }; },
+      },
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/3' }) },
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    expect(current.ticket).toBe('BRIEF-1');
+    expect(current.briefPath).toBe('C:/briefs/brief-1.md');
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('review');
+    expect(planTicketCalls).toBe(0);
+  });
+
+  it('walks a query-resolved ticket through planTicket, the same as a ticket-sourced item, to review', async () => {
+    const store = tempStore();
+    const search: QueueTicketSearch = { searchKeys: async () => ['ABC-1'] };
+    const [item] = await addQueryItems(store, 'sprint = 42', search, 1000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/4' }) },
+    });
+
+    let current = item!;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('review');
+    expect(current.source).toBe('query');
+    expect(current.ticket).toBe('ABC-1');
+  });
+
+  it('walks a backlog-resolved ticket to review the same way', async () => {
+    const store = tempStore();
+    const search: QueueTicketSearch = { searchKeys: async () => ['ABC-9'] };
+    const [item] = await addBacklogItems(store, 'project = BB AND text ~ "flaky"', search, 1000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/5' }) },
+    });
+
+    let current = item!;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('review');
+    expect(current.source).toBe('backlog');
+    expect(current.ticket).toBe('ABC-9');
+  });
 });
 
 describe('fix round: FIX FIRST relaunches once, a second parks', () => {

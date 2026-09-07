@@ -15,6 +15,7 @@ import {
   addBacklogItems, addBriefItem, addQueryItems, addTicketItem, removeItem, retryItem,
   type QueueTicketSearch,
 } from '../intake/queue.js';
+import { buildBacklogJql as defaultBuildBacklogJql } from '../queue-wire.js';
 import type { QueueStore } from '../intake/queueStore.js';
 import type {
   ActionResult, QueueAddRequest, QueueAddResponse, QueueResponse, QueueSource,
@@ -31,6 +32,11 @@ export interface QueueRoutesOptions {
   readPaused: () => boolean;
   writePaused: (paused: boolean) => void;
   maxInFlight: number;
+  /** A.5: wraps an operator's own backlog filter text into a project-scoped JQL before
+   *  it reaches `search`. Defaults to the queue's own production wrapper
+   *  (`queue-wire.ts#buildBacklogJql`, `FORGE_BACKLOG_PROJECT`), so this route works
+   *  unwired; a test injects its own to stay a pure specimen. */
+  buildBacklogJql?: (filter: string) => string;
 }
 
 function respond(response: ServerResponse, status: number, body: unknown): void {
@@ -87,8 +93,10 @@ export class QueueRoutes {
           return { ok: true, items: [addBriefItem(this.opts.store, body.input)] };
         case 'query':
           return { ok: true, items: await addQueryItems(this.opts.store, body.input, this.opts.search) };
-        case 'backlog':
-          return { ok: true, items: await addBacklogItems(this.opts.store, body.input, this.opts.search) };
+        case 'backlog': {
+          const buildJql = this.opts.buildBacklogJql ?? defaultBuildBacklogJql;
+          return { ok: true, items: await addBacklogItems(this.opts.store, buildJql(body.input), this.opts.search) };
+        }
         default:
           return { ok: false, items: [], error: `unknown source ${String(body.source)}` };
       }

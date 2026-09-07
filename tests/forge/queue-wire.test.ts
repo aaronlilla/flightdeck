@@ -6,7 +6,7 @@
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { queueBackendHandoff, queueCommentOnPr } from '../../src/forge/queue-wire.ts';
+import { buildBacklogJql, queueBackendHandoff, queueCommentOnPr } from '../../src/forge/queue-wire.ts';
 
 const calls: { url: string; init?: RequestInit }[] = [];
 
@@ -42,6 +42,22 @@ describe('queueBackendHandoff', () => {
 
     expect(calls).toHaveLength(1);
     expect(calls[0]?.url).toContain('/issue/BBMS-1/assignee');
+  });
+});
+
+describe('buildBacklogJql: A.5', () => {
+  it('wraps an operator filter into a project-scoped, not-Done JQL', () => {
+    const jql = buildBacklogJql('flaky', { FORGE_BACKLOG_PROJECT: 'BBZ' } as NodeJS.ProcessEnv);
+    expect(jql).toBe('project = BBZ AND statusCategory != Done AND text ~ "flaky"');
+  });
+
+  it('refuses honestly when FORGE_BACKLOG_PROJECT is unset, rather than searching every project', () => {
+    expect(() => buildBacklogJql('flaky', {} as NodeJS.ProcessEnv)).toThrow(/FORGE_BACKLOG_PROJECT/);
+  });
+
+  it('escapes an embedded double quote so the JQL stays well-formed', () => {
+    const jql = buildBacklogJql('says "urgent"', { FORGE_BACKLOG_PROJECT: 'BBZ' } as NodeJS.ProcessEnv);
+    expect(jql).toBe('project = BBZ AND statusCategory != Done AND text ~ "says \\"urgent\\""');
   });
 });
 
