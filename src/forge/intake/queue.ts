@@ -147,10 +147,23 @@ export interface QueueJournalWrite {
   id: string;
 }
 
+/** What `rebaseOnBase` answers. `behind` says how far the branch had drifted, so a run
+ *  that needed no replay can be told apart from one that did. */
+export interface RebaseOutcome {
+  ok: boolean;
+  behind: number;
+  reason?: string;
+}
+
 export interface QueueRuntimeDeps {
   planner: QueuePlanner;
   launcher: ChainLauncher;
   gh: ChainGh;
+  /** Brings the branch up to date with its base before the gate reads it, and answers
+   *  whether that succeeded. A branch that has fallen behind while the work ran is the
+   *  ordinary case on a busy repository; one that cannot be replayed cleanly is a real
+   *  conflict, and the item parks for a person rather than anything being forced. */
+  rebaseOnBase?: (input: { worktreePath: string; base: string }) => Promise<RebaseOutcome>;
   council: ChainCouncilFn;
   /** Reused from `chain.ts` unchanged, but `advanceItem` never passes `merge: true` --
    *  the queue's own decision (every item stops at a draft PR) lives in this file, not
@@ -274,10 +287,27 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
     );
   }
 
+  // Aaron, 2026-09-07: every branch must sit on the latest base before anyone reviews or
+  // merges it, so a queue that runs for hours cannot hand back a pile of conflicts. The
+  // replay happens here, after the work is done and before the gate reads the diff.
+  if (deps.rebaseOnBase && item.worktreePath && item.base) {
+    const replay = await deps.rebaseOnBase({ worktreePath: item.worktreePath, base: item.base });
+    if (!replay.ok) {
+      return writeTransition(
+        item,
+        { state: 'parked', reason: `conflicts with ${item.base}: ${replay.reason ?? 'the branch could not be replayed on its base'}` },
+        deps, 'queue.parked', { hop: 'gate', behind: replay.behind },
+      );
+    }
+  }
+
   const council = await deps.council({
     repo: item.repo!, pr: pr.number, forceCodex: true,
     ...(item.worktreePath ? { cwd: item.worktreePath } : {}),
-    ...(item.base ? { baseRef: item.base } : {}),
+    // `origin/<base>`, never the bare branch name: the local ref is whatever this
+    // machine last fetched, and reviewing against it puts everything merged since inside
+    // this ticket's diff. Provisioning refreshes the remote ref, so this one is current.
+    ...(item.base ? { baseRef: `origin/${item.base}` } : {}),
   });
   const councilCleared = council.verdict === 'PASS' || council.verdict === 'PASS WITH NOTES';
   if (!councilCleared) {

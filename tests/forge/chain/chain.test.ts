@@ -116,7 +116,9 @@ describe('runChainTick', () => {
 
     expect(councilInput).toMatchObject({
       repo: 'owner/name', pr: 42, forceCodex: true,
-      cwd: 'C:/worktrees/repo--abc-1', baseRef: 'develop',
+      // The remote ref, not the local branch: the local one is only as fresh as the last
+      // fetch, and reviewing against it puts everything merged since inside this diff.
+      cwd: 'C:/worktrees/repo--abc-1', baseRef: 'origin/develop',
     });
   });
 

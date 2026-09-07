@@ -382,7 +382,9 @@ async function advancePacket(row: ChainPacketState, deps: ChainDeps): Promise<vo
 
   const council = await deps.council({
     repo: row.repo!, pr: pr.number, forceCodex: true,
-    cwd: row.provisioned?.worktreePath, baseRef: row.provisioned?.base,
+    cwd: row.provisioned?.worktreePath,
+    // The remote ref, for the reason `queue.ts` gives at its own council call.
+    baseRef: row.provisioned?.base ? `origin/${row.provisioned.base}` : undefined,
   });
   deps.append({
     event: 'chain.gated', actor: 'chain', packetId: row.packetId, verdict: council.verdict,

@@ -24,6 +24,7 @@ import {
   branchFor, type ChainEnv,
 } from './chain-env.js';
 import type { PollSourceName } from './contracts.js';
+import type { QueueRuntimeDeps } from './intake/queue.js';
 import { run as execRun, type RunRequest, type RunResult } from './exec.js';
 import { createJiraFeed } from './intake/jira.js';
 import {
@@ -396,6 +397,9 @@ export async function provisionWorktree(input: {
   chainEnv: ChainEnv; repo: string; ticket: string;
   exec?: (request: RunRequest) => Promise<RunResult>;
   fs?: ProvisionFs;
+  /** Told when the base could not be refreshed, so the caller can say so rather than
+   *  silently starting from a ref of unknown age. */
+  onNote?: (note: string) => void;
 }): Promise<ProvisionResult> {
   const checkout = checkoutFor(input.chainEnv, input.repo);
   if (!checkout) throw new Error(`no FORGE_REPO_CHECKOUTS entry for ${input.repo}`);
@@ -405,6 +409,19 @@ export async function provisionWorktree(input: {
 
   const runner = input.exec ?? execRun;
   const fs = input.fs ?? REAL_FS;
+
+  // The worktree starts at `origin/<base>`, but that ref is only as fresh as the last
+  // fetch, and nothing in this pipeline was fetching. A stale one costs twice: the branch
+  // starts behind, so the work merges into a base it never saw, and the review reads
+  // `base...HEAD` as everything merged since the last fetch. On BBZ-99 that meant five of
+  // other people's merged commits inside one ticket's review, and the loudest finding in
+  // the round belonged to none of them. A failure here is not fatal -- an offline machine
+  // should still be able to work against whatever it already has -- but it is recorded.
+  const fetched = await runner({
+    argv: ['git', '-C', checkout, 'fetch', '--prune', 'origin', base],
+    cwd: checkout, owner: `chain-${input.ticket}`, cls: 'script',
+  });
+  if (!fetched.ok) input.onNote?.(`could not fetch origin/${base}: starting from the ref already on disk`);
 
   // D2, 2026-09-06: `raw: true` -- this listing is parsed as data by `parseWorktreeList`
   // below, never shown to a person. Without it, `redact()` blanks a long ticket id or a
@@ -524,6 +541,37 @@ export function chainLauncher(chainEnv: ChainEnv, fleetConfigDir: string): Chain
         events: replay(journalPath()).events,
       });
     },
+  };
+}
+
+/** Brings a worktree's branch onto the current tip of its base, so nothing reaches a
+ *  review or a merge sitting on a base it never saw. Fetches first, because the whole
+ *  point is the tip as it is now rather than as it was when the work started. A rebase
+ *  that cannot replay cleanly is aborted, never forced and never left half-applied: the
+ *  caller parks the item and a person resolves it.
+ *
+ *  `raw` on the count, because its output is parsed as a number here, not shown. */
+export function chainRebase(): NonNullable<QueueRuntimeDeps['rebaseOnBase']> {
+  return async ({ worktreePath, base }) => {
+    const git = async (argv: string[], raw = false): Promise<RunResult> => execRun({
+      argv: ['git', '-C', worktreePath, ...argv],
+      cwd: worktreePath, owner: 'chain-rebase', cls: 'script', ...(raw ? { raw: true } : {}),
+    });
+
+    const fetched = await git(['fetch', '--prune', 'origin', base]);
+    if (!fetched.ok) return { ok: false, behind: 0, reason: `could not fetch origin/${base}` };
+
+    const counted = await git(['rev-list', '--count', `HEAD..origin/${base}`], true);
+    const behind = counted.ok ? Number.parseInt(counted.tail.trim(), 10) || 0 : 0;
+    if (behind === 0) return { ok: true, behind: 0 };
+
+    const rebased = await git(['rebase', `origin/${base}`]);
+    if (rebased.ok) return { ok: true, behind };
+
+    // Leave the worktree exactly as it was found. A half-finished rebase would make the
+    // next read of this branch meaningless, including the gate's own.
+    await git(['rebase', '--abort']);
+    return { ok: false, behind, reason: tailOfCommand(rebased.tail) };
   };
 }
 

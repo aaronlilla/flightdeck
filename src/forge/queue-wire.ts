@@ -14,7 +14,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { chainCouncil, chainGate, chainGh, chainLauncher } from './chain-wire.js';
+import { chainCouncil, chainGate, chainGh, chainRebase, chainLauncher } from './chain-wire.js';
 import type { ChainEnv } from './chain-env.js';
 import type { CliResult, ForgeDeps } from './cli.js';
 import type { Packet, PollSourceName, Watermark } from './contracts.js';
@@ -149,6 +149,7 @@ export function buildQueueRuntimeDeps(
     planner: queuePlanner(),
     launcher: chainLauncher(chainEnv, fleetConfigDir),
     gh: chainGh(),
+    rebaseOnBase: chainRebase(),
     council: chainCouncil(deps),
     gate: chainGate(deps),
     clock: () => Date.now(),

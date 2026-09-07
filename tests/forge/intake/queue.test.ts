@@ -29,6 +29,7 @@ interface FixtureOverrides {
   planner?: Partial<QueuePlanner>;
   launcher?: Partial<ChainLauncher>;
   gh?: Partial<ChainGh>;
+  rebaseOnBase?: QueueRuntimeDeps['rebaseOnBase'];
   council?: ChainCouncilFn;
   gate?: ChainGateFn;
   killSwitch?: () => boolean;
@@ -58,6 +59,7 @@ function buildDeps(store: QueueStore, overrides: FixtureOverrides = {}): { deps:
       findPrByHead: async () => undefined,
       ...overrides.gh,
     },
+    ...(overrides.rebaseOnBase ? { rebaseOnBase: overrides.rebaseOnBase } : {}),
     council: overrides.council ?? (async () => ({ verdict: 'PASS' })),
     gate: overrides.gate ?? (async () => ({ merged: false })),
     clock: () => 1_000,
@@ -363,3 +365,53 @@ describe('runQueueTick', () => {
     expect(calls).toBe(1);
   });
 });
+describe('a branch must sit on the latest base before anyone reviews it', () => {
+  // Aaron, 2026-09-07. A queue that runs for hours branches off a base that keeps moving,
+  // and BBZ-99 proved the cost: nothing fetched, so the review read five of other people's
+  // merged commits as part of one ticket's diff, and the round's loudest finding belonged
+  // to none of them.
+  it('replays the branch on its base before the council reads it', async () => {
+    const store = tempStore();
+    store.append({
+      id: 'q-abc-1', at: 1000, source: 'ticket', input: 'ABC-1', ticket: 'ABC-1', repo: 'owner/name',
+      briefPath: 'C:/briefs/abc-1.md', branch: 'feature/abc-1', worktreePath: 'C:/worktrees/repo--abc-1',
+      base: 'develop', state: 'running', runKey: 'abc-1', reason: null, pr: null, journalIds: [],
+      createdAt: 1000, updatedAt: 1000,
+    });
+    const order: string[] = [];
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/9' }) },
+      rebaseOnBase: async () => { order.push('rebase'); return { ok: true, behind: 3 }; },
+      council: async () => { order.push('council'); return { verdict: 'PASS' as const }; },
+    });
+
+    await runQueueTick(deps, store.all());
+
+    expect(order).toEqual(['rebase', 'council']);
+    expect(store.all()[0]?.state).toBe('review');
+  });
+
+  it('parks the item when the branch cannot be replayed, rather than reviewing a conflict', async () => {
+    const store = tempStore();
+    store.append({
+      id: 'q-abc-2', at: 1000, source: 'ticket', input: 'ABC-2', ticket: 'ABC-2', repo: 'owner/name',
+      briefPath: 'C:/briefs/abc-2.md', branch: 'feature/abc-2', worktreePath: 'C:/worktrees/repo--abc-2',
+      base: 'develop', state: 'running', runKey: 'abc-2', reason: null, pr: null, journalIds: [],
+      createdAt: 1000, updatedAt: 1000,
+    });
+    let councilCalls = 0;
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/9' }) },
+      rebaseOnBase: async () => ({ ok: false, behind: 7, reason: 'CONFLICT in src/app.tsx' }),
+      council: async () => { councilCalls += 1; return { verdict: 'PASS' as const }; },
+    });
+
+    await runQueueTick(deps, store.all());
+
+    const parked = store.all()[0];
+    expect(parked?.state).toBe('parked');
+    expect(parked?.reason).toContain('conflicts with develop');
+    expect(councilCalls).toBe(0);
+  });
+});
+
