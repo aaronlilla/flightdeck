@@ -259,6 +259,9 @@ export const FORGE_EVENT_NAMES = [
   // `queue.tick-error` for a worker tick that threw before any item advanced.
   'queue.planning', 'queue.planned', 'queue.launched', 'queue.parked', 'queue.failed',
   'queue.review', 'queue.tick-error',
+  // C.1: `POST /amend` correcting a running item's brief mid-flight (adding only this one
+  // name here -- this file is shared across streams).
+  'brief.amended',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];

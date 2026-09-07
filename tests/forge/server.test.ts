@@ -771,6 +771,95 @@ describe('POST /send', () => {
   });
 });
 
+describe('POST /amend', () => {
+  it('C.1: appends an Amendment section, folds the text into Definition of Done, '
+    + 'delivers it through the run inbox, and journals brief.amended', async () => {
+    const briefPath = join(dir, 'alpha.md');
+    writeFileSync(briefPath, [
+      '# alpha',
+      '',
+      '## Definition of Done',
+      '- ship it',
+      '',
+      '## Notes',
+      'stuff',
+      '',
+    ].join('\n'), 'utf8');
+
+    const response = await fetch(`${base}/amend`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forge-token': server.token },
+      body: JSON.stringify({ run: 'alpha', text: 'also handle the null case' }),
+    });
+    expect(response.status).toBe(200);
+
+    const updated = readFileSync(briefPath, 'utf8');
+    expect(updated).toMatch(/## Amendment \(/);
+    const dodSection = updated.slice(
+      updated.indexOf('## Definition of Done'), updated.indexOf('## Notes'),
+    );
+    expect(dodSection).toContain('also handle the null case');
+
+    expect(
+      new RunInbox('alpha').all().map((message) => message.text)
+        .some((text) => text.includes('also handle the null case')),
+    ).toBe(true);
+
+    const journalText = readFileSync(join(dir, 'fleet.jsonl'), 'utf8');
+    const rows = journalText.split('\n').filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(rows.some((row) => row['event'] === 'brief.amended' && row['run'] === 'alpha')).toBe(true);
+  });
+
+  it('refuses without a token', async () => {
+    const response = await fetch(`${base}/amend`, {
+      method: 'POST',
+      body: JSON.stringify({ run: 'alpha', text: 'hi' }),
+    });
+    expect(response.status).toBe(401);
+  });
+
+  it('refuses a different Origin', async () => {
+    const response = await fetch(`${base}/amend`, {
+      method: 'POST',
+      headers: { 'x-forge-token': server.token, origin: 'http://evil.example' },
+      body: JSON.stringify({ run: 'alpha', text: 'hi' }),
+    });
+    expect(response.status).toBe(403);
+  });
+
+  it('refuses a body missing run or text', async () => {
+    const response = await fetch(`${base}/amend`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forge-token': server.token },
+      body: JSON.stringify({ run: 'alpha' }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it('refuses a body it cannot parse', async () => {
+    const response = await fetch(`${base}/amend`, {
+      method: 'POST',
+      headers: { 'x-forge-token': server.token },
+      body: 'not json',
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it('404s a run with no registry row rather than guessing a brief path', async () => {
+    const response = await fetch(`${base}/amend`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forge-token': server.token },
+      body: JSON.stringify({ run: 'nobody', text: 'hi' }),
+    });
+    expect(response.status).toBe(404);
+  });
+
+  it('refuses a GET, because amending is not a safe method', async () => {
+    const response = await fetch(`${base}/amend`, { method: 'GET' });
+    expect(response.status).toBe(405);
+  });
+});
+
 describe('POST /clear', () => {
   it('W6: clears a breaker-blocked lane', async () => {
     const lanes = new Lanes(join(dir, 'lanes'));

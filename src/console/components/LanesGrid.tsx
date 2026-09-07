@@ -40,10 +40,11 @@ export interface LanesGridProps {
   onOpenCost: (id: string) => void;
   onCommand: (id: string, cmd: string) => void;
   onTip: (tip: TipSpec | null) => void;
+  onAmend?: (id: string, text: string) => void;
 }
 
 export function LanesGrid(props: LanesGridProps): JSX.Element {
-  const { lanes, filter, sort, feedLive, now, onOpen, onOpenCost, onCommand, onTip } = props;
+  const { lanes, filter, sort, feedLive, now, onOpen, onOpenCost, onCommand, onTip, onAmend } = props;
   const shown = visibleLanes(lanes, filter, sort, now);
   return (
     <div
@@ -51,7 +52,7 @@ export function LanesGrid(props: LanesGridProps): JSX.Element {
       style={{ flex: 1, padding: '12px 16px 16px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(215px,1fr))', gap: 10, alignContent: 'start' }}
     >
       {shown.map((lane) => (
-        <LaneTile key={lane.id} lane={lane} feedLive={feedLive} now={now} onOpen={onOpen} onOpenCost={onOpenCost} onCommand={onCommand} onTip={onTip} />
+        <LaneTile key={lane.id} lane={lane} feedLive={feedLive} now={now} onOpen={onOpen} onOpenCost={onOpenCost} onCommand={onCommand} onTip={onTip} onAmend={onAmend} />
       ))}
       {shown.length === 0 ? (
         <div className="m" style={{ fontSize: 12, color: 'var(--ink3)', padding: 40, gridColumn: '1/-1', textAlign: 'center' }}>

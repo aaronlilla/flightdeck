@@ -22,6 +22,9 @@ export interface TicketSheetProps {
    *  once on open and a send otherwise never appears in it until the sheet is
    *  closed and reopened. */
   onSendLane: (id: string, text: string) => void | Promise<void>;
+  /** C.1: the same composer's draft, delivered as a brief amendment (`POST /amend`)
+   *  rather than a plain inbox message. */
+  onAmendLane: (id: string, text: string) => void | Promise<void>;
   onUndo: (jid: string) => void;
   onOpenJournal: (jid: string) => void;
 }
@@ -109,7 +112,7 @@ function JournalPanel({ entries }: { entries: JournalNarrativeEntry[] }): JSX.El
 
 /** Ticket sheet: band, id/model/repo/attempt, cost, context, pipeline rail, journal, run thread. */
 export function TicketSheet(props: TicketSheetProps): JSX.Element {
-  const { lane, feedLive, now, onClose, onCommand, onOpenCost, onOpenSandbox, onSendLane, onUndo, onOpenJournal } = props;
+  const { lane, feedLive, now, onClose, onCommand, onOpenCost, onOpenSandbox, onSendLane, onAmendLane, onUndo, onOpenJournal } = props;
   const [thread, setThread] = useState<Message[]>([]);
   const [journal, setJournal] = useState<JournalNarrativeEntry[]>([]);
   const [draft, setDraft] = useState('');
@@ -130,6 +133,15 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
       .then((r) => setThread(r.messages))
       .catch(() => undefined);
   }, [onSendLane, lane.id]);
+
+  // C.1: same shape as sendAndRefetch, but through the amendment path, so a correction
+  // typed into this composer shows up in the run's own thread the same way a send does.
+  const amendAndRefetch = useCallback((text: string) => {
+    Promise.resolve(onAmendLane(lane.id, text))
+      .then(() => api.getRunThread(lane.id))
+      .then((r) => setThread(r.messages))
+      .catch(() => undefined);
+  }, [onAmendLane, lane.id]);
 
   const headline = laneHeadline(lane);
   const cta = laneCta(lane);
@@ -242,6 +254,7 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
               onKeyDown={(e) => { if (e.key === 'Enter' && draft.trim()) { sendAndRefetch(draft); setDraft(''); } }}
             />
             <span className="btnP" style={{ padding: '5px 10px', fontSize: '9.5px' }} onClick={() => { if (draft.trim()) { sendAndRefetch(draft); setDraft(''); } }}>Send ⏎</span>
+            <span className="btnS" style={{ padding: '5px 10px', fontSize: '9.5px' }} onClick={() => { if (draft.trim()) { amendAndRefetch(draft); setDraft(''); } }}>Amend</span>
           </div>
         </div>
       </div>

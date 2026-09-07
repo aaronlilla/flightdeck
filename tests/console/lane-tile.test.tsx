@@ -93,4 +93,27 @@ describe('LaneTile', () => {
     expect(headline).toHaveAttribute('title', 'jira_AB-12_1788460932645');
     expect(screen.queryByText('jira_AB-12_1788460932645')).not.toBeInTheDocument();
   });
+
+  // C.1: a quick Amend action beside the tile's CTA, for a correction that should not
+  // wait on opening the full ticket sheet.
+  it('C.1: prompts for amendment text and calls onAmend with it, without opening the sheet', async () => {
+    const onOpen = vi.fn();
+    const onAmend = vi.fn();
+    const promptSpy = vi.spyOn(window, 'prompt').mockReturnValue('also handle the null case');
+    render(<LaneTile lane={lane()} feedLive now={Date.now()} onOpen={onOpen} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} onAmend={onAmend} />);
+    await userEvent.click(screen.getByText('Amend'));
+    expect(promptSpy).toHaveBeenCalled();
+    expect(onAmend).toHaveBeenCalledWith('FLT-1', 'also handle the null case');
+    expect(onOpen).not.toHaveBeenCalled();
+    promptSpy.mockRestore();
+  });
+
+  it('C.1: does nothing when the amendment prompt is cancelled', async () => {
+    const onAmend = vi.fn();
+    const promptSpy = vi.spyOn(window, 'prompt').mockReturnValue(null);
+    render(<LaneTile lane={lane()} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} onAmend={onAmend} />);
+    await userEvent.click(screen.getByText('Amend'));
+    expect(onAmend).not.toHaveBeenCalled();
+    promptSpy.mockRestore();
+  });
 });

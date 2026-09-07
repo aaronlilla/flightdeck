@@ -335,6 +335,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
                 onOpenCost={(id) => dispatch({ type: 'sheet', sheet: { type: 'cost', id } })}
                 onCommand={onCommand}
                 onTip={(tip) => dispatch({ type: 'tip', tip })}
+                onAmend={(id, textMsg) => void runAction(() => api.amendRun(id, textMsg))}
               />
             </div>
             <ConductorRail
@@ -411,6 +412,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
                   onOpenCost={(id) => dispatch({ type: 'sheet', sheet: { type: 'cost', id } })}
                   onOpenSandbox={(id) => dispatch({ type: 'sheet', sheet: { type: 'sandbox', id } })}
                   onSendLane={(id, textMsg) => runAction(() => api.sendToRun(id, textMsg))}
+                  onAmendLane={(id, textMsg) => runAction(() => api.amendRun(id, textMsg))}
                   onOpenJournal={onOpenJournal}
                   onUndo={onUndo}
                 />

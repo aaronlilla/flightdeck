@@ -18,10 +18,13 @@ export interface LaneTileProps {
   onOpenCost: (id: string) => void;
   onCommand: (id: string, cmd: string) => void;
   onTip: (tip: TipSpec | null) => void;
+  /** C.1: a quick correction that should not wait on opening the full ticket sheet.
+   *  Optional so every other caller of this tile keeps working unchanged. */
+  onAmend?: (id: string, text: string) => void;
 }
 
 /** One board tile: id, model chip, state, step, context gauge, cost readout, freshness, one CTA. */
-export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, onTip }: LaneTileProps): JSX.Element {
+export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, onTip, onAmend }: LaneTileProps): JSX.Element {
   const st = stateOf(lane.state);
   const headline = laneHeadline(lane);
   const cta = laneCta(lane);
@@ -108,13 +111,28 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 7, borderTop: '1px solid var(--line)', paddingTop: 7 }}>
         <span className={freshnessClass(fresh)} style={{ alignSelf: 'flex-start' }}>{freshnessStamp(fresh)}</span>
-        <span
-          className={cta.cls}
-          style={{ padding: '7px 9px', fontSize: '9.5px', width: '100%' }}
-          onClick={(e) => { e.stopPropagation(); onCommand(lane.id, cta.cmd); }}
-        >
-          {cta.label}
-        </span>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <span
+            className={cta.cls}
+            style={{ padding: '7px 9px', fontSize: '9.5px', flex: 1 }}
+            onClick={(e) => { e.stopPropagation(); onCommand(lane.id, cta.cmd); }}
+          >
+            {cta.label}
+          </span>
+          {onAmend ? (
+            <span
+              className="btnS"
+              style={{ padding: '7px 9px', fontSize: '9.5px', flex: 'none' }}
+              onClick={(e) => {
+                e.stopPropagation();
+                const text = window.prompt(`amend ${lane.id}…`);
+                if (text) onAmend(lane.id, text);
+              }}
+            >
+              Amend
+            </span>
+          ) : null}
+        </div>
       </div>
     </div>
   );
