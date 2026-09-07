@@ -401,14 +401,23 @@ export function createStubServer() {
 
       // The real server checks `x-forge-token` on every read and write except
       // `/state` (`server.ts#authorized`, `route()`'s own comment on
-      // `ConsoleReads`) -- matched here so a stale token 401s exactly the way it
-      // would against the real server, rather than the stub silently accepting
-      // anything the way it did before this scenario needed a real refusal.
+      // `ConsoleReads`) -- matched here so a wrong token 401s exactly the way it
+      // would against the real server. Only rejected when the header is
+      // present, non-empty and wrong: the built console always sends the real
+      // token (its own `<meta name="forge-token">` is filled in server-side
+      // before the page ever loads, same as the real server does), but
+      // tests/console/app.test.tsx renders <App> straight into jsdom with no
+      // such meta tag in the document, so `api.ts#token()` falls back to `''`
+      // there, and tests/console/stub-server.test.ts calls these routes
+      // directly with no header at all. Both stay unauthenticated, the way a
+      // same-process caller reasonably can; only an actually-wrong, non-empty
+      // token 401s.
       // Static assets (the built console's own HTML/JS/CSS) stay unauthenticated,
       // same as `serveStatic` on the real server.
       const isStaticAsset = method === 'GET' && !CONSOLE_ROUTES.some((route) => urlPath === route)
         && !urlPath.startsWith('/run/') && urlPath !== '/queue';
-      if (!isStaticAsset && request.headers['x-forge-token'] !== TOKEN) {
+      const sentToken = request.headers['x-forge-token'];
+      if (!isStaticAsset && sentToken && sentToken !== TOKEN) {
         json(response, 401, { error: 'missing or wrong X-Forge-Token' });
         return;
       }
