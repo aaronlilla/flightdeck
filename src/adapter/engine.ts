@@ -65,8 +65,26 @@ export interface EngineConfig {
   maxTurns?: number;
   /** Tool servers the session may reach. The runner registers exactly one. */
   mcpServers?: Options['mcpServers'];
-  /** When set, the only tools the session may use. */
+  /**
+   * Tools that are auto-allowed without a permission prompt. This does NOT restrict
+   * which tools the model can reach -- the SDK's own doc for `allowedTools` says so
+   * explicitly ("To restrict which tools are available, use the `tools` option
+   * instead"), and a `bypassPermissions` session skips the permission layer this field
+   * belongs to entirely. `[]` here means no tool skips a prompt, never "no tools" --
+   * see `tools` below for the field that actually disables tools.
+   */
   allowedTools?: string[];
+  /**
+   * The base set of built-in tools the session may even attempt. `[]` disables every
+   * built-in tool outright (the SDK's own words: "Disable all built-in tools"),
+   * regardless of `permissionMode` or `canUseTool` -- unlike `allowedTools`, this is
+   * not a permission decision the model can be routed around. The reasoner seam
+   * (`reasoner-claude.ts`) sets this, because its own `allowedTools: []` was found
+   * (2026-09-07) to still let a lens session run a real `Bash`/`Read` call under
+   * `bypassPermissions`, burning its one bounded turn on the tool call instead of an
+   * answer and ending the session with no text at all.
+   */
+  tools?: string[];
   /** How much effort the model puts into its response: the class's own choice, not the
    *  SDK's per-model default. */
   effort?: Options['effort'];
@@ -154,6 +172,7 @@ export function buildOptions(
   if (config.maxTurns !== undefined) options.maxTurns = config.maxTurns;
   if (config.mcpServers) options.mcpServers = config.mcpServers;
   if (config.allowedTools) options.allowedTools = config.allowedTools;
+  if (config.tools) options.tools = config.tools;
   if (config.effort) options.effort = config.effort;
   if (config.systemPrompt !== undefined) options.systemPrompt = config.systemPrompt;
 
