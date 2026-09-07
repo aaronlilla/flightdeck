@@ -171,6 +171,51 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     await refresh();
   }, [appendReceipt, refresh]);
 
+  const resolveConfirm = useCallback((k: string, confirmed: boolean) => {
+    dispatch({
+      type: 'thread',
+      thread: state.thread.map((m) => (m.k === k ? { ...m, resolved: confirmed ? 'confirmed' : 'declined' } : m)),
+    });
+    if (confirmed && pendingConfirm && pendingConfirm.k === k) {
+      const fn = pendingConfirm.cmd === 'kill' ? () => api.killRun(pendingConfirm.id, 'operator confirmed') : () => api.mergeRun(pendingConfirm.id);
+      void runAction(fn);
+    }
+    setPendingConfirm(null);
+  }, [state.thread, pendingConfirm, runAction]);
+
+  // The prototype's own `handle(text)` -- confirm/decline resolution, else a
+  // POST /command round trip -- runs identically whether the text was typed into
+  // the composer or produced by a button/chip. Only the operator-bubble echo
+  // differs by call site (`send()` vs. a direct method call), so that split lives
+  // one level up in onRailSend/onRailCommand rather than here.
+  const processCommand = useCallback((text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    if (pendingConfirm && trimmed.startsWith('confirm ')) { resolveConfirm(pendingConfirm.k, true); return; }
+    if (pendingConfirm && trimmed.startsWith('decline ')) { resolveConfirm(pendingConfirm.k, false); return; }
+    const confirmMatch = trimmed.match(/^confirm (.+)$/);
+    const declineMatch = trimmed.match(/^decline (.+)$/);
+    if (confirmMatch) { resolveConfirm(confirmMatch[1] as string, true); return; }
+    if (declineMatch) { resolveConfirm(declineMatch[1] as string, false); return; }
+    void (async () => {
+      try {
+        const response = await api.sendCommand(trimmed);
+        if (response.cards.length > 0) dispatch({ type: 'thread-append', messages: response.cards });
+      } catch (caught) {
+        appendReceipt(null, caught instanceof api.ApiError ? caught.message : 'the command did not go through', false);
+      }
+      await refresh();
+    })();
+  }, [pendingConfirm, resolveConfirm, appendReceipt, refresh]);
+
+  // D2.2: TicketSheet's own run-thread `MessageCard` wires `onCommand` to
+  // `(text) => onCommand(lane.id, text)` -- this same exact-match switch. A
+  // question/plan/confirm card's own button sends free text like
+  // `answer ask-bbz-118 nullable + backfill`, which matches none of the CTA
+  // strings below. Rather than give the sheet a second entry point into
+  // `processCommand`, anything this switch does not recognize as one of the
+  // board's own CTA commands falls through to it -- the sheet and the rail end
+  // up on the exact same command path either way.
   const onCommand = useCallback((id: string, cmd: string) => {
     const lane = state.lanes.find((l) => l.id === id);
     if (cmd === 'kill' || cmd === 'merge') {
@@ -216,44 +261,8 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     else if (cmd === 'compact') void runAction(() => api.compactRun(id));
     else if (cmd === 'verify') void runAction(() => api.verifyRun(id));
     else if (cmd === 'reopen') void runAction(() => api.reopenRun(id));
-  }, [state.lanes, appendReceipt, refresh, runAction]);
-
-  const resolveConfirm = useCallback((k: string, confirmed: boolean) => {
-    dispatch({
-      type: 'thread',
-      thread: state.thread.map((m) => (m.k === k ? { ...m, resolved: confirmed ? 'confirmed' : 'declined' } : m)),
-    });
-    if (confirmed && pendingConfirm && pendingConfirm.k === k) {
-      const fn = pendingConfirm.cmd === 'kill' ? () => api.killRun(pendingConfirm.id, 'operator confirmed') : () => api.mergeRun(pendingConfirm.id);
-      void runAction(fn);
-    }
-    setPendingConfirm(null);
-  }, [state.thread, pendingConfirm, runAction]);
-
-  // The prototype's own `handle(text)` -- confirm/decline resolution, else a
-  // POST /command round trip -- runs identically whether the text was typed into
-  // the composer or produced by a button/chip. Only the operator-bubble echo
-  // differs by call site (`send()` vs. a direct method call), so that split lives
-  // one level up in onRailSend/onRailCommand rather than here.
-  const processCommand = useCallback((text: string) => {
-    const trimmed = text.trim();
-    if (!trimmed) return;
-    if (pendingConfirm && trimmed.startsWith('confirm ')) { resolveConfirm(pendingConfirm.k, true); return; }
-    if (pendingConfirm && trimmed.startsWith('decline ')) { resolveConfirm(pendingConfirm.k, false); return; }
-    const confirmMatch = trimmed.match(/^confirm (.+)$/);
-    const declineMatch = trimmed.match(/^decline (.+)$/);
-    if (confirmMatch) { resolveConfirm(confirmMatch[1] as string, true); return; }
-    if (declineMatch) { resolveConfirm(declineMatch[1] as string, false); return; }
-    void (async () => {
-      try {
-        const response = await api.sendCommand(trimmed);
-        if (response.cards.length > 0) dispatch({ type: 'thread-append', messages: response.cards });
-      } catch (caught) {
-        appendReceipt(null, caught instanceof api.ApiError ? caught.message : 'the command did not go through', false);
-      }
-      await refresh();
-    })();
-  }, [pendingConfirm, resolveConfirm, appendReceipt, refresh]);
+    else processCommand(cmd);
+  }, [state.lanes, appendReceipt, refresh, runAction, processCommand]);
 
   // Typed composer text (and the rail's quick-command chips, which the prototype
   // also routes through `send()`) echoes an operator bubble before processing.

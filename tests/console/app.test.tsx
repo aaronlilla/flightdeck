@@ -120,6 +120,22 @@ describe('App', () => {
     expect(screen.queryByText(/I understand: pause, resume, kill/)).not.toBeInTheDocument();
   });
 
+  it('D2.2: answering a question from inside its own ticket sheet resumes the lane, same as answering from the rail', async () => {
+    // TicketSheet's own run-thread MessageCard wired `onCommand` to `(text) =>
+    // onCommand(lane.id, text)`, which App.tsx routed through the exact-match CTA
+    // switch its board tiles use ('kill' | 'merge' | 'watch' | ... | 'reopen'). A
+    // question card's own option button sends free text like `answer ask-bbz-118
+    // nullable + backfill`, which matches none of those exact strings and fell
+    // through with no else branch -- a silent no-op, leaving the lane parked.
+    render(<App eventStreamOptions={{ WebSocketImpl: FakeSocket as unknown as typeof WebSocket }} />);
+    await waitFor(() => expect(screen.getByTestId('lane-BBZ-118')).toBeInTheDocument());
+    await userEvent.click(screen.getByTestId('lane-BBZ-118'));
+    await waitFor(() => expect(screen.getByTestId('ticket-sheet')).toBeInTheDocument());
+    const sheet = screen.getByTestId('ticket-sheet');
+    await userEvent.click(within(sheet).getByText('nullable + backfill', { exact: true }));
+    await waitFor(() => expect(screen.getByTestId('lane-BBZ-118')).toHaveAttribute('data-state', 'running'));
+  });
+
   it('shows the disconnected banner once the feed drops', async () => {
     render(<App eventStreamOptions={{ WebSocketImpl: FakeSocket as unknown as typeof WebSocket }} />);
     await waitFor(() => expect(screen.getByTestId('lane-FLT-201')).toBeInTheDocument());
