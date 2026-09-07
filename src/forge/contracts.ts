@@ -259,6 +259,16 @@ export const FORGE_EVENT_NAMES = [
   // `queue.tick-error` for a worker tick that threw before any item advanced.
   'queue.planning', 'queue.planned', 'queue.launched', 'queue.parked', 'queue.failed',
   'queue.review', 'queue.tick-error',
+  // The self-heal stream (B). `queue.paused`: the queue tick backs off to a 10 minute
+  // drip after three identical consecutive `queue.tick-error`s in a row (B.1).
+  // `run.relaunched`: a worker that died mid-tool gets resumed once on the same
+  // worktree; a second death parks it for good (B.2). `registry.reaped`: a registry
+  // row whose pid is provably gone, with a park record older than the 4 hour bound,
+  // gets released with no process ever signalled (B.3). `chain.worktree.reclaimed`:
+  // a `git worktree add` that found a branch already checked out with no live
+  // registry row behind it removes that worktree and retries the add once, instead
+  // of blocking the whole packet forever (B.4).
+  'queue.paused', 'run.relaunched', 'registry.reaped', 'chain.worktree.reclaimed',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];
