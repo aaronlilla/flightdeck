@@ -78,6 +78,66 @@ export function modelAlias(modelId: string | null | undefined): string {
   return base;
 }
 
+/** A brief's first `# ` heading, its `Self finding:` marker and its own ticket-key
+ *  prefix stripped -- the human-facing layer (2026-09-07): a queue item and a chain
+ *  packet both carry a brief on disk, and that heading is the one place either already
+ *  states, in a person's own words, what the lane is for. `null` for a brief with no
+ *  top-level heading at all, or one that is nothing but the prefix once it is stripped --
+ *  never the run id, and never the raw unstripped line. */
+export function titleFromHeading(brief: string, ticket: string | null): string | null {
+  const match = /^#[ \t]+(.+)$/m.exec(brief);
+  if (!match) return null;
+  let text = match[1]!.trim();
+  text = text.replace(/^self finding:\s*/i, '');
+  if (ticket) {
+    const escaped = ticket.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    text = text.replace(new RegExp(`^${escaped}\\s*:?\\s*`, 'i'), '');
+  }
+  text = text.trim();
+  return text || null;
+}
+
+export interface TitleInput {
+  kind: LaneKind;
+  ticket: string | null;
+  /** Already read and stripped by `titleFromHeading`, or `null` when no brief exists on
+   *  disk (or none is on record) for this lane. */
+  briefHeading: string | null;
+  /** `FORGE_JIRA_SITE`, or `null` when it is unset -- a ticket/chain lane still titles
+   *  off its ticket key with no site configured, just with nothing to link to. */
+  jiraSite: string | null;
+  /** The lane's own PR url, already computed, for a hotfix/brief lane's source link. */
+  prUrl: string | null;
+}
+
+function jiraUrl(site: string | null, ticket: string | null): string | null {
+  return site && ticket ? `${site}/browse/${ticket}` : null;
+}
+
+/** `title`/`sourceUrl` (2026-09-07): what a person needs to recognise a lane and open
+ *  where it came from, without decoding its run id. A probe needs no lookup at all; a
+ *  ticket or chain lane titles off its brief (falling back to the bare ticket key, never
+ *  the run id) and links Jira; a hotfix or pasted brief links its own PR instead, since
+ *  neither one ever had a ticket; a self finding and a manual run never carry a source
+ *  link -- neither one was filed anywhere else. */
+export function titleFor(input: TitleInput): { title: string | null; sourceUrl: string | null } {
+  switch (input.kind) {
+    case 'probe':
+      return { title: 'Live probe of the runner', sourceUrl: null };
+    case 'self':
+      return { title: input.briefHeading, sourceUrl: null };
+    case 'ticket':
+    case 'chain':
+      return { title: input.briefHeading ?? input.ticket, sourceUrl: jiraUrl(input.jiraSite, input.ticket) };
+    case 'hotfix':
+    case 'brief':
+      return { title: input.briefHeading, sourceUrl: input.prUrl };
+    case 'manual':
+    default:
+      return { title: input.briefHeading, sourceUrl: null };
+  }
+}
+
 export interface ChainLink {
   key: string;
   runState: RunState | undefined;
@@ -517,6 +577,19 @@ export function computeLanes(input: LanesInput, now: number): LanesResponse {
     tokensPerMin += built.tokensPerMin;
     return built;
   });
+
+  // H1.5: how many lanes share a ticket key -- three `jira_BBZ-89_*` chains folding
+  // into one card, rather than three identical-looking tiles nobody can tell apart.
+  // 1 for a lane whose ticket is null (nothing to group it with) or that shares its
+  // ticket with no other lane on the board.
+  const ticketCounts = new Map<string, number>();
+  for (const built of lanes) {
+    if (!built.ticket) continue;
+    ticketCounts.set(built.ticket, (ticketCounts.get(built.ticket) ?? 0) + 1);
+  }
+  for (const built of lanes) {
+    built.attempts = built.ticket ? ticketCounts.get(built.ticket)! : 1;
+  }
 
   return {
     at: now, lanes, tokensToday: tokensToday(input.fleet.runs, now),

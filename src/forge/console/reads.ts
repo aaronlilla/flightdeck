@@ -7,21 +7,22 @@
  * given its inputs; this class is the only place that reads a real file or shells out.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { run as execRun } from '../exec.js';
 import { Inbox } from '../inbox.js';
 import { JournalCache } from '../journal.js';
-import { forgeHome, inboxDir, lanesDir, registryDir, runDir, runsDir } from '../paths.js';
+import { forgeHome, inboxDir, lanesDir, queuePath as defaultQueuePath, registryDir, runDir, runsDir } from '../paths.js';
 import { foldChainState, type ChainPacketState } from '../chain.js';
 import { classFor, classNames, governorBudget, policyPath } from '../policy.js';
+import { QueueStore } from '../intake/queueStore.js';
 import { Registry } from '../registry.js';
 import type { StuckSignal } from '../liveness.js';
 import { Lanes, type LaneRecord } from '../supervisor.js';
 import { RunInbox } from '../runinbox.js';
 import type {
-  Caps, JournalResponse, LanesResponse, ProposalsResponse, RunCostResponse, RunJournalResponse,
+  Caps, JournalResponse, Lane, LanesResponse, ProposalsResponse, RunCostResponse, RunJournalResponse,
   RunPrResponse, RunSandboxResponse, RunThreadResponse, ThreadResponse,
 } from '../../shared/console-model.js';
 import { capsOverridesPath, computeCaps, readCapsOverrides } from './caps-read.js';
@@ -29,7 +30,7 @@ import { ensureHardTokens } from './caps-write.js';
 import { computeCostSteps, findCapEnforcementFailure } from './cost-steps.js';
 import { actionsLedgerPath, computeJournal, readActionsLedger } from './journal-route.js';
 import { computeJournalNarrative } from './journal-narrative.js';
-import { computeLanes, tokensToday, windowLanes, type LanesInput } from './lanes.js';
+import { computeLanes, tokensToday, titleFor, titleFromHeading, windowLanes, type LanesInput } from './lanes.js';
 import { computeRunPr, prCachePath, readPrCache, writePrCache, type GhLookupFn, type GhPrLookup } from './pr.js';
 import { computeProposals, readRules, rulesPath } from './proposals.js';
 import { computeSandbox, newestLogFile, packetForRun, tailLogWithSeverity } from './sandbox.js';
@@ -53,6 +54,14 @@ export interface ConsoleReadsOptions {
    *  always sets this, or `GET /caps` writes into this repo's own tracked
    *  `model-policy.json` the moment `hardTokens` is absent from it. */
   modelPolicyPath?: string;
+  /** Overrides where `GET /lanes` reads the intake queue's own log from, to join a
+   *  queue-sourced lane to its item (H1.1: the item's brief and PR carry the title and
+   *  source link a bare run id cannot). Defaults to `queuePath()`, which follows
+   *  `FORGE_HOME`. A specimen only. */
+  queueStore?: QueueStore;
+  /** Overrides `FORGE_JIRA_SITE` for `GET /lanes`'s own title/sourceUrl fields. A
+   *  specimen only -- production always reads the real environment. */
+  jiraSite?: string | null;
 }
 
 /** The lane's own burn rate in tokens/hour, off the journal's real cumulative total for
@@ -105,6 +114,10 @@ export class ConsoleReads {
 
   private readonly modelPolicyPath: string;
 
+  private readonly queueStore: QueueStore;
+
+  private readonly jiraSite: string | null;
+
   constructor(options: ConsoleReadsOptions = {}) {
     this.forgeHomeDir = options.forgeHomeDir ?? forgeHome();
     this.lanes = options.lanes ?? new Lanes(lanesDir());
@@ -115,6 +128,8 @@ export class ConsoleReads {
     this.ghLookup = options.ghLookup ?? defaultGhLookup();
     this.stuckFn = options.stuck ?? (() => []);
     this.modelPolicyPath = options.modelPolicyPath ?? policyPath();
+    this.queueStore = options.queueStore ?? new QueueStore(defaultQueuePath());
+    this.jiraSite = options.jiraSite !== undefined ? options.jiraSite : (process.env['FORGE_JIRA_SITE'] ?? null);
   }
 
   private chain(): Map<string, ChainPacketState> {
@@ -221,7 +236,32 @@ export class ConsoleReads {
       prFor: (run) => prCache[run]?.pr ?? null,
       tokensPerHour: (lane) => tokensPerHour(lane, fleet.runs[lane.slug]?.tokensUsed ?? 0, now),
     };
-    return windowLanes(computeLanes(input, now), now, all);
+    const response = windowLanes(computeLanes(input, now), now, all);
+    return { ...response, lanes: response.lanes.map((lane) => this.withHumanFields(lane, chain)) };
+  }
+
+  /** H1.1: `title`/`sourceUrl`, off whichever source actually named this lane -- a
+   *  queue item (by `runKey`), a chain packet (by `launched.runKey`), or a registered
+   *  run's own briefPath for a manual one. A probe needs none of these and titles the
+   *  same way every time. */
+  private withHumanFields(lane: Lane, chain: Map<string, ChainPacketState>): Lane {
+    let briefPath: string | null = null;
+    let prUrl: string | null = lane.pr?.url ?? null;
+
+    if (lane.kind === 'ticket' || lane.kind === 'brief' || lane.kind === 'hotfix' || lane.kind === 'self') {
+      const item = this.queueStore.all().find((row) => row.runKey === lane.id);
+      briefPath = item?.briefPath ?? null;
+      prUrl = prUrl ?? item?.pr?.url ?? null;
+    } else if (lane.kind === 'chain') {
+      const packet = packetForRun(chain, lane.id);
+      briefPath = packet?.briefPath ?? null;
+    } else if (lane.kind === 'manual') {
+      briefPath = this.registry.get(lane.id)?.briefPath ?? null;
+    }
+
+    const briefHeading = briefPath ? readBriefHeading(briefPath, lane.ticket) : null;
+    const { title, sourceUrl } = titleFor({ kind: lane.kind, ticket: lane.ticket, briefHeading, jiraSite: this.jiraSite, prUrl });
+    return { ...lane, title, sourceUrl };
   }
 
   private threadResponse(): ThreadResponse {
@@ -309,6 +349,18 @@ export class ConsoleReads {
     const lane = this.lanesResponse(true).lanes.find((l) => l.id === run);
     if (!lane) return { entries: [] };
     return { entries: computeJournalNarrative(lane, fleet.events, packetForRun(chain, run), now) };
+  }
+}
+
+/** Reads a brief file's own heading off disk for `withHumanFields`, or `null` for a
+ *  path that does not exist (a queue item planned but not yet written its brief, a
+ *  packet whose worker never ran) or does not parse -- never thrown. */
+function readBriefHeading(path: string, ticket: string | null): string | null {
+  if (!existsSync(path)) return null;
+  try {
+    return titleFromHeading(readFileSync(path, 'utf8'), ticket);
+  } catch {
+    return null;
   }
 }
 

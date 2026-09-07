@@ -12,7 +12,8 @@ import { describe, expect, it } from 'vitest';
 import { foldChainState, type ChainPacketState } from '../../../src/forge/chain.js';
 import { Journal, replay } from '../../../src/forge/journal.js';
 import {
-  computeLanes, hopFor, laneStateFor, meaningfulEvents, modelAlias, ticketFor, windowLanes, type LanesInput, laneKindFor } from '../../../src/forge/console/lanes.js';
+  computeLanes, hopFor, laneStateFor, meaningfulEvents, modelAlias, ticketFor, windowLanes, type LanesInput, laneKindFor,
+  titleFromHeading, titleFor } from '../../../src/forge/console/lanes.js';
 import type { RegistryRecord } from '../../../src/forge/registry.js';
 import type { Lane, LanesResponse } from '../../../src/shared/console-model.js';
 import { laneRecord, type LaneRecord } from '../../../src/forge/supervisor.js';
@@ -564,5 +565,97 @@ describe('laneKindFor', () => {
     ['forge-live-probe-b3', 'probe'], ['2026-09-04-forge-smoke-b', 'probe'], ['alpha', 'manual'],
   ])('%s is %s', (id, kind) => {
     expect(laneKindFor(id)).toBe(kind);
+  });
+});
+
+describe('titleFromHeading', () => {
+  it('reads the brief\'s first # heading', () => {
+    expect(titleFromHeading('# Fix the login redirect\n\nmore text', null)).toBe('Fix the login redirect');
+  });
+
+  it('strips a leading "Self finding:" prefix', () => {
+    expect(titleFromHeading('# Self finding: dead route\n\nbody', null)).toBe('dead route');
+  });
+
+  it('strips a leading ticket-key prefix, case-insensitively', () => {
+    expect(titleFromHeading('# BBZ-96: add the merge chip\n', 'BBZ-96')).toBe('add the merge chip');
+    expect(titleFromHeading('# bbz-96 add the merge chip\n', 'BBZ-96')).toBe('add the merge chip');
+  });
+
+  it('is null with no # heading at all', () => {
+    expect(titleFromHeading('no heading here\njust text', null)).toBeNull();
+  });
+
+  it('is null for a heading that is only the stripped prefix', () => {
+    expect(titleFromHeading('# BBZ-96\n', 'BBZ-96')).toBeNull();
+  });
+});
+
+describe('titleFor', () => {
+  it('a ticket lane titles off the brief heading and links Jira by key', () => {
+    expect(titleFor({
+      kind: 'ticket', ticket: 'BBZ-96', briefHeading: 'add the merge chip', jiraSite: 'https://x.atlassian.net', prUrl: null,
+    })).toEqual({ title: 'add the merge chip', sourceUrl: 'https://x.atlassian.net/browse/BBZ-96' });
+  });
+
+  it('a ticket lane with no brief titles off the ticket key itself, never the run id', () => {
+    expect(titleFor({
+      kind: 'ticket', ticket: 'BBZ-96', briefHeading: null, jiraSite: 'https://x.atlassian.net', prUrl: null,
+    })).toEqual({ title: 'BBZ-96', sourceUrl: 'https://x.atlassian.net/browse/BBZ-96' });
+  });
+
+  it('a ticket lane with no configured Jira site still titles, with no source link', () => {
+    expect(titleFor({
+      kind: 'ticket', ticket: 'BBZ-96', briefHeading: 'add the merge chip', jiraSite: null, prUrl: null,
+    })).toEqual({ title: 'add the merge chip', sourceUrl: null });
+  });
+
+  it('a hotfix/brief lane sources to its PR, never Jira', () => {
+    expect(titleFor({
+      kind: 'hotfix', ticket: null, briefHeading: 'patch the crash', jiraSite: 'https://x.atlassian.net', prUrl: 'https://github.com/o/n/pull/9',
+    })).toEqual({ title: 'patch the crash', sourceUrl: 'https://github.com/o/n/pull/9' });
+    expect(titleFor({
+      kind: 'brief', ticket: null, briefHeading: 'patch the crash', jiraSite: null, prUrl: 'https://github.com/o/n/pull/9',
+    })).toEqual({ title: 'patch the crash', sourceUrl: 'https://github.com/o/n/pull/9' });
+  });
+
+  it('a self lane never sources anywhere', () => {
+    expect(titleFor({ kind: 'self', ticket: null, briefHeading: 'dead route', jiraSite: 'https://x.atlassian.net', prUrl: 'https://x/pull/1' }))
+      .toEqual({ title: 'dead route', sourceUrl: null });
+  });
+
+  it('a probe lane always titles the same, with no lookup needed', () => {
+    expect(titleFor({ kind: 'probe', ticket: null, briefHeading: null, jiraSite: null, prUrl: null }))
+      .toEqual({ title: 'Live probe of the runner', sourceUrl: null });
+  });
+
+  it('a chain lane titles off its packet brief and links Jira by key', () => {
+    expect(titleFor({ kind: 'chain', ticket: 'BBZ-89', briefHeading: 'wire the merge chip', jiraSite: 'https://x.atlassian.net', prUrl: null }))
+      .toEqual({ title: 'wire the merge chip', sourceUrl: 'https://x.atlassian.net/browse/BBZ-89' });
+  });
+
+  it('a manual lane titles off a registered brief when there is one, else has no title', () => {
+    expect(titleFor({ kind: 'manual', ticket: null, briefHeading: 'ad-hoc CLI run', jiraSite: null, prUrl: null }))
+      .toEqual({ title: 'ad-hoc CLI run', sourceUrl: null });
+    expect(titleFor({ kind: 'manual', ticket: null, briefHeading: null, jiraSite: null, prUrl: null }))
+      .toEqual({ title: null, sourceUrl: null });
+  });
+});
+
+describe('computeLanes: attempts', () => {
+  it('reports how many lanes share a ticket key, and 1 for a lane that shares with none', () => {
+    const lanes = ['jira_BBZ-89_1', 'jira_BBZ-89_2', 'jira_BBZ-89_3', 'jira_BBZ-12_1'].map((slug) => laneRecord({ slug, column: slug }));
+    const result = computeLanes(baseInput({ laneRecords: lanes }), 1_000);
+    const byId = Object.fromEntries(result.lanes.map((lane) => [lane.id, lane.attempts]));
+    expect(byId['jira_BBZ-89_1']).toBe(3);
+    expect(byId['jira_BBZ-89_2']).toBe(3);
+    expect(byId['jira_BBZ-89_3']).toBe(3);
+    expect(byId['jira_BBZ-12_1']).toBe(1);
+  });
+
+  it('reports 1 for a lane with no ticket at all', () => {
+    const lane = laneRecord({ slug: 'alpha', column: 'alpha' });
+    const result = computeLanes(baseInput({ laneRecords: [lane] }), 1_000);
+    expect(result.lanes[0]!.attempts).toBe(1);
   });
 });
