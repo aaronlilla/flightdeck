@@ -231,6 +231,209 @@ describe('provisionWorktree', () => {
     expect(result.reused).toBe(true);
     expect(calls.some((c) => c.argv[0] === 'npm ci')).toBe(true);
   });
+
+  describe('B.4: orphan worktree reclaim', () => {
+    it('a live registry row owning the elsewhere path still blocks, same as with no registryRows at all', async () => {
+      const elsewhere = worktreePathFor(checkout, 'owner/other', ticket);
+      const chainEnv = envWith({ checkouts: [{ repo, value: checkout }] });
+      const exec = async (request: RunRequest): Promise<RunResult> => {
+        if (request.argv.includes('list')) {
+          return listResult(`worktree ${elsewhere}\nHEAD abcdef\nbranch refs/heads/${branch}\n`);
+        }
+        return { ok: true, tail: '' } as RunResult;
+      };
+
+      await expect(provisionWorktree({
+        chainEnv, repo, ticket, exec, fs: fakeFs(),
+        registryRows: () => [{ cwd: elsewhere, pid: 1 }],
+        isAlive: () => true,
+      })).rejects.toThrow(elsewhere);
+    });
+
+    it('no live registry row owning the elsewhere path reclaims it: removes, retries the add, and journals the reclaim', async () => {
+      const elsewhere = worktreePathFor(checkout, 'owner/other', ticket);
+      const chainEnv = envWith({ checkouts: [{ repo, value: checkout }] });
+      const calls: RunRequest[] = [];
+      let listedOnce = false;
+      const exec = async (request: RunRequest): Promise<RunResult> => {
+        calls.push(request);
+        if (request.argv.includes('list')) {
+          if (!listedOnce) {
+            listedOnce = true;
+            return listResult(`worktree ${elsewhere}\nHEAD abcdef\nbranch refs/heads/${branch}\n`);
+          }
+          return listResult('');
+        }
+        return { ok: true, tail: '' } as RunResult;
+      };
+      let reclaimed: [string, string] | undefined;
+
+      const result = await provisionWorktree({
+        chainEnv, repo, ticket, exec, fs: fakeFs(),
+        registryRows: () => [{ cwd: '/somewhere/else', pid: 1 }],
+        isAlive: () => true,
+        onReclaim: (worktreePath, reclaimedBranch) => { reclaimed = [worktreePath, reclaimedBranch]; },
+      });
+
+      expect(result.worktreePath).toBe(worktreePath);
+      expect(reclaimed).toEqual([elsewhere, branch]);
+      const remove = calls.find((c) => c.argv.includes('remove'));
+      expect(remove?.argv).toContain(elsewhere);
+      const add = calls.find((c) => c.argv.includes('add'));
+      expect(add?.argv).toContain(worktreePath);
+    });
+
+    it('a registry row owning the elsewhere path but whose pid is dead still reclaims it', async () => {
+      const elsewhere = worktreePathFor(checkout, 'owner/other', ticket);
+      const chainEnv = envWith({ checkouts: [{ repo, value: checkout }] });
+      const exec = async (request: RunRequest): Promise<RunResult> => {
+        if (request.argv.includes('list')) {
+          return listResult(`worktree ${elsewhere}\nHEAD abcdef\nbranch refs/heads/${branch}\n`);
+        }
+        return { ok: true, tail: '' } as RunResult;
+      };
+
+      const result = await provisionWorktree({
+        chainEnv, repo, ticket, exec, fs: fakeFs(),
+        registryRows: () => [{ cwd: elsewhere, pid: 999_999 }],
+        isAlive: () => false,
+      });
+
+      expect(result.worktreePath).toBe(worktreePath);
+    });
+
+    it('a failed reclaim still blocks, naming both the original conflict and the remove failure', async () => {
+      const elsewhere = worktreePathFor(checkout, 'owner/other', ticket);
+      const chainEnv = envWith({ checkouts: [{ repo, value: checkout }] });
+      const exec = async (request: RunRequest): Promise<RunResult> => {
+        if (request.argv.includes('list')) {
+          return listResult(`worktree ${elsewhere}\nHEAD abcdef\nbranch refs/heads/${branch}\n`);
+        }
+        if (request.argv.includes('remove')) return { ok: false, tail: 'worktree has modified or untracked files' } as RunResult;
+        return { ok: true, tail: '' } as RunResult;
+      };
+
+      await expect(provisionWorktree({
+        chainEnv, repo, ticket, exec, fs: fakeFs(),
+        registryRows: () => [],
+        isAlive: () => true,
+      })).rejects.toThrow(/modified or untracked files/);
+    });
+  });
+
+  describe('B.7: main-checkout guard', () => {
+    it('refuses a checkout resolving to a configured main checkout when the lock is not held', async () => {
+      const chainEnv = envWith({ checkouts: [{ repo, value: checkout }] });
+      process.env['FORGE_MAIN_CHECKOUTS'] = `${checkout}=main-checkout-fake`;
+      try {
+        await expect(provisionWorktree({
+          chainEnv, repo, ticket, fs: fakeFs(), hasLock: () => false,
+        })).rejects.toThrow(/main-checkout-fake/);
+      } finally {
+        delete process.env['FORGE_MAIN_CHECKOUTS'];
+      }
+    });
+
+    it('proceeds when the configured lock is held', async () => {
+      const chainEnv = envWith({ checkouts: [{ repo, value: checkout }] });
+      const exec = async (request: RunRequest): Promise<RunResult> => {
+        if (request.argv.includes('list')) return listResult('');
+        return { ok: true, tail: '' } as RunResult;
+      };
+      process.env['FORGE_MAIN_CHECKOUTS'] = `${checkout}=main-checkout-fake`;
+      try {
+        const result = await provisionWorktree({
+          chainEnv, repo, ticket, exec, fs: fakeFs(), hasLock: (name) => name === 'main-checkout-fake',
+        });
+        expect(result.worktreePath).toBe(worktreePath);
+      } finally {
+        delete process.env['FORGE_MAIN_CHECKOUTS'];
+      }
+    });
+
+    it('with no hasLock at all, an otherwise-configured main checkout runs unguarded (opt-in only)', async () => {
+      const chainEnv = envWith({ checkouts: [{ repo, value: checkout }] });
+      const exec = async (request: RunRequest): Promise<RunResult> => {
+        if (request.argv.includes('list')) return listResult('');
+        return { ok: true, tail: '' } as RunResult;
+      };
+      process.env['FORGE_MAIN_CHECKOUTS'] = `${checkout}=main-checkout-fake`;
+      try {
+        const result = await provisionWorktree({ chainEnv, repo, ticket, exec, fs: fakeFs() });
+        expect(result.worktreePath).toBe(worktreePath);
+      } finally {
+        delete process.env['FORGE_MAIN_CHECKOUTS'];
+      }
+    });
+
+  });
+});
+
+describe('B.8: runWorktreeSetup serializes per repo', () => {
+  it('two concurrent setups for the same repo never overlap', async () => {
+    const order: string[] = [];
+    let inFlight = 0;
+    let sawOverlap = false;
+    const chainEnv = envWith({ worktreeSetup: [{ repo: 'owner/name', value: 'npm ci' }] });
+    const exec = async (): Promise<RunResult> => {
+      inFlight += 1;
+      if (inFlight > 1) sawOverlap = true;
+      order.push('start');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      order.push('end');
+      inFlight -= 1;
+      return { ok: true, tail: '' } as RunResult;
+    };
+
+    await Promise.all([
+      runWorktreeSetup({ chainEnv, repo: 'owner/name', ticket: 'ABC-1', worktreePath: 'C:/wt1', exec }),
+      runWorktreeSetup({ chainEnv, repo: 'owner/name', ticket: 'ABC-2', worktreePath: 'C:/wt2', exec }),
+    ]);
+
+    expect(sawOverlap).toBe(false);
+    expect(order).toEqual(['start', 'end', 'start', 'end']);
+  });
+
+  it('setups for different repos are never serialized against each other', async () => {
+    let bothInFlightAtOnce = false;
+    let aStarted = false;
+    let bStarted = false;
+    const chainEnv = envWith({
+      worktreeSetup: [{ repo: 'owner/a', value: 'npm ci' }, { repo: 'owner/b', value: 'npm ci' }],
+    });
+    const execA = async (): Promise<RunResult> => {
+      aStarted = true;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      if (bStarted) bothInFlightAtOnce = true;
+      return { ok: true, tail: '' } as RunResult;
+    };
+    const execB = async (): Promise<RunResult> => {
+      bStarted = true;
+      if (aStarted) bothInFlightAtOnce = true;
+      return { ok: true, tail: '' } as RunResult;
+    };
+
+    await Promise.all([
+      runWorktreeSetup({ chainEnv, repo: 'owner/a', ticket: 'ABC-1', worktreePath: 'C:/wt1', exec: execA }),
+      runWorktreeSetup({ chainEnv, repo: 'owner/b', ticket: 'ABC-2', worktreePath: 'C:/wt2', exec: execB }),
+    ]);
+
+    expect(bothInFlightAtOnce).toBe(true);
+  });
+
+  it('a failed setup for one ticket does not block the next ticket on the same repo', async () => {
+    const chainEnv = envWith({ worktreeSetup: [{ repo: 'owner/name', value: 'npm ci' }] });
+    const failing = async (): Promise<RunResult> => ({ ok: false, tail: 'boom' } as RunResult);
+    const succeeding = async (): Promise<RunResult> => ({ ok: true, tail: '' } as RunResult);
+
+    await expect(runWorktreeSetup({
+      chainEnv, repo: 'owner/name', ticket: 'ABC-1', worktreePath: 'C:/wt1', exec: failing,
+    })).rejects.toThrow(/boom/);
+
+    await expect(runWorktreeSetup({
+      chainEnv, repo: 'owner/name', ticket: 'ABC-2', worktreePath: 'C:/wt2', exec: succeeding,
+    })).resolves.toBeUndefined();
+  });
 });
 
 /** E1: the argv a chain launch spawns, against the parent's own `execArgv`/`argv[1]`. */

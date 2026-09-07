@@ -15,6 +15,7 @@ import { dirname, join } from 'node:path';
 
 import type { CliResult, ForgeDeps } from './cli.js';
 import { forge } from './cli.js';
+import { refuseIfMainCheckoutUnlocked } from './coordlock.js';
 import {
   completeBriefWithVerification, runKeyForBrief,
   type ChainCouncilFn, type ChainDeps, type ChainGateFn, type ChainGh, type ChainLauncher, type ChainPlannedPacket, type ChainRunStatus,
@@ -39,6 +40,7 @@ import { resolvePlanProvider } from './intake/reasoner.js';
 import { loadPolicy } from './policy.js';
 import { reasonerFor } from './reasoner-claude.js';
 import { Journal, replay } from './journal.js';
+import { processAlive } from './registry.js';
 import { readKillSwitch } from './supervisor.js';
 
 const JIRA_ENV_VARS = ['FORGE_JIRA_SITE', 'FORGE_JIRA_EMAIL', 'FORGE_JIRA_TOKEN'] as const;
@@ -267,7 +269,7 @@ function readLogTailFile(path: string): string {
  * Split out from `provision()` so a specimen can prove this step alone, against an
  * injected `exec`, without a real git checkout underneath it.
  */
-export async function runWorktreeSetup(input: {
+async function runWorktreeSetupOnce(input: {
   chainEnv: ChainEnv; repo: string; ticket: string; worktreePath: string;
   exec?: (request: RunRequest) => Promise<RunResult>;
 }): Promise<void> {
@@ -283,6 +285,30 @@ export async function runWorktreeSetup(input: {
   if (!result.ok) {
     throw new Error(`setup command failed: ${setup}\n${tailOfCommand(result.tail, 300)}`);
   }
+}
+
+/**
+ * B.8: one setup per repo at a time. Two packets for the same repo provisioning at once
+ * (BBZ-226 and BBZ-205 queued together is exactly this) can otherwise both run
+ * `npm ci` against the same shared npm cache at once, which is the collision the
+ * roadmap's own unknowns list names. An in-process mutex keyed by repo is enough: every
+ * `forge up` process serializes its own setup commands for a given repo, one after
+ * another, rather than two racing writers to the same cache. It never blocks setup for a
+ * different repo, and a failed setup never wedges the queue for the next ticket on the
+ * same repo -- the next caller's own `runWorktreeSetupOnce` still runs, and still throws
+ * on its own merits.
+ */
+const setupQueues = new Map<string, Promise<void>>();
+
+export function runWorktreeSetup(input: {
+  chainEnv: ChainEnv; repo: string; ticket: string; worktreePath: string;
+  exec?: (request: RunRequest) => Promise<RunResult>;
+}): Promise<void> {
+  const ahead = setupQueues.get(input.repo) ?? Promise.resolve();
+  const settleAhead = ahead.catch(() => undefined);
+  const mine = settleAhead.then(() => runWorktreeSetupOnce(input));
+  setupQueues.set(input.repo, mine.catch(() => undefined));
+  return mine;
 }
 
 /**
@@ -400,9 +426,32 @@ export async function provisionWorktree(input: {
   /** Told when the base could not be refreshed, so the caller can say so rather than
    *  silently starting from a ref of unknown age. */
   onNote?: (note: string) => void;
+  /**
+   * B.4: every row the registry currently has, so a "branch already checked out
+   * elsewhere" can tell a genuinely live claim from an orphan -- a worktree `git`
+   * remembers but nothing registered ever finished cleaning up after. Omitted entirely,
+   * this stays the old behavior: block rather than guess. Given, a live row (its `pid`
+   * reported alive by `isAlive`) whose `cwd` matches the other checkout still blocks;
+   * anything else there is reclaimed -- the worktree removed and the `add` retried once.
+   */
+  registryRows?: () => Iterable<{ cwd: string; pid: number }>;
+  isAlive?: (pid: number) => boolean;
+  /** Told the path and branch reclaimed, so the caller can journal `chain.worktree.reclaimed`. */
+  onReclaim?: (worktreePath: string, branch: string) => void;
+  /**
+   * B.7: whether the coordination lock a checkout needs is currently held. Omitted, this
+   * hop runs unguarded, today's behavior. Given, a `checkout` that resolves to a
+   * configured shared main checkout (`FORGE_MAIN_CHECKOUTS`) refuses outright unless it
+   * says that lock is held -- never a workaround, coordination is the only way through.
+   */
+  hasLock?: (name: string) => boolean;
 }): Promise<ProvisionResult> {
   const checkout = checkoutFor(input.chainEnv, input.repo);
   if (!checkout) throw new Error(`no FORGE_REPO_CHECKOUTS entry for ${input.repo}`);
+  if (input.hasLock) {
+    const guard = refuseIfMainCheckoutUnlocked(checkout, input.hasLock);
+    if (!guard.ok) throw new Error(guard.reason);
+  }
   const base = baseFor(input.chainEnv, input.repo);
   const worktreePath = worktreePathFor(checkout, input.repo, input.ticket);
   const branch = branchFor(input.ticket);
@@ -445,7 +494,37 @@ export async function provisionWorktree(input: {
   if (samePath && samePath.branch === branch) {
     reused = true;
   } else if (branchElsewhere) {
-    throw new Error(`branch ${branch} is already checked out at ${branchElsewhere.path}`);
+    const isAlive = input.isAlive ?? processAlive;
+    const elsewhereTarget = normalizeWorktreePath(branchElsewhere.path);
+    const rows = input.registryRows ? [...input.registryRows()] : undefined;
+    const ownedLive = rows?.some(
+      (row) => normalizeWorktreePath(row.cwd) === elsewhereTarget && isAlive(row.pid),
+    );
+    // No `registryRows` at all keeps the old behavior: block, never guess. With one, a
+    // live registry row still blocks -- this is a real launch already working there --
+    // and only a worktree with no live owner behind it gets reclaimed.
+    if (rows === undefined || ownedLive) {
+      throw new Error(`branch ${branch} is already checked out at ${branchElsewhere.path}`);
+    }
+
+    const removed = await runner({
+      argv: ['git', '-C', checkout, 'worktree', 'remove', '--force', branchElsewhere.path],
+      cwd: checkout, owner: `chain-${input.ticket}`, cls: 'script',
+    });
+    if (!removed.ok) {
+      throw new Error(
+        `branch ${branch} is already checked out at ${branchElsewhere.path}, and reclaiming `
+        + `the orphan worktree failed: ${tailOfCommand(removed.tail, 300)}`,
+      );
+    }
+    input.onReclaim?.(branchElsewhere.path, branch);
+
+    fs.mkdirSync(dirname(worktreePath), { recursive: true });
+    const add = await runner({
+      argv: ['git', '-C', checkout, 'worktree', 'add', '-B', branch, worktreePath, `origin/${base}`],
+      cwd: checkout, owner: `chain-${input.ticket}`, cls: 'script',
+    });
+    if (!add.ok) throw new Error(tailOfCommand(add.tail));
   } else {
     fs.mkdirSync(dirname(worktreePath), { recursive: true });
     const add = await runner({
@@ -471,7 +550,21 @@ export async function provisionWorktree(input: {
 export function chainLauncher(chainEnv: ChainEnv, fleetConfigDir: string): ChainLauncher {
   return {
     async provision({ ticket, repo }) {
-      return provisionWorktree({ chainEnv, repo, ticket });
+      return provisionWorktree({
+        chainEnv, repo, ticket,
+        registryRows: () => new Registry(registryDir()).all(),
+        onReclaim: (worktreePath, branch) => {
+          const journal = new Journal(journalPath());
+          try {
+            journal.append({
+              event: 'chain.worktree.reclaimed', actor: 'chain',
+              worktreePath, branch, ticket, repo,
+            });
+          } finally {
+            journal.close();
+          }
+        },
+      });
     },
 
     async launch({ ticket, repo, briefPath, worktreePath, branch }) {
