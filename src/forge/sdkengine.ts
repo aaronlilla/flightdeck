@@ -19,6 +19,7 @@
 import { Engine, buildForgeMcpServer, type EngineConfig, type ForgeToolHandlers, type PreToolVerdict, type QueryFn } from '../adapter/engine.js';
 import { FORGE_TOOL_NAMES } from './contracts.js';
 import { driftBlocker, readMergeable, resolveMergeable, type DriftClock, type Mergeable } from './drift.js';
+import { classifyCommand } from './command-class.js';
 import { run as execRun } from './exec.js';
 import { Gotchas } from './gotcha.js';
 import { redactFields } from './redact.js';
@@ -927,7 +928,13 @@ export class SdkEngine implements EngineLike {
             break;
           case 'tool-use':
             toolNameById.set(event.id, event.name);
-            journal.append({ event: 'tool.start', run: request.run, actor: 'worker', tool: event.name });
+            if (event.name === 'Bash' && typeof event.input['command'] === 'string') {
+              // The class travels with the row so the warden measures this call against
+              // the budget its command deserves, not `script`'s 120 s (`command-class.ts`).
+              journal.append({ event: 'tool.start', run: request.run, actor: 'worker', tool: event.name, cls: classifyCommand(event.input['command']) });
+            } else {
+              journal.append({ event: 'tool.start', run: request.run, actor: 'worker', tool: event.name });
+            }
             if (event.name === 'Bash' && typeof event.input['command'] === 'string') {
               const command = event.input['command'];
               bashCommandById.set(event.id, command);

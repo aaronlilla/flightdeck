@@ -84,7 +84,7 @@ export interface RunState {
    *  the epoch, the earliest this run may be admitted again. */
   resumeAt?: number;
   /** The tool call in flight, when the last event named one and none has closed it since. */
-  currentTool?: { name: string; startedAt: number };
+  currentTool?: { name: string; startedAt: number; cls?: string };
   /** Cumulative `usage.cacheRead` across every turn, for the Warden's cost-shape check
    *  (P4.7/I2). Zero for a run that has journaled no usage yet, never undefined. */
   cacheReadTokens: number;
@@ -376,7 +376,8 @@ function foldLine(state: FleetState, line: string): void {
         break;
       case 'tool.start': {
         const toolName = String(row['tool'] ?? '');
-        run.currentTool = { name: toolName, startedAt: row.at };
+        const cls = typeof row['cls'] === 'string' ? row['cls'] : undefined;
+        run.currentTool = { name: toolName, startedAt: row.at, ...(cls ? { cls } : {}) };
         if (WRITE_TOOL_NAMES.has(toolName)) markWrote(state, row.run);
         break;
       }
