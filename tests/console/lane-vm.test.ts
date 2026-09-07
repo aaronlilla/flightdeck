@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { costClass, costTip, laneCta, laneHeadline, stepDisplay, tileCapText } from '../../src/console/laneVM.js';
+import {
+  costClass, costTip, kindLabel, laneCta, laneHeadline, mergeableWhy, plainLine, prSummaryParts, stepDisplay,
+  tileCapText, tileHeadlineParts,
+} from '../../src/console/laneVM.js';
 import type { Lane, LaneState } from '../../src/shared/console-model.js';
 
 function lane(state: LaneState, extra: Partial<Lane> = {}): Lane {
@@ -44,6 +47,35 @@ describe('laneCta', () => {
 
   it('a lane blocked on an integration offers reconnect instead', () => {
     expect(laneCta(lane('blocked', { blockedBy: 'aws' })).label).toBe('Reconnect AWS →');
+  });
+
+  // H2.1: `mergeable` governs whether a done lane's CTA is allowed to be Merge.
+  it('a done lane with mergeable ok:true still offers Merge now', () => {
+    expect(laneCta(lane('done', { mergeable: { ok: true } })).label).toBe('Merge now →');
+  });
+
+  it('a done lane with mergeable ok:false never offers a Merge button', () => {
+    const cta = laneCta(lane('done', { mergeable: { ok: false, why: 'checks are still running' } }));
+    expect(cta.label).not.toMatch(/merge/i);
+  });
+
+  it('a done lane with no mergeable info at all still offers Merge now (unknown reads as fine here)', () => {
+    expect(laneCta(lane('done', { mergeable: null })).label).toBe('Merge now →');
+  });
+});
+
+describe('mergeableWhy', () => {
+  it('is null for a done lane with no mergeable info or an ok mergeable', () => {
+    expect(mergeableWhy(lane('done', { mergeable: null }))).toBeNull();
+    expect(mergeableWhy(lane('done', { mergeable: { ok: true } }))).toBeNull();
+  });
+
+  it('surfaces the why for a done lane that is not mergeable', () => {
+    expect(mergeableWhy(lane('done', { mergeable: { ok: false, why: 'checks are still running' } }))).toBe('checks are still running');
+  });
+
+  it('is null for a lane not in the done state, whatever mergeable says', () => {
+    expect(mergeableWhy(lane('running', { mergeable: { ok: false, why: 'checks are still running' } }))).toBeNull();
   });
 });
 
@@ -100,6 +132,62 @@ describe('laneHeadline', () => {
 
   it('carries the same value for main and runId when the ticket is just the run id under another name', () => {
     expect(laneHeadline(lane('running', { ticket: 'FLT-1', id: 'FLT-1' }))).toEqual({ main: 'FLT-1', runId: 'FLT-1' });
+  });
+});
+
+// H2.1: the tile headline bolds the ticket key and shows the title beside it; a lane
+// with no key shows the title alone; the run id never appears as text.
+describe('tileHeadlineParts', () => {
+  it('carries key and title separately when both are set', () => {
+    expect(tileHeadlineParts(lane('running', { ticket: 'FLT-9', title: 'the withdrawal fee is off by one', id: 'run-1' })))
+      .toEqual({ key: 'FLT-9', title: 'the withdrawal fee is off by one', runId: 'run-1' });
+  });
+
+  it('has no key when the lane carries no ticket', () => {
+    expect(tileHeadlineParts(lane('running', { ticket: null, title: 'Live probe of the runner', id: 'probe-1' })).key).toBeNull();
+  });
+
+  it('has no title when the server has not filled one in yet', () => {
+    expect(tileHeadlineParts(lane('running', { ticket: 'FLT-9', title: null, id: 'run-1' })).title).toBeNull();
+  });
+});
+
+describe('kindLabel', () => {
+  it('names every lane kind the board can show', () => {
+    expect(kindLabel('ticket')).toBe('ticket');
+    expect(kindLabel('hotfix')).toBe('hotfix');
+    expect(kindLabel('brief')).toBe('brief');
+    expect(kindLabel('self')).toBe('self');
+    expect(kindLabel('chain')).toBe('chain');
+    expect(kindLabel('probe')).toBe('probe');
+    expect(kindLabel('manual')).toBe('manual');
+  });
+});
+
+describe('plainLine', () => {
+  it('shows the server plain sentence when the lane carries one', () => {
+    expect(plainLine(lane('running', { plain: 'Working since 12:44 on a Sonnet session, 43 turns in, last did: ran tests.' })))
+      .toBe('Working since 12:44 on a Sonnet session, 43 turns in, last did: ran tests.');
+  });
+
+  it('falls back to the step display when the server has not filled plain in yet', () => {
+    expect(plainLine(lane('running', { plain: '', stepN: 2, stepTotal: 9, stepText: 'retry loop' }))).toBe('step 2/9 · retry loop');
+  });
+});
+
+describe('prSummaryParts', () => {
+  it('lays out the pr summary line pieces in order, with the number kept separate for a link', () => {
+    const pr = { no: 119, url: 'https://example.invalid/pr/119', files: 2, add: 41, del: 3, draft: true, checks: 'success' as const, verdict: 'PASS WITH NOTES', merged: false };
+    expect(prSummaryParts(pr)).toEqual({
+      no: 119,
+      url: 'https://example.invalid/pr/119',
+      rest: 'draft · checks ✓ · council PASS WITH NOTES · 2 files +41 −3',
+    });
+  });
+
+  it('omits the council segment when there is no verdict yet', () => {
+    const pr = { no: 5, url: 'https://example.invalid/pr/5', files: 1, add: 1, del: 0, draft: false, checks: 'pending' as const, verdict: null, merged: false };
+    expect(prSummaryParts(pr).rest).toBe('open · checks … · 1 files +1 −0');
   });
 });
 
