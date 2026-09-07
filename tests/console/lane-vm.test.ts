@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  costClass, costTip, groupLanesByTicket, kindLabel, laneCta, laneHeadline, mergeableWhy, plainLine, prSummaryParts,
-  stepDisplay, tileCapText, tileHeadlineParts,
+  collapseWardenEvents, costClass, costTip, groupLanesByTicket, kindLabel, laneCta, laneHeadline, mergeableWhy,
+  plainLine, prSummaryParts, stepDisplay, tileCapText, tileHeadlineParts,
 } from '../../src/console/laneVM.js';
-import type { Lane, LaneState } from '../../src/shared/console-model.js';
+import type { Lane, LaneState, Message } from '../../src/shared/console-model.js';
 
 function lane(state: LaneState, extra: Partial<Lane> = {}): Lane {
   return {
@@ -206,6 +206,30 @@ describe('groupLanesByTicket', () => {
   it('never groups two lanes with no ticket, even if their ids collide with nothing else', () => {
     const groups = groupLanesByTicket([lane('running', { id: 'a', ticket: null }), lane('running', { id: 'b', ticket: null })]);
     expect(groups).toHaveLength(2);
+  });
+});
+
+// H2.5
+describe('collapseWardenEvents', () => {
+  function ev(k: string, source: string, text = k): Message {
+    return { k, type: 'event', text, ts: 0, source };
+  }
+
+  it('collapses a run of consecutive warden ticks into one chip with a count', () => {
+    const thread = [ev('a', 'system'), ev('w1', 'warden'), ev('w2', 'warden'), ev('w3', 'warden'), ev('b', 'system')];
+    const out = collapseWardenEvents(thread);
+    expect(out.map((m) => m.text)).toEqual(['a', 'warden ×3', 'b']);
+  });
+
+  it('leaves a single warden tick alone -- no chip needed for one', () => {
+    const thread = [ev('w1', 'warden')];
+    expect(collapseWardenEvents(thread).map((m) => m.text)).toEqual(['w1']);
+  });
+
+  it('never merges two warden runs separated by something else', () => {
+    const thread = [ev('w1', 'warden'), ev('w2', 'warden'), ev('mid', 'system'), ev('w3', 'warden')];
+    const out = collapseWardenEvents(thread);
+    expect(out.map((m) => m.text)).toEqual(['warden ×2', 'mid', 'w3']);
   });
 });
 

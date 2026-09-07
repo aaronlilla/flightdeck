@@ -6,7 +6,7 @@
  */
 import { hm } from './freshness.js';
 import type { Freshness } from './freshness.js';
-import type { Lane, LaneKind, LanePr, LaneState } from '../shared/console-model.js';
+import type { Lane, LaneKind, LanePr, LaneState, Message } from '../shared/console-model.js';
 import { fmtTokens } from '../shared/format-tokens.js';
 
 export interface StateGlyph {
@@ -217,6 +217,27 @@ export function groupLanesByTicket(lanes: Lane[]): LaneGroup[] {
     groups.push({ key, lanes: members });
   }
   return groups;
+}
+
+/** H2.5: a run of consecutive warden tick events (`source: 'warden'`) collapses into
+ *  one chip carrying a count, rather than one tick line per second -- the rail's own
+ *  read of H1.9's collapsed narrative. Non-warden messages, and warden messages with
+ *  something else between them, are left exactly where they are. */
+export function collapseWardenEvents(thread: Message[]): Message[] {
+  const out: Message[] = [];
+  let run: Message[] = [];
+  const flush = (): void => {
+    if (run.length === 0) return;
+    const last = run[run.length - 1] as Message;
+    out.push(run.length === 1 ? last : { ...last, k: `warden-run-${last.k}`, text: `warden ×${run.length}` });
+    run = [];
+  };
+  for (const m of thread) {
+    if (m.type === 'event' && m.source === 'warden') run.push(m);
+    else { flush(); out.push(m); }
+  }
+  flush();
+  return out;
 }
 
 export interface TipContent {
