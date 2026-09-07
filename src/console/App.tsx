@@ -44,6 +44,11 @@ function receiptCard(jid: string | null, text: string, undoable: boolean): Messa
 export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   const [state, dispatch] = useReducer(reducer, undefined, initialState);
   const [pendingConfirm, setPendingConfirm] = useState<{ k: string; id: string; cmd: 'kill' | 'merge'; card: Message } | null>(null);
+  // H2.3: the two bulk actions in the filter bar share this same confirm-card
+  // mechanism, keyed by kind rather than by lane id.
+  const [pendingBulk, setPendingBulk] = useState<{ k: string; kind: 'retire-finished' | 'merge-ready'; card: Message } | null>(null);
+  const pendingBulkRef = useRef(pendingBulk);
+  pendingBulkRef.current = pendingBulk;
   const failCount = useRef(0);
   const mounted = useRef(true);
   const stateRef = useRef(state);
@@ -101,9 +106,13 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       // rather than letting this refetch silently erase the last line of defence before
       // an irreversible action.
       const pending = pendingConfirmRef.current;
+      const pendingBulkCard = pendingBulkRef.current;
       let incomingThread = pending && !thread.messages.some((m) => m.k === pending.k)
         ? [...thread.messages, pending.card]
         : thread.messages;
+      if (pendingBulkCard && !incomingThread.some((m) => m.k === pendingBulkCard.k)) {
+        incomingThread = [...incomingThread, pendingBulkCard.card];
+      }
       const cutoff = Date.now() - LOCAL_CARD_TTL_MS;
       localCardsRef.current = localCardsRef.current.filter((card) => card.ts >= cutoff);
       for (const card of localCardsRef.current) {
@@ -183,8 +192,66 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       const fn = pendingConfirm.cmd === 'kill' ? () => api.killRun(pendingConfirm.id, 'operator confirmed') : () => api.mergeRun(pendingConfirm.id);
       void runAction(fn);
     }
+    if (confirmed && pendingBulk && pendingBulk.k === k) {
+      if (pendingBulk.kind === 'retire-finished') {
+        void runAction(async (): Promise<{ ok: boolean; jid: string | null; message: string; undoable: boolean }> => {
+          const r = await api.postRetireFinished();
+          return { ok: r.ok, jid: null, message: `retired ${r.retired.length} lanes`, undoable: false };
+        }).then(() => {
+          void api.getLanes({ archived: true }).then((res) => dispatch({ type: 'archived-lanes', lanes: res.lanes })).catch(() => undefined);
+        });
+      } else {
+        void runAction(async (): Promise<{ ok: boolean; jid: string | null; message: string; undoable: boolean }> => {
+          const r = await api.postMergeReady();
+          const tail = r.failed.length > 0 ? `, ${r.failed.length} could not merge` : '';
+          return { ok: r.ok, jid: null, message: `merged ${r.merged.length} lanes${tail}`, undoable: false };
+        });
+      }
+    }
     setPendingConfirm(null);
-  }, [state.thread, pendingConfirm, runAction]);
+    setPendingBulk(null);
+  }, [state.thread, pendingConfirm, pendingBulk, runAction]);
+
+  const onCleanUp = useCallback(() => {
+    void (async () => {
+      try {
+        const preview = await api.getRetireFinishedPreview();
+        if (preview.items.length === 0) { appendReceipt(null, 'nothing to retire.', false); return; }
+        const k = `confirm-cleanup-${Date.now()}`;
+        const titles = preview.items.map((i) => i.title ?? i.id).join(', ');
+        const card: Message = {
+          k, type: 'confirm', text: `Retire ${preview.items.length} finished lanes:`, ts: Date.now(), source: 'console', blast: titles,
+        };
+        setPendingBulk({ k, kind: 'retire-finished', card });
+        dispatch({ type: 'thread-append', messages: [card] });
+      } catch (caught) {
+        appendReceipt(null, caught instanceof api.ApiError ? caught.message : 'clean up did not go through', false);
+      }
+    })();
+  }, [appendReceipt]);
+
+  const onMergeReady = useCallback(() => {
+    void (async () => {
+      try {
+        const preview = await api.getMergeReadyPreview();
+        if (preview.ready.length === 0 && preview.notReady.length === 0) { appendReceipt(null, 'nothing is ready to merge.', false); return; }
+        const k = `confirm-merge-ready-${Date.now()}`;
+        const readyPart = preview.ready.map((r) => (r.pr ? `${r.title ?? r.id} (PR #${r.pr.no})` : (r.title ?? r.id))).join(', ');
+        const notReadyPart = preview.notReady.map((r) => `${r.title ?? r.id}: ${r.why}`).join('; ');
+        const blast = [
+          preview.ready.length > 0 ? `ready: ${readyPart}` : null,
+          preview.notReady.length > 0 ? `not ready: ${notReadyPart}` : null,
+        ].filter(Boolean).join(' · ');
+        const card: Message = {
+          k, type: 'confirm', text: `Merge ${preview.ready.length} ready lanes:`, ts: Date.now(), source: 'console', blast,
+        };
+        setPendingBulk({ k, kind: 'merge-ready', card });
+        dispatch({ type: 'thread-append', messages: [card] });
+      } catch (caught) {
+        appendReceipt(null, caught instanceof api.ApiError ? caught.message : 'merge ready did not go through', false);
+      }
+    })();
+  }, [appendReceipt]);
 
   // The prototype's own `handle(text)` -- confirm/decline resolution, else a
   // POST /command round trip -- runs identically whether the text was typed into
@@ -264,7 +331,11 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     else if (cmd === 'compact') void runAction(() => api.compactRun(id));
     else if (cmd === 'verify') void runAction(() => api.verifyRun(id));
     else if (cmd === 'reopen') void runAction(() => api.reopenRun(id));
-    else processCommand(cmd);
+    else if (cmd === 'unretire') {
+      void runAction(() => api.unretireRun(id)).then(() => {
+        void api.getLanes({ archived: true }).then((r) => dispatch({ type: 'archived-lanes', lanes: r.lanes })).catch(() => undefined);
+      });
+    } else processCommand(cmd);
   }, [state.lanes, appendReceipt, refresh, runAction, processCommand]);
 
   // Typed composer text (and the rail's quick-command chips, which the prototype
@@ -355,12 +426,23 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
           <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
               <Filters
-                filter={state.filter} sort={state.sort} repos={repos} lanes={state.lanes} now={state.now}
-                onFilter={(filter) => { dispatch({ type: 'filter', filter }); if (filter === 'all') void refresh(); }}
+                filter={state.filter} sort={state.sort} repos={repos} lanes={state.lanes}
+                archivedLanes={state.archivedLanes} showProbes={state.showProbes} now={state.now}
+                onFilter={(filter) => {
+                  dispatch({ type: 'filter', filter });
+                  if (filter === 'all') void refresh();
+                  if (filter === 'archived') {
+                    void api.getLanes({ archived: true }).then((r) => dispatch({ type: 'archived-lanes', lanes: r.lanes })).catch(() => undefined);
+                  }
+                }}
                 onSort={(sort) => dispatch({ type: 'sort', sort })}
+                onToggleProbes={() => dispatch({ type: 'toggle-probes' })}
+                onCleanUp={onCleanUp}
+                onMergeReady={onMergeReady}
               />
               <LanesGrid
-                lanes={state.lanes} filter={state.filter} sort={state.sort} feedLive={state.feed.live} now={state.now}
+                lanes={state.filter === 'archived' ? state.archivedLanes : state.lanes}
+                filter={state.filter} sort={state.sort} feedLive={state.feed.live} now={state.now} showProbes={state.showProbes}
                 onOpen={(id) => dispatch({ type: 'sheet', sheet: { type: 'ticket', id } })}
                 onOpenCost={(id) => dispatch({ type: 'sheet', sheet: { type: 'cost', id } })}
                 onCommand={onCommand}

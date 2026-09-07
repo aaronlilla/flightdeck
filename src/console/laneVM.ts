@@ -6,7 +6,7 @@
  */
 import { hm } from './freshness.js';
 import type { Freshness } from './freshness.js';
-import type { Lane, LaneState } from '../shared/console-model.js';
+import type { Lane, LaneKind, LanePr, LaneState, Message } from '../shared/console-model.js';
 import { fmtTokens } from '../shared/format-tokens.js';
 
 export interface StateGlyph {
@@ -40,7 +40,7 @@ export interface LaneCta {
 
 export type LaneCommand =
   | 'watch' | 'kill' | 'answer' | 'council' | 'resume' | 'merge'
-  | 'gate-log' | 'reconnect-aws' | 'compact' | 'verify' | 'open-pr' | 'reopen';
+  | 'gate-log' | 'reconnect-aws' | 'compact' | 'verify' | 'open-pr' | 'reopen' | 'unretire';
 
 /**
  * Exactly one CTA per lane state (HANDOFF "Board" section). `runaway` overrides
@@ -48,6 +48,8 @@ export type LaneCommand =
  * offers reconnect instead of the gate log.
  */
 export function laneCta(lane: Lane): LaneCta {
+  // H2.2/H2.3: a retired lane's only action is to come back, whatever its own state.
+  if (lane.retiredAt !== null) return { label: 'Unretire', cmd: 'unretire', cls: 'btnS' };
   if (lane.state === 'running' && lane.runaway) return { label: 'Kill attempt', cmd: 'kill', cls: 'btnR' };
   switch (lane.state) {
     case 'running':
@@ -59,6 +61,10 @@ export function laneCta(lane: Lane): LaneCta {
     case 'paused':
       return { label: 'Resume ▶', cmd: 'resume', cls: 'btnP' };
     case 'done':
+      // H2.1: `mergeable` gates the Merge button -- a lane the board itself knows
+      // would refuse (checks red, no verdict yet) offers the gate log instead of a
+      // button that only fails when clicked.
+      if (lane.mergeable && lane.mergeable.ok === false) return { label: 'Gate log →', cmd: 'gate-log', cls: 'btnS' };
       return { label: 'Merge now →', cmd: 'merge', cls: 'btnP' };
     case 'blocked':
       return lane.blockedBy === 'aws'
@@ -77,6 +83,14 @@ export function laneCta(lane: Lane): LaneCta {
   }
 }
 
+/** H2.1: the muted line under a done lane's CTA when Merge would refuse -- null for
+ *  every other state, and for a done lane whose `mergeable` is unset or ok. */
+export function mergeableWhy(lane: Lane): string | null {
+  if (lane.state !== 'done') return null;
+  if (!lane.mergeable || lane.mergeable.ok) return null;
+  return lane.mergeable.why;
+}
+
 export interface LaneHeadline {
   /** The line every headline renders: the ticket if the lane has one, else the run id. */
   main: string;
@@ -90,6 +104,46 @@ export interface LaneHeadline {
  *  shows up in `title`, matching the prototype's single-line `l.id`. */
 export function laneHeadline(lane: Lane): LaneHeadline {
   return { main: lane.ticket ?? lane.id, runId: lane.id };
+}
+
+/** H2.1: the tile's headline in three parts -- a bold `key` (the ticket), a plain
+ *  `title` beside it, and the run's own `runId`, which never renders as text and
+ *  goes only in a `title` attribute. A lane with no ticket has no key; a lane the
+ *  server has not titled yet has no title. */
+export interface TileHeadline {
+  key: string | null;
+  title: string | null;
+  runId: string;
+}
+
+export function tileHeadlineParts(lane: Lane): TileHeadline {
+  return { key: lane.ticket, title: lane.title, runId: lane.id };
+}
+
+const KIND_LABEL: Record<LaneKind, string> = {
+  ticket: 'ticket', hotfix: 'hotfix', brief: 'brief', self: 'self', chain: 'chain', probe: 'probe', manual: 'manual',
+};
+
+export function kindLabel(kind: LaneKind): string {
+  return KIND_LABEL[kind];
+}
+
+/** H2.1: the tile's step line -- the server's own one-sentence `plain` once it has
+ *  computed one, else the old `step N/M · text` reading, so a lane the fixtures or an
+ *  older server never filled `plain` in for still shows something. */
+export function plainLine(lane: Lane): string {
+  return lane.plain || stepDisplay(lane);
+}
+
+/** H2.1: the PR summary line's pieces, split so the number can render as a link and
+ *  the rest as plain text: `draft|open · checks <glyph> · council <verdict> ·
+ *  N files +A −D`. The council segment is omitted while there is no verdict yet. */
+export function prSummaryParts(pr: LanePr): { no: number; url: string; rest: string } {
+  const checksGlyph = pr.checks === 'success' ? '✓' : pr.checks === 'failure' ? '✗' : pr.checks === 'pending' ? '…' : '?';
+  const parts = [pr.draft ? 'draft' : 'open', `checks ${checksGlyph}`];
+  if (pr.verdict) parts.push(`council ${pr.verdict}`);
+  parts.push(`${pr.files} files +${pr.add} −${pr.del}`);
+  return { no: pr.no, url: pr.url, rest: parts.join(' · ') };
 }
 
 export function ctxPercent(lane: Lane): number {
@@ -139,6 +193,51 @@ export function capText(lane: Lane): string {
  *  runaway, and it still needs the warning. */
 export function tileCapText(lane: Lane): string {
   return lane.tokenCap !== null && lane.tokens > lane.tokenCap ? capText(lane) : '';
+}
+
+/** H2.2: lanes sharing a ticket key fold into one group, newest attempt first --
+ *  `Lane.attempts` is the server's own count of how many runs share the ticket;
+ *  `lanes` here is whatever subset the caller actually fetched, so a group's own
+ *  `lanes.length` (not `attempts`) is what the board can actually show a
+ *  disclosure for. A lane with no ticket never groups with anything. */
+export interface LaneGroup {
+  key: string;
+  lanes: Lane[];
+}
+
+export function groupLanesByTicket(lanes: Lane[]): LaneGroup[] {
+  const groups: LaneGroup[] = [];
+  const seen = new Set<string>();
+  for (const l of lanes) {
+    const key = l.ticket ?? l.id;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const members = l.ticket ? lanes.filter((m) => m.ticket === l.ticket) : [l];
+    members.sort((a, b) => (b.attempt - a.attempt) || (b.startedAt - a.startedAt));
+    groups.push({ key, lanes: members });
+  }
+  return groups;
+}
+
+/** H2.5: a run of consecutive warden tick events (`source: 'warden'`) collapses into
+ *  one chip carrying a count, rather than one tick line per second -- the rail's own
+ *  read of H1.9's collapsed narrative. Non-warden messages, and warden messages with
+ *  something else between them, are left exactly where they are. */
+export function collapseWardenEvents(thread: Message[]): Message[] {
+  const out: Message[] = [];
+  let run: Message[] = [];
+  const flush = (): void => {
+    if (run.length === 0) return;
+    const last = run[run.length - 1] as Message;
+    out.push(run.length === 1 ? last : { ...last, k: `warden-run-${last.k}`, text: `warden ×${run.length}` });
+    run = [];
+  };
+  for (const m of thread) {
+    if (m.type === 'event' && m.source === 'warden') run.push(m);
+    else { flush(); out.push(m); }
+  }
+  flush();
+  return out;
 }
 
 export interface TipContent {

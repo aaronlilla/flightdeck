@@ -1,6 +1,7 @@
 import type { JSX } from 'react';
 
 import type { Lane } from '../../shared/console-model.js';
+import { groupLanesByTicket } from '../laneVM.js';
 import type { Filter, Sort } from '../store.js';
 import { visibleLanes } from './LanesGrid.js';
 
@@ -12,9 +13,14 @@ export interface FiltersProps {
    *  whose lanes carry no `repo` at all renders no repo chip. */
   repos: string[];
   lanes: Lane[];
+  archivedLanes: Lane[];
+  showProbes: boolean;
   now: number;
   onFilter: (filter: Filter) => void;
   onSort: (sort: Sort) => void;
+  onToggleProbes: () => void;
+  onCleanUp: () => void;
+  onMergeReady: () => void;
 }
 
 const BASE_FILTERS: { key: Filter; label: string }[] = [
@@ -30,11 +36,17 @@ const SORTS: { key: Sort; label: string }[] = [
   { key: 'state', label: 'state' },
 ];
 
-export function Filters({ filter, sort, repos, lanes, now, onFilter, onSort }: FiltersProps): JSX.Element {
+function groupCount(lanes: Lane[], filter: Filter, sort: Sort, now: number, showProbes: boolean): number {
+  return groupLanesByTicket(visibleLanes(lanes, filter, sort, now, showProbes)).length;
+}
+
+export function Filters({
+  filter, sort, repos, lanes, archivedLanes, showProbes, now, onFilter, onSort, onToggleProbes, onCleanUp, onMergeReady,
+}: FiltersProps): JSX.Element {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 16px 0', flexWrap: 'wrap' }}>
       {BASE_FILTERS.map((f) => {
-        const count = visibleLanes(lanes, f.key, sort, now).length;
+        const count = groupCount(lanes, f.key, sort, now, showProbes);
         const label = f.key === 'needs-me' ? `needs me · ${count} lanes` : `${f.label} ${count}`;
         return (
           <span key={f.key} className={`chip chipB ${filter === f.key ? 'chipOn' : ''}`} onClick={() => onFilter(f.key)}>
@@ -47,7 +59,18 @@ export function Filters({ filter, sort, repos, lanes, now, onFilter, onSort }: F
           {repo}
         </span>
       ))}
+      <span
+        className={`chip chipB ${filter === 'archived' ? 'chipOn' : ''}`}
+        onClick={() => onFilter('archived')}
+      >
+        Archived {archivedLanes.length}
+      </span>
+      <span className={`chip chipB ${showProbes ? 'chipOn' : ''}`} onClick={onToggleProbes}>
+        Probes
+      </span>
       <span style={{ flex: 1 }} />
+      <span className="btnS" style={{ padding: '6px 10px', fontSize: '9.5px' }} onClick={onCleanUp}>Clean up</span>
+      <span className="btnP" style={{ padding: '6px 10px', fontSize: '9.5px' }} onClick={onMergeReady}>Merge ready</span>
       <span className="m" style={{ fontSize: '10.5px', color: 'var(--ink2)', whiteSpace: 'nowrap' }}>
         sort:
         {SORTS.map((s) => (

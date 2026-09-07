@@ -12,7 +12,9 @@ import type {
   ConsoleStateSummary,
   IntegrationsResponse,
   JournalResponse,
+  LaneStory,
   LanesResponse,
+  MergeReadyReport,
   ProposalsResponse,
   QueueAddRequest,
   QueueAddResponse,
@@ -56,7 +58,8 @@ export function getState(): Promise<ConsoleStateSummary> {
   return call<ConsoleStateSummary>('/state');
 }
 
-export function getLanes(params?: { all?: boolean }): Promise<LanesResponse> {
+export function getLanes(params?: { all?: boolean; archived?: boolean }): Promise<LanesResponse> {
+  if (params?.archived) return call<LanesResponse>('/lanes?archived=1');
   return call<LanesResponse>(params?.all ? '/lanes?all=1' : '/lanes');
 }
 
@@ -105,6 +108,43 @@ export function getRunJournal(id: string): Promise<RunJournalResponse> {
   return call<RunJournalResponse>(`/run/${encodeURIComponent(id)}/journal`);
 }
 
+/** H2.4: the ticket sheet's Story section. */
+export function getRunStory(id: string): Promise<LaneStory> {
+  return call<LaneStory>(`/run/${encodeURIComponent(id)}/story`);
+}
+
+/** H2.3: what a bulk retire would do (`GET /retire-finished`), and doing it
+ *  (`POST /retire-finished`). The preview's own shape isn't in the frozen shared
+ *  contract yet -- named here rather than in console-model.ts, mirrored by the stub. */
+export interface RetireFinishedPreview {
+  items: { id: string; title: string | null }[];
+}
+export interface RetireFinishedResult {
+  ok: boolean;
+  retired: string[];
+}
+export function getRetireFinishedPreview(): Promise<RetireFinishedPreview> {
+  return call<RetireFinishedPreview>('/retire-finished');
+}
+export function postRetireFinished(): Promise<RetireFinishedResult> {
+  return post<RetireFinishedResult>('/retire-finished', {});
+}
+
+/** H2.3: what a bulk merge would do (`GET /merge-ready`, `MergeReadyReport` --
+ *  already in the shared contract), and doing it (`POST /merge-ready`). The
+ *  per-lane outcome shape for the POST isn't in the contract yet, same as above. */
+export interface MergeReadyResult {
+  ok: boolean;
+  merged: string[];
+  failed: { id: string; why: string }[];
+}
+export function getMergeReadyPreview(): Promise<MergeReadyReport> {
+  return call<MergeReadyReport>('/merge-ready');
+}
+export function postMergeReady(): Promise<MergeReadyResult> {
+  return post<MergeReadyResult>('/merge-ready', {});
+}
+
 function post<T>(path: string, body?: unknown): Promise<T> {
   return call<T>(path, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) });
 }
@@ -127,6 +167,10 @@ export function mergeRun(id: string): Promise<ActionResult> {
 
 export function reopenRun(id: string): Promise<ActionResult> {
   return post<ActionResult>(`/run/${encodeURIComponent(id)}/reopen`, {});
+}
+
+export function unretireRun(id: string): Promise<ActionResult> {
+  return post<ActionResult>(`/run/${encodeURIComponent(id)}/unretire`, {});
 }
 
 export function compactRun(id: string): Promise<ActionResult> {

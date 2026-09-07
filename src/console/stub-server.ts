@@ -25,7 +25,7 @@ import { seedJournal } from './fixtures/journal.js';
 import { seedLanes } from './fixtures/lanes.js';
 import { seedRules } from './fixtures/proposals.js';
 import {
-  bigLanes, emptyLanes, emptyRules, galleryThread, healthyIntegrations, matrixQueue, raceThread,
+  bigLanes, emptyLanes, emptyRules, galleryThread, healthyIntegrations, humanBoardLanes, matrixQueue, raceThread,
   refusalLanes, resumedRaceLanes, statesLanes, UNBUILT_REPO,
 } from './fixtures/scenarios.js';
 import { seedThread } from './fixtures/thread.js';
@@ -113,6 +113,9 @@ const FIXTURES: Record<string, () => Db> = {
   'resume-race': () => ({ ...seedDb(), lanes: resumedRaceLanes(), thread: raceThread() }),
   'message-gallery': () => ({ ...seedDb(), thread: galleryThread() }),
   'big-fleet': () => ({ ...seedDb(), lanes: bigLanes() }),
+  // H2.7: the human-UI board -- 31 lanes shaped like the real one this whole
+  // stream was reported against, for every H2.1-H2.6 spec to share.
+  'human-board': () => ({ ...seedDb(), lanes: humanBoardLanes() }),
   'queue-matrix': () => ({
     ...seedDb(),
     lanes: [],
@@ -195,6 +198,31 @@ function stubJournalNarrative(lane: Lane): { t: number; text: string; color: str
   else if (lane.state === 'killed') entries.push({ t: lane.since, text: 'killed · diff discarded', color: 'var(--block)' });
   else if (lane.runaway) entries.push({ t: Date.now(), text: `build failing ×${lane.fails} · ${fmtTokens(lane.tokens)} tokens`, color: 'var(--block)' });
   return entries;
+}
+
+/** H2.4: the ticket sheet's Story section (`GET /run/:id/story`) -- built off this
+ *  fixture lane's own fields, the same stand-in approach `stubJournalNarrative`
+ *  already takes for the journal panel. */
+function stubStory(lane: Lane | undefined, id: string): import('../shared/console-model.js').LaneStory {
+  if (!lane) {
+    return { id, title: null, kind: 'manual', ticket: null, brief: null, entries: [] };
+  }
+  const entries: import('../shared/console-model.js').LaneStoryEntry[] = [
+    { at: lane.startedAt, kind: 'ticket', text: `started on ${lane.ticket ?? lane.id}`, url: lane.sourceUrl },
+  ];
+  if (lane.sandbox) entries.push({ at: lane.startedAt + 60_000, kind: 'branch', text: `branch ${lane.sandbox.branch ?? lane.id.toLowerCase()} pushed`, url: null });
+  if (lane.pr) entries.push({ at: lane.since - 30_000, kind: 'pr', text: `opened PR #${lane.pr.no}`, url: lane.pr.url });
+  if (lane.state === 'parked' && lane.question) entries.push({ at: lane.since, kind: 'park', text: `parked: ${lane.question.text}`, url: null });
+  else if (lane.state === 'merged') entries.push({ at: lane.since, kind: 'merge', text: 'merged into develop', url: lane.pr?.url ?? null });
+  else if (lane.state === 'killed') entries.push({ at: lane.since, kind: 'end', text: 'killed', url: null });
+  return {
+    id: lane.id,
+    title: lane.title,
+    kind: lane.kind,
+    ticket: lane.ticket ? { key: lane.ticket, url: lane.sourceUrl, summary: lane.title } : null,
+    brief: lane.title ? { path: `briefs/${lane.ticket ?? lane.id}.md`, excerpt: lane.title } : null,
+    entries,
+  };
 }
 
 function json(response: ServerResponse, status: number, body: unknown): void {
@@ -450,6 +478,13 @@ export function createStubServer() {
       }
 
       if (urlPath === '/lanes' && method === 'GET') {
+        // H2.2: `archived=1` answers only the retired lanes -- a separate slot from the
+        // live board, never mixed into the default/`all=1` response.
+        if (query.get('archived') === '1') {
+          const archived = db.lanes.filter((l) => l.retiredAt !== null);
+          json(response, 200, { at: Date.now(), lanes: archived, tokensToday: 0, tokensPerMin: 0 });
+          return;
+        }
         const tokensToday = db.lanes.reduce((sum, l) => sum + l.tokens, 0);
         const tokensPerMin = db.lanes.reduce((sum, l) => sum + (l.state === 'running' ? l.tokensPerMin : 0), 0);
         json(response, 200, { at: Date.now(), lanes: db.lanes, tokensToday, tokensPerMin });
@@ -485,6 +520,60 @@ export function createStubServer() {
         json(response, 200, { rules: db.rules, metrics, computedAt: Date.now() });
         return;
       }
+      // H2.3: `/retire-finished` -- a done/merged/killed/probe lane with no open PR is
+      // a candidate. GET previews it, POST retires it (sets `retiredAt`).
+      const RETIRABLE_STATES = new Set(['done', 'merged', 'killed']);
+      const retirable = (): Lane[] => db.lanes.filter((l) => (
+        l.retiredAt === null && (RETIRABLE_STATES.has(l.state) || l.kind === 'probe') && (!l.pr || l.pr.merged !== false)
+      ));
+      if (urlPath === '/retire-finished' && method === 'GET') {
+        json(response, 200, { items: retirable().map((l) => ({ id: l.id, title: l.title })) });
+        return;
+      }
+      if (urlPath === '/retire-finished' && method === 'POST') {
+        const targets = retirable();
+        const now = Date.now();
+        for (const l of targets) l.retiredAt = now;
+        json(response, 200, { ok: true, retired: targets.map((l) => l.id) });
+        return;
+      }
+      // H2.3: `/merge-ready` -- a `done` lane is ready when it carries no `mergeable`
+      // refusal; GET previews the split, POST merges every ready one.
+      const mergeSplit = (): { ready: Lane[]; notReady: { lane: Lane; why: string }[] } => {
+        const ready: Lane[] = [];
+        const notReady: { lane: Lane; why: string }[] = [];
+        for (const l of db.lanes) {
+          if (l.state !== 'done') continue;
+          if (l.mergeable && l.mergeable.ok === false) notReady.push({ lane: l, why: l.mergeable.why });
+          else ready.push(l);
+        }
+        return { ready, notReady };
+      };
+      if (urlPath === '/merge-ready' && method === 'GET') {
+        const { ready, notReady } = mergeSplit();
+        json(response, 200, {
+          ready: ready.map((l) => ({ id: l.id, title: l.title, pr: l.pr })),
+          notReady: notReady.map(({ lane: l, why }) => ({ id: l.id, title: l.title, pr: l.pr, why })),
+        });
+        return;
+      }
+      if (urlPath === '/merge-ready' && method === 'POST') {
+        const { ready, notReady } = mergeSplit();
+        for (const l of ready) { l.state = 'merged'; l.hop = 5; l.hopStatus = 'done'; journal('chain.merged', `${l.id} merged`, l.id, false); }
+        json(response, 200, {
+          ok: true, merged: ready.map((l) => l.id), failed: notReady.map(({ lane: l, why }) => ({ id: l.id, why })),
+        });
+        return;
+      }
+
+      const runStoryMatch = /^\/run\/([^/]+)\/story$/.exec(urlPath);
+      if (runStoryMatch && method === 'GET') {
+        const id = decodeURIComponent(runStoryMatch[1] as string);
+        const l = findLane(id);
+        json(response, 200, stubStory(l, id));
+        return;
+      }
+
       if (urlPath === '/queue' && method === 'GET') {
         json(response, 200, { items: db.queue, paused: db.queuePaused, maxInFlight: 2, pauseReason: db.queuePauseReason });
         return;
@@ -574,6 +663,19 @@ export function createStubServer() {
         appendEvent(`${id} merged`, id);
         publish({ type: 'chain.merged', run: id });
         json(response, 200, ok(jid, `${id} merged`, false, lane));
+        return;
+      }
+      // H2.2/H2.3: a per-lane undo of a retire -- not in the frozen contract (only
+      // the bulk `/retire-finished` is), a stub-only convenience the real server
+      // needs an equivalent route for once it grows a single-lane retire of its own.
+      const runUnretireMatch = /^\/run\/([^/]+)\/unretire$/.exec(urlPath);
+      if (runUnretireMatch && method === 'POST') {
+        const id = decodeURIComponent(runUnretireMatch[1] as string);
+        const lane = findLane(id);
+        if (!lane) { json(response, 404, { error: `no lane named ${id}` }); return; }
+        lane.retiredAt = null;
+        const jid = journal('run.unretired', `${id} unretired`, id, false);
+        json(response, 200, ok(jid, `${id} unretired`, false, lane));
         return;
       }
       const runReopenMatch = /^\/run\/([^/]+)\/reopen$/.exec(urlPath);

@@ -3,10 +3,10 @@ import { useCallback, useEffect, useState } from 'react';
 
 import * as api from '../api.js';
 import { HOP_NAMES } from '../../shared/console-model.js';
-import { costClass, ctxPercent, laneCta, laneHeadline, stateOf } from '../laneVM.js';
+import { costClass, ctxPercent, kindLabel, laneCta, laneHeadline, stateOf } from '../laneVM.js';
 import { computeFreshness, freshnessClass, freshnessStamp, hm } from '../freshness.js';
 import { MessageCard } from './ConductorRail.js';
-import type { JournalNarrativeEntry, Lane, Message } from '../../shared/console-model.js';
+import type { JournalNarrativeEntry, Lane, LaneStory, Message } from '../../shared/console-model.js';
 import { fmtTokens } from '../../shared/format-tokens.js';
 
 export interface TicketSheetProps {
@@ -98,6 +98,40 @@ function bandFor(lane: Lane): { text: string; bg: string; ink: string } {
   };
 }
 
+/** H2.4: the run's own story -- one dated sentence per entry, with a link when the
+ *  entry names one (a PR, a ticket, a change). Rendered before the journal panel. */
+function StoryPanel({ story }: { story: LaneStory | null }): JSX.Element | null {
+  const [briefOpen, setBriefOpen] = useState(false);
+  if (!story || (story.entries.length === 0 && !story.brief)) return null;
+  return (
+    <div style={{ marginBottom: 16 }}>
+      {story.entries.length > 0 ? (
+        <>
+          <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 10 }}>Story</div>
+          <div className="m" style={{ fontSize: 11, lineHeight: 2, color: 'var(--ink2)' }}>
+            {story.entries.map((entry, i) => (
+              <div key={i}>
+                <span style={{ color: 'var(--ink3)', fontWeight: 600 }}>{hm(entry.at)}</span>{' '}
+                {entry.url ? (
+                  <a href={entry.url} style={{ color: 'var(--ink)' }}>{entry.text}</a>
+                ) : (
+                  <span>{entry.text}</span>
+                )}
+              </div>
+            ))}
+          </div>
+        </>
+      ) : null}
+      {story.brief ? (
+        <div style={{ marginTop: 10 }}>
+          <span className="lbl" style={{ color: 'var(--ink2)', cursor: 'pointer' }} onClick={() => setBriefOpen((v) => !v)}>brief</span>
+          {briefOpen ? <div className="m" style={{ fontSize: '10.5px', color: 'var(--ink2)', marginTop: 6 }}>{story.brief.excerpt}</div> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function JournalPanel({ entries }: { entries: JournalNarrativeEntry[] }): JSX.Element {
   return (
     <div className="m" style={{ fontSize: 11, lineHeight: 2, color: 'var(--ink2)' }}>
@@ -115,12 +149,14 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
   const { lane, feedLive, now, onClose, onCommand, onOpenCost, onOpenSandbox, onSendLane, onAmendLane, onUndo, onOpenJournal } = props;
   const [thread, setThread] = useState<Message[]>([]);
   const [journal, setJournal] = useState<JournalNarrativeEntry[]>([]);
+  const [story, setStory] = useState<LaneStory | null>(null);
   const [draft, setDraft] = useState('');
 
   useEffect(() => {
     let active = true;
     api.getRunThread(lane.id).then((r) => { if (active) setThread(r.messages); }).catch(() => undefined);
     api.getRunJournal(lane.id).then((r) => { if (active) setJournal(r.entries); }).catch(() => undefined);
+    api.getRunStory(lane.id).then((r) => { if (active) setStory(r); }).catch(() => undefined);
     return () => { active = false; };
   }, [lane.id]);
 
@@ -170,6 +206,9 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 22px', borderBottom: '1px solid var(--line)', flexWrap: 'wrap', gap: '12px 20px' }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, whiteSpace: 'nowrap' }}>
           <span className="m" title={headline.runId} style={{ fontSize: 22, fontWeight: 700 }}>{headline.main}</span>
+          {lane.title ? <span className="m" style={{ fontSize: 14, color: 'var(--ink2)' }}>{lane.title}</span> : null}
+          <span className="chip">{kindLabel(lane.kind)}</span>
+          {lane.sourceUrl ? <a className="m" href={lane.sourceUrl} target="_blank" rel="noreferrer" style={{ fontSize: '10.5px' }}>source ↗</a> : null}
           <span className="chip">{lane.model}</span>
           <span className="chip">{lane.repo}</span>
           <span className="chip">attempt {lane.attempt}</span>
@@ -194,6 +233,11 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
           </div>
         </div>
       </div>
+      {lane.pr && lane.mergeable && lane.mergeable.ok === false ? (
+        <div className="m" style={{ padding: '8px 22px 0', fontSize: '10.5px', color: 'var(--ink3)' }}>
+          Why not merged: {lane.mergeable.why}
+        </div>
+      ) : null}
       <div style={{ padding: '20px 22px', borderBottom: '1px solid var(--line)' }}>
         <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 16 }}>Pipeline</div>
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'center', overflowX: 'auto' }}>
@@ -224,6 +268,7 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
       </div>
       <div style={{ display: 'flex', minHeight: 300, flexWrap: 'wrap' }}>
         <div style={{ width: 340, flex: '1 1 300px', borderRight: '1px solid var(--line)', padding: '16px 22px' }}>
+          <StoryPanel story={story} />
           <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 10 }}>Journal</div>
           <JournalPanel entries={journal} />
           {lane.pr ? (

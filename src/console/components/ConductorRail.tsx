@@ -2,6 +2,7 @@ import type { JSX } from 'react';
 import { useState } from 'react';
 
 import { computeFreshness, compactFreshnessStamp, freshnessClass, hm } from '../freshness.js';
+import { collapseWardenEvents } from '../laneVM.js';
 import type { Feed, Message } from '../../shared/console-model.js';
 
 /** Chip label paired with the command it actually sends. The prototype's own
@@ -228,7 +229,7 @@ export function ConductorRail(props: ConductorRailProps): JSX.Element {
         <span className="m" style={{ fontSize: 10, fontWeight: 700, color: 'var(--block)' }}>{pending > 0 ? `${pending} waiting ↓` : ''}</span>
       </div>
       <div className="scroll" data-testid="rail-thread" style={{ flex: 1, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12, opacity: feed.live ? 1 : 0.6 }}>
-        {thread.map((m) => (
+        {collapseWardenEvents(thread).map((m) => (
           <MessageCard key={m.k} message={m} feedLive={feed.live} now={now} onCommand={onCommand} onUndo={onUndo} onOpenJournal={onOpenJournal} />
         ))}
       </div>

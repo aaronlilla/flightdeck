@@ -29,9 +29,13 @@ export function buildPaletteItems(
   // Per-category caps apply before the categories are combined: 6 lanes, the last
   // 3 journal matches, both ahead of any overall limit -- otherwise a broad query
   // can flood the list with lanes and crowd out journal and view results.
-  const laneMatches = lanes.filter((lane) => !q || lane.id.toLowerCase().includes(q)).slice(0, 6);
+  // H2.6: the query matches the ticket key and the title, never the run id -- a
+  // run id search would surface exactly the string the board is built to hide.
+  const laneMatches = lanes
+    .filter((lane) => !q || (lane.ticket ?? '').toLowerCase().includes(q) || (lane.title ?? '').toLowerCase().includes(q))
+    .slice(0, 6);
   for (const lane of laneMatches) {
-    items.push({ kind: 'lane', title: lane.id, sub: `${lane.state} · ${lane.stepText}`, go: () => onOpenLane(lane.id) });
+    items.push({ kind: 'lane', title: lane.ticket ?? lane.title ?? lane.id, sub: `${lane.state} · ${lane.stepText}`, go: () => onOpenLane(lane.id) });
   }
   const journalMatches = journal
     .filter((j) => !q || j.jid.toLowerCase().includes(q) || j.text.toLowerCase().includes(q))

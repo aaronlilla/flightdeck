@@ -59,6 +59,11 @@ export interface State {
   /** D2.4: `/state`'s own `queue_on` flag. Starts `true` so the "Queue is off" banner
    *  never flashes before the console's first `/state` fetch lands. */
   queueOn: boolean;
+  /** H2.2: probe lanes hide behind this toggle on every filter but Archived. */
+  showProbes: boolean;
+  /** H2.2: the Archived filter's own fetch (`GET /lanes?archived=1`) -- retired
+   *  lanes never live in `lanes`, so the filter needs its own slot to render from. */
+  archivedLanes: Lane[];
   loaded: boolean;
   now: number;
   /** Duration of the last `/lanes` fetch, for the feed stamp's latency fallback. */
@@ -87,6 +92,8 @@ export type Action =
   | { type: 'proposals'; proposals: ProposalsResponse }
   | { type: 'queue'; items: QueueItem[]; paused: boolean; maxInFlight: number; pauseReason?: string | null }
   | { type: 'queue-on'; on: boolean }
+  | { type: 'toggle-probes' }
+  | { type: 'archived-lanes'; lanes: Lane[] }
   | { type: 'loaded' }
   | { type: 'tick'; now: number }
   | { type: 'fetch-latency'; ms: number }
@@ -119,6 +126,8 @@ export function initialState(): State {
     queuePauseReason: null,
     queueMaxInFlight: 2,
     queueOn: true,
+    showProbes: false,
+    archivedLanes: [],
     loaded: false,
     now: Date.now(),
     fetchLatencyMs: null,
@@ -159,6 +168,10 @@ export function reducer(state: State, action: Action): State {
       };
     case 'queue-on':
       return { ...state, queueOn: action.on };
+    case 'toggle-probes':
+      return { ...state, showProbes: !state.showProbes };
+    case 'archived-lanes':
+      return { ...state, archivedLanes: action.lanes };
     case 'loaded':
       return { ...state, loaded: true };
     case 'tick':

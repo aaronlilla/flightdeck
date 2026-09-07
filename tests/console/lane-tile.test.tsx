@@ -102,4 +102,41 @@ describe('LaneTile', () => {
     render(<LaneTile lane={lane()} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
     expect(screen.queryByText('Amend')).toBeNull();
   });
+
+  // H2.1: the headline bolds the ticket key and shows the title beside it.
+  it('shows the ticket key bold and the title beside it when the server has titled the lane', () => {
+    render(<LaneTile lane={lane({ ticket: 'FLT-9', title: 'the withdrawal fee is off by one' })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
+    expect(screen.getByText('FLT-9')).toBeInTheDocument();
+    expect(screen.getByText('the withdrawal fee is off by one')).toBeInTheDocument();
+  });
+
+  it('shows the title alone when the lane has no ticket key', () => {
+    render(<LaneTile lane={lane({ ticket: null, kind: 'probe', title: 'Live probe of the runner' })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
+    expect(screen.getByText('Live probe of the runner')).toBeInTheDocument();
+  });
+
+  it('shows a kind chip beside the model chip', () => {
+    render(<LaneTile lane={lane({ kind: 'hotfix' })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
+    expect(screen.getByText('hotfix')).toBeInTheDocument();
+  });
+
+  it('shows the server plain sentence in place of the raw step text', () => {
+    render(<LaneTile lane={lane({ plain: 'Working since 12:44 on a Sonnet session, 43 turns in, last did: ran tests.' })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
+    expect(screen.getByText('Working since 12:44 on a Sonnet session, 43 turns in, last did: ran tests.')).toBeInTheDocument();
+  });
+
+  it('shows a PR summary line with the number as a link when the lane carries a PR', () => {
+    render(<LaneTile lane={lane({
+      state: 'done', pr: { no: 119, url: 'https://example.invalid/pr/119', files: 2, add: 41, del: 3, draft: true, checks: 'success', verdict: 'PASS WITH NOTES', merged: false },
+    })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
+    const link = screen.getByText('PR #119');
+    expect(link.closest('a')).toHaveAttribute('href', 'https://example.invalid/pr/119');
+    expect(screen.getByText(/council PASS WITH NOTES/)).toBeInTheDocument();
+  });
+
+  it('never offers Merge on a done lane the server already knows would refuse, and shows the why', () => {
+    render(<LaneTile lane={lane({ state: 'done', mergeable: { ok: false, why: 'checks are still running' } })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
+    expect(screen.queryByText(/merge/i)).not.toBeInTheDocument();
+    expect(screen.getByText('checks are still running')).toBeInTheDocument();
+  });
 });

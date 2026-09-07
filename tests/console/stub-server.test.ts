@@ -74,4 +74,52 @@ describe('stub server', () => {
     const after = await get<{ lanes: { id: string; state: string }[] }>('/lanes');
     expect(after.lanes.find((l) => l.id === 'FLT-211')?.state).toBe('running');
   });
+
+  // H2.3
+  it('previews and then performs a bulk retire of finished lanes', async () => {
+    const preview = await get<{ items: { id: string }[] }>('/retire-finished');
+    expect(preview.items.map((i) => i.id).sort()).toEqual(['FLT-190', 'FLT-193']);
+    const { body } = await post<{ ok: boolean; retired: string[] }>('/retire-finished');
+    expect(body.retired.sort()).toEqual(['FLT-190', 'FLT-193']);
+    const archived = await get<{ lanes: { id: string }[] }>('/lanes?archived=1');
+    expect(archived.lanes.map((l) => l.id).sort()).toEqual(['FLT-190', 'FLT-193']);
+  });
+
+  it('a retired lane comes back on unretire', async () => {
+    await post('/retire-finished');
+    const jid = (await post<{ jid: string }>('/run/FLT-193/unretire')).body.jid;
+    expect(jid).toBeTruthy();
+    const archived = await get<{ lanes: { id: string }[] }>('/lanes?archived=1');
+    expect(archived.lanes.map((l) => l.id)).not.toContain('FLT-193');
+  });
+
+  it('previews and then performs a bulk merge of ready lanes', async () => {
+    const preview = await get<{ ready: { id: string }[]; notReady: { id: string }[] }>('/merge-ready');
+    expect(preview.ready.map((r) => r.id)).toEqual(['FLT-193']);
+    expect(preview.notReady).toEqual([]);
+    const { body } = await post<{ ok: boolean; merged: string[] }>('/merge-ready');
+    expect(body.merged).toEqual(['FLT-193']);
+    const { lanes } = await get<{ lanes: { id: string; state: string }[] }>('/lanes');
+    expect(lanes.find((l) => l.id === 'FLT-193')?.state).toBe('merged');
+  });
+
+  it('serves a story for a lane with a ticket, brief, PR and a merge', async () => {
+    const story = await get<{ entries: { kind: string }[]; ticket: { key: string } | null }>('/run/FLT-190/story');
+    expect(story.ticket?.key).toBe('FLT-190');
+    expect(story.entries.some((e) => e.kind === 'pr')).toBe(true);
+    expect(story.entries.some((e) => e.kind === 'merge')).toBe(true);
+  });
+
+  // H2.7
+  it('serves the human-board fixture: 31 lanes, 4 probes, a three-attempt chain ticket, all titled and plained', async () => {
+    await post('/__test/fixture?name=human-board');
+    const { lanes } = await get<{ lanes: { id: string; kind: string; ticket: string | null; attempt: number; title: string | null; plain: string }[] }>('/lanes');
+    expect(lanes).toHaveLength(31);
+    expect(lanes.filter((l) => l.kind === 'probe')).toHaveLength(4);
+    const chain = lanes.filter((l) => l.ticket === 'FLT-700');
+    expect(chain).toHaveLength(3);
+    expect(chain.map((l) => l.attempt).sort()).toEqual([1, 2, 3]);
+    expect(lanes.some((l) => l.kind === 'self')).toBe(true);
+    expect(lanes.every((l) => l.title !== null && l.plain !== '')).toBe(true);
+  });
 });

@@ -1,7 +1,10 @@
 import type { JSX, MouseEvent } from 'react';
 import { useEffect, useRef } from 'react';
 
-import { costClass, costTip, ctxPercent, ctxTip, laneCta, laneHeadline, modelTip, stateOf, stepDisplay, tileCapText } from '../laneVM.js';
+import {
+  costClass, costTip, ctxPercent, ctxTip, kindLabel, laneCta, mergeableWhy, modelTip, plainLine, prSummaryParts,
+  stateOf, tileCapText, tileHeadlineParts,
+} from '../laneVM.js';
 import type { TipContent } from '../laneVM.js';
 import { computeFreshness, freshnessClass, freshnessStamp } from '../freshness.js';
 import type { Lane } from '../../shared/console-model.js';
@@ -25,8 +28,9 @@ export interface LaneTileProps {
 /** One board tile: id, model chip, state, step, context gauge, cost readout, freshness, one CTA. */
 export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, onTip }: LaneTileProps): JSX.Element {
   const st = stateOf(lane.state);
-  const headline = laneHeadline(lane);
+  const headline = tileHeadlineParts(lane);
   const cta = laneCta(lane);
+  const why = mergeableWhy(lane);
   const pct = ctxPercent(lane);
   const fresh = computeFreshness(lane.verifiedAt, lane.observedAt, feedLive, now, lane.heart);
   const opacity = fresh.verified ? 1 : 0.6;
@@ -70,21 +74,27 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
         </div>
       ) : null}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 6 }}>
-        <div style={{ minWidth: 0 }}>
-          <a className="m" title={headline.runId} style={{ fontSize: 13, fontWeight: 700 }}>{headline.main}</a>
+        <div style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {headline.key ? <span className="m" title={headline.runId} style={{ fontSize: 13, fontWeight: 700 }}>{headline.key}</span> : null}
+          {headline.key && headline.title ? <span className="m" style={{ fontSize: 13, color: 'var(--ink2)' }}> · </span> : null}
+          {headline.title ? (
+            <span className="m" title={headline.key ? undefined : headline.runId} style={{ fontSize: 13, fontWeight: headline.key ? 400 : 700 }}>{headline.title}</span>
+          ) : (!headline.key ? <span className="m" title={headline.runId} style={{ fontSize: 13, fontWeight: 700 }}>{headline.runId}</span> : null)}
         </div>
-        <span
-          className="chip"
-          style={{ flex: 'none' }}
-          onMouseEnter={(e) => showTip('model', e, modelTip(lane, fresh))}
-          onMouseLeave={() => hideTip('model')}
-        >
-          {lane.model}
+        <span style={{ display: 'flex', gap: 4, flex: 'none' }}>
+          <span className="chip" style={{ fontSize: 9 }}>{kindLabel(lane.kind)}</span>
+          <span
+            className="chip"
+            onMouseEnter={(e) => showTip('model', e, modelTip(lane, fresh))}
+            onMouseLeave={() => hideTip('model')}
+          >
+            {lane.model}
+          </span>
         </span>
       </div>
       <div className="lbl" style={{ color: st.color, cursor: 'help' }}>{st.glyph} {st.label}</div>
       <div style={{ font: '12.5px/1.45 "IBM Plex Sans",sans-serif', color: 'var(--ink2)', minHeight: 38 }}>
-        {stepDisplay(lane)}
+        {plainLine(lane)}
       </div>
       <div style={{ cursor: 'help' }} onMouseEnter={(e) => showTip('ctx', e, ctxTip(lane, fresh))} onMouseLeave={() => hideTip('ctx')}>
         <div style={{ position: 'relative', height: 8, background: 'var(--well)', borderRadius: 2, boxShadow: 'inset 0 1px 3px rgba(0,0,0,.6)', borderRight: '3px solid var(--block)' }}>
@@ -108,6 +118,12 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
           {tileCapText(lane)}
         </span>
       </div>
+      {lane.pr ? (
+        <div className="m" style={{ fontSize: '10.5px', color: 'var(--ink2)' }}>
+          <a href={lane.pr.url} onClick={(e) => e.stopPropagation()} style={{ fontWeight: 700, color: 'var(--ink)' }}>PR #{prSummaryParts(lane.pr).no}</a>
+          {' · '}{prSummaryParts(lane.pr).rest}
+        </div>
+      ) : null}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 7, borderTop: '1px solid var(--line)', paddingTop: 7 }}>
         <span className={freshnessClass(fresh)} style={{ alignSelf: 'flex-start' }}>{freshnessStamp(fresh)}</span>
         <div style={{ display: 'flex', gap: 6 }}>
@@ -119,6 +135,7 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
             {cta.label}
           </span>
         </div>
+        {why ? <span className="m" style={{ fontSize: '9.5px', color: 'var(--ink3)' }}>{why}</span> : null}
       </div>
     </div>
   );

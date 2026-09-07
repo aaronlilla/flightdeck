@@ -170,4 +170,26 @@ describe('ConductorRail', () => {
       expect(screen.queryByText(/show earlier/)).not.toBeInTheDocument();
     });
   });
+
+  // H2.5: a run of warden ticks reads as one chip with a count, not one per tick.
+  describe('warden ticks', () => {
+    it('collapses five consecutive warden ticks into one chip', () => {
+      const ticks: Message[] = Array.from({ length: 5 }, (_, i) => ({ k: `w${i}`, type: 'event', text: `tick ${i}`, ts: i, source: 'warden' }));
+      renderRail(ticks);
+      expect(screen.getByText('warden ×5')).toBeInTheDocument();
+      expect(screen.queryByText('tick 0')).not.toBeInTheDocument();
+    });
+
+    it('leaves other events untouched around a warden run', () => {
+      renderRail([
+        { k: 'a', type: 'event', text: 'sandbox ready', ts: 0, source: 'system' },
+        { k: 'w1', type: 'event', text: 'tick', ts: 1, source: 'warden' },
+        { k: 'w2', type: 'event', text: 'tick', ts: 2, source: 'warden' },
+        { k: 'b', type: 'event', text: 'gate opened', ts: 3, source: 'system' },
+      ]);
+      expect(screen.getByText('sandbox ready')).toBeInTheDocument();
+      expect(screen.getByText('warden ×2')).toBeInTheDocument();
+      expect(screen.getByText('gate opened')).toBeInTheDocument();
+    });
+  });
 });
