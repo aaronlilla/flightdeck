@@ -578,6 +578,27 @@ describe('review comment: A.2', () => {
 });
 
 describe('backend path: A.4', () => {
+  it('assigns the backend owner after the ticket write-up, so the owner stays the assignee', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'BBMS-1', 1000);
+    const order: string[] = [];
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS' }),
+    });
+    deps.repoKindFor = () => 'backend';
+    deps.jiraHandoff = async () => { order.push('qa-assign'); };
+    deps.backendHandoff = async () => { order.push('owner-assign'); };
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('review');
+    expect(order).toEqual(['qa-assign', 'owner-assign']);
+  });
+
   it('pings the backend owner in Jira and requests them as a reviewer for a backend item', async () => {
     const store = tempStore();
     const item = addTicketItem(store, 'BBMS-1', 1000);

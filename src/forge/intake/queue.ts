@@ -470,6 +470,19 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
   // as a call to `handoff.ts#terminalStateFor` rather than a scattered
   // `if (repo === ...)`, so which repos are backend stays this environment's own
   // `repoKindFor` wiring, never a name baked into this file (agnostic check).
+  let handoffAt = item.handoffAt;
+  if (deps.jiraHandoff && !handoffAt && item.ticket) {
+    try {
+      await deps.jiraHandoff({ item, pr: { no: pr.number, url: pr.url } });
+      handoffAt = deps.clock();
+    } catch {
+      // Best effort, same discipline as the review comment and the backend ping above.
+    }
+  }
+
+  // The backend owner's assignment runs after the ticket write-up on purpose: the Jira
+  // handoff assigns QA, and for a backend item the owner who lands the PR must be the
+  // assignee at the end, not the one overwritten a second later (seen live 2026-09-07).
   if (deps.repoKindFor) {
     const terminal = terminalStateFor(deps.repoKindFor(item.repo!));
     if (terminal.pings === 'backend-owner' && deps.backendHandoff) {
@@ -486,16 +499,6 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
   // this being the only tick that can ever reach here (belt and braces: `review` is not
   // an in-flight state, so `runQueueTick` never re-enters `advanceItem` for it, but the
   // guard keeps the intent honest even if that ever changes).
-  let handoffAt = item.handoffAt;
-  if (deps.jiraHandoff && !handoffAt && item.ticket) {
-    try {
-      await deps.jiraHandoff({ item, pr: { no: pr.number, url: pr.url } });
-      handoffAt = deps.clock();
-    } catch {
-      // Best effort, same discipline as the review comment and the backend ping above.
-    }
-  }
-
   return writeTransition(
     item,
     {
