@@ -107,28 +107,34 @@ export async function killRun(run: string, reason: string, deps: RunActionsDeps)
   if (!isRegistered(run, deps)) return notFound(run);
   const guard = guardState('kill', run, deps);
   if (guard) return guard;
-  const { jid, id } = recordAction(deps.journalPath, deps.ledger, {
-    kind: 'kill', run, text: `kill requested: ${reason}`, undo: null, extra: { reason },
-  });
-  // The actuator's `findDecision` matches a `decision.made` row by its own full id, the
-  // same way the documented `forge decide RUN kill "<reason>"` CLI does -- never `jid`,
-  // which is a shortened display form (`"J-"` + 8 hex chars) built for a receipt or a
-  // `GET /journal` row. Passing `jid` here meant every board-driven kill recorded its
-  // decision, then had the actuator refuse it a line later for failing to find that exact
-  // decision -- reporting success to the operator while the process kept running.
-  // A lane is a chain: after a context handoff the live process belongs to the newest
-  // successor, not the run id the tile carries. Killing only the root left a handed-off
-  // worker running under a lane that read `running` with no way to stop it (2026-09-07).
-  // Every link that is not already over gets the same decision, newest first.
+  // The actuator's `findDecision` matches a `decision.made` row by its own full id and
+  // by the run it names, the same way the documented `forge decide RUN kill "<reason>"`
+  // CLI does -- never `jid`, the shortened "J-" + 8 hex display form. A lane is a chain:
+  // after a context handoff the live process belongs to the newest successor, not the
+  // run id the tile carries, and the actuator refuses a decision that names a different
+  // run. So every link that is not already over gets its own decision row, newest first,
+  // and the receipt carries the root's (2026-09-07: a killed root over a running -3).
   const fleet = replay(deps.journalPath);
   const links = chainLinks(fleet.runs, run).map((link) => link.key);
   const targets = [...new Set([...links.reverse(), run])];
+  let rootJid: string | null = null;
   for (const target of targets) {
     const state = fleet.runs[target]?.state;
     if (state === 'killed' || state === 'finished') continue;
+    const { jid, id } = recordAction(deps.journalPath, deps.ledger, {
+      kind: 'kill', run: target, text: `kill requested: ${reason}`, undo: null, extra: { reason },
+    });
+    if (target === run || rootJid === null) rootJid = jid;
     await deps.actuator.kill(asRunId(target), id);
   }
-  return { status: 200, body: { ok: true, jid, message: `kill requested for ${run}`, undoable: false } };
+  if (rootJid === null) {
+    const { jid, id } = recordAction(deps.journalPath, deps.ledger, {
+      kind: 'kill', run, text: `kill requested: ${reason}`, undo: null, extra: { reason },
+    });
+    rootJid = jid;
+    await deps.actuator.kill(asRunId(run), id);
+  }
+  return { status: 200, body: { ok: true, jid: rootJid, message: `kill requested for ${run}`, undoable: false } };
 }
 
 /**
