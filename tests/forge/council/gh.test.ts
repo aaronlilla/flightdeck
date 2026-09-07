@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { conclusionOf, countChangedLines } from '../../../src/forge/council/gh.ts';
+import { conclusionOf, countAddDel, countChangedLines } from '../../../src/forge/council/gh.ts';
 
 describe('countChangedLines', () => {
   it('counts added and removed content lines, never the +++/--- file headers', () => {
@@ -22,6 +22,20 @@ describe('countChangedLines', () => {
 
   it('an empty diff has no changed lines', () => {
     expect(countChangedLines('')).toBe(0);
+  });
+});
+
+describe('countAddDel: A.8', () => {
+  it('splits added and removed content lines, never the +++/--- file headers', () => {
+    const diff = [
+      '--- a/x.ts', '+++ b/x.ts', '@@ -1,2 +1,3 @@',
+      '-old line', '+new line one', '+new line two', ' unchanged',
+    ].join('\n');
+    expect(countAddDel(diff)).toEqual({ add: 2, del: 1 });
+  });
+
+  it('an empty diff has no adds or dels', () => {
+    expect(countAddDel('')).toEqual({ add: 0, del: 0 });
   });
 });
 

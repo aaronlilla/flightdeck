@@ -341,6 +341,10 @@ export interface QueueItem {
   /** A.3: when the Jira write-back at review ran for this item -- absent means it
    *  hasn't fired yet. Set once, alongside the transition into `review`. */
   handoffAt?: number;
+  /** A.8/A.9: the PR's own changed-file paths, fetched once the item has a PR and
+   *  before the council reads it -- shared by A.8's real figures at `review` and A.9's
+   *  overlap check against every other item running or in review on the same repo. */
+  changedFiles?: string[] | null;
 }
 
 export interface QueueResponse {

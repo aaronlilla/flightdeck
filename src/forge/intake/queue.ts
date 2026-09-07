@@ -203,6 +203,13 @@ export interface QueueRuntimeDeps {
    *  a remote link, all in Aaron's voice. Runs once per item, guarded by `handoffAt`;
    *  absent means this environment never wires it, and no Jira write happens at all. */
   jiraHandoff?: (input: { item: QueueItem; pr: { no: number; url: string } }) => Promise<void>;
+  /** A.8/A.9: the PR's own changed files and line counts. Fetched once per item, right
+   *  after the PR is found and before the council reads it, so A.9's overlap check runs
+   *  against real data and A.8's figures at `review` need no second fetch. Absent means
+   *  this environment never wires it -- an item then carries no changed-files list, the
+   *  overlap check never fires, and `review`'s figures stay the honest zeros they always
+   *  were. */
+  prSnapshot?: (repo: string, pr: number) => Promise<{ files: string[]; add: number; del: number }>;
   /** Reused from `chain.ts` unchanged, but `advanceItem` never passes `merge: true` --
    *  the queue's own decision (every item stops at a draft PR) lives in this file, not
    *  in whatever the caller wires this to. */
@@ -325,6 +332,39 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
     );
   }
 
+  // A.8/A.9: one fetch of the PR's own changed files and line counts, right after the PR
+  // is found and before the council or the overlap check reads either -- shared by A.9's
+  // overlap check below and A.8's real figures once the item reaches `review`, so this
+  // never fetches the same PR's diff twice within one call.
+  let prAdd = 0;
+  let prDel = 0;
+  if (deps.prSnapshot) {
+    const snapshot = await deps.prSnapshot(item.repo!, pr.number);
+    prAdd = snapshot.add;
+    prDel = snapshot.del;
+    item = writeTransition(item, { changedFiles: snapshot.files }, deps, 'queue.pr-files', {});
+
+    // A.9, moved from stream B to keep this file single-owner: an item whose changed
+    // files overlap another item already running or in review on the same repo parks
+    // rather than reviewing a diff two workers are racing on. Only the later-created
+    // item ever parks itself here -- the earlier one is left untouched, since by
+    // construction it reached this check first and has nothing to answer for.
+    const overlap = deps.store.all().find((other) => (
+      other.id !== item.id && other.repo === item.repo
+      && (other.state === 'running' || other.state === 'review')
+      && other.changedFiles && other.changedFiles.some((file) => snapshot.files.includes(file))
+      && other.createdAt <= item.createdAt
+    ));
+    if (overlap) {
+      const shared = (overlap.changedFiles ?? []).filter((file) => snapshot.files.includes(file));
+      return writeTransition(
+        item,
+        { state: 'parked', reason: `overlaps ${overlap.ticket ?? overlap.id} on ${shared.join(', ')}` },
+        deps, 'queue.parked', { hop: 'overlap', with: overlap.id },
+      );
+    }
+  }
+
   // Aaron, 2026-09-07: every branch must sit on the latest base before anyone reviews or
   // merges it, so a queue that runs for hours cannot hand back a pile of conflicts. The
   // replay happens here, after the work is done and before the gate reads the diff.
@@ -430,7 +470,11 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
   return writeTransition(
     item,
     {
-      state: 'review', pr: { no: pr.number, url: pr.url, files: 0, add: 0, del: 0, draft: true },
+      // A.8: real figures off the snapshot fetched above, when one was fetched -- the
+      // honest zeros from before this stream stand unchanged when `deps.prSnapshot`
+      // isn't wired.
+      state: 'review',
+      pr: { no: pr.number, url: pr.url, files: item.changedFiles?.length ?? 0, add: prAdd, del: prDel, draft: true },
       ...(handoffAt ? { handoffAt } : {}),
     },
     deps, 'queue.review', {},

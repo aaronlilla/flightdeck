@@ -74,6 +74,18 @@ export function countChangedLines(diffText: string): number {
   return count;
 }
 
+/** A.8: the same unified-diff read as `countChangedLines`, split into the add/del pair
+ *  the queue's own PR figures show on the board. */
+export function countAddDel(diffText: string): { add: number; del: number } {
+  let add = 0;
+  let del = 0;
+  for (const line of diffText.split('\n')) {
+    if (line.startsWith('+') && !line.startsWith('+++')) add += 1;
+    else if (line.startsWith('-') && !line.startsWith('---')) del += 1;
+  }
+  return { add, del };
+}
+
 interface RawStatusCheck {
   conclusion?: string | null;
   status?: string | null;

@@ -593,6 +593,119 @@ describe('Jira write-back at review: A.3', () => {
   });
 });
 
+describe('real PR figures: A.8', () => {
+  it('carries the real files/add/del onto the review pr, not the honest-zero placeholder', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS' }),
+    });
+    deps.prSnapshot = async () => ({ files: ['src/a.ts', 'src/b.ts'], add: 12, del: 3 });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.pr).toMatchObject({ files: 2, add: 12, del: 3 });
+  });
+
+  it('stays honest zeros when no prSnapshot dep is wired', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS' }),
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.pr).toMatchObject({ files: 0, add: 0, del: 0 });
+  });
+});
+
+describe('pre-council overlap check: A.9', () => {
+  it('parks the later item when its changed files overlap an item already reviewing in the same repo', async () => {
+    const store = tempStore();
+    // The earlier item is already in review, carrying its own changed files.
+    store.append({
+      id: 'q-early', at: 1000, source: 'ticket', input: 'ABC-1', ticket: 'ABC-1', repo: 'owner/name',
+      briefPath: 'C:/briefs/abc-1.md', branch: 'feature/abc-1', worktreePath: 'C:/worktrees/repo--abc-1',
+      base: 'develop', state: 'review', runKey: 'abc-1', reason: null,
+      pr: { no: 1, url: 'https://github.com/owner/name/pull/1', files: 1, add: 1, del: 0, draft: true },
+      changedFiles: ['src/shared.ts'], journalIds: [], createdAt: 1000, updatedAt: 1000,
+    });
+    const item = addTicketItem(store, 'ABC-2', 2000);
+    let councilCalls = 0;
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/2' }) },
+      council: async () => { councilCalls += 1; return { verdict: 'PASS' as const }; },
+    });
+    deps.prSnapshot = async () => ({ files: ['src/shared.ts', 'src/other.ts'], add: 5, del: 1 });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('parked');
+    expect(current.reason).toContain('src/shared.ts');
+    expect(councilCalls).toBe(0);
+  });
+
+  it('never parks two items in the same repo that touch disjoint files', async () => {
+    const store = tempStore();
+    store.append({
+      id: 'q-early', at: 1000, source: 'ticket', input: 'ABC-1', ticket: 'ABC-1', repo: 'owner/name',
+      briefPath: 'C:/briefs/abc-1.md', branch: 'feature/abc-1', worktreePath: 'C:/worktrees/repo--abc-1',
+      base: 'develop', state: 'review', runKey: 'abc-1', reason: null,
+      pr: { no: 1, url: 'https://github.com/owner/name/pull/1', files: 1, add: 1, del: 0, draft: true },
+      changedFiles: ['src/shared.ts'], journalIds: [], createdAt: 1000, updatedAt: 1000,
+    });
+    const item = addTicketItem(store, 'ABC-2', 2000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/2' }) },
+      council: async () => ({ verdict: 'PASS' }),
+    });
+    deps.prSnapshot = async () => ({ files: ['src/unrelated.ts'], add: 2, del: 0 });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('review');
+  });
+
+  it('never parks two items in different repos, even on the same file path', async () => {
+    const store = tempStore();
+    store.append({
+      id: 'q-early', at: 1000, source: 'ticket', input: 'ABC-1', ticket: 'ABC-1', repo: 'owner/other',
+      briefPath: 'C:/briefs/abc-1.md', branch: 'feature/abc-1', worktreePath: 'C:/worktrees/other--abc-1',
+      base: 'develop', state: 'review', runKey: 'abc-1', reason: null,
+      pr: { no: 1, url: 'https://github.com/owner/other/pull/1', files: 1, add: 1, del: 0, draft: true },
+      changedFiles: ['src/shared.ts'], journalIds: [], createdAt: 1000, updatedAt: 1000,
+    });
+    const item = addTicketItem(store, 'ABC-2', 2000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/2' }) },
+      council: async () => ({ verdict: 'PASS' }),
+    });
+    deps.prSnapshot = async () => ({ files: ['src/shared.ts'], add: 2, del: 0 });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('review');
+  });
+});
+
 describe('runQueueTick', () => {
   it('refuses to start anything while the kill switch is engaged', async () => {
     const store = tempStore();

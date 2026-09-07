@@ -17,7 +17,7 @@ import { join } from 'node:path';
 import { chainCouncil, chainGate, chainGh, chainRebase, chainLauncher } from './chain-wire.js';
 import { repoKindFor as repoKindForEnv, type ChainEnv } from './chain-env.js';
 import type { CliResult, ForgeDeps } from './cli.js';
-import { REAL_GH } from './council/gh.js';
+import { countAddDel, REAL_GH } from './council/gh.js';
 import type { Packet, PollSourceName, Watermark } from './contracts.js';
 import type { QueuePlannedBrief, QueuePlanner, QueueRuntimeDeps, QueueTicketSearch } from './intake/queue.js';
 import { createJiraFeed, createJiraWriteClient, type JiraConfig } from './intake/jira.js';
@@ -215,6 +215,16 @@ export function queueJiraHandoff(
   };
 }
 
+/** A.8/A.9: the PR's own changed files and add/del counts, off `REAL_GH.viewPr` --
+ *  the same read Council's own gate already makes for this PR, just made available to
+ *  the queue itself rather than only living inside the `forge council` subprocess. */
+export function queuePrSnapshot(): NonNullable<QueueRuntimeDeps['prSnapshot']> {
+  return async (repo, pr) => {
+    const snapshot = await REAL_GH.viewPr(repo, pr);
+    return { files: snapshot.files, ...countAddDel(snapshot.diffText) };
+  };
+}
+
 export function buildQueueRuntimeDeps(
   chainEnv: ChainEnv, fleetConfigDir: string, deps: ForgeDeps, store: QueueRuntimeDeps['store'], maxInFlight = 2,
 ): QueueRuntimeDeps {
@@ -242,6 +252,7 @@ export function buildQueueRuntimeDeps(
     repoKindFor: (repo) => repoKindForEnv(chainEnv, repo),
     backendHandoff: queueBackendHandoff(),
     jiraHandoff: queueJiraHandoff(),
+    prSnapshot: queuePrSnapshot(),
   };
 }
 
