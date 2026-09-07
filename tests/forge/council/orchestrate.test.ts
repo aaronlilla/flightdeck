@@ -123,4 +123,92 @@ describe('runCouncilRound', () => {
 
     expect(JSON.stringify(seenInput)).toContain('Codex lane did not run');
   });
+
+  describe('coverage (GATE.md items 1, 2 and 4): a member that never answers cannot let the round pass', () => {
+    it('the BBZ-99 shape -- two of three lenses fail even after a retry -- forces FIX FIRST though the judge said PASS WITH NOTES', async () => {
+      let calls: Record<string, number> = {};
+      const lensRunner: LensRunner = {
+        async run(input) {
+          calls[input.lens] = (calls[input.lens] ?? 0) + 1;
+          if (input.lens === 'correctness' || input.lens === 'scope-conformance') {
+            return { lens: input.lens, failed: true, rawReply: 'not json', findings: [] };
+          }
+          return { lens: input.lens, findings: [] };
+        },
+      };
+      const codexLane = fakeCodexLane([]);
+      const judge = fakeJudge('PASS WITH NOTES');
+
+      const result = await runCouncilRound(
+        { brief: 'x', diffSummary: 'y', changedLines: 200, paths: ['src/x.ts'], ci: { runId: 'r', headSha: 'a' } },
+        { lensRunner, codexLane, judge },
+      );
+
+      // One retry each for the two failed lenses, never a second retry.
+      expect(calls['correctness']).toBe(2);
+      expect(calls['scope-conformance']).toBe(2);
+      expect(result.verdict).toBe('FIX FIRST');
+      expect(result.missingMembers.sort()).toEqual(['correctness', 'scope-conformance']);
+      expect(result.membersTotal).toBe(3);
+      expect(result.decidingFindings.some((f) => f.file === '(coverage)')).toBe(true);
+    });
+
+    it('a lens that fails once and succeeds on retry counts as covered, not missing', async () => {
+      let attempt = 0;
+      const lensRunner: LensRunner = {
+        async run(input) {
+          if (input.lens !== 'correctness') return { lens: input.lens, findings: [] };
+          attempt += 1;
+          if (attempt === 1) return { lens: input.lens, failed: true, rawReply: 'bad', findings: [] };
+          return { lens: input.lens, findings: [] };
+        },
+      };
+      const codexLane = fakeCodexLane([]);
+      const judge = fakeJudge('PASS');
+
+      const result = await runCouncilRound(
+        { brief: 'x', diffSummary: 'y', changedLines: 10, paths: ['src/x.ts'], ci: { runId: 'r', headSha: 'a' } },
+        { lensRunner, codexLane, judge },
+      );
+
+      expect(result.missingMembers).toEqual([]);
+      expect(result.verdict).toBe('PASS');
+      expect(result.lensReports.find((r) => r.lens === 'correctness')?.retried).toBe(true);
+      expect(result.lensReports.find((r) => r.lens === 'correctness')?.failed).toBeFalsy();
+    });
+
+    it('a lens failure never reaches the judge as one of its packets', async () => {
+      const lensRunner: LensRunner = {
+        async run(input) {
+          if (input.lens === 'correctness') return { lens: input.lens, failed: true, rawReply: 'bad', findings: [] };
+          return { lens: input.lens, findings: [] };
+        },
+      };
+      const codexLane = fakeCodexLane([]);
+      let seenInput: unknown;
+      const judge: Judge = { async decide(input) { seenInput = input; return { verdict: 'PASS', decidingFindings: [] }; } };
+
+      await runCouncilRound(
+        { brief: 'x', diffSummary: 'y', changedLines: 10, paths: ['src/x.ts'], ci: { runId: 'r', headSha: 'a' } },
+        { lensRunner, codexLane, judge },
+      );
+
+      expect(JSON.stringify(seenInput)).not.toContain('unparseable');
+      expect(JSON.stringify(seenInput)).not.toContain('coverage is missing');
+    });
+
+    it('full coverage reports zero missing members', async () => {
+      const lensRunner = fakeLensRunner({ correctness: { lens: 'correctness', findings: [] } });
+      const codexLane = fakeCodexLane([]);
+      const judge = fakeJudge('PASS');
+
+      const result = await runCouncilRound(
+        { brief: 'x', diffSummary: 'y', changedLines: 10, paths: ['src/x.ts'], ci: { runId: 'r', headSha: 'a' } },
+        { lensRunner, codexLane, judge },
+      );
+
+      expect(result.missingMembers).toEqual([]);
+      expect(result.membersTotal).toBe(1);
+    });
+  });
 });

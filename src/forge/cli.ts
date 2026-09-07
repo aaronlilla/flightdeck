@@ -1133,6 +1133,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           councilJournal.append({
             event: 'council.lens', actor: 'council', repo, pr, lens: report.lens,
             findings: report.findings.length,
+            ...(report.retried ? { retried: true } : {}),
             ...(report.failed
               ? {
                   failed: true,

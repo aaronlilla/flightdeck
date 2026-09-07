@@ -8,7 +8,7 @@
 import { LENS_NAMES } from './lenses.ts';
 import { diffRisk, lensCountFor } from './risk.ts';
 import { synthesizeFindings } from './synthesis.ts';
-import { buildJudgeInput } from './gate.ts';
+import { buildJudgeInput, verdictForRound } from './gate.ts';
 import type { CodexLane, Judge, LensRunner } from './roles.ts';
 import type { CouncilLensReport, CouncilVerdict, CouncilFinding } from '../contracts.ts';
 
@@ -36,27 +36,71 @@ export interface CouncilRoles {
 }
 
 export interface CouncilRoundResult {
+  /** Every lens's final report, after its one retry -- `failed`/`rawReply`/`retried`
+   *  intact, recorded honestly the same as before this round could ever act on it. */
   lensReports: CouncilLensReport[];
   codexRan: boolean;
   decidingFindings: CouncilFinding[];
   codexOnly: CouncilFinding[];
   verdict: CouncilVerdict;
+  /** GATE.md items 1 and 4: names of every lens (plus `'codex'`, when the round required
+   *  it) that never returned a usable reply after its one retry. Empty means full
+   *  coverage. This is what `verdictForRound` (`gate.ts`) actually decides on -- never a
+   *  finding handed to the judge, because a missing reviewer is not a quality signal. */
+  missingMembers: string[];
+  /** How many members this round required in total (lenses run, plus the Codex lane
+   *  when the diff's risk or the caller required it) -- `membersTotal - missingMembers.length`
+   *  is how many actually answered, the "reviewed by N of M" a board can show. */
+  membersTotal: number;
+}
+
+/** The one coverage finding a round adds when it cannot clear -- named once, for every
+ *  missing member together, rather than one synthetic finding per lens. This is display
+ *  only: `verdictForRound` has already decided the verdict from `missingMembers` itself,
+ *  so this finding exists for a human reading the attestation, never for the judge, which
+ *  never sees it (built after `roles.judge.decide` returns). */
+function coverageFinding(missingMembers: string[], membersRan: number, membersTotal: number): CouncilFinding {
+  return {
+    member: 'council',
+    file: '(coverage)',
+    line: 0,
+    claim: `round coverage incomplete: reviewed by ${membersRan} of ${membersTotal} `
+      + `(${missingMembers.join(', ')} never returned a usable reply, even after a retry)`,
+    failureScenario: 'this round cannot clear the gate on incomplete coverage, independent of what any '
+      + 'lens or the judge found in the diff itself',
+    severity: 'critical',
+    confidence: 'high',
+  };
 }
 
 export async function runCouncilRound(input: CouncilRoundInput, roles: CouncilRoles): Promise<CouncilRoundResult> {
   const risk = diffRisk({ changedLines: input.changedLines, paths: input.paths });
   const lensCount = lensCountFor(risk);
   const lensNames = LENS_NAMES.slice(0, lensCount);
+  const lensCall = (lens: string) => roles.lensRunner.run({ lens, brief: input.brief, diffSummary: input.diffSummary });
 
-  const lensReports = await Promise.all(
-    lensNames.map((lens) => roles.lensRunner.run({ lens, brief: input.brief, diffSummary: input.diffSummary })),
-  );
+  const firstAttempts = await Promise.all(lensNames.map(lensCall));
 
-  const codexResult = (input.forceCodex || risk.needsCodex)
+  // GATE.md item 2: a 120s timeout on a large diff is ordinary, and one retry is cheaper
+  // than a person. Only the lenses that actually failed get a second attempt -- a lens
+  // that already answered is never called twice.
+  const lensReports = await Promise.all(firstAttempts.map(async (report) => {
+    if (!report.failed) return report;
+    const retry = await lensCall(report.lens);
+    return { ...retry, retried: true };
+  }));
+
+  const codexRequired = Boolean(input.forceCodex) || risk.needsCodex;
+  let codexResult = codexRequired
     ? await roles.codexLane.run({
         brief: input.brief, diffSummary: input.diffSummary, cwd: input.cwd, baseRef: input.baseRef,
       })
     : { ran: false, findings: [] };
+  if (codexRequired && !codexResult.ran) {
+    codexResult = await roles.codexLane.run({
+      brief: input.brief, diffSummary: input.diffSummary, cwd: input.cwd, baseRef: input.baseRef,
+    });
+  }
 
   // A round the chain forced Codex onto (`FORGE_COUNCIL_CODEX=always`) where the lane
   // never actually ran is a silent gap, not a clean pass: three Sonnet lenses agreeing
@@ -77,9 +121,16 @@ export async function runCouncilRound(input: CouncilRoundInput, roles: CouncilRo
       }
     : undefined;
 
-  const judgeLensReports = gapFinding ? [...lensReports, { lens: 'codex', findings: [gapFinding] }] : lensReports;
+  // GATE.md item 1: a failed lens is coverage, not a code-quality claim -- it is excluded
+  // from what the judge reads entirely, never handed over dressed up as a finding for it
+  // to weigh. The Codex gap packet above is the one pre-existing exception to that rule
+  // (forced rounds only) and is left as-is; `verdictForRound` still overrides its verdict.
+  const usableLensReports = lensReports.filter((report) => !report.failed);
+  const judgeLensReports = gapFinding
+    ? [...usableLensReports, { lens: 'codex', findings: [gapFinding] }]
+    : usableLensReports;
 
-  const synthesis = synthesizeFindings(lensReports, codexResult.findings);
+  const synthesis = synthesizeFindings(usableLensReports, codexResult.findings);
 
   const judgeInput = buildJudgeInput({
     lenses: judgeLensReports,
@@ -89,13 +140,26 @@ export async function runCouncilRound(input: CouncilRoundInput, roles: CouncilRo
   });
   const judgment = await roles.judge.decide(judgeInput);
 
-  const decidingFindings = judgment.decidingFindings.length ? judgment.decidingFindings : synthesis.decidingFindings;
+  const missingMembers = [
+    ...lensReports.filter((report) => report.failed).map((report) => report.lens),
+    ...(codexRequired && !codexResult.ran ? ['codex'] : []),
+  ];
+  const membersTotal = lensNames.length + (codexRequired ? 1 : 0);
+  const verdict = verdictForRound(judgment.verdict, { missingMembers });
+
+  let decidingFindings = judgment.decidingFindings.length ? judgment.decidingFindings : synthesis.decidingFindings;
+  if (gapFinding) decidingFindings = [...decidingFindings, gapFinding];
+  if (missingMembers.length > 0) {
+    decidingFindings = [...decidingFindings, coverageFinding(missingMembers, membersTotal - missingMembers.length, membersTotal)];
+  }
 
   return {
     lensReports,
     codexRan: codexResult.ran,
-    decidingFindings: gapFinding ? [...decidingFindings, gapFinding] : decidingFindings,
+    decidingFindings,
     codexOnly: synthesis.codexOnly,
-    verdict: gapFinding ? 'FIX FIRST' : judgment.verdict,
+    verdict,
+    missingMembers,
+    membersTotal,
   };
 }

@@ -3,7 +3,7 @@
  * PR here is a fixture through a fake `gh` and every model answer is a fake Reasoner
  * reply -- no `gh` call and no model call anywhere in this file.
  */
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -196,7 +196,7 @@ describe('forge council', () => {
     expect(result.lines.join(' ')).toMatch(/off by one on the retry count/);
   });
 
-  it('a lens replying with prose never crashes the process: the round still produces a judge verdict and an attestation noting the failed lens', async () => {
+  it('a lens replying with prose never crashes the process: it is retried once, still records the failure honestly, and can never let the round clear (GATE.md item 1)', async () => {
     process.env['FORGE_COUNCIL_REPOS'] = REPO;
     const reasonerQueryFn = fakeQueryByModel({
       [LENS_MODEL]: 'sorry, I could not find anything actionable in this diff',
@@ -219,18 +219,19 @@ describe('forge council', () => {
     }
 
     expect(unhandled).toBeUndefined();
-    expect(result.code).toBe(0);
-    expect(result.lines.join(' ')).toMatch(/verdict: PASS/);
+    // A round missing its only lens can never clear, whatever the judge said -- coverage
+    // is decided in code before the verdict is trusted, so this is FIX FIRST, not PASS.
+    expect(result.code).toBe(1);
+    expect(result.lines.join(' ')).toMatch(/verdict: FIX FIRST/);
 
+    // FIX FIRST writes no attestation: nothing here could ever have cleared the gate.
     const attPath = attestationPath(REPO, PR, 'head-1');
-    const attestation = JSON.parse(readFileSync(attPath, 'utf8'));
-    expect(attestation.lenses).toHaveLength(1);
-    expect(attestation.lenses[0].failed).toBe(true);
-    expect(attestation.lenses[0].findings[0].severity).toBe('medium');
+    expect(existsSync(attPath)).toBe(false);
 
     const state = replay(join(home, 'fleet.jsonl'));
     const lensRow = state.events.find((e) => e.event === 'council.lens');
     expect(lensRow?.['failed']).toBe(true);
+    expect(lensRow?.['retried']).toBe(true);
     expect(String(lensRow?.['error'])).toMatch(/unparseable reply/);
   });
 

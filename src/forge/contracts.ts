@@ -1178,6 +1178,10 @@ export interface CouncilLensReport {
   /** The raw reply that failed to parse, kept only when `failed` is true so the failure
    *  is diagnosable from the journal row without a repro. */
   rawReply?: string;
+  /** GATE.md item 2: set once `orchestrate.ts` has given this lens its one retry after
+   *  an initial failure, whatever the retry's own outcome was. `failed` on a `retried`
+   *  report means the retry failed too, not that no retry was attempted. */
+  retried?: boolean;
 }
 
 export const CouncilLensReportSchema = z.object({
@@ -1185,6 +1189,7 @@ export const CouncilLensReportSchema = z.object({
   findings: z.array(CouncilFindingSchema),
   failed: z.boolean().optional(),
   rawReply: z.string().optional(),
+  retried: z.boolean().optional(),
 });
 
 /**
