@@ -32,13 +32,14 @@ import { appendOnce, Journal, JournalCache, type RangeReader } from './journal.j
 import type { StuckSignal } from './liveness.js';
 import { WardenActuator } from './warden.js';
 import { QueueStore } from './intake/queueStore.js';
-import type { QueueMergeDeps, QueuePromoteDeps, QueueTicketSearch } from './intake/queue.js';
+import { mergeItem, type QueueMergeDeps, type QueuePromoteDeps, type QueueTicketSearch } from './intake/queue.js';
 import {
   forgeHome, killSwitchPath as defaultKillSwitchPath, packetsDir as defaultPacketsDir, queuePath as defaultQueuePath,
   registryDir, serverTokenPath,
 } from './paths.js';
 import { routerEnabled } from './policy.js';
 import { retireEligible, retireFinished, retiredPath, retireRun, unretireRun } from './console/retire.js';
+import { mergeReadyReportFrom } from './console/lanes.js';
 import { chainStatusRows, foldChainState } from './chain.js';
 import { Registry } from './registry.js';
 import { route as routeMessage } from './router.js';
@@ -262,6 +263,10 @@ export class ForgeServer {
   private readonly consoleWrites: ConsoleWrites;
 
   private readonly queueRoutes: QueueRoutes;
+
+  private readonly queueStoreForMerge: QueueStore;
+
+  private readonly queueMergeDepsOpt: QueueMergeDeps | undefined;
   /** Set by `forge up` once the self loop exists; read fresh on every `/state`. */
   selfStatus: (() => unknown) | undefined;
 
@@ -297,8 +302,10 @@ export class ForgeServer {
       lanesView: () => this.consoleReads.lanesResponse(),
       ...(options.modelPolicyPath ? { modelPolicyPath: options.modelPolicyPath } : {}),
     });
+    this.queueStoreForMerge = options.queueStore ?? new QueueStore(defaultQueuePath());
+    this.queueMergeDepsOpt = options.queueMergeDeps;
     this.queueRoutes = new QueueRoutes({
-      store: options.queueStore ?? new QueueStore(defaultQueuePath()),
+      store: this.queueStoreForMerge,
       search: options.queueSearch ?? {
         searchKeys: async () => {
           throw new Error('jira not configured: missing FORGE_JIRA_SITE, FORGE_JIRA_EMAIL, FORGE_JIRA_TOKEN');
@@ -581,6 +588,11 @@ export class ForgeServer {
       }
       return this.retireFinishedRoute(request, response);
     }
+    if (path === '/merge-ready') {
+      if (request.method === 'GET') return this.mergeReadyGet(request, response);
+      if (request.method === 'POST') return this.mergeReadyPost(request, response);
+      return json(response, 405, { error: 'merge-ready is GET or POST only' });
+    }
     if (await this.consoleWrites.handle(path, request, response)) return;
     if (await this.queueRoutes.handle(path, request, response)) return;
     if (request.method === 'GET') {
@@ -823,6 +835,48 @@ export class ForgeServer {
       appendOnce(this.journalPath, { event: 'lane.retired', run: id, actor: 'console', retired: true });
     }
     json(response, 200, { ok: true, jid: null, message: `retired ${retired.length} lane(s)`, undoable: false, retired });
+  }
+
+  /** `GET /merge-ready` (H1.8): every lane whose PR is ready by the queue's own rules,
+   *  and every lane with a PR that is not, each with the reason in words -- the same
+   *  `mergeable` field `GET /lanes` already carries per lane, just filtered down to the
+   *  ones that actually have a PR to report on. */
+  private mergeReadyGet(request: IncomingMessage, response: ServerResponse): void {
+    if (!this.authorized(request, response)) return;
+    const lanes = this.consoleReads.lanesResponse(true).lanes;
+    json(response, 200, mergeReadyReportFrom(lanes));
+  }
+
+  /**
+   * `POST /merge-ready` (H1.8): merges every ready lane, one at a time, through the
+   * same path the queue's own Merge click already uses (`mergeItem`) -- never a repo
+   * outside `FORGE_QUEUE_MERGE_REPOS`, since `mergeItem` itself refuses that. A chain
+   * lane (no queue item behind it) is reported honestly as unmerged here rather than
+   * guessed at: this environment's `chainGate` merge path is not wired to this route.
+   */
+  private mergeReadyPost(request: IncomingMessage, response: ServerResponse): void {
+    if (!this.authorized(request, response)) return;
+    void (async () => {
+      const { ready } = mergeReadyReportFrom(this.consoleReads.lanesResponse(true).lanes);
+      const outcomes: Array<{ id: string; ok: boolean; message: string }> = [];
+      for (const lane of ready) {
+        const item = this.queueStoreForMerge.all().find((row) => row.runKey === lane.id);
+        if (!item) {
+          outcomes.push({ id: lane.id, ok: false, message: 'no queue item behind this lane; chain-lane merges are not wired to this route' });
+          continue;
+        }
+        if (!this.queueMergeDepsOpt) {
+          outcomes.push({ id: lane.id, ok: false, message: 'no merge wiring is configured for this environment' });
+          continue;
+        }
+        const outcome = await mergeItem(item, this.queueMergeDepsOpt);
+        appendOnce(this.journalPath, {
+          event: 'merge-ready.merged', actor: 'console', itemId: item.id, run: lane.id, ok: outcome.ok, message: outcome.message,
+        });
+        outcomes.push({ id: lane.id, ok: outcome.ok, message: outcome.message });
+      }
+      json(response, 200, { ok: outcomes.every((row) => row.ok), outcomes });
+    })();
   }
 
   /**

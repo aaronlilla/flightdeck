@@ -35,6 +35,7 @@ import { queueMergeAllowed } from '../queue-wire.js';
 import { chainLinks, computeLanes, mergeableFor, tokensToday, titleFor, titleFromHeading, windowLanes, type LanesInput } from './lanes.js';
 import { computeLaneStory, type GitCommit } from './story.js';
 import { readRetired, retiredPath } from './retire.js';
+import { plainStatus } from './plain.js';
 import {
   computeRunPr, prCachePath, readPrCache, writePrCache,
   type AttestationReaderFn, type GhDetailLookupFn, type GhLookupFn, type GhPrDetail, type GhPrLookup,
@@ -360,11 +361,21 @@ export class ConsoleReads {
   private withHumanFields(lane: Lane, chain: Map<string, ChainPacketState>): Lane {
     let briefPath: string | null = null;
     let prUrl: string | null = lane.pr?.url ?? null;
+    // A queue item carries its own `repo` and a bare `pr` (no/url/draft) straight off
+    // the queue's own log; a chain-kind lane's own `repo` already comes off the chain
+    // packet in `buildLane`. Neither is a substitute for the richer `lane.pr` `/run/:id/pr`
+    // caches (checks/verdict/merged) -- only a fallback for a queue lane nobody has
+    // polled that route for yet, so `mergeable` and `plain` still have a repo and a PR
+    // number to reason about instead of reading every ticket lane as "no PR yet".
+    let repo = lane.repo;
+    let pr = lane.pr;
 
     if (lane.kind === 'ticket' || lane.kind === 'brief' || lane.kind === 'hotfix' || lane.kind === 'self') {
       const item = this.queueStore.all().find((row) => row.runKey === lane.id);
       briefPath = item?.briefPath ?? null;
       prUrl = prUrl ?? item?.pr?.url ?? null;
+      repo = repo ?? item?.repo ?? null;
+      pr = pr ?? item?.pr ?? null;
     } else if (lane.kind === 'chain') {
       const packet = packetForRun(chain, lane.id);
       briefPath = packet?.briefPath ?? null;
@@ -374,8 +385,13 @@ export class ConsoleReads {
 
     const briefHeading = briefPath ? readBriefHeading(briefPath, lane.ticket) : null;
     const { title, sourceUrl } = titleFor({ kind: lane.kind, ticket: lane.ticket, briefHeading, jiraSite: this.jiraSite, prUrl });
-    const mergeable = mergeableFor({ pr: lane.pr, repo: lane.repo, mergeAllowed: this.mergeAllowedFn });
-    return { ...lane, title, sourceUrl, mergeable };
+    const mergeable = mergeableFor({ pr, repo, mergeAllowed: this.mergeAllowedFn });
+    const patched: Lane = { ...lane, title, sourceUrl, mergeable, repo, pr };
+    // `plain` was built in `buildLane` off whatever `pr` the cache already had; a queue
+    // lane's fallback `pr` above can change what it should say (a bare `pr` now exists
+    // where there was none), so it is recomputed here rather than left stale.
+    if (pr !== lane.pr) patched.plain = plainStatus(patched, { now: Date.now() });
+    return patched;
   }
 
   private threadResponse(): ThreadResponse {

@@ -11,7 +11,7 @@ import type { InboxEntry } from '../inbox.js';
 import type { StuckSignal } from '../liveness.js';
 import type { ChainPacketState } from '../chain.js';
 import type { ClassSpec } from '../policy.js';
-import type { Hop, Lane, LaneKind, LanePr, LaneQuestion, LaneSandbox, LaneState, LanesResponse } from '../../shared/console-model.js';
+import type { Hop, Lane, LaneKind, LanePr, LaneQuestion, LaneSandbox, LaneState, LanesResponse, MergeReadyReport } from '../../shared/console-model.js';
 import { textFor } from './journal-route.js';
 import { plainStatus } from './plain.js';
 
@@ -173,6 +173,23 @@ export function mergeableFor(input: MergeableInput): { ok: true } | { ok: false;
     };
   }
   return { ok: true };
+}
+
+/** `GET /merge-ready` (H1.8): every lane with an open, unmerged PR, split by whether
+ *  the queue's own rules say Merge would do anything -- a lane with no PR at all has
+ *  nothing here to report on and is left out of both lists entirely. */
+export function mergeReadyReportFrom(lanes: Lane[]): MergeReadyReport {
+  const ready: MergeReadyReport['ready'] = [];
+  const notReady: MergeReadyReport['notReady'] = [];
+  for (const lane of lanes) {
+    if (!lane.pr || lane.pr.merged) continue;
+    if (lane.mergeable?.ok) {
+      ready.push({ id: lane.id, title: lane.title, pr: lane.pr });
+    } else {
+      notReady.push({ id: lane.id, title: lane.title, pr: lane.pr, why: lane.mergeable?.why ?? 'not evaluated' });
+    }
+  }
+  return { ready, notReady };
 }
 
 export interface ChainLink {

@@ -1041,6 +1041,95 @@ describe('POST /retire-finished (H1.7)', () => {
   });
 });
 
+describe('GET /merge-ready and POST /merge-ready (H1.8)', () => {
+  it('GET reports a queue lane with a bare, unread PR as not-ready ("checks pending")', async () => {
+    const { QueueStore } = await import('../../src/forge/intake/queueStore.js');
+    const queueStore = new QueueStore(join(dir, 'console', 'queue.jsonl'));
+    queueStore.append({
+      id: 'Q-1', at: 1, source: 'ticket', input: 'BBZ-96', ticket: 'BBZ-96', repo: 'o/n', briefPath: 'b.md',
+      branch: 'feature/bbz-96', worktreePath: 'w', base: 'develop', state: 'review', reason: null,
+      runKey: 'queue-BBZ-96', pr: { no: 5, url: 'https://github.com/o/n/pull/5', files: 1, add: 1, del: 0, draft: true },
+      journalIds: [], createdAt: 1, updatedAt: 1,
+    });
+    const journal = new Journal(join(dir, 'fleet.jsonl'));
+    journal.append({ event: 'run.started', run: 'queue-BBZ-96', actor: 'runner' });
+    journal.append({ event: 'run.finished', run: 'queue-BBZ-96', actor: 'runner', verdict: 'done' });
+    journal.close();
+    const lanes = new Lanes(join(dir, 'lanes'));
+    lanes.put('queue-BBZ-96', { column: 'c3' });
+
+    process.env['FORGE_QUEUE_MERGE_REPOS'] = 'o/n';
+    const withQueue = new ForgeServer({
+      lanes, inbox: new Inbox(join(dir, 'inbox')), journalPath: join(dir, 'fleet.jsonl'),
+      registry: new Registry(join(dir, 'registry')), port: 0, queueStore,
+    });
+    const queueBase = `http://127.0.0.1:${await withQueue.listen()}`;
+    try {
+      const report = await (await fetch(`${queueBase}/merge-ready`, {
+        headers: { 'x-forge-token': withQueue.token },
+      })).json() as { ready: unknown[]; notReady: Array<{ id: string; why: string }> };
+      expect(report.ready).toEqual([]);
+      expect(report.notReady).toEqual([{ id: 'queue-BBZ-96', why: 'checks pending' }].map((r) => expect.objectContaining(r)));
+    } finally {
+      delete process.env['FORGE_QUEUE_MERGE_REPOS'];
+      await withQueue.close();
+    }
+  });
+
+  it('POST merges every ready lane through the queue\'s own mergeItem path', async () => {
+    process.env['FORGE_QUEUE_MERGE_REPOS'] = 'o/n';
+    const { QueueStore } = await import('../../src/forge/intake/queueStore.js');
+    const queueStore = new QueueStore(join(dir, 'console', 'queue.jsonl'));
+    queueStore.append({
+      id: 'Q-1', at: 1, source: 'ticket', input: 'BBZ-96', ticket: 'BBZ-96', repo: 'o/n', briefPath: 'b.md',
+      branch: 'feature/bbz-96', worktreePath: 'w', base: 'develop', state: 'review', reason: null,
+      runKey: 'queue-BBZ-96',
+      pr: {
+        no: 5, url: 'https://github.com/o/n/pull/5', files: 1, add: 1, del: 0, draft: true,
+        checks: 'success', verdict: 'PASS', merged: false,
+      },
+      journalIds: [], createdAt: 1, updatedAt: 1,
+    });
+    const journal = new Journal(join(dir, 'fleet.jsonl'));
+    journal.append({ event: 'run.started', run: 'queue-BBZ-96', actor: 'runner' });
+    journal.append({ event: 'run.finished', run: 'queue-BBZ-96', actor: 'runner', verdict: 'done' });
+    journal.close();
+    const lanes = new Lanes(join(dir, 'lanes'));
+    lanes.put('queue-BBZ-96', { column: 'c3' });
+
+    let gateCalled = false;
+    const withQueue = new ForgeServer({
+      lanes, inbox: new Inbox(join(dir, 'inbox')), journalPath: join(dir, 'fleet.jsonl'),
+      registry: new Registry(join(dir, 'registry')), port: 0, queueStore,
+      queueMergeDeps: {
+        mergeAllowed: () => true,
+        gate: async () => { gateCalled = true; return { merged: true }; },
+        clock: () => 9_000,
+        store: queueStore,
+      },
+    });
+    const queueBase = `http://127.0.0.1:${await withQueue.listen()}`;
+    try {
+      const before = await (await fetch(`${queueBase}/merge-ready`, {
+        headers: { 'x-forge-token': withQueue.token },
+      })).json() as { ready: Array<{ id: string }> };
+      expect(before.ready.map((r) => r.id)).toEqual(['queue-BBZ-96']);
+
+      const result = await fetch(`${queueBase}/merge-ready`, {
+        method: 'POST', headers: { 'x-forge-token': withQueue.token },
+      });
+      expect(result.status).toBe(200);
+      const body = await result.json() as { ok: boolean; outcomes: Array<{ id: string; ok: boolean }> };
+      expect(gateCalled).toBe(true);
+      expect(body.outcomes).toEqual([{ id: 'queue-BBZ-96', ok: true }].map((r) => expect.objectContaining(r)));
+      expect(queueStore.get('Q-1')?.state).toBe('done');
+    } finally {
+      delete process.env['FORGE_QUEUE_MERGE_REPOS'];
+      await withQueue.close();
+    }
+  });
+});
+
 describe('anything else', () => {
   it('is a 404 rather than a stack trace', async () => {
     const response = await fetch(`${base}/nope`);

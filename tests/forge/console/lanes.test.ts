@@ -13,7 +13,7 @@ import { foldChainState, type ChainPacketState } from '../../../src/forge/chain.
 import { Journal, replay } from '../../../src/forge/journal.js';
 import {
   computeLanes, hopFor, laneStateFor, meaningfulEvents, modelAlias, ticketFor, windowLanes, type LanesInput, laneKindFor,
-  titleFromHeading, titleFor, mergeableFor } from '../../../src/forge/console/lanes.js';
+  titleFromHeading, titleFor, mergeableFor, mergeReadyReportFrom } from '../../../src/forge/console/lanes.js';
 import type { RegistryRecord } from '../../../src/forge/registry.js';
 import type { Lane, LanesResponse } from '../../../src/shared/console-model.js';
 import { laneRecord, type LaneRecord } from '../../../src/forge/supervisor.js';
@@ -699,5 +699,39 @@ describe('mergeableFor', () => {
   it('PASS WITH NOTES clears the same as a bare PASS', () => {
     const pr = { no: 1, url: 'x', files: 0, add: 0, del: 0, draft: false, merged: false, checks: 'success' as const, verdict: 'PASS WITH NOTES' };
     expect(mergeableFor({ pr, repo: 'o/n', mergeAllowed: allow(['o/n']) })).toEqual({ ok: true });
+  });
+});
+
+describe('mergeReadyReportFrom', () => {
+  function laneWithPr(overrides: Partial<Lane>): Lane {
+    return {
+      title: 'add the merge chip', kind: 'ticket', sourceUrl: null, plain: '', attempts: 1, retiredAt: null,
+      id: 'queue-BBZ-96', ticket: 'BBZ-96', model: 'sonnet-5', modelId: null, className: null, repo: 'o/n',
+      attempt: 1, state: 'done', reason: null, stepN: 0, stepTotal: 0, stepText: '',
+      ctxTokens: 0, ctxCeiling: 0, ctxCompactAt: 0, tokens: 0, tokenCap: null, tokensPerMin: 0,
+      fails: 0, hop: 0, hopStatus: 'live', observedAt: 0, verifiedAt: null, heart: false, since: 0,
+      startedAt: 0, endedAt: null, question: null, sandbox: null, blockedBy: null, runaway: false,
+      needsAaron: null, mergeable: null,
+      pr: { no: 1, url: 'x', files: 0, add: 0, del: 0, draft: true, merged: false, checks: 'success', verdict: 'PASS' },
+      ...overrides,
+    };
+  }
+
+  it('a lane with no PR is left out of both lists', () => {
+    const lane = laneWithPr({ pr: null, mergeable: { ok: false, why: 'no PR yet' } });
+    expect(mergeReadyReportFrom([lane])).toEqual({ ready: [], notReady: [] });
+  });
+
+  it('an already-merged PR is left out of both lists', () => {
+    const lane = laneWithPr({ pr: { no: 1, url: 'x', files: 0, add: 0, del: 0, draft: false, merged: true }, mergeable: { ok: false, why: 'already merged' } });
+    expect(mergeReadyReportFrom([lane])).toEqual({ ready: [], notReady: [] });
+  });
+
+  it('splits ready from not-ready by mergeable.ok, carrying the why', () => {
+    const ready = laneWithPr({ id: 'a', mergeable: { ok: true } });
+    const notReady = laneWithPr({ id: 'b', mergeable: { ok: false, why: 'checks pending' } });
+    const report = mergeReadyReportFrom([ready, notReady]);
+    expect(report.ready.map((r) => r.id)).toEqual(['a']);
+    expect(report.notReady).toEqual([{ id: 'b', title: 'add the merge chip', pr: notReady.pr, why: 'checks pending' }]);
   });
 });

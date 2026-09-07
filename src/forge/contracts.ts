@@ -282,6 +282,9 @@ export const FORGE_EVENT_NAMES = [
   // Retire/Unretire click or the bulk `POST /retire-finished` -- never written by any
   // worker or automation.
   'lane.retired',
+  // H1.8: one lane's own outcome from the bulk `POST /merge-ready` -- always an
+  // operator's own click, never a worker acting on its own.
+  'merge-ready.merged',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];
