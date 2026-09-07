@@ -73,24 +73,38 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
           <span>◆ human needed</span>
         </div>
       ) : null}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 6 }}>
-        <div style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {headline.key ? <span className="m" title={headline.runId} style={{ fontSize: 13, fontWeight: 700 }}>{headline.key}</span> : null}
-          {headline.key && headline.title ? <span className="m" style={{ fontSize: 13, color: 'var(--ink2)' }}> · </span> : null}
-          {headline.title ? (
-            <span className="m" title={headline.key ? undefined : headline.runId} style={{ fontSize: 13, fontWeight: headline.key ? 400 : 700 }}>{headline.title}</span>
-          ) : (!headline.key ? <span className="m" title={headline.runId} style={{ fontSize: 13, fontWeight: 700 }}>{headline.runId}</span> : null)}
-        </div>
-        <span style={{ display: 'flex', gap: 4, flex: 'none' }}>
-          <span className="chip" style={{ fontSize: 9 }}>{kindLabel(lane.kind)}</span>
-          <span
-            className="chip"
-            onMouseEnter={(e) => showTip('model', e, modelTip(lane, fresh))}
-            onMouseLeave={() => hideTip('model')}
-          >
-            {lane.model}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 6 }}>
+          <div style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {headline.key ? (
+              <span className="m" title={headline.runId} style={{ fontSize: 13, fontWeight: 700 }}>{headline.key}</span>
+            ) : (
+              <span className="m" title={headline.runId} style={{ fontSize: 13, fontWeight: 700 }}>{headline.title ?? headline.runId}</span>
+            )}
+          </div>
+          <span style={{ display: 'flex', gap: 4, flex: 'none' }}>
+            <span className="chip" style={{ fontSize: 9 }}>{kindLabel(lane.kind)}</span>
+            <span
+              className="chip"
+              onMouseEnter={(e) => showTip('model', e, modelTip(lane, fresh))}
+              onMouseLeave={() => hideTip('model')}
+            >
+              {lane.model}
+            </span>
           </span>
-        </span>
+        </div>
+        {headline.key && headline.title ? (
+          <div
+            className="m"
+            title={headline.title}
+            style={{
+              fontSize: 12, color: 'var(--ink2)', display: '-webkit-box',
+              WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+            }}
+          >
+            {headline.title}
+          </div>
+        ) : null}
       </div>
       <div className="lbl" style={{ color: st.color, cursor: 'help' }}>{st.glyph} {st.label}</div>
       <div style={{ font: '12.5px/1.45 "IBM Plex Sans",sans-serif', color: 'var(--ink2)', minHeight: 38 }}>

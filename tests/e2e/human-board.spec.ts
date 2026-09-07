@@ -22,6 +22,16 @@ test('H2.1: a titled tile bolds the ticket key, names its kind, and shows the pl
   await expect(tile.getByText('PR #120')).toBeVisible();
 });
 
+test('H2.1 fix: a long title wraps onto its own second line under the key, never running the key and the title together', async ({ page }) => {
+  await page.goto('/');
+  const tile = page.getByTestId('lane-long-title-1');
+  await expect(tile).toBeVisible();
+  const key = tile.getByText('FLT-705', { exact: true });
+  await expect(key).toBeVisible();
+  const keyRowText = await key.locator('xpath=..').textContent();
+  expect(keyRowText ?? '').not.toContain('withdrawal fee');
+});
+
 test('H2.2: the three-attempt chain ticket folds into one card with an attempt chip, and probes hide by default', async ({ page }) => {
   await page.goto('/');
   await expect(page.locator('[data-testid^="lane-chain-"]')).toHaveCount(1);

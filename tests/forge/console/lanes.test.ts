@@ -589,6 +589,12 @@ describe('titleFromHeading', () => {
   it('is null for a heading that is only the stripped prefix', () => {
     expect(titleFromHeading('# BBZ-96\n', 'BBZ-96')).toBeNull();
   });
+
+  it('strips a leading "Goal:" or "Goal -" prefix, ahead of the ticket-key strip', () => {
+    expect(titleFromHeading('# Goal: BBZ-96: add the merge chip\n', 'BBZ-96')).toBe('add the merge chip');
+    expect(titleFromHeading('# Goal - fix the withdrawal fee\n', null)).toBe('fix the withdrawal fee');
+    expect(titleFromHeading('# goal:   tidy the queue worker\n', null)).toBe('tidy the queue worker');
+  });
 });
 
 describe('titleFor', () => {

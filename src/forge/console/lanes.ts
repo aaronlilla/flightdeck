@@ -90,6 +90,7 @@ export function titleFromHeading(brief: string, ticket: string | null): string |
   if (!match) return null;
   let text = match[1]!.trim();
   text = text.replace(/^self finding:\s*/i, '');
+  text = text.replace(/^goal\s*[:\-]\s*/i, '');
   if (ticket) {
     const escaped = ticket.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     text = text.replace(new RegExp(`^${escaped}\\s*:?\\s*`, 'i'), '');

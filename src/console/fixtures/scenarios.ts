@@ -294,6 +294,13 @@ export function humanBoardLanes(): Lane[] {
   }));
 
   out.push(lane({
+    id: 'long-title-1', ticket: 'FLT-705', kind: 'ticket', state: 'running',
+    title: 'the withdrawal fee rounds down instead of to the nearest cent on every payout over five hundred dollars, which the finance team flagged after last week\'s reconciliation',
+    sourceUrl: 'https://example.invalid/browse/FLT-705',
+    plain: 'Working since 09:10 on a Sonnet session, 6 turns in, last did: read the fee calculator.',
+  }));
+
+  out.push(lane({
     id: 'self-1', kind: 'self', ticket: null, state: 'blocked',
     title: 'self finding: the queue worker leaks a file handle on retry',
     plain: 'Self-analysis found a leaked file handle; blocked on your review.',

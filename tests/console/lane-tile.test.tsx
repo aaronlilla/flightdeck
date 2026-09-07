@@ -110,6 +110,18 @@ describe('LaneTile', () => {
     expect(screen.getByText('the withdrawal fee is off by one')).toBeInTheDocument();
   });
 
+  it('H2.1 fix: puts the ticket key and chips on line one and the title on its own second line, with the full title in the title attribute', () => {
+    const longTitle = 'the withdrawal fee rounds down instead of to the nearest cent on every payout over five hundred dollars';
+    render(<LaneTile lane={lane({ ticket: 'FLT-9', title: longTitle })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
+    const key = screen.getByText('FLT-9');
+    const titleEl = screen.getByText(longTitle);
+    expect(titleEl).toHaveAttribute('title', longTitle);
+    // The key and the title must not share a text node/line -- they are two separate
+    // elements once the fix lands, and the row holding the key holds no title text.
+    expect(key.parentElement).not.toBe(titleEl.parentElement);
+    expect(key.parentElement?.textContent).not.toContain(longTitle);
+  });
+
   it('shows the title alone when the lane has no ticket key', () => {
     render(<LaneTile lane={lane({ ticket: null, kind: 'probe', title: 'Live probe of the runner' })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
     expect(screen.getByText('Live probe of the runner')).toBeInTheDocument();
