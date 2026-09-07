@@ -1,0 +1,229 @@
+/**
+ * Named scenarios the e2e suite selects with `POST /__test/fixture?name=<id>`
+ * (see `stub-server.ts`). Each spec picks its own scenario before it navigates,
+ * so specs never depend on the seed board or on each other's mutations -- the
+ * default board (`seedLanes()` et al) stays the one every non-e2e caller sees.
+ *
+ * Every id here also has to survive `check:agnostic`, so lane and ticket ids
+ * follow the same generic `FLT-`/`BBZ-` convention `lanes.ts` already uses.
+ */
+import type { Integration, Lane, Message, QueueItem, Rule } from '../../shared/console-model.js';
+
+const T0 = Date.parse('2026-01-06T14:07:52Z');
+
+function lane(partial: Partial<Lane> & Pick<Lane, 'id' | 'state'>): Lane {
+  return {
+    ticket: null,
+    model: 'sonnet-5',
+    modelId: 'claude-sonnet-5',
+    className: 'implement',
+    repo: 'flightdeck-api',
+    attempt: 1,
+    reason: null,
+    stepN: 1,
+    stepTotal: 6,
+    stepText: 'working',
+    ctxTokens: 40_000,
+    ctxCeiling: 200_000,
+    ctxCompactAt: 180_000,
+    tokens: 240_000,
+    tokenCap: 4_000_000,
+    tokensPerMin: 0,
+    fails: 0,
+    hop: 2,
+    hopStatus: 'live',
+    observedAt: T0,
+    verifiedAt: T0,
+    heart: false,
+    since: T0,
+    startedAt: T0,
+    endedAt: null,
+    question: null,
+    pr: null,
+    sandbox: null,
+    blockedBy: null,
+    runaway: false,
+    needsAaron: null,
+    ...partial,
+  };
+}
+
+/** Cut-line #1: an empty fleet -- no lanes, no rules, no journal, no queue. Every
+ *  "N of the fleet" readout (the all-chip count, the needs-you strip, the queue's
+ *  own empty state) has to hold together with nothing behind it. */
+export function emptyLanes(): Lane[] {
+  return [];
+}
+
+/** The sentinel repo a write handler checks for before running its normal effect
+ *  (see `stub-server.ts#maybeUnbuilt`), standing in for a mechanism the real
+ *  server has not built yet -- the contract's own "answers 501" case. */
+export const UNBUILT_REPO = '__stub-unbuilt__';
+
+/** Cut-line #1: one lane per state, plus the two variants a bare state doesn't
+ *  distinguish (`running` normal vs. `runaway`, `blocked` on an integration vs.
+ *  a failed gate) -- twelve lanes, twelve CTAs, matching `laneCta()`'s own switch
+ *  one for one so a spec can assert every row of the HANDOFF's CTA table renders,
+ *  not only the handful the seed board happens to carry. */
+export function statesLanes(): Lane[] {
+  const now = Date.now();
+  return [
+    lane({ id: 'FLT-301', state: 'running', heart: true, stepText: 'writing a test' }),
+    lane({
+      id: 'FLT-302', state: 'running', runaway: true, heart: true, fails: 3,
+      tokens: 5_000_000, tokenCap: 1_000_000, stepText: 'retrying a flaky build',
+    }),
+    lane({ id: 'FLT-303', state: 'handed-off', heart: true, hop: 3, stepText: 'handed off to the gate council' }),
+    lane({ id: 'FLT-304', state: 'paused', stepText: 'paused by the operator' }),
+    lane({
+      id: 'FLT-305', state: 'parked', stepText: 'blocked on a question',
+      question: { key: 'ask-305', text: 'ship it anyway?', opts: ['yes', 'no'], askedAt: now },
+    }),
+    lane({ id: 'FLT-306', state: 'done', stepText: 'ready to merge', pr: { no: 1, url: 'https://example.invalid/pr/1', files: 2, add: 10, del: 1, draft: false } }),
+    lane({ id: 'FLT-307', state: 'merged', stepText: 'merged', pr: { no: 2, url: 'https://example.invalid/pr/2', files: 2, add: 10, del: 1, draft: false } }),
+    lane({ id: 'FLT-308', state: 'blocked', reason: 'gate: FIX FIRST', stepText: 'the gate council failed this attempt' }),
+    lane({ id: 'FLT-309', state: 'blocked', blockedBy: 'aws', reason: 'blocked on integration:aws', stepText: 'waiting on the AWS integration' }),
+    lane({ id: 'FLT-310', state: 'exhausted', ctxTokens: 199_000, stepText: 'ran out of context before finishing' }),
+    lane({ id: 'FLT-311', state: 'killed', stepText: 'killed' }),
+    lane({ id: 'FLT-312', state: 'unverified', stepText: 'finished without a gate verdict' }),
+  ];
+}
+
+/** Cut-line #1: an exhausted lane whose action route the stub deliberately has
+ *  not built (`repo: UNBUILT_REPO`) -- the contract's 501 case, so the rail's
+ *  refusal card has something real to render instead of a hand-typed fixture. */
+export function refusalLanes(): Lane[] {
+  return [lane({ id: 'FLT-401', state: 'exhausted', repo: UNBUILT_REPO, ctxTokens: 199_000, stepText: 'ran out of context before finishing' })];
+}
+
+/** Cut-line #1: a parked lane whose question the operator already answered from
+ *  a second tab (or the stub's own race) -- so the rail's `answer` command has
+ *  no parked lane left to resolve when this tab's stale question card is
+ *  clicked a second time. The lane starts `running`; the question card is
+ *  carried in the matching thread fixture (`raceThread`) rather than on the
+ *  lane, which is exactly the race: the card is stale, the lane already moved. */
+export function resumedRaceLanes(): Lane[] {
+  return [lane({ id: 'FLT-402', state: 'running', heart: true, stepText: 'already resumed' })];
+}
+
+export function raceThread(): Message[] {
+  const now = Date.now() - 60_000;
+  return [{
+    k: 'race-q1', type: 'question', text: 'the migration column should be NOT NULL or nullable with a backfill job?',
+    ts: now, source: 'FLT-402', lane: 'FLT-402', askKey: 'ask-race',
+    opts: ['NOT NULL', 'nullable + backfill'],
+  }];
+}
+
+/** Cut-line #2: one lane per `MessageType` the rail's `MessageCard` switch
+ *  renders, so the whole gallery is exercised rather than the seed thread's
+ *  three types. */
+export function galleryThread(): Message[] {
+  const now = Date.now();
+  return [
+    { k: 'g-event', type: 'event', text: 'FLT-501 parked -- needs an answer', ts: now - 9 * 60_000, source: 'system', lane: 'FLT-501', verifiedAt: now - 9 * 60_000 },
+    { k: 'g-operator', type: 'operator', text: 'pause everything', ts: now - 8 * 60_000, source: 'operator' },
+    {
+      k: 'g-reply', type: 'reply', text: 'FLT-501 is over its cap and has failed twice. Recommend killing it.', ts: now - 7 * 60_000,
+      source: 'conductor', btns: [{ label: 'Kill FLT-501', cmd: 'kill FLT-501', cls: 'destroy' }],
+    },
+    {
+      k: 'g-question', type: 'question', text: 'the migration column should be NOT NULL or nullable with a backfill job?',
+      ts: now - 6 * 60_000, source: 'FLT-501', lane: 'FLT-501', askKey: 'ask-gallery',
+      opts: ['NOT NULL', 'nullable + backfill'],
+    },
+    {
+      k: 'g-plan', type: 'plan', text: 'merge ready lanes', ts: now - 5 * 60_000, source: 'conductor',
+      items: [{ text: 'merge FLT-306', irreversible: true }, { text: 'post a journal receipt', irreversible: false }],
+    },
+    {
+      k: 'g-confirm', type: 'confirm', text: 'Kill FLT-501?', ts: now - 4 * 60_000, source: 'conductor',
+      blast: 'discards the working diff and stops the sandbox.',
+    },
+    { k: 'g-receipt', type: 'receipt', text: 'FLT-501 killed', ts: now - 3 * 60_000, source: 'conductor', jid: 'J-90001', undoable: false },
+    { k: 'g-refusal', type: 'refusal', text: `refused: 30M tokens is above the org hard limit 20M tokens (FD-7)`, ts: now - 2 * 60_000, source: 'conductor' },
+    {
+      k: 'g-pr', type: 'pr', text: 'draft PR #9 opened', ts: now - 60_000, source: 'FLT-306',
+      pr: { no: 9, url: 'https://example.invalid/pr/9', files: 3, add: 40, del: 5, draft: true },
+    },
+    { k: 'g-thinking', type: 'thinking', text: '', ts: now, source: 'conductor' },
+  ];
+}
+
+/** Cut-line #2: a fleet at operational scale -- 2000 lanes -- to prove the board
+ *  holds together (renders, counts, filters) at ten times what any hand-written
+ *  fixture would cover, not just at the seed's baker's dozen. */
+export function bigLanes(count = 2000): Lane[] {
+  const now = Date.now();
+  const states: Lane['state'][] = ['running', 'paused', 'blocked', 'done', 'merged', 'parked', 'exhausted'];
+  const out: Lane[] = [];
+  for (let i = 0; i < count; i += 1) {
+    const state = states[i % states.length] as Lane['state'];
+    out.push(lane({
+      id: `FLT-${9000 + i}`,
+      state,
+      heart: state === 'running',
+      repo: i % 3 === 0 ? 'flightdeck-api' : i % 3 === 1 ? 'flightdeck-rn' : 'flightdeck-docs',
+      tokens: 10_000 + i * 137,
+      observedAt: now - (i % 20) * 1000,
+      verifiedAt: state === 'running' ? now - (i % 20) * 1000 : null,
+      question: state === 'parked' ? { key: `ask-${i}`, text: 'ok to proceed?', opts: ['yes', 'no'], askedAt: now } : null,
+    }));
+  }
+  return out;
+}
+
+/** Cut-line #1: one queue item per (source, state) pair the current contract
+ *  defines (`QueueSource` x `QueueItemState`, 4 x 7): every add path, every
+ *  card the queue view's `STATE_TAXONOMY` renders. */
+export function matrixQueue(): QueueItem[] {
+  const now = Date.now();
+  const sources: QueueItem['source'][] = ['ticket', 'brief', 'query', 'backlog'];
+  const states: QueueItem['state'][] = ['queued', 'planning', 'running', 'parked', 'review', 'failed', 'done'];
+  const out: QueueItem[] = [];
+  let n = 0;
+  for (const source of sources) {
+    for (const state of states) {
+      n += 1;
+      const id = `Q-matrix-${n}`;
+      const ticket = source === 'ticket' ? `FLT-${600 + n}` : source === 'query' || source === 'backlog' ? `FLT-${600 + n}` : null;
+      out.push({
+        id,
+        source,
+        input: source === 'brief' ? '# Goal: fix the thing' : source === 'query' ? 'sprint in openSprints()' : source === 'backlog' ? 'project = FLT and status = Backlog' : `FLT-${600 + n}`,
+        ticket,
+        repo: state === 'queued' || state === 'planning' ? null : 'example/repo',
+        briefPath: null,
+        branch: null,
+        worktreePath: null,
+        base: null,
+        state,
+        reason: state === 'parked' ? 'blocked on a schema question' : state === 'failed' ? 'launch threw: worktree setup failed' : null,
+        runKey: null,
+        pr: state === 'review' ? { no: 100 + n, url: `https://example.invalid/pr/${100 + n}`, files: 3, add: 30, del: 4, draft: true } : null,
+        journalIds: [],
+        createdAt: now - n * 60_000,
+        updatedAt: now - n * 30_000,
+      });
+    }
+  }
+  return out;
+}
+
+/** Every integration reporting `ok`, paired with `emptyLanes` for the empty-fleet
+ *  scenario -- the seed board's AWS row is deliberately `down` so the default
+ *  fixture's needs-you strip has something to show, which would otherwise leak
+ *  a plate into a board that is supposed to have nothing needing anyone. */
+export function healthyIntegrations(seed: Integration[]): Integration[] {
+  return seed.map((i) => ({
+    ...i, status: 'ok', since: null, cause: null, effect: null, fix: null, fixLabel: null,
+    dependents: [], step: null, retryCount: 0,
+  }));
+}
+
+/** Empty proposal list, paired with `emptyLanes` for the empty-fleet scenario --
+ *  a rule pointing at `mergedToday`/`fails` figures a fleet with nothing running
+ *  can't honestly have. */
+export function emptyRules(): Rule[] {
+  return [];
+}

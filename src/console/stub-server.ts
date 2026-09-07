@@ -13,7 +13,7 @@ import { extname, join } from 'node:path';
 import type { Duplex } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
-import { HEARTBEAT_MS } from '../shared/console-model.js';
+import { CONSOLE_ROUTES, HEARTBEAT_MS } from '../shared/console-model.js';
 import type {
   ActionResult, Caps, Integration, JournalEntry, Lane, Message, QueueAddRequest, QueueAddResponse,
   QueueItem, QueueSource, Rule,
@@ -24,6 +24,10 @@ import { seedIntegrations } from './fixtures/integrations.js';
 import { seedJournal } from './fixtures/journal.js';
 import { seedLanes } from './fixtures/lanes.js';
 import { seedRules } from './fixtures/proposals.js';
+import {
+  bigLanes, emptyLanes, emptyRules, galleryThread, healthyIntegrations, matrixQueue, raceThread,
+  refusalLanes, resumedRaceLanes, statesLanes, UNBUILT_REPO,
+} from './fixtures/scenarios.js';
 import { seedThread } from './fixtures/thread.js';
 
 // `import.meta.url` is not always a `file:` URL under every test environment
@@ -80,6 +84,33 @@ function seedDb(): Db {
 }
 
 let db = seedDb();
+
+/**
+ * Named e2e scenarios, keyed the way `POST /__test/fixture?name=<id>` looks
+ * them up. Each replaces the whole in-memory `db` with a purpose-built board,
+ * so a spec that selects one starts from a known, isolated state regardless
+ * of what any other spec file did to the default seed before it. `default`
+ * (and any unknown name) falls back to `seedDb()`, the shape every non-e2e
+ * caller of this stub already expects.
+ */
+const FIXTURES: Record<string, () => Db> = {
+  default: seedDb,
+  'empty-fleet': () => {
+    const base = seedDb();
+    return { ...base, lanes: emptyLanes(), rules: emptyRules(), thread: [], journal: [], integrations: healthyIntegrations(base.integrations) };
+  },
+  'states-matrix': () => ({ ...seedDb(), lanes: statesLanes() }),
+  'refusal-501': () => ({ ...seedDb(), lanes: refusalLanes() }),
+  'resume-race': () => ({ ...seedDb(), lanes: resumedRaceLanes(), thread: raceThread() }),
+  'message-gallery': () => ({ ...seedDb(), thread: galleryThread() }),
+  'big-fleet': () => ({ ...seedDb(), lanes: bigLanes() }),
+  'queue-matrix': () => ({ ...seedDb(), lanes: [], queue: matrixQueue() }),
+};
+
+function resetToFixture(name: string): void {
+  const build = FIXTURES[name] ?? FIXTURES['default'];
+  db = (build as () => Db)();
+}
 
 function nextJid(): string {
   db.jn += 1;
@@ -359,6 +390,38 @@ export function createStubServer() {
       const query = new URLSearchParams((request.url ?? '').split('?')[1] ?? '');
       const method = request.method ?? 'GET';
 
+      // Test-only: an e2e spec selects its own isolated board before it navigates,
+      // rather than mutating (or depending on) whatever the default seed or another
+      // spec file left behind. Never reachable from the built console itself.
+      if (urlPath === '/__test/fixture' && method === 'POST') {
+        resetToFixture(query.get('name') ?? 'default');
+        json(response, 200, { ok: true, name: query.get('name') ?? 'default' });
+        return;
+      }
+
+      // The real server checks `x-forge-token` on every read and write except
+      // `/state` (`server.ts#authorized`, `route()`'s own comment on
+      // `ConsoleReads`) -- matched here so a wrong token 401s exactly the way it
+      // would against the real server. Only rejected when the header is
+      // present, non-empty and wrong: the built console always sends the real
+      // token (its own `<meta name="forge-token">` is filled in server-side
+      // before the page ever loads, same as the real server does), but
+      // tests/console/app.test.tsx renders <App> straight into jsdom with no
+      // such meta tag in the document, so `api.ts#token()` falls back to `''`
+      // there, and tests/console/stub-server.test.ts calls these routes
+      // directly with no header at all. Both stay unauthenticated, the way a
+      // same-process caller reasonably can; only an actually-wrong, non-empty
+      // token 401s.
+      // Static assets (the built console's own HTML/JS/CSS) stay unauthenticated,
+      // same as `serveStatic` on the real server.
+      const isStaticAsset = method === 'GET' && !CONSOLE_ROUTES.some((route) => urlPath === route)
+        && !urlPath.startsWith('/run/') && urlPath !== '/queue';
+      const sentToken = request.headers['x-forge-token'];
+      if (!isStaticAsset && sentToken && sentToken !== TOKEN) {
+        json(response, 401, { error: 'missing or wrong X-Forge-Token' });
+        return;
+      }
+
       if (urlPath === '/lanes' && method === 'GET') {
         const tokensToday = db.lanes.reduce((sum, l) => sum + l.tokens, 0);
         const tokensPerMin = db.lanes.reduce((sum, l) => sum + (l.state === 'running' ? l.tokensPerMin : 0), 0);
@@ -501,6 +564,14 @@ export function createStubServer() {
         const id = decodeURIComponent(runCompactMatch[1] as string);
         const lane = findLane(id);
         if (!lane) { json(response, 404, { error: `no lane named ${id}` }); return; }
+        // The contract's 501 case (`console-model.ts`'s route table): a write whose
+        // mechanism the real server has not built yet, so the rail renders a refusal
+        // card instead of a fake success. `UNBUILT_REPO` is the `refusal-501` e2e
+        // scenario's own sentinel, never a repo any lane actually carries.
+        if (lane.repo === UNBUILT_REPO) {
+          json(response, 501, { error: 'compaction has no successor worker built yet', reason: 'not-implemented' });
+          return;
+        }
         lane.ctxTokens = Math.round(lane.ctxCeiling * 0.45); lane.state = 'running'; lane.heart = true;
         const jid = journal('run.compacted', `${id} compacted and resumed`, id, false);
         json(response, 200, ok(jid, `${id} compacted and resumed`, false, lane));
