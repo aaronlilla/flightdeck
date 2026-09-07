@@ -27,6 +27,7 @@ import {
 import type { PollSourceName } from './contracts.js';
 import type { QueueRuntimeDeps } from './intake/queue.js';
 import { run as execRun, type RunRequest, type RunResult } from './exec.js';
+import { findingsTextFrom } from './council/renderNotes.js';
 import { createJiraFeed } from './intake/jira.js';
 import {
   intakeBriefsDir, journalPath, killSwitchPath, forgeHome, registryDir, runDir,
@@ -700,10 +701,23 @@ export function chainCouncil(deps: ForgeDeps): ChainCouncilFn {
       { ...deps, ...(forceCodex ? { forceCodexLane: true } : {}) },
     );
     const verdict = (result.data?.['verdict'] as string | undefined) ?? result.lines[0] ?? 'unavailable';
+    // The deciding findings travel as prose for the PR comment and the fix-round brief.
+    // Until 2026-09-07 nothing filled this, so every PR comment read "No deciding
+    // findings" while the attestation on disk carried four.
+    const attestationPath = result.data?.['attestationPath'] as string | undefined;
+    let findingsText: string | undefined;
+    if (attestationPath && existsSync(attestationPath)) {
+      try {
+        findingsText = findingsTextFrom(JSON.parse(readFileSync(attestationPath, 'utf8')) as Parameters<typeof findingsTextFrom>[0]);
+      } catch {
+        findingsText = undefined;
+      }
+    }
     return {
       verdict,
-      ...(result.data?.['attestationPath'] ? { attestationPath: result.data['attestationPath'] as string } : {}),
+      ...(attestationPath ? { attestationPath } : {}),
       ...(result.data?.['coverageNote'] ? { coverageNote: result.data['coverageNote'] as string } : {}),
+      ...(findingsText ? { findingsText } : {}),
     };
   };
 }

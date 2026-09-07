@@ -20,3 +20,19 @@ export function renderNotes(input: CouncilNotesInput): string {
   lines.push(input.findingsText?.trim() ? input.findingsText.trim() : 'No deciding findings.');
   return lines.join('\n');
 }
+
+/** The deciding findings of an attestation as the prose a reviewer reads on the PR:
+ *  one line per finding with its member, severity, place and claim, then the failure
+ *  scenario indented under it. Empty when the round decided on nothing. */
+export function findingsTextFrom(attestation: {
+  decidingFindings?: Array<{ member?: string; file?: string; line?: number; claim: string; failureScenario?: string; severity?: string; confidence?: string }>;
+}): string {
+  const NL = String.fromCharCode(10);
+  const findings = attestation.decidingFindings ?? [];
+  return findings.map((finding) => {
+    const where = finding.file ? ` (${finding.file}${finding.line ? `:${finding.line}` : ''})` : '';
+    const tag = [finding.severity, finding.confidence].filter(Boolean).join('/');
+    const head = `- ${tag ? `[${tag}] ` : ''}${finding.member ? `${finding.member}: ` : ''}${finding.claim}${where}`;
+    return finding.failureScenario ? `${head}${NL}  ${finding.failureScenario}` : head;
+  }).join(NL);
+}

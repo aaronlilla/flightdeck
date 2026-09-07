@@ -19,3 +19,22 @@ describe('renderNotes', () => {
     expect(text).toContain('No deciding findings.');
   });
 });
+
+describe('findingsTextFrom', () => {
+  it('renders each deciding finding with its member, severity, place, claim and scenario', async () => {
+    const { findingsTextFrom } = await import('../../../src/forge/council/renderNotes.js');
+    const text = findingsTextFrom({ decidingFindings: [
+      { member: 'correctness', file: 'src/a.ts', line: 12, claim: 'rethrows for every caller', failureScenario: 'a caller with no catch crashes', severity: 'medium', confidence: 'high' },
+      { claim: 'bare claim' },
+    ] });
+    expect(text.split('\n')).toEqual([
+      '- [medium/high] correctness: rethrows for every caller (src/a.ts:12)',
+      '  a caller with no catch crashes',
+      '- bare claim',
+    ]);
+  });
+  it('is empty when the round decided on nothing', async () => {
+    const { findingsTextFrom } = await import('../../../src/forge/council/renderNotes.js');
+    expect(findingsTextFrom({ decidingFindings: [] })).toBe('');
+  });
+});
