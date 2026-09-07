@@ -335,6 +335,9 @@ export interface QueueItem {
   journalIds: string[];
   createdAt: number;
   updatedAt: number;
+  /** A.1: how many times this item has been relaunched on a FIX FIRST round -- 0 or
+   *  absent means the fix round hasn't been used yet, and it's capped at one. */
+  fixRoundsUsed?: number;
 }
 
 export interface QueueResponse {

@@ -21,6 +21,18 @@ import type { ChainCouncilFn, ChainGateFn, ChainGh, ChainLauncher } from '../cha
 import type { QueueItem, QueueItemState, QueueSource } from '../../shared/console-model.js';
 import type { QueueStore } from './queueStore.js';
 
+/**
+ * A.1: `ChainCouncilResult` (`chain.ts`) carries no findings text, only a verdict and an
+ * optional coverage note -- there was never a caller before this one that needed to
+ * reread a FIX FIRST round's own claims. `findingsText` is optional, so every existing
+ * `ChainCouncilFn` (the chain's own, wired in `chain-wire.ts`) is still a valid
+ * `QueueCouncilFn` unchanged; only a caller that actually supplies the field (this
+ * stream's own wiring, once it exists) gets a real fix-round brief instead of the bare
+ * word "FIX FIRST".
+ */
+export type QueueCouncilResult = Awaited<ReturnType<ChainCouncilFn>> & { findingsText?: string };
+export type QueueCouncilFn = (input: Parameters<ChainCouncilFn>[0]) => Promise<QueueCouncilResult>;
+
 export const QUEUE_IN_FLIGHT_STATES: readonly QueueItemState[] = ['planning', 'running'];
 
 // ---------------------------------------------------------------------------------------
@@ -164,7 +176,12 @@ export interface QueueRuntimeDeps {
    *  ordinary case on a busy repository; one that cannot be replayed cleanly is a real
    *  conflict, and the item parks for a person rather than anything being forced. */
   rebaseOnBase?: (input: { worktreePath: string; base: string }) => Promise<RebaseOutcome>;
-  council: ChainCouncilFn;
+  council: QueueCouncilFn;
+  /** A.1: relaunches the worker on the item's own worktree with the round's findings as
+   *  its brief -- one fix round, never a from-scratch replan. Absent means this
+   *  environment never wires a fix round; a FIX FIRST then always parks, the behaviour
+   *  every specimen before this stream already proved. */
+  relaunchForFixRound?: (input: { item: QueueItem; findings: string }) => Promise<{ runKey: string }>;
   /** Reused from `chain.ts` unchanged, but `advanceItem` never passes `merge: true` --
    *  the queue's own decision (every item stops at a draft PR) lives in this file, not
    *  in whatever the caller wires this to. */
@@ -311,10 +328,29 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
   });
   const councilCleared = council.verdict === 'PASS' || council.verdict === 'PASS WITH NOTES';
   if (!councilCleared) {
+    // A.1: a FIX FIRST on an item that has not already used its one fix round relaunches
+    // the worker on the same worktree instead of parking outright -- the findings are a
+    // fixable problem, not a question for a person, and asking a person for every one of
+    // those defeats the point of the queue. Coverage-missing never gets a fix round: a
+    // member that did not answer says nothing about whether the code has a problem, so
+    // relaunching against it would be guessing at a "fix" for no claim at all.
+    if (council.verdict === 'FIX FIRST' && !council.coverageNote && !item.fixRoundsUsed && deps.relaunchForFixRound) {
+      const findings = council.findingsText
+        ?? 'the council returned FIX FIRST with no findings text carried on this result';
+      const relaunched = await deps.relaunchForFixRound({ item, findings });
+      return writeTransition(
+        item, { runKey: relaunched.runKey, fixRoundsUsed: 1 }, deps, 'queue.fix-round',
+        { previousRunKey: item.runKey, findings },
+      );
+    }
     // GATE.md item 4: when the council itself named which members never answered, that
     // rides along on the parked reason -- a bare "FIX FIRST" tells nobody whether the
     // diff had a real problem or the round never got read.
-    const reason = council.coverageNote ? `${council.verdict}: ${council.coverageNote}` : council.verdict;
+    const reason = council.coverageNote
+      ? `${council.verdict}: ${council.coverageNote}`
+      : item.fixRoundsUsed
+        ? `${council.verdict} after ${item.fixRoundsUsed} fix round(s), parking rather than relaunching again`
+        : council.verdict;
     return writeTransition(item, { state: 'parked', reason }, deps, 'queue.parked', { hop: 'gate' });
   }
 

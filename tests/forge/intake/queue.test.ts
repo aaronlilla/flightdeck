@@ -307,6 +307,88 @@ describe('advanceItem', () => {
   });
 });
 
+describe('fix round: FIX FIRST relaunches once, a second parks', () => {
+  it('relaunches the worker on the first FIX FIRST, carrying the findings as its brief', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let relaunchInput: { item: { id: string }; findings: string } | undefined;
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'FIX FIRST', findingsText: '[high/high] src/x.ts:1 -- bad thing' }),
+    });
+    deps.relaunchForFixRound = async (input) => { relaunchInput = input; return { runKey: 'abc-1-fix-1' }; };
+
+    let current = item;
+    current = await advanceItem(current, deps); // plan
+    current = await advanceItem(current, deps); // launch
+    const result = await advanceItem(current, deps); // gate -> fix round
+
+    expect(result.state).toBe('running');
+    expect(result.fixRoundsUsed).toBe(1);
+    expect(result.runKey).toBe('abc-1-fix-1');
+    expect(relaunchInput?.findings).toContain('bad thing');
+    expect(relaunchInput?.item.id).toBe(item.id);
+  });
+
+  it('parks on a second consecutive FIX FIRST rather than relaunching a second time', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'FIX FIRST' }),
+    });
+    let relaunchCalls = 0;
+    deps.relaunchForFixRound = async () => { relaunchCalls += 1; return { runKey: `fix-${relaunchCalls}` }; };
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps); // first FIX FIRST -> fix round
+    current = await advanceItem(current, deps); // second FIX FIRST -> park
+
+    expect(current.state).toBe('parked');
+    expect(current.fixRoundsUsed).toBe(1);
+    expect(relaunchCalls).toBe(1);
+    expect(current.reason).toContain('FIX FIRST');
+  });
+
+  it('coverage-missing always parks, never spawns a fix round', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let relaunchCalls = 0;
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'FIX FIRST', coverageNote: 'reviewed by 1 of 3 (missing: regression-risk)' }),
+    });
+    deps.relaunchForFixRound = async () => { relaunchCalls += 1; return { runKey: 'x' }; };
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('parked');
+    expect(relaunchCalls).toBe(0);
+    expect(current.reason).toContain('reviewed by 1 of 3');
+  });
+
+  it('a FIX FIRST with no relaunchForFixRound dep wired still parks (no environment ever hard-fails)', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'FIX FIRST' }),
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('parked');
+  });
+});
+
 describe('runQueueTick', () => {
   it('refuses to start anything while the kill switch is engaged', async () => {
     const store = tempStore();
