@@ -173,11 +173,16 @@ export interface JiraCallResult {
   body?: string;
 }
 
-/** J3: the three writes `forge gate --merge` makes once a ticket clears. */
+/** J3: the writes `forge gate --merge` (and, A.3, the queue's own `queueHandoff.ts`)
+ *  make once a ticket clears. */
 export interface JiraWriteClient {
   comment(key: string, body: string): Promise<JiraCallResult>;
   assign(key: string, accountId: string): Promise<JiraCallResult>;
   transition(key: string, transitionId: string): Promise<JiraCallResult>;
+  /** A.3: `POST /rest/api/3/issue/{key}/remotelink` -- a remote issue link to the PR,
+   *  so the ticket carries a first-class link to it rather than only a comment
+   *  mentioning the URL. */
+  link(key: string, url: string): Promise<JiraCallResult>;
 }
 
 async function callResultFor(response: Response): Promise<JiraCallResult> {
@@ -237,6 +242,12 @@ export function createJiraWriteClient(config: Pick<JiraConfig, 'site' | 'email' 
     async transition(key, transitionId) {
       const response = await fetchFn(`${config.site}/rest/api/3/issue/${key}/transitions`, {
         method: 'POST', headers, body: JSON.stringify({ transition: { id: transitionId } }),
+      });
+      return callResultFor(response);
+    },
+    async link(key, url) {
+      const response = await fetchFn(`${config.site}/rest/api/3/issue/${key}/remotelink`, {
+        method: 'POST', headers, body: JSON.stringify({ object: { url, title: url } }),
       });
       return callResultFor(response);
     },

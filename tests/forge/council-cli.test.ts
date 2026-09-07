@@ -517,6 +517,7 @@ describe('Forge Jira stream: J3, the handoff writes at forge gate --merge', () =
         async comment(key) { calls.push(`comment:${key}`); return { ok: true }; },
         async assign(key, accountId) { calls.push(`assign:${key}:${accountId}`); return { ok: true }; },
         async transition(key, transitionId) { calls.push(`transition:${key}:${transitionId}`); return { ok: true }; },
+        async link(key, url) { calls.push(`link:${key}:${url}`); return { ok: true }; },
       },
     });
 
@@ -550,6 +551,7 @@ describe('Forge Jira stream: J3, the handoff writes at forge gate --merge', () =
         async comment() { return { ok: false, status: 500, body: 'server error' }; },
         async assign() { return { ok: true }; },
         async transition() { return { ok: true }; },
+        async link() { return { ok: true }; },
       },
     });
 

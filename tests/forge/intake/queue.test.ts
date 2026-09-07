@@ -491,6 +491,46 @@ describe('backend path: A.4', () => {
   });
 });
 
+describe('Jira write-back at review: A.3', () => {
+  it('runs the handoff once, at the transition into review, and stamps handoffAt', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'BBZ-226', 1000);
+    let handoffCalls = 0;
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS' }),
+    });
+    deps.jiraHandoff = async () => { handoffCalls += 1; };
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('review');
+    expect(handoffCalls).toBe(1);
+    expect(current.handoffAt).toBeTypeOf('number');
+  });
+
+  it('a failing handoff never keeps the item off review, and leaves handoffAt unset', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'BBZ-226', 1000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS' }),
+    });
+    deps.jiraHandoff = async () => { throw new Error('jira down'); };
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('review');
+    expect(current.handoffAt).toBeUndefined();
+  });
+});
+
 describe('runQueueTick', () => {
   it('refuses to start anything while the kill switch is engaged', async () => {
     const store = tempStore();

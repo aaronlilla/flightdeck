@@ -20,6 +20,7 @@ function fakeClient(overrides: Partial<JiraWriteClient> = {}): JiraWriteClient {
     async comment() { return { ok: true }; },
     async assign() { return { ok: true }; },
     async transition() { return { ok: true }; },
+    async link() { return { ok: true }; },
     ...overrides,
   };
 }

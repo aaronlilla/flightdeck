@@ -21,6 +21,7 @@ import { REAL_GH } from './council/gh.js';
 import type { Packet, PollSourceName, Watermark } from './contracts.js';
 import type { QueuePlannedBrief, QueuePlanner, QueueRuntimeDeps, QueueTicketSearch } from './intake/queue.js';
 import { createJiraFeed, createJiraWriteClient, type JiraConfig } from './intake/jira.js';
+import { runQueueHandoff } from './intake/queueHandoff.js';
 import type { PollItemDetail } from './intake/poller.js';
 import { planFromPacket } from './intake/planner.js';
 import { resolvePlanProvider } from './intake/reasoner.js';
@@ -170,6 +171,36 @@ export function queueBackendHandoff(
   };
 }
 
+/** A.3: the Jira write-back at review -- a comment in Aaron's voice, a QA assign/
+ *  transition when those variables are set, and a remote link to the PR. Skipped
+ *  honestly (never a guessed write) when no Jira credential is configured. */
+export function queueJiraHandoff(
+  configFn: () => JiraConfig | undefined = jiraConfigFromEnv,
+): NonNullable<QueueRuntimeDeps['jiraHandoff']> {
+  return async ({ item, pr }) => {
+    const config = configFn();
+    if (!config || !item.ticket) return;
+    const journal = new Journal(journalPath());
+    try {
+      await runQueueHandoff(
+        createJiraWriteClient(config),
+        {
+          ticket: item.ticket, prUrl: pr.url,
+          what: `${item.ticket} reached review through the queue.`,
+          testPlan: [],
+        },
+        {
+          qaAccountId: process.env['FORGE_JIRA_QA_ACCOUNT'],
+          qaTransitionId: process.env['FORGE_JIRA_QA_TRANSITION'],
+        },
+        (handoffEvent) => journal.append({ actor: 'queue', ...handoffEvent }),
+      );
+    } finally {
+      journal.close();
+    }
+  };
+}
+
 export function buildQueueRuntimeDeps(
   chainEnv: ChainEnv, fleetConfigDir: string, deps: ForgeDeps, store: QueueRuntimeDeps['store'], maxInFlight = 2,
 ): QueueRuntimeDeps {
@@ -196,6 +227,7 @@ export function buildQueueRuntimeDeps(
     commentOnPr: queueCommentOnPr(),
     repoKindFor: (repo) => repoKindForEnv(chainEnv, repo),
     backendHandoff: queueBackendHandoff(),
+    jiraHandoff: queueJiraHandoff(),
   };
 }
 

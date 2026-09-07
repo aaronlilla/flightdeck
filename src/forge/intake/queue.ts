@@ -199,6 +199,10 @@ export interface QueueRuntimeDeps {
    *  since the controlled-code merge denial (`rules/gitflow.ts`) is what actually keeps
    *  the repo safe, not this notification. */
   backendHandoff?: (input: { item: QueueItem; pr: { no: number } }) => Promise<void>;
+  /** A.3: the Jira write-back at review -- a comment, a QA assign, a QA transition and
+   *  a remote link, all in Aaron's voice. Runs once per item, guarded by `handoffAt`;
+   *  absent means this environment never wires it, and no Jira write happens at all. */
+  jiraHandoff?: (input: { item: QueueItem; pr: { no: number; url: string } }) => Promise<void>;
   /** Reused from `chain.ts` unchanged, but `advanceItem` never passes `merge: true` --
    *  the queue's own decision (every item stops at a draft PR) lives in this file, not
    *  in whatever the caller wires this to. */
@@ -409,8 +413,26 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
     }
   }
 
+  // A.3: the Jira write-back fires once per item, guarded by `handoffAt` rather than by
+  // this being the only tick that can ever reach here (belt and braces: `review` is not
+  // an in-flight state, so `runQueueTick` never re-enters `advanceItem` for it, but the
+  // guard keeps the intent honest even if that ever changes).
+  let handoffAt = item.handoffAt;
+  if (deps.jiraHandoff && !handoffAt && item.ticket) {
+    try {
+      await deps.jiraHandoff({ item, pr: { no: pr.number, url: pr.url } });
+      handoffAt = deps.clock();
+    } catch {
+      // Best effort, same discipline as the review comment and the backend ping above.
+    }
+  }
+
   return writeTransition(
-    item, { state: 'review', pr: { no: pr.number, url: pr.url, files: 0, add: 0, del: 0, draft: true } },
+    item,
+    {
+      state: 'review', pr: { no: pr.number, url: pr.url, files: 0, add: 0, del: 0, draft: true },
+      ...(handoffAt ? { handoffAt } : {}),
+    },
     deps, 'queue.review', {},
   );
 }

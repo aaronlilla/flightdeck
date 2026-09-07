@@ -338,6 +338,9 @@ export interface QueueItem {
   /** A.1: how many times this item has been relaunched on a FIX FIRST round -- 0 or
    *  absent means the fix round hasn't been used yet, and it's capped at one. */
   fixRoundsUsed?: number;
+  /** A.3: when the Jira write-back at review ran for this item -- absent means it
+   *  hasn't fired yet. Set once, alongside the transition into `review`. */
+  handoffAt?: number;
 }
 
 export interface QueueResponse {
