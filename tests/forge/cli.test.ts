@@ -407,7 +407,7 @@ describe('forge run', () => {
     expect(fourth.code).toBe(1);
     expect(fourth.lines.join(' ')).toMatch(/refusing to start/);
     expect(zeroTurnEngine.started).toHaveLength(3);
-  });
+  }, 20_000); // four in-process runs; over 5 s under full-suite load, 1.5 s alone
 
   it('clears the breaker once forge clear runs', async () => {
     const brief = join(home, 'ok.md');
@@ -427,7 +427,7 @@ describe('forge run', () => {
     // The clear let it launch again; it still parks with no turns, so exit 2, not a
     // refusal (1) and not done (0).
     expect(result.code).toBe(2);
-  });
+  }, 20_000); // five in-process runs; over 5 s under full-suite load, 1.5 s alone
 
   it('I11: forge clear --phantoms removes a pid_N run directory with no registry row, journals the count, and leaves a real run alone', async () => {
     const runsPath = join(home, 'runs');
