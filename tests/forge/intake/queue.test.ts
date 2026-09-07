@@ -276,6 +276,7 @@ describe('advanceItem', () => {
     const item = addTicketItem(store, 'ABC-1', 1000);
     const { deps } = buildDeps(store, {
       launcher: { status: async () => ({ finished: true, verdict: 'blocked' }) },
+      gh: { findPrByHead: async () => undefined },
     });
 
     let current = item;

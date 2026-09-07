@@ -345,8 +345,11 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
   let pr = status.prUrl ? prFromUrl(status.prUrl) : undefined;
   if (!pr && item.branch) pr = await deps.gh.findPrByHead(item.repo!, item.branch);
   if (status.verdict !== 'done') {
-    if (status.verdict === 'unverified' && pr) {
-      deps.append({ event: 'queue.unverified-pr', actor: 'queue', itemId: item.id, pr: pr.number, url: pr.url });
+    // Same for a run that was parked, blocked or killed after its PR was up (a warden
+    // trip on a slow build, an operator's kill of a session that would not end): the PR
+    // is what the gate reviews, and the run's own verdict travels in the journal row.
+    if (pr && status.verdict !== undefined) {
+      deps.append({ event: 'queue.unverified-pr', actor: 'queue', itemId: item.id, pr: pr.number, url: pr.url, verdict: status.verdict });
     } else {
       return writeTransition(item, { state: 'parked', reason: status.verdict ?? 'unknown' }, deps, 'queue.parked', { hop: 'gate' });
     }
