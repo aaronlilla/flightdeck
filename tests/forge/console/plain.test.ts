@@ -4,8 +4,8 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { plainStatus, type PlainContext } from '../../../src/forge/console/plain.js';
-import type { Lane } from '../../../src/shared/console-model.js';
+import { plainForQueueItem, plainStatus, type PlainContext } from '../../../src/forge/console/plain.js';
+import type { Lane, QueueItem } from '../../../src/shared/console-model.js';
 
 function lane(extra: Partial<Lane> = {}): Lane {
   return {
@@ -93,6 +93,67 @@ describe('plainStatus', () => {
       expect(text.length).toBeGreaterThan(0);
       expect(text).not.toMatch(/jira_BBZ-89_1788460932645|queue-BBZ-89|hop \d/i);
       expect(text.trim()).not.toMatch(/^(PASS|FAIL|FIX FIRST|PASS WITH NOTES|killed|done|parked)$/i);
+    }
+  });
+});
+
+function queueItem(extra: Partial<QueueItem> = {}): QueueItem {
+  return {
+    id: 'Q-1', source: 'ticket', input: 'BBZ-96', ticket: 'BBZ-96', repo: 'o/n',
+    briefPath: null, branch: 'feature/bbz-96', worktreePath: 'w', base: 'develop',
+    state: 'review', reason: null, runKey: 'queue-BBZ-96', pr: null, journalIds: [],
+    createdAt: 1, updatedAt: 1,
+    ...extra,
+  };
+}
+
+describe('plainForQueueItem (H1.2 fix): the queue\'s own state and reason win over the run\'s own verdict', () => {
+  it('review: reads the attestation verdict and coverage, and says checks are not read yet rather than pending', () => {
+    const item = queueItem({
+      state: 'review',
+      pr: { no: 119, url: 'https://github.com/o/n/pull/119', files: 6, add: 360, del: 5, draft: true },
+    });
+    const text = plainForQueueItem(item, { verdict: 'PASS WITH NOTES', reviewed: 4, total: 4 });
+    expect(text).toBe('In review: council PASS WITH NOTES, 4 of 4 reviewed; draft PR #119 is waiting for your Merge.');
+    expect(text).not.toMatch(/pending/);
+  });
+
+  it('done with a merged PR: says merged, not the run\'s own unverified verdict', () => {
+    const item = queueItem({
+      state: 'done',
+      pr: { no: 118, url: 'https://github.com/o/n/pull/118', files: 2, add: 10, del: 1, draft: false, merged: true },
+    });
+    expect(plainForQueueItem(item, null)).toContain('Merged');
+  });
+
+  it('done with an open draft the queue never merged: says the queue never merges on its own', () => {
+    const item = queueItem({
+      state: 'done',
+      pr: { no: 118, url: 'https://github.com/o/n/pull/118', files: 2, add: 10, del: 1, draft: true, merged: false },
+    });
+    expect(plainForQueueItem(item, null)).toBe(
+      'Draft PR #118 is open; the queue never merges on its own, so it is waiting for your Merge.',
+    );
+  });
+
+  it('parked: the item\'s own reason, in words', () => {
+    const item = queueItem({ state: 'parked', reason: 'overlaps BBZ-1 on src/wallet.ts' });
+    expect(plainForQueueItem(item, null)).toBe('Parked: overlaps BBZ-1 on src/wallet.ts.');
+  });
+
+  it('every other queue state defers to the run-based sentence', () => {
+    for (const state of ['queued', 'planning', 'running', 'failed'] as const) {
+      expect(plainForQueueItem(queueItem({ state }), null)).toBeNull();
+    }
+  });
+});
+
+describe('the human-board fixture never leaks a run id, a successor id or a hop word into plain', () => {
+  it('every plain sentence across a representative fixture is clean', async () => {
+    const { humanBoardLanes } = await import('../../../src/console/fixtures/scenarios.js');
+    for (const l of humanBoardLanes()) {
+      expect(l.plain).not.toMatch(/queue-|jira_|forge-live|-\d+$/);
+      expect(l.plain).not.toMatch(/\b[0-9a-f]{16}\b/i);
     }
   });
 });

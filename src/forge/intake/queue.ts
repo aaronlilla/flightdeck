@@ -508,6 +508,7 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
       state: 'review',
       pr: { no: pr.number, url: pr.url, files: item.changedFiles?.length ?? 0, add: prAdd, del: prDel, draft: true },
       ...(handoffAt ? { handoffAt } : {}),
+      ...(council.attestationPath ? { attestationPath: council.attestationPath } : {}),
     },
     deps, 'queue.review', {},
   );

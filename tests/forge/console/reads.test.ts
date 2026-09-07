@@ -162,4 +162,42 @@ describe('ConsoleReads.lanesResponse: title and sourceUrl', () => {
     expect(lane!.title).toBe('Live probe of the runner');
     expect(lane!.sourceUrl).toBeNull();
   });
+
+  it('H1.2 fix: plain reads the queue item\'s own review state and the attestation on disk, not the run\'s own unverified verdict', async () => {
+    const forgeHomeDir = tempDir('console-reads-');
+    const { writeAttestation } = await import('../../../src/forge/council/attest.js');
+    const attestationPath = writeAttestation({
+      repo: 'o/n', pr: 119, head: 'deadbeef', base: 'develop', round: 1, verdict: 'PASS WITH NOTES',
+      decidingFindings: [], lenses: [], judge: { model: 'sonnet-5', verdict: 'PASS WITH NOTES' },
+      ci: { runId: 'r1', headSha: 'deadbeef' }, at: { value: 1, observed_at: 1 },
+      coverage: { total: 4, missing: [] },
+    } as never);
+
+    const queueStore = new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl'));
+    queueStore.append({
+      id: 'Q-1', at: 1, source: 'ticket', input: 'BBZ-96', ticket: 'BBZ-96', repo: 'o/n',
+      briefPath: null, branch: 'feature/bbz-96', worktreePath: 'w', base: 'develop',
+      state: 'review', reason: null, runKey: 'queue-BBZ-96',
+      pr: { no: 119, url: 'https://github.com/o/n/pull/119', files: 6, add: 360, del: 5, draft: true },
+      journalIds: [], createdAt: 1, updatedAt: 1, attestationPath,
+    });
+
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'queue-BBZ-96', actor: 'runner' });
+    journal.append({ event: 'run.finished', run: 'queue-BBZ-96', actor: 'runner', verdict: 'unverified' });
+    journal.close();
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put('queue-BBZ-96', { column: 'BBZ-96' });
+
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore, jiraSite: null,
+    });
+
+    const [lane] = reads.lanesResponse().lanes;
+    expect(lane!.plain).toBe('In review: council PASS WITH NOTES, 4 of 4 reviewed; draft PR #119 is waiting for your Merge.');
+    expect(lane!.plain).not.toMatch(/queue-|-\d+$/);
+  });
 });

@@ -22,8 +22,8 @@ import type { StuckSignal } from '../liveness.js';
 import { Lanes, type LaneRecord } from '../supervisor.js';
 import { RunInbox } from '../runinbox.js';
 import type {
-  Caps, JournalResponse, Lane, LaneStory, LanesResponse, ProposalsResponse, RunCostResponse, RunJournalResponse,
-  RunPrResponse, RunSandboxResponse, RunThreadResponse, ThreadResponse,
+  Caps, JournalResponse, Lane, LaneStory, LanesResponse, ProposalsResponse, QueueItem, RunCostResponse,
+  RunJournalResponse, RunPrResponse, RunSandboxResponse, RunThreadResponse, ThreadResponse,
 } from '../../shared/console-model.js';
 import { capsOverridesPath, computeCaps, readCapsOverrides } from './caps-read.js';
 import { ensureHardTokens } from './caps-write.js';
@@ -35,7 +35,8 @@ import { queueMergeAllowed } from '../queue-wire.js';
 import { chainLinks, computeLanes, mergeableFor, tokensToday, titleFor, titleFromHeading, windowLanes, type LanesInput } from './lanes.js';
 import { computeLaneStory, type GitCommit } from './story.js';
 import { readRetired, retiredPath } from './retire.js';
-import { plainStatus } from './plain.js';
+import { plainForQueueItem, plainStatus, type QueueVerdict } from './plain.js';
+import { readAttestationAtPath } from '../council/attest.js';
 import {
   computeRunPr, prCachePath, readPrCache, writePrCache,
   type AttestationReaderFn, type GhDetailLookupFn, type GhLookupFn, type GhPrDetail, type GhPrLookup,
@@ -369,9 +370,11 @@ export class ConsoleReads {
     // number to reason about instead of reading every ticket lane as "no PR yet".
     let repo = lane.repo;
     let pr = lane.pr;
+    let queueItem: QueueItem | undefined;
 
     if (lane.kind === 'ticket' || lane.kind === 'brief' || lane.kind === 'hotfix' || lane.kind === 'self') {
       const item = this.queueStore.all().find((row) => row.runKey === lane.id);
+      queueItem = item;
       briefPath = item?.briefPath ?? null;
       prUrl = prUrl ?? item?.pr?.url ?? null;
       repo = repo ?? item?.repo ?? null;
@@ -391,7 +394,31 @@ export class ConsoleReads {
     // lane's fallback `pr` above can change what it should say (a bare `pr` now exists
     // where there was none), so it is recomputed here rather than left stale.
     if (pr !== lane.pr) patched.plain = plainStatus(patched, { now: Date.now() });
+    // H1.2 fix: once a queue item exists, its own state and reason win over whatever
+    // the run's own verdict says -- a run can sit `unverified` while the item it drives
+    // is already three states further on in `review`. `plainForQueueItem` answers
+    // `null` for every queue state it has no stronger opinion about (`queued`,
+    // `planning`, `running`, `failed`), and the run-based sentence above stands there.
+    if (queueItem) {
+      const verdict = this.queueVerdictFor(queueItem);
+      const queuePlain = plainForQueueItem(queueItem, verdict);
+      if (queuePlain) patched.plain = queuePlain;
+    }
     return patched;
+  }
+
+  /** The council's verdict and coverage for a queue item's own review round, off the
+   *  attestation the gate wrote at `item.attestationPath` -- `null` for an item with no
+   *  attestation on record yet (never a council round, or the file has gone missing). */
+  private queueVerdictFor(item: { attestationPath?: string | null }): QueueVerdict | null {
+    if (!item.attestationPath) return null;
+    const attestation = readAttestationAtPath(item.attestationPath);
+    if (!attestation) return null;
+    return {
+      verdict: attestation.verdict,
+      reviewed: attestation.coverage.total - attestation.coverage.missing.length,
+      total: attestation.coverage.total,
+    };
   }
 
   private threadResponse(): ThreadResponse {

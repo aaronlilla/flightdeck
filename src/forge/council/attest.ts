@@ -27,7 +27,14 @@ export function writeAttestation(attestation: CouncilAttestation): string {
 }
 
 export function readAttestation(repo: string, pr: number, head: string): CouncilAttestation | undefined {
-  const path = attestationPath(repo, pr, head);
+  return readAttestationAtPath(attestationPath(repo, pr, head));
+}
+
+/** The board's own `plain` sentence (H1.2 fix) knows a queue item's `attestationPath`
+ *  straight off the item -- the path the gate already resolved when it wrote the
+ *  attestation -- so it never needs a PR's head sha to find the file. Same validation
+ *  and same honest "nothing readable" answer as `readAttestation`. */
+export function readAttestationAtPath(path: string): CouncilAttestation | undefined {
   if (!existsSync(path)) return undefined;
   let parsed: unknown;
   try {

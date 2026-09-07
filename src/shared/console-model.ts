@@ -407,6 +407,12 @@ export interface QueueItem {
   /** D2.3: the council's own findings against this item's draft PR, one line each --
    *  absent or empty means the council hasn't posted a note (or none is due) yet. */
   councilNotes?: string[] | null;
+  /** H1.2 fix: the attestation file the gate wrote for this item's own review round,
+   *  carried on the item the moment it lands so `plain` can read the council's real
+   *  verdict and coverage straight off disk -- no PR head sha needed to find it, since
+   *  the gate already resolved that path once. Absent for an item that never reached a
+   *  council round (parked earlier, still queued, and so on). */
+  attestationPath?: string | null;
 }
 
 export interface QueueResponse {

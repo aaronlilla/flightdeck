@@ -7,7 +7,7 @@
  * either names a person-facing fact (a PR number, a model's own name, a turn count, a
  * clock time) or a full clause a person can act on.
  */
-import type { Lane } from '../../shared/console-model.js';
+import type { Lane, QueueItem } from '../../shared/console-model.js';
 
 export interface PlainContext {
   now: number;
@@ -106,5 +106,56 @@ export function plainStatus(lane: Lane, context: PlainContext): string {
     }
     default:
       return `${lane.state}.`;
+  }
+}
+
+/** The council coverage a `plain` sentence needs -- the same two figures
+ *  `computeLaneStory` already reads off a `CouncilAttestation` (`attestation.verdict`,
+ *  `attestation.coverage.total - attestation.coverage.missing.length`), passed in
+ *  already-resolved rather than as the whole attestation shape, so this module never
+ *  needs to import the council's own types. */
+export interface QueueVerdict {
+  verdict: string;
+  reviewed: number;
+  total: number;
+}
+
+/**
+ * `plainForQueueItem` (H1.2 fix, 2026-09-07): the board's `plain` line for a lane the
+ * intake queue owns must say what the queue actually knows, not what the run's own
+ * verdict happens to read -- a run can finish `unverified` while its queue item is
+ * three states further along in `review`, and the run-based sentence above has no way
+ * to hear that. Only the four states below override the run-based sentence at all:
+ * every other queue state (`queued`, `planning`, `running`, `failed`) tracks the lane's
+ * own run state closely enough that `plainStatus` already reads right for it.
+ *
+ * Never a run id, a successor id, or a hop word -- every branch here names a PR number,
+ * a council verdict word, a coverage count or the item's own reason, in a full sentence
+ * a person can act on.
+ */
+export function plainForQueueItem(item: QueueItem, verdict: QueueVerdict | null): string | null {
+  switch (item.state) {
+    case 'review': {
+      const pr = item.pr;
+      if (!pr) return null;
+      const verdictClause = verdict
+        ? `council ${verdict.verdict}, ${verdict.reviewed} of ${verdict.total} reviewed`
+        : 'the council has not posted a verdict yet';
+      const checksClause = pr.checks === 'success' ? ', checks green'
+        : pr.checks === 'failure' ? ', checks red'
+          : pr.checks === 'pending' ? ', checks pending'
+            : '';
+      return `In review: ${verdictClause}${checksClause}; draft PR #${pr.no} is waiting for your Merge.`;
+    }
+    case 'done': {
+      const pr = item.pr;
+      if (!pr) return null;
+      if (pr.merged) return `Merged: draft PR #${pr.no} landed.`;
+      return `Draft PR #${pr.no} is open; the queue never merges on its own, so it is waiting for your Merge.`;
+    }
+    case 'parked':
+      return item.reason ? `Parked: ${item.reason}.` : 'Parked, waiting on you.';
+    default:
+      return null;
   }
 }
