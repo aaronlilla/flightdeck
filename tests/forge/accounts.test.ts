@@ -14,13 +14,14 @@ import type { Query } from '@anthropic-ai/claude-agent-sdk';
 import { Engine, type QueryFn } from '../../src/adapter/engine.js';
 import type { EngineEvent } from '../../src/adapter/events.js';
 import {
-  accountIdForConfigDir, addAccount, defaultAccounts, loadAccounts, removeAccount, validateAccounts,
+  accountIdForConfigDir, addAccount, checkAddCandidate, defaultAccounts, loadAccounts, removeAccount, validateAccounts,
 } from '../../src/forge/accounts.js';
 import { buildAccountsBoard } from '../../src/forge/accounts-board.js';
 import { probeAccounts, windowsFromUsage } from '../../src/forge/accounts-probe.js';
 import { Journal, replay } from '../../src/forge/journal.js';
 import { accountsPath } from '../../src/forge/paths.js';
 import { SdkEngine } from '../../src/forge/sdkengine.js';
+import { forge } from '../../src/forge/cli.js';
 
 let home: string;
 let journalPath: string;
@@ -131,6 +132,17 @@ describe('the accounts registry', () => {
     expect(removeAccount(loadAccounts(path, fleetDir), 'nope').ok).toBe(false);
   });
 
+  it('checkAddCandidate refuses the operator own dir and a duplicate without writing, so a probe never runs on either', () => {
+    const registry = loadAccounts(accountsPath(), fleetDir);
+    const own = checkAddCandidate(registry, { id: 'me', configDir: join(homedir(), '.claude') });
+    expect(own.ok).toBe(false);
+    const dup = checkAddCandidate(registry, { id: 'again', configDir: fleetDir });
+    expect(dup.ok).toBe(false);
+    const fresh = checkAddCandidate(registry, { id: 'fleet-b', configDir: join(home, 'fleet-b') });
+    expect(fresh.ok).toBe(true);
+    expect(existsSync(accountsPath())).toBe(false);
+  });
+
   it('a corrupt or invalid file is reported, never silently replaced by the default', () => {
     const path = accountsPath();
     writeFileSync(path, '{ not json', 'utf8');
@@ -145,6 +157,37 @@ describe('the accounts registry', () => {
     expect(accountIdForConfigDir(accounts, fleetDir)).toBe('fleet');
     expect(accountIdForConfigDir(accounts, fleetDir.replace(/\\/g, '/') + '/')).toBe('fleet');
     expect(accountIdForConfigDir(accounts, join(home, '.claude-other'))).toBe('.claude-other');
+  });
+});
+
+describe('forge accounts', () => {
+  it('list names the built-in account and where the registry would be', async () => {
+    const result = await forge(['accounts', 'list']);
+    expect(result.code).toBe(0);
+    expect(result.lines.join(' ')).toContain(fleetDir);
+    expect(result.lines.join(' ')).toContain('every launch goes here today');
+    expect(result.lines.at(-1)).toContain('built in');
+  });
+
+  it('add refuses the operator own dir before any probe runs, and journals nothing', async () => {
+    const result = await forge(['accounts', 'add', 'me', join(homedir(), '.claude')]);
+    expect(result.code).toBe(1);
+    expect(result.lines[0]).toMatch(/own config dir/);
+    expect(existsSync(journalPath) ? replay(journalPath).events.filter((e) => e.event === 'account.probe') : []).toEqual([]);
+    expect(existsSync(accountsPath())).toBe(false);
+  });
+
+  it('add refuses a dir that does not exist without probing it', async () => {
+    const result = await forge(['accounts', 'add', 'ghost', join(home, 'nowhere')]);
+    expect(result.code).toBe(1);
+    expect(result.lines[0]).toMatch(/does not exist/);
+    expect(existsSync(journalPath) ? replay(journalPath).events.filter((e) => e.event === 'account.probe') : []).toEqual([]);
+  });
+
+  it('remove refuses an id the registry does not have', async () => {
+    const result = await forge(['accounts', 'remove', 'nope']);
+    expect(result.code).toBe(1);
+    expect(result.lines[0]).toMatch(/no account 'nope'/);
   });
 });
 

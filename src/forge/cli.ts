@@ -47,7 +47,7 @@ import { readProcessList, watchedProcesses, probeProcessListCached } from './fle
 import { Gotchas } from './gotcha.js';
 import { Inbox, isAskStale } from './inbox.js';
 import { replay, Journal, JournalCache } from './journal.js';
-import { addAccount, launchAccountId, loadAccounts, removeAccount } from './accounts.js';
+import { addAccount, checkAddCandidate, launchAccountId, loadAccounts, removeAccount } from './accounts.js';
 import { probeAccounts, readProbeEnv } from './accounts-probe.js';
 import { checkLaunch, launchEnv, loginInFlight, pinnedRuntime, runtimeHead, runtimeVersion } from './launcher.js';
 import { assess, LivenessSupervisor } from './liveness.js';
@@ -940,6 +940,10 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         const cap = capRaw ? Number(capRaw) : undefined;
         if (capRaw && (!Number.isInteger(cap) || (cap as number) < 1)) return { code: 2, lines: [`max-concurrent must be a positive integer, not '${capRaw}'`] };
         const resolved = resolve(dir);
+        // Refusals first, before anything touches the dir: the operator's own config dir
+        // must never be probed, and a duplicate never asked twice.
+        const candidate = checkAddCandidate(registry, { id, configDir: resolved, ...(cap !== undefined ? { maxConcurrent: cap } : {}) });
+        if (!candidate.ok) return { code: 1, lines: [`refusing: ${candidate.reason}`] };
         if (!existsSync(resolved)) return { code: 1, lines: [`refusing: ${resolved} does not exist; log in there first (CLAUDE_CONFIG_DIR=${resolved} claude, then /login)`] };
         // Verified through the SDK's usage call under that dir, never by opening a
         // credential file: the same probe `forge up` runs, once, before the write.

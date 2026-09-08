@@ -131,6 +131,19 @@ export function saveAccounts(path: string, accounts: Account[]): void {
   writeFileSync(path, `${JSON.stringify({ accounts }, null, 2)}\n`, 'utf8');
 }
 
+/** The same refusals `addAccount` applies, without the write. `forge accounts add`
+ *  runs this before its probe, so a dir the registry would refuse (the operator's own
+ *  `~/.claude` above all) is never even asked for its usage. */
+export function checkAddCandidate(
+  registry: AccountsRegistry,
+  input: { id: string; configDir: string; maxConcurrent?: number },
+): Verdict {
+  if (registry.source === 'invalid') return { ok: false, reason: registry.error ?? 'the registry file is invalid; fix or remove it first' };
+  const account: ClaudeAccount = { id: input.id, provider: 'claude', configDir: input.configDir };
+  if (input.maxConcurrent !== undefined) account.maxConcurrent = input.maxConcurrent;
+  return validateAccounts([...registry.accounts, account]);
+}
+
 export function addAccount(
   registry: AccountsRegistry,
   input: { id: string; configDir: string; maxConcurrent?: number },
