@@ -356,6 +356,13 @@ function plainMessageFor(run: string, row: ForgeEvent): Message | null {
       return { ...event, text: `Finished: ${typeof row.verdict === 'string' ? row.verdict : 'unverified'}` };
     case 'run.handoff':
       return { ...event, text: 'Context ceiling reached; handed off to a fresh session' };
+    // Item 6: a `note` row's own chip used to fall through to `plainEventText`'s
+    // default, which read its raw `textFor` rendering ("note (S-…)") and stripped
+    // only the id, leaving "note (this run)" -- a chip that names nothing. `message`
+    // is the one field a note ever carries something worth saying in; a row with
+    // none is dropped rather than shown as a bare, contentless "note" chip.
+    case 'note':
+      return typeof row.message === 'string' ? { ...event, text: `Note: ${stripMachineIds(row.message)}` } : null;
     default:
       return { ...event, text: plainEventText(row) };
   }

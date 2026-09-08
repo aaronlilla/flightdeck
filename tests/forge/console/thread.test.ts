@@ -359,4 +359,35 @@ describe('computeRunThread: plain mode (deliverable 7)', () => {
       expect(message.text).not.toMatch(idPattern);
     }
   });
+
+  // Item 6: the run thread's own run.parked line reused to show the raw ask key
+  // straight off `row.reason`; it must run through the same fix as the story panel.
+  it('a run.parked "parking on <key>:" row reads as "Parked: Asked you: ..." with no ask key visible', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.append({
+      event: 'run.parked', run: 'alpha', actor: 'runner',
+      reason: 'parking on a1b2c3d4e5f6a7b8: PR #39 (S-b9d39bae548707e0) is open',
+    });
+    journal.close();
+    const fleet = replay(path);
+
+    const result = computeRunThread('alpha', fleet.events, []);
+    const texts = result.messages.map((m) => m.text);
+    expect(texts).toContain('Parked: Asked you: PR #39 (this run) is open');
+  });
+
+  it('a note row reads "Note: <message>" when message is a string, and is dropped otherwise', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.append({ event: 'note', run: 'alpha', actor: 'system', message: 'reconciled: resumed by session id' });
+    journal.append({ event: 'note', run: 'alpha', actor: 'system' });
+    journal.close();
+    const fleet = replay(path);
+
+    const result = computeRunThread('alpha', fleet.events, []);
+    const texts = result.messages.map((m) => m.text);
+    expect(texts).toContain('Note: reconciled: resumed by session id');
+    expect(texts.filter((t) => t.startsWith('Note:') || t.startsWith('note'))).toHaveLength(1);
+  });
 });
