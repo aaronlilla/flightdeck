@@ -50,8 +50,8 @@ test('the Connect panel prints the login and add commands for the next config di
   const panel = page.getByTestId('connect-panel');
   await expect(panel).toBeVisible();
   // fleet-b and fleet-c exist in the fixture, so the next free name is fleet-d.
-  await expect(panel.getByTestId('connect-login-command')).toHaveText('CLAUDE_CONFIG_DIR=/home/operator/.claude-fleet-d claude\n/login');
-  await expect(panel.getByTestId('connect-add-command')).toHaveText('npm run forge -- accounts add fleet-d /home/operator/.claude-fleet-d');
+  await expect(panel.getByTestId('connect-login-command')).toHaveText('CLAUDE_CONFIG_DIR=/srv/operator/.claude-fleet-d claude\n/login');
+  await expect(panel.getByTestId('connect-add-command')).toHaveText('npm run forge -- accounts add fleet-d /srv/operator/.claude-fleet-d');
   await panel.getByRole('textbox', { name: 'new account id' }).fill('night');
-  await expect(panel.getByTestId('connect-add-command')).toHaveText('npm run forge -- accounts add night /home/operator/.claude-night');
+  await expect(panel.getByTestId('connect-add-command')).toHaveText('npm run forge -- accounts add night /srv/operator/.claude-night');
 });

@@ -4,7 +4,7 @@ import type { AccountsResponse } from '../../shared/console-model.js';
  *  limit, one paused on a rejected window, one never probed, and the Codex row. Every
  *  path is a placeholder; the stub never names a real directory. */
 export function seedAccounts(now: number = Date.now()): AccountsResponse {
-  const home = '/home/operator';
+  const home = '/srv/operator';
   return {
     accounts: [
       {
