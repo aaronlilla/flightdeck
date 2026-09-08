@@ -110,3 +110,25 @@ describe('observation kinds never become queue items', () => {
     expect(ledger.all().map((r) => r.kind)).toEqual(['token-outlier']);
   });
 });
+
+describe('one self item per gap, whatever became of the last one', () => {
+  it('queues nothing while the newest self item is younger than the gap, even if it parked', async () => {
+    const { enqueueFindings } = await import('../../../src/forge/self/enqueue.js');
+    const { mkdtempSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { QueueStore } = await import('../../../src/forge/intake/queueStore.js');
+    const { FindingsLedger } = await import('../../../src/forge/self/ledger.js');
+    const dir = mkdtempSync(join(tmpdir(), 'forge-gap-'));
+    const store = new QueueStore(join(dir, 'q.jsonl'));
+    const ledger = new FindingsLedger(join(dir, 'f.jsonl'));
+    const deps = (now: number) => ({ store, briefsDir: join(dir, 'briefs'), ledger, selfRepo: 'owner/self', maxInFlight: 1, minGapMs: 3_600_000, clock: () => now, append: () => ({ id: 'e' }) });
+    const first = enqueueFindings([{ id: 'aaaaaaaaaaaaaaaa', kind: 'gotcha-fix-lane', signature: 'a', summary: 'a', evidence: [] } as never], deps(1_000_000));
+    expect(first).toHaveLength(1);
+    store.append({ id: first[0]!.id, at: 1_000_500, state: 'parked', reason: 'unclear', updatedAt: 1_000_500 } as never);
+    const second = enqueueFindings([{ id: 'bbbbbbbbbbbbbbbb', kind: 'gotcha-fix-lane', signature: 'b', summary: 'b', evidence: [] } as never], deps(1_000_000 + 30 * 60_000));
+    expect(second).toEqual([]);
+    const later = enqueueFindings([{ id: 'bbbbbbbbbbbbbbbb', kind: 'gotcha-fix-lane', signature: 'b', summary: 'b', evidence: [] } as never], deps(1_000_000 + 61 * 60_000));
+    expect(later).toHaveLength(1);
+  });
+});

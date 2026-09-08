@@ -35,6 +35,8 @@ export interface SelfEnqueueDeps {
    *  records nothing and queues nothing. */
   selfRepo: string;
   maxInFlight: number;
+  /** Minimum time between two self items, whatever became of the last one. */
+  minGapMs?: number;
   clock(): number;
   /** Writes one row to the fleet journal, returning it -- the same shape `queue.ts`'s
    *  own `QueueRuntimeDeps.append` uses. */
@@ -74,7 +76,7 @@ function newSelfItemId(findingId: string): string {
  */
 /** Kinds that describe how the fleet behaved, not a change to make: they stay in the
  *  findings ledger for a person to read and never become queue items. */
-export const OBSERVATION_KINDS: ReadonlySet<string> = new Set(['token-outlier']);
+export const OBSERVATION_KINDS: ReadonlySet<string> = new Set(['token-outlier', 'repeated-work']);
 
 export function enqueueFindings(findings: SelfFinding[], deps: SelfEnqueueDeps): QueueItem[] {
   if (!deps.selfRepo) return [];
@@ -82,6 +84,12 @@ export function enqueueFindings(findings: SelfFinding[], deps: SelfEnqueueDeps):
 
   const created: QueueItem[] = [];
   let inFlight = countInFlightSelfItems(deps.store, deps.selfRepo);
+  // A parked or failed self item does not count as in flight, so the loop kept adding a
+  // new one every tick and the board filled with them inside an hour (2026-09-07). One
+  // new self item per `minGapMs` (default an hour), whatever became of the last one.
+  const minGapMs = deps.minGapMs ?? 60 * 60_000;
+  const newest = Math.max(0, ...deps.store.all().filter((item) => item.repo === deps.selfRepo).map((item) => item.createdAt));
+  if (newest && deps.clock() - newest < minGapMs) return [];
 
   for (const found of findings) {
     const now = deps.clock();
