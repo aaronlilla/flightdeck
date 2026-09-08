@@ -60,6 +60,25 @@ describe('stub server', () => {
     expect(body.hardTokens).toBe(20_000_000);
   });
 
+  // Sweep #20: this used to capture only the leading digits off a typed cap and drop
+  // any k/m suffix, so "raise daily cap to 2m tokens" set the cap to a literal 2
+  // tokens instead of 2,000,000.
+  it('parses a k/m token suffix the same way the real command grammar does', async () => {
+    const { body } = await post<{ cards: { type: string; text: string }[] }>('/command', { text: 'raise daily cap to 2m tokens' });
+    const receipt = body.cards.find((c) => c.type === 'receipt');
+    expect(receipt?.text).toContain('2.0M');
+    const caps = await get<{ dailyTokens: number }>('/caps');
+    expect(caps.dailyTokens).toBe(2_000_000);
+  });
+
+  it('parses a k/m token suffix on a per-lane cap command the same way', async () => {
+    const { body } = await post<{ cards: { type: string; text: string }[] }>('/command', { text: 'cap FLT-201 at 500k tokens' });
+    const receipt = body.cards.find((c) => c.type === 'receipt');
+    expect(receipt?.text).toContain('500k');
+    const { lanes } = await get<{ lanes: { id: string; tokenCap: number | null }[] }>('/lanes');
+    expect(lanes.find((l) => l.id === 'FLT-201')?.tokenCap).toBe(500_000);
+  });
+
   it('answers the parked lane through the command grammar and resumes it', async () => {
     const { body } = await post<{ cards: { type: string }[] }>('/command', { text: 'answer nullable + backfill' });
     expect(body.cards.some((c) => c.type === 'receipt')).toBe(true);

@@ -19,6 +19,7 @@ import type {
   QueueItem, QueueSource, ReauditResponse, Rule,
 } from '../shared/console-model.js';
 import { fmtTokens } from '../shared/format-tokens.js';
+import { tokenAmount } from '../forge/console/command.js';
 import { seedCaps } from './fixtures/caps.js';
 import { seedIntegrations } from './fixtures/integrations.js';
 import { seedJournal } from './fixtures/journal.js';
@@ -491,9 +492,13 @@ function runCommand(text: string): Message[] {
       ],
     }];
   }
-  if (/^(raise|set) daily cap to (\d+)/i.test(t)) {
-    const m = /(\d+)/.exec(t);
-    const value = m ? Number(m[1]) : db.caps.dailyTokens;
+  // Sweep #20: this used to capture only the leading digits and drop a `k`/`m`
+  // suffix on the floor, so "raise daily cap to 50m tokens" set the cap to a literal
+  // 50 tokens. `tokenAmount` is the same function the real grammar
+  // (`src/forge/console/command.ts`) parses a typed amount with.
+  const dailyCapMatch = /^(?:raise|set)\s+daily\s+cap\s+to\s+(\d+(?:\.\d+)?)([km])?/i.exec(t);
+  if (dailyCapMatch) {
+    const value = tokenAmount(dailyCapMatch[1] as string, dailyCapMatch[2]);
     if (value > db.caps.hardTokens) {
       return [{ k: `c-${now}`, type: 'refusal', text: `refused: ${fmtTokens(value)} tokens is above the org hard limit ${fmtTokens(db.caps.hardTokens)} tokens (FD-7)`, ts: now, source: 'conductor' }];
     }
@@ -501,9 +506,9 @@ function runCommand(text: string): Message[] {
     const jid = journal('caps.set', `daily cap set to ${fmtTokens(value)} tokens`, null, true);
     return [{ k: `r-${now}`, type: 'receipt', text: `daily cap set to ${fmtTokens(value)} tokens`, ts: now, source: 'conductor', jid, undoable: true }];
   }
-  if (/^cap\b/i.test(t) && laneRef) {
-    const m = /(\d+)/.exec(t);
-    const value = m ? Number(m[1]) : 0;
+  const runCapCommandMatch = /^cap\s+\S+\s+at\s+(\d+(?:\.\d+)?)([km])?/i.exec(t);
+  if (runCapCommandMatch && laneRef) {
+    const value = tokenAmount(runCapCommandMatch[1] as string, runCapCommandMatch[2]);
     if (value > db.caps.hardTokens) {
       return [{ k: `c-${now}`, type: 'refusal', text: `refused: ${fmtTokens(value)} tokens is above the org hard limit ${fmtTokens(db.caps.hardTokens)} tokens (FD-7)`, ts: now, source: 'conductor' }];
     }

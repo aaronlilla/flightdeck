@@ -137,7 +137,11 @@ export type Intent =
  *  suffix (`500k`, `2m`) the way an operator would actually type a cap rather than
  *  spelling out every zero. Never a dollar sign: the grammar this replaces used to
  *  accept an optional leading `$`, and this fleet has nothing left to price in it. */
-function tokenAmount(digits: string, suffix: string | undefined): number {
+/** Exported so the console stub (`stub-server.ts`) parses a typed token amount
+ *  exactly the same way this grammar does, rather than a second regex drifting from
+ *  it -- sweep #20 found the stub reading "50m tokens" as a bare 50 because its own
+ *  copy captured only the leading digits and dropped the k/m suffix on the floor. */
+export function tokenAmount(digits: string, suffix: string | undefined): number {
   const base = Number(digits);
   if (suffix?.toLowerCase() === 'k') return Math.round(base * 1_000);
   if (suffix?.toLowerCase() === 'm') return Math.round(base * 1_000_000);
