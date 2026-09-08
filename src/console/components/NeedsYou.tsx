@@ -13,6 +13,9 @@ export interface NeedItem {
   /** The full run id for the plate title's `title` attribute (a lane's `runId`,
    *  null for the AWS integration plate, which names no single lane). */
   titleId: string | null;
+  /** The owning lane's own repo, for a PR mention inside `title`/`line` -- `null` for
+   *  the AWS integration plate, which names no lane of its own. */
+  repo: string | null;
   sub: string;
   line: string;
   cta: string;
@@ -51,7 +54,7 @@ export function buildNeeds(
     if (integration.status !== 'down') continue;
     const since = integration.since !== null ? ` · since ${hm(integration.since)}` : '';
     items.push({
-      id: `int-${integration.id}`, color: 'var(--block)', title: integration.name, titleId: null,
+      id: `int-${integration.id}`, color: 'var(--block)', title: integration.name, titleId: null, repo: null,
       sub: `${integration.dependents.length} lanes blocked${since}`,
       line: integration.cause ?? '', cta: integration.fixLabel ?? 'Reconnect →',
       ctaCls: 'btnR', onClick: () => onFix('integration', integration.id),
@@ -63,7 +66,7 @@ export function buildNeeds(
     if (lane.state === 'parked' && lane.question && isStaleAsk(lane.question, now)) {
       const key = lane.question.key;
       staleItems.push({
-        id: `stale-${lane.id}`, color: 'var(--ink3)', title: `stale ask from ${headline.main}, ${ago(now - lane.question.askedAt)}`,
+        id: `stale-${lane.id}`, color: 'var(--ink3)', title: `stale ask from ${headline.main}, ${ago(now - lane.question.askedAt)}`, repo: lane.repo,
         titleId: headline.runId, sub: '', line: 'nothing readable was asked; this will never resolve on its own',
         cta: 'Dismiss', ctaCls: 'btnS', onClick: () => onDismissAsk(key), more: null,
       });
@@ -82,7 +85,7 @@ export function buildNeeds(
       // the console never actually read.
       const asks = question ? `${question.slice(0, 70)}…` : '—';
       items.push({
-        id: `park-${lane.id}`, color: 'var(--park)', title: headline.main, titleId: headline.runId,
+        id: `park-${lane.id}`, color: 'var(--park)', title: headline.main, titleId: headline.runId, repo: lane.repo,
         sub: `waiting ${ago(now - lane.since)}`,
         line: `asks: ${asks}`, cta: 'Answer →', ctaCls: 'btnA',
         onClick: () => onFix('lane', lane.id), more: null,
@@ -91,7 +94,7 @@ export function buildNeeds(
     if (lane.state === 'running' && lane.runaway) {
       const cap = lane.tokenCap ?? 0;
       items.push({
-        id: `over-${lane.id}`, color: 'var(--block)', title: headline.main, titleId: headline.runId,
+        id: `over-${lane.id}`, color: 'var(--block)', title: headline.main, titleId: headline.runId, repo: lane.repo,
         sub: `${fmtTokens(lane.tokens)} / ${fmtTokens(cap)}`,
         line: `retry loop ×${lane.fails} · burning ${fmtTokens(lane.tokensPerMin)} tokens/min`, cta: 'Kill attempt', ctaCls: 'btnR',
         onClick: () => onFix('lane', lane.id), more: null,
@@ -119,10 +122,10 @@ export function NeedsYou({ items }: NeedsYouProps): JSX.Element | null {
           <span className="led" style={{ background: n.color, flex: 'none' }} />
           <div style={{ flex: 1, minWidth: 0 }}>
             <div className="m" title={n.titleId ?? undefined} style={{ fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              <Linkify text={n.title} /> <span style={{ color: 'var(--ink2)', fontWeight: 500 }}>{n.sub}</span>
+              <Linkify text={n.title} repo={n.repo} /> <span style={{ color: 'var(--ink2)', fontWeight: 500 }}>{n.sub}</span>
             </div>
             <div className="m" style={{ fontSize: 10, color: 'var(--ink2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              <Linkify text={n.line} />
+              <Linkify text={n.line} repo={n.repo} />
               {n.more ? <> · <a style={{ color: 'var(--ink3)' }} onClick={n.more.onClick}>{n.more.label} ▸</a></> : null}
             </div>
           </div>
