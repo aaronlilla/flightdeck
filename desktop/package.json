@@ -9,6 +9,7 @@
     "build:main": "esbuild electron/main.ts --bundle --platform=node --format=cjs --target=node22 --external:electron --loader:.png=dataurl --outfile=build/main.cjs",
     "build:preload": "esbuild electron/status-preload.ts --bundle --platform=node --format=cjs --target=node22 --external:electron --outfile=build/status-preload.cjs",
     "build:app": "npm run build:main && npm run build:preload",
+    "dev": "node scripts/dev.cjs",
     "dist": "npm run build:app && electron-builder --win --x64 --publish never",
     "test": "vitest run",
     "test:watch": "vitest",

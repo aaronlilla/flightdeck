@@ -203,6 +203,23 @@ and writes screenshots at 1440 and 720 wide in both themes under
 prototype at the same sizes for a side-by-side look; it needs the design
 project's `support.js` copied under `~/.forge/console/reference/`.
 
+### Dev loops
+
+`npm run console:dev` serves the console from Vite with hot reload on its own port and
+proxies every API route to the server on 4120. Set `FORGE_TOKEN` to the value in
+`~/.forge/server-token` first, or every write comes back 401.
+
+`cd desktop && npm run dev` is the same loop for the shell. It bundles
+`electron/main.ts` and the preload in watch mode and restarts Electron after each
+rebuild. That copy keeps its own userData under `desktop/.dev-userdata`, so it runs
+beside the installed app and attaches to the console already on 4120.
+
+To hot reload console edits inside that window rather than a browser tab, run both and
+point the shell at Vite: `FORGE_CONSOLE_ORIGIN=http://localhost:5173 npm run dev`. Use
+`localhost` rather than `127.0.0.1`, because Vite binds the IPv6 loopback and the window
+cannot reach it by the IPv4 address. The supervisor still probes and starts the server
+on 4120 whatever the window shows.
+
 ## Status
 
 Early. The pieces work and are tested, including the keyboard loop and a live

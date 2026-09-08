@@ -14,7 +14,7 @@ export function statusPageHtml(): string {
 <style>
   body { margin: 0; background: #0b0d12; color: #e6e8ef; font: 13px/1.5 -apple-system, Segoe UI, sans-serif; }
   #wrap { padding: 16px; display: flex; flex-direction: column; height: 100vh; box-sizing: border-box; }
-  #brand { display: block; height: 30px; margin-bottom: 14px; }
+  #brand { display: block; height: 30px; width: auto; align-self: flex-start; margin-bottom: 14px; }
   #message { font-size: 14px; margin-bottom: 10px; }
   #log { flex: 1; overflow-y: auto; background: #05060a; border: 1px solid #1c2030; border-radius: 6px; padding: 8px; white-space: pre-wrap; font: 12px/1.4 Consolas, monospace; color: #9aa4c0; }
   #picker { display: none; margin-top: 10px; }

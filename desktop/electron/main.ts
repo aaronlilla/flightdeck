@@ -21,8 +21,9 @@ import { WINDOW_OPTIONS, STATUS_WINDOW_OPTIONS } from './window-options';
 import { statusPageHtml } from './status-page';
 import { settingsPageHtml } from './settings-page';
 import { appIcon, trayIcon } from './brand';
+import { consoleOrigin } from './console-origin';
 
-const CONSOLE_ORIGIN = 'http://127.0.0.1:4120';
+const CONSOLE_ORIGIN = consoleOrigin(process.env);
 
 const fsAdapter: LocateFs & SettingsFs = {
   existsSync,
@@ -362,6 +363,12 @@ async function handleQuitRequest(): Promise<void> {
   isQuitting = true;
   app.quit();
 }
+
+// A separate userData dir gives a dev copy its own single-instance lock and its
+// own settings, so it runs beside the installed app and attaches to the same
+// console. Has to land before the lock is requested, which lives under userData.
+const userDataDir = process.env['FORGE_USER_DATA_DIR']?.trim();
+if (userDataDir) app.setPath('userData', userDataDir);
 
 // Matches `appId` in electron-builder.yml, so the taskbar files the window under
 // the same identity as the installed shortcut and shows the shortcut's icon
