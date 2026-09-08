@@ -439,6 +439,58 @@ describe('ConsoleReads.lanesResponse: title and sourceUrl', () => {
     expect(ghCalls).toBe(1);
   });
 
+  // Item 11: the run itself opened a PR straight off its own branch, but nothing
+  // ever wrote its number back onto the queue item -- the exact live-board finding
+  // (PR #39 for `feature/s-b9d39bae548707e0`, self lane still reading "no PR yet").
+  it('item 11: a queue item with no PR on record discovers one by branch, and surfaces it exactly like a recorded PR', async () => {
+    const forgeHomeDir = tempDir('console-reads-');
+    const queueStore = new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl'));
+    queueStore.append({
+      id: 'Q-1', at: 1, source: 'ticket', input: 'S-b9d39bae548707e0', ticket: null, repo: 'o/n',
+      briefPath: null, branch: 'feature/s-b9d39bae548707e0', worktreePath: 'w', base: 'main',
+      state: 'running', reason: null, runKey: 'S-b9d39bae548707e0', pr: null, journalIds: [],
+      createdAt: 1, updatedAt: 1,
+    });
+
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'S-b9d39bae548707e0', actor: 'runner' });
+    journal.close();
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put('S-b9d39bae548707e0', { column: 'self' });
+
+    let branchCalls = 0;
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore, jiraSite: null,
+      ghBranchLookup: async (repo, branch) => {
+        branchCalls += 1;
+        expect(repo).toBe('o/n');
+        expect(branch).toBe('feature/s-b9d39bae548707e0');
+        return {
+          number: 39, url: 'https://github.com/o/n/pull/39', isDraft: true, mergedAt: null,
+          title: 'dedupe warden.health on an open unregistered trip', headRefOid: 'f284c65',
+        };
+      },
+    });
+
+    // First call: nothing has looked this PR up by branch yet, so the lane still
+    // reads no PR -- and a background discovery is kicked off rather than blocking.
+    const first = reads.lanesResponse().lanes[0]!;
+    expect(first.pr).toBeNull();
+
+    const server = reads as unknown as { settlePrRefreshes(): Promise<void> };
+    await server.settlePrRefreshes();
+
+    const second = reads.lanesResponse().lanes[0]!;
+    expect(second.pr).toEqual({
+      no: 39, url: 'https://github.com/o/n/pull/39', draft: true, merged: false,
+      title: 'dedupe warden.health on an open unregistered trip',
+    });
+    expect(branchCalls).toBe(1);
+  });
+
   it('item 7: GET /run/:id/pr answers for a queue lane with no chain packet, off the queue item\'s own repo and PR', async () => {
     const forgeHomeDir = tempDir('console-reads-');
     const queueStore = new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl'));

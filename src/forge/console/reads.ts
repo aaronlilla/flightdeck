@@ -42,8 +42,9 @@ import { readRetired, retiredPath } from './retire.js';
 import { plainForQueueItem, plainStatus, type QueueVerdict } from './plain.js';
 import { readAttestationAtPath } from '../council/attest.js';
 import {
-  computeQueuePr, computeRunPr, PR_CACHE_TTL_MS, prCachePath, readPrCache, writePrCache,
-  type AttestationReaderFn, type Cache, type GhDetailLookupFn, type GhLookupFn, type GhPrDetail, type GhPrLookup,
+  computeBranchPr, computeQueuePr, computeRunPr, PR_CACHE_TTL_MS, prCachePath, readPrCache, writePrCache,
+  type AttestationReaderFn, type Cache, type GhBranchLookupFn, type GhBranchPr, type GhDetailLookupFn, type GhLookupFn,
+  type GhPrDetail, type GhPrLookup,
 } from './pr.js';
 import { computeProposals, readRules, rulesPath } from './proposals.js';
 import { computeSandbox, newestLogFile, packetForRun, tailLogWithSeverity } from './sandbox.js';
@@ -66,6 +67,10 @@ export interface ConsoleReadsOptions {
   /** H1.3: overrides `gh pr view`'s own checks/merged/title read. A specimen never
    *  shells out. */
   ghDetailLookup?: GhDetailLookupFn;
+  /** Item 11: overrides `gh pr list --repo <repo> --head <branch> --state all`, the
+   *  by-branch PR discovery for a lane whose queue item carries no PR at all. A
+   *  specimen never shells out. */
+  ghBranchLookup?: GhBranchLookupFn;
   /** H1.3: overrides the attestation-on-disk read for a PR's own council verdict. A
    *  specimen only. */
   attestationReader?: AttestationReaderFn;
@@ -234,6 +239,28 @@ function defaultGitLog(): (worktreePath: string, range: GitLogRange) => Promise<
   };
 }
 
+/** Item 11: `gh pr list --repo <repo> --head <branch> --state all --json
+ *  number,url,isDraft,mergedAt,title,headRefOid` -- `--state all` so an already-merged
+ *  PR is found too, not only an open one. */
+function defaultGhBranchLookup(): GhBranchLookupFn {
+  return async (repo: string, branch: string): Promise<GhBranchPr | undefined> => {
+    const result = await execRun({
+      argv: [
+        'gh', 'pr', 'list', '--repo', repo, '--head', branch, '--state', 'all', '--json',
+        'number,url,isDraft,mergedAt,title,headRefOid',
+      ],
+      cwd: process.cwd(), owner: 'console-pr-branch', cls: 'script', fullOutput: true,
+    });
+    if (!result.ok) return undefined;
+    try {
+      const rows = JSON.parse(result.full ?? result.tail) as GhBranchPr[];
+      return rows[0];
+    } catch {
+      return undefined;
+    }
+  };
+}
+
 function defaultAttestationReader(): AttestationReaderFn {
   return (repo, pr, head) => {
     const attestation = readAttestation(repo, pr, head);
@@ -262,6 +289,8 @@ export class ConsoleReads {
 
   private readonly ghDetailLookup: GhDetailLookupFn;
 
+  private readonly ghBranchLookup: GhBranchLookupFn;
+
   private readonly attestationReader: AttestationReaderFn;
 
   private readonly stuckFn: () => StuckSignal[];
@@ -282,6 +311,11 @@ export class ConsoleReads {
    *  lane polled again before the first `gh` read lands never queues a second one. */
   private readonly prRefreshInFlight = new Set<string>();
 
+  /** Item 11: run ids a background by-branch PR discovery is already in flight for --
+   *  the same in-flight guard `prRefreshInFlight` gives the detail refresh, kept
+   *  separate since the two can legitimately run at once for different lanes. */
+  private readonly branchPrDiscoveryInFlight = new Set<string>();
+
   /** Item 7: every background PR-detail refresh `GET /lanes` has kicked off so far,
    *  for `settlePrRefreshes()` (tests only) to wait on. Production never awaits this --
    *  a poll must never block on `gh`. */
@@ -296,6 +330,7 @@ export class ConsoleReads {
     this.journalCache = options.journalCache ?? new JournalCache();
     this.ghLookup = options.ghLookup ?? defaultGhLookup();
     this.ghDetailLookup = options.ghDetailLookup ?? defaultGhDetailLookup();
+    this.ghBranchLookup = options.ghBranchLookup ?? defaultGhBranchLookup();
     this.attestationReader = options.attestationReader ?? defaultAttestationReader();
     this.stuckFn = options.stuck ?? (() => []);
     this.modelPolicyPath = options.modelPolicyPath ?? policyPath();
@@ -332,6 +367,28 @@ export class ConsoleReads {
         writePrCache(cachePath, nextCache);
       } finally {
         this.prRefreshInFlight.delete(run);
+      }
+    })();
+    this.pendingPrRefreshes.push(task);
+  }
+
+  /** Item 11: a queue-sourced lane with a known branch and no PR on record at all --
+   *  the worker's own ask already names one, but nothing ever wrote its number back
+   *  onto the queue item. Looks it up once by branch, in the background, and writes
+   *  the answer into the same `run`-keyed cache `scheduleQueuePrRefresh` and every
+   *  other PR read here share, so the tile and the sheet both see it from the next
+   *  poll. Only fires when nothing else has already found a PR for this run. */
+  private scheduleBranchPrDiscovery(run: string, repo: string, branch: string): void {
+    if (this.branchPrDiscoveryInFlight.has(run)) return;
+    this.branchPrDiscoveryInFlight.add(run);
+    const cachePath = prCachePath(this.forgeHomeDir);
+    const task = (async () => {
+      try {
+        const cache = readPrCache(cachePath);
+        const { cache: nextCache } = await computeBranchPr(run, repo, branch, cache, Date.now(), this.ghBranchLookup);
+        writePrCache(cachePath, nextCache);
+      } finally {
+        this.branchPrDiscoveryInFlight.delete(run);
       }
     })();
     this.pendingPrRefreshes.push(task);
@@ -540,6 +597,22 @@ export class ConsoleReads {
       const cached = prCache[lane.id];
       if (!cached || now - cached.at >= PR_CACHE_TTL_MS) {
         this.scheduleQueuePrRefresh(lane.id, repo, pr);
+      }
+    }
+    // Item 11: the run itself can already have opened a PR straight off its own
+    // branch without the queue item ever recording it -- nothing above finds one,
+    // since every path here needs a `pr.no` the queue item never got. A branch is
+    // known the moment the item is provisioned (`queueItem.branch`), or off the
+    // lane's own sandbox for a lane the queue never provisioned through; a cache
+    // entry still inside its TTL (including a cached "none found") means a lookup has
+    // already landed recently.
+    if (queueItem && repo && !pr?.no) {
+      const branch = queueItem.branch ?? lane.sandbox?.branch ?? null;
+      if (branch) {
+        const cached = prCache[lane.id];
+        if (!cached || now - cached.at >= PR_CACHE_TTL_MS) {
+          this.scheduleBranchPrDiscovery(lane.id, repo, branch);
+        }
       }
     }
     // Item 9: `computeLanes` already stripped `plain`/`reason` once, but both of the
