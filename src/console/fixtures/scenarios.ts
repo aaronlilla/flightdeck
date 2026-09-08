@@ -344,3 +344,17 @@ export function humanBoardLanes(): Lane[] {
 export function emptyRules(): Rule[] {
   return [];
 }
+
+/** A run thread far taller than any screen, on the seed board's first lane: the
+ *  ticket sheet must stay inside the viewport and scroll the thread within itself. */
+export function longThread(): Message[] {
+  const now = Date.now();
+  const messages: Message[] = [];
+  for (let i = 0; i < 80; i += 1) {
+    messages.push({
+      k: `long-${i}`, type: 'event', text: `Turn ${i + 1}: edited a file and ran the unit suite`,
+      ts: now - (80 - i) * 30_000, source: 'system', lane: 'FLT-201', verifiedAt: now - (80 - i) * 30_000,
+    });
+  }
+  return messages;
+}

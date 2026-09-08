@@ -198,7 +198,13 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
   const band = bandFor(lane);
 
   return (
-    <div className="plate" data-testid="ticket-sheet" style={{ width: 900, maxWidth: 'calc(100vw - 40px)', borderColor: 'var(--line2)' }}>
+    <div
+      className="plate" data-testid="ticket-sheet"
+      // The sheet is the screen's height less the overlay's margins and scrolls inside:
+      // a long story or run thread used to push the band and the composer off the top
+      // and bottom of the window (2026-09-07).
+      style={{ width: 900, maxWidth: 'calc(100vw - 40px)', maxHeight: 'calc(100vh - 68px)', display: 'flex', flexDirection: 'column', overflow: 'hidden', borderColor: 'var(--line2)' }}
+    >
       <div className="lbl" style={{ background: band.bg, color: band.ink, padding: '7px 20px', display: 'flex', justifyContent: 'space-between', gap: 12, borderRadius: '3px 3px 0 0' }}>
         <span>{band.text}</span>
         <span style={{ cursor: 'pointer' }} onClick={onClose}>esc to close ✕</span>
@@ -266,8 +272,8 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
           })}
         </div>
       </div>
-      <div style={{ display: 'flex', minHeight: 300, flexWrap: 'wrap' }}>
-        <div style={{ width: 340, flex: '1 1 300px', borderRight: '1px solid var(--line)', padding: '16px 22px' }}>
+      <div data-testid="ticket-sheet-body" style={{ display: 'flex', minHeight: 0, flex: '1 1 auto', flexWrap: 'wrap', overflowY: 'auto' }}>
+        <div data-testid="ticket-sheet-story" style={{ width: 340, flex: '1 1 300px', borderRight: '1px solid var(--line)', padding: '16px 22px' }}>
           <StoryPanel story={story} />
           <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 10 }}>Journal</div>
           <JournalPanel entries={journal} />
@@ -284,14 +290,16 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
           ) : null}
         </div>
         <div style={{ flex: '2 1 380px', padding: '16px 22px', display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <div className="lbl" style={{ color: 'var(--ink2)' }}>Run thread — {lane.id} only</div>
-          {thread.map((m) => (
-            <MessageCard
-              key={m.k} message={m} feedLive={feedLive} now={now}
-              onCommand={(text) => onCommand(lane.id, text)} onUndo={onUndo}
-              onOpenJournal={onOpenJournal}
-            />
-          ))}
+          <div className="lbl" style={{ color: 'var(--ink2)', flex: 'none' }}>Run thread — {lane.id} only</div>
+          <div data-testid="ticket-sheet-thread" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {thread.map((m) => (
+              <MessageCard
+                key={m.k} message={m} feedLive={feedLive} now={now}
+                onCommand={(text) => onCommand(lane.id, text)} onUndo={onUndo}
+                onOpenJournal={onOpenJournal}
+              />
+            ))}
+          </div>
           <div style={{ marginTop: 'auto', background: 'var(--well)', boxShadow: 'inset 0 2px 5px rgba(0,0,0,.6)', borderRadius: 3, padding: '8px 8px 8px 12px', display: 'flex', alignItems: 'center', gap: 8 }}>
             <input
               className="inp" placeholder={`message ${lane.id}…`} value={draft}
