@@ -109,7 +109,7 @@ describe('computeThread', () => {
 });
 
 describe('computeRunThread', () => {
-  it('renders a run\'s own journal rows as messages, merged with its run-inbox sends', () => {
+  it('verbose: renders a run\'s own journal rows as messages, merged with its run-inbox sends', () => {
     const { path, journal } = tempJournal();
     journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
     journal.close();
@@ -117,7 +117,7 @@ describe('computeRunThread', () => {
 
     const result = computeRunThread('alpha', fleet.events, [
       { id: 'm1', at: 5, seq: 0, from: 'console', text: 'do the thing' },
-    ]);
+    ], { verbose: true });
     expect(result.messages.map((m) => m.text)).toContain('alpha started');
     expect(result.messages.map((m) => m.text)).toContain('do the thing');
   });
@@ -167,5 +167,141 @@ describe('computeRunThread', () => {
     const receipt = result.messages.find((m) => m.type === 'receipt');
     expect(receipt).toBeDefined();
     expect(receipt!.jid).toBe(`J-${row.id.slice(0, 8)}`);
+  });
+});
+
+describe('computeRunThread: plain mode (deliverable 7)', () => {
+  it('run.started reads as a sentence naming the model, when the row carries one', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner', model: 'claude-sonnet-5-20260101' });
+    journal.close();
+    const fleet = replay(path);
+
+    const result = computeRunThread('alpha', fleet.events, []);
+    expect(result.messages.map((m) => m.text)).toContain(
+      `Started on Sonnet at ${new Date(fleet.events[0]!.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`,
+    );
+  });
+
+  it('run.started omits the model clause when the row carries none', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.close();
+    const fleet = replay(path);
+
+    const result = computeRunThread('alpha', fleet.events, []);
+    expect(result.messages.map((m) => m.text)).toContain(
+      `Started at ${new Date(fleet.events[0]!.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`,
+    );
+  });
+
+  it('folds a burst of tool calls into one activity message, counted by category', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    for (let i = 0; i < 3; i += 1) {
+      journal.append({ event: 'tool.start', run: 'alpha', actor: 'runner', tool: 'Bash' });
+      journal.append({ event: 'tool.end', run: 'alpha', actor: 'runner' });
+    }
+    journal.append({ event: 'tool.start', run: 'alpha', actor: 'runner', tool: 'Read' });
+    journal.append({ event: 'tool.end', run: 'alpha', actor: 'runner' });
+    journal.append({ event: 'run.finished', run: 'alpha', actor: 'runner', verdict: 'done' });
+    journal.close();
+    const fleet = replay(path);
+
+    const result = computeRunThread('alpha', fleet.events, []);
+    const activity = result.messages.find((m) => m.type === 'activity');
+    expect(activity).toBeDefined();
+    expect(activity!.text).toContain('3 commands');
+    expect(activity!.text).toContain('1 file read');
+    expect(activity!.text).toMatch(/^Worked \d{1,2}:\d{2}.*\s+to\s+\d{1,2}:\d{2}/i);
+  });
+
+  it('a burst with exactly one counted call reads as a single sentence, not a range', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.append({ event: 'tool.start', run: 'alpha', actor: 'runner', tool: 'Bash' });
+    journal.append({ event: 'tool.end', run: 'alpha', actor: 'runner' });
+    journal.append({ event: 'run.finished', run: 'alpha', actor: 'runner', verdict: 'done' });
+    journal.close();
+    const fleet = replay(path);
+
+    const result = computeRunThread('alpha', fleet.events, []);
+    const activity = result.messages.find((m) => m.type === 'activity');
+    expect(activity!.text).toMatch(/^Ran 1 command at \d{1,2}:\d{2}/i);
+  });
+
+  it('collapses two consecutive replies that share their first 80 characters, marking the newest', () => {
+    const { path, journal } = tempJournal();
+    const longOutcome = 'the run got stuck on the same step and reported the exact same outcome text twice over';
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.append({ event: 'forge.report', run: 'alpha', actor: 'worker', outcome: longOutcome });
+    journal.append({ event: 'run.relaunched', run: 'alpha', actor: 'runner', attempt: 2 });
+    journal.append({ event: 'forge.report', run: 'alpha', actor: 'worker', outcome: longOutcome });
+    journal.close();
+    const fleet = replay(path);
+
+    const result = computeRunThread('alpha', fleet.events, []);
+    const replies = result.messages.filter((m) => m.type === 'reply');
+    expect(replies).toHaveLength(1);
+    expect(replies[0]!.text).toContain('(repeated after a relaunch)');
+  });
+
+  it('maps forge.ask, ask.answered, park/resume/relaunch/kill/finish/handoff to plain sentences', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.append({ event: 'forge.ask', run: 'alpha', actor: 'worker', question: 'dev or staging?' });
+    journal.append({ event: 'ask.answered', run: 'alpha', actor: 'operator', answer: 'dev' });
+    journal.append({ event: 'run.parked', run: 'alpha', actor: 'runner', reason: 'waiting on you' });
+    journal.append({ event: 'run.resumed', run: 'alpha', actor: 'operator' });
+    journal.append({ event: 'run.relaunched', run: 'alpha', actor: 'runner', attempt: 2 });
+    journal.append({ event: 'run.killed', run: 'alpha', actor: 'operator', reason: 'over budget' });
+    journal.append({ event: 'run.finished', run: 'alpha', actor: 'runner', verdict: 'killed' });
+    journal.append({ event: 'run.handoff', run: 'alpha', actor: 'runner', successor: 'alpha-2' });
+    journal.close();
+    const fleet = replay(path);
+
+    const result = computeRunThread('alpha', fleet.events, []);
+    const texts = result.messages.map((m) => m.text);
+    expect(texts).toContain('Asked you: dev or staging?');
+    expect(texts).toContain('You answered: dev');
+    expect(texts).toContain('Parked: waiting on you');
+    expect(texts).toContain('Resumed');
+    expect(texts).toContain('Relaunched (attempt 2)');
+    expect(texts).toContain('Killed: over budget');
+    expect(texts).toContain('Finished: killed');
+    expect(texts).toContain('Context ceiling reached; handed off to a fresh session');
+  });
+
+  it('drops a permission.denied row that carries no reason, keeps one that does', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.append({ event: 'permission.denied', run: 'alpha', actor: 'runner', tool: 'Bash' });
+    journal.append({ event: 'permission.denied', run: 'alpha', actor: 'runner', tool: 'Bash', reason: 'not allowed' });
+    journal.close();
+    const fleet = replay(path);
+
+    const result = computeRunThread('alpha', fleet.events, []);
+    const denials = result.messages.filter((m) => m.text.includes('Asked to use'));
+    expect(denials).toHaveLength(1);
+    expect(denials[0]!.text).toBe('Asked to use Bash; parked instead');
+  });
+
+  it('never lets a machine id reach a plain message, over a wide sweep of event kinds', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.append({ event: 'run.parked', run: 'alpha', actor: 'runner', reason: 'parking on a1b2c3d4e5f6a7b8: continue?' });
+    journal.append({ event: 'warden.parked', run: 'alpha', actor: 'warden', reason: 'stale-session for jira_BBZ-99_1788543015139' });
+    journal.append({
+      event: 'run.killed', run: 'alpha', actor: 'operator',
+      reason: 'blocked behind queue-BBZ-1 at 88d44ec96baea849f7c1e8c0a1b2c3d4e5f6a7b8',
+    });
+    journal.close();
+    const fleet = replay(path);
+
+    const result = computeRunThread('alpha', fleet.events, []);
+    const idPattern = /S-[0-9a-f]{12,}|jira_|queue-|\b[0-9a-f]{40}\b|\b[0-9a-f]{16,39}\b/i;
+    for (const message of result.messages) {
+      expect(message.text).not.toMatch(idPattern);
+    }
   });
 });

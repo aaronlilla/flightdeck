@@ -581,3 +581,33 @@ describe('ConsoleReads.runStoryResponse: story scoping (deliverable 1)', () => {
     expect(seenRange).toEqual({ base: 'develop', since: 4_000 });
   });
 });
+
+describe('ConsoleReads: run thread verbose wiring (deliverable 7)', () => {
+  it('plain by default, verbose only when the caller\'s own private call asks for it', () => {
+    const forgeHomeDir = tempDir('console-reads-verbose-');
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.close();
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put('alpha', { column: 'alpha' });
+
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore: new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl')),
+      jiraSite: null,
+    });
+
+    const server = reads as unknown as {
+      runThreadResponse(run: string, verbose?: boolean): { messages: Array<{ text: string }>; verbose?: boolean };
+    };
+    const plain = server.runThreadResponse('alpha');
+    expect(plain.verbose).toBeUndefined();
+    expect(plain.messages.some((m) => m.text === 'alpha started')).toBe(false);
+
+    const verbose = server.runThreadResponse('alpha', true);
+    expect(verbose.verbose).toBe(true);
+    expect(verbose.messages.some((m) => m.text === 'alpha started')).toBe(true);
+  });
+});

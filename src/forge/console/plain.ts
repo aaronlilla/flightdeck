@@ -17,7 +17,9 @@ const MODEL_NAMES: Record<string, string> = {
   'sonnet-5': 'Sonnet', 'opus-5': 'Opus', 'haiku-4.5': 'Haiku',
 };
 
-function modelName(model: string): string {
+/** The model alias's own display name (`sonnet-5` -> `Sonnet`), shared with the plain
+ *  run thread's own "Started on <Model name>" line. */
+export function modelName(model: string): string {
   return MODEL_NAMES[model] ?? model;
 }
 

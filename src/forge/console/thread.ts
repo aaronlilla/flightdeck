@@ -15,7 +15,9 @@ import type { RunMessage } from '../runinbox.js';
 import type { Message, ThreadResponse } from '../../shared/console-model.js';
 import { jidFor, textFor } from './journal-route.js';
 import { collapseWardenChips, railChipText, type TitleForFn } from './journal-narrative.js';
-import { stripMachineIds } from '../../shared/humanize.js';
+import { humanizeParkReason, stripMachineIds } from '../../shared/humanize.js';
+import { modelAlias } from './lanes.js';
+import { modelName } from './plain.js';
 
 export function threadPath(forgeHomeDir: string): string {
   return `${forgeHomeDir}/console/thread.jsonl`;
@@ -164,16 +166,189 @@ function runMessageToMessage(message: RunMessage): Message {
   };
 }
 
+function clockTime(at: number): string {
+  return new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+/** A burst of tool-shaped rows folds into one `activity` message in plain mode -- these
+ *  are the event kinds that carry no narrative of their own and only ever appear as
+ *  part of one. A burst ends the moment a row outside this set is seen. */
+const BURST_EVENTS = new Set([
+  'tool.start', 'tool.end', 'turn.end', 'result.usage', 'burn.mismatch', 'reasoner.call', 'registry.abandoned',
+]);
+
+/** Tool name -> [singular, plural] category label for the activity digest's own count
+ *  ("140 commands, 45 file reads"). Anything not named here reads as "N other tool
+ *  call(s)" -- never the raw tool name. */
+const TOOL_CATEGORY: Record<string, [string, string]> = {
+  Bash: ['command', 'commands'],
+  Read: ['file read', 'file reads'],
+  Edit: ['edit', 'edits'],
+  Write: ['edit', 'edits'],
+  Grep: ['search', 'searches'],
+  Glob: ['search', 'searches'],
+  Skill: ['skill', 'skills'],
+};
+
+function categoryFor(tool: string): [string, string] {
+  return TOOL_CATEGORY[tool] ?? ['other tool call', 'other tool calls'];
+}
+
+/** One `activity` message for a burst of tool-shaped rows, counted by `tool.start`'s own
+ *  tool name -- `null` for a burst that never carried a single `tool.start` (pure
+ *  `burn.mismatch`/`turn.end` noise), which has nothing to tell a person about. A burst
+ *  that counted exactly one tool call reads as a single sentence at one clock time,
+ *  never a "H:MM to H:MM" range with nothing else in it. */
+function activityMessageFor(run: string, burst: ForgeEvent[]): Message | null {
+  const counts = new Map<string, { plural: string; count: number }>();
+  for (const row of burst) {
+    if (row.event !== 'tool.start') continue;
+    const tool = typeof row.tool === 'string' ? row.tool : 'unknown';
+    const [singular, plural] = categoryFor(tool);
+    const existing = counts.get(singular);
+    if (existing) existing.count += 1;
+    else counts.set(singular, { plural, count: 1 });
+  }
+  const total = [...counts.values()].reduce((sum, entry) => sum + entry.count, 0);
+  if (total === 0) return null;
+
+  const first = burst[0]!;
+  const last = burst[burst.length - 1]!;
+  const k = `run-${run}-activity-${first.id}`;
+
+  if (total === 1) {
+    const [singular] = [...counts.entries()][0]!;
+    return {
+      k, type: 'activity', text: `Ran 1 ${singular} at ${clockTime(first.at)}`,
+      ts: first.at, source: run, lane: run,
+    };
+  }
+
+  const parts = [...counts.entries()].map(([singular, entry]) => (
+    `${entry.count} ${entry.count === 1 ? singular : entry.plural}`
+  ));
+  return {
+    k, type: 'activity', text: `Worked ${clockTime(first.at)} to ${clockTime(last.at)}: ${parts.join(', ')}`,
+    ts: first.at, source: run, lane: run,
+  };
+}
+
+/** The plain-mode text and message kind for one of the run's own journal rows -- `null`
+ *  for a row that carries nothing worth telling a person (a `permission.denied` with no
+ *  reason on it). Every text here is already free of machine ids: `run.parked` goes
+ *  through `humanizeParkReason` (which itself calls `stripMachineIds`), and everything
+ *  else is wrapped directly. */
+function plainMessageFor(run: string, row: ForgeEvent): Message | null {
+  const k = `run-${run}-${row.id}`;
+  const event: Message = { k, type: 'event', text: '', ts: row.at, source: run, lane: run, verifiedAt: row.at };
+
+  switch (row.event) {
+    case 'run.started': {
+      const model = typeof row.model === 'string' && row.model ? modelName(modelAlias(row.model)) : null;
+      return { ...event, text: model ? `Started on ${model} at ${clockTime(row.at)}` : `Started at ${clockTime(row.at)}` };
+    }
+    case 'forge.report':
+      return { k, type: 'reply', text: stripMachineIds(forgeReportText(row)), ts: row.at, source: run };
+    case 'forge.done':
+      return {
+        k, type: 'reply', text: stripMachineIds(typeof row.evidence === 'string' ? row.evidence : 'done'),
+        ts: row.at, source: run,
+      };
+    case 'decision.made':
+      return { k, type: 'receipt', text: stripMachineIds(textFor(row)), ts: row.at, source: run, jid: jidFor(row) };
+    case 'forge.ask':
+      return { ...event, text: `Asked you: ${stripMachineIds(String(row.question ?? ''))}` };
+    case 'ask.answered':
+      return { ...event, text: `You answered: ${stripMachineIds(String(row.answer ?? ''))}` };
+    case 'run.parked':
+      return { ...event, text: `Parked: ${humanizeParkReason(typeof row.reason === 'string' ? row.reason : 'waiting on you')}` };
+    case 'warden.parked':
+      return { ...event, text: `Parked by the warden: ${stripMachineIds(typeof row.reason === 'string' ? row.reason : 'a health check tripped')}` };
+    case 'run.resumed':
+      return { ...event, text: 'Resumed' };
+    case 'run.relaunched': {
+      const attempt = typeof row.attempt === 'number' ? row.attempt : null;
+      return { ...event, text: attempt ? `Relaunched (attempt ${attempt})` : 'Relaunched' };
+    }
+    case 'permission.denied': {
+      if (typeof row.reason !== 'string' || !row.reason) return null;
+      return { ...event, text: `Asked to use ${stripMachineIds(String(row.tool ?? 'a tool'))}; parked instead` };
+    }
+    case 'run.killed':
+      return { ...event, text: `Killed: ${stripMachineIds(typeof row.reason === 'string' ? row.reason : 'no reason recorded')}` };
+    case 'run.finished':
+      return { ...event, text: `Finished: ${typeof row.verdict === 'string' ? row.verdict : 'unverified'}` };
+    case 'run.handoff':
+      return { ...event, text: 'Context ceiling reached; handed off to a fresh session' };
+    default:
+      return { ...event, text: stripMachineIds(textFor(row)) };
+  }
+}
+
+/** Deliverable 7: two consecutive replies whose first 80 characters match are the same
+ *  report re-filed after a relaunch (the identical case that buried the worker's real
+ *  updates under a wall of duplicate cards). The older is dropped and the newer keeps
+ *  its own text with a note appended, so the thread reads as one report, not two. */
+function foldRepeatedReplies(messages: Message[]): Message[] {
+  const result: Message[] = [];
+  let lastReplyIndex = -1;
+  for (const message of messages) {
+    if (message.type === 'reply' && lastReplyIndex >= 0) {
+      const prevReply = result[lastReplyIndex]!;
+      if (prevReply.text.slice(0, 80) === message.text.slice(0, 80)) {
+        result.splice(lastReplyIndex, 1);
+        result.push({ ...message, text: `${message.text} (repeated after a relaunch)` });
+        lastReplyIndex = result.length - 1;
+        continue;
+      }
+    }
+    result.push(message);
+    if (message.type === 'reply') lastReplyIndex = result.length - 1;
+  }
+  return result;
+}
+
+function buildPlainRunMessages(run: string, own: ForgeEvent[]): Message[] {
+  const messages: Message[] = [];
+  let i = 0;
+  while (i < own.length) {
+    const row = own[i]!;
+    if (BURST_EVENTS.has(row.event)) {
+      const burst: ForgeEvent[] = [];
+      while (i < own.length && BURST_EVENTS.has(own[i]!.event)) {
+        burst.push(own[i]!);
+        i += 1;
+      }
+      const message = activityMessageFor(run, burst);
+      if (message) messages.push(message);
+      continue;
+    }
+    const message = plainMessageFor(run, row);
+    if (message) messages.push(message);
+    i += 1;
+  }
+  return foldRepeatedReplies(messages);
+}
+
+export interface ComputeRunThreadOptions {
+  /** `true` answers every one of the run's own journal rows unchanged, one message per
+   *  row, the way `GET /run/:id/thread?verbose=1` always has. Default (unset/false):
+   *  plain mode -- tool-call bursts fold into one `activity` sentence, every event
+   *  reads as a clause a person can act on, and no message carries a machine id. */
+  verbose?: boolean;
+}
+
 /**
- * `GET /run/:id/thread`: one run's own journal rows rendered as messages (every event
- * naming this run, in order), plus whatever `RunInbox` has queued for it -- read, never
- * consumed, so the console showing this thread never marks a message delivered before
- * the run's own next tool call actually does.
+ * `GET /run/:id/thread`: one run's own journal rows rendered as messages, plus whatever
+ * `RunInbox` has queued for it -- read, never consumed, so the console showing this
+ * thread never marks a message delivered before the run's own next tool call actually
+ * does.
  */
-export function computeRunThread(run: string, events: ForgeEvent[], runInboxMessages: RunMessage[]): { messages: Message[] } {
-  const own = events
-    .filter((row) => row.run === run)
-    .map((row) => runRowToMessage(run, row));
+export function computeRunThread(
+  run: string, events: ForgeEvent[], runInboxMessages: RunMessage[], options: ComputeRunThreadOptions = {},
+): { messages: Message[] } {
+  const own = events.filter((row) => row.run === run);
+  const rendered = options.verbose ? own.map((row) => runRowToMessage(run, row)) : buildPlainRunMessages(run, own);
   const inbox = runInboxMessages.map(runMessageToMessage);
-  return { messages: [...own, ...inbox].sort((a, b) => a.ts - b.ts) };
+  return { messages: [...rendered, ...inbox].sort((a, b) => a.ts - b.ts) };
 }

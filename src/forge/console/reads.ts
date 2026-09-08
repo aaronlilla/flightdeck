@@ -394,7 +394,8 @@ export class ConsoleReads {
       const sub = runMatch[2] as 'thread' | 'pr' | 'sandbox' | 'cost' | 'journal' | 'story' | 'summary';
       const run = decodeURIComponent(id);
       if (sub === 'thread') {
-        json(response, 200, this.runThreadResponse(run));
+        const url = new URL(request.url ?? '/', 'http://localhost');
+        json(response, 200, this.runThreadResponse(run, url.searchParams.get('verbose') === '1'));
         return true;
       }
       if (sub === 'pr') {
@@ -618,9 +619,10 @@ export class ConsoleReads {
     return computeProposals(fleet.events, now, tokensByRun, existingRules);
   }
 
-  private runThreadResponse(run: string): RunThreadResponse {
+  private runThreadResponse(run: string, verbose = false): RunThreadResponse {
     const fleet = this.journalCache.read(this.journalPath);
-    return computeRunThread(run, fleet.events, new RunInbox(run).all());
+    const result = computeRunThread(run, fleet.events, new RunInbox(run).all(), { verbose });
+    return verbose ? { ...result, verbose: true } : result;
   }
 
   private async runPrResponse(run: string): Promise<RunPrResponse> {
