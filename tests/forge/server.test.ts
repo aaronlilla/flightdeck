@@ -1366,6 +1366,55 @@ function readTextFrames(buffer: Buffer): string[] {
   return frames;
 }
 
+describe('GET /blockers (iteration 6: mounted on the real server)', () => {
+  it('answers 200 with {blockers, chains} on a fleet with one open ask', async () => {
+    const { Inbox: InboxCtor } = await import('../../src/forge/inbox.js');
+    const inbox = new InboxCtor(join(dir, 'inbox'));
+    inbox.raise({ run: 'alpha', question: 'which environment?' });
+
+    const withInbox = new ForgeServer({
+      lanes: new Lanes(join(dir, 'lanes')), inbox, journalPath: join(dir, 'fleet.jsonl'),
+      registry: new Registry(join(dir, 'registry')), port: 0,
+    });
+    const blockersBase = `http://127.0.0.1:${await withInbox.listen()}`;
+    try {
+      const response = await fetch(`${blockersBase}/blockers`, {
+        headers: { 'x-forge-token': withInbox.token },
+      });
+      expect(response.status).toBe(200);
+      const body = await response.json() as { blockers: Array<{ id: string; kind: string }>; chains: string[][] };
+      expect(body.blockers.some((b) => b.kind === 'question')).toBe(true);
+      expect(body.chains.length).toBeGreaterThan(0);
+    } finally {
+      await withInbox.close();
+    }
+  });
+
+  it('POST /blockers/:id/check answers 200 with an honest not-yet when nothing confirms the kind', async () => {
+    const { Inbox: InboxCtor } = await import('../../src/forge/inbox.js');
+    const inbox = new InboxCtor(join(dir, 'inbox'));
+    const entry = inbox.raise({ run: 'alpha', question: 'which environment?' });
+
+    const withInbox = new ForgeServer({
+      lanes: new Lanes(join(dir, 'lanes')), inbox, journalPath: join(dir, 'fleet.jsonl'),
+      registry: new Registry(join(dir, 'registry')), port: 0,
+      blockersConfirmers: {},
+    });
+    const blockersBase = `http://127.0.0.1:${await withInbox.listen()}`;
+    try {
+      const result = await fetch(`${blockersBase}/blockers/${encodeURIComponent(`question:${entry.key}`)}/check`, {
+        method: 'POST', headers: { 'x-forge-token': withInbox.token },
+      });
+      expect(result.status).toBe(200);
+      const body = await result.json() as { ok: boolean; lastCheck: string | null };
+      expect(body.ok).toBe(false);
+      expect(body.lastCheck).toBe('no confirmation is wired for question yet');
+    } finally {
+      await withInbox.close();
+    }
+  });
+});
+
 describe('listen: a port already held', () => {
   it('rejects with the bind error instead of resolving', async () => {
     const { createServer } = await import('node:net');
