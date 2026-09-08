@@ -102,10 +102,14 @@ describe('TicketSheet', () => {
     expect(screen.getByText(/ceiling 200k/)).toBeInTheDocument();
   });
 
-  it('renders the draft PR line as static text with no link target', () => {
+  // Sweep #7: this line had never had an href -- fixed the same day the sweep found
+  // it clicking through to nothing, opening in a new tab like every other PR link.
+  it('renders the draft PR line as a working link that opens in a new tab', () => {
     renderSheet([], { pr: { no: 42, url: 'https://example.test/pr/42', files: 3, add: 10, del: 2, draft: true } });
     const link = screen.getByText('draft PR #42 ↗');
-    expect(link).not.toHaveAttribute('href');
+    expect(link).toHaveAttribute('href', 'https://example.test/pr/42');
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', expect.stringContaining('noopener'));
   });
 
   describe('band', () => {

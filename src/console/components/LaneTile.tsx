@@ -134,7 +134,12 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
       </div>
       {lane.pr ? (
         <div className="m" style={{ fontSize: '10.5px', color: 'var(--ink2)' }}>
-          <a href={lane.pr.url} onClick={(e) => e.stopPropagation()} style={{ fontWeight: 700, color: 'var(--ink)' }}>PR #{prSummaryParts(lane.pr).no}</a>
+          <a
+            href={lane.pr.url} target="_blank" rel="noopener noreferrer"
+            onClick={(e) => e.stopPropagation()} style={{ fontWeight: 700, color: 'var(--ink)' }}
+          >
+            PR #{prSummaryParts(lane.pr).no}
+          </a>
           {' · '}{prSummaryParts(lane.pr).rest}
         </div>
       ) : null}

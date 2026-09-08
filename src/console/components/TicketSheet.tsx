@@ -377,7 +377,12 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
             <>
               <div className="lbl" style={{ color: 'var(--ink2)', margin: '16px 0 8px' }}>Draft output</div>
               <div className="plate" style={{ padding: '10px 12px' }}>
-                <a className="m" style={{ fontSize: '11.5px', fontWeight: 700 }}>draft PR #{lane.pr.no} ↗</a>
+                <a
+                  className="m" style={{ fontSize: '11.5px', fontWeight: 700 }}
+                  href={lane.pr.url} target="_blank" rel="noopener noreferrer"
+                >
+                  draft PR #{lane.pr.no} ↗
+                </a>
                 <div className="m" style={{ fontSize: '10.5px', color: 'var(--ink2)', marginTop: 4 }}>
                   {lane.pr.files} files · <span style={{ color: 'var(--run)', fontWeight: 700 }}>+{lane.pr.add}</span> <span style={{ color: 'var(--block)', fontWeight: 700 }}>−{lane.pr.del}</span>
                 </div>

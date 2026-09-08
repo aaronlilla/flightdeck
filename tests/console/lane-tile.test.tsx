@@ -143,6 +143,7 @@ describe('LaneTile', () => {
     })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
     const link = screen.getByText('PR #119');
     expect(link.closest('a')).toHaveAttribute('href', 'https://example.invalid/pr/119');
+    expect(link.closest('a')).toHaveAttribute('target', '_blank');
     expect(screen.getByText(/council PASS WITH NOTES/)).toBeInTheDocument();
   });
 
