@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
 
 import { initialState, reducer } from '../../src/console/store.js';
@@ -65,6 +66,23 @@ describe('store reducer', () => {
     let state = initialState();
     state = reducer(state, { type: 'theme', theme: 'thL' });
     expect(state.theme).toBe('thL');
+  });
+
+  it('starts plain and toggles verbose, remembering it in localStorage', () => {
+    let state = initialState();
+    expect(state.verbose).toBe(false);
+    state = reducer(state, { type: 'verbose', verbose: true });
+    expect(state.verbose).toBe(true);
+    expect(localStorage.getItem('flightdeck.verbose')).toBe('1');
+    state = reducer(state, { type: 'verbose', verbose: false });
+    expect(state.verbose).toBe(false);
+    expect(localStorage.getItem('flightdeck.verbose')).toBe('0');
+  });
+
+  it('reads a remembered verbose flag back on init', () => {
+    localStorage.setItem('flightdeck.verbose', '1');
+    expect(initialState().verbose).toBe(true);
+    localStorage.removeItem('flightdeck.verbose');
   });
 
   describe('default filter on first load', () => {

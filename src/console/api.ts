@@ -65,8 +65,8 @@ export function getLanes(params?: { all?: boolean; archived?: boolean }): Promis
   return call<LanesResponse>(params?.all ? '/lanes?all=1' : '/lanes');
 }
 
-export function getThread(): Promise<ThreadResponse> {
-  return call<ThreadResponse>('/thread');
+export function getThread(opts?: { verbose?: boolean }): Promise<ThreadResponse> {
+  return call<ThreadResponse>(opts?.verbose ? '/thread?verbose=1' : '/thread');
 }
 
 export function getJournal(params?: { since?: number; run?: string; limit?: number }): Promise<JournalResponse> {
@@ -90,8 +90,9 @@ export function getProposals(): Promise<ProposalsResponse> {
   return call<ProposalsResponse>('/proposals');
 }
 
-export function getRunThread(id: string): Promise<RunThreadResponse> {
-  return call<RunThreadResponse>(`/run/${encodeURIComponent(id)}/thread`);
+export function getRunThread(id: string, opts?: { verbose?: boolean }): Promise<RunThreadResponse> {
+  const qs = opts?.verbose ? '?verbose=1' : '';
+  return call<RunThreadResponse>(`/run/${encodeURIComponent(id)}/thread${qs}`);
 }
 
 export function getRunPr(id: string): Promise<RunPrResponse> {
@@ -111,8 +112,9 @@ export function getRunJournal(id: string): Promise<RunJournalResponse> {
 }
 
 /** H2.4: the ticket sheet's Story section. */
-export function getRunStory(id: string): Promise<LaneStory> {
-  return call<LaneStory>(`/run/${encodeURIComponent(id)}/story`);
+export function getRunStory(id: string, opts?: { verbose?: boolean }): Promise<LaneStory> {
+  const qs = opts?.verbose ? '?verbose=1' : '';
+  return call<LaneStory>(`/run/${encodeURIComponent(id)}/story${qs}`);
 }
 
 /** 2026-09-07: the ticket sheet's own top summary block: what was done, the current
