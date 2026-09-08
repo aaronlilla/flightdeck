@@ -162,6 +162,70 @@ describe('removeItem / retryItem', () => {
   });
 });
 
+describe('retry: a parked item whose run already finished launches again instead of re-parking', () => {
+  // 2026-09-08 live specimen: BBZ-233's Q-0fff83b0 and Q-2181b071 parked again within
+  // seconds of a retry click, because `deps.launcher.status(item.runKey)` still answered
+  // `finished: true` for the same run that had already parked it, with no PR anywhere.
+  it('clears runKey and relaunches when a retried item\'s run is finished with no PR', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let launchCalls = 0;
+    const { deps, events } = buildDeps(store, {
+      launcher: {
+        launch: async ({ ticket }) => { launchCalls += 1; return { runKey: `${ticket.toLowerCase()}-${launchCalls}` }; },
+        status: async () => ({ finished: true, verdict: 'parked' }),
+      },
+      gh: { findPrByHead: async () => undefined },
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps); // plan
+    current = await advanceItem(current, deps); // launch
+    const firstRunKey = current.runKey;
+    current = await advanceItem(current, deps); // status finished, no PR -> park
+    expect(current.state).toBe('parked');
+    expect(current.runKey).toBe(firstRunKey);
+
+    const retried = retryItem(store, current.id, 5000)!;
+    expect(retried.state).toBe('running');
+    expect(retried.runKey).toBe(firstRunKey);
+
+    const relaunched = await advanceItem(retried, deps);
+    expect(relaunched.state).not.toBe('parked');
+    expect(relaunched.runKey).toBe('abc-1-2');
+    expect(relaunched.runKey).not.toBe(firstRunKey);
+    expect(launchCalls).toBe(2);
+    expect(events.map((e) => e['event'])).toContain('queue.relaunch-on-retry');
+  });
+
+  it('an item retried while its finished run does carry a PR still goes to the gate, not a relaunch', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let launchCalls = 0;
+    const { deps, events } = buildDeps(store, {
+      launcher: {
+        launch: async ({ ticket }) => { launchCalls += 1; return { runKey: `${ticket.toLowerCase()}-${launchCalls}` }; },
+        status: async () => ({ finished: true, verdict: 'unverified' }),
+      },
+      gh: { findPrByHead: async () => ({ number: 119, url: 'https://example.invalid/pr/119' }) },
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps); // plan
+    current = await advanceItem(current, deps); // launch
+
+    // Simulate an operator's retry click landing while this run is still in flight, before
+    // its status has finished with a PR -- the marker survives to the tick that reads it.
+    store.append({ id: current.id, at: 4000, retriedAt: 4000 });
+    const withRetry = store.get(current.id)!;
+
+    const result = await advanceItem(withRetry, deps);
+    expect(result.state).toBe('review');
+    expect(launchCalls).toBe(1);
+    expect(events.map((e) => e['event'])).not.toContain('queue.relaunch-on-retry');
+  });
+});
+
 describe('advanceItem', () => {
   it('walks a ticket item from queued through planned, launched, gated to review', async () => {
     const store = tempStore();
@@ -1066,6 +1130,89 @@ describe('mergeItem: A.7', () => {
     expect(result.message).toContain('checks are red');
     expect(result.message).toContain('council verdict is FIX FIRST');
     expect(result.message).not.toContain('see the journal');
+  });
+
+  describe('B: a moved head with no attestation re-councils before refusing', () => {
+    // 2026-09-08 13:41: PR #121 picked up a fix commit after its last council round, so
+    // the gate refused with "no attestation for owner/name#9 at head <sha> -- run forge
+    // council first" even though the fix was already good. Merge should re-council that
+    // head itself rather than sending the operator back to run `forge council` by hand.
+    it('re-councils once and retries the gate when the refusal names a missing attestation', async () => {
+      const item = reviewItem();
+      let gateCalls = 0;
+      let councilInput: { repo: string; pr: number; cwd?: string; baseRef?: string } | undefined;
+      const result = await mergeItem(item, {
+        mergeAllowed: () => true,
+        gate: async () => {
+          gateCalls += 1;
+          return gateCalls === 1
+            ? { merged: false, reason: ['refused: no attestation for owner/name#9 at head abc123 -- run forge council first'] }
+            : { merged: true };
+        },
+        council: async (input) => { councilInput = input; return { verdict: 'PASS' }; },
+        clock: () => 3000,
+        store: { append: () => {} } as never,
+      });
+      expect(gateCalls).toBe(2);
+      expect(councilInput?.repo).toBe('owner/name');
+      expect(councilInput?.pr).toBe(9);
+      expect(result.ok).toBe(true);
+      expect(result.item?.state).toBe('done');
+    });
+
+    it('calls no council when the gate\'s first attempt already carries an attestation', async () => {
+      const item = reviewItem();
+      let councilCalls = 0;
+      const result = await mergeItem(item, {
+        mergeAllowed: () => true,
+        gate: async () => ({ merged: true }),
+        council: async () => { councilCalls += 1; return { verdict: 'PASS' }; },
+        clock: () => 3000,
+        store: { append: () => {} } as never,
+      });
+      expect(councilCalls).toBe(0);
+      expect(result.ok).toBe(true);
+    });
+
+    it('returns the original refusal, with the recouncil verdict in the message, on a FIX FIRST re-council', async () => {
+      const item = reviewItem();
+      let gateCalls = 0;
+      const result = await mergeItem(item, {
+        mergeAllowed: () => true,
+        gate: async () => {
+          gateCalls += 1;
+          return { merged: false, reason: ['refused: no attestation for owner/name#9 at head abc123 -- run forge council first'] };
+        },
+        council: async () => ({ verdict: 'FIX FIRST', coverageNote: 'still red' }),
+        clock: () => 3000,
+        store: { append: () => {} } as never,
+      });
+      expect(gateCalls).toBe(1);
+      expect(result.ok).toBe(false);
+      expect(result.message).toContain('no attestation for');
+      expect(result.message).toContain('FIX FIRST');
+      expect(result.message).toContain('still red');
+    });
+
+    it('journals queue.recouncil exactly once for the re-council', async () => {
+      const item = reviewItem();
+      const rows: Array<Record<string, unknown>> = [];
+      let gateCalls = 0;
+      await mergeItem(item, {
+        mergeAllowed: () => true,
+        gate: async () => {
+          gateCalls += 1;
+          return gateCalls === 1
+            ? { merged: false, reason: ['refused: no attestation for owner/name#9 at head abc123 -- run forge council first'] }
+            : { merged: true };
+        },
+        council: async () => ({ verdict: 'PASS' }),
+        append: (event) => { rows.push(event); return { id: 'e1' }; },
+        clock: () => 3000,
+        store: { append: () => {} } as never,
+      });
+      expect(rows.filter((row) => row['event'] === 'queue.recouncil')).toHaveLength(1);
+    });
   });
 });
 
