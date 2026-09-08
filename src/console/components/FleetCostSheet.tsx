@@ -16,7 +16,7 @@ export interface FleetCostSheetProps {
 export function FleetCostSheet({ lanes, tokensToday, onClose, onOpenLane }: FleetCostSheetProps): JSX.Element {
   const sorted = [...lanes].sort((a, b) => b.tokens - a.tokens);
   return (
-    <div className="plate" data-testid="fleet-cost-sheet" style={{ width: 640, maxWidth: 'calc(100vw - 40px)' }}>
+    <div className="plate" data-testid="fleet-cost-sheet" style={{ width: 'min(940px, calc(100vw - 40px))', minWidth: 'min(640px, calc(100vw - 40px))', maxHeight: 'calc(100vh - var(--topbar-h, 44px) - 28px)', overflowY: 'auto' }}>
       <div className="lbl" style={{ padding: '7px 20px', display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--line)' }}>
         <span>Cost · fleet</span>
         <span style={{ cursor: 'pointer' }} onClick={onClose}>esc ✕</span>

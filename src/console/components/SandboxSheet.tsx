@@ -41,7 +41,7 @@ export function SandboxSheet({ lane, onClose, onKill, onCopiedPath }: SandboxShe
 
   const st = stateOf(lane.state);
   return (
-    <div className="plate" data-testid="sandbox-sheet" style={{ width: 620, maxWidth: 'calc(100vw - 40px)' }}>
+    <div className="plate" data-testid="sandbox-sheet" style={{ width: 'min(920px, calc(100vw - 40px))', minWidth: 'min(620px, calc(100vw - 40px))', maxHeight: 'calc(100vh - var(--topbar-h, 44px) - 28px)', overflowY: 'auto' }}>
       <div className="lbl" style={{ padding: '7px 20px', display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--line)' }}>
         <span title={laneHeadline(lane).runId}>Sandbox · {sandbox?.id ?? '--'} · {laneHeadline(lane).main}</span>
         <span style={{ cursor: 'pointer' }} {...actionable(onClose)}>esc ✕</span>

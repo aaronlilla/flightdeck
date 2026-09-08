@@ -1,4 +1,5 @@
 import type { JSX } from 'react';
+import { useLayoutEffect, useRef } from 'react';
 
 import { hm } from '../freshness.js';
 import type { Caps, Feed } from '../../shared/console-model.js';
@@ -37,8 +38,22 @@ export function TopBar(props: TopBarProps): JSX.Element {
   // Latency prefers the age of the last heartbeat round trip; before one arrives (or once
   // the feed is driven by polling alone) it falls back to the last `/lanes` fetch duration.
   const latencyMs = feed.lastHeartbeatAt !== null ? Math.max(0, now - feed.lastHeartbeatAt) : (fetchLatencyMs ?? 0);
+  // The bar wraps onto two lines in a narrow window, so its height is measured rather
+  // than assumed: every overlay starts at --topbar-h and a sheet's band can never sit
+  // behind it (seen live 2026-09-08 in the desktop window).
+  const barRef = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    const el = barRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const apply = (): void => { document.documentElement.style.setProperty('--topbar-h', `${el.offsetHeight}px`); };
+    apply();
+    const observer = new ResizeObserver(apply);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
   return (
     <div
+      ref={barRef}
       style={{
         display: 'flex', alignItems: 'center', gap: '14px 20px', padding: '10px 22px',
         borderBottom: '1px solid var(--line)', background: 'var(--panel)', boxShadow: 'inset 0 1px 0 var(--hi)', flexWrap: 'wrap',

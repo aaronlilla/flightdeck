@@ -38,7 +38,7 @@ export function CostSheet({ lane, onClose, onKill }: CostSheetProps): JSX.Elemen
   const burnText = lane.state === 'running' ? `${fmtTokens(lane.tokensPerMin)} tokens/min` : '—/min';
 
   return (
-    <div className="plate" data-testid="cost-sheet" style={{ width: 520, maxWidth: 'calc(100vw - 40px)' }}>
+    <div className="plate" data-testid="cost-sheet" style={{ width: 'min(820px, calc(100vw - 40px))', minWidth: 'min(520px, calc(100vw - 40px))', maxHeight: 'calc(100vh - var(--topbar-h, 44px) - 28px)', overflowY: 'auto' }}>
       <div className="lbl" style={{ padding: '7px 20px', display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--line)' }}>
         <span title={laneHeadline(lane).runId}>Cost · {laneHeadline(lane).main}</span>
         <span style={{ cursor: 'pointer' }} {...actionable(onClose)}>esc ✕</span>
