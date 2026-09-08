@@ -54,6 +54,7 @@ import { Inbox, isAskStale } from './inbox.js';
 import { replay, Journal, JournalCache } from './journal.js';
 import { checkLaunch, launchEnv, loginInFlight, pinnedRuntime, runtimeHead, runtimeVersion } from './launcher.js';
 import { assess, LivenessSupervisor } from './liveness.js';
+import { loadConsoleEnv } from './console-env.js';
 import {
   ensureHome, fleetConfigDirChoice, forgeHome, gotchasDir, inboxDir, intakeBriefsDir, journalPath,
   killSwitchPath, lanesDir, queuePath, registryDir, runsDir,
@@ -313,6 +314,11 @@ function isExistingFile(path: string): boolean {
  */
 export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliResult> {
   const [command, ...rest] = argv;
+  // A terminal run of `forge` otherwise sees none of the console's FORGE_* variables:
+  // see console-env.ts. FORGE_NO_CONSOLE_ENV=1 opts out.
+  if (process.env['FORGE_NO_CONSOLE_ENV'] !== '1') {
+    loadConsoleEnv(join(forgeHome(), 'console.env.cmd'), process.env);
+  }
   ensureHome();
   const lanes = new Lanes(lanesDir());
   const inbox = new Inbox(inboxDir());
