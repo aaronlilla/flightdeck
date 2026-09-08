@@ -71,6 +71,10 @@ interface Db {
   /** D2.3: set alongside `queuePaused` only when the (simulated) worker itself paused
    *  the queue, never an operator's own Pause click -- null the rest of the time. */
   queuePauseReason: string | null;
+  /** Queue-throughput W2/W3: the width `POST /queue/width` changes and `GET /queue`
+   *  reports back, so the console's own stepper has something real to talk to against
+   *  this stub. Defaults to 4, matching the production default in `queue-wire.ts`. */
+  queueMaxInFlight: number;
   qn: number;
   /** D2.4: `/state`'s own `queue_on` flag. Defaults `true` so every existing scenario
    *  and spec, none of which cares about this field, never sees the "Queue is off"
@@ -135,6 +139,7 @@ function seedDb(): Db {
     queue: [],
     queuePaused: false,
     queuePauseReason: null,
+    queueMaxInFlight: 4,
     qn: 0,
     queueOn: true,
     staleAuditLane: null,
@@ -898,7 +903,7 @@ export function createStubServer() {
       }
 
       if (urlPath === '/queue' && method === 'GET') {
-        json(response, 200, { items: db.queue, paused: db.queuePaused, maxInFlight: 2, pauseReason: db.queuePauseReason });
+        json(response, 200, { items: db.queue, paused: db.queuePaused, maxInFlight: db.queueMaxInFlight, pauseReason: db.queuePauseReason });
         return;
       }
 
@@ -1157,6 +1162,17 @@ export function createStubServer() {
         db.queuePaused = false;
         db.queuePauseReason = null;
         json(response, 200, { ok: true, jid: null, message: 'queue resumed', undoable: false });
+        return;
+      }
+      if (urlPath === '/queue/width' && method === 'POST') {
+        const body = await readJson<{ maxInFlight: number }>(request);
+        const value = body?.maxInFlight;
+        if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 12) {
+          json(response, 400, { ok: false, jid: null, message: 'maxInFlight must be an integer between 1 and 12', undoable: false });
+          return;
+        }
+        db.queueMaxInFlight = value;
+        json(response, 200, { ok: true, jid: null, message: `queue width set to ${value}`, undoable: false });
         return;
       }
       const queueItemMatch = /^\/queue\/([^/]+)\/(remove|retry|merge|promote)$/.exec(urlPath);

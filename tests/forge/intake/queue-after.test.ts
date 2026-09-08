@@ -16,7 +16,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { ChainCouncilFn, ChainGateFn, ChainGh, ChainLauncher, ChainRunStatus } from '../../../src/forge/chain.js';
 import {
-  addTicketItem, runQueueTick,
+  addBriefItem, addTicketItem, runQueueTick,
   type QueuePlanner, type QueueRuntimeDeps,
 } from '../../../src/forge/intake/queue.js';
 import { QueueStore } from '../../../src/forge/intake/queueStore.js';
@@ -40,6 +40,7 @@ interface FixtureOverrides {
   paused?: () => boolean;
   maxInFlight?: () => number;
   branchMerged?: QueueRuntimeDeps['branchMerged'];
+  mergeCheckRepos?: string[];
 }
 
 function buildDeps(store: QueueStore, overrides: FixtureOverrides = {}): { deps: QueueRuntimeDeps; events: Record<string, unknown>[] } {
@@ -68,6 +69,7 @@ function buildDeps(store: QueueStore, overrides: FixtureOverrides = {}): { deps:
     council: overrides.council ?? (async () => ({ verdict: 'PASS' })),
     gate: overrides.gate ?? (async () => ({ merged: false })),
     ...(overrides.branchMerged ? { branchMerged: overrides.branchMerged } : {}),
+    ...(overrides.mergeCheckRepos ? { mergeCheckRepos: overrides.mergeCheckRepos } : {}),
     clock: () => 1_000,
     killSwitch: overrides.killSwitch ?? (() => false),
     paused: overrides.paused ?? (() => false),
@@ -128,7 +130,7 @@ describe('runQueueTick: after gating', () => {
     store.append({ id: 'q1', at: 2000, state: 'done', updatedAt: 2000 });
     const second = await runQueueTick(deps, store.all());
     expect(second.started).toBe(1);
-    expect(store.get('q2')?.state).toBe('running');
+    expect(store.get('q2')).toMatchObject({ state: 'running', reason: null, after: [] });
   });
 
   it('holds an item queued naming a slug that matches no queue item and no merged branch', async () => {
@@ -207,5 +209,50 @@ describe('runQueueTick: after gating', () => {
     expect(result.started).toBe(1);
     expect(store.get('q1')?.state).toBe('running');
     expect(store.get('q2')).toMatchObject({ state: 'queued', reason: 'waiting on unknown item: unmerged-slug' });
+  }, 30_000);
+
+  it('resolves a merged-branch after: on an item added through the real addBriefItem path, where repo is still null at gate time', async () => {
+    // A production item never carries `repo` while it is still `queued` -- `blankItem`
+    // sets `repo: null` unconditionally, and `advanceItem` only fills it in once the
+    // item leaves `queued` and gets planned. The specimens above hand-set `repo` via
+    // `appendRaw`'s own default, a shape the real add path (`addBriefItem`) never
+    // produces, which is exactly what let `unresolvedAfterReason`'s `item.repo &&
+    // deps.branchMerged(...)` gate go dead in production while still reading green here.
+    const workDir = mkdtempSync(join(tmpdir(), 'queue-after-real-add-'));
+    const originPath = join(workDir, 'origin.git');
+    const checkoutPath = join(workDir, 'checkout');
+    const git = (args: string[], cwd: string) => execFileSync('git', args, { cwd, stdio: 'pipe' });
+
+    git(['init', '--bare', '-b', 'main', originPath], workDir);
+    git(['clone', originPath, checkoutPath], workDir);
+    git(['config', 'user.email', 'queue-after-test@example.com'], checkoutPath);
+    git(['config', 'user.name', 'Queue After Test'], checkoutPath);
+    git(['commit', '--allow-empty', '-m', 'root'], checkoutPath);
+    git(['push', 'origin', 'main'], checkoutPath);
+
+    git(['checkout', '-b', 'feature/real-merged-slug'], checkoutPath);
+    git(['commit', '--allow-empty', '-m', 'merged work'], checkoutPath);
+    git(['push', 'origin', 'feature/real-merged-slug'], checkoutPath);
+    git(['checkout', 'main'], checkoutPath);
+    git(['merge', '--no-ff', 'feature/real-merged-slug', '-m', 'merge it'], checkoutPath);
+    git(['push', 'origin', 'main'], checkoutPath);
+
+    const chainEnv: ChainEnv = {
+      enabled: false, pollSeconds: 300,
+      checkouts: [{ repo: 'owner/name', value: checkoutPath }],
+      bases: [], worktreeSetup: [], verify: [], mergeRepos: [], forceCodex: false, repoKinds: [], shell: [],
+    };
+    const branchMerged = queueBranchMerged(chainEnv);
+
+    const store = tempStore();
+    // No `repo:` line -- planTicket/planBrief resolve it later, same as any real
+    // pasted brief that names no repository of its own on the first twenty lines.
+    addBriefItem(store, 'after: real-merged-slug\n\nDo the thing.', 1000);
+    const { deps } = buildDeps(store, { branchMerged, mergeCheckRepos: ['owner/name'] });
+
+    expect(store.all()[0]?.repo).toBeNull();
+    const result = await runQueueTick(deps, store.all());
+    expect(result.started).toBe(1);
+    expect(store.all()[0]?.state).toBe('running');
   }, 30_000);
 });

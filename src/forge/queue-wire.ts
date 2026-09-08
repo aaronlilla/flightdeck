@@ -409,6 +409,11 @@ export function buildQueueRuntimeDeps(
     commentOnPr: queueCommentOnPr(),
     repoKindFor: (repo) => repoKindForEnv(chainEnv, repo),
     branchMerged: queueBranchMerged(chainEnv),
+    // A queued item's own `repo` is null until it is planned, which happens after the
+    // after: gate runs -- see `mergedOnKnownRepo` in `intake/queue.ts` for why this
+    // fallback list, not `item.repo`, is what a real item actually resolves a
+    // merged-branch after: entry against.
+    mergeCheckRepos: chainEnv.checkouts.map((entry) => entry.repo),
     backendHandoff: queueBackendHandoff(),
     jiraHandoff: queueJiraHandoff(),
     prSnapshot: queuePrSnapshot(),
