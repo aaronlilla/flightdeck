@@ -81,6 +81,7 @@ describe('App', () => {
     render(<App eventStreamOptions={{ WebSocketImpl: FakeSocket as unknown as typeof WebSocket }} />);
     await waitFor(() => expect(screen.getByText('NOT NULL')).toBeInTheDocument());
     await userEvent.click(screen.getByText('NOT NULL'));
+    await userEvent.click(screen.getByTestId('question-send'));
     await waitFor(() => expect(screen.getByTestId('rail-thread').textContent).toMatch(/resumed/));
   });
 
@@ -88,6 +89,7 @@ describe('App', () => {
     render(<App eventStreamOptions={{ WebSocketImpl: FakeSocket as unknown as typeof WebSocket }} />);
     await waitFor(() => expect(screen.getByText('NOT NULL')).toBeInTheDocument());
     await userEvent.click(screen.getByText('NOT NULL'));
+    await userEvent.click(screen.getByTestId('question-send'));
     await waitFor(() => expect(screen.getByTestId('rail-thread').textContent).toMatch(/resumed/));
     expect(screen.getByTestId('rail-thread').textContent).not.toMatch(/answer .*NOT NULL/i);
   });
@@ -181,16 +183,18 @@ describe('App', () => {
     await waitFor(() => expect(screen.getByTestId('ticket-sheet')).toBeInTheDocument());
     const sheet = screen.getByTestId('ticket-sheet');
     await userEvent.click(within(sheet).getByText('nullable + backfill', { exact: true }));
+    await userEvent.click(within(sheet).getByTestId('question-send'));
     await waitFor(() => expect(screen.getByTestId('lane-BBZ-118')).toHaveAttribute('data-state', 'running'));
   });
 
-  // Item 7: clicking a question's option echoes an operator bubble in the rail
-  // reading "Answered: ..." -- the one place answering still needs one.
-  it('echoes an "Answered: ..." operator bubble in the rail when a question option is clicked', async () => {
+  // Item 7: picking a question's option and sending it echoes an operator bubble in
+  // the rail reading "Answered: ..." -- the one place answering still needs one.
+  it('echoes an "Answered: ..." operator bubble in the rail when a question option is sent', async () => {
     render(<App eventStreamOptions={{ WebSocketImpl: FakeSocket as unknown as typeof WebSocket }} />);
     await waitFor(() => expect(screen.getByTestId('lane-BBZ-118')).toBeInTheDocument());
     const rail = screen.getByTestId('rail-thread');
     await userEvent.click(within(rail).getByText('nullable + backfill', { exact: true }));
+    await userEvent.click(within(rail).getByTestId('question-send'));
     await waitFor(() => expect(within(rail).getByText(/^Answered: .*nullable \+ backfill/)).toBeInTheDocument());
   });
 

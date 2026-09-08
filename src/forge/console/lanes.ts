@@ -512,7 +512,14 @@ export interface LaneBuildInput {
 function questionFor(id: string, openAsks: InboxEntry[]): LaneQuestion | null {
   const entry = openAsks.find((ask) => ask.runs.includes(id));
   if (!entry) return null;
-  return { key: entry.key, text: entry.question, opts: entry.options, askedAt: entry.at };
+  return {
+    key: entry.key,
+    text: entry.question,
+    opts: entry.options,
+    askedAt: entry.at,
+    recommended: entry.recommended ?? null,
+    optionSource: entry.optionSource,
+  };
 }
 
 function sandboxFor(packet: ChainPacketState | undefined, registryRow: RegistryRecord | undefined, id: string): LaneSandbox | null {

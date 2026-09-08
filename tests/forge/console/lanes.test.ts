@@ -289,7 +289,10 @@ describe('computeLanes', () => {
         runs: ['alpha'], goals: [], asked: 1, at: 500, disposition: 'park',
       }],
     }), 1_000).lanes[0]!;
-    expect(result.question).toEqual({ key: 'k1', text: 'staging or dev?', opts: ['staging', 'dev'], askedAt: 500 });
+    expect(result.question).toEqual({
+      key: 'k1', text: 'staging or dev?', opts: ['staging', 'dev'], askedAt: 500,
+      recommended: null, optionSource: undefined,
+    });
   });
 
   it('flags runaway for a running lane over its resolved cap', () => {

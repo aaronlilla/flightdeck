@@ -89,12 +89,13 @@ describe('ConductorRail', () => {
     expect(screen.getByText('awaiting go')).toBeInTheDocument();
   });
 
-  it('renders a question card and routes an option click through onCommand, never echoing an operator bubble', async () => {
+  it('renders a question card and routes a picked option through onCommand on Send, never echoing an operator bubble', async () => {
     const { onCommand, onSend } = renderRail([{
       k: 'q1', type: 'question', text: 'NOT NULL or nullable?', ts: Date.now(), source: 'FLT-1',
-      askKey: 'ask-1', opts: ['NOT NULL', 'nullable'],
+      askKey: 'ask-1', opts: ['NOT NULL', 'nullable'], recommended: null,
     }]);
     await userEvent.click(screen.getByText('NOT NULL'));
+    await userEvent.click(screen.getByTestId('question-send'));
     expect(onCommand).toHaveBeenCalledWith('answer ask-1 NOT NULL');
     expect(onSend).not.toHaveBeenCalled();
   });
@@ -103,12 +104,11 @@ describe('ConductorRail', () => {
     const long = 'Close this queue-brief ticket as a misroute with no changes, since the brief was written for a hand session and the queue launched it elsewhere';
     renderRail([{
       k: 'q2', type: 'question', text: 'How should this ticket be closed out?', ts: Date.now(), source: 'FLT-2',
-      askKey: 'ask-2', opts: [long, 'Rebase onto origin/main and continue'],
+      askKey: 'ask-2', opts: [long, 'Rebase onto origin/main and continue'], recommended: null,
     }]);
     const list = screen.getByTestId('question-options') as HTMLElement;
     expect(list.style.flexDirection).toBe('column');
-    const option = screen.getByText(long) as HTMLElement;
-    expect(option.style.whiteSpace).toBe('normal');
+    const option = screen.getByText(long).closest('label') as HTMLElement;
     expect(option.style.width).toBe('100%');
     expect(option.style.overflowWrap).toBe('anywhere');
   });

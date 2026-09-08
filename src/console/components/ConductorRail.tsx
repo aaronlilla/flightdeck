@@ -7,6 +7,7 @@ import { actionable } from '../keyboard-actionable.js';
 import { collapseWardenEvents } from '../laneVM.js';
 import { StoreContext } from '../store.js';
 import { Linkify } from './Linkify.js';
+import { QuestionCard } from './QuestionCard.js';
 import type { Feed, Message } from '../../shared/console-model.js';
 
 /** Chip label paired with the command it actually sends. The prototype's own
@@ -79,7 +80,6 @@ export function MessageCard({
   replyLabel?: string;
   onCommand: (text: string) => void; onUndo: (jid: string) => void; onOpenJournal: (jid: string) => void;
 }): JSX.Element {
-  const [free, setFree] = useState('');
   const [showTip, setShowTip] = useState(false);
   // Every message carries a stamp: verifiedAt falls back to the message's own
   // ts (an "observed" reading) rather than suppressing the stamp when a seeded
@@ -274,39 +274,18 @@ export function MessageCard({
       );
     case 'question':
       return (
-        <div style={{ border: '1px solid var(--hand)', borderRadius: 4, maxWidth: '94%' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 12px', borderBottom: '1px solid var(--line)' }}>
-            <span className="lbl" style={{ color: 'var(--hand)' }}>Question · from <Linkify text={labelFor?.(message.source) ?? message.source} repo={repo} /></span>
-            <span className={freshnessClass(fresh)}>{compactFreshnessStamp(fresh)}</span>
-          </div>
-          <div style={{ padding: '10px 12px', font: '13px/1.5 "IBM Plex Sans",sans-serif' }}><Linkify text={message.text} repo={repo} /></div>
-          {message.answer === undefined ? (
-            <>
-              {/* One option per row, full width, text wrapping: an option is a sentence a
-                 worker wrote, and a no-wrap pill ran off the rail (2026-09-08). */}
-              <div data-testid="question-options" style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '0 12px 10px' }}>
-                {message.opts?.map((o) => (
-                  <span
-                    key={o} className="btnA"
-                    style={{ padding: '7px 10px', fontSize: '10.5px', whiteSpace: 'normal', textAlign: 'left', justifyContent: 'flex-start', overflowWrap: 'anywhere', width: '100%', lineHeight: 1.35, letterSpacing: 0.3, textTransform: 'none' }}
-                    {...actionable(() => onCommand(`answer ${message.askKey ?? ''} ${o}`))}
-                  >
-                    {o}
-                  </span>
-                ))}
-              </div>
-              <div style={{ margin: '0 12px 12px', background: 'var(--well)', boxShadow: 'inset 0 2px 5px rgba(0,0,0,.6)', borderRadius: 3, padding: '7px 10px', display: 'flex' }}>
-                <input
-                  className="inp m" style={{ fontSize: 11 }} placeholder="or type an answer, ⏎"
-                  value={free} onChange={(e) => setFree(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter' && free.trim()) { onCommand(`answer ${message.askKey ?? ''} ${free}`); setFree(''); } }}
-                />
-              </div>
-            </>
-          ) : (
-            <div className="m" style={{ padding: '0 12px 10px', fontSize: '10.5px', color: 'var(--run)' }}>answered: {message.answer}</div>
-          )}
-        </div>
+        <QuestionCard
+          askKey={message.askKey ?? null}
+          question={message.text}
+          from={labelFor?.(message.source) ?? message.source}
+          askedAt={message.ts}
+          options={message.opts ?? []}
+          recommended={message.recommended ?? null}
+          answer={message.answer}
+          laneId={message.lane ?? null}
+          onCommand={onCommand}
+          repo={repo}
+        />
       );
     case 'pr':
       return (

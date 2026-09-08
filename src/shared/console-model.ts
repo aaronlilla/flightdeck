@@ -149,6 +149,12 @@ export interface LaneQuestion {
   text: string;
   opts: string[];
   askedAt: number;
+  /** The zero-based index into `opts` the drafting pass singled out, or `null` when
+   *  nothing was ever recommended. */
+  recommended?: number | null;
+  /** Whether `opts` came straight from the worker or were topped up by the drafting
+   *  pass (W1's `completeAskOptions`). */
+  optionSource?: 'worker' | 'drafted';
 }
 
 /**
@@ -335,6 +341,12 @@ export interface Message {
   jid?: string;
   askKey?: string;
   opts?: string[];
+  /** The zero-based index into `opts` the drafting pass singled out, or `null` when
+   *  nothing was ever recommended. Only meaningful on a `question` message. */
+  recommended?: number | null;
+  /** Whether `opts` came straight from the worker or were topped up by the drafting
+   *  pass. Only meaningful on a `question` message. */
+  optionSource?: 'worker' | 'drafted';
   answer?: string;
   btns?: MessageButton[];
   items?: PlanItem[];
