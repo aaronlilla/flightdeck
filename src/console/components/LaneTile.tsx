@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 
 import { actionable } from '../keyboard-actionable.js';
 import {
-  costClass, costTip, ctxPercent, ctxTip, kindLabel, laneCta, mergeableWhy, modelTip, plainLine, prSummaryParts,
+  costClass, costTip, ctxPercent, ctxTip, kindLabel, laneCta, mergeableWhy, modelTip, prSummaryParts,
   stateOf, tileCapText, tileHeadlineParts,
 } from '../laneVM.js';
 import type { TipContent } from '../laneVM.js';
@@ -11,6 +11,7 @@ import { computeFreshness, freshnessClass, freshnessStamp } from '../freshness.j
 import type { Lane } from '../../shared/console-model.js';
 import { fmtTokens } from '../../shared/format-tokens.js';
 import type { TipSpec } from '../store.js';
+import { Linkify } from './Linkify.js';
 
 const HOVER_DELAY_MS = 250;
 
@@ -32,7 +33,16 @@ export interface LaneTileProps {
   earlier?: Lane[];
 }
 
-/** One board tile: id, model chip, state, step, context gauge, cost readout, freshness, one CTA. */
+/**
+ * One board tile (2026-09-08 rework, Aaron, off the live board): row 1 is the ticket
+ * key and the state, nothing above it; the title runs the full width below; the chip
+ * row sits below the title, never beside it; the YOU block is the most prominent thing
+ * on the card; two quiet lines carry Did and Now; the context gauge, the tokens/PR
+ * line and the footer are unchanged. Every variable slot below the chip row keeps a
+ * fixed height, so every tile in a row lands at the same height with no overlap --
+ * the grid (`LanesGrid.tsx`) reads `gridAutoRows: auto` rather than stretching a `1fr`
+ * row over a tile whose own height varies.
+ */
 export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, onTip, attempts, earlier }: LaneTileProps): JSX.Element {
   const st = stateOf(lane.state);
   const [attemptsOpen, setAttemptsOpen] = useState(false);
@@ -65,73 +75,92 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
     onTip(null);
   };
 
+  // Row 2: the title line. A lane with a title shows it, sized down (the key already
+  // carries the weight in row 1); a lane with no title but a key shows the key again
+  // here rather than leaving the line empty; a lane with neither renders nothing.
+  const titleLineText = lane.title ?? headline.key ?? null;
+  const titleFontSize = headline.key ? 12 : 13;
+  const titleFontWeight = headline.key ? 400 : 700;
+
   return (
     <div
       className="lane"
       data-testid={`lane-${lane.id}`}
       data-state={lane.state}
-      style={{ borderColor: lane.state === 'parked' ? 'var(--park)' : undefined, opacity, height: '100%' }}
+      data-run-id={lane.id}
+      style={{ borderColor: lane.state === 'parked' ? 'var(--park)' : undefined, opacity }}
       {...actionable(() => onOpen(lane.id))}
     >
-      {lane.state === 'parked' ? (
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 6 }}>
+        {headline.key ? <span className="m" style={{ fontSize: 13, fontWeight: 700 }}>{headline.key}</span> : <span />}
+        <span className="lbl" style={{ color: st.color, cursor: 'help', flex: 'none' }}>{st.glyph} {st.label}</span>
+      </div>
+      {titleLineText ? (
         <div
-          className="lbl"
-          style={{ margin: '-12px -13px 2px', background: 'var(--park)', color: 'var(--aInk)', padding: '5px 13px', display: 'flex', justifyContent: 'space-between', borderRadius: '3px 3px 0 0' }}
+          className="m"
+          title={titleLineText}
+          style={{
+            fontSize: titleFontSize, fontWeight: titleFontWeight, color: 'var(--ink)', width: '100%',
+            overflowWrap: 'anywhere', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+            overflow: 'hidden', minHeight: `${titleFontSize * 1.3 * 2}px`,
+          }}
         >
-          <span>◆ human needed</span>
+          <Linkify text={titleLineText} repo={lane.repo ?? undefined} />
         </div>
       ) : null}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 6 }}>
-          <div style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {headline.key ? (
-              <span className="m" title={headline.runId} style={{ fontSize: 13, fontWeight: 700 }}>{headline.key}</span>
-            ) : (
-              <span className="m" title={headline.runId} style={{ fontSize: 13, fontWeight: 700 }}>{headline.title ?? headline.runId}</span>
-            )}
-          </div>
-          <span style={{ display: 'flex', gap: 4, flex: 'none', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-            <span className="chip" style={{ fontSize: 9 }}>{kindLabel(lane.kind)}</span>
-            <span
-              className="chip"
-              onMouseEnter={(e) => showTip('model', e, modelTip(lane, fresh))}
-              onMouseLeave={() => hideTip('model')}
-            >
-              {lane.model}
-            </span>
-            {attempts ? (
-              <span
-                className="chip chipB"
-                {...actionable((e) => { e?.stopPropagation?.(); setAttemptsOpen((v) => !v); })}
-              >
-                attempt {attempts.position} of {attempts.total}
-              </span>
-            ) : null}
+      <span style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+        <span className="chip" style={{ fontSize: 9 }}>{kindLabel(lane.kind)}</span>
+        <span
+          className="chip"
+          onMouseEnter={(e) => showTip('model', e, modelTip(lane, fresh))}
+          onMouseLeave={() => hideTip('model')}
+        >
+          {lane.model}
+        </span>
+        {attempts ? (
+          <span
+            className="chip chipB"
+            {...actionable((e) => { e?.stopPropagation?.(); setAttemptsOpen((v) => !v); })}
+          >
+            attempt {attempts.position} of {attempts.total}
           </span>
+        ) : null}
+      </span>
+      {lane.you ? (
+        <div className="plate" style={{ borderLeft: '3px solid var(--park)', padding: '7px 9px', minHeight: 34 }}>
+          <div className="lbl" style={{ color: 'var(--park)' }}>YOU</div>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--ink)' }}>
+            <Linkify text={lane.you} repo={lane.repo ?? undefined} />
+          </div>
         </div>
-        {headline.key && headline.title ? (
+      ) : (
+        <div style={{ minHeight: 34, display: 'flex', alignItems: 'center' }}>
+          <span className="m" style={{ fontSize: 11, color: 'var(--ink3)' }}>Nothing needed from you.</span>
+        </div>
+      )}
+      <div style={{ minHeight: lane.did ? undefined : 0 }}>
+        {lane.did ? (
           <div
-            className="m"
-            title={headline.title}
+            title={lane.did}
             style={{
-              fontSize: 12, color: 'var(--ink2)', display: '-webkit-box',
-              WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+              font: '11.5px/1.3 "IBM Plex Sans",sans-serif', color: 'var(--ink2)', whiteSpace: 'nowrap',
+              overflow: 'hidden', textOverflow: 'ellipsis',
             }}
           >
-            {headline.title}
+            <span className="lbl" style={{ color: 'var(--ink3)' }}>Did </span>
+            <Linkify text={lane.did} repo={lane.repo ?? undefined} />
           </div>
         ) : null}
       </div>
-      <div className="lbl" style={{ color: st.color, cursor: 'help' }}>{st.glyph} {st.label}</div>
       <div
-        title={plainLine(lane)}
+        title={lane.now}
         style={{
-          font: '12.5px/1.45 "IBM Plex Sans",sans-serif', color: 'var(--ink2)', minHeight: 38,
-          display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden',
-          overflowWrap: 'anywhere',
+          font: '11.5px/1.3 "IBM Plex Sans",sans-serif', color: 'var(--ink2)', whiteSpace: 'nowrap',
+          overflow: 'hidden', textOverflow: 'ellipsis',
         }}
       >
-        {plainLine(lane)}
+        <span className="lbl" style={{ color: 'var(--ink3)' }}>Now </span>
+        <Linkify text={lane.now} repo={lane.repo ?? undefined} />
       </div>
       <div style={{ cursor: 'help' }} onMouseEnter={(e) => showTip('ctx', e, ctxTip(lane, fresh))} onMouseLeave={() => hideTip('ctx')}>
         <div style={{ position: 'relative', height: 8, background: 'var(--well)', borderRadius: 2, boxShadow: 'inset 0 1px 3px rgba(0,0,0,.6)', borderRight: '3px solid var(--block)' }}>
@@ -155,24 +184,26 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
           {tileCapText(lane)}
         </span>
       </div>
-      {lane.pr ? (
-        <div className="m" title={`PR #${prSummaryParts(lane.pr).no} · ${prSummaryParts(lane.pr).rest}`} style={{ fontSize: '10.5px', color: 'var(--ink2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          <a
-            href={lane.pr.url} target="_blank" rel="noopener noreferrer"
-            onClick={(e) => e.stopPropagation()} style={{ fontWeight: 700, color: 'var(--ink)' }}
-          >
-            PR #{prSummaryParts(lane.pr).no}
-          </a>
-          {' · '}{prSummaryParts(lane.pr).rest}
-        </div>
-      ) : null}
+      <div style={{ minHeight: 15 }}>
+        {lane.pr ? (
+          <div className="m" title={`PR #${prSummaryParts(lane.pr).no} · ${prSummaryParts(lane.pr).rest}`} style={{ fontSize: '10.5px', color: 'var(--ink2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            <a
+              href={lane.pr.url} target="_blank" rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()} style={{ fontWeight: 700, color: 'var(--ink)' }}
+            >
+              PR #{prSummaryParts(lane.pr).no}
+            </a>
+            {' · '}{prSummaryParts(lane.pr).rest}
+          </div>
+        ) : null}
+      </div>
       {attempts && earlier && earlier.length > 0 && attemptsOpen ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, background: 'var(--well)', borderRadius: 3, padding: '8px 10px' }}>
           {earlier.map((l) => {
             const earlierCta = laneCta(l);
             return (
               <div key={l.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
-                <span className="m" style={{ fontSize: '10.5px', color: 'var(--ink2)' }}>{plainLine(l)}</span>
+                <span className="m" style={{ fontSize: '10.5px', color: 'var(--ink2)' }}>{l.now}</span>
                 <span
                   className={earlierCta.cls}
                   style={{ padding: '5px 8px', fontSize: 9, flex: 'none' }}
@@ -185,7 +216,7 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
           })}
         </div>
       ) : null}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 7, borderTop: '1px solid var(--line)', paddingTop: 7, marginTop: 'auto' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 7, borderTop: '1px solid var(--line)', paddingTop: 7 }}>
         <span className={freshnessClass(fresh)} style={{ alignSelf: 'flex-start' }}>{freshnessStamp(fresh)}</span>
         <div style={{ display: 'flex', gap: 6 }}>
           <span
