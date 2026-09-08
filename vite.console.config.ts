@@ -33,6 +33,11 @@ export default defineConfig({
   build: {
     outDir: '../../dist/console',
     emptyOutDir: true,
+    // Both servers that serve `dist/console/` (the forge server and the stub) read
+    // every file as UTF-8 text, so a hashed PNG on disk would arrive corrupted.
+    // Images stay inside the bundle as data URLs instead; the brand assets are
+    // the only ones so far and the largest is under 128 KB.
+    assetsInlineLimit: 256 * 1024,
   },
   server: {
     proxy: {

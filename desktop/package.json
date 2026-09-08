@@ -6,7 +6,7 @@
   "type": "commonjs",
   "main": "build/main.cjs",
   "scripts": {
-    "build:main": "esbuild electron/main.ts --bundle --platform=node --format=cjs --target=node22 --external:electron --outfile=build/main.cjs",
+    "build:main": "esbuild electron/main.ts --bundle --platform=node --format=cjs --target=node22 --external:electron --loader:.png=dataurl --outfile=build/main.cjs",
     "build:preload": "esbuild electron/status-preload.ts --bundle --platform=node --format=cjs --target=node22 --external:electron --outfile=build/status-preload.cjs",
     "build:app": "npm run build:main && npm run build:preload",
     "dist": "npm run build:app && electron-builder --win --x64 --publish never",
@@ -19,6 +19,7 @@
     "electron": "^33.0.0",
     "electron-builder": "^25.1.8",
     "esbuild": "^0.24.0",
+    "rcedit": "^4.0.1",
     "typescript": "^5.7.0",
     "vitest": "^3.2.7"
   },

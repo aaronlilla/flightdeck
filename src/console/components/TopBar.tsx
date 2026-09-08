@@ -6,6 +6,8 @@ import type { Caps, Feed } from '../../shared/console-model.js';
 import { fmtTokens } from '../../shared/format-tokens.js';
 import type { View } from '../store.js';
 
+import lockup from '../../../brand/flightdeck-lockup-h96.png';
+
 export interface TopBarProps {
   view: View;
   settingsBadge: number;
@@ -61,7 +63,7 @@ export function TopBar(props: TopBarProps): JSX.Element {
         position: 'relative', zIndex: 1,
       }}
     >
-      <span className="m" style={{ fontSize: 14, fontWeight: 700, letterSpacing: 6 }}>FLIGHTDECK</span>
+      <img src={lockup} alt="Flightdeck" data-testid="brand-lockup" style={{ height: 28, display: 'block' }} />
       <div style={{ display: 'flex', gap: 16 }}>
         <a className={`nav ${view === 'board' ? 'navOn' : ''}`} onClick={() => onNav('board')}>Board</a>
         <a className={`nav ${view === 'settings' ? 'navOn' : ''}`} onClick={() => onNav('settings')}>

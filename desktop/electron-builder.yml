@@ -8,19 +8,24 @@ directories:
 # locates at runtime, never bundled in.
 files:
   - build/main.cjs
-  - build/icon.png
   - build/status-preload.cjs
   - package.json
 
 asar: true
 
+# Puts the icon on the exe itself; see the note in the script.
+afterPack: scripts/after-pack.cjs
+
 win:
-  # The board's own lane tile, drawn in its palette. electron-builder converts
-  # this to the icon formats the installer and the shortcut need.
-  icon: build/icon.png
-  # No certificate is configured, so signing would fail anyway. Off outright
-  # to skip the rcedit/signtool step, which otherwise downloads a macOS
-  # code-signing toolchain this build never touches.
+  # The Flightdeck tile, tracked at the repo root so a fresh clone builds with
+  # it. The installer takes it from here, the exe gets it from the afterPack
+  # hook, and the running window and tray load the same tile from the main
+  # bundle (electron/brand.ts).
+  icon: ../brand/flightdeck-icon.ico
+  # electron-builder's exe edit needs its winCodeSign download, which fails to
+  # extract here (macOS symlinks, no symlink privilege). The afterPack hook
+  # covers the icon; nothing is signed either way, since no certificate is
+  # configured.
   signAndEditExecutable: false
   target:
     - target: nsis
