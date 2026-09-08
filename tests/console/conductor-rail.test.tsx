@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -160,6 +160,19 @@ describe('ConductorRail', () => {
         { k: 'q2', type: 'question', text: 'answered', ts: Date.now(), source: 'FLT-1', askKey: 'b', opts: ['x'], answer: 'x' },
       ]);
       expect(screen.getByText('3 waiting ↓')).toBeInTheDocument();
+    });
+
+    // Sweep #13: "N waiting" named nothing to jump to.
+    it('scrolls to the oldest unresolved card on click', () => {
+      const scrollIntoView = vi.fn();
+      Element.prototype.scrollIntoView = scrollIntoView;
+      renderRail([
+        { k: 'e1', type: 'event', text: 'gate opened', ts: 1, source: 'system' },
+        { k: 'c1', type: 'confirm', text: 'Kill?', ts: 2, source: 'console' },
+        { k: 'q1', type: 'question', text: 'Which?', ts: 3, source: 'FLT-1', askKey: 'a', opts: ['x'] },
+      ]);
+      fireEvent.click(screen.getByText('2 waiting ↓'));
+      expect(scrollIntoView).toHaveBeenCalledOnce();
     });
   });
 

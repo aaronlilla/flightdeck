@@ -237,20 +237,37 @@ export interface ConductorRailProps {
 /** Right rail, single thread; composer disabled with a reason banner when the feed is down. */
 export function ConductorRail(props: ConductorRailProps): JSX.Element {
   const { thread, feed, now, composer, onComposerChange, onSend, onCommand, onUndo, onOpenJournal } = props;
-  const pending = thread.filter((m) => (
+  const isPending = (m: Message): boolean => (
     (m.type === 'question' && m.answer === undefined)
     || (m.type === 'confirm' && m.resolved === undefined)
     || (m.type === 'plan' && m.resolved === undefined)
-  )).length;
+  );
+  const pendingMessages = thread.filter(isPending);
+  const pending = pendingMessages.length;
+  // Sweep #13: "N waiting" named nothing to jump to -- the oldest unresolved card is
+  // the one already first in the thread's own append order, since a card resolves
+  // itself in place rather than moving.
+  const oldestPendingKey = pendingMessages[0]?.k;
   return (
     <div style={{ width: 'clamp(300px,30vw,390px)', flex: 'none', borderLeft: '2px solid var(--line2)', display: 'flex', flexDirection: 'column', background: 'var(--panel)', minHeight: 0 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid var(--line)' }}>
         <span className="lbl">Conductor</span>
-        <span className="m" style={{ fontSize: 10, fontWeight: 700, color: 'var(--block)' }}>{pending > 0 ? `${pending} waiting ↓` : ''}</span>
+        <span
+          className="m"
+          style={{ fontSize: 10, fontWeight: 700, color: 'var(--block)', cursor: pending > 0 ? 'pointer' : 'default' }}
+          onClick={() => {
+            if (!oldestPendingKey) return;
+            document.getElementById(`rail-msg-${oldestPendingKey}`)?.scrollIntoView({ block: 'center' });
+          }}
+        >
+          {pending > 0 ? `${pending} waiting ↓` : ''}
+        </span>
       </div>
       <div className="scroll" data-testid="rail-thread" style={{ flex: 1, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12, opacity: feed.live ? 1 : 0.6 }}>
         {collapseWardenEvents(thread).map((m) => (
-          <MessageCard key={m.k} message={m} feedLive={feed.live} now={now} onCommand={onCommand} onUndo={onUndo} onOpenJournal={onOpenJournal} />
+          <div key={m.k} id={`rail-msg-${m.k}`}>
+            <MessageCard message={m} feedLive={feed.live} now={now} onCommand={onCommand} onUndo={onUndo} onOpenJournal={onOpenJournal} />
+          </div>
         ))}
       </div>
       {feed.live ? (
