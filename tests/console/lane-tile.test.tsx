@@ -270,7 +270,7 @@ describe('the title slot is tall enough for the type it carries', () => {
         feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()}
       />,
     );
-    const slot = document.querySelector('[data-testid="lane-title-slot"]') as HTMLElement | null;
+    const slot = document.querySelector('[data-testid="tile-title-slot"]') as HTMLElement | null;
     expect(slot).not.toBeNull();
     const lineHeight = Number.parseFloat(slot!.style.lineHeight);
     expect(lineHeight).toBeGreaterThanOrEqual(22);

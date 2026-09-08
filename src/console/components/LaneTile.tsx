@@ -134,7 +134,7 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
       <div
         className="m"
         title={titleLineText ?? undefined}
-        data-testid="lane-title-slot"
+        data-testid="tile-title-slot"
         style={{
           fontSize: 'var(--fs-title)', fontWeight: titleFontWeight, lineHeight: '22px', color: 'var(--ink)', width: '100%',
           overflowWrap: 'anywhere', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
