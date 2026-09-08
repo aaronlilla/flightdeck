@@ -23,7 +23,7 @@ export function settingsPageHtml(entries: Record<string, string> = {}): string {
 <style>
   body { margin: 0; background: #0b0d12; color: #e6e8ef; font: 13px/1.5 -apple-system, Segoe UI, sans-serif; }
   #wrap { padding: 16px; display: flex; flex-direction: column; height: 100vh; box-sizing: border-box; }
-  #brand { display: block; height: 30px; margin-bottom: 14px; }
+  #brand { display: block; height: 30px; width: auto; align-self: flex-start; margin-bottom: 14px; }
   h1 { font-size: 14px; margin: 0 0 4px; }
   #hint { color: #9aa4c0; font-size: 11.5px; margin-bottom: 12px; }
   #rows { flex: 1; overflow-y: auto; }
