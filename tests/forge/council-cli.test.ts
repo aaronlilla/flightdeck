@@ -7,13 +7,47 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { forge } from '../../src/forge/cli.ts';
 import { attestationPath } from '../../src/forge/council/attest.ts';
+import type { CouncilAttestation } from '../../src/forge/contracts.ts';
 import type { GhReader, GhWriter, PrSnapshot } from '../../src/forge/council/gh.ts';
 import { modelIdFor } from '../../src/forge/policy.ts';
 import { replay } from '../../src/forge/journal.ts';
+
+// PR #123, 2026-09-08: the terminal printed `verdict: FIX FIRST` while the attestation
+// written in the same breath said `PASS WITH NOTES`, and `forge gate` merged on that
+// attestation -- an operator reading only the terminal would have believed the council
+// had failed. `forge council`'s success path must print whatever it just wrote, never a
+// value it computed before the write. This mock stands in for exactly that divergence:
+// `writeAttestation` records what the round produced, but the file `readAttestation`
+// hands back names a different verdict and finding set, the way a stale or concurrently
+// overwritten attestation file would. A CLI that still prints from the in-memory `round`
+// object passes this mock unnoticed; one that reads the write back does not.
+const STALE_VERDICT: CouncilAttestation['verdict'] = 'PASS WITH NOTES';
+const staleFinding = {
+  member: 'council', file: '(stale)', line: 0, claim: 'this is the attested finding, not the round finding',
+  failureScenario: 'proves the printed line came from the attestation on disk', severity: 'low' as const,
+  confidence: 'high' as const,
+};
+// Off by default so every other test in this file reads the real file back untouched --
+// only the one specimen below turns it on.
+let simulateDivergentReadback = false;
+
+vi.mock('../../src/forge/council/attest.ts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/forge/council/attest.ts')>();
+  return {
+    ...actual,
+    readAttestation: (repo: string, pr: number, head: string) => {
+      const onDisk = actual.readAttestation(repo, pr, head);
+      if (!onDisk || !simulateDivergentReadback) return onDisk;
+      // Hand back a verdict/finding set that differs from whatever `writeAttestation`
+      // actually recorded, standing in for the file having diverged after the write.
+      return { ...onDisk, verdict: STALE_VERDICT, decidingFindings: [staleFinding] };
+    },
+  };
+});
 
 let home: string;
 
@@ -26,6 +60,7 @@ beforeEach(() => {
   for (const name of ['FORGE_JIRA_SITE', 'FORGE_JIRA_EMAIL', 'FORGE_JIRA_TOKEN', 'FORGE_JIRA_QA_ACCOUNT', 'FORGE_JIRA_QA_TRANSITION']) {
     delete process.env[name];
   }
+  simulateDivergentReadback = false;
 });
 
 const REPO = 'acme/widgets';
@@ -127,6 +162,34 @@ describe('forge council', () => {
     expect(state.events.some((e) => e.event === 'council.lens')).toBe(true);
     expect(state.events.some((e) => e.event === 'council.judge')).toBe(true);
     expect(state.events.some((e) => e.event === 'council.attested')).toBe(true);
+  });
+
+  // PR #123, 2026-09-08: the round itself resolved PASS WITH NOTES and wrote it to the
+  // attestation, but the terminal printed FIX FIRST -- a different value than the one
+  // `forge gate` went on to read and merge on. The printed line has to come from the
+  // attestation that was just written, not from a value the CLI computed before the
+  // write, or a diverged file (a stale one, or one another process overwrote) fools the
+  // operator watching the terminal while the gate merges on the real one anyway.
+  it('prints whatever the attestation on disk says, not whatever the round computed before the write', async () => {
+    process.env['FORGE_COUNCIL_REPOS'] = REPO;
+    const reasonerQueryFn = fakeQueryByModel({
+      [LENS_MODEL]: JSON.stringify({ findings: [] }),
+      [JUDGE_MODEL]: JSON.stringify({ verdict: 'PASS', decidingFindings: [] }),
+    });
+
+    simulateDivergentReadback = true;
+    const result = await forge(['council', '--repo', REPO, '--pr', String(PR)], {
+      councilGh: fakeGh([smallSnapshot(), smallSnapshot()]),
+      reasonerQueryFn,
+    });
+
+    expect(result.code).toBe(0);
+    expect(result.lines.join(' ')).toMatch(new RegExp(`verdict: ${STALE_VERDICT}`));
+    expect(result.data?.['verdict']).toBe(STALE_VERDICT);
+    expect(result.lines.join(' ')).toMatch(/this is the attested finding, not the round finding/);
+    // The round's own verdict (PASS) never reaches the terminal once the readback
+    // disagrees with it.
+    expect(result.lines.join(' ')).not.toMatch(/verdict: PASS$/m);
   });
 
   it('accepts --cwd (and --base) alongside --repo/--pr without breaking a passing round', async () => {
