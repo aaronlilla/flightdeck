@@ -78,6 +78,7 @@ import { FORGE_PORT, ForgeServer } from './server.js';
 import { Breaker, clearKillSwitch, Fleet, Lanes, readKillSwitch } from './supervisor.js';
 import { WardenActuator } from './warden.js';
 import { DriftCadenceTracker, WardenTick, type WardenTickRun } from './warden-tick.js';
+import { renderToolCall } from './tool-target.js';
 import { Worker, type EngineLike, type WorkerConfig } from './worker.js';
 import {
   chainStatusLines, foldChainState, runChainTick, runKeyForBrief,
@@ -513,8 +514,11 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
               }
               const recentToolCalls = fleetState.events
                 .filter((event) => event.run === run.run && event.event === 'tool.start')
-                .slice(-5)
-                .map((event) => String(event['tool'] ?? ''));
+                .slice(-8)
+                .map((event) => renderToolCall(
+                  String(event['tool'] ?? ''),
+                  typeof event['target'] === 'string' ? event['target'] : undefined,
+                ));
               return {
                 run: run.run,
                 ...(brief !== undefined ? { brief } : {}),
