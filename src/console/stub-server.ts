@@ -14,6 +14,7 @@ import type { Duplex } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
 import { CONSOLE_ROUTES, HEARTBEAT_MS } from '../shared/console-model.js';
+import { computeNext } from '../forge/console/summary.js';
 import type {
   ActionResult, Caps, Integration, JournalEntry, Lane, LaneSummary, Message, QueueAddRequest, QueueAddResponse,
   QueueItem, QueueSource, ReauditResponse, Rule,
@@ -251,15 +252,15 @@ function stubStory(lane: Lane | undefined, id: string): import('../shared/consol
  *  already takes. A lane the fixture has flagged in `db.staleAuditLane` reports a stale
  *  audit and un-ready drift; every other lane with a PR reports a clean one. */
 function stubSummary(lane: Lane | undefined, id: string): LaneSummary {
-  if (!lane) return { what: [], status: 'no such run', audit: null, readiness: null };
+  if (!lane) return { what: [], status: 'no such run', next: 'Nothing to do; this run is not on the board.', audit: null, readiness: null };
   const what: string[] = [];
   if (lane.title) what.push(`${lane.title}.`);
   what.push(`${lane.stepText}.`.replace(/\.\.$/, '.'));
   const pr = lane.pr;
   if (!pr) {
+    const readiness = { ok: false, why: 'no PR is open yet', checks: null, behindBase: null, headMoved: false };
     return {
-      what, status: lane.plain || `${lane.stepText}.`, audit: null,
-      readiness: { ok: false, why: 'no PR is open yet', checks: null, behindBase: null, headMoved: false },
+      what, status: lane.plain || `${lane.stepText}.`, next: computeNext(lane, readiness), audit: null, readiness,
     };
   }
   const stale = db.staleAuditLane === lane.id;
@@ -283,11 +284,13 @@ function stubSummary(lane: Lane | undefined, id: string): LaneSummary {
       : pr.checks === 'failure'
         ? 'checks are failure'
         : null;
+  const readiness = { ok, why: ok ? null : why, checks: pr.checks ?? 'success', behindBase, headMoved: stale };
   return {
     what,
     status: lane.plain || `${lane.stepText}.`,
+    next: computeNext(lane, readiness),
     audit,
-    readiness: { ok, why: ok ? null : why, checks: pr.checks ?? 'success', behindBase, headMoved: stale },
+    readiness,
   };
 }
 

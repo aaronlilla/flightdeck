@@ -678,7 +678,7 @@ export class ConsoleReads {
   async runSummaryResponse(run: string): Promise<LaneSummary> {
     const lane = this.lanesResponse(true, true).lanes.find((l) => l.id === run);
     if (!lane) {
-      return { what: [], status: 'no such run', audit: null, readiness: null };
+      return { what: [], status: 'no such run', next: 'Nothing to do; this run is not on the board.', audit: null, readiness: null };
     }
     const story = await this.runStoryResponse(run);
     const queueItem = this.queueStore.all().find((item) => item.runKey === run);

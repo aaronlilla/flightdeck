@@ -122,6 +122,10 @@ export interface LaneReadiness {
 export interface LaneSummary {
   what: string[];
   status: string;
+  /** The one thing to do next, in the operator's own terms: "Answer the question
+   *  below.", "Merge it.", "Nothing needed; let it work.", "Read the reason, then Resume
+   *  or Kill." Never empty, never a state word on its own. */
+  next: string;
   audit: LaneAudit | null;
   readiness: LaneReadiness | null;
 }
@@ -249,8 +253,12 @@ export interface LanesResponse {
   tokensPerMin: number;
 }
 
+/** `activity`: a plain-mode digest of a run's own tool calls ("Worked 16:57 to 17:04:
+ *  140 commands, 45 file reads, 11 edits"), drawn as a quiet line rather than a chip.
+ *  Only `/run/:id/thread` without `?verbose=1` produces one. */
 export type MessageType =
   | 'event'
+  | 'activity'
   | 'operator'
   | 'reply'
   | 'question'
@@ -532,8 +540,17 @@ export interface RunSandboxResponse {
   log: SandboxLogLine[];
 }
 
+/**
+ * Plain by default: a run's own thread reads as what it did, what it said and what was
+ * asked of it, with tool calls folded into `activity` digests and every machine id
+ * turned into words. `?verbose=1` answers the raw rows instead, one message per journal
+ * row exactly as `textFor` names it. The same switch applies to `GET /thread` and
+ * `GET /run/:id/story`.
+ */
 export interface RunThreadResponse {
   messages: Message[];
+  /** True when the caller asked for `?verbose=1` and got the raw rows. */
+  verbose?: boolean;
 }
 
 /** One row of the cost sheet's "by step" table: what one turn actually used, straight

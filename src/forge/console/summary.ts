@@ -183,15 +183,58 @@ export function computeReadiness(input: {
   };
 }
 
+/** The one thing to do next, from the lane's state and the readiness verdict. Every
+ *  branch is an instruction a person can follow from the sheet they are looking at, or
+ *  a plain "nothing needed" when the run is working. Never a state word on its own. */
+export function computeNext(lane: Lane, readiness: LaneReadiness | null): string {
+  if (lane.retiredAt !== null) return 'Nothing needed; this lane is archived. Unretire it to bring it back.';
+  if (lane.runaway) return 'It is over its cap and looping. Kill the attempt, then reopen with a tighter brief.';
+  if (lane.pr && !lane.pr.merged && readiness?.ok) return 'Merge it. Checks are green and the council passed.';
+  switch (lane.state) {
+    case 'running':
+    case 'handed-off':
+      return 'Nothing needed; let it work. Watch live if you want to see each step.';
+    case 'paused':
+      return 'Resume it when you are ready.';
+    case 'parked':
+      return lane.question
+        ? 'Answer the question below; the run continues as soon as you do.'
+        : 'Read the reason, then Resume it or Kill it.';
+    case 'blocked':
+      return lane.blockedBy === 'aws'
+        ? 'Reconnect AWS, then Resume it.'
+        : 'Read the reason. If the work is salvageable, Resume it; otherwise Kill it and reopen.';
+    case 'exhausted':
+      return 'It ran out of context. Kill it and reopen; the next attempt starts from its PR if one exists.';
+    case 'unverified':
+      return lane.pr
+        ? `Verify it, or read PR #${lane.pr.no} yourself before deciding.`
+        : 'Verify it, or Kill it if the session left nothing worth keeping.';
+    case 'done':
+      if (lane.pr && !lane.pr.merged) {
+        return readiness?.why ? `Not ready to merge yet: ${readiness.why}. Re-check once that clears.` : 'Merge it.';
+      }
+      return lane.pr?.merged ? 'Nothing needed; it merged. Clean up retires it.' : 'Nothing to merge. Clean up retires it.';
+    case 'merged':
+      return 'Nothing needed; it merged. Clean up retires it.';
+    case 'killed':
+      return 'Reopen it to try again, or Clean up to retire it.';
+    default:
+      return 'Read the story below.';
+  }
+}
+
 export function computeLaneSummary(input: LaneSummaryInput): LaneSummary {
+  const readiness = computeReadiness({
+    pr: input.pr, attestation: input.attestation,
+    mergeable: input.mergeable !== undefined ? input.mergeable : input.lane.mergeable,
+    drift: input.drift,
+  });
   return {
     what: computeWhat(input),
     status: input.lane.plain,
+    next: computeNext(input.lane, readiness),
     audit: computeAudit(input.attestation, input.drift),
-    readiness: computeReadiness({
-      pr: input.pr, attestation: input.attestation,
-      mergeable: input.mergeable !== undefined ? input.mergeable : input.lane.mergeable,
-      drift: input.drift,
-    }),
+    readiness,
   };
 }

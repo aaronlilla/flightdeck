@@ -4,7 +4,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  computeAudit, computeLaneSummary, computeReadiness, computeWhat, type DriftFacts, type PrFacts,
+  computeAudit, computeLaneSummary, computeNext, computeReadiness, computeWhat, type DriftFacts, type PrFacts,
 } from '../../../src/forge/console/summary.js';
 import { verified } from '../../../src/forge/contracts.js';
 import type { CouncilAttestation } from '../../../src/forge/contracts.js';
@@ -219,5 +219,47 @@ describe('computeLaneSummary', () => {
     expect(summary.what.length).toBeGreaterThan(0);
     expect(summary.audit?.verdict).toBe('PASS WITH NOTES');
     expect(summary.readiness?.ok).toBe(true);
+  });
+});
+
+describe('computeNext', () => {
+  const base = { retiredAt: null, runaway: false, pr: null, question: null, blockedBy: null } as unknown as Lane;
+  const notReady = { ok: false, why: 'no PR is open yet', checks: null, behindBase: null, headMoved: false };
+  const ready = { ok: true, why: null, checks: 'success' as const, behindBase: 0, headMoved: false };
+
+  it('tells the operator to answer a parked question', () => {
+    const lane = { ...base, state: 'parked', question: { key: 'k', text: 'Continue?', opts: [], askedAt: 1 } } as Lane;
+    expect(computeNext(lane, notReady)).toMatch(/^Answer the question below/);
+  });
+
+  it('says nothing is needed while a run works', () => {
+    expect(computeNext({ ...base, state: 'running' } as Lane, notReady)).toMatch(/^Nothing needed; let it work/);
+  });
+
+  it('says merge when the readiness verdict is ok, whatever the run state', () => {
+    const pr = { no: 118, url: 'u', title: 't', checks: 'success', merged: false, files: 1, add: 1, del: 0 } as unknown as Lane['pr'];
+    expect(computeNext({ ...base, state: 'unverified', pr } as Lane, ready)).toMatch(/^Merge it\./);
+  });
+
+  it('carries the readiness reason for a done lane that is not ready', () => {
+    const pr = { no: 80, url: 'u', title: 't', checks: 'failure', merged: false, files: 1, add: 1, del: 0 } as unknown as Lane['pr'];
+    const why = { ...notReady, why: 'checks are failure' };
+    expect(computeNext({ ...base, state: 'done', pr } as Lane, why)).toBe('Not ready to merge yet: checks are failure. Re-check once that clears.');
+  });
+
+  it('never answers a bare state word', () => {
+    for (const state of ['running', 'handed-off', 'paused', 'parked', 'blocked', 'exhausted', 'unverified', 'done', 'merged', 'killed'] as const) {
+      const next = computeNext({ ...base, state } as Lane, notReady);
+      expect(next.length).toBeGreaterThan(20);
+      expect(next).not.toBe(state);
+    }
+  });
+
+  it('is on every summary', () => {
+    const summary = computeLaneSummary({
+      lane: { plain: 'p', mergeable: { ok: false, why: 'no PR yet' }, state: 'killed', retiredAt: null, runaway: false, pr: null, question: null } as unknown as Lane,
+      story: null, pr: null, attestation: null, drift: noDrift(),
+    });
+    expect(summary.next).toMatch(/^Reopen it/);
   });
 });
