@@ -255,7 +255,9 @@ export interface QueueRuntimeDeps {
   clock(): number;
   killSwitch(): boolean;
   paused(): boolean;
-  maxInFlight: number;
+  /** Read fresh on every tick, same as `paused` and `killSwitch` above -- a live
+   *  `POST /queue/width` takes effect on the next tick, never only at process start. */
+  maxInFlight(): number;
   /** Writes one row to the fleet journal, returning it -- so the item can carry the
    *  jid forward the same way every other Forge write does. */
   append(event: Record<string, unknown>): QueueJournalWrite;
@@ -626,7 +628,7 @@ export async function runQueueTick(deps: QueueRuntimeDeps, items: QueueItem[]): 
   items = items.filter((item) => !advancing.has(item.id));
   const inFlight = items.filter((item) => QUEUE_IN_FLIGHT_STATES.includes(item.state));
   const queued = items.filter((item) => item.state === 'queued');
-  let slots = Math.max(0, deps.maxInFlight - inFlight.length);
+  let slots = Math.max(0, deps.maxInFlight() - inFlight.length);
   const toAdvance = [...inFlight];
   let started = 0;
   for (const item of queued) {
