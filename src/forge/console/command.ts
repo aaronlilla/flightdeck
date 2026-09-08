@@ -155,6 +155,9 @@ export type Intent =
   | { kind: 'pause'; repo?: string }
   | { kind: 'resume'; lane?: string }
   | { kind: 'kill'; lane: string }
+  | { kind: 'retire'; lane: string }
+  | { kind: 'reopen'; lane: string }
+  | { kind: 'verify'; lane: string }
   | { kind: 'merge-ready' }
   | { kind: 'set-daily-cap'; amount: number }
   | { kind: 'set-run-cap'; lane: string; amount: number }
@@ -199,6 +202,9 @@ export function parseIntent(raw: string): Intent {
   if ((match = text.match(/^resume\s+(\S+)$/i))) return { kind: 'resume', lane: match[1]! };
   if (/^resume$/i.test(text)) return { kind: 'resume' };
   if ((match = text.match(/^kill\s+(\S+)$/i))) return { kind: 'kill', lane: match[1]! };
+  if ((match = text.match(/^(?:remove|archive|retire)\s+(\S+)$/i))) return { kind: 'retire', lane: match[1]! };
+  if ((match = text.match(/^reopen\s+(\S+)$/i))) return { kind: 'reopen', lane: match[1]! };
+  if ((match = text.match(/^verify\s+(\S+)$/i))) return { kind: 'verify', lane: match[1]! };
   if (/^merge\s+ready\s+lanes?$/i.test(text)) return { kind: 'merge-ready' };
   if ((match = text.match(/^(?:raise|set)\s+daily\s+cap\s+to\s+(\d+(?:\.\d+)?)([km])?$/i))) {
     return { kind: 'set-daily-cap', amount: tokenAmount(match[1]!, match[2]) };

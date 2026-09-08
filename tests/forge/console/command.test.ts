@@ -94,6 +94,19 @@ describe('parseIntent', () => {
     expect(parseIntent('dismiss abc123')).toEqual({ kind: 'dismiss', token: 'abc123' });
     expect(parseIntent('gibberish')).toEqual({ kind: 'unknown', text: 'gibberish' });
   });
+
+  // W1: the mission lane was unverified with no PR and no heart, and the operator typed
+  // "remove 2026-09-04-forge-c2-rn" three times and got "I did not understand that"
+  // each time -- remove/archive/retire are three spellings of the same intent, and
+  // reopen/verify complete the set of actions a lane's own REST route already supports
+  // but the grammar never offered a person typing plain text.
+  it('parses remove/archive/retire as one retire intent, and reopen/verify', () => {
+    expect(parseIntent('remove 2026-09-04-forge-c2-rn')).toEqual({ kind: 'retire', lane: '2026-09-04-forge-c2-rn' });
+    expect(parseIntent('archive 2026-09-04-forge-c2-rn')).toEqual({ kind: 'retire', lane: '2026-09-04-forge-c2-rn' });
+    expect(parseIntent('retire 2026-09-04-forge-c2-rn')).toEqual({ kind: 'retire', lane: '2026-09-04-forge-c2-rn' });
+    expect(parseIntent('reopen FLT-204')).toEqual({ kind: 'reopen', lane: 'FLT-204' });
+    expect(parseIntent('verify FLT-204')).toEqual({ kind: 'verify', lane: 'FLT-204' });
+  });
 });
 
 let dir: string;
