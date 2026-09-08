@@ -39,7 +39,7 @@ describe('computeJournalNarrative', () => {
     const fleet = replay(path);
     const chain = foldChainState(fleet.events);
     const entries = computeJournalNarrative(lane(), fleet.events, packetForRun(chain, 'alpha'), 5_000);
-    expect(entries[0]).toEqual({ t: fleet.events[0]!.at, text: 'polled alpha from queue', color: 'var(--ink2)' });
+    expect(entries[0]).toEqual({ t: fleet.events[0]!.at, text: 'Polled from the queue', color: 'var(--ink2)' });
   });
 
   it('reports a real provisioning failure, not a simulated one', () => {
@@ -50,7 +50,7 @@ describe('computeJournalNarrative', () => {
     const fleet = replay(path);
     const chain = foldChainState(fleet.events);
     const entries = computeJournalNarrative(lane(), fleet.events, packetForRun(chain, 'alpha'), 5_000);
-    expect(entries.map((e) => e.text)).toContain('provision failed · AWS sandboxes disconnected');
+    expect(entries.map((e) => e.text)).toContain('Provision failed: AWS sandboxes disconnected');
     // A run blocked on provisioning never claims a branch got pushed.
     expect(entries.some((e) => e.text.startsWith('branch'))).toBe(false);
   });
@@ -64,8 +64,8 @@ describe('computeJournalNarrative', () => {
     const fleet = replay(path);
     const chain = foldChainState(fleet.events);
     const entries = computeJournalNarrative(lane({ sandbox: { id: 'alpha', path: 'w', branch: 'feature/ab-1', pid: 1, sessionId: null, region: 'local', instanceType: 'x' } }), fleet.events, packetForRun(chain, 'alpha'), 5_000);
-    expect(entries.map((e) => e.text)).toContain('sandbox alpha provisioned');
-    expect(entries.map((e) => e.text)).toContain('branch feature/ab-1 pushed · sonnet-5');
+    expect(entries.map((e) => e.text)).toContain('Sandbox provisioned');
+    expect(entries.map((e) => e.text)).toContain('Branch feature/ab-1 pushed on Sonnet');
   });
 
   it('closes with a state-specific line for a parked lane, off the real run.parked event', () => {
@@ -77,7 +77,7 @@ describe('computeJournalNarrative', () => {
     const chain = foldChainState(fleet.events);
     const entries = computeJournalNarrative(lane({ state: 'parked' }), fleet.events, packetForRun(chain, 'alpha'), 5_000);
     const last = entries[entries.length - 1]!;
-    expect(last).toEqual({ t: fleet.events[1]!.at, text: 'parked — needs human', color: 'var(--park)' });
+    expect(last).toEqual({ t: fleet.events[1]!.at, text: 'Parked; needs you', color: 'var(--park)' });
   });
 
   it('closes with the runaway line, priced off the lane\'s own real cost, for a still-running over-cap lane', () => {
@@ -88,7 +88,7 @@ describe('computeJournalNarrative', () => {
     const chain = foldChainState(fleet.events);
     const entries = computeJournalNarrative(lane({ runaway: true, fails: 3, tokens: 5_500_000 }), fleet.events, packetForRun(chain, 'alpha'), 5_000);
     const last = entries[entries.length - 1]!;
-    expect(last).toEqual({ t: 5_000, text: 'build failing ×3 · 5.5M tokens', color: 'var(--block)' });
+    expect(last).toEqual({ t: 5_000, text: 'Build failing ×3; spent 5.5M tokens', color: 'var(--block)' });
   });
 
   it('adds no closing line for a lane still running normally', () => {
@@ -99,6 +99,33 @@ describe('computeJournalNarrative', () => {
     const chain = foldChainState(fleet.events);
     const entries = computeJournalNarrative(lane(), fleet.events, packetForRun(chain, 'alpha'), 5_000);
     expect(entries).toHaveLength(1);
+  });
+
+  it('deliverable 11: reports a merge and a kill in plain words', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.append({ packetId: 'alpha', event: 'chain.merged' });
+    journal.close();
+    const fleet = replay(path);
+    const chain = foldChainState(fleet.events);
+    const entries = computeJournalNarrative(lane({ state: 'merged' }), fleet.events, packetForRun(chain, 'alpha'), 5_000);
+    expect(entries.map((e) => e.text)).toContain('Merged to main; Jira updated');
+  });
+
+  it('deliverable 11: never lets a machine id reach a narrative line', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.append({
+      packetId: 'alpha', event: 'chain.blocked', hop: 'provision',
+      reason: 'blocked behind queue-BBZ-1 at 88d44ec96baea849f7c1e8c0a1b2c3d4e5f6a7b8',
+    });
+    journal.close();
+    const fleet = replay(path);
+    const chain = foldChainState(fleet.events);
+    const entries = computeJournalNarrative(lane(), fleet.events, packetForRun(chain, 'alpha'), 5_000);
+    for (const entry of entries) {
+      expect(entry.text).not.toMatch(/queue-|\b[0-9a-f]{40}\b/i);
+    }
   });
 });
 

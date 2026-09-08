@@ -13,8 +13,10 @@ import type { ChainPacketState } from '../chain.js';
 import type { ForgeEvent } from '../journal.js';
 import type { JournalNarrativeEntry, Lane } from '../../shared/console-model.js';
 import { fmtTokens } from '../../shared/format-tokens.js';
+import { stripMachineIds } from '../../shared/humanize.js';
 import { textFor } from './journal-route.js';
 import { laneKindFor, ticketFor } from './lanes.js';
+import { modelName } from './plain.js';
 
 function firstEventAt(events: ForgeEvent[], name: string, matches: (row: ForgeEvent) => boolean): number | undefined {
   for (const row of events) {
@@ -51,37 +53,39 @@ export function computeJournalNarrative(
 ): JournalNarrativeEntry[] {
   const entries: JournalNarrativeEntry[] = [];
   const startedAt = byRun(events, lane.id, 'run.started') ?? lane.startedAt;
-  entries.push({ t: startedAt, text: `polled ${lane.id} from queue`, color: 'var(--ink2)' });
+  entries.push({ t: startedAt, text: 'Polled from the queue', color: 'var(--ink2)' });
 
   const packetId = packet?.packetId;
   const provisionedAt = packetId ? byPacket(events, packetId, 'chain.provisioned') : undefined;
   const blockedAt = packetId && packet?.blocked?.hop === 'provision' ? byPacket(events, packetId, 'chain.blocked') : undefined;
   if (provisionedAt !== undefined) {
-    entries.push({ t: provisionedAt, text: `sandbox ${lane.sandbox?.id ?? lane.id} provisioned`, color: 'var(--ink2)' });
+    entries.push({ t: provisionedAt, text: 'Sandbox provisioned', color: 'var(--ink2)' });
   } else if (blockedAt !== undefined) {
-    entries.push({ t: blockedAt, text: `provision failed · ${packet?.blocked?.reason ?? 'blocked'}`, color: 'var(--block)' });
+    entries.push({
+      t: blockedAt, text: `Provision failed: ${stripMachineIds(packet?.blocked?.reason ?? 'blocked')}`, color: 'var(--block)',
+    });
   }
 
   if (provisionedAt !== undefined && packetId) {
     const launchedAt = byPacket(events, packetId, 'chain.launched');
     if (launchedAt !== undefined) {
       const branch = packet?.provisioned?.branch ?? lane.id;
-      entries.push({ t: launchedAt, text: `branch ${branch} pushed · ${lane.model}`, color: 'var(--ink2)' });
+      entries.push({ t: launchedAt, text: `Branch ${branch} pushed on ${modelName(lane.model)}`, color: 'var(--ink2)' });
     }
   }
 
   const gatedAt = packetId ? byPacket(events, packetId, 'chain.gated') : undefined;
-  if (gatedAt !== undefined) entries.push({ t: gatedAt, text: 'gate opened · council judge ×3', color: 'var(--ink2)' });
+  if (gatedAt !== undefined) entries.push({ t: gatedAt, text: 'Gate opened; the council reviews it three times', color: 'var(--ink2)' });
 
   if (lane.state === 'parked') {
-    entries.push({ t: lastByRun(events, lane.id, 'run.parked') ?? lane.since, text: 'parked — needs human', color: 'var(--park)' });
+    entries.push({ t: lastByRun(events, lane.id, 'run.parked') ?? lane.since, text: 'Parked; needs you', color: 'var(--park)' });
   } else if (lane.state === 'merged') {
     const mergedAt = packetId ? lastEventAt(events, 'chain.merged', (row) => row.packetId === packetId) : undefined;
-    entries.push({ t: mergedAt ?? lane.since, text: 'merged → main · jira updated', color: 'var(--merge)' });
+    entries.push({ t: mergedAt ?? lane.since, text: 'Merged to main; Jira updated', color: 'var(--merge)' });
   } else if (lane.state === 'killed') {
-    entries.push({ t: lastByRun(events, lane.id, 'run.killed') ?? lane.endedAt ?? lane.since, text: 'killed · diff discarded', color: 'var(--block)' });
+    entries.push({ t: lastByRun(events, lane.id, 'run.killed') ?? lane.endedAt ?? lane.since, text: 'Killed; the diff was discarded', color: 'var(--block)' });
   } else if (lane.runaway) {
-    entries.push({ t: now, text: `build failing ×${lane.fails} · ${fmtTokens(lane.tokens)} tokens`, color: 'var(--block)' });
+    entries.push({ t: now, text: `Build failing ×${lane.fails}; spent ${fmtTokens(lane.tokens)} tokens`, color: 'var(--block)' });
   }
 
   return entries;

@@ -207,6 +207,47 @@ function clockTime(at: number): string {
   return new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
+/** One journal row's own text, in plain words and free of every machine id -- the
+ *  general-purpose per-row renderer the why-stuck reply's "Last it did" lines
+ *  (deliverable 5) and the cost sheet's own step text (deliverable 11) both reuse,
+ *  rather than each inventing its own copy of what an event kind means in words. */
+export function plainEventText(row: ForgeEvent): string {
+  switch (row.event) {
+    case 'tool.start':
+      return `Ran ${typeof row.tool === 'string' ? row.tool : 'a tool'}`;
+    case 'tool.end':
+      return 'Finished a tool call';
+    case 'turn.end':
+      return 'Finished a turn';
+    case 'reasoner.call':
+      return 'Reasoner call';
+    case 'burn.mismatch':
+      return 'Token accounting mismatch';
+    case 'registry.abandoned':
+      return 'Process record abandoned';
+    case 'run.started':
+      return 'Started';
+    case 'run.parked':
+      return `Parked: ${humanizeParkReason(typeof row.reason === 'string' ? row.reason : 'waiting on you')}`;
+    case 'warden.parked':
+      return `Parked by the warden: ${stripMachineIds(typeof row.reason === 'string' ? row.reason : 'a health check tripped')}`;
+    case 'run.resumed':
+      return 'Resumed';
+    case 'run.killed':
+      return `Killed: ${stripMachineIds(typeof row.reason === 'string' ? row.reason : 'no reason recorded')}`;
+    case 'run.finished':
+      return `Finished: ${typeof row.verdict === 'string' ? row.verdict : 'unverified'}`;
+    case 'run.blocked':
+      return `Blocked${typeof row.reason === 'string' ? `: ${stripMachineIds(row.reason)}` : ''}`;
+    case 'ask.answered':
+      return 'Question answered';
+    case 'forge.ask':
+      return `Asked you: ${stripMachineIds(String(row.question ?? ''))}`;
+    default:
+      return stripMachineIds(textFor(row));
+  }
+}
+
 /** A burst of tool-shaped rows folds into one `activity` message in plain mode -- these
  *  are the event kinds that carry no narrative of their own and only ever appear as
  *  part of one. A burst ends the moment a row outside this set is seen. */
@@ -318,7 +359,7 @@ function plainMessageFor(run: string, row: ForgeEvent): Message | null {
     case 'run.handoff':
       return { ...event, text: 'Context ceiling reached; handed off to a fresh session' };
     default:
-      return { ...event, text: stripMachineIds(textFor(row)) };
+      return { ...event, text: plainEventText(row) };
   }
 }
 
