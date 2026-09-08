@@ -18,7 +18,7 @@ import {
   removeItem, retryItem, type QueueMergeDeps, type QueuePromoteDeps, type QueueTicketSearch,
 } from '../intake/queue.js';
 import { resolveGoalBlock } from '../intake/goalFile.js';
-import { buildBacklogJql as defaultBuildBacklogJql } from '../queue-wire.js';
+import { buildBacklogJql as defaultBuildBacklogJql, readQueueWidth, writeQueueWidth } from '../queue-wire.js';
 import { queueTitleFor } from './queue-title.js';
 import type { QueueStore } from '../intake/queueStore.js';
 import type {
@@ -42,7 +42,17 @@ export interface QueueRoutesOptions {
   authorized: (request: IncomingMessage, response: ServerResponse) => boolean;
   readPaused: () => boolean;
   writePaused: (paused: boolean) => void;
+  /** No longer read anywhere in this class -- `response()` calls `readQueueWidth()`
+   *  straight from `queue-wire.ts` instead, so `GET /queue` reflects a `POST
+   *  /queue/width` on its very next call. Kept only so an existing caller's options
+   *  object still typechecks. */
   maxInFlight: number;
+  /** `POST /queue/width`'s one required side effect (queue-throughput W2): every
+   *  successful width change publishes once, of kind `queue`, the same channel every
+   *  other console write already uses. Absent means the write still lands on disk but
+   *  no listener hears about it -- a caller with no publish channel wired, same honest
+   *  gap `mergeDeps`/`promoteDeps` leave when absent above. */
+  publish?: (event: Record<string, unknown>) => void;
   /** A.5: wraps an operator's own backlog filter text into a project-scoped JQL before
    *  it reaches `search`. Defaults to the queue's own production wrapper
    *  (`queue-wire.ts#buildBacklogJql`, `FORGE_BACKLOG_PROJECT`), so this route works
@@ -101,7 +111,7 @@ export class QueueRoutes {
 
   static matches(path: string, method: string | undefined): boolean {
     if (path === '/queue') return method === 'GET' || method === 'POST';
-    if (path === '/queue/pause' || path === '/queue/resume') return method === 'POST';
+    if (path === '/queue/pause' || path === '/queue/resume' || path === '/queue/width') return method === 'POST';
     return ITEM_ROUTE.test(path) && method === 'POST';
   }
 
@@ -135,7 +145,7 @@ export class QueueRoutes {
     // queued item retitles itself with no write.
     return {
       items: this.opts.store.all().map((item) => ({ ...item, title: queueTitleFor(item) })),
-      paused: this.opts.readPaused(), maxInFlight: this.opts.maxInFlight,
+      paused: this.opts.readPaused(), maxInFlight: readQueueWidth(),
     };
   }
 
@@ -211,6 +221,22 @@ export class QueueRoutes {
     if (path === '/queue/resume' && request.method === 'POST') {
       this.opts.writePaused(false);
       const result: ActionResult = { ok: true, jid: null, message: 'queue resumed', undoable: false };
+      respond(response, 200, result);
+      return true;
+    }
+
+    if (path === '/queue/width' && request.method === 'POST') {
+      const body = await readBody<{ maxInFlight: number }>(request);
+      const value = body?.maxInFlight;
+      if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 12) {
+        respond(response, 400, {
+          ok: false, jid: null, message: 'maxInFlight must be an integer between 1 and 12', undoable: false,
+        });
+        return true;
+      }
+      writeQueueWidth(value);
+      this.opts.publish?.({ kind: 'queue', event: 'queue.width', maxInFlight: value, at: Date.now() });
+      const result: ActionResult = { ok: true, jid: null, message: `queue width set to ${value}`, undoable: false };
       respond(response, 200, result);
       return true;
     }

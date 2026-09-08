@@ -179,6 +179,28 @@ describe('stub server', () => {
   // Sweep #6: the console reads success off a non-null jid (`receiptCard`'s
   // `type: jid ? 'receipt' : 'refusal'`); a dismiss with no jid rendered as a red
   // Refused card even though it succeeded.
+  // Queue-throughput W2/W3: /queue/width persists the width the console posts and
+  // GET /queue reflects it back, so the stepper in QueueView isn't posting into a void.
+  it('POST /queue/width changes the width GET /queue reports back', async () => {
+    const before = await get<{ maxInFlight: number }>('/queue');
+    expect(before.maxInFlight).toBe(4);
+    const { status, body } = await post<{ ok: boolean; message: string }>('/queue/width', { maxInFlight: 7 });
+    expect(status).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.message).toContain('7');
+    const after = await get<{ maxInFlight: number }>('/queue');
+    expect(after.maxInFlight).toBe(7);
+  });
+
+  it('POST /queue/width refuses an out-of-range value with the exact message', async () => {
+    const { status, body } = await post<{ ok: boolean; message: string }>('/queue/width', { maxInFlight: 13 });
+    expect(status).toBe(400);
+    expect(body.ok).toBe(false);
+    expect(body.message).toBe('maxInFlight must be an integer between 1 and 12');
+    const after = await get<{ maxInFlight: number }>('/queue');
+    expect(after.maxInFlight).toBe(4);
+  });
+
   it('POST /clear returns a jid on a successful dismiss, and clears the lane\'s question', async () => {
     const cleared = await postConfirmed<{ ok: boolean; jid: string | null }>('/clear', { inboxKey: 'ask-bbz-118' });
     expect(cleared.status).toBe(200);

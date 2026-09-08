@@ -34,7 +34,7 @@ interface FixtureOverrides {
   gate?: ChainGateFn;
   killSwitch?: () => boolean;
   paused?: () => boolean;
-  maxInFlight?: number;
+  maxInFlight?: () => number;
   launchGoal?: QueueRuntimeDeps['launchGoal'];
 }
 
@@ -66,7 +66,7 @@ function buildDeps(store: QueueStore, overrides: FixtureOverrides = {}): { deps:
     clock: () => 1_000,
     killSwitch: overrides.killSwitch ?? (() => false),
     paused: overrides.paused ?? (() => false),
-    maxInFlight: overrides.maxInFlight ?? 2,
+    maxInFlight: overrides.maxInFlight ?? (() => 2),
     append: (event) => {
       seq += 1;
       const id = `e${seq}`;
@@ -1027,7 +1027,7 @@ describe('runQueueTick', () => {
     addTicketItem(store, 'A-1', 1000);
     addTicketItem(store, 'A-2', 1000);
     addTicketItem(store, 'A-3', 1000);
-    const { deps } = buildDeps(store, { maxInFlight: 2 });
+    const { deps } = buildDeps(store, { maxInFlight: () => 2 });
 
     const result = await runQueueTick(deps, store.all());
     expect(result.started).toBe(2);
@@ -1045,7 +1045,7 @@ describe('runQueueTick', () => {
     });
     addTicketItem(store, 'A-2', 1000);
     const { deps } = buildDeps(store, {
-      maxInFlight: 1,
+      maxInFlight: () => 1,
       launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
     });
 

@@ -128,3 +128,19 @@ export function ticketFromBrief(text: string): string | null {
   const match = /^ticket:\s*([A-Z][A-Z0-9_]*-\d+)\s*$/m.exec(text);
   return match ? match[1]! : null;
 }
+
+/**
+ * Queue-throughput W1: every `after: <slug>` line in a brief, one per line, in the
+ * order they appear. A queued item carrying these does not start until each slug
+ * resolves -- see `runQueueTick` in `../intake/queue.ts` for how a slug is matched
+ * and cleared. No such lines returns an empty array, the same as a brief with no
+ * ordering requirement at all.
+ */
+export function parseAfterLines(text: string): string[] {
+  const out: string[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const match = /^\s*after\s*:\s*(.+?)\s*$/i.exec(line);
+    if (match) out.push(match[1]!);
+  }
+  return out;
+}

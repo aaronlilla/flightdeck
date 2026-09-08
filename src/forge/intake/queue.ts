@@ -16,13 +16,16 @@
  * from plain functions instead.
  */
 import { randomUUID } from 'node:crypto';
+import { basename } from 'node:path';
 
 import type { ChainCouncilFn, ChainGateFn, ChainGh, ChainLauncher } from '../chain.js';
 import { runKeyForBrief } from '../chain.js';
 import type { QueueItem, QueueItemState, QueueSource } from '../../shared/console-model.js';
+import { branchFor } from '../chain-env.js';
 import { evaluateAction } from '../rules/index.js';
 import { renderNotes } from '../council/renderNotes.js';
 import { terminalStateFor, type RepoKind } from './handoff.js';
+import { parseAfterLines } from './repoRoute.js';
 import type { QueueStore } from './queueStore.js';
 import { workspaceRoot } from '../paths.js';
 
@@ -49,9 +52,11 @@ function newItemId(): string {
 }
 
 function blankItem(id: string, source: QueueSource, input: string, ticket: string | null, at: number): QueueItem {
+  const after = parseAfterLines(input);
   return {
     id, source, input, ticket, repo: null, briefPath: null, branch: null, worktreePath: null, base: null,
     state: 'queued', reason: null, runKey: null, pr: null, journalIds: [], createdAt: at, updatedAt: at,
+    ...(after.length ? { after } : {}),
   };
 }
 
@@ -264,10 +269,27 @@ export interface QueueRuntimeDeps {
    *  file to plan or amend. Absent means a goal item always fails at the launch hop;
    *  every other source ignores this. */
   launchGoal?: (input: { goalPath: string; block: string; cwd: string; runKey: string }) => Promise<{ runKey: string }>;
+  /** Whether feature/<branch> is already merged into origin/main on the repo's checkout.
+   *  Backs an after: <slug> entry that names no queue item. Absent means such an entry
+   *  never resolves. */
+  branchMerged?: (repo: string, branch: string) => Promise<boolean>;
+  /** Every repository this environment has a checkout for (`ChainEnv.checkouts`, wired
+   *  from `FORGE_REPO_CHECKOUTS` in `buildQueueRuntimeDeps`) -- the fallback list
+   *  `unresolvedAfterReason` asks `branchMerged` about when an `after: <slug>` entry
+   *  names no queue item and the gated item's own `repo` isn't known yet. `item.repo`
+   *  is `null` for the entire time a real item sits `queued` (`blankItem` sets it, and
+   *  `advanceItem` only fills it in once the item is planned, which happens after this
+   *  gate runs), so gating on `item.repo` alone made the merged-branch fallback dead
+   *  code for every item added through the ordinary add path. Absent or empty means no
+   *  fallback repo is known, the same "never resolves" answer as before this field
+   *  existed. */
+  mergeCheckRepos?: string[];
   clock(): number;
   killSwitch(): boolean;
   paused(): boolean;
-  maxInFlight: number;
+  /** Read fresh on every tick, same as `paused` and `killSwitch` above -- a live
+   *  `POST /queue/width` takes effect on the next tick, never only at process start. */
+  maxInFlight(): number;
   /** Writes one row to the fleet journal, returning it -- so the item can carry the
    *  jid forward the same way every other Forge write does. */
   append(event: Record<string, unknown>): QueueJournalWrite;
@@ -332,6 +354,65 @@ async function relaunchOnRetryOrPark(
   return writeTransition(item, { state: 'parked', reason }, deps, 'queue.parked', extra);
 }
 
+/** Whole-slug match only: `after: BBZ-20` names BBZ-20, never BBZ-205. A slug matches an
+ *  item whose `input`, brief file name (with or without the `queue-` prefix and `.md`),
+ *  or branch (bare, or as `branchFor(slug)`) is that slug exactly, case-insensitively. */
+function slugMatches(candidate: QueueItem, slug: string): boolean {
+  const lower = slug.toLowerCase();
+  const names = new Set<string>();
+  if (candidate.input) names.add(candidate.input.toLowerCase());
+  if (candidate.ticket) names.add(candidate.ticket.toLowerCase());
+  if (candidate.briefPath) {
+    const file = basename(candidate.briefPath).toLowerCase().replace(/\.md$/, '');
+    names.add(file);
+    if (file.startsWith('queue-')) names.add(file.slice('queue-'.length));
+  }
+  if (candidate.branch) {
+    const branch = candidate.branch.toLowerCase();
+    names.add(branch);
+    names.add(branch.replace(/^(feature|hotfix)\//, ''));
+  }
+  return names.has(lower) || names.has(branchFor(slug).toLowerCase());
+}
+
+/** Whether every after: entry on item has resolved: an item in state 'done', or (when no
+ *  queue item matches the slug) deps.branchMerged reporting that the branch already merged.
+ *  Returns the reason to hold the item on when it has not resolved, or null when it is clear
+ *  to start. The two reason shapes are deliberately different: a matched but not-done
+ *  predecessor reads "waiting on <slug>", an unmatched one reads "waiting on unknown item:
+ *  <slug>", and the queue view renders the two differently. */
+/** Which repository or repositories `unresolvedAfterReason` should ask `branchMerged`
+ *  about for one unmatched `after: <slug>` entry. `item.repo` wins once it is known
+ *  (an item already planned), but a queued item's own `repo` is null the entire time
+ *  this gate runs -- `blankItem` sets it, and `advanceItem` only fills it in once the
+ *  item leaves `queued`, which happens after this check -- so the fallback list this
+ *  environment has a checkout for (`deps.mergeCheckRepos`) is what a real, never-yet-
+ *  planned item actually resolves against. */
+async function mergedOnKnownRepo(item: QueueItem, slug: string, deps: QueueRuntimeDeps): Promise<boolean> {
+  if (!deps.branchMerged) return false;
+  const branch = branchFor(slug);
+  const repos = item.repo ? [item.repo] : (deps.mergeCheckRepos ?? []);
+  for (const repo of repos) {
+    if (await deps.branchMerged(repo, branch)) return true;
+  }
+  return false;
+}
+
+async function unresolvedAfterReason(
+  item: QueueItem, items: QueueItem[], deps: QueueRuntimeDeps,
+): Promise<string | null> {
+  for (const slug of item.after ?? []) {
+    const matches = items.filter((other) => other.id !== item.id && slugMatches(other, slug));
+    if (matches.length > 0) {
+      if (matches.every((m) => m.state === 'done')) continue;
+      return `waiting on ${slug}`;
+    }
+    if (await mergedOnKnownRepo(item, slug, deps)) continue;
+    return `waiting on unknown item: ${slug}`;
+  }
+  return null;
+}
+
 /**
  * One item, one hop forward. Mirrors `chain.ts`'s `advancePacket`: plan if there is no
  * brief yet, provision and launch if there is no run yet, then wait for the run and gate
@@ -385,7 +466,14 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
   }
 
   if (!item.briefPath) {
-    if (item.state !== 'planning') item = writeTransition(item, { state: 'planning' }, deps, 'queue.planning');
+    // Clears a stale after:-gate `reason` and `after` list the moment the item leaves
+    // `queued` -- neither was ever patched past this point before, so a resolved item
+    // carried a permanent "waiting on ..." line through planning, running and review
+    // (`reason`/`after` in `console-model.ts`; the queue view reads both straight off
+    // the item with no other staleness check).
+    if (item.state !== 'planning') {
+      item = writeTransition(item, { state: 'planning', reason: null, after: [] }, deps, 'queue.planning');
+    }
     let planned: QueuePlannedBrief;
     try {
       planned = item.source === 'brief'
@@ -647,11 +735,20 @@ export async function runQueueTick(deps: QueueRuntimeDeps, items: QueueItem[]): 
   items = items.filter((item) => !advancing.has(item.id));
   const inFlight = items.filter((item) => QUEUE_IN_FLIGHT_STATES.includes(item.state));
   const queued = items.filter((item) => item.state === 'queued');
-  let slots = Math.max(0, deps.maxInFlight - inFlight.length);
+  let slots = Math.max(0, deps.maxInFlight() - inFlight.length);
   const toAdvance = [...inFlight];
   let started = 0;
   for (const item of queued) {
     if (slots <= 0) break;
+    if (item.after?.length) {
+      const reason = await unresolvedAfterReason(item, items, deps);
+      if (reason) {
+        if (item.reason !== reason) {
+          writeTransition(item, { reason }, deps, 'queue.waiting', { hop: 'after' });
+        }
+        continue;
+      }
+    }
     slots -= 1;
     started += 1;
     toAdvance.push(item);
