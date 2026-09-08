@@ -503,18 +503,19 @@ export class ConductorAgent {
     (this.idleTimer as { unref?: () => void }).unref?.();
   }
 
-  /** Closes the model subprocess. `keep` remembers the session id for a resume. */
-  private async closeSession(keep: boolean): Promise<void> {
+  /** Closes the model subprocess. `keep` remembers the session id for a resume. The
+   *  stop is never awaited: a stalled subprocess must not turn a close into a hang. */
+  private closeSession(keep: boolean): void {
     this.clearIdle();
     const engine = this.engine;
     this.engine = null;
     if (!keep) this.sessionId = null;
-    if (engine) await engine.stop().catch(() => undefined);
+    if (engine) void engine.stop().catch(() => undefined);
   }
 
   /** Stops the session for good. Wired into `ForgeServer.close()`. */
   async stop(): Promise<void> {
-    await this.closeSession(true);
+    this.closeSession(true);
   }
 
   private composeMessage(text: string, context: ConductorContext): string {
@@ -620,7 +621,7 @@ export class ConductorAgent {
         // A resumed session that fails is retried once on a fresh one; anything else
         // falls through to the grammar below.
         if (!resumed) throw error;
-        await this.closeSession(false);
+        this.closeSession(false);
         const fresh = this.openEngine(null);
         this.engine = fresh;
         result = await Promise.race([this.turn(fresh, message), timeout]);
@@ -637,7 +638,7 @@ export class ConductorAgent {
       const cards: Message[] = [replyRow(replyText, 'agent'), ...this.turnCards];
       if (result.context >= ceiling) {
         this.handoff = this.handoffParagraph();
-        await this.closeSession(false);
+        this.closeSession(false);
         cards.push(replyRow('That session reached its context ceiling; a fresh one takes over from here carrying a short summary of what we were doing.', 'agent'));
       } else {
         this.armIdle();
@@ -648,7 +649,7 @@ export class ConductorAgent {
       const reason = error instanceof Error ? error.message : String(error);
       // The session is dropped so a stalled subprocess never answers a later message
       // with this one's reply; the id is kept for a resume.
-      await this.closeSession(true);
+      this.closeSession(true);
       const grammar = await this.deps.writes.runGrammar(text, 'conductor');
       const head = replyRow(`The Conductor could not answer (${reason}). The grammar answered instead:`, 'grammar');
       const cards = [head, ...grammar.map((card) => ({ ...card, path: 'grammar' as const }))];

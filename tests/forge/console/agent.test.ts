@@ -79,6 +79,7 @@ afterEach(async () => {
 
 /** The mission lane: a manual run that ended `unverified` with no live process. */
 function deadLane(id = DEAD): void {
+  new Lanes(join(dir, 'lanes')).put(id, { column: 'c', model: 'claude-sonnet-5', context: 1000, cost_usd: 0, session_id: 's1' });
   const journal = new Journal(journalPath);
   journal.append({ event: 'run.started', run: id, actor: 'runner' });
   journal.append({ event: 'run.finished', run: id, verdict: 'unverified' });
@@ -88,7 +89,6 @@ function deadLane(id = DEAD): void {
 /** A live lane: a lane record, a registry row for this very process, one turn taken. */
 function liveLane(id: string): void {
   new Lanes(join(dir, 'lanes')).put(id, { column: 'c', model: 'claude-sonnet-5', context: 1000, cost_usd: 0, session_id: 's1' });
-  writeFileSync(join(dir, `${id}.md`), `# ${id}\n\n## Definition of Done\n\n- ship it\n`, 'utf8');
   new Registry(join(dir, 'registry')).admit({ goal: id, cwd: dir, briefPath: join(dir, `${id}.md`), pid: process.pid });
   const journal = new Journal(journalPath);
   journal.append({ event: 'run.started', run: id, actor: 'runner' });
@@ -376,8 +376,10 @@ describe('every Conductor tool calls its named existing function; the six irreve
     },
     pause: {
       setup: () => liveLane('alpha'), input: { lane: 'alpha' },
-      resultMatches: /paused/,
-      before: () => { expect(actuator.parked).toEqual(['alpha']); expect(replay(journalPath).events.some((row) => row.event === 'run.parked' && row['run'] === 'alpha')).toBe(true); },
+      // pauseRun's own honest 501: a mid-turn pause is not wired, and the tool says so
+      // in that function's words rather than claiming a pause that never happened.
+      resultMatches: /refused: alpha can't be paused mid-turn/,
+      before: () => { expect(actuator.parked).toEqual([]); },
     },
     resume: {
       setup: () => { liveLane('alpha'); appendOnce(journalPath, { event: 'run.paused', run: 'alpha', actor: 'runner' }); },
@@ -397,7 +399,7 @@ describe('every Conductor tool calls its named existing function; the six irreve
       after: () => { expect([...readRetired(retiredPath(dir)).keys()]).toEqual([DEAD]); expect(replay(journalPath).events.some((row) => row.event === 'lane.retired')).toBe(true); },
     },
     unretire: {
-      setup: () => { deadLane(); writeFileSync(retiredPath(dir).replace(/retired\.jsonl$/, ''), '', { flag: 'a' }); },
+      setup: () => deadLane(),
       input: { lane: DEAD }, resultMatches: new RegExp(`unretired ${DEAD}`),
       before: () => { expect(readRetired(retiredPath(dir)).has(DEAD)).toBe(false); expect(replay(journalPath).events.some((row) => row.event === 'lane.retired' && row['retired'] === false)).toBe(true); },
     },
@@ -423,8 +425,9 @@ describe('every Conductor tool calls its named existing function; the six irreve
       resultMatches: /sent to alpha/, before: () => { expect(inboxFiles('alpha')).toBe(1); },
     },
     amend_run: {
-      setup: () => liveLane('alpha'), input: { lane: 'alpha', text: 'also update the docs' },
-      resultMatches: /amended alpha/,
+      setup: () => { liveLane('alpha'); writeFileSync(join(dir, 'alpha.md'), ['goal alpha', '', '## Definition of Done', '', '- ship it', ''].join('\n'), 'utf8'); },
+      input: { lane: 'alpha', text: 'also update the docs' },
+      resultMatches: /amended /,
       before: () => {
         expect(readFileSync(join(dir, 'alpha.md'), 'utf8')).toMatch(/## Amendment/);
         expect(replay(journalPath).events.some((row) => row.event === 'brief.amended' && row['run'] === 'alpha')).toBe(true);
@@ -434,7 +437,7 @@ describe('every Conductor tool calls its named existing function; the six irreve
     answer_ask: {
       setup: () => {
         liveLane('alpha');
-        new Inbox(join(dir, 'inbox')).ask({ runs: ['alpha'], question: 'Restart the forge MCP connection?', options: ['Restart', 'Skip'], kind: 'question' } as never);
+        new Inbox(join(dir, 'inbox')).raise({ run: 'alpha', question: 'Restart the forge MCP connection?' });
       },
       input: { text: 'Restart' }, resultMatches: /Answered "Restart the forge MCP connection\?": Restart/,
       before: () => { expect(new Inbox(join(dir, 'inbox')).open()).toHaveLength(0); },
@@ -446,9 +449,9 @@ describe('every Conductor tool calls its named existing function; the six irreve
     },
     set_run_cap: {
       setup: () => liveLane('alpha'), input: { lane: 'alpha', tokens: 50_000 },
-      resultMatches: /cap of 50k tokens proposed for alpha, waiting on Confirm/,
-      before: () => { expect(readCapsOverrides(join(dir, 'console', 'caps.json')).runCaps?.['alpha']).toBeUndefined(); },
-      after: () => { expect(readCapsOverrides(join(dir, 'console', 'caps.json')).runCaps?.['alpha']).toBe(50_000); },
+      resultMatches: /cap of 50\.0k tokens proposed for alpha, waiting on Confirm/,
+      before: () => { expect(readCapsOverrides(join(dir, 'console', 'caps.json')).perRun?.['alpha']).toBeUndefined(); },
+      after: () => { expect(readCapsOverrides(join(dir, 'console', 'caps.json')).perRun?.['alpha']).toBe(50_000); },
     },
     spend_today: { input: {}, resultMatches: /spent 0 tokens today/ },
     what_stuck: { input: {}, resultMatches: /Nothing is stuck\./ },
