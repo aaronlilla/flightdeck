@@ -29,6 +29,10 @@ export interface TicketSheetProps {
    *  still gets a working sheet. */
   labelFor?: (id: string) => string | null;
   onClose: () => void;
+  /** Item 15: the same plain/verbose switch the top bar carries, discoverable from
+   *  the sheet header too -- optional so a caller with no toggle wired yet still
+   *  gets a working sheet, with the switch simply absent from its header. */
+  onToggleVerbose?: () => void;
   onCommand: (id: string, cmd: string) => void;
   onOpenCost: (id: string) => void;
   onOpenSandbox: (id: string) => void;
@@ -260,8 +264,8 @@ function JournalPanel({ entries }: { entries: JournalNarrativeEntry[] }): JSX.El
 /** Ticket sheet: band, id/model/repo/attempt, cost, context, pipeline rail, journal, run thread. */
 export function TicketSheet(props: TicketSheetProps): JSX.Element {
   const {
-    lane, feedLive, now, focus, verbose = false, labelFor, onClose, onCommand, onOpenCost, onOpenSandbox, onSendLane,
-    onAmendLane, onUndo, onOpenJournal,
+    lane, feedLive, now, focus, verbose = false, labelFor, onClose, onToggleVerbose, onCommand, onOpenCost, onOpenSandbox,
+    onSendLane, onAmendLane, onUndo, onOpenJournal,
   } = props;
   const [thread, setThread] = useState<Message[]>([]);
   const [journal, setJournal] = useState<JournalNarrativeEntry[]>([]);
@@ -385,7 +389,22 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
     >
       <div className="lbl" style={{ background: band.bg, color: band.ink, padding: '7px 20px', display: 'flex', justifyContent: 'space-between', gap: 12, borderRadius: '3px 3px 0 0' }}>
         <span>{band.text}</span>
-        <span style={{ cursor: 'pointer' }} {...actionable(onClose)}>esc to close ✕</span>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          {/* Item 15: the same plain/verbose switch the top bar carries, right where
+              a person is actually reading raw ids and looking for a way out of them --
+              the top bar's own chip is out of sight the moment a sheet covers it. */}
+          {onToggleVerbose ? (
+            <span
+              className="chip chipB" data-testid="ticket-sheet-verbose-chip"
+              title="show raw ids and every row"
+              style={{ cursor: 'pointer' }}
+              {...actionable(onToggleVerbose)}
+            >
+              {verbose ? 'verbose' : 'plain'}
+            </span>
+          ) : null}
+          <span style={{ cursor: 'pointer' }} {...actionable(onClose)}>esc to close ✕</span>
+        </span>
       </div>
       {/* The header through the pipeline can run long (a full Summary, a wide
           pipeline) at a short viewport -- wrapped in its own scrollable region,

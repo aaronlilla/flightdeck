@@ -8,6 +8,7 @@ import { Journal, replay } from '../../../src/forge/journal.js';
 import { computeRunThread, computeThread } from '../../../src/forge/console/thread.js';
 import type { InboxEntry } from '../../../src/forge/inbox.js';
 import type { Message } from '../../../src/shared/console-model.js';
+import { clock } from '../../../src/shared/humanize.js';
 
 function tempJournal(): { path: string; journal: Journal } {
   const dir = mkdtempSync(join(tmpdir(), 'console-thread-'));
@@ -160,6 +161,35 @@ describe('computeThread: plain mode (deliverable 8)', () => {
     const operator = result.messages.find((m) => m.type === 'operator');
     expect(operator?.text).toBe('kill S-b9d39bae548707e0');
   });
+
+  // Item 7: a confirm card's text and blast line, and a question card's opts, all
+  // carry machine ids the same way a reply or refusal can -- every text-bearing field
+  // on every card needs the same strip, not only the fields the earlier fix covered.
+  it('strips machine ids out of a persisted confirm card\'s text and blast line', () => {
+    const persisted: Message[] = [
+      {
+        k: 'm1', type: 'confirm', text: 'confirm? queue-BBZ-182 is killed immediately', ts: 1, source: 'system',
+        blast: 'its worktree and process are gone for jira_BBZ-182_1788543015139',
+      },
+    ];
+    const result = computeThread(persisted, [], 10_000);
+    const confirm = result.messages.find((m) => m.type === 'confirm');
+    expect(confirm?.text).not.toMatch(/queue-BBZ-182|jira_/);
+    expect(confirm?.text).toContain('BBZ-182');
+    expect(confirm?.blast).not.toMatch(/jira_/);
+    expect(confirm?.blast).toContain('BBZ-182');
+  });
+
+  it('strips machine ids out of a live open question card', () => {
+    const entry: InboxEntry = {
+      key: 'ask-1', question: 'PR #39 (S-b9d39bae548707e0) is open, draft, and mergeable', options: ['Yes'],
+      kind: 'question', runs: ['S-b9d39bae548707e0'], goals: [], asked: 1, at: 2_000, disposition: 'park',
+    };
+    const result = computeThread([], [], 10_000, [entry]);
+    const question = result.messages.find((m) => m.type === 'question');
+    expect(question?.text).not.toMatch(/S-[0-9a-f]{12,}/);
+    expect(question?.text).toContain('this run');
+  });
 });
 
 describe('computeRunThread', () => {
@@ -233,7 +263,7 @@ describe('computeRunThread: plain mode (deliverable 7)', () => {
 
     const result = computeRunThread('alpha', fleet.events, []);
     expect(result.messages.map((m) => m.text)).toContain(
-      `Started on Sonnet at ${new Date(fleet.events[0]!.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`,
+      `Started on Sonnet at ${clock(fleet.events[0]!.at)}`,
     );
   });
 
@@ -245,7 +275,7 @@ describe('computeRunThread: plain mode (deliverable 7)', () => {
 
     const result = computeRunThread('alpha', fleet.events, []);
     expect(result.messages.map((m) => m.text)).toContain(
-      `Started at ${new Date(fleet.events[0]!.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`,
+      `Started at ${clock(fleet.events[0]!.at)}`,
     );
   });
 
@@ -357,5 +387,36 @@ describe('computeRunThread: plain mode (deliverable 7)', () => {
     for (const message of result.messages) {
       expect(message.text).not.toMatch(idPattern);
     }
+  });
+
+  // Item 6: the run thread's own run.parked line reused to show the raw ask key
+  // straight off `row.reason`; it must run through the same fix as the story panel.
+  it('a run.parked "parking on <key>:" row reads as "Parked: Asked you: ..." with no ask key visible', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.append({
+      event: 'run.parked', run: 'alpha', actor: 'runner',
+      reason: 'parking on a1b2c3d4e5f6a7b8: PR #39 (S-b9d39bae548707e0) is open',
+    });
+    journal.close();
+    const fleet = replay(path);
+
+    const result = computeRunThread('alpha', fleet.events, []);
+    const texts = result.messages.map((m) => m.text);
+    expect(texts).toContain('Parked: Asked you: PR #39 (this run) is open');
+  });
+
+  it('a note row reads "Note: <message>" when message is a string, and is dropped otherwise', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.append({ event: 'note', run: 'alpha', actor: 'system', message: 'reconciled: resumed by session id' });
+    journal.append({ event: 'note', run: 'alpha', actor: 'system' });
+    journal.close();
+    const fleet = replay(path);
+
+    const result = computeRunThread('alpha', fleet.events, []);
+    const texts = result.messages.map((m) => m.text);
+    expect(texts).toContain('Note: reconciled: resumed by session id');
+    expect(texts.filter((t) => t.startsWith('Note:') || t.startsWith('note'))).toHaveLength(1);
   });
 });

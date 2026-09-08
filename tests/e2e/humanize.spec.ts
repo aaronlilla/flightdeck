@@ -50,7 +50,10 @@ test.describe('(b) verbose mode brings the ids back', () => {
     await expect(sheet).toBeVisible();
     await expect(sheet.getByTestId('ticket-sheet-id-chip')).toHaveCount(0);
 
-    await page.getByText('plain', { exact: true }).click();
+    // Item 15: the sheet carries its own plain/verbose chip beside "esc to close",
+    // so the switch is reachable from the sheet itself, not only the top bar the
+    // sheet is now covering.
+    await sheet.getByTestId('ticket-sheet-verbose-chip').click();
     await expect(sheet.getByTestId('ticket-sheet-id-chip')).toBeVisible();
     await expect(sheet.getByTestId('ticket-sheet-id-chip')).toContainText('FLT-201');
     const thread = sheet.getByTestId('ticket-sheet-thread');
