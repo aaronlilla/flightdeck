@@ -1652,6 +1652,15 @@ describe('W1: an auth or rate-limit gh failure is a credential lapse, never a re
       expect(lapses).toEqual([{ account: 'github', run: `w1-${slug}`, pid: process.pid }]);
       const inbox = new Inbox(join(home, `inbox-w1-${slug}`));
       expect(inbox.open()).toHaveLength(0);
+      // The journal line a person reads. The live probe printed "hit a auth failure"
+      // before this assertion existed.
+      const note = replay(journalPath).events.find(
+        (e) => e.event === 'note' && e.run === `w1-${slug}` && String(e['note']).includes('drift check hit'),
+      );
+      expect(note?.['note']).toBe(
+        `drift check hit ${slug === 'auth' ? 'an auth' : 'a rate-limit'} failure on github; `
+        + 'recorded as a credential lapse rather than base drift',
+      );
     });
   }
 

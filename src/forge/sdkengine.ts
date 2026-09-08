@@ -1033,8 +1033,9 @@ export class SdkEngine implements EngineLike {
                 if (outcome.kind === 'credential-lapse') {
                   journal.append({
                     event: 'note', run: request.run, actor: 'runner',
-                    note: `drift check hit a ${read.reason} failure on ${outcome.account}; `
-                      + 'recorded as a credential lapse rather than base drift',
+                    note: `drift check hit ${read.reason === 'auth' ? 'an auth' : 'a rate-limit'} `
+                      + `failure on ${outcome.account}; recorded as a credential lapse `
+                      + 'rather than base drift',
                   });
                   if (!credentialHorizon) return;
                   const disposition = await credentialHorizon.onLapse(
