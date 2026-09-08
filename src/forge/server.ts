@@ -33,6 +33,7 @@ import { buildRestarters } from './console/blockers-restart.js';
 import { resumeRun } from './console/run-actions.js';
 import { runtimeVersion } from './launcher.js';
 import { readQueuePaused, writeQueuePaused } from './console/queue-pause.js';
+import { writeQueueWidth } from './console/queue-width.js';
 import type { Actuator, Reasoner } from './contracts.js';
 import { isAskStale, projectStaleness, type Inbox } from './inbox.js';
 import { appendOnce, Journal, JournalCache, type RangeReader } from './journal.js';
@@ -337,6 +338,12 @@ export class ForgeServer {
       ...(options.modelPolicyPath ? { modelPolicyPath: options.modelPolicyPath } : {}),
     });
     this.queueMergeDepsOpt = options.queueMergeDeps;
+    // Queue-throughput W2: an explicit `queueMaxInFlight` (from `FORGE_QUEUE_MAX_IN_FLIGHT`
+    // via cli.ts, or a test's own option) seeds the on-disk width every time this server
+    // starts, the same "options.foo ?? default" precedence every other option here follows.
+    // A later `POST /queue/width` still wins for the rest of this process's life --
+    // `response()` and the ticker both read the file fresh, never this captured option.
+    if (options.queueMaxInFlight !== undefined) writeQueueWidth(options.queueMaxInFlight);
     this.queueRoutes = new QueueRoutes({
       store: this.queueStoreForMerge,
       search: options.queueSearch ?? {
@@ -347,7 +354,8 @@ export class ForgeServer {
       authorized: (request, response) => this.authorized(request, response),
       readPaused: () => readQueuePaused(),
       writePaused: (paused) => writeQueuePaused(paused),
-      maxInFlight: options.queueMaxInFlight ?? 2,
+      maxInFlight: options.queueMaxInFlight ?? 4,
+      publish: (event) => this.publish(event),
       ...(options.queueMergeDeps ? { mergeDeps: options.queueMergeDeps } : {}),
       ...(options.queuePromoteDeps ? { promoteDeps: options.queuePromoteDeps } : {}),
     });

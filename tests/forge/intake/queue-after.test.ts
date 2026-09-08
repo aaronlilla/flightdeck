@@ -38,7 +38,7 @@ interface FixtureOverrides {
   gate?: ChainGateFn;
   killSwitch?: () => boolean;
   paused?: () => boolean;
-  maxInFlight?: number;
+  maxInFlight?: () => number;
   branchMerged?: QueueRuntimeDeps['branchMerged'];
 }
 
@@ -71,7 +71,7 @@ function buildDeps(store: QueueStore, overrides: FixtureOverrides = {}): { deps:
     clock: () => 1_000,
     killSwitch: overrides.killSwitch ?? (() => false),
     paused: overrides.paused ?? (() => false),
-    maxInFlight: overrides.maxInFlight ?? 5,
+    maxInFlight: overrides.maxInFlight ?? (() => 5),
     append: (event) => {
       seq += 1;
       const id = `e${seq}`;

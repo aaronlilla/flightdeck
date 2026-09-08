@@ -437,6 +437,15 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       // an add from the console and an advance from the worker are never reading two
       // different views of the same file mid-tick.
       const queueStore = new QueueStore(queuePath());
+      // Queue-throughput W2: FORGE_QUEUE_MAX_IN_FLIGHT seeds the on-disk width for this
+      // `forge up` -- an out-of-range or non-integer value is the same as not setting it
+      // at all, since ForgeServer's own `?? 4` default is the honest fallback, not a
+      // half-applied env value.
+      const envQueueMaxInFlight = Number(process.env['FORGE_QUEUE_MAX_IN_FLIGHT']);
+      const queueMaxInFlight = Number.isInteger(envQueueMaxInFlight)
+        && envQueueMaxInFlight >= 1 && envQueueMaxInFlight <= 12
+        ? envQueueMaxInFlight
+        : undefined;
       const server = new ForgeServer({
         lanes, inbox, journalPath: journalPath(), journalCache: sharedJournalCache, registry,
         stuck: () => liveness.stuck(),
@@ -446,6 +455,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           return Array.isArray(read) ? read.map((proc) => ({ ...proc })) : read;
         },
         queueStore,
+        ...(queueMaxInFlight !== undefined ? { queueMaxInFlight } : {}),
         // A.7: Merge and Promote are clicks. Merge reuses the gate with `merge: true` for
         // repos on FORGE_QUEUE_MERGE_REPOS and then reads the develop deploy's outcome per
         // platform; Promote reports whether the production workflow exists and refuses
