@@ -281,9 +281,15 @@ export function MessageCard({
           <div style={{ padding: '10px 12px', font: '13px/1.5 "IBM Plex Sans",sans-serif' }}><Linkify text={message.text} repo={repo} /></div>
           {message.answer === undefined ? (
             <>
-              <div style={{ display: 'flex', gap: 6, padding: '0 12px 10px', flexWrap: 'wrap' }}>
+              {/* One option per row, full width, text wrapping: an option is a sentence a
+                 worker wrote, and a no-wrap pill ran off the rail (2026-09-08). */}
+              <div data-testid="question-options" style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '0 12px 10px' }}>
                 {message.opts?.map((o) => (
-                  <span key={o} className="btnA" style={{ padding: '6px 10px', fontSize: '9.5px' }} {...actionable(() => onCommand(`answer ${message.askKey ?? ''} ${o}`))}>
+                  <span
+                    key={o} className="btnA"
+                    style={{ padding: '7px 10px', fontSize: '10.5px', whiteSpace: 'normal', textAlign: 'left', justifyContent: 'flex-start', overflowWrap: 'anywhere', width: '100%', lineHeight: 1.35, letterSpacing: 0.3, textTransform: 'none' }}
+                    {...actionable(() => onCommand(`answer ${message.askKey ?? ''} ${o}`))}
+                  >
                     {o}
                   </span>
                 ))}

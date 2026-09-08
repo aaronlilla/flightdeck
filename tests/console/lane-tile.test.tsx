@@ -220,7 +220,7 @@ describe('LaneTile', () => {
       const marker = screen.getByTestId('live-marker');
       expect(screen.getByTestId('tile-footer').contains(marker)).toBe(true);
       expect(marker.querySelector('.live-pulse')).not.toBeNull();
-      expect((marker as HTMLElement).style.justifySelf).toBe('center');
+      expect((marker as HTMLElement).style.justifyContent).toBe('center');
       const header = container.querySelector('.lane > div:first-child') as HTMLElement;
       expect(header.querySelector('.live-pulse')).toBeNull();
     });

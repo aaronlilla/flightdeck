@@ -99,6 +99,20 @@ describe('ConductorRail', () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
+  it('stacks long options one per row and lets their text wrap instead of running off the rail (2026-09-08)', () => {
+    const long = 'Close this queue-brief ticket as a misroute with no changes, since the brief was written for a hand session and the queue launched it elsewhere';
+    renderRail([{
+      k: 'q2', type: 'question', text: 'How should this ticket be closed out?', ts: Date.now(), source: 'FLT-2',
+      askKey: 'ask-2', opts: [long, 'Rebase onto origin/main and continue'],
+    }]);
+    const list = screen.getByTestId('question-options') as HTMLElement;
+    expect(list.style.flexDirection).toBe('column');
+    const option = screen.getByText(long) as HTMLElement;
+    expect(option.style.whiteSpace).toBe('normal');
+    expect(option.style.width).toBe('100%');
+    expect(option.style.overflowWrap).toBe('anywhere');
+  });
+
   it('shows the answered state once a question carries an answer', () => {
     renderRail([{
       k: 'q1', type: 'question', text: 'NOT NULL or nullable?', ts: Date.now(), source: 'FLT-1',
