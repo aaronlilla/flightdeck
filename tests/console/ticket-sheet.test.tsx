@@ -371,7 +371,7 @@ describe('TicketSheet: Summary block', () => {
     );
     await waitFor(() => expect(screen.getByText('the story landed too')).toBeInTheDocument());
     expect(screen.getByText('landed fast')).toBeInTheDocument();
-    expect(screen.queryByTestId('ticket-sheet-summary')).not.toBeInTheDocument();
+    expect(screen.getByTestId('ticket-sheet-summary')).toHaveTextContent('Checking the PR, its checks and the audit');
   });
 
   it('renders what/status/audit/readiness and Re-check/Re-audit buttons', async () => {

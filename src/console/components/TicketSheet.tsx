@@ -179,7 +179,14 @@ function SummaryPanel({
       </div>
     );
   }
-  if (!summary) return null;
+  if (!summary) {
+    return (
+      <div data-testid="ticket-sheet-summary" style={{ padding: '18px 22px', borderBottom: '1px solid var(--line)' }}>
+        <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 10 }}>Summary</div>
+        <div className="m" style={{ fontSize: '11.5px', color: 'var(--ink3)' }}>Checking the PR, its checks and the audit…</div>
+      </div>
+    );
+  }
   const { audit, readiness } = summary;
   const auditLine = audit
     ? `Council ${audit.verdict}, ${audit.reviewed} of ${audit.total} reviewed, `
@@ -464,7 +471,7 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
           </div>
         </div>
       </div>
-      {lane.pr && lane.mergeable && lane.mergeable.ok === false ? (
+      {lane.pr && !lane.pr.merged && lane.mergeable && lane.mergeable.ok === false ? (
         <div className="m" style={{ padding: '8px 22px 0', fontSize: '10.5px', color: 'var(--ink3)' }}>
           Why not merged: {lane.mergeable.why}
         </div>
