@@ -348,6 +348,32 @@ describe('TicketSheet: Summary block', () => {
     await waitFor(() => expect(Element.prototype.scrollIntoView).toHaveBeenCalled());
   });
 
+  // Item 5: the live board's own `/run/:id/summary` took 11 s while the story
+  // (1,387 ms) and the thread (68 ms) landed fast -- the sheet's body must never wait
+  // on the slowest of the three. A summary promise that never resolves must not stop
+  // the story or the thread from rendering the moment their own fetch lands.
+  it('renders the story and the thread even while the summary is still loading', async () => {
+    vi.mocked(api.getRunSummary).mockImplementation(() => new Promise<never>(() => {}));
+    vi.mocked(api.getRunThread).mockResolvedValue({
+      messages: [{ k: 'm1', type: 'reply', text: 'landed fast', ts: 1, source: 'S-1' }],
+    });
+    vi.mocked(api.getRunJournal).mockResolvedValue({ entries: [] });
+    vi.mocked(api.getRunStory).mockResolvedValue({
+      id: 'x', title: null, kind: 'manual', ticket: null, brief: null,
+      entries: [{ at: 1, kind: 'plan', text: 'the story landed too', url: null }],
+    });
+    render(
+      <TicketSheet
+        lane={lane()} feedLive now={Date.now()}
+        onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop} onSendLane={noop}
+        onAmendLane={noop} onUndo={noop} onOpenJournal={noop}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText('the story landed too')).toBeInTheDocument());
+    expect(screen.getByText('landed fast')).toBeInTheDocument();
+    expect(screen.queryByTestId('ticket-sheet-summary')).not.toBeInTheDocument();
+  });
+
   it('renders what/status/audit/readiness and Re-check/Re-audit buttons', async () => {
     vi.mocked(api.getRunSummary).mockResolvedValue({
       what: ['wired the summary block.', 'added the drift check.'],
@@ -396,6 +422,31 @@ describe('TicketSheet: Summary block', () => {
     );
     await waitFor(() => expect(screen.getByTestId('ticket-sheet-audit')).toHaveTextContent('Not audited.'));
     expect(screen.getByTestId('ticket-sheet-readiness')).toHaveTextContent('Not ready: not audited yet.');
+  });
+
+  // Item 1: the live board printed "the base branch gained 46 commits since. base
+  // gained 46 commits since." -- `readiness.why` already carries the drift clause
+  // (`summary.ts#computeReadiness`); the sheet must never say it a second time.
+  it('never repeats the drift clause -- readiness.why already carries it', async () => {
+    vi.mocked(api.getRunSummary).mockResolvedValue({
+      what: [], status: 's', next: 'Not ready yet.', audit: null,
+      readiness: {
+        ok: false, why: 'the base branch gained 46 commits since', checks: 'success', behindBase: 46, headMoved: false,
+      },
+    });
+    vi.mocked(api.getRunThread).mockResolvedValue({ messages: [] });
+    vi.mocked(api.getRunJournal).mockResolvedValue({ entries: [] });
+    vi.mocked(api.getRunStory).mockResolvedValue({ id: 'x', title: null, kind: 'manual', ticket: null, brief: null, entries: [] });
+    render(
+      <TicketSheet
+        lane={lane()} feedLive now={Date.now()}
+        onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop} onSendLane={noop}
+        onAmendLane={noop} onUndo={noop} onOpenJournal={noop}
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId('ticket-sheet-readiness')).toHaveTextContent('gained 46 commits since'));
+    const text = screen.getByTestId('ticket-sheet-readiness').textContent ?? '';
+    expect(text.match(/gained 46 commits since/g)).toHaveLength(1);
   });
 
   it('Re-check calls the API and refreshes the summary in place', async () => {
@@ -449,5 +500,32 @@ describe('TicketSheet: Summary block', () => {
     await waitFor(() => expect(screen.getByText('Re-auditing…')).toBeInTheDocument());
     await waitFor(() => expect(screen.getByTestId('ticket-sheet-audit')).toHaveTextContent('PASS'), { timeout: 5_000 });
     expect(screen.getByText('Re-audit')).toBeInTheDocument();
+  });
+});
+
+describe('TicketSheet: reply label (item 6)', () => {
+  // Item 6: the live sheet labelled the worker's own report with the lane's whole
+  // title, in capitals -- `MessageCard`'s reply label falls back to `labelFor(source)`,
+  // and the sheet was passing the board-wide title lookup straight through. Every
+  // reply inside a run's own thread is that run's own report, so it always reads
+  // "Worker", never a lookup that can resolve to the lane's title.
+  it('labels a run\'s own report "Worker", never the lane\'s title, even when labelFor is wired', async () => {
+    const laneId = 'jira_AB-12_1788460932645';
+    vi.mocked(api.getRunThread).mockResolvedValue({
+      messages: [{ k: 'm1', type: 'reply', text: 'dedupe warden.health on an open unregistered trip', ts: 1, source: laneId }],
+    });
+    vi.mocked(api.getRunJournal).mockResolvedValue({ entries: [] });
+    vi.mocked(api.getRunStory).mockResolvedValue({ id: laneId, title: null, kind: 'manual', ticket: null, brief: null, entries: [] });
+    vi.mocked(api.getRunSummary).mockResolvedValue({ what: [], status: '', next: '', audit: null, readiness: null });
+    render(
+      <TicketSheet
+        lane={lane({ id: laneId })} feedLive now={Date.now()}
+        labelFor={() => 'DEDUPE WARDEN.HEALTH ON AN OPEN UNREGISTERED TRIP'}
+        onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop} onSendLane={noop}
+        onAmendLane={noop} onUndo={noop} onOpenJournal={noop}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText('dedupe warden.health on an open unregistered trip')).toBeInTheDocument());
+    expect(screen.getByTestId('reply-label')).toHaveTextContent('Worker');
   });
 });

@@ -59,7 +59,7 @@ function useMessageRepo(message: Message): string | null {
  *  with the exact same per-type card the Conductor rail uses, rather than a
  *  second, drifting copy of this switch. */
 export function MessageCard({
-  message, feedLive, now, verbose = false, labelFor, onCommand, onUndo, onOpenJournal,
+  message, feedLive, now, verbose = false, labelFor, replyLabel, onCommand, onUndo, onOpenJournal,
 }: {
   message: Message; feedLive: boolean; now: number;
   /** 2026-09-08: plain by default. A `receipt`'s own jid text renders only in
@@ -69,6 +69,13 @@ export function MessageCard({
    *  ("Question from <label>"). Falls back to the raw source id when unset or
    *  when it knows nothing about that particular id. */
   labelFor?: (id: string) => string | null;
+  /** Item 6: overrides a `reply` card's own label outright, skipping `labelFor`
+   *  entirely -- the ticket sheet passes `'Worker'`, since every reply inside a run's
+   *  own thread is that run's own report and `labelFor` there resolves to the lane's
+   *  whole title (the live sheet's own bug: a report labelled in capitals with the
+   *  lane's title). The board-wide rail leaves this unset and keeps `labelFor(source)`,
+   *  since a rail mixes replies from many different runs. */
+  replyLabel?: string;
   onCommand: (text: string) => void; onUndo: (jid: string) => void; onOpenJournal: (jid: string) => void;
 }): JSX.Element {
   const [free, setFree] = useState('');
@@ -112,7 +119,8 @@ export function MessageCard({
       // root-cause report inside its run thread -- a reply is labeled that only
       // when it actually came from the conductor/console/system; anything else
       // names the run it came from (or "Worker" when nothing can name it).
-      const replySource = CONDUCTOR_REPLY_SOURCES.has(message.source) ? 'Conductor' : (labelFor?.(message.source) ?? 'Worker');
+      const replySource = replyLabel
+        ?? (CONDUCTOR_REPLY_SOURCES.has(message.source) ? 'Conductor' : (labelFor?.(message.source) ?? 'Worker'));
       return (
         <div style={{ maxWidth: '92%' }}>
           <div className="lbl" data-testid="reply-label" style={{ color: 'var(--ink3)', marginBottom: 3 }}>{replySource}</div>

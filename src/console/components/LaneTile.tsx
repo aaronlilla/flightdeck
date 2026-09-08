@@ -10,7 +10,7 @@ import type { TipContent } from '../laneVM.js';
 import { computeFreshness, freshnessClass, freshnessStamp } from '../freshness.js';
 import type { Lane } from '../../shared/console-model.js';
 import { fmtTokens } from '../../shared/format-tokens.js';
-import { shortenShas } from '../../shared/humanize.js';
+import { shortenShas, stripMachineIds } from '../../shared/humanize.js';
 import type { TipSpec } from '../store.js';
 import { Linkify } from './Linkify.js';
 
@@ -98,7 +98,7 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
   // here rather than leaving the line empty; a lane with neither renders nothing.
   // A lane with neither a title nor a ticket key (a manual run) is named by its own
   // slug: the operator typed that name, so it is the one they know.
-  const titleLineText = lane.title ?? headline.key ?? (lane.kind === 'manual' ? lane.id : null);
+  const titleLineText = lane.title ?? headline.key ?? (lane.kind === 'manual' && stripMachineIds(lane.id) === lane.id ? lane.id : null);
   const titleFontSize = headline.key ? 12 : 13;
   const titleFontWeight = headline.key ? 400 : 700;
 

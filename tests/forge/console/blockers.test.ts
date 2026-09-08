@@ -59,6 +59,31 @@ describe('detectBlockers: integration', () => {
     }));
     expect(blockers).toHaveLength(0);
   });
+
+  // Item 7: the live board listed Amplitude, context7 and knowledge -- MCP servers
+  // nothing on the board depends on -- as blockers. A down integration only belongs
+  // here when something actually waits on it.
+  it('a down integration with no dependents and no blocked lane yields no blocker', () => {
+    const blockers = detectBlockers(baseInputs({
+      integrations: [{
+        id: 'amplitude', name: 'Amplitude', status: 'down', cause: 'no route to host',
+        fix: null, fixLabel: null, since: 900, dependents: [],
+      }],
+    }));
+    expect(blockers).toHaveLength(0);
+  });
+
+  it('the same down integration with one dependent lane yields one blocker', () => {
+    const blockers = detectBlockers(baseInputs({
+      integrations: [{
+        id: 'amplitude', name: 'Amplitude', status: 'down', cause: 'no route to host',
+        fix: null, fixLabel: null, since: 900, dependents: ['S-run1'],
+      }],
+      lanes: [{ id: 'S-run1', title: 'ship analytics', repo: null, state: 'blocked', observedAt: 900, pr: null, mergeable: null }],
+    }));
+    expect(blockers).toHaveLength(1);
+    expect(blockers[0]!.id).toBe('integration:amplitude');
+  });
 });
 
 describe('detectBlockers: checks', () => {
@@ -82,6 +107,45 @@ describe('detectBlockers: checks', () => {
     expect(blockers).toHaveLength(1);
     expect(blockers[0]!.blocks).toHaveLength(2);
   });
+
+  // Item 8: the live view printed a 120-character title twice per step, and a ticket
+  // key -- when there is one -- is what a person actually recognizes a lane by.
+  it('labels a lane by its ticket key when it has one, ahead of its title', () => {
+    const [blocker] = detectBlockers(baseInputs({
+      lanes: [{
+        id: 'S-run1', title: 'stale-session fix', ticket: 'BBZ-96', repo: 'o/r', state: 'blocked', observedAt: 500,
+        pr: { no: 39, checks: 'failure' }, mergeable: null,
+      }],
+    }));
+    expect(blocker!.blocks).toEqual([{ laneId: 'S-run1', label: 'BBZ-96' }]);
+  });
+
+  it('trims a long title to 60 characters at a word boundary, never the raw 120-character title', () => {
+    const longTitle = 'dedupe warden.health on an open unregistered trip that was never claimed by any lane in the registry at all';
+    const [blocker] = detectBlockers(baseInputs({
+      lanes: [{
+        id: 'S-run1', title: longTitle, repo: 'o/r', state: 'blocked', observedAt: 500,
+        pr: { no: 39, checks: 'failure' }, mergeable: null,
+      }],
+    }));
+    const label = blocker!.blocks[0]!.label;
+    expect(label.length).toBeLessThanOrEqual(60);
+    expect(label).not.toBe(longTitle);
+    expect(longTitle.startsWith(label)).toBe(true);
+  });
+
+  // Item 8: `since` is the failed run's own time, not the moment the Blockers view
+  // happened to be opened -- `inputs.now` was standing in for both.
+  it('reads since off the affected lane\'s own observedAt, not the view\'s open time', () => {
+    const [blocker] = detectBlockers(baseInputs({
+      now: 999_000,
+      lanes: [{
+        id: 'S-run1', title: 'stale-session fix', repo: 'o/r', state: 'blocked', observedAt: 500,
+        pr: { no: 39, checks: 'failure' }, mergeable: null,
+      }],
+    }));
+    expect(blocker!.since).toBe(500);
+  });
 });
 
 describe('detectBlockers: billing', () => {
@@ -94,6 +158,22 @@ describe('detectBlockers: billing', () => {
     }));
     expect(blocker!.id).toBe('billing:aaronlilla/flightdeck');
     expect(blocker!.links).toContainEqual({ label: 'GitHub billing settings', url: 'https://github.com/settings/billing' });
+  });
+
+  // Item 8: the same since-is-view-open-time bug applied to billing blockers.
+  it('reads since off the affected lane\'s own observedAt, not the view\'s open time', () => {
+    const [blocker] = detectBlockers(baseInputs({
+      now: 999_000,
+      billing: [{
+        repo: 'aaronlilla/flightdeck', pr: 39, runId: 'run-1', headSha: 'f284c65',
+        message: 'payments have failed',
+      }],
+      lanes: [{
+        id: 'S-run1', title: 'stale-session fix', repo: 'aaronlilla/flightdeck', state: 'blocked', observedAt: 700,
+        pr: { no: 39, checks: 'failure' }, mergeable: null,
+      }],
+    }));
+    expect(blocker!.since).toBe(700);
   });
 });
 
@@ -173,7 +253,11 @@ describe('the billing -> checks -> question chain', () => {
 describe('orderChains', () => {
   it('gives an unrelated blocker its own one-step chain', () => {
     const blockers = detectBlockers(baseInputs({
-      integrations: [{ id: 'jira', name: 'Jira', status: 'down', cause: null, fix: null, fixLabel: null, since: null, dependents: [] }],
+      integrations: [{
+        id: 'jira', name: 'Jira', status: 'down', cause: null, fix: null, fixLabel: null, since: null,
+        dependents: ['S-run1'],
+      }],
+      lanes: [{ id: 'S-run1', title: 'file the ticket', repo: null, state: 'blocked', observedAt: 1, pr: null, mergeable: null }],
     }));
     expect(orderChains(blockers)).toEqual([['integration:jira']]);
   });

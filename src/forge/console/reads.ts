@@ -39,7 +39,7 @@ import {
 } from './lanes.js';
 import { computeLaneStory, type GitCommit } from './story.js';
 import { readRetired, retiredPath } from './retire.js';
-import { plainForQueueItem, plainStatus, type QueueVerdict } from './plain.js';
+import { plainForQueueItem, plainStatus, prMergedSentence, type QueueVerdict } from './plain.js';
 import { computeYou } from './laneGlance.js';
 import { readAttestationAtPath } from '../council/attest.js';
 import {
@@ -52,7 +52,7 @@ import { computeSandbox, newestLogFile, packetForRun, tailLogWithSeverity } from
 import { computeRunThread, computeThread, readThread, threadPath } from './thread.js';
 import { computeLaneSummary, computeReadiness, type PrFacts } from './summary.js';
 import type { MergeReadyReport } from '../../shared/console-model.js';
-import { gitDrift, type DriftFn } from './drift.js';
+import { gitDrift, type DriftFacts, type DriftFn } from './drift.js';
 import { readChainEnv } from '../chain-env.js';
 import { shortenShas, stripMachineIds } from '../../shared/humanize.js';
 
@@ -170,6 +170,7 @@ function defaultGhDetailLookup(): GhDetailLookupFn {
       return {
         headSha: parsed.headRefOid, isDraft: parsed.isDraft ?? false, merged: Boolean(parsed.mergedAt),
         title: parsed.title ?? '', checks: conclusionOf(parsed.statusCheckRollup), body: parsed.body ?? null,
+        mergedAt: parsed.mergedAt ? Date.parse(parsed.mergedAt) : null,
       };
     } catch {
       return undefined;
@@ -321,6 +322,39 @@ export class ConsoleReads {
    *  for `settlePrRefreshes()` (tests only) to wait on. Production never awaits this --
    *  a poll must never block on `gh`. */
   private pendingPrRefreshes: Promise<void>[] = [];
+
+  /** Item 2: `ghDetailLookup(repo, pr)` reads, cached per (repo, pr) for `PR_CACHE_TTL_MS`
+   *  -- the same window the board's own `pr-cache.json` uses. `GET /run/:id/summary`
+   *  used to call this twice in one request (once through `runStoryResponse`, once for
+   *  its own fresh read) and again on every re-open inside the same minute; that pair of
+   *  calls, plus a `git fetch` for drift, is the live console's own 11-second sheet. An
+   *  in-memory `Map` is enough: this cache only needs to survive one process's uptime,
+   *  never a restart, unlike the on-disk `pr-cache.json` other routes share. */
+  private readonly detailCache = new Map<string, { detail: GhPrDetail | undefined; at: number }>();
+
+  /** Item 2: `driftFn(...)` reads, cached the same way and for the same window, keyed by
+   *  repo, PR number and the head sha the drift check actually ran against. */
+  private readonly driftCache = new Map<string, { drift: DriftFacts; at: number }>();
+
+  private async cachedDetail(repo: string, pr: number): Promise<GhPrDetail | undefined> {
+    const key = `${repo}#${pr}`;
+    const now = Date.now();
+    const cached = this.detailCache.get(key);
+    if (cached && now - cached.at < PR_CACHE_TTL_MS) return cached.detail;
+    const detail = await this.ghDetailLookup(repo, pr);
+    this.detailCache.set(key, { detail, at: now });
+    return detail;
+  }
+
+  private async cachedDrift(args: Parameters<DriftFn>[0]): Promise<DriftFacts> {
+    const key = `${args.repo}#${args.pr}#${args.headSha ?? ''}#${args.attestationHead ?? ''}`;
+    const now = Date.now();
+    const cached = this.driftCache.get(key);
+    if (cached && now - cached.at < PR_CACHE_TTL_MS) return cached.drift;
+    const drift = await this.driftFn(args);
+    this.driftCache.set(key, { drift, at: now });
+    return drift;
+  }
 
   constructor(options: ConsoleReadsOptions = {}) {
     this.forgeHomeDir = options.forgeHomeDir ?? forgeHome();
@@ -576,12 +610,24 @@ export class ConsoleReads {
     // lane's fallback `pr` above can change what it should say (a bare `pr` now exists
     // where there was none), so it is recomputed here rather than left stale.
     if (pr !== lane.pr) patched.plain = plainStatus(patched, { now: Date.now() });
+    // Item 1: a merged PR outranks a stale queue state -- `buildLane`'s own
+    // `laneStateFor` never sees this `pr` (it is resolved above, later than the fold
+    // that set `state`), so a lane whose queue item still reads parked (or anything
+    // else) reads merged the moment its PR, recorded or discovered above, actually is
+    // one. Wins over the queue-item plain override below, since nothing about a merged
+    // PR is still waiting on whatever the queue item says.
+    const mergedNow = Boolean(pr?.merged) && patched.state !== 'merged';
+    if (mergedNow) {
+      patched.state = 'merged';
+      patched.reason = null;
+      patched.plain = prMergedSentence(pr);
+    }
     // H1.2 fix: once a queue item exists, its own state and reason win over whatever
     // the run's own verdict says -- a run can sit `unverified` while the item it drives
     // is already three states further on in `review`. `plainForQueueItem` answers
     // `null` for every queue state it has no stronger opinion about (`queued`,
     // `planning`, `running`, `failed`), and the run-based sentence above stands there.
-    if (queueItem) {
+    if (queueItem && !mergedNow) {
       const verdict = this.queueVerdictFor({ ...queueItem, ...(repo ? { repo } : {}) });
       // The checks clause reads the lane's own PR facts (the cache), which the queue
       // item never carries.
@@ -827,7 +873,7 @@ export class ConsoleReads {
     const repo = queueItem?.repo ?? packet?.repo ?? null;
     const prNo = queueItem?.pr?.no ?? lane?.pr?.no ?? null;
     if (repo && prNo) {
-      const detail = await this.ghDetailLookup(repo, prNo);
+      const detail = await this.cachedDetail(repo, prNo);
       if (detail) {
         const found = readAttestation(repo, prNo, detail.headSha);
         attestation = found;
@@ -846,11 +892,12 @@ export class ConsoleReads {
   }
 
   /** `GET /run/:id/summary` (2026-09-07): the ticket sheet's top summary block, folded
-   *  from the same story `GET /run/:id/story` already builds plus a fresh read of the
-   *  PR's own title/body/checks, the attestation on disk for its current head, and
-   *  git's own drift facts. Never reads `lane.pr` off the 60-second PR cache: a person
-   *  clicking into the sheet wants today's truth, not whatever the last board poll
-   *  happened to cache. */
+   *  from the same story `GET /run/:id/story` already builds plus a read of the PR's own
+   *  title/body/checks, the attestation on disk for its current head, and git's own
+   *  drift facts. Item 2: every `gh`/`git` fact here is cached per (repo, PR) for
+   *  `PR_CACHE_TTL_MS` through `cachedDetail`/`cachedDrift` -- a warm sheet answers off
+   *  that cache instead of repeating the same `gh pr view` and `git fetch` this same
+   *  request's own `runStoryResponse` call already made. */
   async runSummaryResponse(run: string): Promise<LaneSummary> {
     const lane = this.lanesResponse(true, true).lanes.find((l) => l.id === run);
     if (!lane) {
@@ -869,7 +916,7 @@ export class ConsoleReads {
     let headSha: string | null = null;
     let mergeable: Lane['mergeable'] | undefined;
     if (repo && prNo) {
-      const detail = await this.ghDetailLookup(repo, prNo);
+      const detail = await this.cachedDetail(repo, prNo);
       if (detail) {
         headSha = detail.headSha;
         pr = {
@@ -887,7 +934,7 @@ export class ConsoleReads {
       }
     }
     const drift = repo && prNo && base
-      ? await this.driftFn({ repo, base, pr: prNo, headSha, attestationHead: attestation?.head ?? null })
+      ? await this.cachedDrift({ repo, base, pr: prNo, headSha, attestationHead: attestation?.head ?? null })
       : { behindBase: null, headMoved: false };
 
     return computeLaneSummary({ lane, story, pr, attestation: attestation ?? null, drift, mergeable });
@@ -938,6 +985,11 @@ export class ConsoleReads {
       delete next[run];
       writePrCache(cachePath, next);
     }
+    // A recheck asks for today's truth, not the last 60s' worth of it -- drop this
+    // process's own detail/drift caches too, or `runSummaryResponse` right below would
+    // just hand back the same stale read Item 2's cache was built to skip repeating.
+    this.detailCache.clear();
+    this.driftCache.clear();
     return this.runSummaryResponse(run);
   }
 }
