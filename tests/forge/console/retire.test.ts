@@ -9,7 +9,7 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { readRetired, retireEligible, retireFinished, retireRun, unretireRun } from '../../../src/forge/console/retire.js';
+import { readRetired, retireEligible, retireFinished, retirePreview, retireRun, unretireRun } from '../../../src/forge/console/retire.js';
 import type { Lane } from '../../../src/shared/console-model.js';
 
 function tempPath(): string {
@@ -97,5 +97,26 @@ describe('retireFinished', () => {
     retireRun(path, 'a', 1_000);
     const retiredIds = retireFinished(path, [lane({ id: 'a', state: 'done' })], 5_000);
     expect(retiredIds).toEqual([]);
+  });
+});
+
+describe('retirePreview', () => {
+  it('lists what a bulk retire would touch, without retiring anything', () => {
+    const path = tempPath();
+    const lanes = [
+      lane({ id: 'a', title: 'Alpha', state: 'done' }),
+      lane({ id: 'b', title: 'Bravo', state: 'running' }),
+      lane({ id: 'c', title: null, state: 'merged' }),
+    ];
+    const items = retirePreview(path, lanes);
+    expect(items).toEqual([{ id: 'a', title: 'Alpha' }, { id: 'c', title: null }]);
+    expect(readRetired(path).size).toBe(0);
+  });
+
+  it('excludes a lane already retired', () => {
+    const path = tempPath();
+    retireRun(path, 'a', 1_000);
+    const items = retirePreview(path, [lane({ id: 'a', state: 'done' })]);
+    expect(items).toEqual([]);
   });
 });

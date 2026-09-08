@@ -1042,6 +1042,28 @@ describe('POST /retire-finished (H1.7)', () => {
   });
 });
 
+describe('GET /retire-finished (H1.7 preview)', () => {
+  it('previews what a bulk retire would touch, retiring nothing', async () => {
+    const journal = new Journal(join(dir, 'fleet.jsonl'));
+    journal.append({ event: 'run.started', run: 'beta', actor: 'runner' });
+    journal.append({ event: 'run.finished', run: 'beta', actor: 'runner', verdict: 'done' });
+    journal.close();
+    const lanes = new Lanes(join(dir, 'lanes'));
+    lanes.put('beta', { column: 'c2' });
+
+    const preview = await fetch(`${base}/retire-finished`, {
+      headers: { 'x-forge-token': server.token },
+    });
+    expect(preview.status).toBe(200);
+    const previewBody = await preview.json() as { items: Array<{ id: string }> };
+    expect(previewBody.items.map((i) => i.id)).toContain('beta');
+    expect(previewBody.items.map((i) => i.id)).not.toContain('alpha');
+
+    const after = await (await fetch(`${base}/lanes`, { headers: { 'x-forge-token': server.token } })).json() as { lanes: Array<{ id: string }> };
+    expect(after.lanes.map((lane) => lane.id)).toContain('beta');
+  });
+});
+
 describe('GET /merge-ready and POST /merge-ready (H1.8)', () => {
   it('GET reports a queue lane with a bare, unread PR as not-ready ("checks pending")', async () => {
     const { QueueStore } = await import('../../src/forge/intake/queueStore.js');

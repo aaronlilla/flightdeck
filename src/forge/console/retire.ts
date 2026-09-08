@@ -78,3 +78,13 @@ export function retireFinished(path: string, lanes: Lane[], now: number): string
   }
   return retired;
 }
+
+/** `GET /retire-finished`: what `retireFinished` would touch, with nothing retired --
+ *  the same eligibility rule, read-only, for the preview the console shows before the
+ *  operator confirms the bulk action. */
+export function retirePreview(path: string, lanes: Lane[]): { id: string; title: string | null }[] {
+  const already = readRetired(path);
+  return lanes
+    .filter((lane) => !already.has(lane.id) && retireEligible(lane))
+    .map((lane) => ({ id: lane.id, title: lane.title }));
+}

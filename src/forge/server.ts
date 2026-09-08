@@ -39,7 +39,7 @@ import {
   registryDir, serverTokenPath,
 } from './paths.js';
 import { routerEnabled } from './policy.js';
-import { retireEligible, retireFinished, retiredPath, retireRun, unretireRun } from './console/retire.js';
+import { retireEligible, retireFinished, retirePreview, retiredPath, retireRun, unretireRun } from './console/retire.js';
 import { mergeReadyReportFrom } from './console/lanes.js';
 import { chainStatusRows, foldChainState } from './chain.js';
 import { Registry } from './registry.js';
@@ -596,6 +596,7 @@ export class ForgeServer {
       return this.retireOne(request, response, decodeURIComponent(retireMatch[1]!), retireMatch[2] === 'retire');
     }
     if (path === '/retire-finished') {
+      if (request.method === 'GET') return this.retireFinishedPreviewRoute(request, response);
       if (request.method !== 'POST') {
         return json(response, 405, { error: 'retiring lanes is not a safe method' });
       }
@@ -851,6 +852,15 @@ export class ForgeServer {
       appendOnce(this.journalPath, { event: 'lane.retired', run: id, actor: 'console', retired: true });
     }
     json(response, 200, { ok: true, jid: null, message: `retired ${retired.length} lane(s)`, undoable: false, retired });
+  }
+
+  /** `GET /retire-finished` (H1.7): a read-only preview of what a bulk retire would
+   *  touch -- the same eligibility rule as the POST, with nothing actually retired. */
+  private retireFinishedPreviewRoute(request: IncomingMessage, response: ServerResponse): void {
+    if (!this.authorized(request, response)) return;
+    const lanes = this.consoleReads.lanesResponse(true, true).lanes;
+    const items = retirePreview(retiredPath(this.forgeHomeDir), lanes);
+    json(response, 200, { items });
   }
 
   /** `GET /merge-ready` (H1.8): every lane whose PR is ready by the queue's own rules,
