@@ -107,16 +107,18 @@ export interface WardenChip {
  *  the lane's own ticket key or its kind, never its raw run id. */
 export type TitleForFn = (id: string) => string | null;
 
-/** A rail chip's label for a lane: its title when the caller supplies one, else its
- *  ticket key, else "Live probe" for a probe, else a bare "a lane" -- never the raw
+const LABEL_TITLE_LIMIT = 60;
+
+/** A rail chip's label for a lane: its ticket key first, then its title (trimmed to
+ *  60 characters), else "Live probe" for a probe, else a bare "a run" -- never the raw
  *  run id or a pid, which is the machine text this fix replaces. */
 function labelFor(id: string, titleFor: TitleForFn): string {
-  const title = titleFor(id);
-  if (title) return title;
   const ticket = ticketFor(id, undefined);
   if (ticket) return ticket;
+  const title = titleFor(id);
+  if (title) return title.length > LABEL_TITLE_LIMIT ? title.slice(0, LABEL_TITLE_LIMIT) : title;
   if (laneKindFor(id) === 'probe') return 'Live probe';
-  return 'a lane';
+  return 'a run';
 }
 
 const SIGNAL_PHRASES: Record<string, string> = {
@@ -129,7 +131,9 @@ const SIGNAL_PHRASES: Record<string, string> = {
   'registry-abandoned': 'its process record was abandoned',
 };
 
-function signalPhrase(signal: string): string {
+/** Deliverable 5: the what's-stuck reply reuses this exact wording per signal rather
+ *  than inventing a second copy of it. */
+export function signalPhrase(signal: string): string {
   return SIGNAL_PHRASES[signal] ?? 'tripped a health check';
 }
 

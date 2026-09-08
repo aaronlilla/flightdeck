@@ -6,7 +6,9 @@ import { describe, expect, it } from 'vitest';
 
 import { Journal, replay, type ForgeEvent } from '../../../src/forge/journal.js';
 import { foldChainState } from '../../../src/forge/chain.js';
-import { collapseWardenChips, computeJournalNarrative } from '../../../src/forge/console/journal-narrative.js';
+import {
+  collapseWardenChips, computeJournalNarrative, railChipText, signalPhrase,
+} from '../../../src/forge/console/journal-narrative.js';
 import { packetForRun } from '../../../src/forge/console/sandbox.js';
 import type { Lane } from '../../../src/shared/console-model.js';
 
@@ -155,5 +157,23 @@ describe('collapseWardenChips (H1.9)', () => {
     const chips = collapseWardenChips(rows, (id) => (id === 'forge-live-probe-b' ? 'Live probe' : null));
     expect(chips[0]!.text).toBe('Live probe: parked by the warden.');
     expect(chips[0]!.text).not.toMatch(/forge-live-probe-b/i);
+  });
+});
+
+describe('railChipText: label trims a long title to 60 characters (deliverable 6)', () => {
+  it('trims a title over 60 characters before it reaches a chip', () => {
+    const longTitle = 'a fix that touches every screen in the app and every backend endpoint too';
+    const row = parked({ event: 'run.killed', run: 'alpha', at: 1_000, reason: 'over budget' });
+    const text = railChipText(row, (id) => (id === 'alpha' ? longTitle : null));
+    expect(text).not.toBeNull();
+    const label = text!.split(' killed')[0]!;
+    expect(label.length).toBeLessThanOrEqual(60);
+  });
+});
+
+describe('signalPhrase (deliverable 5)', () => {
+  it('is exported for the what\'s-stuck reply to reuse', () => {
+    expect(signalPhrase('context')).toContain('context ceiling');
+    expect(signalPhrase('idle')).toContain('quiet');
   });
 });

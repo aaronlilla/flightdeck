@@ -565,7 +565,16 @@ export class ConsoleReads {
     // Built once per call: `lanesResponse` reads every lane off disk, and calling it per
     // chip (hundreds of chips, on every feed event) held the event loop for seconds at a
     // time and made a 900-byte page take six seconds to answer (2026-09-07).
-    const titles = new Map(this.lanesResponse(true, true).lanes.map((l) => [l.id, l.title] as const));
+    //
+    // Deliverable 6: every chain link (a handed-off successor run, not only the root)
+    // maps to the same root lane's title -- a chip about the successor used to read its
+    // own bare run id, since `GET /lanes` only ever carries the root's own id.
+    const titles = new Map<string, string | null>();
+    for (const lane of this.lanesResponse(true, true).lanes) {
+      for (const link of chainLinks(fleet.runs, lane.id)) {
+        titles.set(link.key, lane.title);
+      }
+    }
     const titleFor = (id: string): string | null => titles.get(id) ?? null;
     return computeThread(persisted, fleet.events, now, this.inbox.open(), titleFor);
   }

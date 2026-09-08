@@ -15,6 +15,7 @@ import type { RunMessage } from '../runinbox.js';
 import type { Message, ThreadResponse } from '../../shared/console-model.js';
 import { jidFor, textFor } from './journal-route.js';
 import { collapseWardenChips, railChipText, type TitleForFn } from './journal-narrative.js';
+import { stripMachineIds } from '../../shared/humanize.js';
 
 export function threadPath(forgeHomeDir: string): string {
   return `${forgeHomeDir}/console/thread.jsonl`;
@@ -54,7 +55,9 @@ function chipFor(row: ForgeEvent, titleFor: TitleForFn): Message {
   return {
     k: `chip-${row.id}`,
     type: 'event',
-    text: railChipText(row, titleFor) ?? textFor(row),
+    // Every `CHIP_EVENTS` member has its own phrasing in `railChipText`; this fallback
+    // is defensive only, and still never lets a raw run id or ask key reach the rail.
+    text: railChipText(row, titleFor) ?? stripMachineIds(textFor(row), { labelFor: titleFor }),
     ts: row.at,
     source: row.run ?? 'system',
     lane: row.run,

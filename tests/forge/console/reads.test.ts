@@ -244,8 +244,57 @@ describe('ConsoleReads.lanesResponse: title and sourceUrl', () => {
     const server = reads as unknown as { threadResponse(): { messages: Array<{ text: string }> } };
     const thread = server.threadResponse();
     const chip = thread.messages.find((m) => m.text.includes('context ceiling'));
-    expect(chip?.text).toBe('reconcile stale wallet holds: context ceiling reached, handed off to a fresh session.');
+    // Deliverable 6: `labelFor` now prefers the ticket key over the title, so a lane
+    // that carries one -- BBZ-99, here -- shows it on the rail chip.
+    expect(chip?.text).toBe('BBZ-99: context ceiling reached, handed off to a fresh session.');
     expect(chip?.text).not.toMatch(/queue-|STUCK/i);
+  });
+
+  it('deliverable 6: a successor run\'s chip carries the root lane\'s own title, not its own bare id', () => {
+    const forgeHomeDir = tempDir('console-reads-');
+    const briefsDir = join(forgeHomeDir, 'briefs');
+    mkdirSync(briefsDir, { recursive: true });
+    const briefPath = join(briefsDir, 'hotfix-fee.md');
+    writeFileSync(briefPath, '# fix the withdrawal fee\n', 'utf8');
+
+    const queueStore = new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl'));
+    queueStore.append({
+      id: 'Q-1', at: 1, source: 'hotfix', input: 'fix the withdrawal fee', ticket: null, repo: 'o/n',
+      briefPath, branch: 'hotfix/fee', worktreePath: 'w', base: 'main',
+      state: 'running', reason: null, runKey: 'hotfix-fee', pr: null, journalIds: [],
+      createdAt: 1, updatedAt: 1,
+    });
+
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'hotfix-fee', actor: 'runner' });
+    journal.append({ event: 'run.handoff', run: 'hotfix-fee', actor: 'runner', successor: 'hotfix-fee-2' });
+    journal.append({ event: 'run.started', run: 'hotfix-fee-2', actor: 'runner' });
+    journal.append({ event: 'run.killed', run: 'hotfix-fee-2', actor: 'operator', reason: 'over budget' });
+    journal.close();
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put('hotfix-fee', { column: 'hotfix-fee' });
+
+    const threadDir = join(forgeHomeDir, 'console');
+    mkdirSync(threadDir, { recursive: true });
+    writeFileSync(
+      join(threadDir, 'thread.jsonl'),
+      `${JSON.stringify({ k: 'm1', type: 'operator', text: 'hi', ts: 0, source: 'operator' })}\n`,
+      'utf8',
+    );
+
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore,
+      jiraSite: null,
+    });
+
+    const server = reads as unknown as { threadResponse(): { messages: Array<{ text: string }> } };
+    const thread = server.threadResponse();
+    const chip = thread.messages.find((m) => m.text.includes('killed'));
+    expect(chip?.text).toContain('fix the withdrawal fee');
+    expect(chip?.text).not.toMatch(/hotfix-fee-2/i);
   });
 
   it('item 7: GET /lanes reads a queue lane\'s checks/verdict/merged in the background, off repo+PR alone, with no chain packet at all', async () => {
