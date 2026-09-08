@@ -29,14 +29,26 @@ function walk(dir: string, ext: string): string[] {
   return found;
 }
 
-/** `fontSize: 11`, `fontSize: '10.5px'`, `fontSize:"9"` -- every literal form, but not
- *  `fontSize: 'var(--fs-ui)'`, which carries no digits before the closing quote. */
-const TSX_FONT_SIZE = /fontSize:\s*(['"]?)([0-9][0-9.]*)(px)?\1/g;
+/** Every `fontSize` in a component must be a quoted `var(--fs-...)` string. This is
+ *  deliberately stricter than a 12px floor: a numeric literal, a named constant and a
+ *  template string all fail, because each one drifts the scale apart card by card,
+ *  which is how the board reached 126 different sizes. Anything after `fontSize:` that
+ *  is not the quoted token form is an offender. */
+const TSX_FONT_SIZE = /fontSize:\s*([^,}\n]+)/g;
+const TOKEN_FORM = /^(['"])var\(--fs-[a-z-]+\)\1$/;
 /** A `font:` shorthand in a component style object, e.g. `font: '11.5px/1.3 ...'`. */
 const TSX_FONT_SHORTHAND = /\bfont:\s*['"][^'"]*?\b([0-9][0-9.]*)px/g;
+/** A module-level `const` that holds a bare number and is named like a size: the
+ *  indirection the token rule above would otherwise miss. */
+const TSX_SIZE_CONST = /^const\s+(\w*(?:fs|font|size)\w*)\s*=\s*([0-9][0-9.]*)\s*;/gim;
 /** `font-size:11px` and the size slot of a `font:` shorthand, in the stylesheet. */
 const CSS_FONT_SIZE = /font-size:\s*([0-9][0-9.]*)px/g;
 const CSS_FONT_SHORTHAND = /\bfont:\s*[^;{}]*?\b([0-9][0-9.]*)px/g;
+
+/** The one deliberate exception: the "Needs you" count is a display number, not body
+ *  text, and it is the point of that component. Named by file and by the size it is
+ *  allowed to carry, so a second one cannot slip in behind it. */
+const DISPLAY_NUMBER_ALLOWLIST = new Map([['src/console/components/NeedsYou.tsx', '22']]);
 
 function relative(path: string): string {
   return path.slice(process.cwd().length + 1).split(String.fromCharCode(92)).join('/');
@@ -58,14 +70,30 @@ describe('the console type scale', () => {
     expect(components.length).toBeGreaterThan(10);
   });
 
-  it('names a token for every text size in a component, never a pixel number', () => {
+  it('names a token for every text size in a component, never a number', () => {
     const bad: string[] = [];
     for (const path of components) {
       const text = readFileSync(path, 'utf8');
-      bad.push(...offenders(text, path, TSX_FONT_SIZE, (m) => Number(m[2])));
-      bad.push(...offenders(text, path, TSX_FONT_SHORTHAND, (m) => Number(m[1])));
+      const rel = relative(path);
+      const allowed = DISPLAY_NUMBER_ALLOWLIST.get(rel);
+      for (const match of text.matchAll(TSX_FONT_SIZE)) {
+        const value = match[1]!.trim().replace(/\s+/g, ' ');
+        if (TOKEN_FORM.test(value)) continue;
+        if (allowed !== undefined && value === allowed) continue;
+        bad.push(`${rel}: fontSize: ${value}`);
+      }
+      for (const match of text.matchAll(TSX_FONT_SHORTHAND)) {
+        bad.push(`${rel}: ${match[0].trim()}`);
+      }
+      for (const match of text.matchAll(TSX_SIZE_CONST)) {
+        bad.push(`${rel}: const ${match[1]} = ${match[2]}`);
+      }
     }
     expect(bad).toEqual([]);
+  });
+
+  it('prints the allowlist it honours, so an exception is never silent', () => {
+    expect([...DISPLAY_NUMBER_ALLOWLIST]).toEqual([['src/console/components/NeedsYou.tsx', '22']]);
   });
 
   it('keeps every size in the stylesheet at or above the 12px floor', () => {

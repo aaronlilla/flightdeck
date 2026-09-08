@@ -197,7 +197,7 @@ function StoryPanel({ story, repo }: { story: LaneStory | null; repo?: string | 
       {story.entries.length > 0 ? (
         <>
           <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 10 }}>Story</div>
-          <div className="m" style={{ fontSize: 11, lineHeight: 2, color: 'var(--ink2)', overflowWrap: 'anywhere' }}>
+          <div className="m" style={{ fontSize: 'var(--fs-body)', lineHeight: 2, color: 'var(--ink2)', overflowWrap: 'anywhere' }}>
             {story.entries.map((entry, i) => (
               <div key={i}>
                 <span style={{ color: 'var(--ink3)', fontWeight: 600 }}>{hm(entry.at)}</span>{' '}
@@ -214,7 +214,7 @@ function StoryPanel({ story, repo }: { story: LaneStory | null; repo?: string | 
       {story.brief ? (
         <div style={{ marginTop: 10 }}>
           <span className="lbl" style={{ color: 'var(--ink2)', cursor: 'pointer' }} {...actionable(() => setBriefOpen((v) => !v))}>brief</span>
-          {briefOpen ? <div className="m" style={{ fontSize: '10.5px', color: 'var(--ink2)', marginTop: 6 }}>{story.brief.excerpt}</div> : null}
+          {briefOpen ? <div className="m" style={{ fontSize: 'var(--fs-body)', color: 'var(--ink2)', marginTop: 6 }}>{story.brief.excerpt}</div> : null}
         </div>
       ) : null}
     </div>
@@ -244,7 +244,7 @@ function SummaryPanel({
     return (
       <div data-testid="ticket-sheet-summary" style={{ padding: '18px 22px', borderBottom: '1px solid var(--line)' }}>
         <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 10 }}>Summary</div>
-        <div className="m" style={{ fontSize: '11.5px', color: 'var(--block)' }}>could not load the summary.</div>
+        <div className="m" style={{ fontSize: 'var(--fs-body)', color: 'var(--block)' }}>could not load the summary.</div>
       </div>
     );
   }
@@ -252,7 +252,7 @@ function SummaryPanel({
     return (
       <div data-testid="ticket-sheet-summary" style={{ padding: '18px 22px', borderBottom: '1px solid var(--line)' }}>
         <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 10 }}>Summary</div>
-        <div className="m" style={{ fontSize: '11.5px', color: 'var(--ink3)' }}>Checking the PR, its checks and the audit…</div>
+        <div className="m" style={{ fontSize: 'var(--fs-body)', color: 'var(--ink3)' }}>Checking the PR, its checks and the audit…</div>
       </div>
     );
   }
@@ -267,20 +267,20 @@ function SummaryPanel({
       <div>
         <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 10 }}>What happened</div>
         {summary.what.length > 0 ? (
-          <ul className="m" style={{ margin: 0, paddingLeft: 18, fontSize: '11.5px', color: 'var(--ink)', lineHeight: 1.6 }}>
+          <ul className="m" style={{ margin: 0, paddingLeft: 18, fontSize: 'var(--fs-body)', color: 'var(--ink)', lineHeight: 1.6 }}>
             {summary.what.map((line, i) => <li key={i}><Linkify text={line} repo={repo} /></li>)}
           </ul>
         ) : (
-          <div className="m" style={{ fontSize: '11.5px', color: 'var(--ink3)' }}>Nothing on record yet.</div>
+          <div className="m" style={{ fontSize: 'var(--fs-body)', color: 'var(--ink3)' }}>Nothing on record yet.</div>
         )}
       </div>
       <div>
         <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 10 }}>Where it is</div>
-        <div className="m" style={{ fontSize: '11.5px', color: 'var(--ink2)', marginBottom: 6 }}><Linkify text={summary.status} repo={repo} /></div>
+        <div className="m" style={{ fontSize: 'var(--fs-body)', color: 'var(--ink2)', marginBottom: 6 }}><Linkify text={summary.status} repo={repo} /></div>
         <div
           ref={auditRef} data-testid="ticket-sheet-audit" className="m"
           style={{
-            fontSize: '11.5px', color: 'var(--ink2)', marginBottom: 6,
+            fontSize: 'var(--fs-body)', color: 'var(--ink2)', marginBottom: 6,
             outline: highlightAudit ? '2px solid var(--hand)' : 'none', outlineOffset: 4,
             transition: 'outline-color .3s',
           }}
@@ -292,7 +292,7 @@ function SummaryPanel({
             </ul>
           ) : null}
         </div>
-        <div data-testid="ticket-sheet-readiness" className="m" style={{ fontSize: '11.5px' }}>
+        <div data-testid="ticket-sheet-readiness" className="m" style={{ fontSize: 'var(--fs-body)' }}>
           {readiness?.ok ? (
             <span style={{ color: 'var(--run)', fontWeight: 700 }}>Ready to merge.</span>
           ) : (
@@ -303,11 +303,11 @@ function SummaryPanel({
       <div>
         <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 10 }}>Next step</div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <span className="m" data-testid="ticket-sheet-next" style={{ fontSize: '11.5px', fontWeight: 700, color: 'var(--ink)' }}><Linkify text={summary.next} repo={repo} /></span>
+          <span className="m" data-testid="ticket-sheet-next" style={{ fontSize: 'var(--fs-body)', fontWeight: 700, color: 'var(--ink)' }}><Linkify text={summary.next} repo={repo} /></span>
           <span style={{ flex: 1 }} />
           <span
             className="btnS"
-            style={{ padding: '6px 10px', fontSize: '9.5px', opacity: recheckRunning ? 0.55 : 1, display: 'inline-flex', alignItems: 'center', gap: 6 }}
+            style={{ padding: '6px 10px', fontSize: 'var(--fs-ui)', opacity: recheckRunning ? 0.55 : 1, display: 'inline-flex', alignItems: 'center', gap: 6 }}
             aria-busy={recheckRunning} aria-disabled={recheckRunning}
             data-busy={recheckRunning ? '1' : undefined} data-testid="ticket-sheet-recheck"
             {...actionable(recheckRunning ? () => undefined : onRecheck)}
@@ -317,14 +317,14 @@ function SummaryPanel({
           </span>
           <span
             className="btnS" aria-busy={reauditRunning ? 'true' : undefined} data-busy={reauditRunning ? '1' : undefined}
-            style={{ padding: '6px 10px', fontSize: '9.5px', opacity: reauditRunning ? 0.7 : 1, cursor: reauditRunning ? 'default' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+            style={{ padding: '6px 10px', fontSize: 'var(--fs-ui)', opacity: reauditRunning ? 0.7 : 1, cursor: reauditRunning ? 'default' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}
             {...actionable(reauditRunning ? () => undefined : onReaudit)}
           >
             {reauditRunning ? <span className="fdSpinner" aria-hidden="true" /> : null}
             {reauditRunning ? 'Re-auditing…' : 'Re-audit'}
           </span>
           {recheckResult?.kind === 'done' && !recheckRunning ? (
-            <span className="m" data-testid="ticket-sheet-recheck-result" style={{ fontSize: '10.5px', color: recheckResult.ok ? 'var(--run)' : 'var(--block)' }}>
+            <span className="m" data-testid="ticket-sheet-recheck-result" style={{ fontSize: 'var(--fs-meta)', color: recheckResult.ok ? 'var(--run)' : 'var(--block)' }}>
               {recheckResult.ok ? '✓' : '✕'} {recheckResult.text}
             </span>
           ) : null}
@@ -336,7 +336,7 @@ function SummaryPanel({
 
 function JournalPanel({ entries, repo }: { entries: JournalNarrativeEntry[]; repo?: string | null }): JSX.Element {
   return (
-    <div className="m" style={{ fontSize: 11, lineHeight: 2, color: 'var(--ink2)', overflowWrap: 'anywhere' }}>
+    <div className="m" style={{ fontSize: 'var(--fs-body)', lineHeight: 2, color: 'var(--ink2)', overflowWrap: 'anywhere' }}>
       {entries.map((entry, i) => (
         <div key={i}>
           <span style={{ color: entry.color, fontWeight: 600 }}>{hm(entry.t)}</span> <span><Linkify text={entry.text} repo={repo} /></span>
@@ -557,7 +557,7 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
         {/* Item 3: the big line is the lane's own title, else its ticket key, else
             "Untitled run" -- never the run id, which lives only in the title attribute
             (and, in verbose mode, in the small id chip on the row below). */}
-        <span className="m" title={headline.runId} style={{ fontSize: 22, fontWeight: 700 }}>
+        <span className="m" title={headline.runId} style={{ fontSize: 'var(--fs-heading)', fontWeight: 700 }}>
           <Linkify text={lane.title ?? lane.ticket ?? 'Untitled run'} repo={lane.repo} />
         </span>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px 20px' }}>
@@ -573,7 +573,7 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
             <span className="chip">{lane.model}</span>
             <span className="chip">{lane.repo}</span>
             <span className="chip">attempt {lane.attempt}</span>
-            <a className="m" style={{ fontSize: '10.5px' }} {...actionable(() => onOpenSandbox(lane.id))}>sandbox</a>
+            <a className="m" style={{ fontSize: 'var(--fs-ui)' }} {...actionable(() => onOpenSandbox(lane.id))}>sandbox</a>
             {verbose ? (
               <span
                 data-testid="ticket-sheet-id-chip"
@@ -601,14 +601,14 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
           </div>
           <span className={freshnessClass(fresh)}>{freshnessStamp(fresh)}</span>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end' }}>
-            <LaneCta lane={lane} cmd={cta.cmd} label={cta.label} cls={cta.cls} style={{ padding: '7px 11px', fontSize: '9.5px' }} onCommand={onCommand} />
-            {canPause ? <LaneCta lane={lane} cmd="pause" label="Pause" cls="btnS" style={{ padding: '7px 11px', fontSize: '9.5px' }} onCommand={onCommand} /> : null}
-            {canKill ? <LaneCta lane={lane} cmd="kill" label="Kill" cls="btnR" style={{ padding: '7px 11px', fontSize: '9.5px' }} onCommand={onCommand} /> : null}
+            <LaneCta lane={lane} cmd={cta.cmd} label={cta.label} cls={cta.cls} style={{ padding: '7px 11px', fontSize: 'var(--fs-ui)' }} onCommand={onCommand} />
+            {canPause ? <LaneCta lane={lane} cmd="pause" label="Pause" cls="btnS" style={{ padding: '7px 11px', fontSize: 'var(--fs-ui)' }} onCommand={onCommand} /> : null}
+            {canKill ? <LaneCta lane={lane} cmd="kill" label="Kill" cls="btnR" style={{ padding: '7px 11px', fontSize: 'var(--fs-ui)' }} onCommand={onCommand} /> : null}
           </div>
         </div>
       </div>
       {lane.pr && !lane.pr.merged && lane.mergeable && lane.mergeable.ok === false ? (
-        <div className="m" style={{ padding: '8px 22px 0', fontSize: '10.5px', color: 'var(--ink3)' }}>
+        <div className="m" style={{ padding: '8px 22px 0', fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>
           Why not merged: {lane.mergeable.why}
         </div>
       ) : null}
@@ -631,13 +631,13 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
                   <div style={{
                     width: 32, height: 32, borderWidth: 2, borderStyle: style.border, borderColor: style.color,
                     background: style.bg, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    font: '700 13px "IBM Plex Mono",monospace', color: style.glyphColor, animation: style.anim,
+                    font: '700 var(--fs-ui)/1.4 "IBM Plex Mono",monospace', color: style.glyphColor, animation: style.anim,
                   }}
                   >
                     {style.glyph}
                   </div>
-                  <div className="m" style={{ fontSize: '10.5px', fontWeight: 600, color: style.labelColor, textAlign: 'center' }}>{name}</div>
-                  {sub ? <div className="m" style={{ fontSize: 9, color: 'var(--ink3)', textAlign: 'center' }}>{sub}</div> : null}
+                  <div className="m" style={{ fontSize: 'var(--fs-meta)', fontWeight: 600, color: style.labelColor, textAlign: 'center' }}>{name}</div>
+                  {sub ? <div className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)', textAlign: 'center' }}>{sub}</div> : null}
                   {style.badge ? <span className="lbl" style={{ color: style.color }}>{style.badge}</span> : null}
                 </div>
               </div>
@@ -664,12 +664,12 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
               <div className="lbl" style={{ color: 'var(--ink2)', margin: '16px 0 8px' }}>Draft output</div>
               <div className="plate" style={{ padding: '10px 12px' }}>
                 <a
-                  className="m" style={{ fontSize: '11.5px', fontWeight: 700 }}
+                  className="m" style={{ fontSize: 'var(--fs-ui)', fontWeight: 700 }}
                   href={lane.pr.url} target="_blank" rel="noopener noreferrer"
                 >
                   draft PR #{lane.pr.no} ↗
                 </a>
-                <div className="m" style={{ fontSize: '10.5px', color: 'var(--ink2)', marginTop: 4 }}>
+                <div className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink2)', marginTop: 4 }}>
                   {lane.pr.files} files · <span style={{ color: 'var(--run)', fontWeight: 700 }}>+{lane.pr.add}</span> <span style={{ color: 'var(--block)', fontWeight: 700 }}>−{lane.pr.del}</span>
                 </div>
               </div>
@@ -698,14 +698,14 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
               onKeyDown={(e) => { if (e.key === 'Enter' && draft.trim()) { sendAndRefetch(draft); setDraft(''); } }}
             />
             <span
-              className="btnP" style={{ padding: '5px 10px', fontSize: '9.5px', opacity: sending ? 0.55 : 1 }}
+              className="btnP" style={{ padding: '5px 10px', fontSize: 'var(--fs-ui)', opacity: sending ? 0.55 : 1 }}
               aria-busy={sending} aria-disabled={sending} data-testid={`action-sendCommand-${lane.id}`} data-pending={sending ? 'true' : 'false'}
               {...actionable(() => { if (draft.trim() && !sending) { sendAndRefetch(draft); setDraft(''); } })}
             >
               {sending ? 'Sending…' : 'Send ⏎'}
             </span>
             <span
-              className="btnS" style={{ padding: '5px 10px', fontSize: '9.5px', opacity: amend.pending ? 0.55 : 1 }}
+              className="btnS" style={{ padding: '5px 10px', fontSize: 'var(--fs-ui)', opacity: amend.pending ? 0.55 : 1 }}
               aria-busy={amend.pending} aria-disabled={amend.pending} data-testid={`action-amendRun-${lane.id}`} data-pending={amend.pending ? 'true' : 'false'}
               {...actionable(() => { if (draft.trim() && !amend.pending) { amendAndRefetch(draft); setDraft(''); } })}
             >

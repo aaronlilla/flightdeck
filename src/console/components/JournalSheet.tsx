@@ -21,7 +21,7 @@ export function JournalSheet({ rows, run, onClose, onUndo }: JournalSheetProps):
         {rows.map((j) => (
           <div
             key={j.jid} className="m"
-            style={{ display: 'grid', gridTemplateColumns: '80px 70px 1fr 110px 60px', gap: 12, padding: '8px 20px', borderBottom: '1px solid var(--line)', fontSize: 11, alignItems: 'center', textDecoration: j.undone ? 'line-through' : 'none' }}
+            style={{ display: 'grid', gridTemplateColumns: '80px 70px 1fr 110px 60px', gap: 12, padding: '8px 20px', borderBottom: '1px solid var(--line)', fontSize: 'var(--fs-meta)', alignItems: 'center', textDecoration: j.undone ? 'line-through' : 'none' }}
           >
             <b>{j.jid}</b>
             <span style={{ color: 'var(--ink3)' }}>{new Date(j.ts).toLocaleTimeString()}</span>

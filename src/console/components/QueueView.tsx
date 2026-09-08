@@ -4,6 +4,7 @@ import type { ActionOutcome } from '../store.js';
 import { ActionButton, ActionOutcomeView } from './ActionButton.js';
 import { useRef, useState } from 'react';
 
+import { BOARD_GRID_COLUMNS, CARD_GAP_PX } from '../grid.js';
 import { actionable } from '../keyboard-actionable.js';
 import { Linkify } from './Linkify.js';
 import type { QueueItem, QueueItemState, QueueSource } from '../../shared/console-model.js';
@@ -268,7 +269,7 @@ function AddWork({ onToast }: { onToast: (outcome: ActionOutcome) => void }): JS
         ) : (
           <input
             ref={inputRef}
-            className="inp m" style={{ fontSize: 12 }} placeholder={SOURCE_PLACEHOLDER[source]} value={input}
+            className="inp m" style={{ fontSize: 'var(--fs-ui)' }} placeholder={SOURCE_PLACEHOLDER[source]} value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') submit(); }}
           />
@@ -335,7 +336,7 @@ export function QueueView(props: QueueViewProps): JSX.Element {
           nothing queued -- add a ticket, a brief, a query or a backlog filter above
         </div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(215px,1fr))', gap: 10 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: BOARD_GRID_COLUMNS, gridAutoRows: 'auto', alignItems: 'start', gap: CARD_GAP_PX }}>
           {items.map((item) => (
             <QueueCard key={item.id} item={item} onToast={toast} />
           ))}

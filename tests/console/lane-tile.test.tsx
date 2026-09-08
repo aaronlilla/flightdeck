@@ -258,3 +258,22 @@ describe('LaneTile', () => {
     });
   });
 });
+
+// W3 (2026-09-08): the tiles grew to fit the bigger type. The title slot has to hold
+// two lines of --fs-title (16px) at its 22px line-height, or the second line of a
+// two-line title is clipped by the very fixed height that keeps a row even.
+describe('the title slot is tall enough for the type it carries', () => {
+  it('reserves at least two title line-heights', () => {
+    render(
+      <LaneTile
+        lane={lane({ title: 'A title long enough to wrap onto a second line on any card width at all' })}
+        feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()}
+      />,
+    );
+    const slot = document.querySelector('[data-testid="lane-title-slot"]') as HTMLElement | null;
+    expect(slot).not.toBeNull();
+    const lineHeight = Number.parseFloat(slot!.style.lineHeight);
+    expect(lineHeight).toBeGreaterThanOrEqual(22);
+    expect(Number.parseFloat(slot!.style.height)).toBeGreaterThanOrEqual(2 * lineHeight);
+  });
+});

@@ -132,10 +132,10 @@ export function NeedsYou({ items, blockersCount = 0, onOpenBlockers }: NeedsYouP
         <div key={n.id} className="plate" style={{ flex: '1 1 220px', minWidth: 0, display: 'flex', alignItems: 'center', gap: 12, padding: '8px 12px', borderColor: n.color }}>
           <span className="led" style={{ background: n.color, flex: 'none' }} />
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div className="m" title={n.titleId ?? undefined} style={{ fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            <div className="m" title={n.titleId ?? undefined} style={{ fontSize: 'var(--fs-body)', fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
               <Linkify text={n.title} repo={n.repo} /> <span style={{ color: 'var(--ink2)', fontWeight: 500 }}>{n.sub}</span>
             </div>
-            <div className="m" style={{ fontSize: 10, color: 'var(--ink2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            <div className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
               <Linkify text={n.line} repo={n.repo} />
               {n.more ? <> · <a style={{ color: 'var(--ink3)' }} onClick={n.more.onClick}>{n.more.label} ▸</a></> : null}
             </div>
@@ -143,19 +143,19 @@ export function NeedsYou({ items, blockersCount = 0, onOpenBlockers }: NeedsYouP
           {n.action?.spec === 'reconnectIntegration' ? (
             <ActionButton
               spec={ACTIONS.reconnectIntegration} args={[n.action.arg]} actionRef={`needs-${n.action.arg}`} className={n.ctaCls}
-              style={{ padding: '7px 11px', fontSize: '9.5px', flex: 'none', whiteSpace: 'nowrap' }} busy="Reconnecting…"
+              style={{ padding: '7px 11px', fontSize: 'var(--fs-ui)', flex: 'none', whiteSpace: 'nowrap' }} busy="Reconnecting…"
             >
               {n.cta}
             </ActionButton>
           ) : n.action?.spec === 'dismissAsk' ? (
             <ActionButton
               spec={ACTIONS.dismissAsk} args={[n.action.arg]} actionRef={`needs-${n.action.arg}`} className={n.ctaCls}
-              style={{ padding: '7px 11px', fontSize: '9.5px', flex: 'none', whiteSpace: 'nowrap' }} busy="Dismissing…"
+              style={{ padding: '7px 11px', fontSize: 'var(--fs-ui)', flex: 'none', whiteSpace: 'nowrap' }} busy="Dismissing…"
             >
               {n.cta}
             </ActionButton>
           ) : (
-            <span className={n.ctaCls} style={{ padding: '7px 11px', fontSize: '9.5px', flex: 'none', whiteSpace: 'nowrap' }} onClick={n.onClick}>{n.cta}</span>
+            <span className={n.ctaCls} style={{ padding: '7px 11px', fontSize: 'var(--fs-ui)', flex: 'none', whiteSpace: 'nowrap' }} onClick={n.onClick}>{n.cta}</span>
           )}
         </div>
       ))}
