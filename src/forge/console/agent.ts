@@ -36,7 +36,7 @@ import type { ConsoleReads } from './reads.js';
 import type { QueueRoutes } from './queue-route.js';
 import { amendRunBrief, type AmendDeps } from './amend.js';
 import { assertRunListening } from './listening.js';
-import { appendThread as appendThreadDefault, actionFailureText, type ConsoleWrites } from './command.js';
+import { appendThread as appendThreadDefault, actionFailureText, parseIntent, type ConsoleWrites } from './command.js';
 import {
   killRun, pauseRun, reauditRun, reopenRun, resumeRun, setRunCap,
 } from './run-actions.js';
@@ -54,6 +54,7 @@ const DEFAULT_IDLE_MS = 5 * 60_000;
 const REASON_LIMIT = 140;
 const HANDOFF_EXCHANGES = 5;
 const HANDOFF_CHARS = 240;
+const ARCHIVED_LIMIT = 20;
 
 export type ReplyPath = 'agent' | 'grammar';
 
@@ -101,7 +102,7 @@ interface Usage { input: number; cacheRead: number; cacheCreation: number; outpu
  */
 export function conductorStateSummary(input: {
   lanes: Lane[]; asks: Array<{ key: string; question: string; runs?: string[] }>;
-  sheetLane?: string; tokensToday: number;
+  archived?: Lane[]; sheetLane?: string; tokensToday: number;
 }): string {
   const lines: string[] = [];
   lines.push(`lanes (${input.lanes.length}):`);
@@ -110,6 +111,13 @@ export function conductorStateSummary(input: {
     const reason = lane.reason ? ` reason="${lane.reason.slice(0, REASON_LIMIT)}"` : '';
     const pr = lane.pr?.no ? ` pr=#${lane.pr.no}${lane.pr.merged ? ' merged' : ''}` : '';
     lines.push(`- id=${lane.id} label="${label}" state=${lane.state} heart=${lane.heart ? 'live' : 'none'} kind=${lane.kind}${pr}${reason}`);
+  }
+  const archived = (input.archived ?? []).slice(0, ARCHIVED_LIMIT);
+  if (archived.length) {
+    lines.push(`archived lanes (off the board; unretire brings one back) (${archived.length}):`);
+    for (const lane of archived) {
+      lines.push(`- id=${lane.id} label="${lane.ticket ?? lane.title ?? lane.id}" state=${lane.state}`);
+    }
   }
   lines.push(`open asks (${input.asks.length}):`);
   for (const ask of input.asks) {
@@ -141,9 +149,10 @@ function replyRow(text: string, path: ReplyPath): Message {
   return { k: randomUUID(), type: 'reply', text, ts: Date.now(), source: 'conductor', path };
 }
 
-function receiptRow(text: string, jid?: string | null): Message {
+function receiptRow(text: string, jid?: string | null, ran = true): Message {
   return {
-    k: randomUUID(), type: 'receipt', text, ts: Date.now(), source: 'conductor', resolved: 'ran', path: 'agent',
+    k: randomUUID(), type: 'receipt', text, ts: Date.now(), source: 'conductor', path: 'agent',
+    ...(ran ? { resolved: 'ran' as const } : {}),
     ...(jid ? { jid } : {}),
   };
 }
@@ -458,7 +467,10 @@ export class ConductorAgent {
           outcome = { text, receipt: text };
         }
         if (outcome.receipt) {
-          this.record(receiptRow(outcome.receipt), this.turnRun);
+          const row = outcome.receipt.startsWith('refused:')
+            ? refusalRow(outcome.receipt)
+            : receiptRow(outcome.receipt, undefined, !(outcome.cards && outcome.cards.length > 0));
+          this.record(row, this.turnRun);
           this.deps.publish({ event: 'conductor.receipt', text: outcome.receipt, at: this.now() });
         }
         return outcome;
@@ -524,10 +536,13 @@ export class ConductorAgent {
 
   private composeMessage(text: string, context: ConductorContext): string {
     // all=true so a finished/unverified lane the operator can still act on (the mission
-    // lane) is in the block the model reads; archived=false keeps a retired lane out.
+    // lane) is in the block the model reads; archived=false keeps a retired lane out of
+    // the main list. Archived lanes go in their own section so `unretire` has a valid id.
     const view = this.deps.reads.lanesResponse(true, false);
+    const activeIds = new Set(view.lanes.map((lane) => lane.id));
+    const archived = this.deps.reads.lanesResponse(true, true).lanes.filter((lane) => !activeIds.has(lane.id));
     const state = conductorStateSummary({
-      lanes: view.lanes, asks: this.deps.inbox.open(), tokensToday: view.tokensToday,
+      lanes: view.lanes, asks: this.deps.inbox.open(), tokensToday: view.tokensToday, archived,
       ...(context.run ? { sheetLane: context.run } : {}),
     });
     const handoff = this.handoff ? `<handoff>\n${this.handoff}\n</handoff>\n` : '';
@@ -605,7 +620,6 @@ export class ConductorAgent {
     this.turnRun = context.run;
     this.clearIdle();
     const startedAt = this.now();
-    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       let engine = this.engine;
       let resumed = false;
@@ -615,22 +629,31 @@ export class ConductorAgent {
         this.engine = engine;
       }
       const message = this.composeMessage(text, context);
-      const timeout = new Promise<never>((_, reject) => {
-        timer = (this.deps.setTimeoutFn ?? setTimeout)(() => {
-          reject(new Error(`the Conductor did not answer in ${Math.round(timeoutMs / 1000)}s`));
-        }, timeoutMs);
-      });
+      // Each attempt gets its own timeout: reusing one already-settled timer gave a retry
+      // zero budget, so it failed instantly and spawned a subprocess for nothing.
+      const runTurn = (eng: Engine): Promise<{ text: string; usage: Usage; model: string; context: number }> => {
+        let attemptTimer: ReturnType<typeof setTimeout> | undefined;
+        const to = new Promise<never>((_, reject) => {
+          attemptTimer = (this.deps.setTimeoutFn ?? setTimeout)(() => {
+            reject(new Error(`the Conductor did not answer in ${Math.round(timeoutMs / 1000)}s`));
+          }, timeoutMs);
+        });
+        return Promise.race([this.turn(eng, message), to]).finally(() => {
+          if (attemptTimer !== undefined) (this.deps.clearTimeoutFn ?? clearTimeout)(attemptTimer);
+        });
+      };
       let result: { text: string; usage: Usage; model: string; context: number };
       try {
-        result = await Promise.race([this.turn(engine, message), timeout]);
+        result = await runTurn(engine);
       } catch (error) {
-        // A resumed session that fails is retried once on a fresh one; anything else
-        // falls through to the grammar below.
-        if (!resumed) throw error;
+        // Retry once on a fresh session only when a RESUMED session errored, never when it
+        // timed out (reopening does not help a timeout, which goes straight to the grammar).
+        const timedOut = error instanceof Error && /did not answer in/.test(error.message);
+        if (!resumed || timedOut) throw error;
         this.closeSession(false);
         const fresh = this.openEngine(null);
         this.engine = fresh;
-        result = await Promise.race([this.turn(fresh, message), timeout]);
+        result = await runTurn(fresh);
       }
       appendOnce(this.deps.journalPath, {
         event: 'conductor.usage', actor: 'conductor',
@@ -656,13 +679,26 @@ export class ConductorAgent {
       // The session is dropped so a stalled subprocess never answers a later message
       // with this one's reply; the id is kept for a resume.
       this.closeSession(true);
-      const grammar = await this.deps.writes.runGrammar(text, 'conductor');
+      // A cap change is irreversible-by-policy: even on the fallback it gets a Confirm
+      // card, matching the agent's own set_daily_cap/set_run_cap tools, rather than the
+      // grammar's immediate apply. Everything else runs through the grammar unchanged
+      // (kill/retire/merge already come back as their own confirm/plan cards).
+      const intent = parseIntent(text);
+      let answer: Message[];
+      if (intent.kind === 'set-daily-cap') {
+        const outcome = await this.handlers().set_daily_cap({ tokens: intent.amount });
+        answer = [replyRow(outcome.text, 'grammar'), ...(outcome.cards ?? [])];
+      } else if (intent.kind === 'set-run-cap') {
+        const outcome = await this.handlers().set_run_cap({ lane: intent.lane, tokens: intent.amount });
+        answer = [replyRow(outcome.text, 'grammar'), ...(outcome.cards ?? [])];
+      } else {
+        answer = (await this.deps.writes.runGrammar(text, 'conductor')).map((card) => ({ ...card, path: 'grammar' as const }));
+      }
       const head = replyRow(`The Conductor could not answer (${reason}). The grammar answered instead:`, 'grammar');
-      const cards = [head, ...grammar.map((card) => ({ ...card, path: 'grammar' as const }))];
+      const cards = [head, ...answer];
       for (const card of cards) this.record(card, context.run);
       return { cards, path: 'grammar', reason };
     } finally {
-      if (timer !== undefined) (this.deps.clearTimeoutFn ?? clearTimeout)(timer);
       this.turnCards = [];
       this.turnRun = undefined;
     }

@@ -261,12 +261,14 @@ describe('ConductorAgent: the mission, on a fake model and a real board', () => 
   });
 
   it('every reply and receipt lands in thread.jsonl, and a conductor.usage row with the account is journaled per turn', async () => {
-    liveLane('alpha');
-    const fake = scriptedQuery([{ tools: [{ tool: 'pause', input: { lane: 'alpha' } }], reply: 'Paused alpha.', usage: { input: 300, cacheRead: 20, cacheCreation: 10, output: 50 } }]);
+    // queue_add is a genuine 'ran' action, so its receipt row is a receipt (a refused
+    // pause would now correctly record a refusal row instead; see the wrapped() change).
+    const fake = scriptedQuery([{ tools: [{ tool: 'queue_add', input: { source: 'ticket', input: 'ACME-7' } }], reply: 'Queued it.', usage: { input: 300, cacheRead: 20, cacheCreation: 10, output: 50 } }]);
     makeServer(fake.fn);
-    await server!.conductor.handle('pause alpha');
+    await server!.conductor.handle('queue ACME-7');
     const thread = readFileSync(join(dir, 'console', 'thread.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line) as Message);
     expect(thread.map((row) => row.type)).toEqual(['receipt', 'reply']);
+    expect(thread[0]!.resolved).toBe('ran');
     const usage = replay(journalPath).events.find((row) => row.event === 'conductor.usage')!;
     expect(usage).toBeDefined();
     expect(usage['usage']).toEqual({ input: 600, cacheRead: 40, cacheCreation: 20, output: 100 });
@@ -528,5 +530,48 @@ describe('conductorStateSummary', () => {
     expect(text).toContain('- key=ask1 runs=queue-ACME-9 question="Merge?"');
     expect(text).toContain("operator has this lane's sheet open: queue-ACME-9");
     expect(text).toContain('spent today: 12.3k tokens');
+  });
+});
+
+describe('review fixes (2026-09-08)', () => {
+  it('a cap change on the grammar fallback proposes a Confirm card and does not apply the cap immediately', async () => {
+    // The agent's own set_daily_cap tool confirm-gates; the fallback must not quietly
+    // apply the cap through the grammar's immediate path (G3 finding 3).
+    makeServer(refusingQuery('fleet login expired').fn);
+    const reply = await server!.conductor.handle('raise daily cap to 5m');
+    expect(reply.path).toBe('grammar');
+    const card = reply.cards.find((row) => row.type === 'confirm');
+    expect(card, 'the fallback answers a cap change with a Confirm card').toBeDefined();
+    expect(card!.blast).toMatch(/daily cap becomes 5.0M tokens/);
+    // Nothing written until confirm.
+    expect(readCapsOverrides(join(dir, 'console', 'caps.json')).dailyTokens).toBeUndefined();
+    const token = confirmToken(card!);
+    await command(`confirm ${token}`);
+    expect(readCapsOverrides(join(dir, 'console', 'caps.json')).dailyTokens).toBe(5_000_000);
+  });
+
+  it('the state block lists archived lanes so unretire has a valid id to pass', async () => {
+    deadLane();
+    // Retire it so it leaves the active board but stays archived.
+    const fake = scriptedQuery([{ tools: [{ tool: 'retire', input: { lane: DEAD } }], reply: 'proposed' }]);
+    makeServer(fake.fn);
+    const reply = await server!.conductor.handle(`remove ${DEAD}`);
+    await command(`confirm ${confirmToken(reply.cards.find((c) => c.type === 'confirm')!)}`);
+    // Now a fresh message: the composed prompt must carry the archived lane.
+    await server!.conductor.handle('anything else?');
+    const prompt = fake.prompts[fake.prompts.length - 1]!;
+    expect(prompt).toMatch(/archived lanes \(off the board; unretire brings one back\)/);
+    expect(prompt).toMatch(new RegExp(`id=${DEAD}`));
+  });
+
+  it('a refused tool records a refusal row in the thread, not a resolved receipt', async () => {
+    liveLane('alpha');
+    // pause is honestly unwired (501), so its receipt must read as a refusal.
+    const fake = scriptedQuery([{ tools: [{ tool: 'pause', input: { lane: 'alpha' } }], reply: 'tried' }]);
+    makeServer(fake.fn);
+    await server!.conductor.handle('pause alpha');
+    const thread = readFileSync(join(dir, 'console', 'thread.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line) as Message);
+    expect(thread[0]!.type).toBe('refusal');
+    expect(thread[0]!.resolved).toBeUndefined();
   });
 });

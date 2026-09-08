@@ -862,6 +862,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
                   // W3 (2026-09-08): the composer talks to the Conductor with the lane as
                   // context, never straight into an inbox nobody may read. The sheet
                   // renders the cards itself; `refresh()` picks up the rail's copy.
+                  conductorTimeoutMs={state.conductorTimeoutMs}
                   onSendLane={async (id, textMsg) => {
                     const response = await api.sendCommand(textMsg, id);
                     void refresh();
