@@ -27,7 +27,7 @@ describe('loadConsoleEnv', () => {
     writeFileSync(
       filePath,
       [
-        'set FORGE_COUNCIL_REPOS=BOLTBETZ-LLC/v2-React-Native,BOLTBETZ-LLC/bb-infra',
+        'set FORGE_COUNCIL_REPOS=acme/widgets,acme/gadgets',
         'set FORGE_INTAKE_REPO_MAP=a=1,b=2',
         '',
         'rem this is a comment, not a set line',
@@ -38,7 +38,7 @@ describe('loadConsoleEnv', () => {
     const env: NodeJS.ProcessEnv = {};
     const filled = loadConsoleEnv(filePath, env);
 
-    expect(env['FORGE_COUNCIL_REPOS']).toBe('BOLTBETZ-LLC/v2-React-Native,BOLTBETZ-LLC/bb-infra');
+    expect(env['FORGE_COUNCIL_REPOS']).toBe('acme/widgets,acme/gadgets');
     expect(env['FORGE_INTAKE_REPO_MAP']).toBe('a=1,b=2');
     expect(env['FORGE_QUEUE_POLL_S']).toBe('30');
     expect(filled).toEqual(['FORGE_COUNCIL_REPOS', 'FORGE_INTAKE_REPO_MAP', 'FORGE_QUEUE_POLL_S']);
