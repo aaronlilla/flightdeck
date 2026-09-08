@@ -158,7 +158,7 @@ export function bigLanes(count = 2000): Lane[] {
   const now = Date.now();
   const states: Lane['state'][] = ['running', 'paused', 'blocked', 'done', 'merged', 'parked', 'exhausted'];
   const out: Lane[] = [];
-  for (let i = 0; i < count; i += 1) {
+  for (let i = 0; i < count - 1; i += 1) {
     const state = states[i % states.length] as Lane['state'];
     out.push(lane({
       id: `FLT-${9000 + i}`,
@@ -172,6 +172,15 @@ export function bigLanes(count = 2000): Lane[] {
       question: state === 'parked' ? { key: `ask-${i}`, text: 'ok to proceed?', opts: ['yes', 'no'], askedAt: now } : null,
     }));
   }
+  // Sweep #19: a tile's title is meant to clamp to two lines regardless of how long
+  // the ticket key or the title text runs -- this lane's own key+title run to 140
+  // characters combined, long enough that an unclamped tile would grow past two lines.
+  out.push(lane({
+    id: 'FLT-9999-long-title-clamp-check',
+    ticket: 'FLT-9999-long-title-clamp-check',
+    title: 'the withdrawal fee calculator rounds down instead of to the nearest cent on every payout over five hundred dollars across every operator on the platform',
+    state: 'running', heart: true, repo: 'flightdeck-api',
+  }));
   return out;
 }
 

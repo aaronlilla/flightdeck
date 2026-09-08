@@ -31,6 +31,23 @@ test('the running filter at scale shows only running lanes, none of the other si
   }
 });
 
+// Sweep #19: a tile's title is meant to clamp to two lines regardless of how long
+// the ticket key or the title text runs.
+test('a tile with a 140-character key+title clamps its title box to two lines', async ({ page }) => {
+  test.slow();
+  await page.goto('/');
+  const tile = page.getByTestId('lane-FLT-9999-long-title-clamp-check');
+  await expect(tile).toBeVisible();
+  await tile.scrollIntoViewIfNeeded();
+  const titleBox = tile.getByText('the withdrawal fee calculator rounds down', { exact: false });
+  const box = await titleBox.boundingBox();
+  expect(box).not.toBeNull();
+  // LaneTile.tsx sets this element's own font-size to 12px inline; two lines at a
+  // typical ~1.5 line-height plus a little rendering slack is a generous two-line cap
+  // -- an unclamped tile with this much text would run to five or six lines instead.
+  expect(box!.height).toBeLessThanOrEqual(12 * 1.5 * 2 + 6);
+});
+
 test('the palette still finds a specific lane by id inside 2000 rows', async ({ page }) => {
   test.slow();
   await page.goto('/');
