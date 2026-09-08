@@ -198,6 +198,34 @@ describe('railChipText: label trims a long title to 60 characters (deliverable 6
   });
 });
 
+describe('railChipText: external.complete reads in plain words, not the raw write kind (W5)', () => {
+  it('a jira-transition write names what happened, not the kind string', () => {
+    const row = parked({ event: 'external.complete', kind: 'jira-transition', ticket: 'BBZ-175', at: 1_000 });
+    const text = railChipText(row, () => null);
+    expect(text).not.toContain('jira-transition');
+    expect(text).toContain('BBZ-175');
+  });
+
+  it('a pr-merge write reads as a plain sentence about the merge', () => {
+    const row = parked({ event: 'external.complete', kind: 'pr-merge', ticket: 'BBZ-175', at: 1_000 });
+    const text = railChipText(row, () => null);
+    expect(text).not.toContain('pr-merge');
+    expect(text?.toLowerCase()).toContain('merged');
+  });
+
+  it('a jira-comment write reads as a plain sentence, not "jira-comment complete"', () => {
+    const row = parked({ event: 'external.complete', kind: 'jira-comment', ticket: 'BBZ-175', at: 1_000 });
+    const text = railChipText(row, () => null);
+    expect(text).not.toContain('jira-comment');
+  });
+
+  it('an unrecognized kind still avoids echoing the raw kind string', () => {
+    const row = parked({ event: 'external.complete', kind: 'some-future-kind', ticket: 'BBZ-175', at: 1_000 });
+    const text = railChipText(row, () => null);
+    expect(text).not.toContain('some-future-kind');
+  });
+});
+
 describe('signalPhrase (deliverable 5)', () => {
   it('is exported for the what\'s-stuck reply to reuse', () => {
     expect(signalPhrase('context')).toContain('context ceiling');

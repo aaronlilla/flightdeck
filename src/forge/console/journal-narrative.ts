@@ -127,6 +127,25 @@ export function signalPhrase(signal: string): string {
   return SIGNAL_PHRASES[signal] ?? 'tripped a health check';
 }
 
+/** W5: an `external.complete` row's own `kind` is a code identifier
+ *  (`jira-transition`, `pr-merge`, ...), not a sentence -- a rail chip that printed it
+ *  verbatim read "jira-transition complete on BBZ-175.", which is not a phrase anyone
+ *  wrote for a person. Each known kind gets a phrase in words; a kind nobody has named
+ *  yet still avoids the raw identifier by falling back to a generic sentence. */
+const EXTERNAL_KIND_PHRASES: Record<string, (ticket: string | null) => string> = {
+  'jira-transition': (ticket) => `${ticket ?? 'The ticket'} moved to its next status in Jira.`,
+  'jira-comment': (ticket) => `Left an update on ${ticket ?? 'the ticket'} in Jira.`,
+  'jira-assign': (ticket) => `${ticket ?? 'The ticket'} was assigned in Jira.`,
+  'pr-merge': (ticket) => `Merged the change${ticket ? ` for ${ticket}` : ''}.`,
+  'pr-ready': (ticket) => `Opened a draft PR${ticket ? ` for ${ticket}` : ''}.`,
+};
+
+function externalCompleteText(kind: string, ticket: string | null): string {
+  const phrase = EXTERNAL_KIND_PHRASES[kind];
+  if (phrase) return phrase(ticket);
+  return `Finished a background step${ticket ? ` on ${ticket}` : ''}.`;
+}
+
 /** A rail chip's own human sentence for one event -- the lane's key or title, never
  *  its raw run id, an ask key or a pid. `null` for an event kind this has no dedicated
  *  phrasing for, so the caller can fall back to `textFor`'s own technical rendering
@@ -147,7 +166,8 @@ export function railChipText(row: ForgeEvent, titleFor: TitleForFn): string | nu
       return 'Question answered.';
     case 'external.complete': {
       const kind = typeof row.kind === 'string' ? row.kind : 'write';
-      return `${kind} complete${row.ticket ? ` on ${String(row.ticket)}` : ''}.`;
+      const ticket = typeof row.ticket === 'string' ? row.ticket : null;
+      return externalCompleteText(kind, ticket);
     }
     case 'liveness.stuck': {
       const signal = typeof row.signal === 'string' ? row.signal : 'unknown';
