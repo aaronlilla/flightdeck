@@ -12,6 +12,8 @@
  * own -- the packet then sits there for a person, same as everything else in this file.
  */
 
+import { haipingHandoffExample } from './contracts.ts';
+
 export type ChainHop = 'unrouted' | 'provision' | 'launch' | 'gate';
 
 /**
@@ -56,7 +58,14 @@ export function completeBriefWithVerification(brief: string, input: {
     '',
     'Open a draft PR whose title carries the ticket key. Once checks are green, put the',
     'typed Haiping handoff (`HaipingHandoffSchema`) in the PR body as a fenced JSON block,',
-    'and name this PR\'s URL in the `forge_done` evidence.',
+    'and name this PR\'s URL in the `forge_done` evidence. Below is that shape filled with',
+    'placeholders that still validate -- copy it and replace every value, do not invent',
+    'fields of your own:',
+    '',
+    `\`\`\`json\n${haipingHandoffExample()}\n\`\`\``,
+    '',
+    'deployKind is `rebuild` when this change touched android/, ios/, patches/ or a native dependency, and `ota` otherwise.',
+    'notVisuallyVerified lists every step above -- no agent looks at a screen, so every step counts as not visually verified.',
     '',
     '## How this run ends',
     '',

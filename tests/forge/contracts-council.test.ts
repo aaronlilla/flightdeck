@@ -10,6 +10,7 @@ import {
   CouncilAttestationSchema,
   checkHandoff,
   HaipingHandoffSchema,
+  haipingHandoffExample,
   JoeHandoffSchema,
   HarrisonHandoffSchema,
   verified,
@@ -130,5 +131,17 @@ describe('typed handoffs: an incomplete one fails the gate', () => {
   it('schemas themselves reject the same incomplete shapes directly', () => {
     expect(HaipingHandoffSchema.safeParse({ ticket: 'x' }).success).toBe(false);
     expect(HarrisonHandoffSchema.safeParse({}).success).toBe(false);
+  });
+});
+
+describe('haipingHandoffExample: the placeholder a worker copies into the PR body', () => {
+  it('parses as complete JSON against the real schema, not a hand-written duplicate of it', () => {
+    const parsed = JSON.parse(haipingHandoffExample());
+    expect(checkHandoff('haiping', parsed).complete).toBe(true);
+  });
+
+  it('is plain JSON text -- the caller fences it, so this stays reusable outside a fence', () => {
+    expect(haipingHandoffExample().trim().startsWith('```')).toBe(false);
+    expect(() => JSON.parse(haipingHandoffExample())).not.toThrow();
   });
 });
