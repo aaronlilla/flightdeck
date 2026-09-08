@@ -1,16 +1,10 @@
 // @vitest-environment jsdom
-import type { ReactElement } from 'react';
-import { render as rtlRender, screen } from '@testing-library/react';
+import { screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
+import { render } from './helpers/with-store.js';
 import { FlightReview } from '../../src/console/components/FlightReview.js';
-import { StoreContext, initialState } from '../../src/console/store.js';
 import type { ProposalsResponse, Rule } from '../../src/shared/console-model.js';
-
-function render(node: ReactElement): ReturnType<typeof rtlRender> {
-  const state = { ...initialState(), links: { jiraSite: null, defaultRepo: null } };
-  return rtlRender(<StoreContext.Provider value={{ state, dispatch: vi.fn() }}>{node}</StoreContext.Provider>);
-}
 
 function rule(extra: Partial<Rule> = {}): Rule {
   return {
@@ -36,7 +30,7 @@ function renderReview(rules: Rule[], now = Date.now()) {
   return render(
     <FlightReview
       proposals={proposals(rules)} now={now}
-      onApply={noop} onDismiss={noop} onRestore={noop} onUndo={noop}
+      onUndo={noop}
     />,
   );
 }

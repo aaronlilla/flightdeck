@@ -351,7 +351,7 @@ function downCopy(decl: IntegrationDecl, row: StoredRow | undefined, dependents:
   return { cause, effect, fix };
 }
 
-function toIntegration(decl: IntegrationDecl, row: StoredRow | undefined, dependents: string[]): Integration {
+function toIntegration(decl: IntegrationDecl, row: StoredRow | undefined, dependents: string[], canConnect: boolean): Integration {
   const status = row?.status ?? 'checking';
   const down = status === 'down';
   const copy = down ? downCopy(decl, row, dependents) : null;
@@ -373,6 +373,7 @@ function toIntegration(decl: IntegrationDecl, row: StoredRow | undefined, depend
     retryCount: row?.retryCount ?? 0,
     dependents,
     step: null,
+    canConnect,
     links: {},
   };
 }
@@ -442,7 +443,7 @@ export class IntegrationsRegistry {
       const now = Date.now();
       const dependents = this.dependentsByIntegration();
       const items = this.decls().map((decl) =>
-        toIntegration(decl, stored.rows[decl.id], dependents[decl.id] ?? []));
+        toIntegration(decl, stored.rows[decl.id], dependents[decl.id] ?? [], Boolean(this.reconnects[decl.id])));
       // Nothing awaits this, so a probe that rejects after the caller has moved on would
       // surface as an unhandled rejection and take the process down with it. A failed
       // probe is ordinary here: the row simply keeps its previous value until one works.
@@ -469,7 +470,7 @@ export class IntegrationsRegistry {
     const stored = readStored(this.configPath);
     const dependents = this.dependentsByIntegration();
     const items = this.decls().map((decl) =>
-      toIntegration(decl, stored.rows[decl.id], dependents[decl.id] ?? []));
+      toIntegration(decl, stored.rows[decl.id], dependents[decl.id] ?? [], Boolean(this.reconnects[decl.id])));
     return { items, checkedAt: Date.now(), everyS: this.everyS };
   }
 
@@ -504,7 +505,7 @@ export class IntegrationsRegistry {
     writeStored(this.configPath, stored);
     const dependents = this.dependentsByIntegration();
     const items = this.decls().map((decl) =>
-      toIntegration(decl, stored.rows[decl.id], dependents[decl.id] ?? []));
+      toIntegration(decl, stored.rows[decl.id], dependents[decl.id] ?? [], Boolean(this.reconnects[decl.id])));
     return { items, checkedAt: now, everyS: this.everyS };
   }
 
@@ -540,9 +541,12 @@ export class IntegrationsRegistry {
     if (!reconnectFn) {
       const list = await this.list(false);
       const integration = list.items.find((item) => item.id === id) ?? toIntegration(
-        decl ?? { id, kind: 'conn', name: id, desc: '', reconnectLabel: null }, undefined, [],
+        decl ?? { id, kind: 'conn', name: id, desc: '', reconnectLabel: null }, undefined, [], false,
       );
-      return { ok: false, integration, steps, message: `not wired: no reconnect command declared for ${id}`, jid: null };
+      // W3: the honest answer. The old text read as a bug in the row; this one names
+      // the row and the slice that will wire it, and the row hides its connect control
+      // entirely (`canConnect: false`) so nobody has to click to find out.
+      return { ok: false, integration, steps, message: `failed: no connect action for ${id} yet (S3)`, jid: null };
     }
     steps[0]!.done = true;
     await reconnectFn();

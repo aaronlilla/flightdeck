@@ -77,11 +77,14 @@ describe('App refresh concurrency', () => {
     }) as typeof fetch;
 
     const socket = FakeSocket.instances[0]!;
-    // Two server frames land back to back -- exactly what a live fleet does -- while the
-    // first refresh this triggers is still waiting on the gated `/lanes` fetch above.
-    socket.onmessage?.({ data: JSON.stringify({ type: 'heartbeat', at: Date.now() }) });
-    socket.onmessage?.({ data: JSON.stringify({ type: 'heartbeat', at: Date.now() }) });
-    socket.onmessage?.({ data: JSON.stringify({ type: 'heartbeat', at: Date.now() }) });
+    // Three server frames land back to back -- exactly what a live fleet does -- while
+    // the first refresh this triggers is still waiting on the gated `/lanes` fetch above.
+    // A heartbeat no longer triggers a full refresh (it re-reads `/state` alone, the
+    // build check); an event App.tsx does not recognize as a slice event still falls
+    // through to `refresh()` (App.tsx's `onEvent`), so that is what exercises the guard.
+    socket.onmessage?.({ data: JSON.stringify({ type: 'tool.start', run: 'FLT-201' }) });
+    socket.onmessage?.({ data: JSON.stringify({ type: 'tool.start', run: 'FLT-201' }) });
+    socket.onmessage?.({ data: JSON.stringify({ type: 'tool.start', run: 'FLT-201' }) });
 
     expect(lanesCalls).toBe(1);
 

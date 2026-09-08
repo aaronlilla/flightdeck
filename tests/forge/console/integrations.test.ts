@@ -229,7 +229,10 @@ describe('IntegrationsRegistry.reconnect', () => {
     expect(journalLines.some((row) => row.event === 'blocker.cleared')).toBe(true);
   });
 
-  it('answers not wired for an integration with no declared reconnect command', async () => {
+  // W3: the row says which id has no connect action and which slice will wire it,
+  // and the row it hands back reports `canConnect: false` so the console renders no
+  // connect button at all rather than one that can only refuse.
+  it('names the id and the slice for an integration with no declared reconnect command', async () => {
     const registry = new IntegrationsRegistry({
       journalPath, ledger, configPath,
       probes: { github: up(), jira: down(), 'model-provider': up(), codex: up(), aws: up() },
@@ -239,7 +242,21 @@ describe('IntegrationsRegistry.reconnect', () => {
     const result = await registry.reconnect('jira');
 
     expect(result.ok).toBe(false);
-    expect(result.message).toMatch(/not wired/);
+    expect(result.message).toBe('failed: no connect action for jira yet (S3)');
+    expect(result.integration.canConnect).toBe(false);
+  });
+
+  it('reports canConnect on the rows that do have a connect action', async () => {
+    const registry = new IntegrationsRegistry({
+      journalPath, ledger, configPath,
+      probes: { github: up(), jira: down(), 'model-provider': up(), codex: up(), aws: up() },
+      reconnects: { aws: async () => undefined },
+    });
+
+    const { items } = await registry.list(false);
+
+    expect(items.find((i) => i.id === 'aws')?.canConnect).toBe(true);
+    expect(items.find((i) => i.id === 'jira')?.canConnect).toBe(false);
   });
 });
 

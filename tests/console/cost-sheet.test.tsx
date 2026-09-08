@@ -24,7 +24,7 @@ function lane(extra: Partial<Lane> = {}): Lane {
 
 function renderSheet(laneExtra: Partial<Lane> = {}, steps: CostStep[] = [], capEnforcementFailedJid: string | null = null) {
   vi.mocked(api.getRunCost).mockResolvedValue({ steps, capEnforcementFailedJid });
-  return render(<CostSheet lane={lane(laneExtra)} onClose={vi.fn()} onKill={vi.fn()} />);
+  return render(<CostSheet lane={lane(laneExtra)} onClose={vi.fn()} />);
 }
 
 describe('CostSheet', () => {

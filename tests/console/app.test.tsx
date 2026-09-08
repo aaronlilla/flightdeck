@@ -93,29 +93,37 @@ describe('App', () => {
   });
 
   it('requires a confirm card before a kill goes through', async () => {
+    // Irreversible actions no longer show a client-made confirm: `killRun` answers
+    // 202 `{ pending: true, token, blast }` and `useAction` turns that into an
+    // `ActionOutcomeView` "confirm" card in place, next to the button that was
+    // clicked -- nothing runs until that card's own Confirm sends the token back.
     render(<App eventStreamOptions={{ WebSocketImpl: FakeSocket as unknown as typeof WebSocket }} />);
     await waitFor(() => expect(screen.getByTestId('lane-FLT-204')).toBeInTheDocument());
-    await userEvent.click(within(screen.getByTestId('lane-FLT-204')).getByText('Kill attempt'));
-    expect(screen.getByText('Confirm — irreversible')).toBeInTheDocument();
-    await userEvent.click(screen.getByText('Confirm'));
+    const tile = screen.getByTestId('lane-FLT-204');
+    await userEvent.click(within(tile).getByText('Kill attempt'));
+    await waitFor(() => expect(within(tile).getByTestId('action-confirm-killRun-FLT-204')).toBeInTheDocument());
+    expect(within(tile).getByText(/Confirm, irreversible:/)).toBeInTheDocument();
+    await userEvent.click(within(tile).getByTestId('action-confirm-yes-killRun-FLT-204'));
     await waitFor(() => expect(screen.getByTestId('lane-FLT-204')).toHaveAttribute('data-state', 'killed'));
   });
 
   it('a live event refresh must not silently drop an unconfirmed kill card', async () => {
-    // The Kill/Merge confirm card is client-only state until Confirm is clicked. `/events`
-    // fires on every journal event from every lane -- including the very run about to be
-    // killed, which produces `tool.start`/`tool.end` several times a minute -- and each
-    // frame makes App refetch `/thread`, which this stub answers from its fixed seed and
-    // therefore never echoes back a card the operator has not confirmed yet. Confirmed
-    // live: two attempts on a real run never found (or lost) the card at all.
+    // The server-issued confirm now lives in `state.actions` (`useAction`'s own
+    // reducer slice), not in `state.thread` -- so the failure mode this guards is no
+    // longer a `/thread` replace losing a card the server never echoed back. It is
+    // whether a live event's `refresh()`/`refreshSlice('lanes')` -- which fires
+    // constantly off the very run about to be killed's `tool.start`/`tool.end` --
+    // touches `state.actions` at all. Confirmed live: two attempts on a real run
+    // never found (or lost) the card.
     render(<App eventStreamOptions={{ WebSocketImpl: FakeSocket as unknown as typeof WebSocket }} />);
     await waitFor(() => expect(screen.getByTestId('lane-FLT-204')).toBeInTheDocument());
-    await userEvent.click(within(screen.getByTestId('lane-FLT-204')).getByText('Kill attempt'));
-    expect(screen.getByText('Confirm — irreversible')).toBeInTheDocument();
+    const tile = screen.getByTestId('lane-FLT-204');
+    await userEvent.click(within(tile).getByText('Kill attempt'));
+    await waitFor(() => expect(within(tile).getByTestId('action-confirm-killRun-FLT-204')).toBeInTheDocument());
     await waitFor(() => expect(FakeSocket.instances.length).toBeGreaterThan(0));
     FakeSocket.instances[0]!.onmessage?.({ data: JSON.stringify({ type: 'tool.start', run: 'FLT-204' }) });
-    await waitFor(() => expect(screen.getByText('Confirm — irreversible')).toBeInTheDocument());
-    await userEvent.click(screen.getByText('Confirm'));
+    await waitFor(() => expect(within(screen.getByTestId('lane-FLT-204')).getByTestId('action-confirm-killRun-FLT-204')).toBeInTheDocument());
+    await userEvent.click(within(screen.getByTestId('lane-FLT-204')).getByTestId('action-confirm-yes-killRun-FLT-204'));
     await waitFor(() => expect(screen.getByTestId('lane-FLT-204')).toHaveAttribute('data-state', 'killed'));
   });
 
@@ -193,21 +201,25 @@ describe('App', () => {
     await waitFor(() => expect(screen.getByText(/live feed lost/)).toBeInTheDocument(), { timeout: 15_000 });
   }, 20_000);
 
-  it('D2.1: a 501 refusal card survives the refresh runAction fires right after appending it', async () => {
-    // `runAction` appends the refusal card via `appendReceipt`, then immediately calls
-    // `refresh()`. `refresh()` replaces `state.thread` wholesale from `/thread`, which
-    // has no row for a client-only refusal card -- so without a fix the card renders
-    // for one tick and is gone once the refresh's own `/thread` fetch lands.
+  it('D2.1: a 501 refusal card survives the refresh useAction fires right after appending it', async () => {
+    // `useAction`'s `settle` appends the refusal card to the rail via `thread-append`,
+    // then immediately calls `host.refreshSlices` for the action's effect (`compactRun`
+    // is effect `lane`: `['lanes', 'journal']`). Neither of those touches `/thread`, but
+    // the failure this guards is unchanged in shape: a client-only card must survive
+    // whatever refetch lands right behind it, not get overwritten the moment the next
+    // `/thread` read (the 5s poll, or a live event) replaces `state.thread` wholesale.
+    // The same failed call also renders inline next to the button that made it, so the
+    // assertions below are scoped to the rail to keep the two apart.
     await fetch('/__test/fixture?name=refusal-501', { method: 'POST' });
     render(<App eventStreamOptions={{ WebSocketImpl: FakeSocket as unknown as typeof WebSocket }} />);
     const tile = await screen.findByTestId('lane-FLT-401');
     await userEvent.click(within(tile).getByText('Compact + resume →', { exact: true }));
-    await waitFor(() => expect(screen.getByText('Refused')).toBeInTheDocument());
-    // Give the `refresh()` that `runAction` awaits right after appending the card time
-    // to complete its own round trip and overwrite `state.thread`.
+    const rail = screen.getByTestId('rail-thread');
+    await waitFor(() => expect(within(rail).getByText('Refused')).toBeInTheDocument());
+    // Give a `/thread` refetch (the 5s poll, or a live event) time to land right behind it.
     await new Promise((resolve) => { setTimeout(resolve, 500); });
-    expect(screen.getByText('Refused')).toBeInTheDocument();
-    expect(screen.getByText('compaction has no successor worker built yet')).toBeInTheDocument();
+    expect(within(rail).getByText('Refused')).toBeInTheDocument();
+    expect(within(rail).getByText('compaction has no successor worker built yet')).toBeInTheDocument();
     expect(tile).toHaveAttribute('data-state', 'exhausted');
   });
 });

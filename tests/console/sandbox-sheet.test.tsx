@@ -29,7 +29,7 @@ function renderSheet(
   onCopiedPath = vi.fn(),
 ) {
   vi.mocked(api.getRunSandbox).mockResolvedValue({ sandbox: lane(laneExtra).sandbox, log });
-  return { onCopiedPath, ...render(<SandboxSheet lane={lane(laneExtra)} onClose={vi.fn()} onKill={vi.fn()} onCopiedPath={onCopiedPath} />) };
+  return { onCopiedPath, ...render(<SandboxSheet lane={lane(laneExtra)} onClose={vi.fn()} onCopiedPath={onCopiedPath} />) };
 }
 
 describe('SandboxSheet', () => {

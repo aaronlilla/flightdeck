@@ -2,7 +2,7 @@
 import type { ReactElement } from 'react';
 import { render as rtlRender, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { TicketSheet } from '../../src/console/components/TicketSheet.js';
 import { StoreContext, initialState } from '../../src/console/store.js';
@@ -16,14 +16,20 @@ function render(node: ReactElement): ReturnType<typeof rtlRender> {
   return rtlRender(<StoreContext.Provider value={{ state, dispatch: vi.fn() }}>{node}</StoreContext.Provider>);
 }
 
-vi.mock('../../src/console/api.js', () => ({
-  getRunThread: vi.fn(),
-  getRunJournal: vi.fn(),
-  getRunStory: vi.fn(),
-  getRunSummary: vi.fn(),
-  recheckRun: vi.fn(),
-  reauditRun: vi.fn(),
-}));
+vi.mock('../../src/console/api.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/console/api.js')>();
+  return {
+    ...actual,
+    getRunThread: vi.fn(),
+    getRunJournal: vi.fn(),
+    getRunStory: vi.fn(),
+    getRunSummary: vi.fn(),
+    recheckRun: vi.fn(),
+    reauditRun: vi.fn(),
+    sendToRun: vi.fn(),
+    amendRun: vi.fn(),
+  };
+});
 
 import * as api from '../../src/console/api.js';
 
@@ -59,13 +65,21 @@ function renderSheet(
   return render(
     <TicketSheet
       lane={lane(laneExtra)} feedLive now={Date.now()} focus={focus} verbose={verbose}
-      onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop} onSendLane={noop}
-      onAmendLane={onAmendLane} onUndo={noop} onOpenJournal={noop}
+      onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop}
+      onUndo={noop} onOpenJournal={noop}
     />,
   );
 }
 
 describe('TicketSheet', () => {
+  // `amendRun`/`sendToRun`/`recheckRun` are now real spies backed by `api.js`'s own
+  // module (the mock factory spreads `importOriginal`), shared across every test in
+  // this file -- a call count from one test would otherwise leak into the next one's
+  // `not.toHaveBeenCalled()`. Clearing call history (not the resolved-value stubs
+  // each test sets for itself) before every test keeps each test's assertion about
+  // its own render.
+  beforeEach(() => { vi.clearAllMocks(); });
+
   // 2026-09-08: the big line is the lane's title when there is one, else the
   // ticket, else "Untitled run" -- never the run id, which lives only in the
   // title attribute.
@@ -253,19 +267,18 @@ describe('TicketSheet', () => {
   // C.1: an Amend action beside Send, sharing the composer's draft text but reaching
   // the run through the brief-amendment path rather than a plain inbox message.
   it('C.1: shows an Amend action beside Send and posts the composer\'s draft through onAmendLane', async () => {
-    const onAmendLane = vi.fn();
-    renderSheet([], {}, [], onAmendLane);
+    vi.mocked(api.amendRun).mockResolvedValue({ ok: true, jid: 'j1', message: 'amended', undoable: false });
+    renderSheet([]);
     const input = screen.getByPlaceholderText(/Tell this run something/);
     await userEvent.type(input, 'also handle the null case');
     await userEvent.click(screen.getByText('Amend'));
-    expect(onAmendLane).toHaveBeenCalledWith('jira_AB-12_1788460932645', 'also handle the null case');
+    expect(vi.mocked(api.amendRun)).toHaveBeenCalledWith('jira_AB-12_1788460932645', 'also handle the null case');
   });
 
   it('C.1: does nothing when Amend is clicked with an empty draft', async () => {
-    const onAmendLane = vi.fn();
-    renderSheet([], {}, [], onAmendLane);
+    renderSheet([]);
     await userEvent.click(screen.getByText('Amend'));
-    expect(onAmendLane).not.toHaveBeenCalled();
+    expect(vi.mocked(api.amendRun)).not.toHaveBeenCalled();
   });
 
   // W1: `sendAndRefetch` used to end in `.catch(() => undefined)`, so a `/send` refusal
@@ -279,14 +292,14 @@ describe('TicketSheet', () => {
       id: 'jira_AB-12_1788460932645', title: null, kind: 'manual', ticket: null, brief: null, entries: [],
     });
     vi.mocked(api.getRunSummary).mockResolvedValue({ what: [], status: '', next: '', audit: null, readiness: null });
-    const onSendLane = vi.fn().mockRejectedValue(
+    vi.mocked(api.sendToRun).mockRejectedValue(
       new Error('2026-09-04-forge-c2-rn has no live session; it ended earlier. Kill, verify or archive it instead.'),
     );
     render(
       <TicketSheet
         lane={lane()} feedLive now={Date.now()} verbose={false}
-        onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop} onSendLane={onSendLane}
-        onAmendLane={noop} onUndo={noop} onOpenJournal={noop}
+        onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop}
+        onUndo={noop} onOpenJournal={noop}
       />,
     );
     const input = screen.getByPlaceholderText(/Tell this run something/);
@@ -370,8 +383,8 @@ describe('TicketSheet: Summary block', () => {
     render(
       <TicketSheet
         lane={lane()} feedLive now={Date.now()} focus="audit"
-        onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop} onSendLane={noop}
-        onAmendLane={noop} onUndo={noop} onOpenJournal={noop}
+        onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop}
+        onUndo={noop} onOpenJournal={noop}
       />,
     );
     await waitFor(() => expect(screen.getByText('reviewer-a: the retry can double-charge')).toBeInTheDocument());
@@ -396,8 +409,8 @@ describe('TicketSheet: Summary block', () => {
     render(
       <TicketSheet
         lane={lane()} feedLive now={Date.now()}
-        onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop} onSendLane={noop}
-        onAmendLane={noop} onUndo={noop} onOpenJournal={noop}
+        onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop}
+        onUndo={noop} onOpenJournal={noop}
       />,
     );
     await waitFor(() => expect(screen.getByText('the story landed too')).toBeInTheDocument());
@@ -422,8 +435,8 @@ describe('TicketSheet: Summary block', () => {
     render(
       <TicketSheet
         lane={lane()} feedLive now={Date.now()}
-        onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop} onSendLane={noop}
-        onAmendLane={noop} onUndo={noop} onOpenJournal={noop}
+        onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop}
+        onUndo={noop} onOpenJournal={noop}
       />,
     );
     await waitFor(() => expect(screen.getByText('wired the summary block.')).toBeInTheDocument());
@@ -447,8 +460,8 @@ describe('TicketSheet: Summary block', () => {
     render(
       <TicketSheet
         lane={lane()} feedLive now={Date.now()}
-        onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop} onSendLane={noop}
-        onAmendLane={noop} onUndo={noop} onOpenJournal={noop}
+        onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop}
+        onUndo={noop} onOpenJournal={noop}
       />,
     );
     await waitFor(() => expect(screen.getByTestId('ticket-sheet-audit')).toHaveTextContent('Not audited.'));
@@ -471,8 +484,8 @@ describe('TicketSheet: Summary block', () => {
     render(
       <TicketSheet
         lane={lane()} feedLive now={Date.now()}
-        onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop} onSendLane={noop}
-        onAmendLane={noop} onUndo={noop} onOpenJournal={noop}
+        onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop}
+        onUndo={noop} onOpenJournal={noop}
       />,
     );
     await waitFor(() => expect(screen.getByTestId('ticket-sheet-readiness')).toHaveTextContent('gained 46 commits since'));
@@ -494,8 +507,8 @@ describe('TicketSheet: Summary block', () => {
     render(
       <TicketSheet
         lane={lane()} feedLive now={Date.now()}
-        onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop} onSendLane={noop}
-        onAmendLane={noop} onUndo={noop} onOpenJournal={noop}
+        onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop}
+        onUndo={noop} onOpenJournal={noop}
       />,
     );
     await waitFor(() => expect(screen.getByText('stale')).toBeInTheDocument());
@@ -521,8 +534,8 @@ describe('TicketSheet: Summary block', () => {
     render(
       <TicketSheet
         lane={lane()} feedLive now={Date.now()}
-        onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop} onSendLane={noop}
-        onAmendLane={noop} onUndo={noop} onOpenJournal={noop}
+        onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop}
+        onUndo={noop} onOpenJournal={noop}
       />,
     );
     await waitFor(() => expect(screen.getByTestId('ticket-sheet-readiness')).toHaveTextContent('moved since the audit'));
@@ -552,8 +565,8 @@ describe('TicketSheet: reply label (item 6)', () => {
       <TicketSheet
         lane={lane({ id: laneId })} feedLive now={Date.now()}
         labelFor={() => 'DEDUPE WARDEN.HEALTH ON AN OPEN UNREGISTERED TRIP'}
-        onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop} onSendLane={noop}
-        onAmendLane={noop} onUndo={noop} onOpenJournal={noop}
+        onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop}
+        onUndo={noop} onOpenJournal={noop}
       />,
     );
     await waitFor(() => expect(screen.getByText('dedupe warden.health on an open unregistered trip')).toBeInTheDocument());

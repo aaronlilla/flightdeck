@@ -341,11 +341,15 @@ function receiptCard(jid: string | null, ok: boolean, text: string): Message {
   };
 }
 
-export interface ActionHandle<A extends unknown[]> {
-  /** Runs the action. For an irreversible one, the first run produces a confirm. */
-  run: (...args: A) => Promise<ActionOutcome>;
+export interface ActionHandle<A extends unknown[], R = unknown> {
+  /** Runs the action. For an irreversible one, the first run produces a confirm.
+   *  A successful 'done' also carries the server's raw response as `raw`, for a
+   *  caller that needs more than text/ok/jid (the ticket sheet's summary panel
+   *  takes its fresh `LaneSummary` straight off `recheckRun`'s response this way,
+   *  instead of fetching it again). */
+  run: (...args: A) => Promise<ActionOutcome & { raw?: R }>;
   /** Sends the server-issued token back, running what the confirm was about. */
-  confirm: () => Promise<ActionOutcome | null>;
+  confirm: () => Promise<(ActionOutcome & { raw?: R }) | null>;
   /** Declines the confirm and releases the server-side pending entry. */
   dismiss: () => void;
   clear: () => void;
@@ -358,7 +362,7 @@ export interface ActionHandle<A extends unknown[]> {
  * apart (a Kill on each of two lanes), so each renders its own pending and result.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function useAction<A extends any[], R>(entry: ActionSpec<A, R>, ref?: string): ActionHandle<A> {
+export function useAction<A extends any[], R>(entry: ActionSpec<A, R>, ref?: string): ActionHandle<A, R> {
   const { state, dispatch } = useStore();
   const host = useContext(ActionsContext);
   const key = actionKey(entry.id, ref);
@@ -375,7 +379,7 @@ export function useAction<A extends any[], R>(entry: ActionSpec<A, R>, ref?: str
     return outcome;
   }, [dispatch, key, entry, host]);
 
-  const call = useCallback(async (args: A, confirm?: string): Promise<ActionOutcome> => {
+  const call = useCallback(async (args: A, confirm?: string): Promise<ActionOutcome & { raw?: R }> => {
     dispatch({ type: 'action-pending', key });
     try {
       const result = await entry.call(args, confirm);
@@ -384,20 +388,22 @@ export function useAction<A extends any[], R>(entry: ActionSpec<A, R>, ref?: str
       }
       const ok = entry.ok ? entry.ok(result) : true;
       const link = entry.link ? entry.link(args, result) : null;
-      return settle({ kind: 'done', ok, text: entry.text(result, args), jid: entry.jid?.(result) ?? null, at: Date.now(), link }, true);
+      const outcome = { kind: 'done' as const, ok, text: entry.text(result, args), jid: entry.jid?.(result) ?? null, at: Date.now(), link, raw: result };
+      settle(outcome, true);
+      return outcome;
     } catch (caught) {
       const link = entry.link ? entry.link(args, undefined) : null;
       return settle({ kind: 'done', ok: false, text: errorText(caught), jid: null, at: Date.now(), link }, true);
     }
   }, [dispatch, key, entry, settle]);
 
-  const run = useCallback(async (...args: A): Promise<ActionOutcome> => {
+  const run = useCallback(async (...args: A): Promise<ActionOutcome & { raw?: R }> => {
     if (state.actions[key]?.pending) return state.actions[key]!.result ?? { kind: 'done', ok: false, text: 'already running', jid: null, at: Date.now(), link: null };
     lastArgs.current = args;
     return call(args);
   }, [state.actions, key, call]);
 
-  const confirm = useCallback(async (): Promise<ActionOutcome | null> => {
+  const confirm = useCallback(async (): Promise<(ActionOutcome & { raw?: R }) | null> => {
     if (!token || !lastArgs.current) return null;
     return call(lastArgs.current, token);
   }, [token, call]);

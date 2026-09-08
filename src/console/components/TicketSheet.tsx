@@ -334,7 +334,7 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
   const reaudit = useAction(ACTIONS.reauditRun, lane.id);
   const handleRecheck = useCallback(() => {
     void recheck.run(lane.id).then((outcome) => {
-      if (outcome.kind === 'done' && outcome.ok) api.getRunSummary(lane.id).then(setSummary).catch(() => undefined);
+      if (outcome.kind === 'done' && outcome.ok && outcome.raw) setSummary(outcome.raw);
     });
   }, [lane.id, recheck]);
 

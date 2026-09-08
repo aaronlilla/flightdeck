@@ -21,7 +21,7 @@ function renderRail(thread: Message[], feed: Feed = feedUp, overrides: Partial<{
   const onCommand = overrides.onCommand ?? vi.fn();
   const onOpenJournal = overrides.onOpenJournal ?? vi.fn();
   const state = { ...initialState(), links: { jiraSite: null, defaultRepo: null } };
-  render(
+  const result = render(
     <StoreContext.Provider value={{ state, dispatch: vi.fn() }}>
       <ConductorRail
         thread={thread} feed={feed} now={Date.now()} composer="" verbose={overrides.verbose ?? false}
@@ -30,7 +30,7 @@ function renderRail(thread: Message[], feed: Feed = feedUp, overrides: Partial<{
       />
     </StoreContext.Provider>,
   );
-  return { onSend, onCommand, onOpenJournal };
+  return { onSend, onCommand, onOpenJournal, unmount: result.unmount };
 }
 
 describe('ConductorRail', () => {
@@ -115,11 +115,14 @@ describe('ConductorRail', () => {
 
   it('sends the composer text on Enter, echoing through onSend', async () => {
     const onSend = vi.fn();
+    const state = { ...initialState(), links: { jiraSite: null, defaultRepo: null } };
     render(
-      <ConductorRail
-        thread={[]} feed={feedUp} now={Date.now()} composer="status" onComposerChange={vi.fn()}
-        onSend={onSend} onCommand={vi.fn()} onUndo={vi.fn()} onOpenJournal={vi.fn()}
-      />,
+      <StoreContext.Provider value={{ state, dispatch: vi.fn() }}>
+        <ConductorRail
+          thread={[]} feed={feedUp} now={Date.now()} composer="status" onComposerChange={vi.fn()}
+          onSend={onSend} onCommand={vi.fn()} onUndo={vi.fn()} onOpenJournal={vi.fn()}
+        />
+      </StoreContext.Provider>,
     );
     await userEvent.type(screen.getByPlaceholderText(/command…/), '{Enter}');
     expect(onSend).toHaveBeenCalledWith('status');
@@ -186,13 +189,7 @@ describe('ConductorRail', () => {
   describe('reply label (item 14)', () => {
     it('labels a reply "Conductor" when its source is conductor, console or system', () => {
       for (const source of ['conductor', 'console', 'system']) {
-        const { unmount } = render(
-          <ConductorRail
-            thread={[{ k: `r-${source}`, type: 'reply', text: 'root cause found', ts: Date.now(), source }]}
-            feed={feedUp} now={Date.now()} composer="" onComposerChange={vi.fn()} onSend={vi.fn()} onCommand={vi.fn()}
-            onUndo={vi.fn()} onOpenJournal={vi.fn()}
-          />,
-        );
+        const { unmount } = renderRail([{ k: `r-${source}`, type: 'reply', text: 'root cause found', ts: Date.now(), source }]);
         expect(screen.getByTestId('reply-label')).toHaveTextContent('Conductor');
         unmount();
       }

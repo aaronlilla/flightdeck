@@ -57,10 +57,18 @@ const STATUS_COLOR: Record<Integration['status'], string> = {
  * than wearing a "Connect" label over a call that cannot connect anything.
  */
 function ctasFor(i: Integration): { check: string; reconnect: string | null } {
+  // W3: a row with no connect action behind it shows no connect button. The old
+  // labels were aliases -- every one of them ran the same reconnect call, and a row
+  // with nothing wired answered `not wired` after the click. A label nobody can act
+  // on is worse than no label, so `canConnect` decides whether it renders at all.
+  if (!i.canConnect) return { check: i.status === 'down' || i.status === 'degraded' ? 'Check' : 'manage', reconnect: null };
   if (i.status === 'down') return { check: 'Check', reconnect: i.kind === 'mcp' ? 'Fix →' : (i.fixLabel ?? 'Reconnect →') };
   if (i.status === 'degraded') return { check: 'Check', reconnect: 'Reconnect' };
   if (i.status === 'off') return { check: 'Check', reconnect: null };
-  return { check: 'Check', reconnect: null };
+  // Healthy (and mid-probe) rows keep the pre-catalog label: the check control still
+  // re-runs the probe, but a row with nothing wrong reads as "manage" rather than
+  // "Check", matching the original ctaFor this replaced.
+  return { check: 'manage', reconnect: null };
 }
 
 /** An MCP server runs over stdio, so a healthy row with no measured latency says so
