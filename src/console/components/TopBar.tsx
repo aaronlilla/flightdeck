@@ -97,25 +97,25 @@ export function TopBar(props: TopBarProps): JSX.Element {
       {liveCount > 0 ? (
         <span
           data-testid="topbar-live-count" className="m"
-          style={{ fontSize: '10.5px', color: 'var(--run)', display: 'flex', alignItems: 'center', gap: 6 }}
+          style={{ fontSize: 'var(--fs-meta)', color: 'var(--run)', display: 'flex', alignItems: 'center', gap: 6 }}
         >
           <span className="live-pulse" aria-hidden="true" />
           {liveCount} live
         </span>
       ) : null}
       {oldestPending ? (
-        <span data-testid="topbar-working" className="m" style={{ fontSize: '10.5px', color: 'var(--ink2)', display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span data-testid="topbar-working" className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink2)', display: 'flex', alignItems: 'center', gap: 6 }}>
           <span className="fdSpinner" aria-hidden="true" />
           Working: {oldestPending.label} · {workingSeconds}s
         </span>
       ) : null}
-      <span className="m" style={{ fontSize: '10.5px', color: 'var(--ink3)', border: '1px solid var(--line2)', borderRadius: 3, padding: '4px 10px', cursor: 'pointer' }} onClick={onOpenPalette}>
+      <span className="m" style={{ fontSize: 'var(--fs-ui)', color: 'var(--ink3)', border: '1px solid var(--line2)', borderRadius: 3, padding: '4px 10px', cursor: 'pointer' }} onClick={onOpenPalette}>
         ⌘K jump
       </span>
       <span className="lbl" style={{ color: 'var(--ink2)' }}>tokens today</span>
       <span
         className={overDaily ? 'w2' : 'w0'}
-        style={{ fontSize: 14, padding: '2px 8px' }}
+        style={{ fontSize: 'var(--fs-body)', padding: '2px 8px' }}
         onClick={onOpenCost}
       >
         {fmtTokens(tokensToday)}{caps && Number.isFinite(caps.dailyTokens) ? ` / ${fmtTokens(caps.dailyTokens)}` : ''}
@@ -123,8 +123,8 @@ export function TopBar(props: TopBarProps): JSX.Element {
       <span className={feed.live ? 'stF' : 'stO'}>
         {feed.live ? `■ live feed · ${latencyMs}ms` : `○ feed lost ${hm(feed.lostAt ?? now)}`}
       </span>
-      <span className="m" style={{ fontSize: 11, color: 'var(--ink2)', minWidth: 62 }}>{hm(now)}</span>
-      <ActionButton spec={ACTIONS.stopAll} args={[]} actionRef="topbar" className="btnR" style={{ padding: '5px 10px', fontSize: '9.5px' }} busy="Stopping…">Stop all</ActionButton>
+      <span className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink2)', minWidth: 62 }}>{hm(now)}</span>
+      <ActionButton spec={ACTIONS.stopAll} args={[]} actionRef="topbar" className="btnR" style={{ padding: '5px 10px', fontSize: 'var(--fs-ui)' }} busy="Stopping…">Stop all</ActionButton>
       <span className="chip chipB" title="show raw ids and every row" onClick={onToggleVerbose}>{verbose ? 'verbose' : 'plain'}</span>
       <span className="chip chipB" onClick={onToggleTheme}>{theme === 'thD' ? 'day mode' : 'night ops'}</span>
     </div>

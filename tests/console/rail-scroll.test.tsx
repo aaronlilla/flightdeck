@@ -86,3 +86,57 @@ describe('the rail thread scrolls like a chat', () => {
     expect(rail.scrollTop).toBe(1500);
   });
 });
+
+// W4 (2026-09-08): the rail reads at body size, and nothing in it runs off the side.
+// jsdom lays nothing out, so the assertion is the style contract rather than a
+// measured width: a `nowrap` element with no overflow rule is exactly what pushes a
+// long option or a long receipt past the edge of the thread. Real geometry is
+// measured in tests/e2e/readability.spec.ts, in a browser.
+describe('nothing in the rail runs off the side', () => {
+  function longQuestion(): Message {
+    return {
+      k: 'q-1', type: 'question', text: 'Which base should the retry branch start from?',
+      ts: Date.now(), source: 'conductor',
+      // `opts`, not `options`: ConductorRail renders `message.opts` (string[]), and a
+      // fixture with the wrong field name rendered no option buttons at all, which left
+      // this test asserting nothing about the widest thing in the rail.
+      askKey: 'ask-1',
+      opts: [1, 2, 3].map((n) => `option ${n} ${'a decision spelled out at length '.repeat(6)}`),
+    } as unknown as Message;
+  }
+
+  function longReceipt(): Message {
+    return {
+      k: 'r-1', type: 'receipt', text: `merged ${'and then said something about it '.repeat(9)}`,
+      ts: Date.now(), source: 'conductor',
+    } as unknown as Message;
+  }
+
+  function longPr(): Message {
+    return {
+      k: 'pr-1', type: 'pr', text: `Draft PR for ${'a change with a long name '.repeat(6)}`,
+      ts: Date.now(), source: 'conductor', pr: { no: 7, url: 'https://example.invalid/pr/7', files: 12, add: 340, del: 96, draft: true },
+    } as unknown as Message;
+  }
+
+  it('never leaves a nowrap element without an overflow rule', () => {
+    render(railFor([longQuestion(), longReceipt(), longPr()]));
+    const thread = screen.getByTestId('rail-thread');
+    // Guard the fixture itself: a question whose options do not render would make the
+    // walk below pass by having nothing wide to walk over.
+    expect(thread.querySelectorAll('[data-testid="question-options"] > span')).toHaveLength(3);
+    const offenders: string[] = [];
+    for (const el of thread.querySelectorAll<HTMLElement>('*')) {
+      if (el.style.whiteSpace !== 'nowrap') continue;
+      if (el.style.overflow === 'hidden' && el.style.textOverflow === 'ellipsis') continue;
+      offenders.push(`${el.tagName.toLowerCase()}.${el.className}: ${el.textContent?.slice(0, 40) ?? ''}`);
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('reads at body size, with the wider column that needs', () => {
+    const { container } = render(railFor([longReceipt()]));
+    const rail = container.firstElementChild as HTMLElement;
+    expect(rail.style.width).toBe('clamp(360px, 30vw, 480px)');
+  });
+});

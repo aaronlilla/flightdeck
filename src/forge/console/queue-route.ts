@@ -17,6 +17,7 @@ import {
   retryItem, type QueueMergeDeps, type QueuePromoteDeps, type QueueTicketSearch,
 } from '../intake/queue.js';
 import { buildBacklogJql as defaultBuildBacklogJql } from '../queue-wire.js';
+import { queueTitleFor } from './queue-title.js';
 import type { QueueStore } from '../intake/queueStore.js';
 import type {
   ActionResult, QueueAddRequest, QueueAddResponse, QueueResponse, QueueSource,
@@ -127,8 +128,12 @@ export class QueueRoutes {
   }
 
   private response(): QueueResponse {
+    // `title` is filled here, on the way out, rather than stored on the item: every
+    // item already on disk gets one on the next read, and a brief edited under a
+    // queued item retitles itself with no write.
     return {
-      items: this.opts.store.all(), paused: this.opts.readPaused(), maxInFlight: this.opts.maxInFlight,
+      items: this.opts.store.all().map((item) => ({ ...item, title: queueTitleFor(item) })),
+      paused: this.opts.readPaused(), maxInFlight: this.opts.maxInFlight,
     };
   }
 
