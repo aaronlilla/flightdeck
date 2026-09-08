@@ -62,6 +62,9 @@ export interface LaneRecord {
    *  `run` command writes it at admission, so a board shows a real class right away
    *  instead of "unknown class" until the run's first journal event overrides it. */
   className?: string | null;
+  /** The registry id of the account this lane's most recent launch went to, written
+   *  at admission like `className`, so the board shows it before the first turn. */
+  account?: string | null;
 }
 
 /** A record with every field present, so a reader never has to guess at a missing key. */

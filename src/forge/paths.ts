@@ -110,6 +110,13 @@ export function probeDir(): string | undefined {
 
 /** Single-flight login locks, one file per account: `<account>.lock` holding whoever's
  *  browser flow is in flight for it (`credential-horizon.ts`). */
+/** The accounts registry: which Claude config dirs and which Codex login Forge may run
+ *  work on. Untracked and under `FORGE_HOME`, never in the repo, because it names
+ *  directories that exist on one machine. Absent means one account: `fleetConfigDir()`. */
+export function accountsPath(): string {
+  return join(forgeHome(), 'accounts.json');
+}
+
 export function loginsDir(): string {
   return join(forgeHome(), 'logins');
 }

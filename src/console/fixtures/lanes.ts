@@ -41,6 +41,7 @@ function lane(partial: Partial<Lane> & Pick<Lane, 'id' | 'state'>): Lane {
     pr: null,
     sandbox: null,
     blockedBy: null,
+    account: null,
     runaway: false,
     needsAaron: null,
     ...partial,

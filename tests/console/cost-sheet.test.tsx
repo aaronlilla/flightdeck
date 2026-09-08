@@ -15,7 +15,7 @@ function lane(extra: Partial<Lane> = {}): Lane {
     repo: 'flightdeck-api', attempt: 1, state: 'running', reason: null, stepN: 2, stepTotal: 6, stepText: 'working',
     ctxTokens: 70_000, ctxCeiling: 200_000, ctxCompactAt: 180_000, tokens: 5_500_000, tokenCap: 1_600_000, tokensPerMin: 260_000,
     fails: 2, hop: 2, hopStatus: 'live', observedAt: Date.now(), verifiedAt: Date.now(), heart: true, since: Date.now(),
-    startedAt: Date.now(), endedAt: null, question: null, pr: null, sandbox: null, blockedBy: null, runaway: true,
+    startedAt: Date.now(), endedAt: null, question: null, pr: null, sandbox: null, blockedBy: null, account: null, runaway: true,
     needsAaron: null, did: null, now: '', you: null,
     ...extra,
   };

@@ -25,6 +25,7 @@ import { Gotchas } from './gotcha.js';
 import { redactFields } from './redact.js';
 import { askKey, Inbox, type InboxEntry } from './inbox.js';
 import { Journal } from './journal.js';
+import { accountIdForConfigDir, loadAccounts } from './accounts.js';
 import { fleetConfigDir } from './paths.js';
 import { readParkRecord } from './parkrecord.js';
 import {
@@ -812,6 +813,9 @@ export class SdkEngine implements EngineLike {
     const journal = this.journal;
     const inbox = this.sharedInbox;
     const gotchas = new Gotchas(this.deps.gotchasDir, this.deps.journalPath);
+    // Which registered account this session runs on, read once from the config dir the
+    // options pinned: the tag every `account.window` row below carries.
+    const account = accountIdForConfigDir(loadAccounts().accounts, workerOptions.env['CLAUDE_CONFIG_DIR'] ?? fleetConfigDir());
 
     const handlers = buildForgeToolHandlers({
       run: request.run, goal, inbox, journal, parked: this.parked, gotchas,
@@ -1007,6 +1011,15 @@ export class SdkEngine implements EngineLike {
             }
             break;
           }
+          case 'rate-limit':
+            // The SDK's own plan-window signal for this session's account. Journaled as
+            // it arrives, before any failure, so the board knows an account's headroom
+            // from the runs on it and not only from the next probe.
+            journal.append({
+              event: 'account.window', run: request.run, actor: 'worker', account,
+              window: event.window, status: event.status, utilization: event.utilization, resetsAt: event.resetsAt,
+            });
+            break;
           case 'result-usage':
             // The SDK result message's own per-model totals, journaled on this
             // segment's end row for the Governor's burn ledger (P4.2, `governor.ts`'s

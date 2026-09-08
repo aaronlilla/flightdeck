@@ -216,6 +216,9 @@ export interface Lane {
   sandbox: LaneSandbox | null;
   /** Integration id this lane is blocked on, when it is. */
   blockedBy: string | null;
+  /** The registry id of the account this run launched under (`~/.forge/accounts.json`),
+   *  from its `run.started` row. Null for a run journaled before attribution existed. */
+  account: string | null;
   runaway: boolean;
   needsAaron: string | null;
   /** What a person needs to recognise this lane without decoding its run id
@@ -389,6 +392,60 @@ export interface ReconnectResponse {
   steps: { text: string; done: boolean }[];
   message: string;
   jid: string | null;
+}
+
+export type AccountWindowStatus = 'allowed' | 'allowed_warning' | 'rejected' | 'unavailable' | 'unknown';
+
+export interface AccountWindow {
+  /** Percent of the window used, 0 to 100, from the newest row that carried one. Null
+   *  until any row has. */
+  utilization: number | null;
+  /** Milliseconds since the epoch, or null when the newest row named no reset. */
+  resetsAt: number | null;
+  /** `unknown` until a row exists; `unavailable` when the newest row is a probe that
+   *  could not see plan windows (the utilization shown is then the last known one). */
+  status: AccountWindowStatus;
+  observedAt: number | null;
+}
+
+export interface AccountRow {
+  id: string;
+  provider: 'claude' | 'codex';
+  /** The config dir for a Claude account, null for Codex. */
+  configDir: string | null;
+  maxConcurrent: number | null;
+  /** `yes` once a probe answered or a live run reported under this account, `no` when
+   *  the newest probe failed, `unknown` before either. */
+  connected: 'yes' | 'no' | 'unknown';
+  connectedReason: string | null;
+  subscription: string | null;
+  fiveHour: AccountWindow;
+  sevenDay: AccountWindow;
+  /** Tokens across every run attributed to this account that had an event today. */
+  tokensToday: number;
+  liveRuns: number;
+  lastEvent: { at: number; window: string | null; status: string; actor: string } | null;
+  /** Set while the newest window row is `rejected` and its reset is still ahead. */
+  paused: { until: number; window: string } | null;
+  /** True for the account every launch goes to today. Slice 2 replaces this with a
+   *  per-run choice; until then it is `fleetConfigDir()`'s account. */
+  isLaunchAccount: boolean;
+  /** Codex has no window API. Its row folds the harness tool's own ledger instead. */
+  codex: { callsToday: number; durationTodayMs: number; lastError: string | null; lastCallAt: number | null } | null;
+}
+
+export interface AccountsResponse {
+  accounts: AccountRow[];
+  registryPath: string;
+  registrySource: 'default' | 'file' | 'invalid';
+  registryError: string | null;
+  /** The operator's home directory, so the Connect panel can print a real path for
+   *  the next config dir without the client guessing one. */
+  homeDir: string;
+  probe: { on: boolean; everySeconds: number; lastAt: number | null };
+  /** Tokens today from runs whose `run.started` row carried no account. */
+  unattributedTokensToday: number;
+  checkedAt: number;
 }
 
 export interface Caps {

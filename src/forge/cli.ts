@@ -47,6 +47,8 @@ import { readProcessList, watchedProcesses, probeProcessListCached } from './fle
 import { Gotchas } from './gotcha.js';
 import { Inbox, isAskStale } from './inbox.js';
 import { replay, Journal, JournalCache } from './journal.js';
+import { addAccount, launchAccountId, loadAccounts, removeAccount } from './accounts.js';
+import { probeAccounts } from './accounts-probe.js';
 import { checkLaunch, launchEnv, loginInFlight, pinnedRuntime, runtimeHead, runtimeVersion } from './launcher.js';
 import { assess, LivenessSupervisor } from './liveness.js';
 import {
@@ -740,6 +742,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       lanes.put(slug, {
         column: 'forge', started: Date.now(), owner: 'forge',
         className: plannedClassName, model: plannedModel,
+        account: launchAccountId(),
       });
       const engine = deps.engine ?? new SdkEngine({
         journalPath: journalPath(), inboxDir: inboxDir(), gotchasDir: gotchasDir(),

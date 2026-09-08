@@ -177,6 +177,10 @@ export const FORGE_EVENT_NAMES = [
   // a kill it refused for lack of a decision, and a fleet-probe health note that is never
   // acted on (liveness.ts's fleet-unknown, surfaced but not treated as a run's own fault).
   'run.killed', 'warden.refused', 'warden.health',
+  // Accounts (2026-09-08): `account.probe` is one usage call under one config dir (did
+  // it answer, or what it threw); `account.window` is one plan window's state for one
+  // account, from the probe or from a live worker's `rate_limit_event`.
+  'account.probe', 'account.window',
   // The Governor stream's own (roadmap P4.2, `src/forge/governor.ts`): `result.usage`
   // carries the SDK result message's own `modelUsage` map, journaled by the engine on a
   // segment's end row; `burn.mismatch` is the reconciliation between that sum and B.3.6's

@@ -15,6 +15,7 @@
  * The engine is injected. Every specimen runs against a fake stream, so the suite spends
  * nothing and still exercises the loop that decides the money.
  */
+import { launchAccountId } from './accounts.js';
 import { tierOfBrief, contextFor, effortFor, modelFor, modelIdFor, turnsFor } from './policy.js';
 import { Journal, replay } from './journal.js';
 import { run as execRun, type RunRequest, type RunResult } from './exec.js';
@@ -355,6 +356,7 @@ export class Worker {
     let runName = this.config.run;
     let prompt = this.config.brief;
     let predecessor: string | undefined;
+    const account = launchAccountId();
     // The stuck rule, replacing a bare session cap (B.3.8): a chain that keeps handing
     // off or stopping without ever committing is going nowhere, whatever its budget says.
     let sessionsSinceCommit = 0;
@@ -379,6 +381,10 @@ export class Worker {
           maxContext: ceiling,
           ...(this.config.ticket ? { ticket: this.config.ticket } : {}),
           ...(predecessor ? { predecessor } : {}),
+          // The same account for every session of this worker, so a handoff successor
+          // inherits it: `--resume` cannot cross a config dir, and the row that says which
+          // login a run is on has to agree with the row before it.
+          account,
         });
 
         let session: SessionResult;

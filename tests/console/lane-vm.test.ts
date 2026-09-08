@@ -13,7 +13,7 @@ function lane(state: LaneState, extra: Partial<Lane> = {}): Lane {
     repo: 'flightdeck-api', attempt: 1, state, reason: null, stepN: 1, stepTotal: 6, stepText: '',
     ctxTokens: 1000, ctxCeiling: 200_000, ctxCompactAt: 180_000, tokens: 1, tokenCap: 10, tokensPerMin: 0,
     fails: 0, hop: 0, hopStatus: 'live', observedAt: 0, verifiedAt: 0, heart: false, since: 0, startedAt: 0,
-    endedAt: null, question: null, pr: null, sandbox: null, blockedBy: null, runaway: false, needsAaron: null, did: null, now: '', you: null,
+    endedAt: null, question: null, pr: null, sandbox: null, blockedBy: null, account: null, runaway: false, needsAaron: null, did: null, now: '', you: null,
     ...extra,
   };
 }

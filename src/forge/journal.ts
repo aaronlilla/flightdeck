@@ -74,6 +74,9 @@ export interface RunState {
   model?: string;
   successor?: string;
   predecessor?: string;
+  /** The registry id (`~/.forge/accounts.json`) of the login this run launched under,
+   *  from its `run.started` row. Absent for rows written before attribution existed. */
+  account?: string;
   /** The model-policy class this run opened under, for liveness's context ceiling. */
   className?: string;
   /** When this run last produced any journal event, for liveness's idle signal. */
@@ -318,6 +321,7 @@ function foldLine(state: FleetState, line: string): void {
         if (row.model) run.model = row.model;
         if (row.predecessor) run.predecessor = row.predecessor;
         if (typeof row['className'] === 'string') run.className = row['className'];
+        if (typeof row['account'] === 'string') run.account = row['account'];
         break;
       case 'turn.end':
         run.turns += 1;
