@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { replayEvents } from '../../src/forge/contracts.js';
-import { ConformanceDrift, extractDoD, isOnTask } from '../../src/forge/conformance-drift.js';
+import { ConformanceDrift, MIN_CALLS_TO_JUDGE, buildPrompt, extractDoD, isOnTask } from '../../src/forge/conformance-drift.js';
 import { Journal } from '../../src/forge/journal.js';
 
 describe('extractDoD', () => {
@@ -52,6 +52,9 @@ afterEach(() => {
   rmSync(home, { recursive: true, force: true });
 });
 
+/** A full judging window: the checker declines to judge fewer calls than this. */
+const WINDOW = ['Read brief.md', 'Edit src/a.ts', 'Edit src/b.ts', 'Bash: npx vitest run tests/a.test.ts', 'Bash: git commit -m x'];
+
 function fakeReasoner(responses: string[]) {
   let index = 0;
   return {
@@ -75,7 +78,7 @@ describe('item 7 of 2026-09-05: the reasoner call carries the run it was called 
       actuator: { park: async (run) => { parked.push(run); return true; } },
     });
 
-    await checker.check('card-network-glow', '- do the thing', []);
+    await checker.check('card-network-glow', '- do the thing', WINDOW);
 
     expect(calls).toEqual([{ run: 'card-network-glow' }]);
   });
@@ -88,7 +91,7 @@ describe('a single off-task verdict', () => {
       journal,
       actuator: { park: async (run) => { parked.push(run); return true; } },
     });
-    const result = await checker.check('r1', '- do the thing', ['Bash: ls']);
+    const result = await checker.check('r1', '- do the thing', WINDOW);
     expect(result.parked).toBe(false);
     expect(parked).toEqual([]);
   });
@@ -102,8 +105,8 @@ describe('two consecutive off-task verdicts', () => {
       actuator: { park: async (run) => { parked.push(run); return true; } },
     });
 
-    await checker.check('r1', '- do the thing', []);
-    const result = await checker.check('r1', '- do the thing', []);
+    await checker.check('r1', '- do the thing', WINDOW);
+    const result = await checker.check('r1', '- do the thing', WINDOW);
 
     expect(result.parked).toBe(true);
     expect(parked).toEqual(['r1']);
@@ -119,10 +122,49 @@ describe('two consecutive off-task verdicts', () => {
       journal,
       actuator: { park: async (run) => { parked.push(run); return true; } },
     });
-    await checker.check('r1', '- do the thing', []);
-    await checker.check('r1', '- do the thing', []);
-    const third = await checker.check('r1', '- do the thing', []);
+    await checker.check('r1', '- do the thing', WINDOW);
+    await checker.check('r1', '- do the thing', WINDOW);
+    const third = await checker.check('r1', '- do the thing', WINDOW);
     expect(third.parked).toBe(false);
     expect(parked).toEqual([]);
+  });
+});
+
+describe('too few tool calls to judge (2026-09-08: three runs parked ten minutes in)', () => {
+  it('never calls the reasoner under MIN_CALLS_TO_JUDGE calls and reads as on task', async () => {
+    let called = 0;
+    const checker = new ConformanceDrift({
+      reasoner: { provider: 'claude' as const, call: async () => { called += 1; return { text: 'no, nothing done' }; } },
+      journal,
+      actuator: { park: async (run) => { parked.push(run); return true; } },
+    });
+    const few = Array.from({ length: MIN_CALLS_TO_JUDGE - 1 }, (_, i) => `Edit src/f${i}.ts`);
+    const result = await checker.check('r-young', '- [ ] everything', few);
+    expect(result).toEqual({ onTask: true, parked: false, judged: false });
+    expect(called).toBe(0);
+    expect(parked).toEqual([]);
+  });
+
+  it('judges once the window is full', async () => {
+    let called = 0;
+    const checker = new ConformanceDrift({
+      reasoner: { provider: 'claude' as const, call: async () => { called += 1; return { text: 'yes' }; } },
+      journal,
+      actuator: { park: async (run) => { parked.push(run); return true; } },
+    });
+    const enough = Array.from({ length: MIN_CALLS_TO_JUDGE }, (_, i) => `Edit src/f${i}.ts`);
+    const result = await checker.check('r-old', '- [ ] everything', enough);
+    expect(result.judged).toBe(true);
+    expect(called).toBe(1);
+  });
+});
+
+describe('the prompt asks whether the calls serve the brief, not whether the brief is done', () => {
+  it('says unfinished work is on task and lists the calls with their targets', () => {
+    const prompt = buildPrompt('- [ ] tests green', ['Read src/a.ts', 'Bash: npx vitest run tests/a.test.ts']);
+    expect(prompt).toContain('Unfinished work is still on task');
+    expect(prompt).toContain('not a checklist the calls must already');
+    expect(prompt).toContain('- Bash: npx vitest run tests/a.test.ts');
+    expect(prompt).not.toContain('(none yet)');
   });
 });

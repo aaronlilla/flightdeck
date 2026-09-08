@@ -10,7 +10,7 @@ import type { JSX } from 'react';
  */
 import { useCallback, useEffect, useReducer, useRef } from 'react';
 
-import { ACTIONS, ActionsContext, EFFECT_SLICES, errorText, showToast, type ActionsHost } from './actions.js';
+import { ACTIONS, ActionsContext, EFFECT_SLICES, actionKey, errorText, showToast, type ActionSpec, type ActionsHost } from './actions.js';
 import * as api from './api.js';
 import { BlockersView } from './components/BlockersView.js';
 import { CommandPalette, buildPaletteItems } from './components/CommandPalette.js';
@@ -193,6 +193,8 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       const endedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
       dispatch({ type: 'fetch-latency', ms: Math.round(endedAt - startedAt) });
       if (lanes) dispatch({ type: 'lanes', lanes: lanes.lanes, links: lanes.links });
+      // Local cards, their TTL and the operator-bubble dedupe live in the reducer's
+      // own `thread` case now, so every replace gets them rather than this one call site.
       if (thread) dispatch({ type: 'thread', thread: applyResolved(thread.messages) });
       if (journal) dispatch({ type: 'journal', journal: journal.rows });
       if (integrations) dispatch({ type: 'integrations', integrations: integrations.items });
@@ -200,6 +202,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       if (proposals) dispatch({ type: 'proposals', proposals });
       if (queue) dispatch({ type: 'queue', items: queue.items, paused: queue.paused, maxInFlight: queue.maxInFlight, pauseReason: queue.pauseReason });
       if (consoleState) dispatch({ type: 'queue-on', on: consoleState.queue_on });
+      if (consoleState?.conductor) dispatch({ type: 'conductor-timeout', timeoutMs: consoleState.conductor.timeoutMs });
       if (blockers) dispatch({ type: 'blockers', blockers });
       // The server moved onto a new build (a restart, a self cutover): this page's
       // components are the old ones, so reload rather than paint new data with them.
@@ -328,26 +331,51 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       const card: Message = { k: `op-${Date.now()}-${Math.random()}`, type: 'operator', text: commandEcho(trimmed, { labelFor }), ts: Date.now(), source: 'operator' };
       dispatch({ type: 'thread-append', messages: [card], local: true });
     }
-    // The composer's own contract: pending within one render (the rail reads this
-    // key), the reply cards as the inline result, and the effect refetched.
+    // A model call takes seconds, and a rail that shows nothing for five seconds reads
+    // as broken. A local working row goes up the moment the message leaves, tool
+    // receipts stream in over the live feed underneath it, and it comes down when the
+    // reply lands. If the class timeout passes first, the row says so. The composer's
+    // own control reads `key` for pending and the reply for its inline result.
     const key = 'sendCommand:rail';
+    const tokenAction = trimmed.match(/^(confirm|run|dismiss)\s+\S+$/i);
+    const working: Message | null = tokenAction ? null : {
+      k: `working-${Date.now()}-${Math.random()}`, type: 'thinking', text: 'Conductor is working…', ts: Date.now(), source: 'conductor',
+    };
+    let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+    if (working) {
+      dispatch({ type: 'thread-append', messages: [working], local: true });
+      const seconds = Math.round(stateRef.current.conductorTimeoutMs / 1000);
+      timeoutTimer = setTimeout(() => {
+        const text = `the Conductor did not answer in ${seconds}s; the grammar answered instead…`;
+        dispatch({ type: 'local-card-text', k: working.k, text });
+      }, stateRef.current.conductorTimeoutMs);
+    }
+    const dropWorking = () => {
+      if (!working) return;
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+      dispatch({ type: 'local-card-drop', k: working.k });
+    };
     dispatch({ type: 'action-pending', key });
     void (async () => {
       try {
         const response = await api.sendCommand(trimmed);
-        if (response.cards.length > 0) dispatch({ type: 'thread-append', messages: response.cards });
-        const refused = response.cards.some((card) => card.type === 'refusal');
-        dispatch({ type: 'action-result', key, result: { kind: 'done', ok: !refused, text: response.cards[0]?.text ?? 'no reply', jid: null, at: Date.now(), link: null } });
+        dropWorking();
+        // The server echoes the operator's own card first (`ConsoleWrites.command`);
+        // this rail already showed its own bubble, so only the answer is appended.
+        const answer = response.cards.filter((card) => card.type !== 'operator');
+        if (answer.length > 0) dispatch({ type: 'thread-append', messages: answer });
+        const refused = answer.some((card) => card.type === 'refusal');
+        dispatch({ type: 'action-result', key, result: { kind: 'done', ok: !refused, text: answer[0]?.text ?? 'no reply', jid: null, at: Date.now(), link: null } });
         // The card this command actioned lives only in `thread.jsonl`, unresolved:
         // see `resolvedOverridesRef` above for why `refresh()` needs this recorded
         // rather than patched once here.
-        const tokenAction = trimmed.match(/^(confirm|run|dismiss)\s+\S+$/i);
         if (tokenAction) {
           const resolvedValue: 'confirmed' | 'declined' = /^dismiss\s/i.test(trimmed) ? 'declined' : 'confirmed';
           const target = stateRef.current.thread.find((m) => m.btns?.some((b) => b.cmd === trimmed));
           if (target) resolvedOverridesRef.current.set(target.k, { resolved: resolvedValue, at: Date.now() });
         }
       } catch (caught) {
+        dropWorking();
         const message = caught instanceof api.ApiError ? errorText(caught) : 'the command did not go through';
         appendReceipt(null, message, false);
         dispatch({ type: 'action-result', key, result: { kind: 'done', ok: false, text: message, jid: null, at: Date.now(), link: null } });
@@ -405,18 +433,33 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
 
   // Undo from a rail card or the journal sheet: the catalog entry, run without a
   // control of its own, so the receipt still lands in the rail and the slices refetch.
-  const onUndo = useCallback((jid: string) => {
-    const key = `undoJournal:${jid}`;
+  /**
+   * One catalog action run from here rather than from a control of its own, for the
+   * two places where the button lives inside a child that takes a callback: the
+   * journal's Undo and the ticket sheet's Amend. Same four promises as `useAction`,
+   * minus the inline result, which the child renders itself.
+   */
+  const runCatalogAction = useCallback(<A extends unknown[], R>(
+    spec: ActionSpec<A, R>, args: A, ref?: string,
+  ): Promise<void> => {
+    const key = actionKey(spec.id, ref);
     dispatch({ type: 'action-pending', key });
-    void api.undoJournal(jid).then((result) => {
-      dispatch({ type: 'action-result', key, result: { kind: 'done', ok: result.ok, text: result.message, jid: result.jid, at: Date.now(), link: { kind: 'journal', jid, label: 'journal' } } });
-      appendReceipt(result.jid, result.message, result.undoable);
+    return spec.call(args).then((result) => {
+      const ok = spec.ok ? spec.ok(result) : true;
+      const text = spec.text(result, args);
+      const jid = spec.jid?.(result) ?? null;
+      dispatch({ type: 'action-result', key, result: { kind: 'done', ok, text, jid, at: Date.now(), link: spec.link?.(args, result) ?? null } });
+      appendReceipt(jid, text, false);
     }, (caught: unknown) => {
-      const message = caught instanceof api.ApiError ? errorText(caught) : 'the undo did not go through';
+      const message = errorText(caught);
       dispatch({ type: 'action-result', key, result: { kind: 'done', ok: false, text: message, jid: null, at: Date.now(), link: null } });
       appendReceipt(null, message, false);
-    }).then(() => { for (const slice of EFFECT_SLICES.journal) void refreshSlice(slice); });
+    }).then(() => { for (const slice of EFFECT_SLICES[spec.effect]) void refreshSlice(slice); });
   }, [appendReceipt, refreshSlice]);
+
+  const onUndo = useCallback((jid: string) => {
+    void runCatalogAction(ACTIONS.undoJournal, [jid], jid);
+  }, [runCatalogAction]);
 
   const onOpenJournal = useCallback((jid: string) => {
     dispatch({ type: 'sheet', sheet: { type: 'journal', run: jid } });
@@ -614,6 +657,16 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
                   onCommand={onCommand}
                   onOpenCost={(id) => dispatch({ type: 'sheet', sheet: { type: 'cost', id } })}
                   onOpenSandbox={(id) => dispatch({ type: 'sheet', sheet: { type: 'sandbox', id } })}
+                  // The composer talks to the Conductor with the lane as context,
+                  // never straight into an inbox nobody may read. The sheet renders
+                  // the cards itself; `refresh()` picks up the rail's copy.
+                  conductorTimeoutMs={state.conductorTimeoutMs}
+                  onSendLane={async (id, textMsg) => {
+                    const response = await api.sendCommand(textMsg, id);
+                    void refresh();
+                    return response;
+                  }}
+                  onAmendLane={(id, textMsg) => runCatalogAction(ACTIONS.amendRun, [id, textMsg], id)}
                   onOpenJournal={onOpenJournal}
                   onUndo={onUndo}
                   labelFor={labelFor}

@@ -102,6 +102,30 @@ export class QueueRoutes {
     return ITEM_ROUTE.test(path) && method === 'POST';
   }
 
+  /** The Conductor agent's four `queue_*` tools (2026-09-08) read and write through
+   *  these, the same code the routes below run, without the HTTP layer. */
+  list(): QueueResponse {
+    return this.response();
+  }
+
+  addItems(body: QueueAddRequest): Promise<QueueAddResponse> {
+    return this.add(body);
+  }
+
+  remove(id: string): ActionResult {
+    const removed = removeItem(this.opts.store, id);
+    return removed
+      ? { ok: true, jid: null, message: `removed ${id}`, undoable: false }
+      : { ok: false, jid: null, message: `no queue item ${id}`, undoable: false };
+  }
+
+  retry(id: string): ActionResult {
+    const retried = retryItem(this.opts.store, id);
+    return retried
+      ? { ok: true, jid: null, message: `${id} is queued again`, undoable: false }
+      : { ok: false, jid: null, message: `${id} is not parked or failed`, undoable: false };
+  }
+
   private response(): QueueResponse {
     return {
       items: this.opts.store.all(), paused: this.opts.readPaused(), maxInFlight: this.opts.maxInFlight,
@@ -182,24 +206,21 @@ export class QueueRoutes {
       const gate: ConfirmGate = this.opts.confirmGate ?? ((_body, _source, _blast, act) => act());
 
       if (action === 'remove') {
+        // Removing a queued item is irreversible, so the route answers 202 with a
+        // token and runs nothing until it comes back. `remove` itself is the method
+        // the Conductor's own tool calls, so both paths do exactly one thing.
         const body = await readBody<Record<string, unknown>>(request);
         const outcome = await gate(body, 'console', `removes ${id} from the queue: it will not run.`, async () => {
-          const removed = removeItem(this.opts.store, id);
-          const result: ActionResult = removed
-            ? { ok: true, jid: null, message: `removed ${id}`, undoable: false }
-            : { ok: false, jid: null, message: `no queue item ${id}`, undoable: false };
-          return { status: removed ? 200 : 404, body: result };
+          const result = this.remove(id);
+          return { status: result.ok ? 200 : 404, body: result };
         });
         respond(response, outcome.status, outcome.body);
         return true;
       }
 
       if (action === 'retry') {
-        const retried = retryItem(this.opts.store, id);
-        const result: ActionResult = retried
-          ? { ok: true, jid: null, message: `${id} is queued again`, undoable: false }
-          : { ok: false, jid: null, message: `${id} is not parked or failed`, undoable: false };
-        respond(response, retried ? 200 : 409, result);
+        const result = this.retry(id);
+        respond(response, result.ok ? 200 : 409, result);
         return true;
       }
 

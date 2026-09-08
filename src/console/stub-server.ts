@@ -613,11 +613,41 @@ function publish(event: Record<string, unknown>): void {
   }
 }
 
-function runCommand(text: string): Message[] {
+function runCommand(text: string, run?: string): Message[] {
   const t = text.trim();
   const now = Date.now();
   const laneRefMatch = /\b([a-z]{2,4}-\d{2,4})\b/i.exec(t);
   const laneRef = laneRefMatch ? (laneRefMatch[1] as string).toUpperCase() : null;
+
+  // The Conductor agent's shape (2026-09-08), as the stub plays it: `remove | archive |
+  // retire <lane>` answers with a tool receipt first, then a confirm card, the way the
+  // real agent streams a receipt per tool call before its reply; Confirm retires the
+  // lane and it leaves the board. Rows the agent answers carry `path: 'agent'`.
+  const removeMatch = /^(?:remove|archive|retire)\s+(\S+)$/i.exec(t);
+  if (removeMatch) {
+    const ref = (removeMatch[1] as string).toUpperCase();
+    const lane = findLane(ref);
+    if (!lane) return [{ k: `c-${now}`, type: 'reply', text: `No lane matches "${ref}". Pick one from the board.`, ts: now, source: 'conductor', path: 'agent' }];
+    const token = randomUUID();
+    pendingConfirms.set(token, () => {
+      lane.retiredAt = Date.now();
+      const jid = journal('lane.retired', `retired ${ref}`, ref, true);
+      publish({ event: 'lane.retired', run: lane.id });
+      return [{ k: `r-${Date.now()}`, type: 'receipt', text: `retired ${ref}`, ts: Date.now(), source: 'conductor', jid, undoable: true, path: 'agent' }];
+    });
+    return [
+      { k: `r-${now}`, type: 'receipt', text: `remove proposed for ${ref}, waiting on Confirm`, ts: now, source: 'conductor', resolved: 'ran', path: 'agent' },
+      { k: `c-${now}`, type: 'reply', text: `Proposed taking ${ref} off the board; it stays under Archived. The Confirm card is waiting for you.`, ts: now, source: 'conductor', path: 'agent' },
+      {
+        k: `confirm-${now}`, type: 'confirm', text: 'confirm?', ts: now, source: 'conductor', path: 'agent',
+        blast: `${ref} leaves the board; it stays under Archived and can be brought back.`,
+        btns: [
+          { label: 'Confirm', cmd: `confirm ${token}`, cls: 'destroy' },
+          { label: 'Not now', cmd: `dismiss ${token}` },
+        ],
+      },
+    ];
+  }
 
   // A stale token (the pending confirm/plan already ran, or the fixture reset
   // underneath it) reads the same as a token that was never valid.
@@ -641,6 +671,19 @@ function runCommand(text: string): Message[] {
     if (!pending) return [{ k: `c-${now}`, type: 'refusal', text: `nothing pending for ${token}`, ts: now, source: 'conductor' }];
     pendingPlans.delete(token);
     return pending();
+  }
+  // Typed into a ticket sheet: the stub's agent tells that run, the way the old
+  // composer delivered straight to its inbox, and says so.
+  if (run) {
+    const lane = db.lanes.find((l) => l.id === run);
+    const label = lane?.ticket ?? run;
+    if (!lane || !lane.heart) {
+      return [{ k: `c-${now}`, type: 'reply', text: `${label} has no live session, so there is nobody to tell. Kill, verify or archive it instead.`, ts: now, source: 'conductor', path: 'agent' }];
+    }
+    return [
+      { k: `r-${now}`, type: 'receipt', text: `sent to ${label}`, ts: now, source: 'conductor', resolved: 'ran', path: 'agent' },
+      { k: `c-${now}`, type: 'reply', text: `Told ${label}: ${t}`, ts: now, source: 'conductor', path: 'agent' },
+    ];
   }
   if (/^kill\b/i.test(t) && laneRef) {
     const lane = findLane(laneRef);
@@ -786,7 +829,7 @@ export function createStubServer() {
       // D2.4: the one field of the real server's own `/state` the web console needs.
       // Not in `CONSOLE_ROUTES` (same as the real server: `/state` carries no token).
       if (urlPath === '/state' && method === 'GET') {
-        json(response, 200, { queue_on: db.queueOn, build: stubBuild });
+        json(response, 200, { queue_on: db.queueOn, build: stubBuild, conductor: { enabled: true, timeoutMs: 120_000, open: false } });
         return;
       }
 
@@ -1181,8 +1224,11 @@ export function createStubServer() {
       }
 
       if (urlPath === '/command' && method === 'POST') {
-        const body = await readJson<{ text?: string }>(request);
-        const cards = runCommand(body.text ?? '');
+        const body = await readJson<{ text?: string; run?: string }>(request);
+        const text = body.text ?? '';
+        // The real route echoes the operator's own bubble first (`ConsoleWrites.command`).
+        const operator: Message = { k: `op-${Date.now()}-${Math.random()}`, type: 'operator', text, ts: Date.now(), source: 'operator' };
+        const cards = [operator, ...runCommand(text, body.run)];
         db.thread = [...db.thread, ...cards];
         json(response, 200, { cards });
         return;

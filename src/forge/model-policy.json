@@ -148,5 +148,12 @@
     "allowedRepos": [],
     "autoMerge": []
   },
-  "router": {"enabled": false}
+  "router": {"enabled": false},
+  "_conductor_comment": [
+    "The Conductor agent behind the console rail (2026-09-08): one Sonnet session on the",
+    "implement class holding the console tools. enabled: true routes every typed message",
+    "to it, with the regex grammar as the fallback when the session cannot open or does",
+    "not answer inside reasoner.timeoutMs; false keeps every message on the grammar."
+  ],
+  "conductor": {"agent": {"enabled": true}}
 }

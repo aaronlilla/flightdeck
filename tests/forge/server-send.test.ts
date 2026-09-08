@@ -70,17 +70,23 @@ describe('POST /send refuses a target with no live session', () => {
     // Mirrors the mission lane exactly: a `run.finished` row with an `unverified`
     // verdict and no live registry row, so the board carries a record but heart reads
     // false.
+    // A lane file is what puts the record on the board at all: `lanesResponse`
+    // enumerates lane ids off `lanes.all()`, so a journal-only run never appears and
+    // would take the no-record path above instead of this one.
+    new Lanes(join(dir, 'lanes')).put('2026-09-04-forge-c2-rn', { column: 'c', model: 'claude-sonnet-5', context: 1000, cost_usd: 0, session_id: 's1' });
     const journal = new Journal(join(dir, 'fleet.jsonl'));
     journal.append({ event: 'run.started', run: '2026-09-04-forge-c2-rn', actor: 'runner' });
     journal.append({ event: 'run.finished', run: '2026-09-04-forge-c2-rn', verdict: 'unverified' });
     journal.close();
+    const record = (await (await fetch(`${base}/lanes?all=1&archived=1`, { headers: { 'x-forge-token': server.token } })).json() as { lanes: Array<{ id: string; state: string; heart: boolean }> })
+      .lanes.find((lane) => lane.id === '2026-09-04-forge-c2-rn');
+    expect(record).toMatchObject({ state: 'unverified', heart: false });
 
     const response = await postSend('2026-09-04-forge-c2-rn', 'kill and remove this');
 
     expect(response.status).toBe(409);
     const body = await response.json() as { error: string };
-    expect(body.error).toMatch(/no live session/);
-    expect(body.error).toMatch(/2026-09-04-forge-c2-rn/);
+    expect(body.error).toMatch(/2026-09-04-forge-c2-rn has no live session; it ended /);
     expect(inboxFileCount('2026-09-04-forge-c2-rn')).toBe(0);
   });
 

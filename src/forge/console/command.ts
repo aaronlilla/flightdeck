@@ -27,7 +27,7 @@ import type { Registry } from '../registry.js';
 import type { RunRequest } from '../exec.js';
 import type { Lanes } from '../supervisor.js';
 import type { QueueStore } from '../intake/queueStore.js';
-import { governorBudget } from '../policy.js';
+import { conductorAgentEnabled, governorBudget } from '../policy.js';
 import { forgeHome } from '../paths.js';
 import { retireLane } from './retire.js';
 import { consoleDir, recordAction, ActionsLedger, actionsLedgerPath } from './actions-ledger.js';
@@ -48,6 +48,7 @@ import {
 import type { ActionResult, LanesResponse, Message, PlanItem } from '../../shared/console-model.js';
 import { fmtTokens } from '../../shared/format-tokens.js';
 import { stripMachineIds } from '../../shared/humanize.js';
+import type { ConductorAgent, ConductorContext } from './agent.js';
 
 const REASON_LIMIT = 140;
 
@@ -347,6 +348,10 @@ export class ConsoleWrites {
 
   private enforcement: { stop(): void } | undefined;
 
+  /** The Conductor agent `command()` hands a message to when policy has it on. Attached
+   *  by `server.ts` after construction, since the agent's tools need this instance. */
+  private agent: ConductorAgent | undefined;
+
   constructor(private readonly deps: ConsoleWritesDeps) {
     this.ledger = new ActionsLedger(deps.ledgerPath ?? actionsLedgerPath());
     this.integrations = new IntegrationsRegistry({
@@ -367,6 +372,10 @@ export class ConsoleWrites {
    *  over the same config file. */
   integrationsRegistry(): IntegrationsRegistry {
     return this.integrations;
+  }
+
+  attachAgent(agent: ConductorAgent): void {
+    this.agent = agent;
   }
 
   /** Starts the 10-second rule-enforcement tick. Called once by `server.ts#listen()`;
@@ -408,7 +417,7 @@ export class ConsoleWrites {
     };
   }
 
-  private capsWriteDeps(): CapsWriteDeps {
+  capsWriteDeps(): CapsWriteDeps {
     return {
       journalPath: this.deps.journalPath, ledger: this.ledger,
       overridesPath: this.overridesPath(),
@@ -522,7 +531,7 @@ export class ConsoleWrites {
   }
 
   /** The retire implementation shared with `server.ts`'s route and the agent's tool. */
-  private retireDeps() {
+  retireDeps() {
     return {
       forgeHomeDir: this.deps.forgeHomeDir ?? forgeHome(), journalPath: this.deps.journalPath,
       lanesAll: () => (this.deps.lanesViewAll ?? this.deps.lanesView)?.().lanes ?? [],
@@ -579,6 +588,19 @@ export class ConsoleWrites {
     this.pendingConfirms.set(fresh, pending);
     const reply: ConfirmPendingBody = { ok: false, pending: true, token: fresh, blast, card: confirmCard(source, blast, fresh) };
     return { status: 202, body: reply };
+  }
+
+  /** One grammar intent, run and answered as cards, with nothing written to the thread:
+   *  the Conductor agent's tools go through this for the intents the grammar already
+   *  implements (pause-all, resume-all, merge-ready, caps, stuck, spend, answer). */
+  runIntent(intent: Intent, source: string): Promise<Message[]> {
+    return this.executeIntent(intent, source);
+  }
+
+  /** The whole grammar on one message, cards only, nothing written to the thread. The
+   *  agent's fallback path. */
+  runGrammar(text: string, source: string): Promise<Message[]> {
+    return this.executeIntent(parseIntent(text), source);
   }
 
   private async executeIntent(intent: Intent, source: string): Promise<Message[]> {
@@ -800,10 +822,24 @@ export class ConsoleWrites {
     }
   }
 
-  async command(text: string): Promise<Message[]> {
+  /**
+   * One operator message. A card's own button (`confirm`, `dismiss`, `run`, `cancel`)
+   * is answered by the grammar before the agent is consulted, so a click never costs a
+   * model call and a token never reaches the model. Everything else goes to the
+   * Conductor agent when `conductor.agent.enabled` is on (the shipped default) and it
+   * is attached; the grammar answers otherwise, and every reply row says which path did.
+   */
+  async command(text: string, context: ConductorContext = {}): Promise<Message[]> {
     const operatorCard: Message = { k: randomUUID(), type: 'operator', text, ts: Date.now(), source: 'operator' };
     appendThread(operatorCard);
-    const cards = await this.executeIntent(parseIntent(text), 'conductor');
+    const intent = parseIntent(text);
+    const isCardButton = intent.kind === 'confirm' || intent.kind === 'dismiss' || intent.kind === 'run-plan' || intent.kind === 'cancel';
+    if (!isCardButton && this.agent && conductorAgentEnabled(this.deps.modelPolicyPath)) {
+      const reply = await this.agent.handle(text, context);
+      return [operatorCard, ...reply.cards];
+    }
+    const cards = (await this.executeIntent(intent, 'conductor'))
+      .map((card) => (isCardButton ? card : { ...card, path: 'grammar' as const }));
     for (const card of cards) appendThread(card);
     return [operatorCard, ...cards];
   }
@@ -898,12 +934,12 @@ export class ConsoleWrites {
 
     if (path === '/command' && method === 'POST') {
       if (!this.deps.authorized(request, response)) return true;
-      const body = await readBody<{ text?: string }>(request);
+      const body = await readBody<{ text?: string; run?: string }>(request);
       if (!body?.text) {
         respond(response, 400, { error: 'a command needs text' });
         return true;
       }
-      const cards = await this.command(body.text);
+      const cards = await this.command(body.text, body.run ? { run: body.run } : {});
       respond(response, 200, { cards });
       return true;
     }

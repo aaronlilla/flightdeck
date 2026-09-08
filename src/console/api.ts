@@ -261,17 +261,6 @@ export function setRunCap(id: string, tokenCap: number): Promise<ActionResult> {
 }
 
 /**
- * The ticket sheet's own "message {lane.id}..." composer: `POST /send`, the server's
- * run-scoped delivery (`RunInbox.send`), never the board-wide `/command` classifier.
- * `/send` answers `{ ok: true }` only, so this shapes that into the same `ActionResult`
- * every other run action already returns, for `runAction`'s one receipt path.
- */
-export function sendToRun(run: string, text: string): Promise<ActionResult> {
-  return post<{ ok: boolean }>('/send', { run, text })
-    .then((result) => ({ ok: result.ok, jid: null, message: `sent to ${run}`, undoable: false }));
-}
-
-/**
  * C.1's Amend action: `POST /amend`, which appends the text to the run's own brief (and
  * its Definition of Done) and delivers it through the run's inbox. Same `{ ok: true }`
  * shape as `/send`, folded into `ActionResult` the same way for `runAction`'s one
@@ -286,8 +275,10 @@ export function setCaps(body: { dailyTokens?: number; runTokens?: number }, conf
   return post<Gated<Caps>>('/caps', withConfirm(body, confirm));
 }
 
-export function sendCommand(text: string): Promise<CommandResponse> {
-  return post<CommandResponse>('/command', { text });
+/** `run` is the lane whose sheet the text was typed into, so the Conductor agent gets
+ *  it as context and "kill and remove this" has a "this". */
+export function sendCommand(text: string, run?: string): Promise<CommandResponse> {
+  return post<CommandResponse>('/command', run ? { text, run } : { text });
 }
 
 export function checkIntegration(id: string): Promise<IntegrationsResponse> {

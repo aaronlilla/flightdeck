@@ -20,6 +20,7 @@ import { Engine, buildForgeMcpServer, type EngineConfig, type ForgeToolHandlers,
 import { FORGE_TOOL_NAMES } from './contracts.js';
 import { driftBlocker, readMergeable, resolveMergeable, type DriftClock, type Mergeable } from './drift.js';
 import { classifyCommand } from './command-class.js';
+import { toolTarget } from './tool-target.js';
 import { run as execRun } from './exec.js';
 import { Gotchas } from './gotcha.js';
 import { redactFields } from './redact.js';
@@ -928,12 +929,17 @@ export class SdkEngine implements EngineLike {
             break;
           case 'tool-use':
             toolNameById.set(event.id, event.name);
-            if (event.name === 'Bash' && typeof event.input['command'] === 'string') {
-              // The class travels with the row so the warden measures this call against
-              // the budget its command deserves, not `script`'s 120 s (`command-class.ts`).
-              journal.append({ event: 'tool.start', run: request.run, actor: 'worker', tool: event.name, cls: classifyCommand(event.input['command']) });
-            } else {
-              journal.append({ event: 'tool.start', run: request.run, actor: 'worker', tool: event.name });
+            {
+              // The target (file, pattern, first line of a command) travels with the row so
+              // the warden's conformance judge sees what the call was about, not just its name.
+              const target = toolTarget(event.name, event.input);
+              if (event.name === 'Bash' && typeof event.input['command'] === 'string') {
+                // The class travels with the row so the warden measures this call against
+                // the budget its command deserves, not `script`'s 120 s (`command-class.ts`).
+                journal.append({ event: 'tool.start', run: request.run, actor: 'worker', tool: event.name, cls: classifyCommand(event.input['command']), ...(target ? { target } : {}) });
+              } else {
+                journal.append({ event: 'tool.start', run: request.run, actor: 'worker', tool: event.name, ...(target ? { target } : {}) });
+              }
             }
             if (event.name === 'Bash' && typeof event.input['command'] === 'string') {
               const command = event.input['command'];

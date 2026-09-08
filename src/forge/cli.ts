@@ -54,6 +54,7 @@ import { Inbox, isAskStale } from './inbox.js';
 import { replay, Journal, JournalCache } from './journal.js';
 import { checkLaunch, launchEnv, loginInFlight, pinnedRuntime, runtimeHead, runtimeVersion } from './launcher.js';
 import { assess, LivenessSupervisor } from './liveness.js';
+import { loadConsoleEnv } from './console-env.js';
 import {
   ensureHome, fleetConfigDirChoice, forgeHome, gotchasDir, inboxDir, intakeBriefsDir, journalPath,
   killSwitchPath, lanesDir, queuePath, registryDir, runsDir,
@@ -77,6 +78,7 @@ import { FORGE_PORT, ForgeServer } from './server.js';
 import { Breaker, clearKillSwitch, Fleet, Lanes, readKillSwitch } from './supervisor.js';
 import { WardenActuator } from './warden.js';
 import { DriftCadenceTracker, WardenTick, type WardenTickRun } from './warden-tick.js';
+import { renderToolCall } from './tool-target.js';
 import { Worker, type EngineLike, type WorkerConfig } from './worker.js';
 import {
   chainStatusLines, foldChainState, runChainTick, runKeyForBrief,
@@ -313,6 +315,11 @@ function isExistingFile(path: string): boolean {
  */
 export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliResult> {
   const [command, ...rest] = argv;
+  // A terminal run of `forge` otherwise sees none of the console's FORGE_* variables:
+  // see console-env.ts. FORGE_NO_CONSOLE_ENV=1 opts out.
+  if (process.env['FORGE_NO_CONSOLE_ENV'] !== '1') {
+    loadConsoleEnv(join(forgeHome(), 'console.env.cmd'), process.env);
+  }
   ensureHome();
   const lanes = new Lanes(lanesDir());
   const inbox = new Inbox(inboxDir());
@@ -507,8 +514,11 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
               }
               const recentToolCalls = fleetState.events
                 .filter((event) => event.run === run.run && event.event === 'tool.start')
-                .slice(-5)
-                .map((event) => String(event['tool'] ?? ''));
+                .slice(-8)
+                .map((event) => renderToolCall(
+                  String(event['tool'] ?? ''),
+                  typeof event['target'] === 'string' ? event['target'] : undefined,
+                ));
               return {
                 run: run.run,
                 ...(brief !== undefined ? { brief } : {}),

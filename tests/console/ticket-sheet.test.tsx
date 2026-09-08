@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import type { JSX, ReactElement } from 'react';
 import { useReducer } from 'react';
-import { render as rtlRender, screen, waitFor } from '@testing-library/react';
+import { render as rtlRender, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -84,7 +84,7 @@ function renderSheet(
     <TicketSheet
       lane={lane(laneExtra)} feedLive now={Date.now()} focus={focus} verbose={verbose}
       onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop}
-      onUndo={noop} onOpenJournal={noop}
+      onSendLane={noop} onAmendLane={onAmendLane} onUndo={noop} onOpenJournal={noop}
     />,
   );
 }
@@ -285,12 +285,14 @@ describe('TicketSheet', () => {
   // C.1: an Amend action beside Send, sharing the composer's draft text but reaching
   // the run through the brief-amendment path rather than a plain inbox message.
   it('C.1: shows an Amend action beside Send and posts the composer\'s draft through onAmendLane', async () => {
-    vi.mocked(api.amendRun).mockResolvedValue({ ok: true, jid: 'j1', message: 'amended', undoable: false });
-    renderSheet([]);
+    // Amend reaches the run through the callback App routes into the catalog, so what
+    // this proves is what the sheet hands over, not which api function it reaches for.
+    const onAmendLane = vi.fn().mockResolvedValue(undefined);
+    renderSheet([], {}, [], onAmendLane);
     const input = screen.getByPlaceholderText(/Tell this run something/);
     await userEvent.type(input, 'also handle the null case');
     await userEvent.click(screen.getByText('Amend'));
-    expect(vi.mocked(api.amendRun)).toHaveBeenCalledWith('jira_AB-12_1788460932645', 'also handle the null case');
+    expect(onAmendLane).toHaveBeenCalledWith('jira_AB-12_1788460932645', 'also handle the null case');
   });
 
   it('C.1: does nothing when Amend is clicked with an empty draft', async () => {
@@ -310,14 +312,45 @@ describe('TicketSheet', () => {
       id: 'jira_AB-12_1788460932645', title: null, kind: 'manual', ticket: null, brief: null, entries: [],
     });
     vi.mocked(api.getRunSummary).mockResolvedValue({ what: [], status: '', next: '', audit: null, readiness: null });
-    vi.mocked(api.sendToRun).mockRejectedValue(
+    const onSendLane = vi.fn().mockRejectedValue(
       new Error('2026-09-04-forge-c2-rn has no live session; it ended earlier. Kill, verify or archive it instead.'),
     );
     render(
       <TicketSheet
         lane={lane()} feedLive now={Date.now()} verbose={false}
         onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop}
-        onUndo={noop} onOpenJournal={noop}
+        onSendLane={onSendLane} onAmendLane={noop} onUndo={noop} onOpenJournal={noop}
+      />,
+    );
+    const input = screen.getByPlaceholderText(/Tell this run something/);
+    await userEvent.type(input, 'kill and remove this');
+    await userEvent.click(screen.getByText('Send ⏎'));
+
+    expect(input).toHaveValue('');
+    await waitFor(() => {
+      expect(screen.getByTestId('ticket-sheet-thread').textContent).toMatch(/has no live session/);
+    });
+  });
+
+  // W1: `sendAndRefetch` used to end in `.catch(() => undefined)`, so a `/send` refusal
+  // (the dead-lane 409 this stream added) vanished with no trace in the sheet -- the
+  // rail is behind the open sheet, so that was the whole of what the operator saw.
+  // Every rejection now becomes a reply row in the sheet's own thread.
+  it('W1: a rejected onSendLane renders a reply row in the sheet thread, and the composer clears', async () => {
+    vi.mocked(api.getRunThread).mockResolvedValue({ messages: [] });
+    vi.mocked(api.getRunJournal).mockResolvedValue({ entries: [] });
+    vi.mocked(api.getRunStory).mockResolvedValue({
+      id: 'jira_AB-12_1788460932645', title: null, kind: 'manual', ticket: null, brief: null, entries: [],
+    });
+    vi.mocked(api.getRunSummary).mockResolvedValue({ what: [], status: '', next: '', audit: null, readiness: null });
+    const onSendLane = vi.fn().mockRejectedValue(
+      new Error('2026-09-04-forge-c2-rn has no live session; it ended earlier. Kill, verify or archive it instead.'),
+    );
+    render(
+      <TicketSheet
+        lane={lane()} feedLive now={Date.now()} verbose={false}
+        onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop} onSendLane={onSendLane}
+        onAmendLane={noop} onUndo={noop} onOpenJournal={noop}
       />,
     );
     const input = screen.getByPlaceholderText(/Tell this run something/);
@@ -402,7 +435,7 @@ describe('TicketSheet: Summary block', () => {
       <TicketSheet
         lane={lane()} feedLive now={Date.now()} focus="audit"
         onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop}
-        onUndo={noop} onOpenJournal={noop}
+        onSendLane={noop} onAmendLane={noop} onUndo={noop} onOpenJournal={noop}
       />,
     );
     await waitFor(() => expect(screen.getByText('reviewer-a: the retry can double-charge')).toBeInTheDocument());
@@ -428,7 +461,7 @@ describe('TicketSheet: Summary block', () => {
       <TicketSheet
         lane={lane()} feedLive now={Date.now()}
         onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop}
-        onUndo={noop} onOpenJournal={noop}
+        onSendLane={noop} onAmendLane={noop} onUndo={noop} onOpenJournal={noop}
       />,
     );
     await waitFor(() => expect(screen.getByText('the story landed too')).toBeInTheDocument());
@@ -454,7 +487,7 @@ describe('TicketSheet: Summary block', () => {
       <TicketSheet
         lane={lane()} feedLive now={Date.now()}
         onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop}
-        onUndo={noop} onOpenJournal={noop}
+        onSendLane={noop} onAmendLane={noop} onUndo={noop} onOpenJournal={noop}
       />,
     );
     await waitFor(() => expect(screen.getByText('wired the summary block.')).toBeInTheDocument());
@@ -479,7 +512,7 @@ describe('TicketSheet: Summary block', () => {
       <TicketSheet
         lane={lane()} feedLive now={Date.now()}
         onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop}
-        onUndo={noop} onOpenJournal={noop}
+        onSendLane={noop} onAmendLane={noop} onUndo={noop} onOpenJournal={noop}
       />,
     );
     await waitFor(() => expect(screen.getByTestId('ticket-sheet-audit')).toHaveTextContent('Not audited.'));
@@ -503,7 +536,7 @@ describe('TicketSheet: Summary block', () => {
       <TicketSheet
         lane={lane()} feedLive now={Date.now()}
         onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop}
-        onUndo={noop} onOpenJournal={noop}
+        onSendLane={noop} onAmendLane={noop} onUndo={noop} onOpenJournal={noop}
       />,
     );
     await waitFor(() => expect(screen.getByTestId('ticket-sheet-readiness')).toHaveTextContent('gained 46 commits since'));
@@ -525,7 +558,7 @@ describe('TicketSheet: Summary block', () => {
       <TicketSheet
         lane={lane()} feedLive now={Date.now()}
         onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop}
-        onUndo={noop} onOpenJournal={noop}
+        onSendLane={noop} onAmendLane={noop} onUndo={noop} onOpenJournal={noop}
       />,
     );
     await waitFor(() => expect(screen.getByText('stale')).toBeInTheDocument());
@@ -555,7 +588,8 @@ describe('TicketSheet: Summary block', () => {
     render(
       <TicketSheet
         lane={lane()} feedLive now={Date.now()}
-        onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop} onUndo={noop} onOpenJournal={noop}
+        onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop}
+        onSendLane={noop} onAmendLane={noop} onUndo={noop} onOpenJournal={noop}
       />,
     );
     await waitFor(() => expect(screen.getByText('stale')).toBeInTheDocument());
@@ -582,7 +616,7 @@ describe('TicketSheet: Summary block', () => {
       <TicketSheet
         lane={lane()} feedLive now={Date.now()}
         onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop}
-        onUndo={noop} onOpenJournal={noop}
+        onSendLane={noop} onAmendLane={noop} onUndo={noop} onOpenJournal={noop}
       />,
     );
     await waitFor(() => expect(screen.getByTestId('ticket-sheet-readiness')).toHaveTextContent('moved since the audit'));
@@ -611,7 +645,8 @@ describe('TicketSheet: Summary block', () => {
     render(
       <TicketSheet
         lane={lane({ id })} feedLive now={Date.now()}
-        onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop} onUndo={noop} onOpenJournal={noop}
+        onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop}
+        onSendLane={noop} onAmendLane={noop} onUndo={noop} onOpenJournal={noop}
       />,
     );
     await waitFor(() => expect(screen.getByTestId('ticket-sheet-audit')).toHaveTextContent('Not audited.'));
@@ -641,10 +676,84 @@ describe('TicketSheet: reply label (item 6)', () => {
         lane={lane({ id: laneId })} feedLive now={Date.now()}
         labelFor={() => 'DEDUPE WARDEN.HEALTH ON AN OPEN UNREGISTERED TRIP'}
         onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop}
-        onUndo={noop} onOpenJournal={noop}
+        onSendLane={noop} onAmendLane={noop} onUndo={noop} onOpenJournal={noop}
       />,
     );
     await waitFor(() => expect(screen.getByText('dedupe warden.health on an open unregistered trip')).toBeInTheDocument());
     expect(screen.getByTestId('reply-label')).toHaveTextContent('Worker');
+  });
+});
+
+// W3 (2026-09-08): the composer's Send goes to the Conductor with this lane as its
+// context, and the cards that come back (the receipt for each tool the agent ran, its
+// reply, any confirm card) render inside this sheet's own thread.
+describe('W3: the sheet composer talks to the Conductor', () => {
+  it('Send calls onSendLane with the lane id, and the returned reply rows land in the sheet thread', async () => {
+    vi.mocked(api.getRunThread).mockResolvedValue({ messages: [] });
+    vi.mocked(api.getRunJournal).mockResolvedValue({ entries: [] });
+    vi.mocked(api.getRunStory).mockResolvedValue({
+      id: 'jira_AB-12_1788460932645', title: null, kind: 'manual', ticket: null, brief: null, entries: [],
+    });
+    vi.mocked(api.getRunSummary).mockResolvedValue({ what: [], status: '', next: '', audit: null, readiness: null });
+    const onSendLane = vi.fn().mockResolvedValue({
+      cards: [
+        { k: 'op-1', type: 'operator', text: 'kill and remove this', ts: 1, source: 'operator' },
+        { k: 'r-1', type: 'receipt', text: 'kill and remove proposed for AB-12, waiting on Confirm', ts: 2, source: 'conductor', resolved: 'ran', path: 'agent' },
+        { k: 'c-1', type: 'reply', text: 'Kill and remove proposed; the Confirm card is waiting for you.', ts: 3, source: 'conductor', path: 'agent' },
+        { k: 'cf-1', type: 'confirm', text: 'confirm?', ts: 4, source: 'conductor', blast: 'AB-12 stops now and leaves the board.', btns: [{ label: 'Confirm', cmd: 'confirm tok-1', cls: 'destroy' }, { label: 'Not now', cmd: 'dismiss tok-1' }] },
+      ],
+    });
+    const onCommand = vi.fn();
+    render(
+      <TicketSheet
+        lane={lane()} feedLive now={Date.now()} verbose={false}
+        onClose={noop} onCommand={onCommand} onOpenCost={noop} onOpenSandbox={noop} onSendLane={onSendLane}
+        onAmendLane={noop} onUndo={noop} onOpenJournal={noop}
+      />,
+    );
+    const input = screen.getByPlaceholderText(/Tell this run something/);
+    await userEvent.type(input, 'kill and remove this');
+    await userEvent.click(screen.getByText('Send ⏎'));
+
+    expect(onSendLane).toHaveBeenCalledWith('jira_AB-12_1788460932645', 'kill and remove this');
+    const thread = screen.getByTestId('ticket-sheet-thread');
+    await waitFor(() => {
+      expect(thread.textContent).toMatch(/Kill and remove proposed; the Confirm card is waiting for you\./);
+    });
+    expect(thread.textContent).toMatch(/kill and remove proposed for AB-12, waiting on Confirm/);
+    expect(thread.textContent).toMatch(/kill and remove this/);
+    expect(within(thread).queryByTestId('conductor-working')).not.toBeInTheDocument();
+    await userEvent.click(within(thread).getByText('Confirm'));
+    expect(onCommand).toHaveBeenCalledWith('jira_AB-12_1788460932645', 'confirm tok-1');
+  });
+
+  it('a working row shows while the Conductor answers, and turns into the timeout text when it does not', async () => {
+    vi.mocked(api.getRunThread).mockResolvedValue({ messages: [] });
+    vi.mocked(api.getRunJournal).mockResolvedValue({ entries: [] });
+    vi.mocked(api.getRunStory).mockResolvedValue({
+      id: 'jira_AB-12_1788460932645', title: null, kind: 'manual', ticket: null, brief: null, entries: [],
+    });
+    vi.mocked(api.getRunSummary).mockResolvedValue({ what: [], status: '', next: '', audit: null, readiness: null });
+    let release: (value: { cards: Message[] }) => void = () => {};
+    const onSendLane = vi.fn().mockReturnValue(new Promise<{ cards: Message[] }>((resolve) => { release = resolve; }));
+    render(
+      <TicketSheet
+        lane={lane()} feedLive now={Date.now()} verbose={false} conductorTimeoutMs={300}
+        onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop} onSendLane={onSendLane}
+        onAmendLane={noop} onUndo={noop} onOpenJournal={noop}
+      />,
+    );
+    await userEvent.type(screen.getByPlaceholderText(/Tell this run something/), 'status?');
+    await userEvent.click(screen.getByText('Send ⏎'));
+    const thread = screen.getByTestId('ticket-sheet-thread');
+    // The working row is up the moment Send is pressed; its held budget (300ms) is long
+    // enough that this first read never races the timeout timer under load.
+    expect(within(thread).getByTestId('conductor-working')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(within(thread).getByTestId('conductor-working').textContent).toBe('the Conductor did not answer in 0s; the grammar answered instead…');
+    }, { timeout: 3000 });
+    release({ cards: [{ k: 'c-2', type: 'reply', text: 'The Conductor could not answer (the Conductor did not answer in 120s). The grammar answered instead:', ts: 5, source: 'conductor', path: 'grammar' }] });
+    await waitFor(() => expect(within(thread).queryByTestId('conductor-working')).not.toBeInTheDocument());
+    expect(thread.textContent).toMatch(/The grammar answered instead:/);
   });
 });

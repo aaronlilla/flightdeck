@@ -24,6 +24,7 @@ import { Registry } from '../../src/forge/registry.js';
 import { ForgeServer } from '../../src/forge/server.js';
 import { Lanes } from '../../src/forge/supervisor.js';
 import { isSliceEvent, type SliceName } from '../../src/shared/console-events.js';
+import { scriptedQuery } from './console/agent-fake.js';
 
 interface Sample {
   path: string;
@@ -90,11 +91,23 @@ beforeEach(async () => {
   process.env['FORGE_HOME'] = dir;
   const journal = new Journal(join(dir, 'fleet.jsonl'));
   journal.close();
-  writeFileSync(join(dir, 'model-policy.json'), JSON.stringify({ classes: {}, governor: { dailyTokens: 5_000_000, runTokens: 1_000_000 } }));
+  // `implement` is the class the Conductor reasons on (`CONDUCTOR_CLASS`), and a class
+  // nobody declared throws rather than guessing, so `/command` needs it here. The
+  // aliases come with it: the model name resolves through them.
+  writeFileSync(join(dir, 'model-policy.json'), JSON.stringify({
+    classes: { implement: { model: 'sonnet', effort: 'medium', maxContext: 150_000, maxTurns: 120, provider: 'claude' } },
+    aliases: { sonnet: 'claude-sonnet-5' },
+    governor: { dailyTokens: 5_000_000, runTokens: 1_000_000 },
+  }));
   server = new ForgeServer({
     lanes: new Lanes(join(dir, 'lanes')), inbox: new Inbox(join(dir, 'inbox')),
     journalPath: join(dir, 'fleet.jsonl'), registry: new Registry(join(dir, 'registry')),
     consoleActuator: idleActuator, modelPolicyPath: join(dir, 'model-policy.json'),
+    // `/command` routes to the Conductor agent by default. The agent path is the one
+    // this walk has to exercise, so it gets a scripted model rather than being turned
+    // off: disabled, the route would fall back to the grammar and this sample would
+    // stop covering the handler the console actually reaches.
+    conductorQueryFn: scriptedQuery([{ tools: [], reply: 'nothing is stuck.' }]).fn,
     forgeHomeDir: dir, port: 0,
   });
   published = [];

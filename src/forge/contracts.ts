@@ -286,6 +286,9 @@ export const FORGE_EVENT_NAMES = [
   // Retire/Unretire click or the bulk `POST /retire-finished` -- never written by any
   // worker or automation.
   'lane.retired',
+  // The Conductor agent (2026-09-08): one usage row per model turn on the rail, and one
+  // live-feed frame per tool receipt so the console refetches the thread mid-turn.
+  'conductor.usage', 'conductor.receipt',
   // H1.8: one lane's own outcome from the bulk `POST /merge-ready` -- always an
   // operator's own click, never a worker acting on its own.
   'merge-ready.merged',
@@ -1314,6 +1317,27 @@ export const HaipingHandoffSchema = z.object({
   steps: z.array(z.string().min(1)).min(1),
   notVisuallyVerified: z.array(z.string()),
 });
+
+/**
+ * Q-56a42646 / PR #121: a worker with no access to flightdeck's own source cannot see
+ * `HaipingHandoffSchema` above, so naming it in the brief left one worker inventing its
+ * own fields. This builds the fenced example straight from a `HaipingHandoff` object
+ * literal -- typechecked against the same interface the schema validates -- rather than
+ * a second hand-written copy of the shape that could drift from it. Every value is an
+ * obvious placeholder a worker overwrites, and it still parses as complete on its own:
+ * `checkHandoff('haiping', JSON.parse(haipingHandoffExample()))` is `{ complete: true }`.
+ */
+export function haipingHandoffExample(): string {
+  const example: HaipingHandoff = {
+    ticket: 'BBZ-000',
+    pr: 'owner/repo#0',
+    deployKind: 'ota',
+    perPlatform: { android: 'REPLACE: android fingerprint or build number', ios: 'REPLACE: ios fingerprint or build number' },
+    steps: ['REPLACE: first thing Haiping should do', 'REPLACE: what he should see happen'],
+    notVisuallyVerified: ['REPLACE: a step nobody looked at on a screen'],
+  };
+  return JSON.stringify(example, null, 2);
+}
 
 /** Joe: the backend draft-PR ping, since the gitflow guard makes a merge impossible. */
 export interface JoeHandoff {

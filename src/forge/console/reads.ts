@@ -805,6 +805,16 @@ export class ConsoleReads {
     return computeProposals(fleet.events, now, tokensByRun, existingRules);
   }
 
+  /** The Conductor agent's `lane_detail` reads (2026-09-08): the same thread and story
+   *  `GET /run/:id/thread` and `GET /run/:id/story` serve, without the HTTP layer. */
+  runThread(run: string, verbose = false): RunThreadResponse {
+    return this.runThreadResponse(run, verbose);
+  }
+
+  runStory(run: string, verbose = false): Promise<LaneStory> {
+    return this.runStoryResponse(run, verbose);
+  }
+
   private runThreadResponse(run: string, verbose = false): RunThreadResponse {
     const fleet = this.journalCache.read(this.journalPath);
     const result = computeRunThread(run, fleet.events, new RunInbox(run).all(), { verbose });

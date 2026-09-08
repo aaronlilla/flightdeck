@@ -193,10 +193,6 @@ export const ACTIONS = {
     id: 'setRunCap', label: 'Set cap', reversible: true, effect: 'caps',
     call: ([id, cap]) => api.setRunCap(id, cap), text: fromActionResult, ok: okOf, jid: jidOf, link: ([id]) => laneLink(id),
   }),
-  sendToRun: spec<[string, string], ActionResult>({
-    id: 'sendToRun', label: 'Send', reversible: true, effect: 'lane',
-    call: ([id, text]) => api.sendToRun(id, text), text: fromActionResult, ok: okOf, jid: jidOf, link: ([id]) => laneLink(id),
-  }),
   amendRun: spec<[string, string], ActionResult>({
     id: 'amendRun', label: 'Amend', reversible: true, effect: 'lane',
     call: ([id, text]) => api.amendRun(id, text), text: fromActionResult, ok: okOf, jid: jidOf, link: ([id]) => laneLink(id),
@@ -208,9 +204,9 @@ export const ACTIONS = {
     ok: (caps) => !api.isConfirmPending(caps),
     link: () => viewLink('settings', 'caps'),
   }),
-  sendCommand: spec<[string], Awaited<ReturnType<typeof api.sendCommand>>>({
+  sendCommand: spec<[string, string | undefined], Awaited<ReturnType<typeof api.sendCommand>>>({
     id: 'sendCommand', label: 'Send', reversible: true, effect: 'conductor',
-    call: ([text]) => api.sendCommand(text),
+    call: ([text, run]) => api.sendCommand(text, run),
     text: (response) => response.cards[0]?.text ?? 'no reply',
     ok: (response) => !response.cards.some((card) => card.type === 'refusal'),
     railReceipt: false,

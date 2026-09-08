@@ -93,6 +93,9 @@ export interface State {
   /** D2.4: `/state`'s own `queue_on` flag. Starts `true` so the "Queue is off" banner
    *  never flashes before the console's first `/state` fetch lands. */
   queueOn: boolean;
+  /** How long the rail waits for the Conductor before its working row says it did not
+   *  answer; `/state`'s own `conductor.timeoutMs`. */
+  conductorTimeoutMs: number;
   /** H2.2: probe lanes hide behind this toggle on every filter but Archived. */
   showProbes: boolean;
   /** H2.2: the Archived filter's own fetch (`GET /lanes?archived=1`) -- retired
@@ -132,6 +135,14 @@ export type Action =
   | { type: 'lanes'; lanes: Lane[]; tokensToday?: number; links?: State['links'] }
   | { type: 'thread'; thread: Message[] }
   | { type: 'thread-append'; messages: Message[]; local?: boolean }
+  /** Drops a card the page put up itself, from the thread and from the local list
+   *  both. Filtering the thread alone puts it straight back: the `thread` case
+   *  re-attaches every local card the server's copy does not carry, which is the
+   *  whole point of that list and the reason a working row would not come down. */
+  | { type: 'local-card-drop'; k: string }
+  /** Rewrites one local card in place, keeping its key so nothing re-attaches a
+   *  stale copy of it on the next refetch. */
+  | { type: 'local-card-text'; k: string; text: string }
   | { type: 'action-pending'; key: string }
   | { type: 'action-result'; key: string; result: ActionOutcome }
   | { type: 'action-clear'; key: string }
@@ -142,6 +153,7 @@ export type Action =
   | { type: 'queue'; items: QueueItem[]; paused: boolean; maxInFlight: number; pauseReason?: string | null }
   | { type: 'blockers'; blockers: BlockersResponse }
   | { type: 'queue-on'; on: boolean }
+  | { type: 'conductor-timeout'; timeoutMs: number }
   | { type: 'toggle-probes' }
   | { type: 'archived-lanes'; lanes: Lane[] }
   | { type: 'loaded' }
@@ -188,6 +200,7 @@ export function initialState(): State {
     queuePauseReason: null,
     queueMaxInFlight: 2,
     queueOn: true,
+    conductorTimeoutMs: 120_000,
     showProbes: false,
     archivedLanes: [],
     actions: {},
@@ -221,10 +234,27 @@ export function reducer(state: State, action: Action): State {
       const localCards = state.localCards.filter((card) => card.ts >= cutoff);
       let thread = action.thread;
       for (const card of localCards) {
-        if (!thread.some((m) => m.k === card.k)) thread = [...thread, card];
+        if (thread.some((m) => m.k === card.k)) continue;
+        // The server persists the operator's own card too (`ConsoleWrites.command`),
+        // under its own key: once that copy arrives, the local bubble for the same
+        // words sent moments before is the same message and must not show twice.
+        if (card.type === 'operator' && thread.some((m) => m.type === 'operator' && m.text === card.text && Math.abs(m.ts - card.ts) < LOCAL_CARD_TTL_MS)) continue;
+        thread = [...thread, card];
       }
       return { ...state, thread, localCards };
     }
+    case 'local-card-drop':
+      return {
+        ...state,
+        thread: state.thread.filter((m) => m.k !== action.k),
+        localCards: state.localCards.filter((m) => m.k !== action.k),
+      };
+    case 'local-card-text':
+      return {
+        ...state,
+        thread: state.thread.map((m) => (m.k === action.k ? { ...m, text: action.text } : m)),
+        localCards: state.localCards.map((m) => (m.k === action.k ? { ...m, text: action.text } : m)),
+      };
     case 'thread-append':
       return {
         ...state,
@@ -257,6 +287,8 @@ export function reducer(state: State, action: Action): State {
       };
     case 'blockers':
       return { ...state, blockers: action.blockers };
+    case 'conductor-timeout':
+      return { ...state, conductorTimeoutMs: action.timeoutMs };
     case 'queue-on':
       return { ...state, queueOn: action.on };
     case 'toggle-probes':
