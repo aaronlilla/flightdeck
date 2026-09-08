@@ -535,7 +535,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         const chainTick = setInterval(() => {
           void (async () => {
             try {
-              const chainState = foldChainState(replay(journalPath()).events);
+              const chainState = foldChainState(sharedJournalCache.read(journalPath()).events);
               await runChainTick(chainDeps, chainState);
             } catch (error) {
               chainJournal.append({

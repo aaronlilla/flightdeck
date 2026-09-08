@@ -40,9 +40,14 @@ import { parseRepoMap } from './intake/repoRoute.js';
 import { resolvePlanProvider } from './intake/reasoner.js';
 import { loadPolicy } from './policy.js';
 import { reasonerFor } from './reasoner-claude.js';
-import { Journal, replay } from './journal.js';
+import { Journal, JournalCache } from './journal.js';
 import { processAlive } from './registry.js';
 import { readKillSwitch } from './supervisor.js';
+
+// One incremental reader for every tick in this process: a full `replay()` parses the
+// whole journal (4 MB, 15k rows on 2026-09-07) on each call, and three of them per
+// 15 s queue tick stalled the console's event loop for seconds at a time.
+const journalCache = new JournalCache();
 
 const JIRA_ENV_VARS = ['FORGE_JIRA_SITE', 'FORGE_JIRA_EMAIL', 'FORGE_JIRA_TOKEN'] as const;
 
@@ -612,7 +617,7 @@ export function chainLauncher(chainEnv: ChainEnv, fleetConfigDir: string): Chain
       await waitForLaunchToRegister({
         runKey,
         registry: new Registry(registryDir()),
-        readEvents: () => replay(journalPath()).events,
+        readEvents: () => journalCache.read(journalPath()).events,
         child,
         readLogTail: () => readLogTailFile(logPath),
         waitMs: launchWaitMs(),
@@ -622,7 +627,7 @@ export function chainLauncher(chainEnv: ChainEnv, fleetConfigDir: string): Chain
     },
 
     async status(runKey) {
-      const state = replay(journalPath());
+      const state = journalCache.read(journalPath());
       // The journal carries no forge_done evidence text today (worker.ts's own gap,
       // named rather than papered over): the chain always falls back to `gh pr list`
       // for the PR itself.
@@ -632,7 +637,7 @@ export function chainLauncher(chainEnv: ChainEnv, fleetConfigDir: string): Chain
     async runRegistered(runKey) {
       return hasRunRegistered(runKey, {
         registry: new Registry(registryDir()),
-        events: replay(journalPath()).events,
+        events: journalCache.read(journalPath()).events,
       });
     },
   };

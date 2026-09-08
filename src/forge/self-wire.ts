@@ -17,7 +17,9 @@ import { Gotchas } from './gotcha.js';
 import type { QueueMergeDeps } from './intake/queue.js';
 import { queueBusy, QUEUE_IN_FLIGHT_STATES } from './intake/queue.js';
 import type { QueueStore } from './intake/queueStore.js';
-import { Journal, replay } from './journal.js';
+import { Journal, JournalCache } from './journal.js';
+
+const journalCache = new JournalCache();
 import { forgeHome, gotchasDir, journalPath } from './paths.js';
 import { analyze, type AttestationRoundInput, type RunTranscript, type SelfAnalyzeInputs } from './self/analyze.js';
 import { enqueueFindings } from './self/enqueue.js';
@@ -141,7 +143,7 @@ export function buildSelfLoop(opts: SelfLoopOptions): SelfLoop {
   };
 
   const gather = opts.gather ?? ((): SelfAnalyzeInputs => {
-    const state = replay(journalPath());
+    const state = journalCache.read(journalPath());
     const events = state.events as unknown as Array<Record<string, unknown>>;
     return {
       gotchas: new Gotchas(gotchasDir(), journalPath()).all(),
