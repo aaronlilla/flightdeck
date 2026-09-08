@@ -29,6 +29,7 @@ import type { Lanes } from '../supervisor.js';
 import type { QueueStore } from '../intake/queueStore.js';
 import { governorBudget } from '../policy.js';
 import { forgeHome } from '../paths.js';
+import { retireLane } from './retire.js';
 import { consoleDir, recordAction, ActionsLedger, actionsLedgerPath } from './actions-ledger.js';
 import {
   compactRun, killRun, mergeRun, pauseRun, reauditRun, reopenRun, restoreRunCap,
@@ -110,6 +111,13 @@ export function appendThread(message: Message): void {
  *  shape every other console write's own confirmation card uses. */
 export function plainReceiptCard(text: string): Message {
   return { k: randomUUID(), type: 'receipt', text, ts: Date.now(), source: 'blockers', resolved: 'ran' };
+}
+
+/** The one sentence a failed run action has to say: `message` (an `ActionResult`),
+ *  else `reason` (a 501 "not wired"), else `error` (a state refusal), else the fallback. */
+export function actionFailureText(body: unknown, fallback: string): string {
+  const row = (body ?? {}) as { message?: string; reason?: string; error?: string };
+  return row.message ?? row.reason ?? row.error ?? fallback;
 }
 
 function receiptCard(source: string, result: ActionResult): Message {
@@ -256,6 +264,12 @@ export interface ConsoleWritesDeps {
    *  repo/PR/base/worktree (`POST /run/:id/reaudit`). Defaults to `RunActionsDeps`'s own
    *  default (`defaultQueuePath()`, which follows `FORGE_HOME`) when unset. */
   queueStore?: QueueStore;
+  /** What `remove | archive | retire <lane>` retires against: the archived-inclusive
+   *  lanes view (`lanesResponse(true, true)`) the retire rule reads heart and PR off.
+   *  Falls back to `lanesView` when unset. */
+  lanesViewAll?: () => LanesResponse;
+  /** Where `retired.jsonl` lives. Defaults to `forgeHome()`. A specimen only. */
+  forgeHomeDir?: string;
 }
 
 function readBody<T>(request: IncomingMessage): Promise<T | null> {
@@ -476,6 +490,31 @@ export class ConsoleWrites {
     }
   }
 
+  /** The retire implementation shared with `server.ts`'s route and the agent's tool. */
+  private retireDeps() {
+    return {
+      forgeHomeDir: this.deps.forgeHomeDir ?? forgeHome(), journalPath: this.deps.journalPath,
+      lanesAll: () => (this.deps.lanesViewAll ?? this.deps.lanesView)?.().lanes ?? [],
+    };
+  }
+
+  /**
+   * Registers a server-side confirm for an irreversible action and returns the token
+   * and the card. The grammar's kill/retire and every irreversible Conductor-agent tool
+   * (W2) go through this one map, so a typed or clicked `confirm <token>` finds the
+   * pending action wherever it was proposed.
+   */
+  propose(source: string, blast: string, run: () => Promise<Message[]>): { token: string; card: Message } {
+    const token = randomUUID();
+    this.pendingConfirms.set(token, { blast, run });
+    return { token, card: confirmCard(source, blast, token) };
+  }
+
+  /** Whether `confirm <token>` would still find something to run. */
+  hasPending(token: string): boolean {
+    return this.pendingConfirms.has(token);
+  }
+
   private async executeIntent(intent: Intent, source: string): Promise<Message[]> {
     switch (intent.kind) {
       case 'cancel':
@@ -546,17 +585,46 @@ export class ConsoleWrites {
         const view = this.deps.lanesView?.();
         const label = labelFor(view, laneId);
         const blast = `${label} stops now; its worktree and process are gone.`;
-        const token = randomUUID();
-        this.pendingConfirms.set(token, {
-          blast,
-          run: async () => {
-            const outcome = await killRun(laneId, 'killed from the console', this.runActionsDeps());
-            return [outcome.status === 200
-              ? receiptCard(source, outcome.body as ActionResult)
-              : refusalCard(source, (outcome.body as { message?: string }).message ?? `could not kill ${label}`)];
-          },
+        const { card } = this.propose(source, blast, async () => {
+          const outcome = await killRun(laneId, 'killed from the console', this.runActionsDeps());
+          return [outcome.status === 200
+            ? receiptCard(source, outcome.body as ActionResult)
+            : refusalCard(source, (outcome.body as { message?: string }).message ?? `could not kill ${label}`)];
         });
-        return [confirmCard(source, blast, token)];
+        return [card];
+      }
+
+      case 'retire': {
+        const resolved = this.resolveLaneId(intent.lane);
+        if (typeof resolved !== 'string') return [refusalCard(source, resolved.refusal)];
+        const laneId = resolved;
+        const label = labelFor(this.deps.lanesView?.(), laneId);
+        const blast = `${label} leaves the board; it stays under Archived and can be brought back.`;
+        const { card } = this.propose(source, blast, async () => {
+          const outcome = retireLane(laneId, true, this.retireDeps());
+          return [outcome.status === 200
+            ? receiptCard(source, outcome.body)
+            : refusalCard(source, outcome.body.error)];
+        });
+        return [card];
+      }
+
+      case 'reopen': {
+        const resolved = this.resolveLaneId(intent.lane);
+        if (typeof resolved !== 'string') return [refusalCard(source, resolved.refusal)];
+        const outcome = await reopenRun(resolved, this.runActionsDeps());
+        return [outcome.status === 200
+          ? receiptCard(source, outcome.body as ActionResult)
+          : refusalCard(source, actionFailureText(outcome.body, `could not reopen ${resolved}`))];
+      }
+
+      case 'verify': {
+        const resolved = this.resolveLaneId(intent.lane);
+        if (typeof resolved !== 'string') return [refusalCard(source, resolved.refusal)];
+        const outcome = await verifyRun(resolved, this.runActionsDeps());
+        return [outcome.status === 200
+          ? receiptCard(source, outcome.body as ActionResult)
+          : refusalCard(source, actionFailureText(outcome.body, `could not verify ${resolved}`))];
       }
 
       case 'merge-ready': {
@@ -661,8 +729,8 @@ export class ConsoleWrites {
 
       case 'unknown':
       default:
-        return [replyCard(source, 'I did not understand that. Try one of: pause, resume, kill <ticket>, merge ready lanes, '
-          + "raise daily cap to <n>, cap <ticket> at <n>, why is <ticket> stuck, what's stuck, spend today, status, answer <text>.")];
+        return [replyCard(source, 'I did not understand that. Try one of: pause, resume, kill <ticket>, remove <ticket>, reopen <ticket>, '
+          + "verify <ticket>, merge ready lanes, raise daily cap to <n>, cap <ticket> at <n>, why is <ticket> stuck, what's stuck, spend today, status, answer <text>.")];
     }
   }
 
