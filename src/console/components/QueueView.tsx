@@ -225,11 +225,18 @@ function AddWork({ onAdd }: { onAdd: (source: QueueSource, input: string) => voi
 export function QueueView(props: QueueViewProps): JSX.Element {
   const { items, paused, pauseReason, maxInFlight, onAdd, onRemove, onRetry, onPause, onResume, onMerge, onPromote } = props;
   const inFlight = items.filter((i) => i.state === 'planning' || i.state === 'running').length;
+  // Sweep #18: the nav badge counts parked+failed while this header counted every
+  // item, so "Queue 8" next to "Queue · 28 items" read as two disagreeing numbers
+  // rather than one total and one subset of it.
+  const needsAttention = items.filter((i) => i.state === 'parked' || i.state === 'failed').length;
 
   return (
     <div className="scroll" style={{ flex: 1, padding: '16px 22px', display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid var(--line2)', paddingBottom: 12 }}>
-        <span className="lbl">Queue · {items.length} item{items.length === 1 ? '' : 's'}</span>
+        <span className="lbl">
+          Queue · {items.length} item{items.length === 1 ? '' : 's'}
+          {needsAttention > 0 ? `, ${needsAttention} need${needsAttention === 1 ? 's' : ''} attention` : ''}
+        </span>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <span className="m" style={{ fontSize: 11, color: 'var(--ink2)' }}>{inFlight} / {maxInFlight} in flight</span>
           {paused ? (

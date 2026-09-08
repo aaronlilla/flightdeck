@@ -55,4 +55,11 @@ describe('TopBar nav badges', () => {
     renderBar({ reviewBadge: 3 });
     expect(screen.getByText('3 proposed')).toBeInTheDocument();
   });
+
+  // Sweep #18: the badge's own meaning (parked+failed) was never named anywhere,
+  // so it read as a disagreement with the Queue view's own "N items" header.
+  it('labels the Queue badge "needs attention" so it explains itself against the header count', () => {
+    renderBar({ queueBadge: 8 });
+    expect(screen.getByText('8')).toHaveAttribute('title', 'needs attention');
+  });
 });

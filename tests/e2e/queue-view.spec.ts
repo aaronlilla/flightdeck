@@ -14,7 +14,9 @@ test.afterAll(async ({ request }) => {
 test('the queue view renders every (source, state) card the matrix seeds, 28 in all', async ({ page }) => {
   await page.goto('/');
   await page.getByText('Queue', { exact: false }).click();
-  await expect(page.getByText('Queue · 28 items')).toBeVisible();
+  // Sweep #18: the header now names the badge's own subset alongside the total, so
+  // "Queue 8" in the nav and this header explain each other rather than disagreeing.
+  await expect(page.getByText('Queue · 28 items, 8 need attention')).toBeVisible();
   // One card per matrix row -- each queue card is a `.lane` plate, same shape
   // the board's own tiles use (`QueueCard` in QueueView.tsx).
   await expect(page.locator('.scroll .lane')).toHaveCount(28);

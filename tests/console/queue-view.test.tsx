@@ -204,4 +204,20 @@ describe('QueueView header', () => {
     renderQueue([item({ state: 'running' }), item({ id: 'Q-2', state: 'planning' }), item({ id: 'Q-3', state: 'queued' })], { maxInFlight: 2 });
     expect(screen.getByText('2 / 2 in flight')).toBeInTheDocument();
   });
+
+  // Sweep #18: the nav badge counts parked+failed while this header counted every
+  // item, so "Queue 8" and "Queue · 28 items" read as two disagreeing numbers.
+  it('names the needs-attention subset alongside the total item count', () => {
+    renderQueue([
+      item({ id: 'Q-1', state: 'queued' }),
+      item({ id: 'Q-2', state: 'parked' }),
+      item({ id: 'Q-3', state: 'failed' }),
+    ]);
+    expect(screen.getByText('Queue · 3 items, 2 need attention')).toBeInTheDocument();
+  });
+
+  it('omits the needs-attention clause entirely when nothing is parked or failed', () => {
+    renderQueue([item({ id: 'Q-1', state: 'queued' })]);
+    expect(screen.getByText('Queue · 1 item')).toBeInTheDocument();
+  });
 });

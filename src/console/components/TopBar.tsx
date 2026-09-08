@@ -47,7 +47,7 @@ export function TopBar(props: TopBarProps): JSX.Element {
           Flight review{reviewBadge > 0 ? <span style={{ color: 'var(--park)' }}> {reviewBadge} proposed</span> : null}
         </a>
         <a className={`nav ${view === 'queue' ? 'navOn' : ''}`} onClick={() => onNav('queue')}>
-          Queue{queueBadge > 0 ? <span style={{ color: 'var(--park)' }}> {queueBadge}</span> : null}
+          Queue{queueBadge > 0 ? <span title="needs attention" style={{ color: 'var(--park)' }}> {queueBadge}</span> : null}
         </a>
       </div>
       <span style={{ flex: 1 }} />
