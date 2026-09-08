@@ -741,10 +741,18 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
 
         {state.sheet ? (
           <div
-            style={{ position: 'fixed', top: 'var(--topbar-h, 44px)', left: 0, right: 0, bottom: 0, zIndex: 20, background: 'color-mix(in srgb,var(--bg) 62%,transparent)', display: 'flex', justifyContent: 'center', alignItems: 'flex-start', padding: '14px 20px', overflow: 'auto' }}
+            // A standard modal: a full-screen scrim over everything, padding all round,
+            // the dialog centred and capped to the viewport, and only the dialog's own
+            // body scrolls. The scrim itself never scrolls, so the app behind it never moves.
+            data-testid="sheet-scrim"
+            style={{ position: 'fixed', inset: 0, zIndex: 30, background: 'color-mix(in srgb,var(--bg) 62%,transparent)', display: 'flex', justifyContent: 'center', alignItems: 'center', padding: 24, overflow: 'hidden' }}
             onClick={() => dispatch({ type: 'sheet', sheet: null })}
           >
-            <div ref={sheetContainerRef} tabIndex={-1} style={{ outline: 'none' }} onClick={(e) => e.stopPropagation()}>
+            <div
+              ref={sheetContainerRef} tabIndex={-1}
+              style={{ outline: 'none', maxHeight: '100%', maxWidth: '100%', display: 'flex', minHeight: 0 }}
+              onClick={(e) => e.stopPropagation()}
+            >
               {state.sheet.type === 'ticket' && sheetLane ? (
                 <TicketSheet
                   lane={sheetLane} feedLive={state.feed.live} now={state.now} verbose={state.verbose}

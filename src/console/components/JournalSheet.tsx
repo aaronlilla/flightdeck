@@ -12,7 +12,7 @@ export interface JournalSheetProps {
 /** Journal sheet: jid · time · text · actor · undo, undone entries strike through. */
 export function JournalSheet({ rows, run, onClose, onUndo }: JournalSheetProps): JSX.Element {
   return (
-    <div className="plate" data-testid="journal-sheet" style={{ width: 'min(1060px, calc(100vw - 40px))', minWidth: 'min(760px, calc(100vw - 40px))', maxHeight: 'calc(100vh - var(--topbar-h, 44px) - 28px)', overflowY: 'auto' }}>
+    <div className="plate" data-testid="journal-sheet" style={{ width: 'min(1060px, calc(100vw - 48px))', minWidth: 'min(760px, calc(100vw - 48px))', maxHeight: 'calc(100vh - 48px)', overflowY: 'auto', boxSizing: 'border-box' }}>
       <div className="lbl" style={{ padding: '7px 20px', display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--line)' }}>
         <span>Journal · {run ?? 'all entries'}</span>
         <span style={{ cursor: 'pointer' }} onClick={onClose}>esc ✕</span>

@@ -387,7 +387,7 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
       // The sheet is the screen's height less the overlay's margins and scrolls inside:
       // a long story or run thread used to push the band and the composer off the top
       // and bottom of the window (2026-09-07).
-      style={{ width: 'min(1400px, calc(100vw - 40px))', height: 'calc(100vh - var(--topbar-h, 44px) - 28px)', display: 'flex', flexDirection: 'column', overflow: 'hidden', borderColor: 'var(--line2)' }}
+      style={{ width: 'min(1400px, calc(100vw - 48px))', height: 'calc(100vh - 48px)', maxHeight: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', borderColor: 'var(--line2)' }}
     >
       <div className="lbl" style={{ background: band.bg, color: band.ink, padding: '7px 20px', display: 'flex', justifyContent: 'space-between', gap: 12, borderRadius: '3px 3px 0 0' }}>
         <span>{band.text}</span>

@@ -58,10 +58,7 @@ export function TopBar(props: TopBarProps): JSX.Element {
       style={{
         display: 'flex', alignItems: 'center', gap: '14px 20px', padding: '10px 22px',
         borderBottom: '1px solid var(--line)', background: 'var(--panel)', boxShadow: 'inset 0 1px 0 var(--hi)', flexWrap: 'wrap',
-        // Above the sheet overlay's z-index:20 (App.tsx), so day mode/verbose stay
-        // clickable with a sheet open rather than only closing it (2026-09-08: the
-        // verbose toggle needs to be reachable while looking at the sheet it affects).
-        position: 'relative', zIndex: 21,
+        position: 'relative', zIndex: 1,
       }}
     >
       <span className="m" style={{ fontSize: 14, fontWeight: 700, letterSpacing: 6 }}>FLIGHTDECK</span>
