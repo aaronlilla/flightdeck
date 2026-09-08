@@ -21,7 +21,7 @@ test('the ticket sheet never grows past the screen; its thread scrolls inside', 
   // The body scrolls inside the sheet: the composer is reachable by scrolling it, and
   // the sheet's band with "esc to close" never moves.
   const body = page.getByTestId('ticket-sheet-body');
-  const scrolls = await body.evaluate((el) => (el as HTMLElement).scrollHeight > (el as HTMLElement).clientHeight + 50);
+  const scrolls = await body.evaluate((el) => { const box = el as unknown as { scrollHeight: number; clientHeight: number }; return box.scrollHeight > box.clientHeight + 50; });
   expect(scrolls).toBe(true);
   await sheet.getByPlaceholder(/^message /).scrollIntoViewIfNeeded();
   await expect(sheet.getByPlaceholder(/^message /)).toBeInViewport();
