@@ -444,6 +444,10 @@ export function computeRunThread(
 ): { messages: Message[] } {
   const own = events.filter((row) => row.run === run);
   const rendered = options.verbose ? own.map((row) => runRowToMessage(run, row)) : buildPlainRunMessages(run, own);
-  const inbox = runInboxMessages.map(runMessageToMessage);
+  // An inbox message carries whatever the console queued for the run, question text
+  // included; in plain mode it reads in words like every other row here.
+  const inbox = runInboxMessages.map(runMessageToMessage).map((message) => (
+    options.verbose ? message : { ...message, text: stripMachineIds(message.text) }
+  ));
   return { messages: [...rendered, ...inbox].sort((a, b) => a.ts - b.ts) };
 }

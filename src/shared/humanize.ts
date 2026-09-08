@@ -79,7 +79,8 @@ export function stripMachineIds(text: string, options: StripOptions = {}): strin
   out = shortenShas(out);
   out = out.replace(JOURNAL_ID, '');
   out = out.replace(HEX_KEY, '');
-  out = out.replace(/\(\s*\)/g, '');
+  // A parenthetical that only ever named the run says nothing once the id is gone.
+  out = out.replace(/\(\s*(?:this run)?\s*\)/g, '');
   out = out.replace(/[ \t]{2,}/g, ' ').replace(/\s+([,.;:])/g, '$1').trim();
   return out || 'this run';
 }

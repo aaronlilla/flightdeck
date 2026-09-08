@@ -188,7 +188,7 @@ describe('computeThread: plain mode (deliverable 8)', () => {
     const result = computeThread([], [], 10_000, [entry]);
     const question = result.messages.find((m) => m.type === 'question');
     expect(question?.text).not.toMatch(/S-[0-9a-f]{12,}/);
-    expect(question?.text).toContain('this run');
+    expect(question?.text).toBe('PR #39 is open, draft, and mergeable');
   });
 });
 
@@ -403,7 +403,7 @@ describe('computeRunThread: plain mode (deliverable 7)', () => {
 
     const result = computeRunThread('alpha', fleet.events, []);
     const texts = result.messages.map((m) => m.text);
-    expect(texts).toContain('Parked: Asked you: PR #39 (this run) is open');
+    expect(texts).toContain('Parked: Asked you: PR #39 is open');
   });
 
   it('a note row reads "Note: <message>" when message is a string, and is dropped otherwise', () => {
@@ -418,5 +418,16 @@ describe('computeRunThread: plain mode (deliverable 7)', () => {
     const texts = result.messages.map((m) => m.text);
     expect(texts).toContain('Note: reconciled: resumed by session id');
     expect(texts.filter((t) => t.startsWith('Note:') || t.startsWith('note'))).toHaveLength(1);
+  });
+});
+
+describe('computeRunThread inbox messages', () => {
+  it('strips machine ids from a queued inbox message in plain mode and keeps them in verbose', async () => {
+    const { computeRunThread } = await import('../../../src/forge/console/thread.js');
+    const inbox = [{ id: 'm1', at: 5, from: 'console', text: 'Question: PR #39 (S-b9d39bae548707e0) is open. Answer: not now' }] as never;
+    const plain = computeRunThread('S-b9d39bae548707e0', [], inbox);
+    expect(plain.messages[0]!.text).toBe('Question: PR #39 is open. Answer: not now');
+    const verbose = computeRunThread('S-b9d39bae548707e0', [], inbox, { verbose: true });
+    expect(verbose.messages[0]!.text).toContain('S-b9d39bae548707e0');
   });
 });

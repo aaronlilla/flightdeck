@@ -21,7 +21,7 @@ describe('stripMachineIds', () => {
       .toBe('checks are failure on head 88d44ec, not green');
     expect(stripMachineIds('answered f92af4249f6a27ae')).toBe('answered');
     expect(stripMachineIds('J-d11d7d30 answered f92af4249f6a27ae')).toBe('answered');
-    expect(stripMachineIds('burn.mismatch (S-b9d39bae548707e0)')).toBe('burn.mismatch (this run)');
+    expect(stripMachineIds('burn.mismatch (S-b9d39bae548707e0)')).toBe('burn.mismatch');
   });
 
   it('never returns an empty string', () => {
@@ -63,7 +63,7 @@ describe('humanizeParkReason', () => {
 
   it('strips ids out of the asked text itself, not just the "parking on <key>:" prefix', () => {
     expect(humanizeParkReason('parking on 19a6c631cb7783d8: PR #39 (S-b9d39bae548707e0) is open'))
-      .toBe('Asked you: PR #39 (this run) is open');
+      .toBe('Asked you: PR #39 is open');
   });
 });
 

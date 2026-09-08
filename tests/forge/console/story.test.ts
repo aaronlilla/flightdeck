@@ -243,7 +243,7 @@ describe('computeLaneStory: plain mode (deliverable 9)', () => {
     expect(parked!.text.startsWith('Parked: Asked you:')).toBe(true);
     expect(parked!.text).not.toContain('Warden parked it');
     expect(parked!.text).not.toContain('parking on:');
-    expect(parked!.text).toContain('PR #39 (this run) is open, draft, and mergeable');
+    expect(parked!.text).toContain('PR #39 is open, draft, and mergeable');
   });
 
   it('a genuine warden park still reads "Warden parked it" off the event name', () => {
@@ -259,7 +259,7 @@ describe('computeLaneStory: plain mode (deliverable 9)', () => {
   });
 
   it('cuts a long "Asked you" line to 240 characters at a word boundary in plain mode, keeps it whole in verbose', () => {
-    const question = `PR #39 (this run) is open, draft, and mergeable, with the warden.health dedupe fix and a new failing-then-passing test in tests/forge/warden-tick.test.ts. Locally: npx vitest run tests/forge/warden-tick.test.ts is 20/20, and npm run verify is 2147/2154 (the 7 failures are in cli.test.ts and sdkengine.test.ts, pre-existing, unrelated to this change).`;
+    const question = `PR #39 is open, draft, and mergeable, with the warden.health dedupe fix and a new failing-then-passing test in tests/forge/warden-tick.test.ts. Locally: npx vitest run tests/forge/warden-tick.test.ts is 20/20, and npm run verify is 2147/2154 (the 7 failures are in cli.test.ts and sdkengine.test.ts, pre-existing, unrelated to this change).`;
     const reason = `parking on 19a6c631cb7783d8: ${question}`;
     const events: ForgeEvent[] = [
       ev({ event: 'run.started', run: 'alpha', at: 1_000 }),

@@ -22,11 +22,11 @@ const HOVER_DELAY_MS = 250;
 // total tile height, or tiles sharing a row stop matching and the ones after them
 // overlap the row below.
 const LINE_H = 16;
-const YOU_BLOCK_H = 40;
+const YOU_BLOCK_H = 58;
 // One height for the title's 2-line slot regardless of whether it renders at 12px
 // (keyed) or 13px (keyless) -- a per-font-size height would make a keyed and a
 // keyless tile disagree on height in the same row.
-const TITLE_H = 36;
+const TITLE_H = 34;
 
 export interface LaneTileProps {
   lane: Lane;
@@ -96,7 +96,9 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
   // Row 2: the title line. A lane with a title shows it, sized down (the key already
   // carries the weight in row 1); a lane with no title but a key shows the key again
   // here rather than leaving the line empty; a lane with neither renders nothing.
-  const titleLineText = lane.title ?? headline.key ?? null;
+  // A lane with neither a title nor a ticket key (a manual run) is named by its own
+  // slug: the operator typed that name, so it is the one they know.
+  const titleLineText = lane.title ?? headline.key ?? (lane.kind === 'manual' ? lane.id : null);
   const titleFontSize = headline.key ? 12 : 13;
   const titleFontWeight = headline.key ? 400 : 700;
 
@@ -119,7 +121,7 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
         className="m"
         title={titleLineText ?? undefined}
         style={{
-          fontSize: titleFontSize, fontWeight: titleFontWeight, color: 'var(--ink)', width: '100%',
+          fontSize: titleFontSize, fontWeight: titleFontWeight, lineHeight: '17px', color: 'var(--ink)', width: '100%',
           overflowWrap: 'anywhere', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
           // A hard `height` (not `minHeight`), the same for every tile regardless of
           // font size or whether there is any title text at all: not the line-clamp's
@@ -154,9 +156,9 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
         ) : null}
       </span>
       {lane.you ? (
-        <div className="youP" style={{ borderLeft: '3px solid var(--park)', padding: '7px 9px', height: YOU_BLOCK_H, boxSizing: 'border-box', overflow: 'hidden' }}>
-          <div className="lbl" style={{ color: 'var(--park)' }}>YOU</div>
-          <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--ink)', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+        <div className="youP" title={lane.you} style={{ borderLeft: '3px solid var(--park)', padding: '6px 9px', height: YOU_BLOCK_H, boxSizing: 'border-box', overflow: 'hidden' }}>
+          <div className="lbl" style={{ color: 'var(--park)', lineHeight: '12px', marginBottom: 2 }}>YOU</div>
+          <div style={{ fontSize: 12.5, lineHeight: '16px', fontWeight: 700, color: 'var(--ink)', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
             <Linkify text={lane.you} repo={lane.repo ?? undefined} />
           </div>
         </div>
@@ -259,7 +261,8 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
             {cta.label}
           </span>
         </div>
-        {why ? <span className="m" style={{ fontSize: '9.5px', color: 'var(--ink3)' }}>{why}</span> : null}
+        {/* One reserved line whether or not there is a reason, so a tile with one is no taller than its neighbours. */}
+        <span className="m" title={why ?? undefined} style={{ fontSize: '9.5px', lineHeight: '14px', height: 14, color: 'var(--ink3)', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', display: 'block' }}>{why ?? ''}</span>
       </div>
     </div>
   );
