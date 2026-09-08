@@ -8,7 +8,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import { Journal } from '../../../src/forge/journal.js';
 import { QueueStore } from '../../../src/forge/intake/queueStore.js';
@@ -343,5 +343,96 @@ describe('ConsoleReads.lanesResponse: title and sourceUrl', () => {
       no: 119, url: 'https://github.com/o/n/pull/119', files: 6, add: 360, del: 5, draft: true,
       checks: 'success', merged: false, title: 'add the merge chip', verdict: 'PASS WITH NOTES',
     });
+  });
+});
+
+describe('ConsoleReads.runSummaryResponse / runRecheckResponse (2026-09-07)', () => {
+  let previousForgeHome: string | undefined;
+
+  afterEach(() => {
+    if (previousForgeHome === undefined) delete process.env['FORGE_HOME'];
+    else process.env['FORGE_HOME'] = previousForgeHome;
+  });
+
+  function setup(): { forgeHomeDir: string; queueStore: QueueStore; journalPath: string } {
+    const forgeHomeDir = tempDir('console-reads-summary-');
+    previousForgeHome = process.env['FORGE_HOME'];
+    process.env['FORGE_HOME'] = forgeHomeDir;
+    const queueStore = new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl'));
+    queueStore.append({
+      id: 'Q-1', at: 1, source: 'ticket', input: 'BBZ-96', ticket: 'BBZ-96', repo: 'o/n',
+      briefPath: null, branch: 'feature/bbz-96', worktreePath: 'w', base: 'develop',
+      state: 'review', reason: null, runKey: 'queue-BBZ-96',
+      pr: { no: 119, url: 'https://github.com/o/n/pull/119', draft: true },
+      journalIds: [], createdAt: 500, updatedAt: 1_500,
+    });
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'queue-BBZ-96', actor: 'runner' });
+    journal.close();
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put('queue-BBZ-96', { column: 'BBZ-96' });
+    return { forgeHomeDir, queueStore, journalPath };
+  }
+
+  it('GET /run/:id/summary folds the PR title, checks, the attestation and drift into one summary', async () => {
+    const { forgeHomeDir, queueStore, journalPath } = setup();
+    const { writeAttestation } = await import('../../../src/forge/council/attest.js');
+    writeAttestation({
+      repo: 'o/n', pr: 119, head: 'deadbeef', base: 'develop', round: 1, verdict: 'PASS WITH NOTES',
+      decidingFindings: [{
+        member: 'style', file: 'src/console/api.ts', line: 1, claim: 'a nit',
+        failureScenario: 'cosmetic only', severity: 'low', confidence: 'high',
+      }],
+      lenses: [], judge: { model: 'sonnet-5', verdict: 'PASS WITH NOTES' },
+      ci: { runId: 'r1', headSha: 'deadbeef' }, at: { value: 42, observed_at: 42 },
+      coverage: { total: 4, missing: [] },
+    } as never);
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore, jiraSite: null,
+      ghDetailLookup: async () => ({
+        headSha: 'deadbeef', isDraft: true, merged: false, title: 'add the merge chip',
+        checks: 'success', body: 'Wires the merge chip into the sheet.',
+      }),
+      driftFn: async () => ({ behindBase: 0, headMoved: false }),
+      gitLog: async () => [],
+      mergeAllowed: () => true,
+    });
+
+    const summary = await reads.runSummaryResponse('queue-BBZ-96');
+    expect(summary.what).toContain('add the merge chip.');
+    expect(summary.audit).toMatchObject({ verdict: 'PASS WITH NOTES', reviewed: 4, total: 4, findings: 1, stale: false });
+    expect(summary.readiness).toMatchObject({ ok: true, checks: 'success', headMoved: false, behindBase: 0 });
+  });
+
+  it('POST /run/:id/recheck drops the shared PR cache entry before recomputing', async () => {
+    const { forgeHomeDir, queueStore, journalPath } = setup();
+    const { writePrCache, prCachePath } = await import('../../../src/forge/console/pr.js');
+    const cachePath = prCachePath(forgeHomeDir);
+    writePrCache(cachePath, { 'queue-BBZ-96': { pr: { no: 119, url: 'stale', draft: false }, at: Date.now() } });
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore, jiraSite: null,
+      ghDetailLookup: async () => ({
+        headSha: 'freshsha', isDraft: false, merged: false, title: 'add the merge chip', checks: 'pending',
+      }),
+      driftFn: async () => ({ behindBase: null, headMoved: false }),
+      gitLog: async () => [],
+    });
+
+    await reads.runRecheckResponse('queue-BBZ-96');
+    // Dropping the stale entry lets the board's own background refresh (fired the moment
+    // `runSummaryResponse` reads the lane) write a fresh one back in -- this proves the
+    // stale `url: 'stale'` row is gone and the fresh checks read landed, not that the
+    // cache key stays empty forever.
+    const { readPrCache } = await import('../../../src/forge/console/pr.js');
+    const cached = readPrCache(cachePath)['queue-BBZ-96'];
+    expect(cached?.pr?.url).not.toBe('stale');
+    expect(cached?.pr?.checks).toBe('pending');
   });
 });

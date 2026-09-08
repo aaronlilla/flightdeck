@@ -1,12 +1,12 @@
 import type { JSX } from 'react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import * as api from '../api.js';
 import { HOP_NAMES } from '../../shared/console-model.js';
 import { costClass, ctxPercent, kindLabel, laneCta, laneHeadline, stateOf } from '../laneVM.js';
 import { computeFreshness, freshnessClass, freshnessStamp, hm } from '../freshness.js';
 import { MessageCard } from './ConductorRail.js';
-import type { JournalNarrativeEntry, Lane, LaneStory, Message } from '../../shared/console-model.js';
+import type { JournalNarrativeEntry, Lane, LaneStory, LaneSummary, Message } from '../../shared/console-model.js';
 import { fmtTokens } from '../../shared/format-tokens.js';
 
 export interface TicketSheetProps {
@@ -132,6 +132,67 @@ function StoryPanel({ story }: { story: LaneStory | null }): JSX.Element | null 
   );
 }
 
+/** 2026-09-07: the ticket sheet's top summary block -- what was done, the lane's own
+ *  status, whether it was audited, and whether it is proven ready to merge, with the
+ *  Re-check and Re-audit buttons right there rather than making an operator dig for
+ *  either fact somewhere else on the sheet. Renders nothing (rather than a loading
+ *  placeholder) until the first fetch lands, matching `StoryPanel`'s own convention. */
+function SummaryPanel({
+  summary, onRecheck, onReaudit, reauditRunning,
+}: {
+  summary: LaneSummary | null;
+  onRecheck: () => void;
+  onReaudit: () => void;
+  reauditRunning: boolean;
+}): JSX.Element | null {
+  if (!summary) return null;
+  const { audit, readiness } = summary;
+  const auditLine = audit
+    ? `Council ${audit.verdict}, ${audit.reviewed} of ${audit.total} reviewed, `
+      + `${audit.findings} ${audit.findings === 1 ? 'finding' : 'findings'}, at ${hm(audit.at)} on ${audit.head.slice(0, 7)}`
+      + (audit.stale ? ` -- stale: ${audit.staleWhy}` : '')
+    : 'Not audited.';
+  const driftNote = readiness && (readiness.headMoved || (readiness.behindBase ?? 0) > 0)
+    ? [
+      readiness.headMoved ? 'head moved since the audit' : null,
+      readiness.behindBase ? `base gained ${readiness.behindBase} commit${readiness.behindBase === 1 ? '' : 's'} since` : null,
+    ].filter(Boolean).join('; ')
+    : null;
+
+  return (
+    <div data-testid="ticket-sheet-summary" style={{ padding: '18px 22px', borderBottom: '1px solid var(--line)' }}>
+      <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 10 }}>Summary</div>
+      {summary.what.length > 0 ? (
+        <ul className="m" style={{ margin: '0 0 12px', paddingLeft: 18, fontSize: '11.5px', color: 'var(--ink)', lineHeight: 1.6 }}>
+          {summary.what.map((line, i) => <li key={i}>{line}</li>)}
+        </ul>
+      ) : (
+        <div className="m" style={{ fontSize: '11.5px', color: 'var(--ink3)', marginBottom: 12 }}>Nothing on record yet.</div>
+      )}
+      <div className="m" style={{ fontSize: '11.5px', color: 'var(--ink2)', marginBottom: 6 }}>{summary.status}</div>
+      <div data-testid="ticket-sheet-audit" className="m" style={{ fontSize: '11.5px', color: 'var(--ink2)', marginBottom: 6 }}>{auditLine}</div>
+      <div data-testid="ticket-sheet-readiness" className="m" style={{ fontSize: '11.5px', marginBottom: 12 }}>
+        {readiness?.ok ? (
+          <span style={{ color: 'var(--run)', fontWeight: 700 }}>Ready to merge.</span>
+        ) : (
+          <span style={{ color: 'var(--block)' }}>Not ready: {readiness?.why ?? 'unknown'}.</span>
+        )}
+        {driftNote ? <span style={{ color: 'var(--ink3)' }}> {driftNote}.</span> : null}
+      </div>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <span className="btnS" style={{ padding: '6px 10px', fontSize: '9.5px' }} onClick={onRecheck}>Re-check</span>
+        <span
+          className="btnS"
+          style={{ padding: '6px 10px', fontSize: '9.5px', opacity: reauditRunning ? 0.5 : 1, cursor: reauditRunning ? 'default' : 'pointer' }}
+          onClick={reauditRunning ? undefined : onReaudit}
+        >
+          {reauditRunning ? 'Re-auditing…' : 'Re-audit'}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function JournalPanel({ entries }: { entries: JournalNarrativeEntry[] }): JSX.Element {
   return (
     <div className="m" style={{ fontSize: 11, lineHeight: 2, color: 'var(--ink2)' }}>
@@ -150,15 +211,49 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
   const [thread, setThread] = useState<Message[]>([]);
   const [journal, setJournal] = useState<JournalNarrativeEntry[]>([]);
   const [story, setStory] = useState<LaneStory | null>(null);
+  const [summary, setSummary] = useState<LaneSummary | null>(null);
+  const [reauditRunning, setReauditRunning] = useState(false);
   const [draft, setDraft] = useState('');
+  const reauditPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     let active = true;
     api.getRunThread(lane.id).then((r) => { if (active) setThread(r.messages); }).catch(() => undefined);
     api.getRunJournal(lane.id).then((r) => { if (active) setJournal(r.entries); }).catch(() => undefined);
     api.getRunStory(lane.id).then((r) => { if (active) setStory(r); }).catch(() => undefined);
-    return () => { active = false; };
+    api.getRunSummary(lane.id).then((r) => { if (active) setSummary(r); }).catch(() => undefined);
+    setReauditRunning(false);
+    return () => {
+      active = false;
+      if (reauditPollRef.current) clearTimeout(reauditPollRef.current);
+    };
   }, [lane.id]);
+
+  const handleRecheck = useCallback(() => {
+    api.recheckRun(lane.id).then(setSummary).catch(() => undefined);
+  }, [lane.id]);
+
+  // Polls the summary until the audit's own head no longer trails the PR's current one
+  // (`readiness.headMoved` false once a fresh attestation lands), so the button stays
+  // disabled for exactly as long as the round actually takes rather than a guessed delay.
+  const pollAfterReaudit = useCallback((id: string) => {
+    api.getRunSummary(id).then((next) => {
+      setSummary(next);
+      if (next.audit && next.readiness && !next.readiness.headMoved) {
+        setReauditRunning(false);
+        return;
+      }
+      reauditPollRef.current = setTimeout(() => pollAfterReaudit(id), 3_000);
+    }).catch(() => setReauditRunning(false));
+  }, []);
+
+  const handleReaudit = useCallback(() => {
+    setReauditRunning(true);
+    api.reauditRun(lane.id).then((result) => {
+      if (!result.started) { setReauditRunning(false); return; }
+      reauditPollRef.current = setTimeout(() => pollAfterReaudit(lane.id), 3_000);
+    }).catch(() => setReauditRunning(false));
+  }, [lane.id, pollAfterReaudit]);
 
   // A send lands on the run's own thread server-side, but the thread above was fetched
   // once on open and never polls -- without this, the message the operator just typed
@@ -244,6 +339,7 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
           Why not merged: {lane.mergeable.why}
         </div>
       ) : null}
+      <SummaryPanel summary={summary} onRecheck={handleRecheck} onReaudit={handleReaudit} reauditRunning={reauditRunning} />
       <div style={{ padding: '20px 22px', borderBottom: '1px solid var(--line)' }}>
         <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 16 }}>Pipeline</div>
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'center', overflowX: 'auto' }}>

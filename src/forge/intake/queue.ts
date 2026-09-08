@@ -633,7 +633,8 @@ export async function mergeItem(item: QueueItem, deps: QueueMergeDeps): Promise<
 
   const result = await deps.gate({ repo: item.repo!, pr: item.pr.no, merge: true });
   if (!result.merged) {
-    return { ok: false, message: 'the merge did not complete -- see the journal for the gate\'s own reason' };
+    const why = result.reason?.length ? result.reason.join(' | ') : 'no reason recorded';
+    return { ok: false, message: `the merge did not complete: ${why}` };
   }
 
   // The item is done the moment the merge lands. The develop deploy takes minutes, so

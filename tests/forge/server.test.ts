@@ -23,6 +23,7 @@ import { Registry } from '../../src/forge/registry.js';
 import { RunInbox } from '../../src/forge/runinbox.js';
 import { Breaker, readKillSwitch, Lanes } from '../../src/forge/supervisor.js';
 import { ForgeServer, FORGE_PORT } from '../../src/forge/server.js';
+import { ConsoleReads } from '../../src/forge/console/reads.js';
 
 let dir: string;
 let server: ForgeServer;
@@ -1128,6 +1129,108 @@ describe('GET /merge-ready and POST /merge-ready (H1.8)', () => {
       await withQueue.close();
     }
   });
+});
+
+describe('GET /run/:id/summary, POST /run/:id/recheck, POST /run/:id/reaudit (2026-09-07)', () => {
+  it('GET /run/:id/summary folds a fresh PR read, the attestation and drift into one summary', async () => {
+    const { QueueStore } = await import('../../src/forge/intake/queueStore.js');
+    const queueStore = new QueueStore(join(dir, 'console', 'queue.jsonl'));
+    queueStore.append({
+      id: 'Q-1', at: 1, source: 'ticket', input: 'BBZ-96', ticket: 'BBZ-96', repo: 'o/n', briefPath: null,
+      branch: 'feature/bbz-96', worktreePath: dir, base: 'develop', state: 'review', reason: null,
+      runKey: 'queue-BBZ-96', pr: { no: 5, url: 'https://github.com/o/n/pull/5', draft: true },
+      journalIds: [], createdAt: 1, updatedAt: 1,
+    });
+    const journal = new Journal(join(dir, 'fleet.jsonl'));
+    journal.append({ event: 'run.started', run: 'queue-BBZ-96', actor: 'runner' });
+    journal.close();
+    const lanes = new Lanes(join(dir, 'lanes'));
+    lanes.put('queue-BBZ-96', { column: 'c4' });
+
+    const consoleReads = new ConsoleReads({
+      forgeHomeDir: dir, journalPath: join(dir, 'fleet.jsonl'), lanes,
+      registry: new Registry(join(dir, 'registry')), inbox: new Inbox(join(dir, 'inbox')),
+      queueStore, jiraSite: null, mergeAllowed: () => true,
+      ghDetailLookup: async () => ({
+        headSha: 'sha1', isDraft: true, merged: false, title: 'wire the merge chip',
+        checks: 'success', body: null,
+      }),
+      driftFn: async () => ({ behindBase: 0, headMoved: false }),
+      gitLog: async () => [],
+    });
+    const withSummary = new ForgeServer({
+      lanes, inbox: new Inbox(join(dir, 'inbox')), journalPath: join(dir, 'fleet.jsonl'),
+      registry: new Registry(join(dir, 'registry')), port: 0, queueStore, consoleReads,
+    });
+    const summaryBase = `http://127.0.0.1:${await withSummary.listen()}`;
+    try {
+      const response = await fetch(`${summaryBase}/run/queue-BBZ-96/summary`, {
+        headers: { 'x-forge-token': withSummary.token },
+      });
+      expect(response.status).toBe(200);
+      const summary = await response.json() as { what: string[]; readiness: { checks: string } | null };
+      expect(summary.what).toContain('wire the merge chip.');
+      expect(summary.readiness?.checks).toBe('success');
+    } finally {
+      await withSummary.close();
+    }
+  });
+
+  it('POST /run/:id/recheck answers the same shape as the GET, freshly computed', async () => {
+    const { QueueStore } = await import('../../src/forge/intake/queueStore.js');
+    const queueStore = new QueueStore(join(dir, 'console', 'queue.jsonl'));
+    queueStore.append({
+      id: 'Q-1', at: 1, source: 'ticket', input: 'BBZ-96', ticket: 'BBZ-96', repo: 'o/n', briefPath: null,
+      branch: 'feature/bbz-96', worktreePath: dir, base: 'develop', state: 'review', reason: null,
+      runKey: 'queue-BBZ-96', pr: { no: 5, url: 'https://github.com/o/n/pull/5', draft: true },
+      journalIds: [], createdAt: 1, updatedAt: 1,
+    });
+    const journal = new Journal(join(dir, 'fleet.jsonl'));
+    journal.append({ event: 'run.started', run: 'queue-BBZ-96', actor: 'runner' });
+    journal.close();
+    const lanes = new Lanes(join(dir, 'lanes'));
+    lanes.put('queue-BBZ-96', { column: 'c4' });
+
+    const consoleReads = new ConsoleReads({
+      forgeHomeDir: dir, journalPath: join(dir, 'fleet.jsonl'), lanes,
+      registry: new Registry(join(dir, 'registry')), inbox: new Inbox(join(dir, 'inbox')),
+      queueStore, jiraSite: null, mergeAllowed: () => true,
+      ghDetailLookup: async () => ({
+        headSha: 'sha2', isDraft: true, merged: false, title: 'wire the merge chip',
+        checks: 'pending', body: null,
+      }),
+      driftFn: async () => ({ behindBase: 2, headMoved: false }),
+      gitLog: async () => [],
+    });
+    const withRecheck = new ForgeServer({
+      lanes, inbox: new Inbox(join(dir, 'inbox')), journalPath: join(dir, 'fleet.jsonl'),
+      registry: new Registry(join(dir, 'registry')), port: 0, queueStore, consoleReads,
+    });
+    const recheckBase = `http://127.0.0.1:${await withRecheck.listen()}`;
+    try {
+      const response = await fetch(`${recheckBase}/run/queue-BBZ-96/recheck`, {
+        method: 'POST', headers: { 'x-forge-token': withRecheck.token },
+      });
+      expect(response.status).toBe(200);
+      const summary = await response.json() as { readiness: { checks: string; behindBase: number } | null };
+      expect(summary.readiness?.checks).toBe('pending');
+      expect(summary.readiness?.behindBase).toBe(2);
+    } finally {
+      await withRecheck.close();
+    }
+  });
+
+  it('POST /run/:id/reaudit refuses with no repo/PR on record', async () => {
+    const response = await fetch(`${base}/run/alpha/reaudit`, {
+      method: 'POST', headers: { 'x-forge-token': server.token },
+    });
+    expect(response.status).toBe(501);
+  });
+
+  // The "fires the council CLI and answers started:true" behavior is proven at the
+  // `reauditRun` unit level (tests/forge/console/run-actions.test.ts), which injects a
+  // fake `spawnFn` directly -- `ForgeServer` has no HTTP-reachable seam to fake the CLI
+  // spawn, and this suite never lets a real `forge council` subprocess start (order 9).
 });
 
 describe('anything else', () => {

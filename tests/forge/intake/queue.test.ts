@@ -1035,6 +1035,20 @@ describe('mergeItem: A.7', () => {
     expect(result.ok).toBe(false);
     expect(result.item).toBeUndefined();
   });
+
+  it('carries the gate\'s own reason lines in the refusal message, not a "see the journal" pointer', async () => {
+    const item = reviewItem();
+    const result = await mergeItem(item, {
+      mergeAllowed: () => true,
+      gate: async () => ({ merged: false, reason: ['checks are red', 'council verdict is FIX FIRST'] }),
+      clock: () => 3000,
+      store: { append: () => {} } as never,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('checks are red');
+    expect(result.message).toContain('council verdict is FIX FIRST');
+    expect(result.message).not.toContain('see the journal');
+  });
 });
 
 describe('promoteItem: A.7', () => {

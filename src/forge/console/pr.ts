@@ -62,6 +62,10 @@ export interface GhPrDetail {
   merged: boolean;
   title: string;
   checks: 'success' | 'failure' | 'pending';
+  /** 2026-09-07: the PR's own description, for the ticket sheet's "what was done"
+   *  summary. `null` for a PR with an empty body, or read through a caller that never
+   *  asked `gh` for it (`fromGh`'s own `GhPrLookup` shape has no body field at all). */
+  body?: string | null;
 }
 
 export type GhDetailLookupFn = (repo: string, pr: number) => Promise<GhPrDetail | undefined>;

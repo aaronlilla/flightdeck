@@ -155,6 +155,11 @@ export type ChainCouncilFn = (input: {
 export interface ChainGateResult {
   merged: boolean;
   mergeSha?: string;
+  /** 2026-09-07: the gate's own reason lines when it did not merge -- `forge gate`'s
+   *  own `lines`, so a refusal (`mergeItem`'s own message) carries the gate's actual
+   *  words instead of sending a reader to dig the journal out by hand. Absent when the
+   *  gate merged, or when nothing more specific than "did not merge" is on record. */
+  reason?: string[];
 }
 
 export type ChainGateFn = (input: { repo: string; pr: number; merge: boolean }) => Promise<ChainGateResult>;

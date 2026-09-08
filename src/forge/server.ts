@@ -289,6 +289,7 @@ export class ForgeServer {
     this.reasoner = options.reasoner;
     this.consoleReads = options.consoleReads
       ?? new ConsoleReads(options.modelPolicyPath ? { modelPolicyPath: options.modelPolicyPath } : {});
+    this.queueStoreForMerge = options.queueStore ?? new QueueStore(defaultQueuePath());
     this.consoleWrites = new ConsoleWrites({
       journalPath: this.journalPath,
       registry: this.registry,
@@ -301,9 +302,9 @@ export class ForgeServer {
       authorized: (request, response) => this.authorized(request, response),
       stuck: this.stuckFn,
       lanesView: () => this.consoleReads.lanesResponse(),
+      queueStore: this.queueStoreForMerge,
       ...(options.modelPolicyPath ? { modelPolicyPath: options.modelPolicyPath } : {}),
     });
-    this.queueStoreForMerge = options.queueStore ?? new QueueStore(defaultQueuePath());
     this.queueMergeDepsOpt = options.queueMergeDeps;
     this.queueRoutes = new QueueRoutes({
       store: this.queueStoreForMerge,
@@ -523,6 +524,16 @@ export class ForgeServer {
     if (ConsoleReads.matches(path, request.method)) {
       if (!this.authorized(request, response)) return;
       if (await this.consoleReads.handle(path, request, response)) return;
+    }
+
+    // 2026-09-07: `POST /run/:id/recheck` -- the ticket sheet's own Re-check button.
+    // Lives here rather than in `ConsoleReads` (GET-only) or `ConsoleWrites` (which has
+    // no access to the reads side's own PR cache and drift wiring).
+    const recheckMatch = /^\/run\/([^/]+)\/recheck$/.exec(path);
+    if (recheckMatch && request.method === 'POST') {
+      if (!this.authorized(request, response)) return;
+      const id = decodeURIComponent(recheckMatch[1] as string);
+      return json(response, 200, await this.consoleReads.runRecheckResponse(id));
     }
 
     if (path === '/state' && request.method === 'GET') {
@@ -845,8 +856,9 @@ export class ForgeServer {
    *  ones that actually have a PR to report on. */
   private mergeReadyGet(request: IncomingMessage, response: ServerResponse): void {
     if (!this.authorized(request, response)) return;
-    const lanes = this.consoleReads.lanesResponse(true).lanes;
-    json(response, 200, mergeReadyReportFrom(lanes));
+    void (async () => {
+      json(response, 200, await this.consoleReads.mergeReadyReport());
+    })();
   }
 
   /**

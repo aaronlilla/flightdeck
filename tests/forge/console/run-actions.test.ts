@@ -12,9 +12,10 @@ import { Registry } from '../../../src/forge/registry.js';
 import { findDecision, WardenActuator } from '../../../src/forge/warden.js';
 import { ActionsLedger } from '../../../src/forge/console/actions-ledger.js';
 import {
-  capOverridesPath, compactRun, killRun, mergeRun, pauseRun, resumeRun, setRunCap, verifyRun,
+  capOverridesPath, compactRun, killRun, mergeRun, pauseRun, reauditRun, resumeRun, setRunCap, verifyRun,
   type RunActionsDeps,
 } from '../../../src/forge/console/run-actions.js';
+import { QueueStore } from '../../../src/forge/intake/queueStore.js';
 
 class FakeActuator implements Actuator {
   parked: Array<{ run: string; reason: string }> = [];
@@ -379,5 +380,71 @@ describe('action guards judge the chain, not the root', () => {
     const fleet = replay(journalPath);
     const { state } = laneStateNowFor('alpha', { fleet, chain: foldChainState(fleet.events) });
     expect(state).toBe('running');
+  });
+});
+
+describe('reauditRun', () => {
+  function queueDeps(): { queueStore: QueueStore } {
+    return { queueStore: new QueueStore(join(dir, 'queue.jsonl')) };
+  }
+
+  it('refuses when no repo/PR is on record for the run', async () => {
+    const result = await reauditRun('ghost', { ...deps, ...queueDeps() });
+    expect(result.status).toBe(501);
+    expect((result.body as { error: string }).error).toBe('not wired');
+  });
+
+  it('refuses a queue item that is not review/done/unverified/killed', async () => {
+    const { queueStore } = queueDeps();
+    queueStore.append({
+      id: 'Q-1', at: 1, source: 'ticket', input: 'ABC-1', ticket: 'ABC-1', repo: 'owner/name',
+      briefPath: null, branch: 'feature/abc-1', worktreePath: dir, base: 'develop',
+      state: 'running', reason: null, runKey: 'alpha', pr: { no: 9, url: 'https://x/9', draft: true },
+      journalIds: [], createdAt: 1, updatedAt: 1,
+    });
+    const result = await reauditRun('alpha', { ...deps, queueStore });
+    expect(result.status).toBe(409);
+  });
+
+  it('fires the council CLI in the background and answers started:true for a review item', async () => {
+    const { queueStore } = queueDeps();
+    queueStore.append({
+      id: 'Q-1', at: 1, source: 'ticket', input: 'ABC-1', ticket: 'ABC-1', repo: 'owner/name',
+      briefPath: null, branch: 'feature/abc-1', worktreePath: dir, base: 'develop',
+      state: 'review', reason: null, runKey: 'alpha', pr: { no: 9, url: 'https://x/9', draft: true },
+      journalIds: [], createdAt: 1, updatedAt: 1,
+    });
+    let spawnedArgs: string[] | undefined;
+    deps.spawnFn = (command, args) => {
+      spawnedArgs = [command, ...args];
+      return fakeSpawn(0, 'council done')();
+    };
+    const result = await reauditRun('alpha', { ...deps, queueStore });
+    expect(result.status).toBe(200);
+    expect((result.body as { started: boolean }).started).toBe(true);
+    expect(spawnedArgs).toContain('council');
+    expect(spawnedArgs).toContain('--repo');
+    expect(spawnedArgs).toContain('owner/name');
+    expect(spawnedArgs).toContain('--pr');
+    expect(spawnedArgs).toContain('9');
+    expect(spawnedArgs).toContain('--base');
+    expect(spawnedArgs).toContain('origin/develop');
+  });
+
+  it('re-audits a lane that is done/unverified/killed even with no queue item at all', async () => {
+    appendOnce(journalPath, { event: 'intake.planned', packetId: 'p1', repo: 'owner/name' });
+    appendOnce(journalPath, { event: 'chain.launched', packetId: 'p1', run: 'alpha', launched: { runKey: 'alpha' } });
+    appendOnce(journalPath, { event: 'chain.provisioned', packetId: 'p1', worktreePath: dir, branch: 'feat/x' });
+    appendOnce(journalPath, { event: 'run.finished', run: 'alpha', verdict: 'done' });
+    const { queueStore } = queueDeps();
+    queueStore.append({
+      id: 'Q-1', at: 1, source: 'ticket', input: 'ABC-1', ticket: 'ABC-1', repo: 'owner/name',
+      briefPath: null, branch: 'feat/x', worktreePath: dir, base: 'develop',
+      state: 'done', reason: null, runKey: 'alpha', pr: { no: 12, url: 'https://x/12', draft: true },
+      journalIds: [], createdAt: 1, updatedAt: 1,
+    });
+    deps.spawnFn = fakeSpawn(0, 'council done');
+    const result = await reauditRun('alpha', { ...deps, queueStore });
+    expect(result.status).toBe(200);
   });
 });

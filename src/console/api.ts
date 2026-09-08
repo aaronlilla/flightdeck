@@ -14,11 +14,13 @@ import type {
   JournalResponse,
   LaneStory,
   LanesResponse,
+  LaneSummary,
   MergeReadyReport,
   ProposalsResponse,
   QueueAddRequest,
   QueueAddResponse,
   QueueResponse,
+  ReauditResponse,
   ReconnectResponse,
   RunCostResponse,
   RunJournalResponse,
@@ -111,6 +113,25 @@ export function getRunJournal(id: string): Promise<RunJournalResponse> {
 /** H2.4: the ticket sheet's Story section. */
 export function getRunStory(id: string): Promise<LaneStory> {
   return call<LaneStory>(`/run/${encodeURIComponent(id)}/story`);
+}
+
+/** 2026-09-07: the ticket sheet's own top summary block: what was done, the current
+ *  status, whether it was audited, and whether it is proven ready to merge. */
+export function getRunSummary(id: string): Promise<LaneSummary> {
+  return call<LaneSummary>(`/run/${encodeURIComponent(id)}/summary`);
+}
+
+/** The sheet's Re-check button: re-reads the PR facts and drift now, bypassing the
+ *  60-second PR cache the board's own poll relies on. */
+export function recheckRun(id: string): Promise<LaneSummary> {
+  return post<LaneSummary>(`/run/${encodeURIComponent(id)}/recheck`, {});
+}
+
+/** The sheet's Re-audit button: runs the council again on the run's current head. The
+ *  result lands as a new attestation; the caller polls `getRunSummary` until the
+ *  audit's own `head` matches the PR's current head. */
+export function reauditRun(id: string): Promise<ReauditResponse> {
+  return post<ReauditResponse>(`/run/${encodeURIComponent(id)}/reaudit`, {});
 }
 
 /** H2.3: what a bulk retire would do (`GET /retire-finished`), and doing it

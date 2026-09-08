@@ -17,12 +17,14 @@ import { run as execRun, type RunRequest } from '../exec.js';
 import { replay } from '../journal.js';
 import { chainLinks } from './lanes.js';
 import { forgeHome } from '../paths.js';
+import { queuePath as defaultQueuePath } from '../paths.js';
+import { QueueStore } from '../intake/queueStore.js';
 import type { Registry } from '../registry.js';
 import type { Lanes } from '../supervisor.js';
 import { recordAction, type ActionsLedger } from './actions-ledger.js';
 import { capsOverridesPath, readCapsOverrides, writeCapsOverrides } from './caps-read.js';
 import { laneStateNowFor } from './lanes.js';
-import type { ActionResult, LaneState } from '../../shared/console-model.js';
+import type { ActionResult, LaneState, ReauditResponse } from '../../shared/console-model.js';
 import { fmtTokens } from '../../shared/format-tokens.js';
 
 export interface RunActionsDeps {
@@ -42,6 +44,10 @@ export interface RunActionsDeps {
    *  `process.argv[1]`), the same convention `chainLaunchArgv` uses so the spawned
    *  command works whether this server is running under `tsx` or compiled `dist/`. */
   cliArgv?: () => string[];
+  /** 2026-09-07: overrides where `reauditRun` finds a queue-sourced lane's own
+   *  repo/PR/base/worktree. Defaults to `defaultQueuePath()`, which follows
+   *  `FORGE_HOME`. A specimen only. */
+  queueStore?: QueueStore;
 }
 
 export type RunActionResponse = {
@@ -359,4 +365,73 @@ export async function compactRun(run: string, deps: RunActionsDeps): Promise<Run
         + 'reply to a context-ceiling handoff produces one, and the console cannot request that synchronously',
     },
   };
+}
+
+export type ReauditActionResponse = { status: number; body: ReauditResponse | { error: string; reason: string } };
+
+/** 2026-09-07: `POST /run/:id/reaudit` -- runs the same council round the queue itself
+ *  runs (`forge council --repo --pr --cwd --base origin/<base>`, with `FORGE_COUNCIL_CODEX
+ *  =always` for the same forced Codex lane `chainCouncil`'s `forceCodex: true` asks
+ *  for), fired in the background so this call answers as soon as it has started rather
+ *  than waiting out however long the round takes. The result lands as a new attestation
+ *  and a `council.*` journal sequence, readable off the next `GET /run/:id/summary`.
+ *
+ * Refuses outright when there is no repo/PR on record for this run, or when the lane
+ * is not in a state a re-audit makes sense for: a queue item still `review`, or a lane
+ * that has already finished one way or another (`done`/`unverified`/`killed`) with a PR
+ * open. A run still `running`/`planning`/`queued` has nothing on a head yet to audit. */
+export async function reauditRun(run: string, deps: RunActionsDeps): Promise<ReauditActionResponse> {
+  const queueStore = deps.queueStore ?? new QueueStore(defaultQueuePath());
+  const item = queueStore.all().find((row) => row.runKey === run);
+  const chainRow = findChainRowForRun(run, deps.journalPath);
+  const repo = item?.repo ?? chainRow?.repo ?? null;
+  const prNo = item?.pr?.no ?? null;
+  const base = item?.base ?? null;
+  const cwd = item?.worktreePath ?? chainRow?.provisioned?.worktreePath ?? null;
+
+  if (!repo || !prNo) {
+    return { status: 501, body: { error: 'not wired', reason: `no repo/PR on record for run ${run} to re-audit` } };
+  }
+
+  const REAUDITABLE_LANE_STATES: LaneState[] = ['done', 'unverified', 'killed'];
+  let stateOk: boolean;
+  let stateLabel: string;
+  if (item) {
+    // A queue-sourced lane's own item state is the ground truth for it: `review` and
+    // `done` are the two the sheet can meaningfully re-audit. The item's `running` /
+    // `planning` / `parked` / `failed` states never carry a stable head yet, so a lane
+    // with no journal history for its run (reading `unverified` by default) must not
+    // slip through on that fallback alone.
+    stateOk = item.state === 'review' || item.state === 'done';
+    stateLabel = item.state;
+  } else {
+    const fleet = replay(deps.journalPath);
+    const chain = foldChainState(fleet.events);
+    const { state } = laneStateNowFor(run, { fleet, chain, laneRecord: deps.lanes?.get(run) });
+    stateOk = REAUDITABLE_LANE_STATES.includes(state);
+    stateLabel = state;
+  }
+  if (!stateOk) {
+    return {
+      status: 409,
+      body: { error: `reaudit needs review/done/unverified/killed, not ${stateLabel}`, reason: 'wrong-state' },
+    };
+  }
+
+  const argv = [
+    ...(deps.cliArgv?.() ?? defaultCliArgv()),
+    'council', '--repo', repo, '--pr', String(prNo),
+    ...(cwd ? ['--cwd', cwd] : []),
+    ...(base ? ['--base', `origin/${base}`] : []),
+  ];
+  const [command, ...args] = argv;
+  void execRun({
+    argv: [command as string, ...args], cwd: process.cwd(), owner: `console-${run}-reaudit`, cls: 'script',
+    fullOutput: true, env: { ...process.env, FORGE_COUNCIL_CODEX: 'always' },
+    ...(deps.spawnFn ? { spawnFn: deps.spawnFn } : {}),
+  });
+  recordAction(deps.journalPath, deps.ledger, {
+    kind: 'reaudit', run, text: `re-audit requested for ${repo}#${prNo}`, undo: null, extra: { repo, pr: prNo },
+  });
+  return { status: 200, body: { started: true } };
 }
