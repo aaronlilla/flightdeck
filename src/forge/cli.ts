@@ -1420,14 +1420,25 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           verdict: round.verdict, path: attPath,
         });
 
+        // BBZ-123: the terminal once printed `round.verdict` while the attestation on
+        // disk carried a different one (PR #123, 2026-09-08 -- an operator watching the
+        // console would have believed the council failed while it had actually cleared
+        // and the gate went on to merge). Reading the just-written file back is the one
+        // way the printed line can never diverge from what `forge gate` will later read:
+        // there is no second copy of the verdict left to drift.
+        const attested = readAttestation(repo, pr, snapshot.headSha) ?? attestation;
+        const attestedFindingLines = [...attested.decidingFindings]
+          .sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity])
+          .map((f) => `  [${f.severity}/${f.confidence}] ${f.file}:${f.line} -- ${f.claim}`);
+
         return {
           code: 0,
           lines: [
-            `verdict: ${round.verdict}`,
-            ...(findingLines.length ? findingLines : ['no deciding findings']),
+            `verdict: ${attested.verdict}`,
+            ...(attestedFindingLines.length ? attestedFindingLines : ['no deciding findings']),
             `attestation: ${attPath}`,
           ],
-          data: { verdict: round.verdict, attestationPath: attPath, ...(coverageNote ? { coverageNote } : {}) },
+          data: { verdict: attested.verdict, attestationPath: attPath, ...(coverageNote ? { coverageNote } : {}) },
         };
       } finally {
         councilJournal.close();
