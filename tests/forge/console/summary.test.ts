@@ -271,6 +271,14 @@ describe('computeNext', () => {
     expect(computeNext({ ...base, state: 'done', pr } as Lane, why)).toBe('Not ready to merge yet: checks are failure. Re-check once that clears.');
   });
 
+  // Item 10: an abandoned-process block reads the same instruction a parked lane
+  // does, never the generic "salvageable? Resume; otherwise Kill and reopen" line
+  // meant for a real block a person still has to judge.
+  it('gives the parked-style instruction for an abandoned-process block', () => {
+    const lane = { ...base, state: 'blocked', reason: 'its process is gone and it never reported finishing' } as Lane;
+    expect(computeNext(lane, notReady)).toBe('Read the reason, then Resume it or Kill it.');
+  });
+
   it('never answers a bare state word', () => {
     for (const state of ['running', 'handed-off', 'paused', 'parked', 'blocked', 'exhausted', 'unverified', 'done', 'merged', 'killed'] as const) {
       const next = computeNext({ ...base, state } as Lane, notReady);

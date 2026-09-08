@@ -217,6 +217,13 @@ export function computeNext(lane: Lane, readiness: LaneReadiness | null): string
         ? 'Answer the question below; the run continues as soon as you do.'
         : 'Read the reason, then Resume it or Kill it.';
     case 'blocked':
+      // Item 10: a lane read as blocked because its process is simply gone (no
+      // registry row anywhere in its chain, no journal row in ten minutes) gets the
+      // same instruction a parked lane does -- there is nothing here to salvage or
+      // reconnect, only a reason to read before deciding.
+      if (lane.reason === 'its process is gone and it never reported finishing') {
+        return 'Read the reason, then Resume it or Kill it.';
+      }
       return lane.blockedBy === 'aws'
         ? 'Reconnect AWS, then Resume it.'
         : 'Read the reason. If the work is salvageable, Resume it; otherwise Kill it and reopen.';

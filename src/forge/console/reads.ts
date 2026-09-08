@@ -456,6 +456,12 @@ export class ConsoleReads {
       capOverrides: readCapsOverrides(capsOverridesPath(this.forgeHomeDir)).perRun ?? {},
       prFor: (run) => prCache[run]?.pr ?? null,
       tokensPerHour: (lane) => tokensPerHour(lane, fleet.runs[lane.slug]?.tokensUsed ?? 0, now),
+      // Item 10: a queue item's own state and reason outrank a stale run state --
+      // see `laneStateFor`'s own `queueParked` branch.
+      queueStateFor: (run) => {
+        const item = this.queueStore.all().find((row) => row.runKey === run);
+        return item ? { state: item.state, reason: item.reason } : undefined;
+      },
     };
     // `archived` bypasses the 24h finished-lane window the same way `all` does: an
     // operator asking to see everything ever retired must see a lane retired long ago,

@@ -22,6 +22,11 @@ import { shortenShas, stripMachineIds, ticketInId } from '../../shared/humanize.
  *  explanation never reads as three `burn.mismatch` rows in a row. */
 const NOISE_EVENTS = new Set(['burn.mismatch', 'result.usage', 'subagent.usage', 'warden.health', 'tool.end']);
 
+/** Item 10: how long a lane reading running/handed-off, with no live registry row
+ *  anywhere in its chain, gets to file one more journal row before it reads as
+ *  abandoned rather than working. */
+const ABANDONED_MS = 10 * 60 * 1000;
+
 /** `events`, minus noise rows, unless that leaves nothing. A run whose only rows are
  *  noise still needs something to render, not an empty step text. */
 export function meaningfulEvents(events: ForgeEvent[]): ForgeEvent[] {
@@ -412,20 +417,30 @@ export interface LaneStateResult {
 
 /**
  * The lane's own `LaneState`, and why -- in the precedence order the brief lays out:
- * a merged chain packet wins outright, then an explicit `needs_aaron` flag, then the
- * run's own last event being `run.blocked` or `run.killed` (nothing later has moved it
- * on), then a chain-level block, then the registered run state, then the lane record's
- * own last-known verdict for a run the journal never heard from at all.
+ * a merged chain packet wins outright, then item 10's own queue-parked truth, then an
+ * explicit `needs_aaron` flag, then the run's own last event being `run.blocked` or
+ * `run.killed` (nothing later has moved it on), then a chain-level block, then the
+ * registered run state, then the lane record's own last-known verdict for a run the
+ * journal never heard from at all.
  */
 export function laneStateFor(input: {
   packet: ChainPacketState | undefined;
   lane: LaneRecord;
   runState: RunState | undefined;
   runEvents: ForgeEvent[];
+  /** Item 10: the queue item's own state and reason, when this lane is queue-sourced
+   *  and the caller has already looked one up, and its state is `parked`. A queue item
+   *  read as parked wins outright, whatever the run's own events say -- the live-board
+   *  finding this fixes had a self lane whose queue item was parked but whose run
+   *  events still read `started`, so the tile showed RUNNING with a park reason
+   *  printed one line under it. */
+  queueParked?: { reason: string | null };
 }): LaneStateResult {
-  const { packet, lane, runState, runEvents } = input;
+  const { packet, lane, runState, runEvents, queueParked } = input;
 
   if (packet?.merged) return { state: 'merged', reason: null };
+
+  if (queueParked) return { state: 'parked', reason: queueParked.reason };
 
   if (lane.needs_aaron) return { state: 'blocked', reason: lane.needs_aaron };
 
@@ -487,6 +502,10 @@ export interface LaneBuildInput {
   eventsByRun: Map<string, ForgeEvent[]>;
   /** `indexJiraCompleteTickets(fleet.events)`, built once per `computeLanes` call. */
   jiraCompleteTickets: Set<string>;
+  /** Item 10: the queue item's own state/reason for this lane, when one exists.
+   *  Optional -- a caller with no queue store wired (most tests) reads every lane
+   *  purely off the journal, same as before. */
+  queueStateFor?: (id: string) => { state: string; reason: string | null } | undefined;
 }
 
 function questionFor(id: string, openAsks: InboxEntry[]): LaneQuestion | null {
@@ -521,7 +540,9 @@ export function buildLane(input: LaneBuildInput): Lane {
   const runEvents = input.eventsByRun.get(terminal.key) ?? [];
   const packet = packetForRun(chain, id);
 
-  const { state, reason } = laneStateFor({ packet, lane, runState, runEvents });
+  const queueState = input.queueStateFor?.(id);
+  const queueParked = queueState?.state === 'parked' ? { reason: queueState.reason } : undefined;
+  let { state, reason } = laneStateFor({ packet, lane, runState, runEvents, queueParked });
 
   const ticket = ticketFor(id, runState);
   const className = runState?.className ?? lane.className ?? null;
@@ -547,9 +568,6 @@ export function buildLane(input: LaneBuildInput): Lane {
     // scope) -- a lane the journal has no run state for at all reads 0 tokens rather
     // than a conversion this file cannot honestly make.
     : 0;
-  const running = state === 'running' || state === 'handed-off';
-  const tokensPerMin = running ? Number((input.tokensPerHourValue / 60).toFixed(4)) : 0;
-
   const fails = runEvents.filter((row) => row.event === 'run.blocked' || row.event === 'engine.error').length;
 
   // I3: `lastEventAt` off the run's own last MEANINGFUL event, not `RunState.lastEventAt`
@@ -577,6 +595,19 @@ export function buildLane(input: LaneBuildInput): Lane {
   // registry row, not just `id`'s own. Backs `heart` for a stalled handoff (running
   // needs none of this: the terminal's own state already says so) and `runaway` below.
   const chainLive = chainIsLive(links, input.registryGet);
+
+  // Item 10: a lane whose run state still reads running/handed-off, with no live
+  // registry row anywhere in its chain AND no journal row in the last ten minutes,
+  // is a process that is simply gone -- not one quietly working. The live-board
+  // finding this fixes showed a tile banded RUNNING with a park reason printed one
+  // line under it, because nothing here had ever noticed the process had vanished.
+  if ((state === 'running' || state === 'handed-off') && !chainLive && now - lastEventAt >= ABANDONED_MS) {
+    state = 'blocked';
+    reason = 'its process is gone and it never reported finishing';
+  }
+
+  const running = state === 'running' || state === 'handed-off';
+  const tokensPerMin = running ? Number((input.tokensPerHourValue / 60).toFixed(4)) : 0;
   const heart = state === 'running' || (state === 'handed-off' && chainLive);
   const since = sinceFor(state, runEvents, lastEventAt);
 
@@ -660,6 +691,8 @@ export interface LanesInput {
   capOverrides: Record<string, number>;
   prFor: (run: string) => LanePr | null;
   tokensPerHour: (lane: LaneRecord) => number;
+  /** Item 10: the queue item's own state/reason for a lane, when one exists. */
+  queueStateFor?: (id: string) => { state: string; reason: string | null } | undefined;
 }
 
 function startOfLocalDay(now: number): number {
@@ -697,6 +730,7 @@ export function computeLanes(input: LanesInput, now: number): LanesResponse {
       openAsks: input.openAsks, stuck: input.stuck, classFor: input.classFor,
       capOverride: input.capOverrides[lane.slug], prFor: input.prFor,
       attempt, tokensPerHourValue, eventsByRun, jiraCompleteTickets,
+      queueStateFor: input.queueStateFor,
     });
     tokensPerMin += built.tokensPerMin;
     return built;

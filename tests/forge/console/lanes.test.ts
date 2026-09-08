@@ -217,6 +217,19 @@ describe('laneStateFor', () => {
     expect(laneStateFor({ packet: undefined, lane: { ...lane, verdict: 'done' }, runEvents: [], runState: undefined }).state).toBe('done');
     expect(laneStateFor({ packet: undefined, lane, runEvents: [], runState: undefined }).state).toBe('unverified');
   });
+
+  // Item 10: a queue item read as parked outranks a run state that still reads
+  // running -- the live-board finding this fixes had a self lane banded RUNNING with
+  // a park reason printed one line under it.
+  it('parked, with the queue item\'s own reason, when the queue item reads parked, whatever the run state says', () => {
+    const result = laneStateFor({
+      packet: undefined, lane,
+      runState: { run: 'alpha', state: 'started', turns: 0, context: 0, costUsd: 0, tokensUsed: 0, lastEventAt: 0, cacheReadTokens: 0, totalReadTokens: 0, turnsSinceWrite: 0 },
+      runEvents: [],
+      queueParked: { reason: 'refused: checks are failure on head 88d44ec, not green.' },
+    });
+    expect(result).toEqual({ state: 'parked', reason: 'refused: checks are failure on head 88d44ec, not green.' });
+  });
 });
 
 describe('computeLanes', () => {
@@ -405,6 +418,55 @@ describe('handoff chain folding', () => {
     }), 1_000).lanes[0]!;
     expect(built.state).toBe('handed-off');
     expect(built.heart).toBe(true);
+  });
+
+  // Item 10: a lane whose run state still reads running, with no live registry row
+  // anywhere in its chain and no journal row for ten minutes, is abandoned rather
+  // than working -- the live-board finding this fixes showed a tile banded RUNNING
+  // with a park reason printed one line under it.
+  it('a running lane with no live registry row and no journal row for ten minutes reads as blocked, abandoned', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.close();
+    const fleet = replay(path);
+    const lastAt = fleet.events[fleet.events.length - 1]!.at;
+    const lane = laneRecord({ slug: 'alpha', column: 'c1' });
+    const now = lastAt + 11 * 60_000;
+    const built = computeLanes(baseInput({
+      laneRecords: [lane], fleet, registryGet: () => undefined,
+    }), now).lanes[0]!;
+    expect(built.state).toBe('blocked');
+    expect(built.reason).toBe('its process is gone and it never reported finishing');
+    expect(built.heart).toBe(false);
+  });
+
+  it('a fixture lane with a live registry row still reads running after ten minutes of silence', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.close();
+    const fleet = replay(path);
+    const lastAt = fleet.events[fleet.events.length - 1]!.at;
+    const lane = laneRecord({ slug: 'alpha', column: 'c1' });
+    const registryRow: RegistryRecord = { goal: 'alpha', cwd: '.', briefPath: 'b.md', pid: 123, startedAt: 0 };
+    const now = lastAt + 11 * 60_000;
+    const built = computeLanes(baseInput({
+      laneRecords: [lane], fleet, registryGet: (run) => (run === 'alpha' ? registryRow : undefined),
+    }), now).lanes[0]!;
+    expect(built.state).toBe('running');
+  });
+
+  it('a fixture lane with a fresh journal row (under ten minutes) still reads running, no registry row needed', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.close();
+    const fleet = replay(path);
+    const lastAt = fleet.events[fleet.events.length - 1]!.at;
+    const lane = laneRecord({ slug: 'alpha', column: 'c1' });
+    const now = lastAt + 5 * 60_000;
+    const built = computeLanes(baseInput({
+      laneRecords: [lane], fleet, registryGet: () => undefined,
+    }), now).lanes[0]!;
+    expect(built.state).toBe('running');
   });
 
   it('does not flag a finished chain over its cap as runaway, even before it ages off the board', () => {
