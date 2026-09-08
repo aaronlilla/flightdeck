@@ -70,8 +70,6 @@ beforeEach(() => {
   journalPath = join(dir, 'fleet.jsonl');
   new Journal(journalPath).close();
   actuator = new FakeActuator(journalPath);
-  // A generous hard limit so a proposed run cap is refused for no reason but its own.
-  writeFileSync(join(dir, 'console', 'caps.json').replace(/[/\\]console[/\\]caps\.json$/, ''), '', { flag: 'a' });
 });
 
 afterEach(async () => {
