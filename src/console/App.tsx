@@ -211,6 +211,28 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     await refresh();
   }, [appendReceipt, refresh]);
 
+  // The rail's own receipt is invisible from the Queue tab, so an add/remove/retry/
+  // merge/promote there landed with no feedback at all short of switching tabs to check
+  // the rail. A toast (the component already existed, unused) shows the same text on
+  // the Queue tab itself, and clears itself after a few seconds the way a toast should.
+  const queueToast = useCallback((text: string, ok: boolean) => {
+    dispatch({ type: 'toast', toast: { glyph: ok ? '✓' : '✕', title: text, sub: '', big: '', color: ok ? undefined : 'var(--block)' } });
+    setTimeout(() => dispatch({ type: 'toast', toast: null }), 4000);
+  }, []);
+
+  const runQueueAction = useCallback(async (fn: () => Promise<{ ok: boolean; jid: string | null; message: string; undoable: boolean }>) => {
+    try {
+      const result = await fn();
+      appendReceipt(result.jid, result.message, result.undoable);
+      queueToast(result.message, result.ok);
+    } catch (caught) {
+      const message = caught instanceof api.ApiError ? caught.message : 'the action did not go through';
+      appendReceipt(null, message, false);
+      queueToast(message, false);
+    }
+    await refresh();
+  }, [appendReceipt, refresh, queueToast]);
+
   const resolveConfirm = useCallback((k: string, confirmed: boolean) => {
     dispatch({
       type: 'thread',
@@ -553,18 +575,25 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
             onAdd={(source, input) => void (async () => {
               try {
                 const result = await api.addToQueue({ source, input });
-                if (!result.ok) { appendReceipt(null, result.error ?? 'the add did not go through', false); }
+                if (result.ok) {
+                  queueToast(`added ${result.items.length} item${result.items.length === 1 ? '' : 's'} to the queue`, true);
+                } else {
+                  appendReceipt(null, result.error ?? 'the add did not go through', false);
+                  queueToast(result.error ?? 'the add did not go through', false);
+                }
               } catch (caught) {
-                appendReceipt(null, caught instanceof api.ApiError ? caught.message : 'the add did not go through', false);
+                const message = caught instanceof api.ApiError ? caught.message : 'the add did not go through';
+                appendReceipt(null, message, false);
+                queueToast(message, false);
               }
               await refresh();
             })()}
-            onRemove={(id) => void runAction(() => api.removeQueueItem(id))}
-            onRetry={(id) => void runAction(() => api.retryQueueItem(id))}
-            onPause={() => void runAction(() => api.pauseQueue())}
-            onResume={() => void runAction(() => api.resumeQueue())}
-            onMerge={(id) => void runAction(() => api.mergeQueueItem(id))}
-            onPromote={(id) => void runAction(() => api.promoteQueueItem(id))}
+            onRemove={(id) => void runQueueAction(() => api.removeQueueItem(id))}
+            onRetry={(id) => void runQueueAction(() => api.retryQueueItem(id))}
+            onPause={() => void runQueueAction(() => api.pauseQueue())}
+            onResume={() => void runQueueAction(() => api.resumeQueue())}
+            onMerge={(id) => void runQueueAction(() => api.mergeQueueItem(id))}
+            onPromote={(id) => void runQueueAction(() => api.promoteQueueItem(id))}
           />
         ) : null}
 
