@@ -125,6 +125,10 @@ export interface Policy {
    *  `router` key at all (every fixture written before this field existed) reads the
    *  same as `{ enabled: false }`, never as an error. */
   router?: { enabled: boolean };
+  /** The Conductor agent behind `POST /command` (2026-09-08). On by default: a policy
+   *  file with no `conductor` key at all routes the rail to the agent, and only an
+   *  explicit `{ agent: { enabled: false } }` keeps every message on the regex grammar. */
+  conductor?: { agent?: { enabled?: boolean } };
   /**
    * The protected-capability classifier's own config (roadmap P4.6, decision 6): file
    * globs and, where a path alone will not tell, an added-text pattern to search a
@@ -256,6 +260,12 @@ export function classForSubagent(subagentType: string, path?: string): string {
  *  purpose, is off, never a crash. */
 export function routerEnabled(path?: string): boolean {
   return loadPolicy(path).router?.enabled === true;
+}
+
+/** Whether `POST /command` hands a message to the Conductor agent before the grammar.
+ *  Defaults to on; only an explicit `conductor.agent.enabled: false` turns it off. */
+export function conductorAgentEnabled(path?: string): boolean {
+  return loadPolicy(path).conductor?.agent?.enabled !== false;
 }
 
 /**

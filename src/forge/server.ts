@@ -52,6 +52,7 @@ import { processAlive, Registry } from './registry.js';
 import { route as routeMessage } from './router.js';
 import { RunInbox, deliverAnswer } from './runinbox.js';
 import { assertRunListening } from './console/listening.js';
+import { amendRunBrief, type AmendDeps } from './console/amend.js';
 import { Breaker, clearKillSwitch, Fleet, type LaneRecord, type Lanes } from './supervisor.js';
 
 /** Reads the server's own bearer token, minting one on first use. */
@@ -62,37 +63,7 @@ export function ensureServerToken(path: string = serverTokenPath()): string {
   return token;
 }
 
-/**
- * Same two regexes `conformance-drift.ts` uses to find and bound a brief's own
- * `## Definition of Done` section (duplicated rather than imported, since that module
- * belongs to the drift checker and this one only needs the same shape). `appendAmendment`
- * folds an amendment's text into that section -- the section the drift checker re-reads
- * every tick -- and also appends a dated `## Amendment` section so a later reader can see
- * the brief was corrected after the fact, rather than only see a Definition of Done that
- * quietly grew.
- */
-const DOD_HEADING = /^##[ \t]+Definition of Done[ \t]*\r?\n/im;
-const NEXT_HEADING = /^##[ \t]+\S/m;
-
-/** Exported for its own specimen; used by `/amend`. */
-export function appendAmendment(brief: string, text: string): string {
-  const stamp = new Date().toISOString();
-  const start = DOD_HEADING.exec(brief);
-  let withDoD = brief;
-  if (start) {
-    const bodyStart = start.index + start[0].length;
-    const rest = brief.slice(bodyStart);
-    NEXT_HEADING.lastIndex = 0;
-    const next = NEXT_HEADING.exec(rest);
-    const insertAt = bodyStart + (next ? next.index : rest.length);
-    const before = brief.slice(0, insertAt);
-    const after = brief.slice(insertAt);
-    const needsBlankLine = !before.endsWith('\n\n') && !before.endsWith('\n');
-    withDoD = `${before}${needsBlankLine ? '\n' : ''}- Amendment (${stamp}): ${text}\n${after}`;
-  }
-  const separator = withDoD.endsWith('\n') ? '\n' : '\n\n';
-  return `${withDoD}${separator}## Amendment (${stamp})\n\n${text}\n`;
-}
+export { appendAmendment } from './console/amend.js';
 
 /** The maximum a request body may be before it is refused outright. */
 export const MAX_BODY_BYTES = 64 * 1024;
@@ -860,20 +831,15 @@ export class ForgeServer {
         json(response, 400, { error: 'an amendment needs a run and text' });
         return;
       }
-      const record = this.registry.get(parsed.run);
-      if (!record) {
-        json(response, 404, { error: `nothing runs ${parsed.run}` });
-        return;
-      }
-      const brief = readFileSync(record.briefPath, 'utf8');
-      writeFileSync(record.briefPath, appendAmendment(brief, parsed.text), 'utf8');
-      new RunInbox(parsed.run).send(`Amendment: ${parsed.text}`, 'console');
-      appendOnce(this.journalPath, {
-        event: 'brief.amended', run: parsed.run, actor: 'console', text: parsed.text,
-      });
-      this.publish({ event: 'brief.amended', run: parsed.run });
-      json(response, 200, { ok: true });
+      const outcome = amendRunBrief(parsed.run, parsed.text, this.amendDeps());
+      json(response, outcome.status, outcome.body);
     });
+  }
+
+  /** The one amend implementation (`amend.ts#amendRunBrief`) this route and the
+   *  Conductor agent's `amend_run` tool share. */
+  private amendDeps(): AmendDeps {
+    return { registry: this.registry, journalPath: this.journalPath, publish: (event) => this.publish(event) };
   }
 
   /**

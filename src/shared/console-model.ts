@@ -346,6 +346,9 @@ export interface Message {
   undone?: boolean;
   /** Freshness of the fact behind an event chip. */
   verifiedAt?: number | null;
+  /** Which path answered a rail message: the Conductor agent, or the regex grammar it
+   *  falls back to. Absent on every row older than the agent. */
+  path?: 'agent' | 'grammar';
 }
 
 export interface ThreadResponse {

@@ -92,6 +92,30 @@ export class QueueRoutes {
     return ITEM_ROUTE.test(path) && method === 'POST';
   }
 
+  /** The Conductor agent's four `queue_*` tools (2026-09-08) read and write through
+   *  these, the same code the routes below run, without the HTTP layer. */
+  list(): QueueResponse {
+    return this.response();
+  }
+
+  addItems(body: QueueAddRequest): Promise<QueueAddResponse> {
+    return this.add(body);
+  }
+
+  remove(id: string): ActionResult {
+    const removed = removeItem(this.opts.store, id);
+    return removed
+      ? { ok: true, jid: null, message: `removed ${id}`, undoable: false }
+      : { ok: false, jid: null, message: `no queue item ${id}`, undoable: false };
+  }
+
+  retry(id: string): ActionResult {
+    const retried = retryItem(this.opts.store, id);
+    return retried
+      ? { ok: true, jid: null, message: `${id} is queued again`, undoable: false }
+      : { ok: false, jid: null, message: `${id} is not parked or failed`, undoable: false };
+  }
+
   private response(): QueueResponse {
     return {
       items: this.opts.store.all(), paused: this.opts.readPaused(), maxInFlight: this.opts.maxInFlight,
@@ -170,20 +194,14 @@ export class QueueRoutes {
       const id = decodeURIComponent(match[1]!);
       const action = match[2]!;
       if (action === 'remove') {
-        const removed = removeItem(this.opts.store, id);
-        const result: ActionResult = removed
-          ? { ok: true, jid: null, message: `removed ${id}`, undoable: false }
-          : { ok: false, jid: null, message: `no queue item ${id}`, undoable: false };
-        respond(response, removed ? 200 : 404, result);
+        const result = this.remove(id);
+        respond(response, result.ok ? 200 : 404, result);
         return true;
       }
 
       if (action === 'retry') {
-        const retried = retryItem(this.opts.store, id);
-        const result: ActionResult = retried
-          ? { ok: true, jid: null, message: `${id} is queued again`, undoable: false }
-          : { ok: false, jid: null, message: `${id} is not parked or failed`, undoable: false };
-        respond(response, retried ? 200 : 409, result);
+        const result = this.retry(id);
+        respond(response, result.ok ? 200 : 409, result);
         return true;
       }
 

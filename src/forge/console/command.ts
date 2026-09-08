@@ -377,7 +377,7 @@ export class ConsoleWrites {
     };
   }
 
-  private capsWriteDeps(): CapsWriteDeps {
+  capsWriteDeps(): CapsWriteDeps {
     return {
       journalPath: this.deps.journalPath, ledger: this.ledger,
       overridesPath: this.overridesPath(),
@@ -491,7 +491,7 @@ export class ConsoleWrites {
   }
 
   /** The retire implementation shared with `server.ts`'s route and the agent's tool. */
-  private retireDeps() {
+  retireDeps() {
     return {
       forgeHomeDir: this.deps.forgeHomeDir ?? forgeHome(), journalPath: this.deps.journalPath,
       lanesAll: () => (this.deps.lanesViewAll ?? this.deps.lanesView)?.().lanes ?? [],
@@ -513,6 +513,19 @@ export class ConsoleWrites {
   /** Whether `confirm <token>` would still find something to run. */
   hasPending(token: string): boolean {
     return this.pendingConfirms.has(token);
+  }
+
+  /** One grammar intent, run and answered as cards, with nothing written to the thread:
+   *  the Conductor agent's tools go through this for the intents the grammar already
+   *  implements (pause-all, resume-all, merge-ready, caps, stuck, spend, answer). */
+  runIntent(intent: Intent, source: string): Promise<Message[]> {
+    return this.executeIntent(intent, source);
+  }
+
+  /** The whole grammar on one message, cards only, nothing written to the thread. The
+   *  agent's fallback path. */
+  runGrammar(text: string, source: string): Promise<Message[]> {
+    return this.executeIntent(parseIntent(text), source);
   }
 
   private async executeIntent(intent: Intent, source: string): Promise<Message[]> {
