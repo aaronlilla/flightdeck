@@ -106,11 +106,15 @@ export function buildNeeds(
 
 export interface NeedsYouProps {
   items: NeedItem[];
+  /** Iteration 4: how many open blockers Aaron can act on right now -- a bare count,
+   *  never rendered when zero. `onOpenBlockers` jumps to the Blockers view. */
+  blockersCount?: number;
+  onOpenBlockers?: () => void;
 }
 
 /** Needs-you strip: one plate per item with the fix button, hidden when empty. */
-export function NeedsYou({ items }: NeedsYouProps): JSX.Element | null {
-  if (items.length === 0) return null;
+export function NeedsYou({ items, blockersCount = 0, onOpenBlockers }: NeedsYouProps): JSX.Element | null {
+  if (items.length === 0 && blockersCount === 0) return null;
   return (
     <div style={{ display: 'flex', gap: 10, padding: '10px 16px', background: 'var(--panel2)', borderBottom: '2px solid var(--line2)', alignItems: 'stretch', flexWrap: 'wrap' }}>
       <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: '0 10px 0 4px', borderRight: '1px solid var(--line2)' }}>
@@ -132,6 +136,11 @@ export function NeedsYou({ items }: NeedsYouProps): JSX.Element | null {
           <span className={n.ctaCls} style={{ padding: '7px 11px', fontSize: '9.5px', flex: 'none', whiteSpace: 'nowrap' }} onClick={n.onClick}>{n.cta}</span>
         </div>
       ))}
+      {blockersCount > 0 ? (
+        <span className="chip chipB" style={{ alignSelf: 'center' }} onClick={onOpenBlockers}>
+          {blockersCount} blocker{blockersCount === 1 ? '' : 's'}
+        </span>
+      ) : null}
     </div>
   );
 }
