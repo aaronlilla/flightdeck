@@ -496,7 +496,11 @@ export class ConsoleReads {
     // computed for this lane, so a chip reads "BBZ-99: ..." instead of shouting its
     // raw run id. `lanesResponse` is already the shared lookup every other run-scoped
     // route here uses (`runJournalResponse`, `runStoryResponse`).
-    const titleFor = (id: string): string | null => this.lanesResponse(true, true).lanes.find((l) => l.id === id)?.title ?? null;
+    // Built once per call: `lanesResponse` reads every lane off disk, and calling it per
+    // chip (hundreds of chips, on every feed event) held the event loop for seconds at a
+    // time and made a 900-byte page take six seconds to answer (2026-09-07).
+    const titles = new Map(this.lanesResponse(true, true).lanes.map((l) => [l.id, l.title] as const));
+    const titleFor = (id: string): string | null => titles.get(id) ?? null;
     return computeThread(persisted, fleet.events, now, this.inbox.open(), titleFor);
   }
 
