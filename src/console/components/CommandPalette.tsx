@@ -12,6 +12,7 @@ export interface PaletteItem {
 
 const VIEW_LABELS: [View, string][] = [
   ['board', 'Board'],
+  ['queue', 'Queue'],
   ['settings', 'Settings'],
   ['review', 'Flight review'],
 ];

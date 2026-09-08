@@ -49,10 +49,20 @@ describe('buildPaletteItems', () => {
     expect(items.map((i) => i.title)).toEqual(['Flight review']);
   });
 
-  it('lists all three views Title Case with no query', () => {
+  it('lists all four views Title Case with no query', () => {
     const items = buildPaletteItems('', [], [], vi.fn(), vi.fn(), vi.fn());
     const viewTitles = items.filter((i) => i.kind === 'view').map((i) => i.title);
-    expect(viewTitles).toEqual(['Board', 'Settings', 'Flight review']);
+    expect(viewTitles).toEqual(['Board', 'Queue', 'Settings', 'Flight review']);
+  });
+
+  // Sweep #12: the palette had no way to reach the Queue view at all.
+  it('navigates to the Queue view from the palette', () => {
+    const onNav = vi.fn();
+    const items = buildPaletteItems('queue', [], [], vi.fn(), onNav, vi.fn());
+    const queueItem = items.find((i) => i.title === 'Queue');
+    expect(queueItem).toBeDefined();
+    queueItem?.go();
+    expect(onNav).toHaveBeenCalledWith('queue');
   });
 
   // H2.6: the palette searches the ticket key and the title, never the run id.
