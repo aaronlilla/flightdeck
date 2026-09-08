@@ -66,7 +66,7 @@ export function SandboxSheet({ lane, onClose, onCopiedPath }: SandboxSheetProps)
           <LaneCta lane={lane} cmd="kill" label="Kill sandbox" cls="btnR" onCommand={() => undefined} />
         </div>
         <div style={{ background: 'var(--well)', borderRadius: 3, padding: '12px 14px', boxShadow: 'inset 0 2px 5px rgba(0,0,0,.6)' }}>
-          <div className="m" style={{ fontSize: '10.5px', lineHeight: 1.9, color: '#9aa08c' }}>
+          <div className="m" style={{ fontSize: 'var(--fs-meta)', lineHeight: 1.9, color: '#9aa08c' }}>
             {loadFailed
               ? <div style={{ color: 'var(--block)' }}>could not load the sandbox log.</div>
               : (log.length === 0

@@ -93,7 +93,7 @@ export function MessageCard({
     // mono line with no chip border, not another all-caps chip.
     case 'activity':
       return (
-        <div className="m" style={{ alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: 7, fontSize: '10.5px', color: 'var(--ink3)' }}>
+        <div className="m" style={{ alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: 7, fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>
           <span><Linkify text={message.text} repo={repo} /></span>
           <span className={freshnessClass(fresh)}>{compactFreshnessStamp(fresh)}</span>
         </div>
@@ -112,7 +112,7 @@ export function MessageCard({
       );
     case 'operator':
       return (
-        <div style={{ alignSelf: 'flex-end', maxWidth: '82%', background: 'var(--ink)', color: 'var(--bg)', padding: '9px 13px', borderRadius: '10px 10px 3px 10px', font: '13px/1.45 "IBM Plex Sans",sans-serif' }}>
+        <div style={{ alignSelf: 'flex-end', maxWidth: '82%', background: 'var(--ink)', color: 'var(--bg)', padding: '9px 13px', borderRadius: '10px 10px 3px 10px', font: 'var(--fs-ui)/1.45 "IBM Plex Sans",sans-serif' }}>
           <Linkify text={message.text} repo={repo} />
         </div>
       );
@@ -129,13 +129,13 @@ export function MessageCard({
       return (
         <div style={{ maxWidth: '92%' }}>
           <div className="lbl" data-testid="reply-label" style={{ color: 'var(--ink3)', marginBottom: 3 }}>{replySource}</div>
-          <div style={{ borderLeft: '2px solid var(--line2)', paddingLeft: 10, font: '13px/1.5 "IBM Plex Sans",sans-serif' }}>
+          <div style={{ borderLeft: '2px solid var(--line2)', paddingLeft: 10, font: 'var(--fs-ui)/1.5 "IBM Plex Sans",sans-serif' }}>
             <WrappedText text={message.text} repo={repo} />
           </div>
           {message.btns && message.btns.length > 0 ? (
             <div style={{ display: 'flex', gap: 6, margin: '8px 0 0 12px', flexWrap: 'wrap' }}>
               {message.btns.map((b) => (
-                <span key={b.label} className={b.cls === 'destroy' ? 'btnR' : b.cls === 'answer' ? 'btnA' : b.cls === 'defer' ? 'btnS' : 'btnP'} style={{ padding: '6px 10px', fontSize: '9.5px' }} {...actionable(() => onCommand(b.cmd))}>
+                <span key={b.label} className={b.cls === 'destroy' ? 'btnR' : b.cls === 'answer' ? 'btnA' : b.cls === 'defer' ? 'btnS' : 'btnP'} style={{ padding: '6px 10px', fontSize: 'var(--fs-meta)' }} {...actionable(() => onCommand(b.cmd))}>
                   {b.label}
                 </span>
               ))}
@@ -148,7 +148,7 @@ export function MessageCard({
       return (
         <div style={{ maxWidth: '88%', border: '1px dashed var(--block)', borderLeft: '3px solid var(--block)', borderRadius: 4, padding: '9px 12px' }}>
           <div className="lbl" style={{ color: 'var(--block)', marginBottom: 3 }}>Refused</div>
-          <div style={{ font: '13px/1.5 "IBM Plex Sans",sans-serif', color: 'var(--ink2)' }}>
+          <div style={{ font: 'var(--fs-ui)/1.5 "IBM Plex Sans",sans-serif', color: 'var(--ink2)' }}>
             <WrappedText text={message.text} repo={repo} />
           </div>
         </div>
@@ -169,7 +169,7 @@ export function MessageCard({
         </span>
       ) : null;
       return (
-        <div className="m" style={{ fontSize: '10.5px', color: 'var(--ink2)', display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap', textDecoration: message.undone ? 'line-through' : 'none' }}>
+        <div className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink2)', display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap', textDecoration: message.undone ? 'line-through' : 'none' }}>
           {verbose && message.jid ? (
             <a
               data-testid="receipt-jid"
@@ -212,8 +212,8 @@ export function MessageCard({
           <div style={{ padding: '4px 0' }}>
             {message.items?.map((a, i) => (
               <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'baseline', padding: '6px 12px' }}>
-                <span className="m" style={{ fontSize: 11, fontWeight: 700, color: 'var(--ink3)' }}>{i + 1}</span>
-                <span style={{ flex: 1, font: '12.5px/1.4 "IBM Plex Sans",sans-serif' }}><Linkify text={a.text} repo={repo} /></span>
+                <span className="m" style={{ fontSize: 'var(--fs-meta)', fontWeight: 700, color: 'var(--ink3)' }}>{i + 1}</span>
+                <span style={{ flex: 1, font: 'var(--fs-ui)/1.4 "IBM Plex Sans",sans-serif' }}><Linkify text={a.text} repo={repo} /></span>
                 <span
                   className="chip"
                   style={{
@@ -252,7 +252,7 @@ export function MessageCard({
             <span>Confirm — irreversible</span>
             <span>{message.resolved ?? 'awaiting you'}</span>
           </div>
-          <div style={{ padding: '11px 12px', font: '13px/1.5 "IBM Plex Sans",sans-serif' }}>
+          <div style={{ padding: '11px 12px', font: 'var(--fs-ui)/1.5 "IBM Plex Sans",sans-serif' }}>
             <Linkify text={message.text} repo={repo} /> <strong>{message.blast}</strong>
           </div>
           {!message.resolved ? (
@@ -293,9 +293,9 @@ export function MessageCard({
         <div className="plate" style={{ maxWidth: '94%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 12px', gap: 12 }}>
           <div>
             <div className="lbl" style={{ color: 'var(--merge)', marginBottom: 3 }}>Draft PR · {message.source}</div>
-            <a className="m" style={{ fontSize: '11.5px', fontWeight: 700 }} href={message.pr?.url}>{message.text} ↗</a>
+            <a className="m" style={{ fontSize: 'var(--fs-meta)', fontWeight: 700 }} href={message.pr?.url}>{message.text} ↗</a>
           </div>
-          <span className="m" style={{ fontSize: '10.5px', color: 'var(--ink2)', whiteSpace: 'nowrap' }}>
+          <span className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink2)', whiteSpace: 'nowrap' }}>
             {message.pr?.files ?? 0} files · <span style={{ color: 'var(--run)', fontWeight: 700 }}>+{message.pr?.add ?? 0}</span> <span style={{ color: 'var(--block)', fontWeight: 700 }}>−{message.pr?.del ?? 0}</span>
           </span>
         </div>
@@ -410,7 +410,7 @@ export function ConductorRail(props: ConductorRailProps): JSX.Element {
         <span className="lbl">Conductor</span>
         <span
           className="m"
-          style={{ fontSize: 10, fontWeight: 700, color: 'var(--block)', cursor: pending > 0 ? 'pointer' : 'default' }}
+          style={{ fontSize: 'var(--fs-meta)', fontWeight: 700, color: 'var(--block)', cursor: pending > 0 ? 'pointer' : 'default' }}
           {...actionable(() => {
             if (!oldestPendingKey) return;
             document.getElementById(`rail-msg-${oldestPendingKey}`)?.scrollIntoView({ block: 'center' });
@@ -453,7 +453,7 @@ export function ConductorRail(props: ConductorRailProps): JSX.Element {
               onKeyDown={(e) => { if (e.key === 'Enter' && composer.trim() && !composerBusy) { onSend(composer); onComposerChange(''); } }}
             />
             <span
-              className="btnP" style={{ padding: '5px 10px', fontSize: '9.5px', opacity: composerBusy ? 0.55 : 1 }}
+              className="btnP" style={{ padding: '5px 10px', fontSize: 'var(--fs-meta)', opacity: composerBusy ? 0.55 : 1 }}
               aria-busy={composerBusy} aria-disabled={composerBusy} data-testid="action-sendCommand-rail" data-pending={composerBusy ? 'true' : 'false'}
               {...actionable(() => { if (composer.trim() && !composerBusy) { onSend(composer); onComposerChange(''); } })}
             >
@@ -461,9 +461,9 @@ export function ConductorRail(props: ConductorRailProps): JSX.Element {
             </span>
           </div>
           {composerBusy ? (
-            <div className="m" data-testid="rail-working" style={{ margin: '-8px 16px 12px', fontSize: '10.5px', color: 'var(--ink2)' }}>working…</div>
+            <div className="m" data-testid="rail-working" style={{ margin: '-8px 16px 12px', fontSize: 'var(--fs-meta)', color: 'var(--ink2)' }}>working…</div>
           ) : composerAction?.result?.kind === 'done' && !composerAction.result.ok ? (
-            <div className="m" data-testid="rail-composer-result" style={{ margin: '-8px 16px 12px', fontSize: '10.5px', color: 'var(--block)' }}>✕ {composerAction.result.text}</div>
+            <div className="m" data-testid="rail-composer-result" style={{ margin: '-8px 16px 12px', fontSize: 'var(--fs-meta)', color: 'var(--block)' }}>✕ {composerAction.result.text}</div>
           ) : null}
         </>
       ) : (

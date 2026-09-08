@@ -49,7 +49,7 @@ export function CostSheet({ lane, onClose }: CostSheetProps): JSX.Element {
               compact (`fmtTokens`), but the cost sheet's whole purpose is a precise
               number to audit against. */}
           <span className={costClass(lane)}>{lane.tokens.toLocaleString()} tokens</span>
-          <div className="m" style={{ fontSize: 11, lineHeight: 1.8, color: 'var(--ink2)' }}>
+          <div className="m" style={{ fontSize: 'var(--fs-meta)', lineHeight: 1.8, color: 'var(--ink2)' }}>
             {Math.round(totalInput / 1000)}k input · {Math.round(totalOutput / 1000)}k output · {lane.model}<br />
             {capText(lane)}{capEnforcementFailedJid ? ` · cap event failed (${capEnforcementFailedJid})` : ''} · burn {burnText}
           </div>
@@ -57,14 +57,14 @@ export function CostSheet({ lane, onClose }: CostSheetProps): JSX.Element {
           {over ? <LaneCta lane={lane} cmd="kill" label="Kill attempt" cls="btnR" onCommand={() => undefined} /> : null}
         </div>
         {loadFailed ? (
-          <div className="m" style={{ fontSize: 11, color: 'var(--block)' }}>could not load the step breakdown.</div>
+          <div className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--block)' }}>could not load the step breakdown.</div>
         ) : null}
         {!loadFailed && steps.length > 0 ? (
           <div>
             <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 8 }}>By step</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
               {steps.map((step, i) => (
-                <div key={i} className="m" style={{ fontSize: '10.5px', color: 'var(--ink2)', display: 'flex', gap: 10, alignItems: 'baseline' }}>
+                <div key={i} className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink2)', display: 'flex', gap: 10, alignItems: 'baseline' }}>
                   <span style={{ color: 'var(--ink3)', whiteSpace: 'nowrap' }}>{hm(step.t)}</span>
                   <span style={{ flex: 1 }}>{step.stepText}</span>
                   <span style={{ whiteSpace: 'nowrap' }}>{Math.round(step.inputTokens / 1000)}k in</span>

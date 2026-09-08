@@ -71,7 +71,7 @@ function StepButtons({ blocker, enabled }: { blocker: Blocker; enabled: boolean 
     const labelFor = new Map(blocker.blocks.map((b) => [b.laneId, b.label]));
     const startedLabels = (result.started ?? []).map((laneId) => labelFor.get(laneId) ?? laneId);
     return (
-      <span className="m" style={{ color: 'var(--run)', fontSize: 11 }}>
+      <span className="m" style={{ color: 'var(--run)', fontSize: 'var(--fs-meta)' }}>
         Resolved {hm(Date.now())}
         {startedLabels.length ? (
           <span style={{ color: 'var(--ink2)' }}> · Started: {startedLabels.join(', ')}</span>
@@ -85,19 +85,19 @@ function StepButtons({ blocker, enabled }: { blocker: Blocker; enabled: boolean 
       {blocker.youCanResolve ? (
         <ActionButton
           spec={ACTIONS.resolveBlocker} args={[blocker.id]} className="btnP" disabled={!enabled}
-          style={{ padding: '7px 11px', fontSize: '9.5px' }} busy="Checking…" outcome="none" onOutcome={onOutcome}
+          style={{ padding: '7px 11px', fontSize: 'var(--fs-meta)' }} busy="Checking…" outcome="none" onOutcome={onOutcome}
         >
           Resolved, check it
         </ActionButton>
       ) : null}
       <ActionButton
         spec={ACTIONS.checkBlocker} args={[blocker.id]} className="btnS" disabled={!enabled}
-        style={{ padding: '7px 11px', fontSize: '9.5px' }} busy="Checking…" outcome="none" onOutcome={onOutcome}
+        style={{ padding: '7px 11px', fontSize: 'var(--fs-meta)' }} busy="Checking…" outcome="none" onOutcome={onOutcome}
       >
         Check again
       </ActionButton>
       {result?.kind === 'not-yet' ? (
-        <span className="m" data-testid={`blocker-not-yet-${blocker.id}`} style={{ color: 'var(--block)', fontSize: 11 }}>Not yet: {(result.detail ?? 'not confirmed').replace(/^not yet: /, '')}</span>
+        <span className="m" data-testid={`blocker-not-yet-${blocker.id}`} style={{ color: 'var(--block)', fontSize: 'var(--fs-meta)' }}>Not yet: {(result.detail ?? 'not confirmed').replace(/^not yet: /, '')}</span>
       ) : null}
     </div>
   );
@@ -116,7 +116,7 @@ function ChainStep({ blocker, stepN, enabled, jiraSite }: {
       }}
     >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
-        <div className="m" style={{ fontSize: 12.5, fontWeight: 700, display: 'flex', gap: 8, alignItems: 'baseline' }}>
+        <div className="m" style={{ fontSize: 'var(--fs-meta)', fontWeight: 700, display: 'flex', gap: 8, alignItems: 'baseline' }}>
           <span style={{ color: 'var(--ink3)' }}>{stepN}</span>
           <span style={{ color: enabled ? 'var(--block)' : 'var(--ink3)' }}>{enabled ? '●' : '○'}</span>
           <span>{linkify(blocker.title, blocker.links, jiraSite, `${blocker.id}-title`)}</span>
@@ -125,13 +125,13 @@ function ChainStep({ blocker, stepN, enabled, jiraSite }: {
           {enabled ? 'OPEN' : `WAITING ON ${stepN - 1}`}
         </span>
       </div>
-      <div className="m" style={{ fontSize: 11, color: 'var(--ink2)' }}>
+      <div className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink2)' }}>
         {linkify(blocker.detail, blocker.links, jiraSite, `${blocker.id}-detail`)}
       </div>
-      <div className="m" style={{ fontSize: 11, color: 'var(--ink2)' }}>To resolve: {blocker.howToResolve}</div>
-      <div className="m" style={{ fontSize: 10.5, color: 'var(--ink3)' }}>Then: {blocker.thenWhat}</div>
+      <div className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink2)' }}>To resolve: {blocker.howToResolve}</div>
+      <div className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>Then: {blocker.thenWhat}</div>
       {blocker.blocks.length ? (
-        <div className="m" style={{ fontSize: 10.5, color: 'var(--ink3)' }}>
+        <div className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>
           Blocks: {blocker.blocks.map((b, i) => (
             <span key={b.laneId}>
               {i > 0 ? ', ' : ''}
@@ -142,7 +142,7 @@ function ChainStep({ blocker, stepN, enabled, jiraSite }: {
       ) : null}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginTop: 2 }}>
         <StepButtons blocker={blocker} enabled={enabled} />
-        <span className="m" style={{ fontSize: 10, color: 'var(--ink3)' }}>since {hm(blocker.since)}</span>
+        <span className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>since {hm(blocker.since)}</span>
       </div>
     </div>
   );
@@ -189,7 +189,7 @@ export function BlockersView({ blockers, chains, jiraSite }: BlockersViewProps):
         <div data-testid="blockers-resolved-today" style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
           <span className="lbl" style={{ color: 'var(--ink2)' }}>Resolved today</span>
           {resolvedToday.map((b) => (
-            <div key={b.id} data-testid={`blocker-resolved-${b.id}`} className="m" style={{ fontSize: 11, color: 'var(--ink3)', display: 'flex', gap: 8 }}>
+            <div key={b.id} data-testid={`blocker-resolved-${b.id}`} className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)', display: 'flex', gap: 8 }}>
               <span style={{ color: 'var(--run)' }}>✓</span>
               <span>{b.title}</span>
               <span style={{ color: 'var(--ink3)' }}>{b.resolvedAt ? hm(b.resolvedAt) : ''}</span>

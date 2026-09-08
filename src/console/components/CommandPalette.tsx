@@ -69,7 +69,7 @@ export function CommandPalette({ query, items, onQueryChange, onClose }: Command
         <div style={{ background: 'var(--well)', borderRadius: '4px 4px 0 0', padding: '10px 14px', display: 'flex', gap: 10, alignItems: 'center', boxShadow: 'inset 0 2px 5px rgba(0,0,0,.6)' }}>
           <span className="m" style={{ color: '#636b58' }}>⌘K</span>
           <input
-            className="inp m" style={{ fontSize: 13 }} placeholder="lane, ticket, journal id, view…"
+            className="inp m" style={{ fontSize: 'var(--fs-ui)' }} placeholder="lane, ticket, journal id, view…"
             value={query} autoFocus
             onChange={(e) => onQueryChange(e.target.value)}
             onKeyDown={(e) => {
@@ -86,8 +86,8 @@ export function CommandPalette({ query, items, onQueryChange, onClose }: Command
               onClick={() => { p.go(); onClose(); }}
             >
               <span className="chip" style={{ width: 52, textAlign: 'center' }}>{p.kind}</span>
-              <span className="m" style={{ fontSize: 12, fontWeight: 700 }}>{p.title}</span>
-              <span className="m" style={{ fontSize: '10.5px', color: 'var(--ink2)', flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.sub}</span>
+              <span className="m" style={{ fontSize: 'var(--fs-meta)', fontWeight: 700 }}>{p.title}</span>
+              <span className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink2)', flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.sub}</span>
             </div>
           ))}
         </div>

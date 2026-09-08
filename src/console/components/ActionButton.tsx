@@ -101,19 +101,19 @@ export function ActionOutcomeView(props: ActionOutcomeViewProps): JSX.Element | 
     return (
       <span
         className="m actionConfirm" data-testid={`action-confirm-${suffix}`}
-        style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: '10.5px', padding: '4px 8px', border: '1px solid var(--block)', borderRadius: 4 }}
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-meta)', padding: '4px 8px', border: '1px solid var(--block)', borderRadius: 4 }}
         onClick={(e) => { if (stopPropagation) e.stopPropagation(); }}
       >
         <span style={{ color: 'var(--ink2)' }}>Confirm, irreversible: {result.blast}</span>
-        <span className="btnR" style={{ padding: '4px 8px', fontSize: '9.5px' }} data-testid={`action-confirm-yes-${suffix}`} {...actionable(guard(onConfirm))}>Confirm</span>
-        <span className="btnS" style={{ padding: '4px 8px', fontSize: '9.5px' }} data-testid={`action-confirm-no-${suffix}`} {...actionable(guard(onDismiss))}>Not now</span>
+        <span className="btnR" style={{ padding: '4px 8px', fontSize: 'var(--fs-meta)' }} data-testid={`action-confirm-yes-${suffix}`} {...actionable(guard(onConfirm))}>Confirm</span>
+        <span className="btnS" style={{ padding: '4px 8px', fontSize: 'var(--fs-meta)' }} data-testid={`action-confirm-no-${suffix}`} {...actionable(guard(onDismiss))}>Not now</span>
       </span>
     );
   }
   return (
     <span
       className="m actionResult" data-testid={`action-result-${suffix}`} data-ok={result.ok ? 'true' : 'false'}
-      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '10.5px', color: result.ok ? 'var(--run)' : 'var(--block)' }}
+      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-meta)', color: result.ok ? 'var(--run)' : 'var(--block)' }}
       onClick={(e) => { if (stopPropagation) e.stopPropagation(); }}
     >
       <span aria-hidden="true">{result.ok ? '✓' : '✕'}</span>

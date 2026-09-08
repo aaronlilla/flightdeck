@@ -78,7 +78,7 @@ export function LanesGrid(props: LanesGridProps): JSX.Element {
         <LaneGroupTile key={group.key} group={group} feedLive={feedLive} now={now} pending={pending} onOpen={onOpen} onOpenCost={onOpenCost} onCommand={onCommand} onTip={onTip} />
       ))}
       {groups.length === 0 ? (
-        <div className="m" style={{ fontSize: 12, color: 'var(--ink3)', padding: 40, gridColumn: '1/-1', textAlign: 'center' }}>
+        <div className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)', padding: 40, gridColumn: '1/-1', textAlign: 'center' }}>
           no lanes match this filter
         </div>
       ) : null}

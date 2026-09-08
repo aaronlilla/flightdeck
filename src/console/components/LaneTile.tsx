@@ -125,7 +125,7 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
     >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 6, height: 18 }}>
         {headline.key ? (
-          <span className="m" style={{ fontSize: 13, fontWeight: 700 }}><Linkify text={headline.key} repo={lane.repo ?? undefined} /></span>
+          <span className="m" style={{ fontSize: 'var(--fs-ui)', fontWeight: 700 }}><Linkify text={headline.key} repo={lane.repo ?? undefined} /></span>
         ) : <span />}
         <span className="lbl" style={{ color: st.color, cursor: 'help', flex: 'none' }}>{st.glyph} {st.label}</span>
       </div>
@@ -150,7 +150,7 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
         {titleLineText ? <Linkify text={titleLineText} repo={lane.repo ?? undefined} /> : null}
       </div>
       <span style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-        <span className="chip" style={{ fontSize: 9 }}>{kindLabel(lane.kind)}</span>
+        <span className="chip" style={{ fontSize: 'var(--fs-meta)' }}>{kindLabel(lane.kind)}</span>
         <span
           className="chip"
           onMouseEnter={(e) => showTip('model', e, modelTip(lane, fresh))}
@@ -170,13 +170,13 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
       {lane.you ? (
         <div className="youP" title={lane.you} style={{ borderLeft: '3px solid var(--park)', padding: '6px 9px', height: YOU_BLOCK_H, boxSizing: 'border-box', overflow: 'hidden' }}>
           <div className="lbl" style={{ color: 'var(--park)', lineHeight: '12px', marginBottom: 2 }}>YOU</div>
-          <div style={{ fontSize: 12.5, lineHeight: '16px', fontWeight: 700, color: 'var(--ink)', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+          <div style={{ fontSize: 'var(--fs-meta)', lineHeight: '16px', fontWeight: 700, color: 'var(--ink)', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
             <Linkify text={lane.you} repo={lane.repo ?? undefined} />
           </div>
         </div>
       ) : (
         <div style={{ height: YOU_BLOCK_H, display: 'flex', alignItems: 'center', boxSizing: 'border-box' }}>
-          <span className="m" style={{ fontSize: 11, color: 'var(--ink3)' }}>Nothing needed from you.</span>
+          <span className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>Nothing needed from you.</span>
         </div>
       )}
       <div style={{ height: LINE_H, overflow: 'hidden' }}>
@@ -184,7 +184,7 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
           <div
             title={didText}
             style={{
-              font: '11.5px/1.3 "IBM Plex Sans",sans-serif', color: 'var(--ink2)', whiteSpace: 'nowrap',
+              font: 'var(--fs-meta)/1.3 "IBM Plex Sans",sans-serif', color: 'var(--ink2)', whiteSpace: 'nowrap',
               overflow: 'hidden', textOverflow: 'ellipsis',
             }}
           >
@@ -197,7 +197,7 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
         title={nowText}
         style={{
           height: LINE_H, overflow: 'hidden',
-          font: '11.5px/1.3 "IBM Plex Sans",sans-serif', color: 'var(--ink2)', whiteSpace: 'nowrap',
+          font: 'var(--fs-meta)/1.3 "IBM Plex Sans",sans-serif', color: 'var(--ink2)', whiteSpace: 'nowrap',
           textOverflow: 'ellipsis',
         }}
       >
@@ -209,8 +209,8 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
           <div style={{ position: 'absolute', top: 1, bottom: 1, left: 1, width: `${pct}%`, background: `repeating-linear-gradient(90deg, ${st.color} 0 5px, transparent 5px 7px)` }} />
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, whiteSpace: 'nowrap' }}>
-          <span className="m" style={{ fontSize: '9.5px', color: 'var(--ink2)' }}>context {pct}%</span>
-          <span className="m" style={{ fontSize: '9.5px', color: 'var(--ink3)' }}>ceiling {Math.round(lane.ctxCeiling / 1000)}k</span>
+          <span className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink2)' }}>context {pct}%</span>
+          <span className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>ceiling {Math.round(lane.ctxCeiling / 1000)}k</span>
         </div>
       </div>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
@@ -222,13 +222,13 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
         >
           {fmtTokens(lane.tokens)}
         </span>
-        <span className="m" style={{ fontSize: '9.5px', fontWeight: 700, color: 'var(--block)', whiteSpace: 'nowrap' }}>
+        <span className="m" style={{ fontSize: 'var(--fs-meta)', fontWeight: 700, color: 'var(--block)', whiteSpace: 'nowrap' }}>
           {tileCapText(lane)}
         </span>
       </div>
       <div style={{ height: LINE_H, overflow: 'hidden' }}>
         {lane.pr ? (
-          <div className="m" title={`PR #${prSummaryParts(lane.pr).no} · ${prSummaryParts(lane.pr).rest}`} style={{ fontSize: '10.5px', color: 'var(--ink2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <div className="m" title={`PR #${prSummaryParts(lane.pr).no} · ${prSummaryParts(lane.pr).rest}`} style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             <a
               href={lane.pr.url} target="_blank" rel="noopener noreferrer"
               onClick={(e) => e.stopPropagation()} style={{ fontWeight: 700, color: 'var(--ink)' }}
@@ -245,10 +245,10 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
             const earlierCta = laneCta(l);
             return (
               <div key={l.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
-                <span className="m" style={{ fontSize: '10.5px', color: 'var(--ink2)' }}>{l.now}</span>
+                <span className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink2)' }}>{l.now}</span>
                 <LaneCta
                   lane={l} cmd={earlierCta.cmd} label={earlierCta.label} cls={earlierCta.cls}
-                  style={{ padding: '5px 8px', fontSize: 9, flex: 'none' }} onCommand={onCommand} stopPropagation
+                  style={{ padding: '5px 8px', fontSize: 'var(--fs-meta)', flex: 'none' }} onCommand={onCommand} stopPropagation
                 />
               </div>
             );
@@ -265,12 +265,12 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
           {lane.live.alive || (liveCount ?? 0) > 0 ? (
             <>
               <span className="live-pulse" aria-hidden="true" />
-              <span className="m" style={{ fontSize: 10, color: 'var(--run)', whiteSpace: 'nowrap' }}>
+              <span className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--run)', whiteSpace: 'nowrap' }}>
                 {(liveCount ?? 0) > 1 ? `${liveCount} live` : 'live'}{liveSecondsAgo !== null ? ` · last event ${liveSecondsAgo}s ago` : ''}
               </span>
             </>
           ) : stalled ? (
-            <span className="m" style={{ fontSize: 10, fontWeight: 700, color: 'var(--block)', whiteSpace: 'nowrap' }}>STALLED · no process</span>
+            <span className="m" style={{ fontSize: 'var(--fs-meta)', fontWeight: 700, color: 'var(--block)', whiteSpace: 'nowrap' }}>STALLED · no process</span>
           ) : null}
         </div>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -280,12 +280,12 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
             // border the other CTA classes render as a box-shadow ring instead --
             // a fixed height plus border-box keeps every CTA the same footer height
             // regardless of which button class a lane's own state picks.
-            style={{ padding: '7px 9px', fontSize: '9.5px', flex: 1, height: 32, boxSizing: 'border-box' }}
+            style={{ padding: '7px 9px', fontSize: 'var(--fs-meta)', flex: 1, height: 32, boxSizing: 'border-box' }}
             onCommand={onCommand} stopPropagation
           />
         </div>
         {/* One reserved line whether or not there is a reason, so a tile with one is no taller than its neighbours. */}
-        <span className="m" title={why ?? undefined} style={{ fontSize: '9.5px', lineHeight: '14px', height: 14, color: 'var(--ink3)', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', display: 'block' }}>{why ?? ''}</span>
+        <span className="m" title={why ?? undefined} style={{ fontSize: 'var(--fs-meta)', lineHeight: '14px', height: 14, color: 'var(--ink3)', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', display: 'block' }}>{why ?? ''}</span>
       </div>
     </div>
   );

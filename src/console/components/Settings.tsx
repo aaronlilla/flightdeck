@@ -127,14 +127,14 @@ function Row({ i, now, onToast }: { i: Integration; now: number; onToast?: (text
       </span>
       <span style={{ display: 'inline-flex', gap: 6, justifySelf: 'end' }}>
         <ActionButton
-          spec={ACTIONS.checkIntegration} args={[i.id]} className="btnS" style={{ padding: '5px 10px', fontSize: '9.5px' }}
+          spec={ACTIONS.checkIntegration} args={[i.id]} className="btnS" style={{ padding: '5px 10px', fontSize: 'var(--fs-meta)' }}
           busy="connecting…" outcome="none" onOutcome={toast} testId={`integration-check-${i.id}`}
         >
           {ctas.check}
         </ActionButton>
         {ctas.reconnect ? (
           <ActionButton
-            spec={ACTIONS.reconnectIntegration} args={[i.id]} className="btnR" style={{ padding: '5px 10px', fontSize: '9.5px' }}
+            spec={ACTIONS.reconnectIntegration} args={[i.id]} className="btnR" style={{ padding: '5px 10px', fontSize: 'var(--fs-meta)' }}
             busy="connecting…" outcome="none" onOutcome={toast} testId={`integration-reconnect-${i.id}`}
           >
             {ctas.reconnect}
@@ -252,7 +252,7 @@ export function Settings(props: SettingsProps): JSX.Element {
   return (
     <div style={{ flex: 1, display: 'flex', minHeight: 0 }} data-testid="settings-view">
       <div style={{ width: 210, borderRight: '1px solid var(--line)', padding: '18px 0', background: 'var(--panel)' }}>
-        <div className="m" style={{ fontSize: '11.5px', lineHeight: 2.6, padding: '0 22px' }}>
+        <div className="m" style={{ fontSize: 'var(--fs-meta)', lineHeight: 2.6, padding: '0 22px' }}>
           {NAV_ITEMS.map((item) => (
             <div
               key={item.id}
@@ -270,7 +270,7 @@ export function Settings(props: SettingsProps): JSX.Element {
             </div>
           ))}
           <div style={{ color: 'var(--ink2)', cursor: 'pointer' }} onClick={onOpenJournal}>
-            Audit journal <span className="chip" style={{ fontSize: 8 }}>{journalCount}</span>
+            Audit journal <span className="chip" style={{ fontSize: 'var(--fs-meta)' }}>{journalCount}</span>
           </div>
         </div>
       </div>
@@ -287,24 +287,24 @@ export function Settings(props: SettingsProps): JSX.Element {
                 <div style={{ display: 'flex', gap: 22, padding: 16, alignItems: 'center' }}>
                   <div style={{ flex: 1 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                      <span className="m" style={{ fontSize: 16, fontWeight: 700 }}>{d.name}</span>
+                      <span className="m" style={{ fontSize: 'var(--fs-title)', fontWeight: 700 }}>{d.name}</span>
                       {d.scope ? <span className="chip">{d.scope}</span> : null}
                     </div>
-                    <div className="m" style={{ fontSize: '11.5px', lineHeight: 1.9, color: 'var(--ink2)', marginTop: 8 }}>
+                    <div className="m" style={{ fontSize: 'var(--fs-meta)', lineHeight: 1.9, color: 'var(--ink2)', marginTop: 8 }}>
                       <b style={{ color: 'var(--ink)' }}>cause</b> {d.cause}<br />
                       <b style={{ color: 'var(--ink)' }}>effect</b> {d.effect}<br />
                       <b style={{ color: 'var(--ink)' }}>fix</b> {d.fix}
                     </div>
-                    <div className="m" style={{ fontSize: '10.5px', color: 'var(--ink3)', marginTop: 8 }}>{downFooter(d)}</div>
+                    <div className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)', marginTop: 8 }}>{downFooter(d)}</div>
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'stretch', width: 230 }}>
                     <ActionButton
-                      spec={ACTIONS.reconnectIntegration} args={[d.id]} actionRef={`plate-${d.id}`} className="btnR" style={{ padding: 12, fontSize: 12, textAlign: 'center' }}
+                      spec={ACTIONS.reconnectIntegration} args={[d.id]} actionRef={`plate-${d.id}`} className="btnR" style={{ padding: 12, fontSize: 'var(--fs-meta)', textAlign: 'center' }}
                       busy="connecting…" onOutcome={(result) => { if (result.kind === 'done') onToast?.(result.text, result.ok); }}
                     >
                       {d.fixLabel ?? 'Reconnect via SSO'} →
                     </ActionButton>
-                    <span className="m" style={{ fontSize: '9.5px', color: 'var(--ink3)', textAlign: 'center' }}>≈ 20s · no restart</span>
+                    <span className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)', textAlign: 'center' }}>≈ 20s · no restart</span>
                   </div>
                 </div>
               </div>
@@ -312,9 +312,9 @@ export function Settings(props: SettingsProps): JSX.Element {
             <div className="plate" style={{ padding: 0 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 16px', borderBottom: '1px solid var(--line)' }}>
                 <span className="lbl">Connections</span>
-                <span className="m" style={{ fontSize: 10, color: 'var(--ink2)' }}>checked every 30s · <a onClick={onCheckAll}>check now</a></span>
+                <span className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink2)' }}>checked every 30s · <a onClick={onCheckAll}>check now</a></span>
               </div>
-              <div className="m" style={{ fontSize: '11.5px' }}>
+              <div className="m" style={{ fontSize: 'var(--fs-meta)' }}>
                 {conns.map((i) => <Row key={i.id} i={i} now={now} onToast={onToast} />)}
               </div>
             </div>
@@ -322,7 +322,7 @@ export function Settings(props: SettingsProps): JSX.Element {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 16px', borderBottom: '1px solid var(--line)' }}>
                 <span className="lbl">MCP servers</span>
               </div>
-              <div className="m" style={{ fontSize: '11.5px' }}>
+              <div className="m" style={{ fontSize: 'var(--fs-meta)' }}>
                 {mcps.map((i) => <Row key={i.id} i={i} now={now} onToast={onToast} />)}
               </div>
             </div>
@@ -332,7 +332,7 @@ export function Settings(props: SettingsProps): JSX.Element {
         {section === 'caps' ? (
           <div className="plate" style={{ padding: 0 }}>
             <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--line)' }}><span className="lbl">Per-run overrides</span></div>
-            <div className="m" style={{ fontSize: '11.5px', padding: '10px 16px' }}>
+            <div className="m" style={{ fontSize: 'var(--fs-meta)', padding: '10px 16px' }}>
               {caps && Object.keys(caps.overrides).length > 0 ? (
                 Object.entries(caps.overrides).map(([id, tokenCap]) => (
                   <div key={id} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0' }}>
@@ -345,7 +345,7 @@ export function Settings(props: SettingsProps): JSX.Element {
             </div>
             <div style={{ padding: '10px 16px', borderTop: '1px solid var(--line)' }}>
               <span className="lbl">Tokens today</span>
-              <div className="m" style={{ fontSize: '11.5px', marginTop: 6 }}>
+              <div className="m" style={{ fontSize: 'var(--fs-meta)', marginTop: 6 }}>
                 {fmtTokens(caps?.tokensToday ?? 0)} of {capText(caps?.dailyTokens)} daily · {capText(caps?.runTokens)} per run · {capText(caps?.hardTokens)} hard limit
               </div>
             </div>
@@ -355,7 +355,7 @@ export function Settings(props: SettingsProps): JSX.Element {
         {section === 'models' ? (
           <div className="plate" style={{ padding: 0 }}>
             <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--line)' }}><span className="lbl">Models & routing</span></div>
-            <div className="m" style={{ fontSize: '11.5px' }}>
+            <div className="m" style={{ fontSize: 'var(--fs-meta)' }}>
               {modelClassGroups(lanes).length > 0 ? modelClassGroups(lanes).map((g) => (
                 <div key={g.className} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 16px', borderBottom: '1px solid var(--line)' }}>
                   <span>{g.className}</span>
@@ -371,7 +371,7 @@ export function Settings(props: SettingsProps): JSX.Element {
         {section === 'repos' ? (
           <div className="plate" style={{ padding: 0 }}>
             <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--line)' }}><span className="lbl">Repos & queues</span></div>
-            <div className="m" style={{ fontSize: '11.5px' }}>
+            <div className="m" style={{ fontSize: 'var(--fs-meta)' }}>
               {repoQueueGroups(lanes).length > 0 ? repoQueueGroups(lanes).map((g) => (
                 <div key={g.repo} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 16px', borderBottom: '1px solid var(--line)' }}>
                   <span>{g.repo}</span>
@@ -387,7 +387,7 @@ export function Settings(props: SettingsProps): JSX.Element {
         {section === 'notifications' ? (
           <div className="plate" style={{ padding: 0 }}>
             <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--line)' }}><span className="lbl">Notifications</span></div>
-            <div className="m" style={{ fontSize: 11, lineHeight: 2.4, padding: '10px 16px', color: 'var(--ink2)' }}>
+            <div className="m" style={{ fontSize: 'var(--fs-meta)', lineHeight: 2.4, padding: '10px 16px', color: 'var(--ink2)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>live feed</span><b>{feed.live ? 'connected' : `lost${feed.lostAt ? ` ${hm(feed.lostAt)}` : ''}`}</b></div>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>needs you</span><b>{lanes.filter((l) => l.state === 'parked' || l.state === 'blocked' || l.runaway).length} lane(s)</b></div>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>flight review</span><b>{rules.filter((r) => r.status === 'open').length} open proposal(s)</b></div>
@@ -398,7 +398,7 @@ export function Settings(props: SettingsProps): JSX.Element {
         {section === 'shortcuts' ? (
           <div className="plate" style={{ padding: 0 }}>
             <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--line)' }}><span className="lbl">Shortcuts</span></div>
-            <div className="m" style={{ fontSize: '11.5px' }}>
+            <div className="m" style={{ fontSize: 'var(--fs-meta)' }}>
               {SHORTCUTS.map((s) => (
                 <div key={s.keys} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 16px', borderBottom: '1px solid var(--line)' }}>
                   <b>{s.keys}</b><span style={{ color: 'var(--ink2)' }}>{s.action}</span>
@@ -412,14 +412,14 @@ export function Settings(props: SettingsProps): JSX.Element {
       <div style={{ width: 300, borderLeft: '1px solid var(--line)', padding: '22px 20px', background: 'var(--panel)', display: 'flex', flexDirection: 'column', gap: 18 }}>
         <div>
           <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 8 }}>Caps &amp; policies</div>
-          <div className="m" style={{ fontSize: '11.5px', lineHeight: 2.4 }}>
+          <div className="m" style={{ fontSize: 'var(--fs-meta)', lineHeight: 2.4 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span style={{ color: 'var(--ink2)' }}>daily cap (tokens)</span>
-              <span><input className="inp m" style={{ width: 90, fontSize: 12, fontWeight: 700, textAlign: 'right' }} value={dailyDraft} onChange={(e) => setDailyDraft(e.target.value)} /></span>
+              <span><input className="inp m" style={{ width: 90, fontSize: 'var(--fs-meta)', fontWeight: 700, textAlign: 'right' }} value={dailyDraft} onChange={(e) => setDailyDraft(e.target.value)} /></span>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span style={{ color: 'var(--ink2)' }}>per-run cap (tokens)</span>
-              <span><input className="inp m" style={{ width: 90, fontSize: 12, fontWeight: 700, textAlign: 'right' }} value={runDraft} onChange={(e) => setRunDraft(e.target.value)} /></span>
+              <span><input className="inp m" style={{ width: 90, fontSize: 'var(--fs-meta)', fontWeight: 700, textAlign: 'right' }} value={runDraft} onChange={(e) => setRunDraft(e.target.value)} /></span>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: 'var(--ink2)' }}>org hard limit</span><b>{capText(caps?.hardTokens)} · FD-7</b></div>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: 'var(--ink2)' }}>cap enforcement</span><span style={{ fontWeight: 700, color: enforcement.color }}>{enforcement.text}</span></div>
@@ -438,11 +438,11 @@ export function Settings(props: SettingsProps): JSX.Element {
               onDismiss={saveCaps.dismiss} onClear={saveCaps.clear}
             />
           </div>
-          <div className="m" style={{ fontSize: 10, color: 'var(--block)', marginTop: 6, minHeight: 14 }}>{err}</div>
+          <div className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--block)', marginTop: 6, minHeight: 14 }}>{err}</div>
         </div>
         <div>
           <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 8 }}>On connection loss</div>
-          <div className="m" style={{ fontSize: 11, lineHeight: 1.9, color: 'var(--ink2)' }}>
+          <div className="m" style={{ fontSize: 'var(--fs-meta)', lineHeight: 1.9, color: 'var(--ink2)' }}>
             Needs-you strip within 30s, with fix button<br />
             Dependent lanes hold, do not fail<br />
             2 auto-retries, then operator<br />
@@ -451,7 +451,7 @@ export function Settings(props: SettingsProps): JSX.Element {
         </div>
         <div>
           <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 8 }}>Recent</div>
-          <div className="m" style={{ fontSize: '10.5px', lineHeight: 2, color: 'var(--ink2)' }}>
+          <div className="m" style={{ fontSize: 'var(--fs-meta)', lineHeight: 2, color: 'var(--ink2)' }}>
             {recentJournal.length > 0 ? recentJournal.map((j) => (
               <div key={j.jid}>
                 <a style={{ color: 'var(--ink)', fontWeight: 600, textDecoration: 'none', cursor: 'pointer' }} onClick={onOpenJournal}>{hm(j.ts)}</a> <Linkify text={j.text} />

@@ -69,9 +69,9 @@ export function Filters({
         Probes
       </span>
       <span style={{ flex: 1 }} />
-      <ActionButton spec={ACTIONS.postRetireFinished} args={[]} actionRef="filters" className="btnS" style={{ padding: '6px 10px', fontSize: '9.5px' }} busy="Cleaning up…">Clean up</ActionButton>
-      <ActionButton spec={ACTIONS.postMergeReady} args={[]} actionRef="filters" className="btnP" style={{ padding: '6px 10px', fontSize: '9.5px' }} busy="Merging…">Merge ready</ActionButton>
-      <span className="m" style={{ fontSize: '10.5px', color: 'var(--ink2)', whiteSpace: 'nowrap' }}>
+      <ActionButton spec={ACTIONS.postRetireFinished} args={[]} actionRef="filters" className="btnS" style={{ padding: '6px 10px', fontSize: 'var(--fs-meta)' }} busy="Cleaning up…">Clean up</ActionButton>
+      <ActionButton spec={ACTIONS.postMergeReady} args={[]} actionRef="filters" className="btnP" style={{ padding: '6px 10px', fontSize: 'var(--fs-meta)' }} busy="Merging…">Merge ready</ActionButton>
+      <span className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink2)', whiteSpace: 'nowrap' }}>
         sort:
         {SORTS.map((s) => (
           <a

@@ -51,7 +51,7 @@ function QueueCard({ item, onToast }: { item: QueueItem; onToast: (outcome: Acti
   return (
     <div className="lane" style={{ borderColor: taxon.color }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-        <a className="m" style={{ fontSize: 13, fontWeight: 700 }}>{item.ticket ?? item.id}</a>
+        <a className="m" style={{ fontSize: 'var(--fs-ui)', fontWeight: 700 }}>{item.ticket ?? item.id}</a>
         <div style={{ display: 'flex', gap: 6 }}>
           {/* D2.3: A.1's fix round -- the round count and the findings it is retrying
               against, the latter carried in `reason` the same way a parked/failed
@@ -63,57 +63,57 @@ function QueueCard({ item, onToast }: { item: QueueItem; onToast: (outcome: Acti
         </div>
       </div>
       <div className="lbl" style={{ color: taxon.color }}>{taxon.label}</div>
-      <div className="m" style={{ fontSize: 11.5, color: 'var(--ink2)', minHeight: 32, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+      <div className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink2)', minHeight: 32, overflow: 'hidden', textOverflow: 'ellipsis' }}>
         <Linkify text={item.reason ?? item.repo ?? item.input} repo={item.repo} />
       </div>
       {item.state === 'review' && item.councilNotes && item.councilNotes.length > 0 ? (
-        <div className="m" style={{ fontSize: 9.5, color: 'var(--ink3)' }}>
+        <div className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>
           council notes: <Linkify text={item.councilNotes.join('; ')} repo={item.repo} />
         </div>
       ) : null}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 7, borderTop: '1px solid var(--line)', paddingTop: 7 }}>
         {item.state === 'review' && item.pr ? (
           <>
-            <a href={item.pr.url} target="_blank" rel="noopener noreferrer" className="btnP" style={{ padding: '7px 9px', fontSize: 9.5, width: '100%', textAlign: 'center' }}>
+            <a href={item.pr.url} target="_blank" rel="noopener noreferrer" className="btnP" style={{ padding: '7px 9px', fontSize: 'var(--fs-meta)', width: '100%', textAlign: 'center' }}>
               Open PR #{item.pr.no} →
             </a>
-            <div className="m" style={{ fontSize: 9.5, color: 'var(--ink3)', textAlign: 'center' }}>
+            <div className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)', textAlign: 'center' }}>
               {item.pr.files} file{item.pr.files === 1 ? '' : 's'}, +{item.pr.add}/-{item.pr.del}
             </div>
             <ActionButton
               spec={ACTIONS.mergeQueueItem} args={[item.id]} className="btnA"
-              style={{ padding: '7px 9px', fontSize: 9.5, width: '100%', textAlign: 'center', boxSizing: 'border-box' }}
+              style={{ padding: '7px 9px', fontSize: 'var(--fs-meta)', width: '100%', textAlign: 'center', boxSizing: 'border-box' }}
               busy="Merging…" onOutcome={onToast}
             >
               Merge
             </ActionButton>
           </>
         ) : item.state === 'done' && item.source === 'hotfix' && item.promotedAt ? (
-          <div className="m" style={{ fontSize: 9.5, color: 'var(--ink3)', textAlign: 'center' }}>
+          <div className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)', textAlign: 'center' }}>
             promoted {item.promotedVersion}
           </div>
         ) : item.state === 'done' && item.source === 'hotfix' ? (
           promoteOpen ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
               <input
-                className="inp m" style={{ fontSize: 10.5 }} placeholder="version, e.g. 1.4.2"
+                className="inp m" style={{ fontSize: 'var(--fs-meta)' }} placeholder="version, e.g. 1.4.2"
                 value={promoteVersion} onChange={(e) => setPromoteVersion(e.target.value)}
               />
               <input
-                className="inp m" style={{ fontSize: 10.5 }} placeholder="one-line release message"
+                className="inp m" style={{ fontSize: 'var(--fs-meta)' }} placeholder="one-line release message"
                 value={promoteMessage} onChange={(e) => setPromoteMessage(e.target.value)}
               />
               <ActionButton
                 spec={ACTIONS.promoteQueueItem} args={[item.id, promoteVersion.trim(), promoteMessage.trim()]} actionRef={item.id}
                 className="btnA" disabled={!promoteVersion.trim() || !promoteMessage.trim()}
-                style={{ padding: '7px 9px', fontSize: 9.5, width: '100%', textAlign: 'center', boxSizing: 'border-box' }}
+                style={{ padding: '7px 9px', fontSize: 'var(--fs-meta)', width: '100%', textAlign: 'center', boxSizing: 'border-box' }}
                 busy="Promoting…" onOutcome={onToast}
               >
                 Promote {promoteVersion.trim() || '…'}
               </ActionButton>
             </div>
           ) : (
-            <span className="btnA" style={{ padding: '7px 9px', fontSize: 9.5, width: '100%', textAlign: 'center' }} {...actionable(() => setPromoteOpen(true))}>
+            <span className="btnA" style={{ padding: '7px 9px', fontSize: 'var(--fs-meta)', width: '100%', textAlign: 'center' }} {...actionable(() => setPromoteOpen(true))}>
               Promote
             </span>
           )
@@ -121,7 +121,7 @@ function QueueCard({ item, onToast }: { item: QueueItem; onToast: (outcome: Acti
           taxon.cta.action === 'retry' ? (
             <ActionButton
               spec={ACTIONS.retryQueueItem} args={[item.id]} className={taxon.cta.cls}
-              style={{ padding: '7px 9px', fontSize: 9.5, width: '100%', textAlign: 'center', boxSizing: 'border-box' }}
+              style={{ padding: '7px 9px', fontSize: 'var(--fs-meta)', width: '100%', textAlign: 'center', boxSizing: 'border-box' }}
               busy="Retrying…" onOutcome={onToast}
             >
               {taxon.cta.label}
@@ -129,13 +129,13 @@ function QueueCard({ item, onToast }: { item: QueueItem; onToast: (outcome: Acti
           ) : taxon.cta.action === 'remove' ? (
             <ActionButton
               spec={ACTIONS.removeQueueItem} args={[item.id]} className={taxon.cta.cls}
-              style={{ padding: '7px 9px', fontSize: 9.5, width: '100%', textAlign: 'center', boxSizing: 'border-box' }}
+              style={{ padding: '7px 9px', fontSize: 'var(--fs-meta)', width: '100%', textAlign: 'center', boxSizing: 'border-box' }}
               busy="Removing…" onOutcome={onToast}
             >
               {taxon.cta.label}
             </ActionButton>
           ) : (
-            <span className={taxon.cta.cls} style={{ padding: '7px 9px', fontSize: 9.5, width: '100%', textAlign: 'center' }}>
+            <span className={taxon.cta.cls} style={{ padding: '7px 9px', fontSize: 'var(--fs-meta)', width: '100%', textAlign: 'center' }}>
               {taxon.cta.label}
             </span>
           )
@@ -209,27 +209,27 @@ function AddWork({ onToast }: { onToast: (outcome: ActionOutcome) => void }): JS
         </div>
       ) : null}
       {source === 'hotfix' ? (
-        <div className="m" style={{ fontSize: 10.5, color: 'var(--ink3)' }}>
+        <div className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>
           A hotfix ships to dev on Merge and to production only on a separate Promote click.
         </div>
       ) : null}
       <div style={{ background: 'var(--well)', boxShadow: 'inset 0 2px 5px rgba(0,0,0,.6)', borderRadius: 3, padding: '8px 10px', display: 'flex', gap: 8 }}>
         {source === 'brief' || source === 'hotfix' ? (
           <textarea
-            className="inp m" style={{ fontSize: 11.5, minHeight: 70, resize: 'vertical' }}
+            className="inp m" style={{ fontSize: 'var(--fs-meta)', minHeight: 70, resize: 'vertical' }}
             placeholder={SOURCE_PLACEHOLDER[source]} value={input} onChange={(e) => setInput(e.target.value)}
           />
         ) : (
           <input
             ref={inputRef}
-            className="inp m" style={{ fontSize: 12 }} placeholder={SOURCE_PLACEHOLDER[source]} value={input}
+            className="inp m" style={{ fontSize: 'var(--fs-meta)' }} placeholder={SOURCE_PLACEHOLDER[source]} value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') submit(); }}
           />
         )}
         <span
           className="btnP"
-          style={{ padding: '5px 10px', fontSize: 9.5, alignSelf: 'flex-end', opacity: holdsPlaceholder || add.pending ? 0.5 : 1 }}
+          style={{ padding: '5px 10px', fontSize: 'var(--fs-meta)', alignSelf: 'flex-end', opacity: holdsPlaceholder || add.pending ? 0.5 : 1 }}
           title={holdsPlaceholder ? 'type over the KEY placeholder first' : undefined}
           aria-disabled={holdsPlaceholder || add.pending} aria-busy={add.pending}
           data-testid="action-addToQueue-add-work" data-pending={add.pending ? 'true' : 'false'}
@@ -268,16 +268,16 @@ export function QueueView(props: QueueViewProps): JSX.Element {
           {needsAttention > 0 ? `, ${needsAttention} need${needsAttention === 1 ? 's' : ''} attention` : ''}
         </span>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <span className="m" style={{ fontSize: 11, color: 'var(--ink2)' }}>{inFlight} / {maxInFlight} in flight</span>
+          <span className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink2)' }}>{inFlight} / {maxInFlight} in flight</span>
           {paused ? (
             <>
               <span className="chip" style={{ color: 'var(--park)', borderColor: 'var(--park)' }}>
                 {pauseReason ? `paused — ${pauseReason}` : 'paused'}
               </span>
-              <ActionButton spec={ACTIONS.resumeQueue} args={[]} actionRef="queue" className="btnP" style={{ padding: '6px 10px', fontSize: 9.5 }} busy="Resuming…" onOutcome={toast}>Resume queue</ActionButton>
+              <ActionButton spec={ACTIONS.resumeQueue} args={[]} actionRef="queue" className="btnP" style={{ padding: '6px 10px', fontSize: 'var(--fs-meta)' }} busy="Resuming…" onOutcome={toast}>Resume queue</ActionButton>
             </>
           ) : (
-            <ActionButton spec={ACTIONS.pauseQueue} args={[]} actionRef="queue" className="btnS" style={{ padding: '6px 10px', fontSize: 9.5 }} busy="Pausing…" onOutcome={toast}>Pause queue</ActionButton>
+            <ActionButton spec={ACTIONS.pauseQueue} args={[]} actionRef="queue" className="btnS" style={{ padding: '6px 10px', fontSize: 'var(--fs-meta)' }} busy="Pausing…" onOutcome={toast}>Pause queue</ActionButton>
           )}
         </div>
       </div>
@@ -285,7 +285,7 @@ export function QueueView(props: QueueViewProps): JSX.Element {
       <AddWork onToast={toast} />
 
       {items.length === 0 ? (
-        <div className="m" style={{ fontSize: 12, color: 'var(--ink3)', padding: 40, textAlign: 'center' }}>
+        <div className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)', padding: 40, textAlign: 'center' }}>
           nothing queued -- add a ticket, a brief, a query or a backlog filter above
         </div>
       ) : (
