@@ -280,12 +280,14 @@ describe('ConductorRail', () => {
     });
   });
 
+  // W5: an `event` row is machinery, not conversation -- it moves into the
+  // Activity drawer instead of rendering as a chip in the thread itself.
   describe('event row', () => {
-    it('never dims an event chip regardless of freshness', () => {
+    it('never dims an event line in the drawer regardless of freshness', async () => {
       renderRail([{ k: 'e1', type: 'event', text: 'gate opened', ts: Date.now() - 60_000, source: 'system' }], feedUp);
-      const chip = screen.getByText('gate opened');
-      const row = chip.parentElement as HTMLElement;
-      expect(row.style.opacity).toBe('');
+      await userEvent.click(screen.getByTestId('activity-drawer-toggle'));
+      const line = screen.getByText(/^gate opened/);
+      expect(line.style.opacity).toBe('');
     });
   });
 
@@ -300,53 +302,61 @@ describe('ConductorRail', () => {
       expect(screen.queryByText(/still working ×/)).not.toBeInTheDocument();
     });
 
-    it('renders more than 200 messages with no show earlier link and no cap', () => {
+    it('renders more than 200 messages with no show earlier link and no cap', async () => {
       const longThread: Message[] = Array.from({ length: 210 }, (_, i) => ({ k: `m${i}`, type: 'event', text: `event ${i}`, ts: i, source: 'system' }));
       renderRail(longThread);
-      expect(screen.getByText('event 0')).toBeInTheDocument();
-      expect(screen.getByText('event 209')).toBeInTheDocument();
+      expect(screen.getByTestId('activity-drawer-badge')).toHaveTextContent('210');
+      await userEvent.click(screen.getByTestId('activity-drawer-toggle'));
+      expect(screen.getByText(/^event 0/)).toBeInTheDocument();
+      expect(screen.getByText(/^event 209/)).toBeInTheDocument();
       expect(screen.queryByText(/show earlier/)).not.toBeInTheDocument();
     });
   });
 
   // H2.5: a run of warden ticks reads as one chip with a count, not one per tick.
+  // W5: the collapsed chip is still an `event` row, so it now lives in the drawer.
   describe('warden ticks', () => {
-    it('collapses five consecutive warden ticks into one chip', () => {
+    it('collapses five consecutive warden ticks into one line', async () => {
       const ticks: Message[] = Array.from({ length: 5 }, (_, i) => ({ k: `w${i}`, type: 'event', text: `tick ${i}`, ts: i, source: 'warden' }));
       renderRail(ticks);
-      expect(screen.getByText('warden ×5')).toBeInTheDocument();
+      await userEvent.click(screen.getByTestId('activity-drawer-toggle'));
+      expect(screen.getByText(/^warden ×5/)).toBeInTheDocument();
       expect(screen.queryByText('tick 0')).not.toBeInTheDocument();
     });
 
-    it('leaves other events untouched around a warden run', () => {
+    it('leaves other events untouched around a warden run', async () => {
       renderRail([
         { k: 'a', type: 'event', text: 'sandbox ready', ts: 0, source: 'system' },
         { k: 'w1', type: 'event', text: 'tick', ts: 1, source: 'warden' },
         { k: 'w2', type: 'event', text: 'tick', ts: 2, source: 'warden' },
         { k: 'b', type: 'event', text: 'gate opened', ts: 3, source: 'system' },
       ]);
-      expect(screen.getByText('sandbox ready')).toBeInTheDocument();
-      expect(screen.getByText('warden ×2')).toBeInTheDocument();
-      expect(screen.getByText('gate opened')).toBeInTheDocument();
+      await userEvent.click(screen.getByTestId('activity-drawer-toggle'));
+      expect(screen.getByText(/^sandbox ready/)).toBeInTheDocument();
+      expect(screen.getByText(/^warden ×2/)).toBeInTheDocument();
+      expect(screen.getByText(/^gate opened/)).toBeInTheDocument();
     });
   });
 
-  // Item 7: message cards read as words, not machine chips.
+  // Item 7 / W5: an activity digest is machinery too, so it reads as a quiet
+  // line in the drawer -- never a chip, and never sitting in the thread itself.
   describe('activity digest', () => {
-    it('renders a quiet mono line with no chip border', () => {
+    it('renders as a quiet line in the drawer, with no chip border', async () => {
       renderRail([{ k: 'a1', type: 'activity', text: 'Worked 16:57 to 17:04: 140 commands, 45 file reads, 11 edits', ts: Date.now(), source: 'FLT-1' }]);
+      await userEvent.click(screen.getByTestId('activity-drawer-toggle'));
       const line = screen.getByText(/^Worked 16:57 to 17:04/);
       expect(line).toHaveStyle({ color: 'var(--ink3)' });
       expect(line.className).not.toMatch(/chip/);
     });
   });
 
-  describe('event chip wrapping', () => {
-    it('wraps a long event sentence instead of clipping it at the rail edge', () => {
+  describe('event line wrapping', () => {
+    it('wraps a long event sentence instead of clipping it at the drawer edge', async () => {
       const long = 'a lane wide off the reservation deregistered its own worktree and never told the queue';
       renderRail([{ k: 'e1', type: 'event', text: long, ts: Date.now(), source: 'system' }]);
-      const chip = screen.getByText(long);
-      expect(chip).toHaveStyle({ whiteSpace: 'normal', textTransform: 'none' });
+      await userEvent.click(screen.getByTestId('activity-drawer-toggle'));
+      const line = screen.getByText(new RegExp(`^${long}`));
+      expect(line).toHaveStyle({ overflowWrap: 'anywhere' });
     });
   });
 

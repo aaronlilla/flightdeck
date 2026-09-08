@@ -6,6 +6,7 @@ import { computeFreshness, compactFreshnessStamp, freshnessClass, hm } from '../
 import { actionable } from '../keyboard-actionable.js';
 import { collapseWardenEvents } from '../laneVM.js';
 import { StoreContext } from '../store.js';
+import { ActivityDrawer } from './ActivityDrawer.js';
 import { Linkify } from './Linkify.js';
 import { QuestionCard } from './QuestionCard.js';
 import type { Feed, Message } from '../../shared/console-model.js';
@@ -391,6 +392,14 @@ export function ConductorRail(props: ConductorRailProps): JSX.Element {
   );
   const pendingMessages = thread.filter(isPending);
   const pending = pendingMessages.length;
+  // W5: the rail is a conversation -- operator words, Conductor replies, question
+  // cards and receipts of what the operator did. A run's own tool-call digest and the
+  // journal's system chips (`event`/`activity`) are machinery, not conversation, and
+  // move to the Activity drawer instead of sitting in the thread between them.
+  const collapsedThread = collapseWardenEvents(thread);
+  const isObservation = (m: Message): boolean => m.type === 'event' || m.type === 'activity';
+  const conversationRows = collapsedThread.filter((m) => !isObservation(m));
+  const observationRows = collapsedThread.filter(isObservation);
   // Sweep #13: "N waiting" named nothing to jump to -- the oldest unresolved card is
   // the one already first in the thread's own append order, since a card resolves
   // itself in place rather than moving.
@@ -411,8 +420,9 @@ export function ConductorRail(props: ConductorRailProps): JSX.Element {
         </span>
       </div>
       <div style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex', flexDirection: 'column' }}>
-      <div ref={scroll.ref} onScroll={scroll.onScroll} className="scroll" data-testid="rail-thread" style={{ flex: 1, minHeight: 0, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12, opacity: feed.live ? 1 : 0.6 }}>
-        {collapseWardenEvents(thread).map((m) => (
+      <div ref={scroll.ref} onScroll={scroll.onScroll} className="scroll" data-testid="rail-thread" style={{ flex: 1, minHeight: 0, overflowX: 'hidden', padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12, opacity: feed.live ? 1 : 0.6 }}>
+        <ActivityDrawer rows={observationRows} />
+        {conversationRows.map((m) => (
           <div key={m.k} id={`rail-msg-${m.k}`}>
             <MessageCard message={m} feedLive={feed.live} now={now} verbose={verbose} labelFor={labelFor} onCommand={onCommand} onUndo={onUndo} onOpenJournal={onOpenJournal} />
           </div>
