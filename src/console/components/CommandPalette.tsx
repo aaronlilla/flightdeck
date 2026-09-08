@@ -1,5 +1,6 @@
 import type { JSX } from 'react';
 
+import { laneHeadline } from '../laneVM.js';
 import type { JournalEntry, Lane } from '../../shared/console-model.js';
 import type { View } from '../store.js';
 
@@ -36,7 +37,7 @@ export function buildPaletteItems(
     .filter((lane) => !q || (lane.ticket ?? '').toLowerCase().includes(q) || (lane.title ?? '').toLowerCase().includes(q))
     .slice(0, 6);
   for (const lane of laneMatches) {
-    items.push({ kind: 'lane', title: lane.ticket ?? lane.title ?? lane.id, sub: `${lane.state} · ${lane.stepText}`, go: () => onOpenLane(lane.id) });
+    items.push({ kind: 'lane', title: laneHeadline(lane).main, sub: `${lane.state} · ${lane.stepText}`, go: () => onOpenLane(lane.id) });
   }
   const journalMatches = journal
     .filter((j) => !q || j.jid.toLowerCase().includes(q) || j.text.toLowerCase().includes(q))

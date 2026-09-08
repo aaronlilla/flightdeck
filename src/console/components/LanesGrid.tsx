@@ -62,7 +62,10 @@ export function LanesGrid(props: LanesGridProps): JSX.Element {
   return (
     <div
       className="scroll"
-      style={{ flex: 1, padding: '12px 16px 16px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(215px,1fr))', gap: 10, alignContent: 'start' }}
+      style={{
+        flex: 1, padding: '12px 16px 16px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(215px,1fr))',
+        gridAutoRows: '1fr', alignItems: 'stretch', gap: 10, alignContent: 'start',
+      }}
     >
       {groups.map((group) => (
         <LaneGroupTile key={group.key} group={group} feedLive={feedLive} now={now} onOpen={onOpen} onOpenCost={onOpenCost} onCommand={onCommand} onTip={onTip} />

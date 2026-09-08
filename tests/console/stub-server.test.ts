@@ -144,6 +144,27 @@ describe('stub server', () => {
     expect(lanes.every((l) => l.title !== null && l.plain !== '')).toBe(true);
   });
 
+  // Item 9: plain by default, raw rows under ?verbose=1, on the run-scoped thread.
+  describe('run thread verbose parity', () => {
+    const MACHINE_ID = /S-[0-9a-f]{12,}|jira_|queue-[A-Z]|[0-9a-f]{40}/;
+
+    it('plain mode carries an activity message, a reply, an "Asked you:" event, and no machine ids', async () => {
+      await post('/__test/fixture?name=human-board');
+      const { messages, verbose } = await get<{ messages: { type: string; text: string }[]; verbose?: boolean }>('/run/parked-1/thread');
+      expect(verbose).toBeFalsy();
+      expect(messages.some((m) => m.type === 'activity')).toBe(true);
+      expect(messages.some((m) => m.type === 'reply')).toBe(true);
+      expect(messages.some((m) => m.type === 'event' && m.text.startsWith('Asked you:'))).toBe(true);
+      for (const m of messages) expect(m.text).not.toMatch(MACHINE_ID);
+    });
+
+    it('verbose mode returns rows carrying the run id', async () => {
+      const { messages, verbose } = await get<{ messages: { type: string; text: string }[]; verbose?: boolean }>('/run/BBZ-118/thread?verbose=1');
+      expect(verbose).toBe(true);
+      expect(messages.some((m) => /S-[0-9a-f]{12,}/.test(m.text))).toBe(true);
+    });
+  });
+
   // Sweep #6: the console reads success off a non-null jid (`receiptCard`'s
   // `type: jid ? 'receipt' : 'refusal'`); a dismiss with no jid rendered as a red
   // Refused card even though it succeeded.

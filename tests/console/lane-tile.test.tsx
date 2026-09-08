@@ -152,4 +152,27 @@ describe('LaneTile', () => {
     expect(screen.queryByText(/merge/i)).not.toBeInTheDocument();
     expect(screen.getByText('checks are still running')).toBeInTheDocument();
   });
+
+  // 2026-09-08: a 40-char sha in the sentence must never run off the tile, and the
+  // full sentence stays readable in `title` even once the visible text clamps.
+  it('clamps a long plain sentence to three lines and carries the full text in title', () => {
+    const sha = 'b'.repeat(40);
+    const long = `Working on a very long sentence that mentions commit ${sha} and keeps going past what three lines can show, on and on and on.`;
+    render(<LaneTile lane={lane({ plain: long })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
+    const shortened = long.replace(sha, sha.slice(0, 7));
+    const el = screen.getByTitle(shortened);
+    expect(el).toHaveStyle({ WebkitLineClamp: '3' });
+  });
+
+  // 2026-09-08: retried tickets fold into one tile; the attempt chip now renders
+  // inside the tile, on the chip row, instead of hanging below it in a second box.
+  it('shows an attempt chip on the chip row when the tile carries one', () => {
+    render(<LaneTile lane={lane()} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} attempts={{ position: 3, total: 3 }} />);
+    expect(screen.getByText('attempt 3 of 3')).toBeInTheDocument();
+  });
+
+  it('renders no attempt chip when the tile carries none', () => {
+    render(<LaneTile lane={lane()} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
+    expect(screen.queryByText(/attempt \d+ of \d+/)).toBeNull();
+  });
 });

@@ -80,6 +80,10 @@ export interface State {
   theme: 'thD' | 'thL';
   composer: string;
   laneComposer: Record<string, string>;
+  /** 2026-09-08: plain by default -- every route answers human sentences, machine
+   *  ids stripped. Verbose asks every read for `?verbose=1` instead: raw rows, ids
+   *  intact. Remembered in `localStorage` the same way `theme` is. */
+  verbose: boolean;
 }
 
 export type Action =
@@ -110,7 +114,16 @@ export type Action =
   | { type: 'toast'; toast: ToastSpec | null }
   | { type: 'theme'; theme: 'thD' | 'thL' }
   | { type: 'composer'; text: string }
-  | { type: 'lane-composer'; run: string; text: string };
+  | { type: 'lane-composer'; run: string; text: string }
+  | { type: 'verbose'; verbose: boolean };
+
+function readStoredVerbose(): boolean {
+  try {
+    return typeof localStorage !== 'undefined' && localStorage.getItem('flightdeck.verbose') === '1';
+  } catch {
+    return false;
+  }
+}
 
 export function initialState(): State {
   return {
@@ -142,6 +155,7 @@ export function initialState(): State {
     theme: (typeof localStorage !== 'undefined' && localStorage.getItem('fd.theme') === 'thL') ? 'thL' : 'thD',
     composer: '',
     laneComposer: {},
+    verbose: readStoredVerbose(),
   };
 }
 
@@ -218,6 +232,14 @@ export function reducer(state: State, action: Action): State {
       return { ...state, composer: action.text };
     case 'lane-composer':
       return { ...state, laneComposer: { ...state.laneComposer, [action.run]: action.text } };
+    case 'verbose':
+      try {
+        if (typeof localStorage !== 'undefined') localStorage.setItem('flightdeck.verbose', action.verbose ? '1' : '0');
+      } catch {
+        // localStorage unavailable (private mode, disabled site data): the toggle
+        // still works for this session, it just won't be remembered.
+      }
+      return { ...state, verbose: action.verbose };
     default:
       return state;
   }

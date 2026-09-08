@@ -18,13 +18,14 @@ test('the ticket sheet never grows past the screen; its thread scrolls inside', 
   expect(box).not.toBeNull();
   expect(box!.y).toBeGreaterThanOrEqual(0);
   expect(box!.y + box!.height).toBeLessThanOrEqual(900);
-  // The body scrolls inside the sheet: the composer is reachable by scrolling it, and
-  // the sheet's band with "esc to close" never moves.
-  const body = page.getByTestId('ticket-sheet-body');
-  const scrolls = await body.evaluate((el) => { const box = el as unknown as { scrollHeight: number; clientHeight: number }; return box.scrollHeight > box.clientHeight + 50; });
+  // Item 6: the body itself never scrolls -- the thread column scrolls inside
+  // itself, and the composer is pinned at the bottom of the right column,
+  // reachable with no scrolling at all, the sheet's band with "esc to close"
+  // never moves.
+  const thread = page.getByTestId('ticket-sheet-thread');
+  const scrolls = await thread.evaluate((el) => { const box = el as unknown as { scrollHeight: number; clientHeight: number }; return box.scrollHeight > box.clientHeight + 50; });
   expect(scrolls).toBe(true);
-  await sheet.getByPlaceholder(/^message /).scrollIntoViewIfNeeded();
-  await expect(sheet.getByPlaceholder(/^message /)).toBeInViewport();
+  await expect(sheet.getByPlaceholder(/Tell this run something/)).toBeInViewport();
   await expect(sheet.getByText('esc to close ✕')).toBeInViewport();
   const after = await sheet.boundingBox();
   expect(after!.y + after!.height).toBeLessThanOrEqual(900);

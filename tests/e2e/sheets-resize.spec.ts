@@ -58,7 +58,7 @@ test('the sandbox sheet stays visible and un-overflowed across a resize', async 
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto('/');
   await page.getByTestId('lane-FLT-201').click();
-  await page.getByTestId('ticket-sheet').getByText('fd-2201', { exact: true }).first().click();
+  await page.getByTestId('ticket-sheet').getByText('sandbox', { exact: true }).first().click();
   const sheet = page.getByTestId('sandbox-sheet');
   await expect(sheet).toBeVisible();
   await page.setViewportSize({ width: 720, height: 900 });
@@ -73,6 +73,9 @@ test('the journal sheet stays visible and un-overflowed across a resize', async 
   // the ticket sheet's own copy of this same click does nothing.
   await page.getByText('nullable + backfill', { exact: true }).click();
   await expect(page.getByTestId('rail-thread')).toContainText(/resumed/);
+  // Plain mode hides the jid text on a receipt card (item 7); verbose brings it
+  // back so this can still find the specific receipt link to click through.
+  await page.getByText('plain', { exact: true }).click();
   const jidLink = page.getByTestId('rail-thread').locator('a', { hasText: /^J-\d+$/ }).first();
   await jidLink.click();
   const sheet = page.getByTestId('journal-sheet');

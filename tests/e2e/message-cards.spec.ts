@@ -20,10 +20,15 @@ test('the rail renders every message type: event, operator, reply, question, pla
   await expect(rail.getByText('Question · from FLT-501')).toBeVisible(); // question
   await expect(rail.getByText('Plan · 2 actions')).toBeVisible(); // plan
   await expect(rail.getByText('Confirm — irreversible')).toBeVisible(); // confirm
-  await expect(rail.getByText('J-90001')).toBeVisible(); // receipt
+  await expect(rail.getByTestId('receipt-jid')).toBeVisible(); // receipt (plain mode: no id text)
+  await expect(rail.getByText('J-90001')).toHaveCount(0);
   await expect(rail.getByText('Refused', { exact: true })).toBeVisible(); // refusal
   await expect(rail.getByText('draft PR #9 opened')).toBeVisible(); // pr
   await expect(rail.getByText('conductor is planning')).toBeVisible(); // thinking
+
+  // 2026-09-08: verbose mode brings the id text back.
+  await page.getByText('plain', { exact: true }).click();
+  await expect(rail.getByText('J-90001')).toBeVisible();
 });
 
 test('the plan card shows both a reversible and an irreversible action, distinctly labeled', async ({ page }) => {

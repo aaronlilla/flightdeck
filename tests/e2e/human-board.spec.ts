@@ -82,13 +82,17 @@ test('H2.3: Merge ready previews and merges the one ready PR', async ({ page }) 
   await expect(page.getByText(/merged \d+ lanes/)).toBeVisible();
 });
 
-test('H2.4: the ticket sheet shows the kind, a source link, and the Story section', async ({ page }) => {
+// Updated for item 3: the ticket chip is the source link now (never a separate
+// "source ↗" chip beside it).
+test('H2.4: the ticket sheet shows the kind, a linked ticket chip, and the Story section', async ({ page }) => {
   await page.goto('/');
   await page.getByTestId('lane-merged-1').click();
   const sheet = page.getByTestId('ticket-sheet');
   await expect(sheet).toBeVisible();
   await expect(sheet.getByText('ticket')).toBeVisible();
-  await expect(sheet.getByText('source ↗')).toBeVisible();
+  const ticketLink = sheet.getByText('FLT-702', { exact: true }).and(page.locator('a'));
+  await expect(ticketLink).toBeVisible();
+  await expect(ticketLink).toHaveAttribute('href', 'https://example.invalid/browse/FLT-702');
   await expect(sheet.getByText('Story')).toBeVisible();
 });
 

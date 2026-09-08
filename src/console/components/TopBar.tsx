@@ -17,15 +17,22 @@ export interface TopBarProps {
   /** Duration of the last `/lanes` fetch, used when no heartbeat has arrived yet. */
   fetchLatencyMs: number | null;
   theme: 'thD' | 'thL';
+  /** 2026-09-08: plain by default -- every route answers human sentences with the
+   *  machine ids stripped. This chip is the one switch back to the raw rows. */
+  verbose: boolean;
   onNav: (view: View) => void;
   onOpenPalette: () => void;
   onOpenCost: () => void;
   onToggleTheme: () => void;
+  onToggleVerbose: () => void;
 }
 
-/** Top nav: Board / Settings [n down] / Flight review [n proposed], ⌘K, spend today, feed stamp, clock, theme. */
+/** Top nav: Board / Settings [n down] / Flight review [n proposed], ⌘K, spend today, feed stamp, clock, theme, verbose. */
 export function TopBar(props: TopBarProps): JSX.Element {
-  const { view, settingsBadge, reviewBadge, queueBadge, caps, tokensToday, feed, now, fetchLatencyMs, theme, onNav, onOpenPalette, onOpenCost, onToggleTheme } = props;
+  const {
+    view, settingsBadge, reviewBadge, queueBadge, caps, tokensToday, feed, now, fetchLatencyMs, theme, verbose,
+    onNav, onOpenPalette, onOpenCost, onToggleTheme, onToggleVerbose,
+  } = props;
   const overDaily = caps ? tokensToday > caps.dailyTokens : false;
   // Latency prefers the age of the last heartbeat round trip; before one arrives (or once
   // the feed is driven by polling alone) it falls back to the last `/lanes` fetch duration.
@@ -35,6 +42,10 @@ export function TopBar(props: TopBarProps): JSX.Element {
       style={{
         display: 'flex', alignItems: 'center', gap: '14px 20px', padding: '10px 22px',
         borderBottom: '1px solid var(--line)', background: 'var(--panel)', boxShadow: 'inset 0 1px 0 var(--hi)', flexWrap: 'wrap',
+        // Above the sheet overlay's z-index:20 (App.tsx), so day mode/verbose stay
+        // clickable with a sheet open rather than only closing it (2026-09-08: the
+        // verbose toggle needs to be reachable while looking at the sheet it affects).
+        position: 'relative', zIndex: 21,
       }}
     >
       <span className="m" style={{ fontSize: 14, fontWeight: 700, letterSpacing: 6 }}>FLIGHTDECK</span>
@@ -66,6 +77,7 @@ export function TopBar(props: TopBarProps): JSX.Element {
         {feed.live ? `■ live feed · ${latencyMs}ms` : `○ feed lost ${hm(feed.lostAt ?? now)}`}
       </span>
       <span className="m" style={{ fontSize: 11, color: 'var(--ink2)', minWidth: 62 }}>{hm(now)}</span>
+      <span className="chip chipB" title="show raw ids and every row" onClick={onToggleVerbose}>{verbose ? 'verbose' : 'plain'}</span>
       <span className="chip chipB" onClick={onToggleTheme}>{theme === 'thD' ? 'day mode' : 'night ops'}</span>
     </div>
   );

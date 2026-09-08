@@ -49,6 +49,14 @@ describe('buildPaletteItems', () => {
     expect(items.map((i) => i.title)).toEqual(['Flight review']);
   });
 
+  // 2026-09-08: a lane with no ticket and no title must never fall back to its own
+  // run id as visible text -- the one string the board is built to hide.
+  it('never shows the run id for a lane with no ticket and no title', () => {
+    const untitled = { ...lane('S-b9d39bae548707e0', 'working'), ticket: null, title: null };
+    const items = buildPaletteItems('', [untitled], [], vi.fn(), vi.fn(), vi.fn());
+    expect(items[0]?.title).toBe('Untitled run');
+  });
+
   it('lists all four views Title Case with no query', () => {
     const items = buildPaletteItems('', [], [], vi.fn(), vi.fn(), vi.fn());
     const viewTitles = items.filter((i) => i.kind === 'view').map((i) => i.title);

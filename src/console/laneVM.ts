@@ -8,6 +8,7 @@ import { hm } from './freshness.js';
 import type { Freshness } from './freshness.js';
 import type { Lane, LaneKind, LanePr, LaneState, Message } from '../shared/console-model.js';
 import { fmtTokens } from '../shared/format-tokens.js';
+import { shortenShas } from '../shared/humanize.js';
 
 export interface StateGlyph {
   glyph: string;
@@ -104,10 +105,12 @@ export interface LaneHeadline {
 }
 
 /** What a lane's headline says, shared by the tile, the ticket sheet band, and
- *  the needs-you plates: a ticket outranks the run id, and the run id only
- *  shows up in `title`, matching the prototype's single-line `l.id`. */
+ *  the needs-you plates: a ticket outranks a title, which outranks the fallback
+ *  "Untitled run" -- the run id never appears as visible text, only in `runId`,
+ *  for a `title` attribute (2026-09-08: the id was still the fallback here, the
+ *  one machine string the rest of the board was built to hide). */
 export function laneHeadline(lane: Lane): LaneHeadline {
-  return { main: lane.ticket ?? lane.id, runId: lane.id };
+  return { main: lane.ticket ?? lane.title ?? 'Untitled run', runId: lane.id };
 }
 
 /** H2.1: the tile's headline in three parts -- a bold `key` (the ticket), a plain
@@ -136,7 +139,7 @@ export function kindLabel(kind: LaneKind): string {
  *  computed one, else the old `step N/M · text` reading, so a lane the fixtures or an
  *  older server never filled `plain` in for still shows something. */
 export function plainLine(lane: Lane): string {
-  return lane.plain || stepDisplay(lane);
+  return shortenShas(lane.plain || stepDisplay(lane));
 }
 
 /** H2.1: the PR summary line's pieces, split so the number can render as a link and

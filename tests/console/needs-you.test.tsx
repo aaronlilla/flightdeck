@@ -22,9 +22,11 @@ function lane(extra: Partial<Lane> = {}): Lane {
 // same headline rule, and the full run id shows up only in the title attribute --
 // never as a second visible line.
 describe('buildNeeds headline', () => {
-  it('titles a parked plate with the run id when there is no ticket', () => {
+  // 2026-09-08: the run id was still the fallback here -- fixed to fall through
+  // to "Untitled run" the same way `laneHeadline` does everywhere else.
+  it('titles a parked plate "Untitled run" when there is no ticket and no title', () => {
     const items = buildNeeds([lane({ ticket: null })], [], vi.fn());
-    expect(items[0]?.title).toBe('jira_AB-12_1788460932645');
+    expect(items[0]?.title).toBe('Untitled run');
     expect(items[0]?.titleId).toBe('jira_AB-12_1788460932645');
   });
 
