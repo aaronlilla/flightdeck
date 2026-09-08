@@ -158,7 +158,7 @@ function QueueCard({ item, onRemove, onRetry, onMerge, onPromote }: {
 
 const SOURCE_PLACEHOLDER: Record<QueueSource, string> = {
   ticket: 'BB-123',
-  brief: '# Goal: ...',
+  brief: '# Goal: ...  then a line  repo: owner/name  (without it the default repository applies)',
   query: 'sprint = 42 or "epic link" = BB-1',
   backlog: 'project = BB and status = Backlog',
   hotfix: 'what\'s broken in production right now',

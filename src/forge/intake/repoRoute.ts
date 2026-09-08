@@ -98,3 +98,19 @@ export function routeRepo(rules: RepoRule[], input: RepoRouteInput): string {
   }
   return 'unknown';
 }
+
+/**
+ * A pasted brief has no ticket, so no label, component or key for the rules above to
+ * match, and it used to land on the `default` repository every time. A brief names its
+ * repository itself with one line in its first twenty, `repo: owner/name`, which wins
+ * over the rules. Returns null when no such line exists or the value is not an
+ * `owner/name` pair, and the caller falls back to `routeRepo`.
+ */
+export function repoFromBrief(text: string): string | null {
+  const head = text.split(/\r?\n/, 20);
+  for (const line of head) {
+    const match = /^\s*repo\s*:\s*([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\s*$/i.exec(line);
+    if (match) return match[1]!;
+  }
+  return null;
+}

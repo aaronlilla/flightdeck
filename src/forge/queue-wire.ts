@@ -29,7 +29,7 @@ import { runQueueHandoff } from './intake/queueHandoff.js';
 import type { PollItemDetail } from './intake/poller.js';
 import { planFromPacket } from './intake/planner.js';
 import { resolvePlanProvider } from './intake/reasoner.js';
-import { parseRepoMap, routeRepo } from './intake/repoRoute.js';
+import { parseRepoMap, routeRepo, repoFromBrief } from './intake/repoRoute.js';
 import { Journal } from './journal.js';
 import { loadPolicy } from './policy.js';
 import { queueBriefsDir, journalPath, killSwitchPath } from './paths.js';
@@ -159,9 +159,11 @@ export function queuePlanner(configFn: () => JiraConfig | undefined = jiraConfig
       }
     },
 
+    // A pasted brief has no ticket for the rules to match, so a `repo: owner/name` line
+    // in the brief wins; without one the map's default applies as before.
     async planBrief(text): Promise<QueuePlannedBrief> {
       const id = `queue-brief-${Date.now()}`;
-      const repo = routeRepo(repoRules, { ticket: id, labels: [], components: [], issuetype: '' });
+      const repo = repoFromBrief(text) ?? routeRepo(repoRules, { ticket: id, labels: [], components: [], issuetype: '' });
       const briefPath = await writeBrief(id, text);
       return { ticket: id, repo, briefPath };
     },
@@ -171,7 +173,7 @@ export function queuePlanner(configFn: () => JiraConfig | undefined = jiraConfig
     // feature branch.
     async planHotfix(text): Promise<QueuePlannedBrief> {
       const id = `hotfix-${Date.now()}`;
-      const repo = routeRepo(repoRules, { ticket: id, labels: [], components: [], issuetype: '' });
+      const repo = repoFromBrief(text) ?? routeRepo(repoRules, { ticket: id, labels: [], components: [], issuetype: '' });
       const briefPath = await writeBrief(
         id,
         `${text}\n\nThis is a hotfix: it ships to dev on Merge and to production only on a `
