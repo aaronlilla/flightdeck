@@ -15,7 +15,7 @@ import type { RunMessage } from '../runinbox.js';
 import type { Message, ThreadResponse } from '../../shared/console-model.js';
 import { jidFor, textFor } from './journal-route.js';
 import { collapseWardenChips, railChipText, type TitleForFn } from './journal-narrative.js';
-import { commandEcho, humanizeParkReason, receiptText, stripMachineIds } from '../../shared/humanize.js';
+import { clock, commandEcho, humanizeParkReason, receiptText, stripMachineIds } from '../../shared/humanize.js';
 import { modelAlias } from './lanes.js';
 import { modelName } from './plain.js';
 
@@ -203,9 +203,7 @@ function runMessageToMessage(message: RunMessage): Message {
   };
 }
 
-function clockTime(at: number): string {
-  return new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-}
+const clockTime = clock;
 
 /** One journal row's own text, in plain words and free of every machine id -- the
  *  general-purpose per-row renderer the why-stuck reply's "Last it did" lines

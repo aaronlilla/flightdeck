@@ -12,7 +12,7 @@
 import type { ForgeEvent } from '../journal.js';
 import type { CouncilAttestation } from '../contracts.js';
 import type { LaneKind, LaneStory, LaneStoryEntry, QueueItem } from '../../shared/console-model.js';
-import { humanizeParkReason, stripMachineIds } from '../../shared/humanize.js';
+import { clock, humanizeParkReason, stripMachineIds } from '../../shared/humanize.js';
 
 export interface GitCommit {
   sha: string;
@@ -46,9 +46,7 @@ export interface LaneStoryInput {
 
 const BRIEF_EXCERPT_LIMIT = 600;
 
-function clockTime(at: number): string {
-  return new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-}
+const clockTime = clock;
 
 function findAt(events: ForgeEvent[], name: string): ForgeEvent | undefined {
   return events.find((row) => row.event === name);

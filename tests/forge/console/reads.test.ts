@@ -16,6 +16,7 @@ import { Lanes } from '../../../src/forge/supervisor.js';
 import { Registry } from '../../../src/forge/registry.js';
 import { Inbox } from '../../../src/forge/inbox.js';
 import { ConsoleReads } from '../../../src/forge/console/reads.js';
+import { clock } from '../../../src/shared/humanize.js';
 
 function tempDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix));
@@ -137,7 +138,7 @@ describe('ConsoleReads.lanesResponse: title and sourceUrl', () => {
 
     const server = reads as unknown as { runStoryResponse(run: string): Promise<{ entries: Array<{ text: string }> }> };
     const story = await server.runStoryResponse('queue-BBZ-96');
-    expect(story.entries.map((e) => e.text)).toContain('Queued from Jira as BBZ-96 at ' + new Date(500).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }));
+    expect(story.entries.map((e) => e.text)).toContain(`Queued from Jira as BBZ-96 at ${clock(500)}`);
     expect(story.entries.map((e) => e.text)).toContain('Draft PR #119 opened');
     expect(story.entries.map((e) => e.text)).toContain('Branch feature/bbz-96 off develop');
   });

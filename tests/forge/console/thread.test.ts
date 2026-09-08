@@ -8,6 +8,7 @@ import { Journal, replay } from '../../../src/forge/journal.js';
 import { computeRunThread, computeThread } from '../../../src/forge/console/thread.js';
 import type { InboxEntry } from '../../../src/forge/inbox.js';
 import type { Message } from '../../../src/shared/console-model.js';
+import { clock } from '../../../src/shared/humanize.js';
 
 function tempJournal(): { path: string; journal: Journal } {
   const dir = mkdtempSync(join(tmpdir(), 'console-thread-'));
@@ -233,7 +234,7 @@ describe('computeRunThread: plain mode (deliverable 7)', () => {
 
     const result = computeRunThread('alpha', fleet.events, []);
     expect(result.messages.map((m) => m.text)).toContain(
-      `Started on Sonnet at ${new Date(fleet.events[0]!.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`,
+      `Started on Sonnet at ${clock(fleet.events[0]!.at)}`,
     );
   });
 
@@ -245,7 +246,7 @@ describe('computeRunThread: plain mode (deliverable 7)', () => {
 
     const result = computeRunThread('alpha', fleet.events, []);
     expect(result.messages.map((m) => m.text)).toContain(
-      `Started at ${new Date(fleet.events[0]!.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`,
+      `Started at ${clock(fleet.events[0]!.at)}`,
     );
   });
 

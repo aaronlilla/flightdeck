@@ -13,7 +13,7 @@ import type { ChainPacketState } from '../chain.js';
 import type { ForgeEvent } from '../journal.js';
 import type { JournalNarrativeEntry, Lane } from '../../shared/console-model.js';
 import { fmtTokens } from '../../shared/format-tokens.js';
-import { stripMachineIds } from '../../shared/humanize.js';
+import { clock, stripMachineIds } from '../../shared/humanize.js';
 import { textFor } from './journal-route.js';
 import { laneKindFor, ticketFor } from './lanes.js';
 import { modelName } from './plain.js';
@@ -174,9 +174,7 @@ export function railChipText(row: ForgeEvent, titleFor: TitleForFn): string | nu
   }
 }
 
-function clockTime(at: number): string {
-  return new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-}
+const clockTime = clock;
 
 /**
  * H1.9: the conductor rail's own chip storm (`PID:51340 STUCK (STALE-SESSION)` x 20,
