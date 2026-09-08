@@ -231,6 +231,23 @@ describe('the successor', () => {
     expect(first?.successor).toBeTruthy();
     expect(state.runs[first!.successor!]?.predecessor).toBe('alpha');
   });
+
+  it('a handoff successor inherits the account its predecessor launched under', async () => {
+    process.env['FORGE_CONFIG_DIR'] = join(dir, 'fleet-x');
+    const worker = makeWorker([climbing(30_000, 4), climbing(1_000, 2)], {
+      maxContext: 60_000,
+    });
+    await worker.run();
+    const state = replay(journalPath);
+    const first = state.runs['alpha'];
+    const second = state.runs[first!.successor!];
+    // With no registry file the default account is `fleet`, on `FORGE_CONFIG_DIR`.
+    expect(first?.account).toBe('fleet');
+    expect(second?.account).toBe('fleet');
+    const starts = state.events.filter((e) => e.event === 'run.started').map((e) => e['account']);
+    expect(starts).toEqual(['fleet', 'fleet']);
+    delete process.env['FORGE_CONFIG_DIR'];
+  });
 });
 
 describe('the tier', () => {
