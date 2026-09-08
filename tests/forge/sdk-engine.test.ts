@@ -1900,3 +1900,82 @@ describe('findings from the design critique, held as regressions', () => {
     expect(open[0]?.question).not.toMatch(/rebase/i);
   });
 });
+
+describe('cross-model review findings, held as regressions', () => {
+  function fakeDriftClock(): { now: () => number; sleep: (ms: number) => Promise<void> } {
+    let now = 0;
+    return { now: () => now, sleep: async (ms) => { now += ms; } };
+  }
+
+  function pushOnce() {
+    return fakeQuery([[{
+      text: 'pushed', usage: { input: 10, cacheRead: 0, cacheCreation: 0, output: 1 },
+      toolUse: { name: 'Bash', input: { command: 'git push' } },
+    }]]);
+  }
+
+  it('a credential ask parks the run it asks about, so "answer this to carry on" is true', async () => {
+    const inboxDir = join(home, 'inbox-park');
+    const parked = new Map<string, string>();
+    const { fn } = pushOnce();
+    await new SdkEngine({
+      journalPath, inboxDir, gotchasDir: join(home, 'gotchas-park'), queryFn: fn, parked,
+      checkDrift: async () => readMergeableDetailed('not logged into any GitHub hosts'),
+      driftClock: fakeDriftClock(),
+      credentialHorizon: { onLapse: async () => 'started' },
+    }).run({ ...REQUEST, run: 'park-run', env: { PATH: '/usr/bin' } });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const open = new Inbox(inboxDir).open();
+    expect(open).toHaveLength(1);
+    // Without this the board says the run is waiting for an answer while the run keeps
+    // taking tool calls with a credential that cannot work.
+    expect(parked.get('park-run')).toBe(open[0]?.key);
+  });
+
+  it('a successor session clears the blocker its predecessor raised for the same goal', async () => {
+    const inboxDir = join(home, 'inbox-handoff');
+    const gotchasDir = join(home, 'gotchas-handoff');
+
+    const { fn } = pushOnce();
+    await new SdkEngine({
+      journalPath, inboxDir, gotchasDir, queryFn: fn,
+      checkDrift: async () => readMergeableDetailed(
+        JSON.stringify({ mergeable: 'CONFLICTING', baseRefName: 'develop' }),
+      ),
+      driftClock: fakeDriftClock(),
+    }).run({ ...REQUEST, run: 'handoff-goal', goal: 'handoff-goal', env: { PATH: '/usr/bin' } });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(new Inbox(inboxDir).open()).toHaveLength(1);
+
+    // The run hit its ceiling and handed off. The successor carries a new segment name
+    // and the same stable goal, rebases, and pushes something mergeable.
+    const { fn: fn2 } = pushOnce();
+    await new SdkEngine({
+      journalPath, inboxDir, gotchasDir, queryFn: fn2,
+      checkDrift: async () => readMergeableDetailed(
+        JSON.stringify({ mergeable: 'MERGEABLE', baseRefName: 'develop' }),
+      ),
+      driftClock: fakeDriftClock(),
+    }).run({ ...REQUEST, run: 'handoff-goal-2', goal: 'handoff-goal', env: { PATH: '/usr/bin' } });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(new Inbox(inboxDir).open()).toHaveLength(0);
+  });
+
+  it('an ask carries the stable goal, so an answer reaches the session that is live', async () => {
+    const inboxDir = join(home, 'inbox-goal-id');
+    const { fn } = pushOnce();
+    await new SdkEngine({
+      journalPath, inboxDir, gotchasDir: join(home, 'gotchas-goal-id'), queryFn: fn,
+      checkDrift: async () => readMergeableDetailed('not logged into any GitHub hosts'),
+      driftClock: fakeDriftClock(),
+      credentialHorizon: { onLapse: async () => 'started' },
+    }).run({ ...REQUEST, run: 'goal-id-2', goal: 'goal-id', env: { PATH: '/usr/bin' } });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const open = new Inbox(inboxDir).open();
+    expect(open).toHaveLength(1);
+    expect(open[0]?.goals).toContain('goal-id');
+  });
+});

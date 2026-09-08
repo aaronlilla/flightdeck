@@ -1048,11 +1048,20 @@ export class SdkEngine implements EngineLike {
                   // `CredentialHorizon.tick()` in the shipped binary, so neither the park
                   // nor the lock is cleared by anything except the process exiting. Raise
                   // the ask first, so the way out exists whatever the horizon does.
-                  const ask = credentialBlocker(request.run, outcome.account, outcome.reason);
-                  inbox.raise(ask);
+                  // `goal` rather than the segment name alone. A handoff renames the
+                  // segment, and answer delivery reads `entry.goals`, so an ask addressed
+                  // only to `goal-2` never reaches the session that is live. The key is
+                  // unaffected: `askKey` scopes a blocker on wording alone.
+                  const ask = { ...credentialBlocker(request.run, outcome.account, outcome.reason), goal };
+                  const entry = inbox.raise(ask);
                   journal.append({
                     event: 'run.blocked', run: request.run, actor: 'runner', reason: ask.question,
                   });
+                  // The ask says to answer it before carrying on, so the run has to
+                  // actually stop. Without this the board shows a blocked run that is
+                  // still taking tool calls with a credential that cannot work, and an
+                  // answer arrives for a session that has already finished.
+                  parkRun({ parked: this.parked, journal }, request.run, entry);
                   // Only an auth failure goes to the login flow. A rate limit clears with
                   // time, and `onLapse` would take the single-flight login lock, tell
                   // Aaron the account "needs a fresh login", and hold that lock against a
@@ -1076,7 +1085,13 @@ export class SdkEngine implements EngineLike {
                   // no reconstruction from the current read can name. That ask sat open
                   // on a branch that was already mergeable.
                   for (const entry of inbox.open()) {
-                    if (!entry.runs.includes(request.run)) continue;
+                    // By goal as well as by segment name. A blocker raised before a
+                    // handoff records the predecessor's name, and the successor that
+                    // rebases and pushes something mergeable runs under a different one.
+                    // Matching on the segment alone left the resolved conflict on the
+                    // board with nothing able to clear it.
+                    const mine = entry.runs.includes(request.run) || entry.goals.includes(goal);
+                    if (!mine) continue;
                     if (!/^Base drift\b/.test(entry.question)) continue;
                     inbox.answer(entry.key, 'cleared: a later read found the branch mergeable');
                     journal.append({
@@ -1086,7 +1101,7 @@ export class SdkEngine implements EngineLike {
                   return;
                 }
 
-                inbox.raise(outcome.ask);
+                inbox.raise({ ...outcome.ask, goal });
                 journal.append({
                   event: 'run.blocked', run: request.run, actor: 'runner', reason: outcome.ask.question,
                 });
