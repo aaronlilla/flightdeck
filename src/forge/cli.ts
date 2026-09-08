@@ -34,7 +34,7 @@ import { autoMergeAllowed, councilPolicy, repoAllowedForCouncil } from './counci
 import { redactPrBody } from './council/redact-sinks.js';
 import { SEVERITY_RANK } from './council/synthesis.js';
 import { runCutover } from './cutover.js';
-import { readLoginLock } from './credential-horizon.js';
+import { CredentialHorizon, readLoginLock } from './credential-horizon.js';
 import { buildBurnLedger, checkBudget } from './governor.js';
 import { reconcileBurnOnce } from './burn-reconcile.js';
 import { planIntakeWrites } from './intake/dryRun.js';
@@ -86,6 +86,16 @@ import {
 import { readChainEnv } from './chain-env.js';
 import { buildChainDeps, hasRunRegistered } from './chain-wire.js';
 import { isGoalFile } from './intake/goalFile.js';
+
+
+/** The port the console is actually served on: `FORGE_PORT` when a second `forge up` was
+ *  started on one, else the default. A link that names the wrong port sends a person to a
+ *  page that is not there. */
+function consolePort(): number {
+  const raw = process.env['FORGE_PORT'];
+  const parsed = raw ? Number(raw) : NaN;
+  return Number.isFinite(parsed) ? parsed : FORGE_PORT;
+}
 
 export interface CliResult {
   code: number;
@@ -805,17 +815,6 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         column: 'forge', started: Date.now(), owner: 'forge',
         className: plannedClassName, model: plannedModel,
       });
-      const engine = deps.engine ?? new SdkEngine({
-        journalPath: journalPath(), inboxDir: inboxDir(), gotchasDir: gotchasDir(),
-        killSwitch: () => readKillSwitch(killSwitchPath()).engaged,
-        // I12: written the moment the SDK's init message names the session, not after
-        // the first turn resolves -- a process killed mid-segment still leaves a
-        // registry row and a lane `reconcileRegistry` can resume.
-        onSessionStarted: (_run, sessionId, model) => {
-          registry.setSession(slug, sessionId, model);
-          lanes.put(slug, { session_id: sessionId });
-        },
-      });
       // P4.7/I9: the real actuator, so a model-mismatch turn actually parks (writes the
       // park record the PreToolUse hook checks on this run's own next tool call) rather
       // than only journaling `governor.parked`/`warden.parked` with nothing acting on it.
@@ -824,6 +823,40 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       const actuatorJournal = new Journal(journalPath());
       const actuator = new WardenActuator({
         journal: actuatorJournal, journalPath: journalPath(), registry, lanes,
+      });
+      // Where a `gh` credential lapse from the drift check lands. An expired token
+      // reads as an unknown mergeable state, and answering that with "rebase onto the
+      // base branch" asks for something no rebase can deliver. The park goes under
+      // `credential:github`: the key `warden-tick.ts` clears once the credential is good
+      // again, and the id the console's own GitHub integration row uses, so the two name
+      // one credential rather than two.
+      const credentialHorizon = new CredentialHorizon({
+        journal: actuatorJournal,
+        blockers: new BlockerBoard({ journal: actuatorJournal, actuator }),
+        // The one message Aaron gets, on a surface he already watches.
+        // `CredentialHorizon` redacts before calling this, so nothing here re-reads a
+        // secret.
+        notifyAaron: (message) => {
+          actuatorJournal.append({ event: 'note', run: slug, actor: 'warden', note: message });
+        },
+        // A worker runs unattended, so it never opens an interactive login itself:
+        // that hangs on a prompt nobody is there to answer. It points at the console's
+        // GitHub row instead, where Reconnect runs `gh auth login --web` with a person
+        // present.
+        startFlow: async () => ({ page: `http://127.0.0.1:${consolePort()}/#integrations` }),
+        isAlive: processAlive,
+      });
+      const engine = deps.engine ?? new SdkEngine({
+        journalPath: journalPath(), inboxDir: inboxDir(), gotchasDir: gotchasDir(),
+        killSwitch: () => readKillSwitch(killSwitchPath()).engaged,
+        credentialHorizon,
+        // I12: written the moment the SDK's init message names the session, not after
+        // the first turn resolves -- a process killed mid-segment still leaves a
+        // registry row and a lane `reconcileRegistry` can resume.
+        onSessionStarted: (_run, sessionId, model) => {
+          registry.setSession(slug, sessionId, model);
+          lanes.put(slug, { session_id: sessionId });
+        },
       });
       const worker = new Worker({
         run: slug,

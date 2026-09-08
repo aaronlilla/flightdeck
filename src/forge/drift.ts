@@ -80,15 +80,46 @@ export interface MergeableRead {
   /** Only set when `state` is UNKNOWN for a classifiable reason -- an ordinary
    *  still-computing UNKNOWN carries none, since there is nothing to classify. */
   reason?: Exclude<UnknownReason, 'other'>;
+  /** Exactly what the `gh` call printed, so a caller raising an ask can quote the
+   *  failure a person has to act on rather than describe it second-hand. Redact it
+   *  before it leaves the process: `gh` prints tokens in some error URLs. */
+  output?: string;
+  /** The pull request's own base branch, read off the same `gh` call. Undefined when the
+   *  call never produced one -- an unreadable base is said out loud, never guessed at. */
+  base?: string;
 }
 
 /** `readMergeable` plus the reason, when the output itself explains the failure rather
- *  than the state genuinely being undecided. */
+ *  than the state genuinely being undecided, plus the base branch and the raw output. */
 export function readMergeableDetailed(output: string): MergeableRead {
-  const state = readMergeable(output);
-  if (state !== 'UNKNOWN') return { state };
-  const reason = classifyUnknown(output ?? '');
-  return reason === 'other' ? { state } : { state, reason };
+  const text = output ?? '';
+  const state = readMergeable(text);
+  const base = readBaseRef(text);
+  const withBase = base === undefined ? {} : { base };
+  if (state !== 'UNKNOWN') return { state, output: text, ...withBase };
+  const reason = classifyUnknown(text);
+  return reason === 'other'
+    ? { state, output: text, ...withBase }
+    : { state, reason, output: text, ...withBase };
+}
+
+/**
+ * The base branch `gh pr view --json ...,baseRefName` reported, when it reported one.
+ *
+ * Undefined for output that is not JSON, carries no `baseRefName`, or carries an empty
+ * one: a base nobody could read is named as unreadable, never defaulted to `main`. A
+ * guessed base in a question is worse than no base, because it reads as a fact.
+ */
+export function readBaseRef(output: string): string | undefined {
+  try {
+    const parsed = JSON.parse(output ?? '') as { baseRefName?: unknown };
+    const base = parsed.baseRefName;
+    if (typeof base !== 'string') return undefined;
+    const trimmed = base.trim();
+    return trimmed === '' ? undefined : trimmed;
+  } catch {
+    return undefined;
+  }
 }
 
 export type DriftOutcome =
@@ -105,13 +136,34 @@ export type DriftOutcome =
 export function classifyDrift(
   run: string, output: string, base = 'the base branch', ghAccount = 'gh',
 ): DriftOutcome {
-  const { state, reason } = readMergeableDetailed(output);
+  const read = readMergeableDetailed(output);
+  // The explicit `base` argument wins over anything the output happened to name: this
+  // overload's callers pass the base they already know, and its default is the literal
+  // no-branch wording.
+  return classifyDriftRead(run, { ...read, base }, ghAccount);
+}
+
+/**
+ * `classifyDrift` for a read that has already happened -- the shape the engine's retry
+ * window returns, so the reason and the base survive the wait instead of being re-derived
+ * from output the caller may not have (a specimen driving `checkDrift` returns a state,
+ * not `gh` text).
+ *
+ * The base named in the question is the one the read itself reported. When the read
+ * reported none, `driftBlocker`'s own no-branch wording stands: an unreadable base is
+ * said as unreadable, never filled in with a guess.
+ */
+export function classifyDriftRead(
+  run: string, read: MergeableRead, ghAccount = 'gh',
+): DriftOutcome {
+  const { state, reason, base } = read;
   if (state === 'MERGEABLE') return { kind: 'clear' };
   if (reason === 'auth' || reason === 'rate-limit') return { kind: 'credential-lapse', account: ghAccount };
-  const ask = driftBlocker(run, state, base);
+  const ask = base === undefined ? driftBlocker(run, state) : driftBlocker(run, state, base);
   // driftBlocker only returns undefined for MERGEABLE, already handled above, but the
   // type still allows it -- fall back to a blocker rather than silently clearing.
-  return { kind: 'blocker', ask: ask ?? { run, kind: 'blocker', question: `Base drift against ${base}: unknown state.`, options: ['rebase and continue', 'stop and leave it for review'] } };
+  const named = base ?? 'the base branch';
+  return { kind: 'blocker', ask: ask ?? { run, kind: 'blocker', question: `Base drift against ${named}: unknown state.`, options: ['rebase and continue', 'stop and leave it for review'] } };
 }
 
 /**
@@ -155,4 +207,28 @@ export async function resolveMergeable(
     state = await check();
   }
   return state;
+}
+
+/**
+ * `resolveMergeable` for a read that carries its own reason.
+ *
+ * The retry window exists for GitHub still computing a mergeable state after a push, and
+ * that is the only UNKNOWN worth waiting on. An UNKNOWN whose output already says why --
+ * an expired token, a rate limit -- is a definite answer arriving early: waiting ninety
+ * seconds for it to change is ninety seconds a run spends learning nothing, and the
+ * answer at the end is the same one it had at the start.
+ */
+export async function resolveMergeableRead(
+  check: () => Promise<MergeableRead>,
+  clock: DriftClock = REAL_DRIFT_CLOCK,
+  intervalMs = 10_000,
+  windowMs = 90_000,
+): Promise<MergeableRead> {
+  const deadline = clock.now() + windowMs;
+  let read = await check();
+  while (read.state === 'UNKNOWN' && read.reason === undefined && clock.now() < deadline) {
+    await clock.sleep(intervalMs);
+    read = await check();
+  }
+  return read;
 }
