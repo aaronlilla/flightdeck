@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import * as api from '../api.js';
 import { HOP_NAMES } from '../../shared/console-model.js';
+import { actionable } from '../keyboard-actionable.js';
 import { costClass, ctxPercent, kindLabel, laneCta, laneHeadline, stateOf } from '../laneVM.js';
 import { computeFreshness, freshnessClass, freshnessStamp, hm } from '../freshness.js';
 import { MessageCard } from './ConductorRail.js';
@@ -129,7 +130,7 @@ function StoryPanel({ story }: { story: LaneStory | null }): JSX.Element | null 
       ) : null}
       {story.brief ? (
         <div style={{ marginTop: 10 }}>
-          <span className="lbl" style={{ color: 'var(--ink2)', cursor: 'pointer' }} onClick={() => setBriefOpen((v) => !v)}>brief</span>
+          <span className="lbl" style={{ color: 'var(--ink2)', cursor: 'pointer' }} {...actionable(() => setBriefOpen((v) => !v))}>brief</span>
           {briefOpen ? <div className="m" style={{ fontSize: '10.5px', color: 'var(--ink2)', marginTop: 6 }}>{story.brief.excerpt}</div> : null}
         </div>
       ) : null}
@@ -210,11 +211,11 @@ function SummaryPanel({
         {driftNote ? <span style={{ color: 'var(--ink3)' }}> {driftNote}.</span> : null}
       </div>
       <div style={{ display: 'flex', gap: 8 }}>
-        <span className="btnS" style={{ padding: '6px 10px', fontSize: '9.5px' }} onClick={onRecheck}>Re-check</span>
+        <span className="btnS" style={{ padding: '6px 10px', fontSize: '9.5px' }} {...actionable(onRecheck)}>Re-check</span>
         <span
           className="btnS"
           style={{ padding: '6px 10px', fontSize: '9.5px', opacity: reauditRunning ? 0.5 : 1, cursor: reauditRunning ? 'default' : 'pointer' }}
-          onClick={reauditRunning ? undefined : onReaudit}
+          {...actionable(reauditRunning ? () => undefined : onReaudit)}
         >
           {reauditRunning ? 'Re-auditing…' : 'Re-audit'}
         </span>
@@ -347,7 +348,7 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
     >
       <div className="lbl" style={{ background: band.bg, color: band.ink, padding: '7px 20px', display: 'flex', justifyContent: 'space-between', gap: 12, borderRadius: '3px 3px 0 0' }}>
         <span>{band.text}</span>
-        <span style={{ cursor: 'pointer' }} onClick={onClose}>esc to close ✕</span>
+        <span style={{ cursor: 'pointer' }} {...actionable(onClose)}>esc to close ✕</span>
       </div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 22px', borderBottom: '1px solid var(--line)', flexWrap: 'wrap', gap: '12px 20px' }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, whiteSpace: 'nowrap' }}>
@@ -358,12 +359,12 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
           <span className="chip">{lane.model}</span>
           <span className="chip">{lane.repo}</span>
           <span className="chip">attempt {lane.attempt}</span>
-          <a className="m" style={{ fontSize: '10.5px' }} onClick={() => onOpenSandbox(lane.id)}>{lane.sandbox?.id ?? '--'}</a>
+          <a className="m" style={{ fontSize: '10.5px' }} {...actionable(() => onOpenSandbox(lane.id))}>{lane.sandbox?.id ?? '--'}</a>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 20, flexWrap: 'wrap' }}>
           <div style={{ textAlign: 'right' }}>
             <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 3 }}>tokens</div>
-            <span className={costClass(lane)} onClick={() => onOpenCost(lane.id)}>{fmtTokens(lane.tokens)}</span>
+            <span className={costClass(lane)} {...actionable(() => onOpenCost(lane.id))}>{fmtTokens(lane.tokens)}</span>
           </div>
           <div style={{ width: 140 }}>
             <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 4 }}>context {pct}% · ceiling 200k</div>
@@ -373,9 +374,9 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
           </div>
           <span className={freshnessClass(fresh)}>{freshnessStamp(fresh)}</span>
           <div style={{ display: 'flex', gap: 6 }}>
-            <span className={cta.cls} style={{ padding: '7px 11px', fontSize: '9.5px' }} onClick={() => onCommand(lane.id, cta.cmd)}>{cta.label}</span>
-            {canPause ? <span className="btnS" style={{ padding: '7px 11px', fontSize: '9.5px' }} onClick={() => onCommand(lane.id, 'pause')}>Pause</span> : null}
-            {canKill ? <span className="btnR" style={{ padding: '7px 11px', fontSize: '9.5px' }} onClick={() => onCommand(lane.id, 'kill')}>Kill</span> : null}
+            <span className={cta.cls} style={{ padding: '7px 11px', fontSize: '9.5px' }} {...actionable(() => onCommand(lane.id, cta.cmd))}>{cta.label}</span>
+            {canPause ? <span className="btnS" style={{ padding: '7px 11px', fontSize: '9.5px' }} {...actionable(() => onCommand(lane.id, 'pause'))}>Pause</span> : null}
+            {canKill ? <span className="btnR" style={{ padding: '7px 11px', fontSize: '9.5px' }} {...actionable(() => onCommand(lane.id, 'kill'))}>Kill</span> : null}
           </div>
         </div>
       </div>
@@ -455,8 +456,8 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter' && draft.trim()) { sendAndRefetch(draft); setDraft(''); } }}
             />
-            <span className="btnP" style={{ padding: '5px 10px', fontSize: '9.5px' }} onClick={() => { if (draft.trim()) { sendAndRefetch(draft); setDraft(''); } }}>Send ⏎</span>
-            <span className="btnS" style={{ padding: '5px 10px', fontSize: '9.5px' }} onClick={() => { if (draft.trim()) { amendAndRefetch(draft); setDraft(''); } }}>Amend</span>
+            <span className="btnP" style={{ padding: '5px 10px', fontSize: '9.5px' }} {...actionable(() => { if (draft.trim()) { sendAndRefetch(draft); setDraft(''); } })}>Send ⏎</span>
+            <span className="btnS" style={{ padding: '5px 10px', fontSize: '9.5px' }} {...actionable(() => { if (draft.trim()) { amendAndRefetch(draft); setDraft(''); } })}>Amend</span>
           </div>
         </div>
       </div>

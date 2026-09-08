@@ -2,6 +2,7 @@ import type { JSX } from 'react';
 import { useState } from 'react';
 
 import { computeFreshness, compactFreshnessStamp, freshnessClass, hm } from '../freshness.js';
+import { actionable } from '../keyboard-actionable.js';
 import { collapseWardenEvents } from '../laneVM.js';
 import type { Feed, Message } from '../../shared/console-model.js';
 
@@ -52,7 +53,7 @@ export function MessageCard({
           {message.btns && message.btns.length > 0 ? (
             <div style={{ display: 'flex', gap: 6, margin: '8px 0 0 12px', flexWrap: 'wrap' }}>
               {message.btns.map((b) => (
-                <span key={b.label} className={b.cls === 'destroy' ? 'btnR' : b.cls === 'answer' ? 'btnA' : b.cls === 'defer' ? 'btnS' : 'btnP'} style={{ padding: '6px 10px', fontSize: '9.5px' }} onClick={() => onCommand(b.cmd)}>
+                <span key={b.label} className={b.cls === 'destroy' ? 'btnR' : b.cls === 'answer' ? 'btnA' : b.cls === 'defer' ? 'btnS' : 'btnP'} style={{ padding: '6px 10px', fontSize: '9.5px' }} {...actionable(() => onCommand(b.cmd))}>
                   {b.label}
                 </span>
               ))}
@@ -82,7 +83,7 @@ export function MessageCard({
           {message.jid ? (
             <a
               style={{ fontWeight: 700, color: 'var(--ink)', cursor: 'pointer', position: 'relative' }}
-              onClick={() => onOpenJournal(message.jid as string)}
+              {...actionable(() => onOpenJournal(message.jid as string))}
               onMouseEnter={() => setShowTip(true)}
               onMouseLeave={() => setShowTip(false)}
             >
@@ -95,7 +96,7 @@ export function MessageCard({
             </a>
           ) : null}
           <span>{message.text}</span>
-          {message.undoable && !message.undone && message.jid ? <a style={{ fontWeight: 600 }} onClick={() => onUndo(message.jid as string)}>undo</a> : null}
+          {message.undoable && !message.undone && message.jid ? <a style={{ fontWeight: 600 }} {...actionable(() => onUndo(message.jid as string))}>undo</a> : null}
           <span className={freshnessClass(fresh)}>{compactFreshnessStamp(fresh)}</span>
         </div>
       );
@@ -128,14 +129,14 @@ export function MessageCard({
             <div style={{ display: 'flex', gap: 8, padding: '0 12px 12px' }}>
               {message.btns && message.btns.length > 0 ? (
                 message.btns.map((b) => (
-                  <span key={b.label} className={b.cls === 'go' ? 'btnP' : 'btnS'} onClick={() => onCommand(b.cmd)}>
+                  <span key={b.label} className={b.cls === 'go' ? 'btnP' : 'btnS'} {...actionable(() => onCommand(b.cmd))}>
                     {b.label}{b.cls === 'go' ? ' →' : ''}
                   </span>
                 ))
               ) : (
                 <>
-                  <span className="btnP" onClick={() => onCommand(`run ${message.k}`)}>Run plan →</span>
-                  <span className="btnS" onClick={() => onCommand(`dismiss ${message.k}`)}>Not now</span>
+                  <span className="btnP" {...actionable(() => onCommand(`run ${message.k}`))}>Run plan →</span>
+                  <span className="btnS" {...actionable(() => onCommand(`dismiss ${message.k}`))}>Not now</span>
                 </>
               )}
             </div>
@@ -156,14 +157,14 @@ export function MessageCard({
             <div style={{ display: 'flex', gap: 10, padding: '0 12px 12px' }}>
               {message.btns && message.btns.length > 0 ? (
                 message.btns.map((b) => (
-                  <span key={b.label} className={b.cls === 'destroy' ? 'btnR' : 'btnS'} onClick={() => onCommand(b.cmd)}>
+                  <span key={b.label} className={b.cls === 'destroy' ? 'btnR' : 'btnS'} {...actionable(() => onCommand(b.cmd))}>
                     {b.label}
                   </span>
                 ))
               ) : (
                 <>
-                  <span className="btnR" onClick={() => onCommand(`confirm ${message.k}`)}>Confirm</span>
-                  <span className="btnS" onClick={() => onCommand(`decline ${message.k}`)}>Not now</span>
+                  <span className="btnR" {...actionable(() => onCommand(`confirm ${message.k}`))}>Confirm</span>
+                  <span className="btnS" {...actionable(() => onCommand(`decline ${message.k}`))}>Not now</span>
                 </>
               )}
             </div>
@@ -182,7 +183,7 @@ export function MessageCard({
             <>
               <div style={{ display: 'flex', gap: 6, padding: '0 12px 10px', flexWrap: 'wrap' }}>
                 {message.opts?.map((o) => (
-                  <span key={o} className="btnA" style={{ padding: '6px 10px', fontSize: '9.5px' }} onClick={() => onCommand(`answer ${message.askKey ?? ''} ${o}`)}>
+                  <span key={o} className="btnA" style={{ padding: '6px 10px', fontSize: '9.5px' }} {...actionable(() => onCommand(`answer ${message.askKey ?? ''} ${o}`))}>
                     {o}
                   </span>
                 ))}
@@ -255,10 +256,10 @@ export function ConductorRail(props: ConductorRailProps): JSX.Element {
         <span
           className="m"
           style={{ fontSize: 10, fontWeight: 700, color: 'var(--block)', cursor: pending > 0 ? 'pointer' : 'default' }}
-          onClick={() => {
+          {...actionable(() => {
             if (!oldestPendingKey) return;
             document.getElementById(`rail-msg-${oldestPendingKey}`)?.scrollIntoView({ block: 'center' });
-          }}
+          })}
         >
           {pending > 0 ? `${pending} waiting ↓` : ''}
         </span>
@@ -274,7 +275,7 @@ export function ConductorRail(props: ConductorRailProps): JSX.Element {
         <>
           <div style={{ margin: '0 16px 8px', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {QUICK_COMMANDS.map(([label, command]) => (
-              <span key={label} className="chip chipB" onClick={() => onSend(command)}>{label}</span>
+              <span key={label} className="chip chipB" {...actionable(() => onSend(command))}>{label}</span>
             ))}
           </div>
           <div style={{ margin: '0 16px 16px', background: 'var(--well)', boxShadow: 'inset 0 2px 5px rgba(0,0,0,.6)', borderRadius: 3, padding: '8px 8px 8px 12px', display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -283,7 +284,7 @@ export function ConductorRail(props: ConductorRailProps): JSX.Element {
               onChange={(e) => onComposerChange(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter' && composer.trim()) { onSend(composer); onComposerChange(''); } }}
             />
-            <span className="btnP" style={{ padding: '5px 10px', fontSize: '9.5px' }} onClick={() => { if (composer.trim()) { onSend(composer); onComposerChange(''); } }}>Send ⏎</span>
+            <span className="btnP" style={{ padding: '5px 10px', fontSize: '9.5px' }} {...actionable(() => { if (composer.trim()) { onSend(composer); onComposerChange(''); } })}>Send ⏎</span>
           </div>
         </>
       ) : (

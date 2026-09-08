@@ -1,6 +1,7 @@
 import type { JSX } from 'react';
 import { useRef, useState } from 'react';
 
+import { actionable } from '../keyboard-actionable.js';
 import type { QueueItem, QueueItemState, QueueSource } from '../../shared/console-model.js';
 
 export interface QueueViewProps {
@@ -92,19 +93,19 @@ function QueueCard({ item, onRemove, onRetry, onMerge, onPromote }: {
               <div style={{ display: 'flex', gap: 6 }}>
                 <span
                   className="btnR" style={{ padding: '7px 9px', fontSize: 9.5, flex: 1, textAlign: 'center' }}
-                  onClick={() => { setMergeConfirmOpen(false); onMerge(item.id); }}
+                  {...actionable(() => { setMergeConfirmOpen(false); onMerge(item.id); })}
                 >
                   Confirm merge
                 </span>
                 <span
                   className="btnS" style={{ padding: '7px 9px', fontSize: 9.5, flex: 1, textAlign: 'center' }}
-                  onClick={() => setMergeConfirmOpen(false)}
+                  {...actionable(() => setMergeConfirmOpen(false))}
                 >
                   Cancel
                 </span>
               </div>
             ) : onMerge ? (
-              <span className="btnA" style={{ padding: '7px 9px', fontSize: 9.5, width: '100%', textAlign: 'center' }} onClick={() => setMergeConfirmOpen(true)}>
+              <span className="btnA" style={{ padding: '7px 9px', fontSize: 9.5, width: '100%', textAlign: 'center' }} {...actionable(() => setMergeConfirmOpen(true))}>
                 Merge
               </span>
             ) : null}
@@ -127,16 +128,16 @@ function QueueCard({ item, onRemove, onRetry, onMerge, onPromote }: {
               <span
                 className="btnA"
                 style={{ padding: '7px 9px', fontSize: 9.5, width: '100%', textAlign: 'center', opacity: promoteVersion.trim() && promoteMessage.trim() ? 1 : 0.5 }}
-                onClick={() => {
+                {...actionable(() => {
                   if (!promoteVersion.trim() || !promoteMessage.trim()) return;
                   onPromote(item.id, promoteVersion.trim(), promoteMessage.trim());
-                }}
+                })}
               >
                 Confirm promote
               </span>
             </div>
           ) : (
-            <span className="btnA" style={{ padding: '7px 9px', fontSize: 9.5, width: '100%', textAlign: 'center' }} onClick={() => setPromoteOpen(true)}>
+            <span className="btnA" style={{ padding: '7px 9px', fontSize: 9.5, width: '100%', textAlign: 'center' }} {...actionable(() => setPromoteOpen(true))}>
               Promote
             </span>
           )
@@ -144,7 +145,7 @@ function QueueCard({ item, onRemove, onRetry, onMerge, onPromote }: {
           <span
             className={taxon.cta.cls}
             style={{ padding: '7px 9px', fontSize: 9.5, width: '100%', textAlign: 'center' }}
-            onClick={() => (taxon.cta.action === 'retry' ? onRetry(item.id) : taxon.cta.action === 'remove' ? onRemove(item.id) : undefined)}
+            {...actionable(() => (taxon.cta.action === 'retry' ? onRetry(item.id) : taxon.cta.action === 'remove' ? onRemove(item.id) : undefined))}
           >
             {taxon.cta.label}
           </span>
@@ -199,7 +200,7 @@ function AddWork({ onAdd }: { onAdd: (source: QueueSource, input: string) => voi
     <div className="plate" style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
       <div style={{ display: 'flex', gap: 8 }}>
         {(['ticket', 'brief', 'query', 'backlog', 'hotfix'] as const).map((s) => (
-          <span key={s} className={`chip chipB ${source === s ? 'chipOn' : ''}`} onClick={() => setSource(s)}>
+          <span key={s} className={`chip chipB ${source === s ? 'chipOn' : ''}`} {...actionable(() => setSource(s))}>
             {SOURCE_LABEL[s]}
           </span>
         ))}
@@ -207,7 +208,7 @@ function AddWork({ onAdd }: { onAdd: (source: QueueSource, input: string) => voi
       {source === 'query' ? (
         <div style={{ display: 'flex', gap: 8 }}>
           {QUERY_TEMPLATES.map((t) => (
-            <span key={t.label} className="chip" style={{ cursor: 'pointer' }} onClick={() => fillTemplate(t.jql)}>
+            <span key={t.label} className="chip" style={{ cursor: 'pointer' }} {...actionable(() => fillTemplate(t.jql))}>
               {t.label}
             </span>
           ))}
@@ -236,7 +237,7 @@ function AddWork({ onAdd }: { onAdd: (source: QueueSource, input: string) => voi
           className="btnP"
           style={{ padding: '5px 10px', fontSize: 9.5, alignSelf: 'flex-end', opacity: holdsPlaceholder ? 0.5 : 1 }}
           title={holdsPlaceholder ? 'type over the KEY placeholder first' : undefined}
-          onClick={submit}
+          {...actionable(submit)}
         >
           Add ⏎
         </span>
@@ -270,10 +271,10 @@ export function QueueView(props: QueueViewProps): JSX.Element {
               <span className="chip" style={{ color: 'var(--park)', borderColor: 'var(--park)' }}>
                 {pauseReason ? `paused — ${pauseReason}` : 'paused'}
               </span>
-              <span className="btnP" style={{ padding: '6px 10px', fontSize: 9.5 }} onClick={onResume}>Resume queue</span>
+              <span className="btnP" style={{ padding: '6px 10px', fontSize: 9.5 }} {...actionable(onResume)}>Resume queue</span>
             </>
           ) : (
-            <span className="btnS" style={{ padding: '6px 10px', fontSize: 9.5 }} onClick={onPause}>Pause queue</span>
+            <span className="btnS" style={{ padding: '6px 10px', fontSize: 9.5 }} {...actionable(onPause)}>Pause queue</span>
           )}
         </div>
       </div>

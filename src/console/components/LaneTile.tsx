@@ -1,6 +1,7 @@
 import type { JSX, MouseEvent } from 'react';
 import { useEffect, useRef } from 'react';
 
+import { actionable } from '../keyboard-actionable.js';
 import {
   costClass, costTip, ctxPercent, ctxTip, kindLabel, laneCta, mergeableWhy, modelTip, plainLine, prSummaryParts,
   stateOf, tileCapText, tileHeadlineParts,
@@ -63,7 +64,7 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
       data-testid={`lane-${lane.id}`}
       data-state={lane.state}
       style={{ borderColor: lane.state === 'parked' ? 'var(--park)' : undefined, opacity }}
-      onClick={() => onOpen(lane.id)}
+      {...actionable(() => onOpen(lane.id))}
     >
       {lane.state === 'parked' ? (
         <div
@@ -122,7 +123,7 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
         <span
           className={costClass(lane, !fresh.verified)}
-          onClick={(e) => { e.stopPropagation(); onOpenCost(lane.id); }}
+          {...actionable((e) => { e?.stopPropagation?.(); onOpenCost(lane.id); })}
           onMouseEnter={(e) => showTip('cost', e, costTip(lane, fresh))}
           onMouseLeave={() => hideTip('cost')}
         >
@@ -149,7 +150,7 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
           <span
             className={cta.cls}
             style={{ padding: '7px 9px', fontSize: '9.5px', flex: 1 }}
-            onClick={(e) => { e.stopPropagation(); onCommand(lane.id, cta.cmd); }}
+            {...actionable((e) => { e?.stopPropagation?.(); onCommand(lane.id, cta.cmd); })}
           >
             {cta.label}
           </span>

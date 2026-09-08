@@ -2,6 +2,7 @@ import type { JSX } from 'react';
 import { useEffect, useState } from 'react';
 
 import * as api from '../api.js';
+import { actionable } from '../keyboard-actionable.js';
 import { capText, costClass, laneHeadline } from '../laneVM.js';
 import { hm } from '../freshness.js';
 import type { CostStep, Lane } from '../../shared/console-model.js';
@@ -40,7 +41,7 @@ export function CostSheet({ lane, onClose, onKill }: CostSheetProps): JSX.Elemen
     <div className="plate" data-testid="cost-sheet" style={{ width: 520, maxWidth: 'calc(100vw - 40px)' }}>
       <div className="lbl" style={{ padding: '7px 20px', display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--line)' }}>
         <span title={laneHeadline(lane).runId}>Cost · {laneHeadline(lane).main}</span>
-        <span style={{ cursor: 'pointer' }} onClick={onClose}>esc ✕</span>
+        <span style={{ cursor: 'pointer' }} {...actionable(onClose)}>esc ✕</span>
       </div>
       <div style={{ padding: '18px 22px', display: 'flex', flexDirection: 'column', gap: 14 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 18 }}>
@@ -53,7 +54,7 @@ export function CostSheet({ lane, onClose, onKill }: CostSheetProps): JSX.Elemen
             {capText(lane)}{capEnforcementFailedJid ? ` · cap event failed (${capEnforcementFailedJid})` : ''} · burn {burnText}
           </div>
           <span style={{ flex: 1 }} />
-          {over ? <span className="btnR" onClick={() => onKill(lane.id)}>Kill attempt</span> : null}
+          {over ? <span className="btnR" {...actionable(() => onKill(lane.id))}>Kill attempt</span> : null}
         </div>
         {loadFailed ? (
           <div className="m" style={{ fontSize: 11, color: 'var(--block)' }}>could not load the step breakdown.</div>
