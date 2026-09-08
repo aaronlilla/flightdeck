@@ -298,6 +298,53 @@ describe('ConsoleReads.lanesResponse: title and sourceUrl', () => {
     expect(chip?.text).not.toMatch(/hotfix-fee-2/i);
   });
 
+  // Item 8: an operator bubble that resumes a ticket-carrying lane echoed the lane's
+  // full TITLE (a "Resume Close the fee-skip hole for card withdrawals with both fee
+  // fields omitted (BBZ-182)." bubble on the live board) because the seam handed to
+  // computeThread mapped every id straight to lane.title, skipping the ticket key
+  // entirely. It must echo the short ticket key instead.
+  it('item 8: an echoed command names a ticket-carrying lane by its ticket, not its long title', () => {
+    const forgeHomeDir = tempDir('console-reads-');
+    const briefsDir = join(forgeHomeDir, 'briefs');
+    mkdirSync(briefsDir, { recursive: true });
+    const briefPath = join(briefsDir, 'bbz-182.md');
+    writeFileSync(briefPath, '# Close the fee-skip hole for card withdrawals with both fee fields omitted\n', 'utf8');
+
+    const queueStore = new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl'));
+    queueStore.append({
+      id: 'Q-1', at: 1, source: 'ticket', input: 'BBZ-182', ticket: 'BBZ-182', repo: 'o/n',
+      briefPath, branch: 'feature/bbz-182', worktreePath: 'w', base: 'develop',
+      state: 'running', reason: null, runKey: 'queue-BBZ-182', pr: null, journalIds: [],
+      createdAt: 1, updatedAt: 1,
+    });
+
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'queue-BBZ-182', actor: 'runner' });
+    journal.close();
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put('queue-BBZ-182', { column: 'BBZ-182' });
+
+    const threadDir = join(forgeHomeDir, 'console');
+    mkdirSync(threadDir, { recursive: true });
+    writeFileSync(
+      join(threadDir, 'thread.jsonl'),
+      `${JSON.stringify({ k: 'm1', type: 'operator', text: 'resume queue-BBZ-182', ts: 1, source: 'operator' })}\n`,
+      'utf8',
+    );
+
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore, jiraSite: null,
+    });
+
+    const server = reads as unknown as { threadResponse(): { messages: Array<{ text: string }> } };
+    const thread = server.threadResponse();
+    const operator = thread.messages.find((m) => m.text.startsWith('Resume'));
+    expect(operator?.text).toBe('Resume BBZ-182.');
+  });
+
   it('item 7: GET /lanes reads a queue lane\'s checks/verdict/merged in the background, off repo+PR alone, with no chain packet at all', async () => {
     const forgeHomeDir = tempDir('console-reads-');
     const { writeAttestation } = await import('../../../src/forge/council/attest.js');

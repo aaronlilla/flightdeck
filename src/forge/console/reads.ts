@@ -34,8 +34,8 @@ import { computeJournalNarrative } from './journal-narrative.js';
 import { readAttestation } from '../council/attest.js';
 import { queueMergeAllowed } from '../queue-wire.js';
 import {
-  chainLinks, computeLanes, mergeableFor, mergeReadyReportFrom, tokensToday, titleFor, titleFromHeading,
-  windowLanes, type LanesInput,
+  chainLinks, computeLanes, labelFor as laneLabelFor, mergeableFor, mergeReadyReportFrom, tokensToday, titleFor,
+  titleFromHeading, windowLanes, type LanesInput,
 } from './lanes.js';
 import { computeLaneStory, type GitCommit } from './story.js';
 import { readRetired, retiredPath } from './retire.js';
@@ -572,10 +572,15 @@ export class ConsoleReads {
     // Deliverable 6: every chain link (a handed-off successor run, not only the root)
     // maps to the same root lane's title -- a chip about the successor used to read its
     // own bare run id, since `GET /lanes` only ever carries the root's own id.
-    const titles = new Map<string, string | null>();
+    // Item 8: every chip and echoed command on the rail names a lane through the one
+    // shared `labelFor` (ticket key first, then title, then a manual lane's own slug),
+    // never the lane's bare `title` -- that used to leave a long-titled lane's whole
+    // title standing in for what should have read as its short ticket key.
+    const titles = new Map<string, string>();
     for (const lane of this.lanesResponse(true, true).lanes) {
+      const label = laneLabelFor(lane.id, (id) => (id === lane.id ? { ticket: lane.ticket, title: lane.title } : null));
       for (const link of chainLinks(fleet.runs, lane.id)) {
-        titles.set(link.key, lane.title);
+        titles.set(link.key, label);
       }
     }
     const titleFor = (id: string): string | null => titles.get(id) ?? null;

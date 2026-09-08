@@ -330,9 +330,10 @@ describe('ConsoleWrites.command / kill confirm flow', () => {
     const cards = await writes.command('why is alpha stuck');
 
     const reply = cards.find((card) => card.type === 'reply')!;
-    // No lanesView wired here, so labelFor has nothing to name "alpha" by -- the same
-    // "a run" fallback deliverable 5 defines for a lane the caller cannot look up.
-    expect(reply.text.startsWith('a run is blocked: base drift')).toBe(true);
+    // No lanesView wired here, so labelFor has nothing to name "alpha" by beyond the
+    // id itself -- item 8's manual-lane fallback: an id shaped like none of ticket,
+    // self, chain or probe reads as its own slug, the name a person typed.
+    expect(reply.text.startsWith('alpha is blocked: base drift')).toBe(true);
     expect(reply.text).not.toContain('burn.mismatch');
   });
 

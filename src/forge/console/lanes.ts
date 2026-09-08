@@ -14,7 +14,7 @@ import type { ClassSpec } from '../policy.js';
 import type { Hop, Lane, LaneKind, LanePr, LaneQuestion, LaneSandbox, LaneState, LanesResponse, MergeReadyReport } from '../../shared/console-model.js';
 import { textFor } from './journal-route.js';
 import { plainStatus } from './plain.js';
-import { shortenShas, stripMachineIds } from '../../shared/humanize.js';
+import { shortenShas, stripMachineIds, ticketInId } from '../../shared/humanize.js';
 
 /** Journal rows that carry no narrative on their own: burn accounting, per-tool
  *  chatter, warden health pings. `stepText` and the "why is X stuck" reply both skip
@@ -174,6 +174,36 @@ export function titleFor(input: TitleInput): { title: string | null; sourceUrl: 
       return { title: input.briefHeading, sourceUrl: null };
   }
 }
+
+/** The ticket key and the title `labelFor` reads for a given id, when the caller
+ *  already has a real lane to answer from -- `null` for an id the caller does not
+ *  recognise at all, which still leaves `labelFor` its own fallbacks. */
+export interface LabelLookup {
+  ticket: string | null;
+  title: string | null;
+}
+
+/** What a person calls a lane, anywhere on the server -- the rail, the run thread, the
+ *  reply grammar (item 8: this used to have three separate implementations, one per
+ *  caller, that disagreed with each other -- the rail's own copy answered a lane's
+ *  full TITLE where the reply grammar answered its ticket key, so the same lane read
+ *  two different ways in two different corners of the console).
+ *
+ *  Order: `lookup`'s own ticket for this id, else the ticket key baked into the id's
+ *  own shape; else `lookup`'s own title, trimmed to 60 characters at a word boundary;
+ *  else, for a manual lane, the id itself (a person typed that name, so it is the one
+ *  they know); else whatever ticket key `ticketInId` can still read out of the id;
+ *  else a bare "a run". Never the raw run id on its own. */
+export function labelFor(id: string, lookup: (id: string) => LabelLookup | null = () => null): string {
+  const found = lookup(id);
+  const ticket = found?.ticket ?? ticketFor(id, undefined);
+  if (ticket) return ticket;
+  if (found?.title) return truncateAtWordBoundary(found.title, LABEL_TITLE_LIMIT);
+  if (laneKindFor(id) === 'manual') return id;
+  return ticketInId(id) ?? 'a run';
+}
+
+const LABEL_TITLE_LIMIT = 60;
 
 export interface MergeableInput {
   pr: LanePr | null;
