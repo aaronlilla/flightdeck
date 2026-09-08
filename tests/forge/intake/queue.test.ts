@@ -1092,3 +1092,18 @@ describe('promoteItem: A.7', () => {
     expect(promoted?.version).toBe('1.3.1');
   });
 });
+
+describe('a review item whose PR merged elsewhere', () => {
+  it('lands on done on the next sweep, with the PR named in the reason', async () => {
+    const { resetMergedSweep } = await import('../../../src/forge/intake/queue.js');
+    resetMergedSweep();
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    store.append({ id: item.id, at: 2000, state: 'review', repo: 'owner/name', pr: { no: 118, url: 'u', files: 1, add: 1, del: 0, draft: true }, updatedAt: 2000 } as never);
+    const { deps } = buildDeps(store, {});
+    deps.prMerged = async (_repo, pr) => pr === 118;
+    await runQueueTick(deps, store.all());
+    expect(store.get(item.id)?.state).toBe('done');
+    expect(store.get(item.id)?.reason).toBe('PR #118 merged outside the queue');
+  });
+});

@@ -349,6 +349,14 @@ export function buildQueueRuntimeDeps(
     backendHandoff: queueBackendHandoff(),
     jiraHandoff: queueJiraHandoff(),
     prSnapshot: queuePrSnapshot(),
+    prMerged: async (repo, pr) => {
+      const result = await execRun({
+        argv: ['gh', 'pr', 'view', String(pr), '--repo', repo, '--json', 'mergedAt'],
+        cwd: process.cwd(), owner: 'queue', cls: 'script', fullOutput: true, raw: true,
+      });
+      if (!result.ok) throw new Error('gh could not read the PR');
+      return Boolean((JSON.parse(result.full ?? result.tail) as { mergedAt?: string | null }).mergedAt);
+    },
   };
 }
 

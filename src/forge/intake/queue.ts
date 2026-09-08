@@ -225,6 +225,10 @@ export interface QueueRuntimeDeps {
    *  overlap check never fires, and `review`'s figures stay the honest zeros they always
    *  were. */
   prSnapshot?: (repo: string, pr: number) => Promise<{ files: string[]; add: number; del: number }>;
+  /** Whether a PR has merged, by whoever merged it. A review item whose PR merged by
+   *  hand (the CLI gate, GitHub itself) lands on `done` on the next sweep instead of
+   *  sitting in review with a Merge button forever (seen live 2026-09-07). */
+  prMerged?: (repo: string, pr: number) => Promise<boolean>;
   /** Reused from `chain.ts` unchanged, but `advanceItem` never passes `merge: true` --
    *  the queue's own decision (every item stops at a draft PR) lives in this file, not
    *  in whatever the caller wires this to. */
@@ -533,6 +537,10 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
  *  Module scope rather than a field, because the tick is a free function and one process
  *  owns one queue. */
 const advancing = new Set<string>();
+const MERGED_SWEEP_MS = 120_000;
+let lastMergedSweepAt = 0;
+/** Test seam: make the next tick sweep merged PRs regardless of the last sweep time. */
+export function resetMergedSweep(): void { lastMergedSweepAt = 0; }
 
 /** True while any item is mid-advance in this process (a council round, a launch, a
  *  handoff). The self loop's cutover reads it so a restart never lands on a hop half
@@ -556,6 +564,21 @@ export async function runQueueTick(deps: QueueRuntimeDeps, items: QueueItem[]): 
     slots -= 1;
     started += 1;
     toAdvance.push(item);
+  }
+
+  // Review items are not advanced, but a PR merged outside the queue must still close
+  // its item. Swept at most every two minutes so a tick stays cheap.
+  if (deps.prMerged && Date.now() - lastMergedSweepAt >= MERGED_SWEEP_MS) {
+    lastMergedSweepAt = Date.now();
+    for (const item of items.filter((row) => row.state === 'review' && row.pr && row.repo)) {
+      try {
+        if (await deps.prMerged(item.repo!, item.pr!.no)) {
+          writeTransition(item, { state: 'done', reason: `PR #${item.pr!.no} merged outside the queue` }, deps, 'queue.done', { hop: 'merged-elsewhere' });
+        }
+      } catch {
+        // an unreadable PR is not evidence of a merge; the next sweep asks again
+      }
+    }
   }
 
   let advanced = 0;
