@@ -238,10 +238,16 @@ export class WardenTick {
       if (this.parkedTrips.has(id)) continue;
 
       await guarded(`park:${id}`, async () => {
+        // health-repeat (S-b9d39bae548707e0): reported here shares `parkedTrips` with the
+        // parked branch below, not a set of its own -- an open trip is announced once
+        // either way, and the cleanup loop at the bottom of this method already clears
+        // whichever kind of id it was the moment the trip stops being open, so a re-trip
+        // still gets its own fresh line.
         const health = (): void => {
           this.deps.journal.append({
             event: 'warden.health', actor: 'warden', key: trip.key, signal: trip.signal, evidence: trip,
           });
+          this.parkedTrips.add(id);
         };
 
         // `trip.key`'s own pre-check: a fleet pid the tick was never meant to act on

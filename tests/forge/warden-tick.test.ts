@@ -124,8 +124,14 @@ describe('WardenTick.run', () => {
 
     const state = replay(journalPath);
     expect(state.events.some((e) => e.event === 'warden.parked')).toBe(false);
+    // health-repeat (S-b9d39bae548707e0): a trip on an unregistered key never got added
+    // to `parkedTrips`, so it never got the "parked once" treatment a registered run's
+    // trip gets. Every tick re-logged `warden.health` for as long as the trip stayed
+    // open, and in production the warden reported the same `stale-session` key 1073
+    // times in one run. One open trip across three ticks should journal one health row,
+    // matching the dedupe a registered run's trip already gets.
     const healthRows = state.events.filter((e) => e.event === 'warden.health' && e['key'] === 'pid:9999');
-    expect(healthRows.length).toBeGreaterThan(0);
+    expect(healthRows).toHaveLength(1);
     expect(readParkRecord('pid:9999')).toBeUndefined();
   });
 
@@ -155,8 +161,40 @@ describe('WardenTick.run', () => {
     const state = replay(journalPath);
     expect(state.events.some((e) => e.event === 'warden.parked' && e.run === 'pid:5555')).toBe(false);
     const healthRows = state.events.filter((e) => e.event === 'warden.health' && e['key'] === 'pid:5555');
-    expect(healthRows).toHaveLength(3);
+    expect(healthRows).toHaveLength(1);
     expect(readParkRecord('pid:5555')).toBeUndefined();
+  });
+
+  it('health-repeat: a stale-session trip on an unregistered fleet pid that stays open for '
+    + 'hundreds of ticks is journaled as warden.health once, not once per tick', async () => {
+    // Self finding, 2026-09-05: the warden reported `stale-session` 1073 times for the
+    // same handful of fleet pids over a few hours of `forge up` ticks, one row every
+    // ~30s while the same session file sat stale. `parkedTrips` is what dedupes a
+    // `warden.parked` row across ticks (parkGenericTrips adds the id there once the
+    // actuator confirms the park); the `health()` branch -- taken for every `pid:N` key,
+    // since a fleet pid never has a registry row or a lane -- never added the id to that
+    // set, so the same open trip re-journaled a fresh `warden.health` row on every single
+    // tick for as long as the session stayed stale.
+    const tick = new WardenTick({
+      journal, actuator, blockers: new BlockerBoard({ journal, actuator }),
+      now: () => Date.now(),
+      stuck: () => [makeStuck({
+        key: 'pid:51456', signal: 'stale-session',
+        hint: "fleet pid 51456's session file has not updated in 6 minutes",
+      })],
+      liveRuns: () => [],
+      reportFleetHealth: () => 0,
+      isRegisteredRun: () => false,
+    });
+
+    for (let i = 0; i < 30; i += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      await tick.run();
+    }
+
+    const state = replay(journalPath);
+    const healthRows = state.events.filter((e) => e.event === 'warden.health' && e['key'] === 'pid:51456');
+    expect(healthRows).toHaveLength(1);
   });
 
   it('still parks a registered run whose key passes isRegisteredRun', async () => {
