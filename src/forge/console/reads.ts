@@ -52,6 +52,7 @@ import { computeLaneSummary, computeReadiness, type PrFacts } from './summary.js
 import type { MergeReadyReport } from '../../shared/console-model.js';
 import { gitDrift, type DriftFn } from './drift.js';
 import { readChainEnv } from '../chain-env.js';
+import { shortenShas, stripMachineIds } from '../../shared/humanize.js';
 
 export interface ConsoleReadsOptions {
   lanes?: Lanes;
@@ -535,6 +536,16 @@ export class ConsoleReads {
         this.scheduleQueuePrRefresh(lane.id, repo, pr);
       }
     }
+    // Item 9: `computeLanes` already stripped `plain`/`reason` once, but both of the
+    // overrides above -- `plainStatus` recomputed for a queue lane's freshly-resolved
+    // `pr`, and `plainForQueueItem`'s own read of the queue item's raw `reason` (which
+    // can still carry an unshortened sha straight off a park reason, "checks are
+    // failure on head <40 hex characters>") -- run after that strip, not before it.
+    // The invariant this class promises -- no `plain`, `reason` or `status` leaves
+    // `ConsoleReads` carrying a 40-character sha or a run id -- has to hold here too,
+    // at the very end, or it only holds for whichever lanes this method never touched.
+    if (patched.plain) patched.plain = shortenShas(stripMachineIds(patched.plain));
+    if (patched.reason) patched.reason = shortenShas(stripMachineIds(patched.reason));
     return patched;
   }
 

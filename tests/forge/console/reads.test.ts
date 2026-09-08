@@ -345,6 +345,39 @@ describe('ConsoleReads.lanesResponse: title and sourceUrl', () => {
     expect(operator?.text).toBe('Resume BBZ-182.');
   });
 
+  // Item 9: a queue item's own park `reason` can carry an unshortened 40-character
+  // sha ("checks are failure on head <sha>, not green"); `plainForQueueItem` reads
+  // that raw reason AFTER `computeLanes` already stripped and shortened `plain` once,
+  // so the sha reached the board whole even though the tile's own sha read short.
+  it('item 9: a queue-parked lane\'s plain sentence never carries a 40-character sha', () => {
+    const forgeHomeDir = tempDir('console-reads-');
+    const queueStore = new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl'));
+    const sha = 'f284c653033e12549fdaa68212840987a328a824';
+    queueStore.append({
+      id: 'Q-1', at: 1, source: 'ticket', input: 'BBZ-1', ticket: 'BBZ-1', repo: 'o/n',
+      briefPath: null, branch: 'feature/bbz-1', worktreePath: 'w', base: 'develop',
+      state: 'parked', reason: `refused: checks are failure on head ${sha}, not green.`,
+      runKey: 'queue-BBZ-1', pr: null, journalIds: [], createdAt: 1, updatedAt: 1,
+    });
+
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'queue-BBZ-1', actor: 'runner' });
+    journal.close();
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put('queue-BBZ-1', { column: 'BBZ-1' });
+
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore, jiraSite: null,
+    });
+
+    const [lane] = reads.lanesResponse().lanes;
+    expect(lane!.plain).not.toContain(sha);
+    expect(lane!.plain).toContain(sha.slice(0, 7));
+  });
+
   it('item 7: GET /lanes reads a queue lane\'s checks/verdict/merged in the background, off repo+PR alone, with no chain packet at all', async () => {
     const forgeHomeDir = tempDir('console-reads-');
     const { writeAttestation } = await import('../../../src/forge/council/attest.js');

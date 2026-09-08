@@ -78,6 +78,20 @@ describe('computeWhat', () => {
     expect(computeWhat({ story: null, pr: null, drift: noDrift() })).toEqual([]);
   });
 
+  // Item 9: with no PR open, drift.commits is never populated (it only ever reads a
+  // PR's own commit range), so "what happened" fell back straight to the title alone.
+  // The story panel's own `commit` entries are the run's own commits too; they stand
+  // in here, newest first.
+  it('falls back to the story\'s own commit entries, newest first, when there is no PR at all', () => {
+    const s = story([
+      { at: 1, kind: 'commit', text: 'Committed: first fix' },
+      { at: 2, kind: 'commit', text: 'Committed: second fix' },
+      { at: 3, kind: 'commit', text: 'Committed: third fix' },
+    ]);
+    const what = computeWhat({ story: s, pr: null, drift: noDrift() });
+    expect(what).toEqual(['third fix.', 'second fix.', 'first fix.']);
+  });
+
   it('reduces the PR body to prose: drops a markdown heading, a fenced block, and list markers, keeping the first two sentences of the first paragraph', () => {
     const pr: PrFacts = {
       title: 'add the merge chip',
@@ -156,6 +170,16 @@ describe('computeReadiness', () => {
     const readiness = computeReadiness({ pr: null, attestation: null, mergeable: null, drift: noDrift() });
     expect(readiness.ok).toBe(false);
     expect(readiness.why).toContain('no PR is open yet');
+  });
+
+  // Item 9: with no PR at all, mergeableFor's own why (also "no PR yet") repeated the
+  // exact same fact computeReadiness had already said in its own words -- the live
+  // board read "Not ready: no PR is open yet; not audited yet; no PR yet."
+  it('never says "no PR" twice when mergeable also carries a no-PR refusal', () => {
+    const readiness = computeReadiness({
+      pr: null, attestation: null, mergeable: { ok: false, why: 'no PR yet' }, drift: noDrift(),
+    });
+    expect(readiness.why).toBe('no PR is open yet; not audited yet');
   });
 
   it('is not ready when checks are red', () => {
