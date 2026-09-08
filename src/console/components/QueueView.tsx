@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 
 import type { QueueItem, QueueItemState, QueueSource } from '../../shared/console-model.js';
 
@@ -169,13 +169,31 @@ const QUERY_TEMPLATES: { label: string; jql: string }[] = [
   { label: 'epic…', jql: 'parent = KEY' },
 ];
 
+// Sweep #14: a query template can carry a placeholder token the operator must type
+// over (the epic chip's `parent = KEY`) -- never a literal value Add is allowed to
+// submit as though it named a real epic.
+const TEMPLATE_PLACEHOLDER = 'KEY';
+const PLACEHOLDER_WORD = new RegExp(`\\b${TEMPLATE_PLACEHOLDER}\\b`);
+
 function AddWork({ onAdd }: { onAdd: (source: QueueSource, input: string) => void }): JSX.Element {
   const [source, setSource] = useState<QueueSource>('ticket');
   const [input, setInput] = useState('');
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const holdsPlaceholder = source === 'query' && PLACEHOLDER_WORD.test(input);
   const submit = (): void => {
-    if (!input.trim()) return;
+    if (!input.trim() || holdsPlaceholder) return;
     onAdd(source, input);
     setInput('');
+  };
+  const fillTemplate = (jql: string): void => {
+    setInput(jql);
+    const idx = jql.indexOf(TEMPLATE_PLACEHOLDER);
+    requestAnimationFrame(() => {
+      const el = inputRef.current;
+      if (!el) return;
+      el.focus();
+      if (idx >= 0) el.setSelectionRange(idx, idx + TEMPLATE_PLACEHOLDER.length);
+    });
   };
   return (
     <div className="plate" style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -189,7 +207,7 @@ function AddWork({ onAdd }: { onAdd: (source: QueueSource, input: string) => voi
       {source === 'query' ? (
         <div style={{ display: 'flex', gap: 8 }}>
           {QUERY_TEMPLATES.map((t) => (
-            <span key={t.label} className="chip" style={{ cursor: 'pointer' }} onClick={() => setInput(t.jql)}>
+            <span key={t.label} className="chip" style={{ cursor: 'pointer' }} onClick={() => fillTemplate(t.jql)}>
               {t.label}
             </span>
           ))}
@@ -208,12 +226,20 @@ function AddWork({ onAdd }: { onAdd: (source: QueueSource, input: string) => voi
           />
         ) : (
           <input
+            ref={inputRef}
             className="inp m" style={{ fontSize: 12 }} placeholder={SOURCE_PLACEHOLDER[source]} value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') submit(); }}
           />
         )}
-        <span className="btnP" style={{ padding: '5px 10px', fontSize: 9.5, alignSelf: 'flex-end' }} onClick={submit}>Add ⏎</span>
+        <span
+          className="btnP"
+          style={{ padding: '5px 10px', fontSize: 9.5, alignSelf: 'flex-end', opacity: holdsPlaceholder ? 0.5 : 1 }}
+          title={holdsPlaceholder ? 'type over the KEY placeholder first' : undefined}
+          onClick={submit}
+        >
+          Add ⏎
+        </span>
       </div>
     </div>
   );
