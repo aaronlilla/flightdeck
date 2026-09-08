@@ -140,8 +140,11 @@ export function assess(input: LivenessInput, thresholds: LivenessThresholds = DE
       continue;
     }
 
+    // A run inside a tool call is not idle: a jest run or an npm ci is one Bash call
+    // that stays silent for minutes, and the tool-budget signal below owns that case
+    // with the command class's own wall budget. Idle only judges a run between calls.
     const idleFor = input.now - run.lastEventAt;
-    if (idleFor >= thresholds.idleMs) {
+    if (idleFor >= thresholds.idleMs && !run.currentTool) {
       trips.push({
         key: run.run, signal: 'idle', threshold: thresholds.idleMs, observed: idleFor,
         since: run.lastEventAt,

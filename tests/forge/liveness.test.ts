@@ -35,6 +35,21 @@ describe('the idle signal', () => {
   });
 });
 
+describe('the idle signal while a tool call is in flight', () => {
+  it('does not trip idle for a run whose current tool call is still inside its class budget', () => {
+    // A jest run or an npm ci is one Bash call that stays silent for minutes. The
+    // tool-budget signal owns that case; idle must not park it first.
+    const trips = assess(baseInput({
+      runs: [{
+        run: 'r1', className: 'implement', lastEventAt: NOW - (DEFAULT_THRESHOLDS.idleMs + 60_000), context: 0,
+        currentTool: { name: 'Bash', startedAt: NOW - (DEFAULT_THRESHOLDS.idleMs + 60_000), cls: 'test' },
+      }],
+    }));
+    expect(trips.some((t) => t.signal === 'idle')).toBe(false);
+    expect(trips.some((t) => t.signal === 'tool-budget')).toBe(false);
+  });
+});
+
 describe('the tool-budget signal', () => {
   it('is silent one second inside the class budget', () => {
     const trips = assess(baseInput({
