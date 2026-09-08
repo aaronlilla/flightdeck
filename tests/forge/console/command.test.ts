@@ -86,7 +86,9 @@ describe('parseIntent', () => {
     expect(parseIntent("what's stuck")).toEqual({ kind: 'what-stuck' });
     expect(parseIntent('spend today')).toEqual({ kind: 'spend-today' });
     expect(parseIntent('status')).toEqual({ kind: 'status' });
-    expect(parseIntent('answer backfill')).toEqual({ kind: 'answer', text: 'backfill' });
+    expect(parseIntent('answer backfill')).toEqual({ kind: 'answer', askKey: null, text: 'backfill' });
+    expect(parseIntent('answer f92af4249f6a27ae Restart the forge MCP connection'))
+      .toEqual({ kind: 'answer', askKey: 'f92af4249f6a27ae', text: 'Restart the forge MCP connection' });
     expect(parseIntent('confirm abc123')).toEqual({ kind: 'confirm', token: 'abc123' });
     expect(parseIntent('run abc123')).toEqual({ kind: 'run-plan', token: 'abc123' });
     expect(parseIntent('dismiss abc123')).toEqual({ kind: 'dismiss', token: 'abc123' });
@@ -350,5 +352,107 @@ describe('ConsoleWrites.command / kill confirm flow', () => {
 
     expect(cards.some((card) => card.type === 'receipt')).toBe(true);
     expect(inbox.open()).toHaveLength(0);
+  });
+
+  it('deliverable 3: answer <askKey> <text> delivers only the text, never the key alongside it', async () => {
+    const raised = inbox.raise({ run: 'alpha', question: 'Restart the forge MCP connection?' });
+
+    const cards = await writes.command(`answer ${raised.key} Restart`);
+
+    const answered = inbox.entry(raised.key);
+    expect(answered?.answer).toBe('Restart');
+    const receipt = cards.find((card) => card.type === 'receipt')!;
+    expect(receipt.text).toBe('Answered "Restart the forge MCP connection?": Restart');
+  });
+});
+
+describe('ConsoleWrites: lane addressing by ticket key or title (deliverable 4)', () => {
+  function writesWithLanes(lanes: unknown[]): ConsoleWrites {
+    return new ConsoleWrites({
+      journalPath, registry, inbox, actuator,
+      authorized: () => true,
+      ledgerPath: join(dir, `actions-${Math.random()}.jsonl`),
+      capsOverridesPath: join(dir, `caps-${Math.random()}.json`),
+      rulesConfigPath: join(dir, `rules-${Math.random()}.json`),
+      integrationsConfigPath: join(dir, `integrations-${Math.random()}.json`),
+      lanesView: () => ({ at: Date.now(), lanes: lanes as never, tokensToday: 0, tokensPerMin: 0 }),
+    });
+  }
+
+  it('kill BBZ-182 resolves to the newest lane whose ticket matches, case-insensitively', async () => {
+    registry.admit({ goal: 'queue-BBZ-182-2', cwd: dir, briefPath: join(dir, 'a.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'queue-BBZ-182-2', actor: 'runner' });
+    const withLanes = writesWithLanes([
+      { id: 'queue-BBZ-182-1', ticket: 'BBZ-182', startedAt: 1_000, state: 'blocked' },
+      { id: 'queue-BBZ-182-2', ticket: 'bbz-182', startedAt: 5_000, state: 'blocked' },
+    ]);
+
+    const cards = await withLanes.command('kill BBZ-182');
+    const confirm = cards.find((card) => card.type === 'confirm')!;
+    expect(confirm.blast).toContain('queue-BBZ-182-2');
+    withLanes.stop();
+  });
+
+  it('resume BBZ-89 resolves and resumes only that lane, not every needs_aaron lane', async () => {
+    registry.admit({ goal: 'queue-BBZ-89', cwd: dir, briefPath: join(dir, 'a.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'queue-BBZ-89', actor: 'runner' });
+    appendOnce(journalPath, { event: 'run.paused', run: 'queue-BBZ-89', actor: 'runner' });
+    const withLanes = writesWithLanes([
+      { id: 'queue-BBZ-89', ticket: 'BBZ-89', startedAt: 1_000, state: 'paused' },
+    ]);
+
+    const cards = await withLanes.command('resume BBZ-89');
+    expect(actuator.resumed).toEqual(['queue-BBZ-89']);
+    expect(cards.some((card) => card.type === 'receipt')).toBe(true);
+    withLanes.stop();
+  });
+
+  it('cap BBZ-96 at 500k resolves by ticket before setting the cap', async () => {
+    registry.admit({ goal: 'queue-BBZ-96', cwd: dir, briefPath: join(dir, 'a.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'queue-BBZ-96', actor: 'runner' });
+    const withLanes = writesWithLanes([
+      { id: 'queue-BBZ-96', ticket: 'BBZ-96', startedAt: 1_000, state: 'running' },
+    ]);
+
+    const cards = await withLanes.command('cap BBZ-96 at 500k');
+    expect(cards.some((card) => card.type === 'receipt')).toBe(true);
+    expect(cards.some((card) => card.type === 'refusal')).toBe(false);
+    withLanes.stop();
+  });
+
+  it('why is BBZ-226 stuck resolves by ticket', async () => {
+    registry.admit({ goal: 'queue-BBZ-226', cwd: dir, briefPath: join(dir, 'a.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'queue-BBZ-226', actor: 'runner' });
+    appendOnce(journalPath, { event: 'run.blocked', run: 'queue-BBZ-226', actor: 'runner', reason: 'context ceiling' });
+    const withLanes = writesWithLanes([
+      { id: 'queue-BBZ-226', ticket: 'BBZ-226', startedAt: 1_000, state: 'blocked' },
+    ]);
+
+    const cards = await withLanes.command('why is BBZ-226 stuck');
+    const reply = cards.find((card) => card.type === 'reply')!;
+    expect(reply.text).toContain('context ceiling');
+    withLanes.stop();
+  });
+
+  it('names what it looked for when nothing matches', async () => {
+    const withLanes = writesWithLanes([{ id: 'queue-BBZ-1', ticket: 'BBZ-1', startedAt: 1_000, state: 'running' }]);
+
+    const cards = await withLanes.command('kill BBZ-9999');
+    const refusal = cards.find((card) => card.type === 'refusal')!;
+    expect(refusal.text).toBe('No lane matches "BBZ-9999".');
+    withLanes.stop();
+  });
+
+  it('falls back to a lane whose title contains the token when no ticket or id matches', async () => {
+    registry.admit({ goal: 'queue-brief-tidy', cwd: dir, briefPath: join(dir, 'a.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'queue-brief-tidy', actor: 'runner' });
+    const withLanes = writesWithLanes([
+      { id: 'queue-brief-tidy', ticket: null, title: 'tidy the queue worker', startedAt: 1_000, state: 'running' },
+    ]);
+
+    const cards = await withLanes.command('kill worker');
+    const confirm = cards.find((card) => card.type === 'confirm')!;
+    expect(confirm.blast).toContain('queue-brief-tidy');
+    withLanes.stop();
   });
 });

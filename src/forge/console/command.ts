@@ -117,7 +117,7 @@ function replyCard(source: string, text: string): Message {
 
 export type Intent =
   | { kind: 'pause'; repo?: string }
-  | { kind: 'resume' }
+  | { kind: 'resume'; lane?: string }
   | { kind: 'kill'; lane: string }
   | { kind: 'merge-ready' }
   | { kind: 'set-daily-cap'; amount: number }
@@ -126,7 +126,7 @@ export type Intent =
   | { kind: 'what-stuck' }
   | { kind: 'spend-today' }
   | { kind: 'status' }
-  | { kind: 'answer'; text: string }
+  | { kind: 'answer'; askKey: string | null; text: string }
   | { kind: 'confirm'; token: string }
   | { kind: 'run-plan'; token: string }
   | { kind: 'dismiss'; token: string }
@@ -160,6 +160,7 @@ export function parseIntent(raw: string): Intent {
     const repoMatch = text.match(/on\s+(\S+)/i);
     return { kind: 'pause', ...(repoMatch ? { repo: repoMatch[1] } : {}) };
   }
+  if ((match = text.match(/^resume\s+(\S+)$/i))) return { kind: 'resume', lane: match[1]! };
   if (/^resume$/i.test(text)) return { kind: 'resume' };
   if ((match = text.match(/^kill\s+(\S+)$/i))) return { kind: 'kill', lane: match[1]! };
   if (/^merge\s+ready\s+lanes?$/i.test(text)) return { kind: 'merge-ready' };
@@ -175,7 +176,15 @@ export function parseIntent(raw: string): Intent {
   if (/^what'?s\s+stuck\??$/i.test(text)) return { kind: 'what-stuck' };
   if (/^spend\s+today$/i.test(text)) return { kind: 'spend-today' };
   if (/^status$/i.test(text)) return { kind: 'status' };
-  if ((match = text.match(/^answer\s+(.+)$/i))) return { kind: 'answer', text: match[1]! };
+  // `answer <askKey> <text>` (deliverable 3): the first token is an ask key -- an id at
+  // least 8 hex characters long -- and only the text after it is the answer. Matching
+  // it here, ahead of the plain free-text form below, is what stops the whole tail
+  // ("f92af4249f6a27ae Restart the forge MCP connection") from being delivered to the
+  // run as if the operator had typed the key as part of their answer.
+  if ((match = text.match(/^answer\s+([0-9a-f]{8,})\s+(.+)$/i))) {
+    return { kind: 'answer', askKey: match[1]!, text: match[2]! };
+  }
+  if ((match = text.match(/^answer\s+(.+)$/i))) return { kind: 'answer', askKey: null, text: match[1]! };
   return { kind: 'unknown', text };
 }
 
@@ -326,6 +335,38 @@ export class ConsoleWrites {
     return tokensToday(replay(this.deps.journalPath).runs, Date.now());
   }
 
+  /**
+   * Deliverable 4: a lane addressed by a ticket key, a lane id, or a piece of its
+   * title -- resolved to the newest lane whose ticket matches (case-insensitive), else
+   * a lane whose id equals the token exactly, else a lane whose title contains the
+   * token (case-insensitive), in that order. Without a `lanesView` wired at all there
+   * is nothing here to resolve against, so the token passes through unchanged -- the
+   * same behaviour every command already had before this deliverable.
+   *
+   * Returns the resolved lane id, or a refusal message naming exactly what it looked
+   * for when `lanesView` is wired and nothing on the board matches.
+   */
+  private resolveLaneId(token: string): string | { refusal: string } {
+    const view = this.deps.lanesView?.();
+    if (!view) return token;
+    const lowerToken = token.toLowerCase();
+
+    let byTicket: (typeof view.lanes)[number] | undefined;
+    for (const lane of view.lanes) {
+      if ((lane.ticket ?? '').toLowerCase() !== lowerToken) continue;
+      if (!byTicket || lane.startedAt > byTicket.startedAt) byTicket = lane;
+    }
+    if (byTicket) return byTicket.id;
+
+    const byId = view.lanes.find((lane) => lane.id === token);
+    if (byId) return byId.id;
+
+    const byTitle = view.lanes.find((lane) => (lane.title ?? '').toLowerCase().includes(lowerToken));
+    if (byTitle) return byTitle.id;
+
+    return { refusal: `No lane matches "${token}".` };
+  }
+
   private readyToMergeRuns(): string[] {
     const { events } = replay(this.deps.journalPath);
     const rows = foldChainState(events);
@@ -429,6 +470,14 @@ export class ConsoleWrites {
       }
 
       case 'resume': {
+        if (intent.lane) {
+          const resolved = this.resolveLaneId(intent.lane);
+          if (typeof resolved !== 'string') return [refusalCard(source, resolved.refusal)];
+          const outcome = await resumeRun(resolved, this.runActionsDeps());
+          return [outcome.status === 200
+            ? receiptCard(source, outcome.body as ActionResult)
+            : refusalCard(source, (outcome.body as { message?: string }).message ?? `could not resume ${resolved}`)];
+        }
         const rows = this.deps.registry.all().filter((row) => this.deps.lanes?.get(row.goal)?.needs_aaron);
         const cards: Message[] = [];
         for (const row of rows) {
@@ -440,17 +489,20 @@ export class ConsoleWrites {
       }
 
       case 'kill': {
+        const resolved = this.resolveLaneId(intent.lane);
+        if (typeof resolved !== 'string') return [refusalCard(source, resolved.refusal)];
+        const laneId = resolved;
         const token = randomUUID();
         this.pendingConfirms.set(token, {
-          blast: `${intent.lane} is killed immediately; its worktree and process are gone`,
+          blast: `${laneId} is killed immediately; its worktree and process are gone`,
           run: async () => {
-            const outcome = await killRun(intent.lane, 'killed from the console', this.runActionsDeps());
+            const outcome = await killRun(laneId, 'killed from the console', this.runActionsDeps());
             return [outcome.status === 200
               ? receiptCard(source, outcome.body as ActionResult)
-              : refusalCard(source, (outcome.body as { message?: string }).message ?? `could not kill ${intent.lane}`)];
+              : refusalCard(source, (outcome.body as { message?: string }).message ?? `could not kill ${laneId}`)];
           },
         });
-        return [confirmCard(source, `${intent.lane} is killed immediately; its worktree and process are gone`, token)];
+        return [confirmCard(source, `${laneId} is killed immediately; its worktree and process are gone`, token)];
       }
 
       case 'merge-ready': {
@@ -483,19 +535,24 @@ export class ConsoleWrites {
       }
 
       case 'set-run-cap': {
-        const outcome = await setRunCap(intent.lane, intent.amount, this.runActionsDeps());
+        const resolved = this.resolveLaneId(intent.lane);
+        if (typeof resolved !== 'string') return [refusalCard(source, resolved.refusal)];
+        const outcome = await setRunCap(resolved, intent.amount, this.runActionsDeps());
         return [outcome.status === 200
           ? receiptCard(source, outcome.body as ActionResult)
           : refusalCard(source, `${(outcome.body as { error: string }).error} (FD-7)`)];
       }
 
       case 'why-stuck': {
-        const signals = (this.deps.stuck?.() ?? []).filter((signal) => signal.key === intent.lane);
+        const resolved = this.resolveLaneId(intent.lane);
+        if (typeof resolved !== 'string') return [refusalCard(source, resolved.refusal)];
+        const laneId = resolved;
+        const signals = (this.deps.stuck?.() ?? []).filter((signal) => signal.key === laneId);
         const fleet = replay(this.deps.journalPath);
-        const runEvents = fleet.events.filter((event) => event.run === intent.lane);
-        if (!signals.length && !runEvents.length) return [replyCard(source, `nothing known about ${intent.lane}`)];
+        const runEvents = fleet.events.filter((event) => event.run === laneId);
+        if (!signals.length && !runEvents.length) return [replyCard(source, `nothing known about ${laneId}`)];
         const chain = foldChainState(fleet.events);
-        const { state, reason } = laneStateNowFor(intent.lane, { fleet, chain, laneRecord: this.deps.lanes?.get(intent.lane) });
+        const { state, reason } = laneStateNowFor(laneId, { fleet, chain, laneRecord: this.deps.lanes?.get(laneId) });
         const lastThree = meaningfulEvents(runEvents).slice(-3).map((event) => textFor(event));
         const parts = [
           reason ? `${state}: ${reason}` : state,
@@ -522,16 +579,20 @@ export class ConsoleWrites {
 
       case 'answer': {
         const open = this.deps.inbox.open();
-        const match = open.find((ask) => ask.question.toLowerCase().includes(intent.text.toLowerCase()))
-          ?? (open.length === 1 ? open[0] : undefined);
-        if (!match) return [refusalCard(source, `no open question matches "${intent.text}"`)];
+        const match = (intent.askKey ? open.find((ask) => ask.key === intent.askKey) : undefined)
+          ?? open.find((ask) => ask.question.toLowerCase().includes(intent.text.toLowerCase()))
+          ?? (!intent.askKey && open.length === 1 ? open[0] : undefined);
+        if (!match) return [refusalCard(source, `no open question matches "${intent.askKey ?? intent.text}"`)];
         const answered = this.deps.inbox.answer(match.key, intent.text);
         if (!answered) return [refusalCard(source, `could not answer ${match.key}`)];
         await deliverAnswer(answered, match.key, intent.text);
         const { jid } = recordAction(this.deps.journalPath, this.ledger, {
           kind: 'answer', text: `answered ${match.key}: ${intent.text}`, undo: null, extra: { askKey: match.key },
         });
-        return [receiptCard(source, { ok: true, jid, message: `answered ${match.key}`, undoable: false })];
+        const questionHead = match.question.length > 70 ? `${match.question.slice(0, 70)}…` : match.question;
+        return [receiptCard(source, {
+          ok: true, jid, message: `Answered "${questionHead}": ${intent.text}`, undoable: false,
+        })];
       }
 
       case 'unknown':
