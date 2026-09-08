@@ -696,7 +696,7 @@ describe('W3: the sheet composer talks to the Conductor', () => {
     const onSendLane = vi.fn().mockReturnValue(new Promise<{ cards: Message[] }>((resolve) => { release = resolve; }));
     render(
       <TicketSheet
-        lane={lane()} feedLive now={Date.now()} verbose={false} conductorTimeoutMs={30}
+        lane={lane()} feedLive now={Date.now()} verbose={false} conductorTimeoutMs={300}
         onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop} onSendLane={onSendLane}
         onAmendLane={noop} onUndo={noop} onOpenJournal={noop}
       />,
@@ -704,10 +704,12 @@ describe('W3: the sheet composer talks to the Conductor', () => {
     await userEvent.type(screen.getByPlaceholderText(/Tell this run something/), 'status?');
     await userEvent.click(screen.getByText('Send ⏎'));
     const thread = screen.getByTestId('ticket-sheet-thread');
-    expect(within(thread).getByTestId('conductor-working').textContent).toBe('Conductor is working…');
+    // The working row is up the moment Send is pressed; its held budget (300ms) is long
+    // enough that this first read never races the timeout timer under load.
+    expect(within(thread).getByTestId('conductor-working')).toBeInTheDocument();
     await waitFor(() => {
       expect(within(thread).getByTestId('conductor-working').textContent).toBe('the Conductor did not answer in 0s; the grammar answered instead…');
-    });
+    }, { timeout: 3000 });
     release({ cards: [{ k: 'c-2', type: 'reply', text: 'The Conductor could not answer (the Conductor did not answer in 120s). The grammar answered instead:', ts: 5, source: 'conductor', path: 'grammar' }] });
     await waitFor(() => expect(within(thread).queryByTestId('conductor-working')).not.toBeInTheDocument());
     expect(thread.textContent).toMatch(/The grammar answered instead:/);

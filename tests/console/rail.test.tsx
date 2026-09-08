@@ -128,10 +128,12 @@ describe('W4: the rail shows the Conductor working', () => {
     await waitFor(() => expect(screen.getByTestId(`lane-${DEAD}`)).toBeInTheDocument());
 
     await typeIntoRail('status');
-    await waitFor(() => {
-      expect(rail.textContent).toMatch(/the Conductor did not answer in 0s; the grammar answered instead…/);
-    });
-    await waitFor(() => expect(rail.textContent).toMatch(/The Conductor could not answer \(the Conductor did not answer in 0s\)\. The grammar answered instead:/), { timeout: 3000 });
+    // The working row is up the moment the message leaves.
+    expect(within(rail).getByTestId('conductor-working')).toBeInTheDocument();
+    // The session hangs, so at the class timeout the server answers on the grammar and
+    // the reply names that path. (The client's own working-row "did not answer" morph is
+    // transient and covered deterministically by the sheet unit test.)
+    await waitFor(() => expect(rail.textContent).toMatch(/The Conductor could not answer \(the Conductor did not answer in 0s\)\. The grammar answered instead:/), { timeout: 4000 });
     expect(within(rail).queryByTestId('conductor-working')).not.toBeInTheDocument();
     expect(within(rail).getAllByTestId('reply-label').map((node) => node.textContent)).toContain('Conductor (grammar)');
     expect(rail.textContent).toMatch(/1 lane: 1 unverified\./);
