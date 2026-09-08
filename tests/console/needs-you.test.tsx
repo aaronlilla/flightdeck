@@ -53,22 +53,37 @@ describe('buildNeeds headline', () => {
 });
 
 describe('buildNeeds asks line', () => {
-  // script_wrapped.txt 199: `l.question.text.slice(0,70)+'…'`, unconditional -- the
-  // ellipsis is appended even when the question is well under 70 chars.
-  it('carries the question text into the asks line with the prototype\'s unconditional ellipsis', () => {
+  // W2 (2026-09-08): the needs-you plate carries the first 140 characters of the
+  // question, not the prototype's original 70 -- a person deciding whether to open
+  // the card needs enough of the question to recognize it, not just its first clause.
+  it('carries the question text into the asks line with the unconditional ellipsis', () => {
     const items = buildNeeds([lane({ question: { key: 'ask', text: 'NOT NULL or nullable?', opts: [], askedAt: 0 } })], [], vi.fn());
     expect(items[0]?.line).toBe('asks: NOT NULL or nullable?…');
   });
 
-  it('truncates a question past 70 chars before appending the ellipsis', () => {
-    const text = 'x'.repeat(90);
+  it('truncates a question past 140 chars before appending the ellipsis', () => {
+    const text = 'x'.repeat(160);
     const items = buildNeeds([lane({ question: { key: 'ask', text, opts: [], askedAt: 0 } })], [], vi.fn());
-    expect(items[0]?.line).toBe(`asks: ${'x'.repeat(70)}…`);
+    expect(items[0]?.line).toBe(`asks: ${'x'.repeat(140)}…`);
   });
 
   it('never renders a bare "asks:" when the inbox entry has no readable question', () => {
     const items = buildNeeds([lane({ question: { key: 'ask', text: '', opts: [], askedAt: 0 } })], [], vi.fn());
     expect(items[0]?.line).not.toBe('asks: ');
+  });
+
+  it('carries the recommended option as its own line, under the question', () => {
+    const items = buildNeeds([lane({
+      question: { key: 'ask', text: 'staging or dev?', opts: ['staging', 'dev'], askedAt: 0, recommended: 1 },
+    })], [], vi.fn());
+    expect(items[0]?.recommendedLine).toBe('Recommended: dev');
+  });
+
+  it('has no recommended line when the ask carries no recommendation', () => {
+    const items = buildNeeds([lane({
+      question: { key: 'ask', text: 'staging or dev?', opts: ['staging', 'dev'], askedAt: 0, recommended: null },
+    })], [], vi.fn());
+    expect(items[0]?.recommendedLine).toBeNull();
   });
 });
 

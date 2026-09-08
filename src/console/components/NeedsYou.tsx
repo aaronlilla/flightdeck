@@ -29,6 +29,9 @@ export interface NeedItem {
   /** The plate's trailing "label ▸" link, when it has one (the integration plate's
    *  "why + fix ▸", opening Settings). */
   more: { label: string; onClick: () => void } | null;
+  /** A parked lane's own recommended option, one line under `line`. Null on every
+   *  other kind of need, and on a parked lane whose ask carries no recommendation. */
+  recommendedLine: string | null;
 }
 
 /** An ask past this age with no readable question text is never going to become
@@ -65,6 +68,7 @@ export function buildNeeds(
       ctaCls: 'btnR', onClick: () => onFix('integration', integration.id),
       action: { spec: 'reconnectIntegration', arg: integration.id },
       more: integration.cause ? { label: 'why + fix', onClick: onOpenSettings } : null,
+      recommendedLine: null,
     });
   }
   for (const lane of lanes) {
@@ -75,7 +79,7 @@ export function buildNeeds(
         id: `stale-${lane.id}`, color: 'var(--ink3)', title: `stale ask from ${headline.main}, ${ago(now - lane.question.askedAt)}`, repo: lane.repo,
         titleId: headline.runId, sub: '', line: 'nothing readable was asked; this will never resolve on its own',
         cta: 'Dismiss', ctaCls: 'btnS', onClick: () => onDismissAsk(key), more: null,
-        action: { spec: 'dismissAsk', arg: key },
+        action: { spec: 'dismissAsk', arg: key }, recommendedLine: null,
       });
       // A dismissed ask clears `lane.question` but leaves the lane `parked` -- nothing
       // resumes it on a dismiss. Without the `lane.question` guard below, that lane
@@ -83,19 +87,24 @@ export function buildNeeds(
       // actually left Needs You, it just changed which plate the lane showed as.
     } else if (lane.state === 'parked' && lane.question) {
       const question = lane.question.text;
-      // The prototype's own plate: `asks: ` plus the question, truncated to 70 chars
-      // with an unconditional "…" (script_wrapped.txt 199: `text.slice(0,70)+'…'`,
-      // appended even when the question is already short). It never covers an inbox
-      // entry with no readable question -- every fixture it ships with has one -- so
-      // a blank question here fell straight through as a bare `asks: `. The em dash
-      // keeps that same shape without putting words in the run's mouth for a question
-      // the console never actually read.
-      const asks = question ? `${question.slice(0, 70)}…` : '—';
+      // W2 (2026-09-08): 140 characters, not the prototype's original 70
+      // (script_wrapped.txt 199: `text.slice(0,70)+'…'`) -- enough of the question
+      // to recognize it before opening the card. Still unconditional: the ellipsis
+      // is appended even when the question is already short. It never covers an
+      // inbox entry with no readable question -- every fixture it ships with has
+      // one -- so a blank question here fell straight through as a bare `asks: `.
+      // The em dash keeps that same shape without putting words in the run's mouth
+      // for a question the console never actually read.
+      const asks = question ? `${question.slice(0, 140)}…` : '—';
+      const { recommended, opts } = lane.question;
+      const recommendedLine = recommended !== null && recommended !== undefined && opts[recommended] !== undefined
+        ? `Recommended: ${opts[recommended]}`
+        : null;
       items.push({
         id: `park-${lane.id}`, color: 'var(--park)', title: headline.main, titleId: headline.runId, repo: lane.repo,
         sub: `waiting ${ago(now - lane.since)}`,
         line: `asks: ${asks}`, cta: 'Answer →', ctaCls: 'btnA',
-        onClick: () => onFix('lane', lane.id), more: null,
+        onClick: () => onFix('lane', lane.id), more: null, recommendedLine,
       });
     }
     if (lane.state === 'running' && lane.runaway) {
@@ -104,7 +113,7 @@ export function buildNeeds(
         id: `over-${lane.id}`, color: 'var(--block)', title: headline.main, titleId: headline.runId, repo: lane.repo,
         sub: `${fmtTokens(lane.tokens)} / ${fmtTokens(cap)}`,
         line: `retry loop ×${lane.fails} · burning ${fmtTokens(lane.tokensPerMin)} tokens/min`, cta: 'Kill attempt', ctaCls: 'btnR',
-        onClick: () => onFix('lane', lane.id), more: null,
+        onClick: () => onFix('lane', lane.id), more: null, recommendedLine: null,
       });
     }
   }
@@ -139,6 +148,11 @@ export function NeedsYou({ items, blockersCount = 0, onOpenBlockers }: NeedsYouP
               <Linkify text={n.line} repo={n.repo} />
               {n.more ? <> · <a style={{ color: 'var(--ink3)' }} onClick={n.more.onClick}>{n.more.label} ▸</a></> : null}
             </div>
+            {n.recommendedLine ? (
+              <div className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--hand)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {n.recommendedLine}
+              </div>
+            ) : null}
           </div>
           {n.action?.spec === 'reconnectIntegration' ? (
             <ActionButton
