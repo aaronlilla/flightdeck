@@ -51,6 +51,7 @@ import { chainStatusRows, foldChainState } from './chain.js';
 import { processAlive, Registry } from './registry.js';
 import { route as routeMessage } from './router.js';
 import { RunInbox, deliverAnswer } from './runinbox.js';
+import { assertRunListening } from './console/listening.js';
 import { Breaker, clearKillSwitch, Fleet, type LaneRecord, type Lanes } from './supervisor.js';
 
 /** Reads the server's own bearer token, minting one on first use. */
@@ -817,12 +818,23 @@ export class ForgeServer {
   /**
    * `POST /send`: queues a message into a run's own inbox, the same `RunInbox.send` that
    * `forge send RUN TEXT` calls. Delivered by the run's next tool call, per `runinbox.ts`.
+   *
+   * W1: refuses outright when nothing is listening -- no record on the board at all, or
+   * a record with `heart: false` -- rather than writing a file nobody will ever read and
+   * answering 200 as if it had. `assertRunListening` is the one check both this route
+   * and the Conductor agent's `send_to_run` tool call, so a message routed through the
+   * agent gets the same refusal a typed `/send` does.
    */
   private send(request: IncomingMessage, response: ServerResponse): void {
     if (!this.authorized(request, response)) return;
     this.readJson<{ run?: string; text?: string }>(request, response, (parsed) => {
       if (!parsed || !parsed.run || !parsed.text) {
         json(response, 400, { error: 'a send needs a run and text' });
+        return;
+      }
+      const verdict = assertRunListening(parsed.run, () => this.consoleReads.lanesResponse(true, true));
+      if (!verdict.listening) {
+        json(response, 409, { error: verdict.reason });
         return;
       }
       new RunInbox(parsed.run).send(parsed.text, 'console');

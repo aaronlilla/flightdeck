@@ -292,6 +292,37 @@ describe('TicketSheet', () => {
     expect(onAmendLane).not.toHaveBeenCalled();
   });
 
+  // W1: `sendAndRefetch` used to end in `.catch(() => undefined)`, so a `/send` refusal
+  // (the dead-lane 409 this stream added) vanished with no trace in the sheet -- the
+  // rail is behind the open sheet, so that was the whole of what the operator saw.
+  // Every rejection now becomes a reply row in the sheet's own thread.
+  it('W1: a rejected onSendLane renders a reply row in the sheet thread, and the composer clears', async () => {
+    vi.mocked(api.getRunThread).mockResolvedValue({ messages: [] });
+    vi.mocked(api.getRunJournal).mockResolvedValue({ entries: [] });
+    vi.mocked(api.getRunStory).mockResolvedValue({
+      id: 'jira_AB-12_1788460932645', title: null, kind: 'manual', ticket: null, brief: null, entries: [],
+    });
+    vi.mocked(api.getRunSummary).mockResolvedValue({ what: [], status: '', next: '', audit: null, readiness: null });
+    const onSendLane = vi.fn().mockRejectedValue(
+      new Error('2026-09-04-forge-c2-rn has no live session; it ended earlier. Kill, verify or archive it instead.'),
+    );
+    render(
+      <TicketSheet
+        lane={lane()} feedLive now={Date.now()} verbose={false}
+        onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop} onSendLane={onSendLane}
+        onAmendLane={noop} onUndo={noop} onOpenJournal={noop}
+      />,
+    );
+    const input = screen.getByPlaceholderText(/Tell this run something/);
+    await userEvent.type(input, 'kill and remove this');
+    await userEvent.click(screen.getByText('Send ⏎'));
+
+    expect(input).toHaveValue('');
+    await waitFor(() => {
+      expect(screen.getByTestId('ticket-sheet-thread').textContent).toMatch(/has no live session/);
+    });
+  });
+
   // H2.4, updated by item 3: the ticket chip itself becomes the source link when
   // there is one, rather than a separate "source ↗" chip.
   it('shows the kind chip and links the ticket chip to sourceUrl when the lane carries one', () => {

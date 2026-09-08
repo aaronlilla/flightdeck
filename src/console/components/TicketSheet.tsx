@@ -401,6 +401,18 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
     startReaudit(lane.id, storeDispatch, displayName);
   }, [lane.id, storeDispatch, displayName]);
 
+  // W1: appends a reply row into this sheet's own thread for a rejected send or amend.
+  // The rail already got its own receipt/refusal (App.tsx's `runAction`), but the rail
+  // sits behind the open sheet -- an operator watching the sheet saw nothing at all
+  // until this, exactly the silence the mission complained about.
+  const appendSheetError = useCallback((error: unknown) => {
+    const text = error instanceof Error ? error.message : String(error);
+    const row: Message = {
+      k: `sheet-${Date.now()}-${Math.random()}`, type: 'refusal', text, ts: Date.now(), source: 'console',
+    };
+    setThread((prev) => [...prev, row]);
+  }, []);
+
   // A send lands on the run's own thread server-side, but the thread above was fetched
   // once on open and never polls -- without this, the message the operator just typed
   // would silently vanish from the sheet until it was closed and reopened.
@@ -408,8 +420,8 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
     Promise.resolve(onSendLane(lane.id, text))
       .then(() => api.getRunThread(lane.id, { verbose }))
       .then((r) => setThread(r.messages))
-      .catch(() => undefined);
-  }, [onSendLane, lane.id, verbose]);
+      .catch(appendSheetError);
+  }, [onSendLane, lane.id, verbose, appendSheetError]);
 
   // C.1: same shape as sendAndRefetch, but through the amendment path, so a correction
   // typed into this composer shows up in the run's own thread the same way a send does.
@@ -417,8 +429,8 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
     Promise.resolve(onAmendLane(lane.id, text))
       .then(() => api.getRunThread(lane.id, { verbose }))
       .then((r) => setThread(r.messages))
-      .catch(() => undefined);
-  }, [onAmendLane, lane.id, verbose]);
+      .catch(appendSheetError);
+  }, [onAmendLane, lane.id, verbose, appendSheetError]);
 
   // Item 6: the thread scrolls to its newest message on open and after a send.
   // jsdom (the test environment) has no `scrollTo` on a plain element, so this

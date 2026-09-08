@@ -87,7 +87,10 @@ const ALLOWED_STATES: Record<'pause' | 'resume' | 'kill' | 'compact' | 'merge' |
   // ("Gate log ->") anywhere to go besides reopening the same sheet. Confirmed live as a
   // genuine dead end: no Resume, no Kill, nothing. Kill has to reach a blocked run too --
   // whether or not its process is still alive, this is what closes the lane out.
-  kill: ['running', 'handed-off', 'paused', 'parked', 'blocked'],
+  // `unverified`/`exhausted`: a finished-but-unresolved lane the tile's own "Verify it,
+  // or Kill it" CTA already offers -- refusing Kill here left it a dead end (mission,
+  // 2026-09-08).
+  kill: ['running', 'handed-off', 'paused', 'parked', 'blocked', 'unverified', 'exhausted'],
   compact: ['running', 'exhausted'],
   merge: ['done', 'unverified'],
   reopen: ['killed', 'blocked', 'exhausted'],
