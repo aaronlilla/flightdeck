@@ -156,6 +156,60 @@ describe('ConductorRail', () => {
       await userEvent.click(screen.getByTestId('receipt-jid'));
       expect(onOpenJournal).toHaveBeenCalledWith('J-40217');
     });
+
+    // Item 13: hiding the jid text left a stray, empty <a> link sitting above every
+    // receipt in plain mode. Plain mode renders no anchor for the jid at all -- the
+    // click target lives on the receipt's own text instead.
+    it('renders no anchor tag for the jid in plain mode, only in verbose', () => {
+      renderRail(
+        [{ k: 'r1', type: 'receipt', text: 'paused FLT-187', ts: Date.now(), source: 'console', jid: 'J-40217', undoable: true }],
+        feedUp, { verbose: false },
+      );
+      const receiptRow = screen.getByTestId('receipt-jid');
+      expect(receiptRow.tagName).not.toBe('A');
+      expect(document.querySelectorAll('a[data-testid="receipt-jid"]')).toHaveLength(0);
+    });
+
+    it('renders the jid as an anchor tag in verbose mode', () => {
+      renderRail(
+        [{ k: 'r1', type: 'receipt', text: 'paused FLT-187', ts: Date.now(), source: 'console', jid: 'J-40217', undoable: true }],
+        feedUp, { verbose: true },
+      );
+      expect(screen.getByTestId('receipt-jid').tagName).toBe('A');
+    });
+  });
+
+  describe('reply label (item 14)', () => {
+    it('labels a reply "Conductor" when its source is conductor, console or system', () => {
+      for (const source of ['conductor', 'console', 'system']) {
+        const { unmount } = render(
+          <ConductorRail
+            thread={[{ k: `r-${source}`, type: 'reply', text: 'root cause found', ts: Date.now(), source }]}
+            feed={feedUp} now={Date.now()} composer="" onComposerChange={vi.fn()} onSend={vi.fn()} onCommand={vi.fn()}
+            onUndo={vi.fn()} onOpenJournal={vi.fn()}
+          />,
+        );
+        expect(screen.getByTestId('reply-label')).toHaveTextContent('Conductor');
+        unmount();
+      }
+    });
+
+    it('labels a reply by its own run, via labelFor, when it came from a worker rather than the conductor', () => {
+      renderRail(
+        [{ k: 'r1', type: 'reply', text: 'Root cause: the health branch never added its trip id.', ts: Date.now(), source: 'S-b9d39bae548707e0' }],
+        feedUp,
+        { labelFor: (id) => (id === 'S-b9d39bae548707e0' ? 'BBZ-182' : null) },
+      );
+      expect(screen.getByTestId('reply-label')).toHaveTextContent('BBZ-182');
+    });
+
+    it('falls back to "Worker" when labelFor knows nothing about the reply\'s own source', () => {
+      renderRail(
+        [{ k: 'r1', type: 'reply', text: 'still working', ts: Date.now(), source: 'S-b9d39bae548707e0' }],
+        feedUp,
+      );
+      expect(screen.getByTestId('reply-label')).toHaveTextContent('Worker');
+    });
   });
 
   describe('reply buttons', () => {
