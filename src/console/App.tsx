@@ -377,6 +377,16 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     if (pendingConfirm && trimmed === `decline ${pendingConfirm.k}`) { resolveConfirm(pendingConfirm.k, false); return; }
     if (pendingBulk && trimmed === `confirm ${pendingBulk.k}`) { resolveConfirm(pendingBulk.k, true); return; }
     if (pendingBulk && trimmed === `decline ${pendingBulk.k}`) { resolveConfirm(pendingBulk.k, false); return; }
+    // Item 7: clicking a question's option (or typing a free-text answer) still
+    // bypasses `onRailSend`'s operator bubble -- this is the one place that path
+    // still needs one, since "Answered: <option>" is the one honest thing to say
+    // the operator just did. Every other button here (reply/plan/confirm) still
+    // echoes nothing, matching the design this rail already had.
+    if (/^answer\s/i.test(trimmed)) {
+      const card: Message = { k: `op-${Date.now()}-${Math.random()}`, type: 'operator', text: commandEcho(trimmed, { labelFor }), ts: Date.now(), source: 'operator' };
+      localCardsRef.current = [...localCardsRef.current, card];
+      dispatch({ type: 'thread-append', messages: [card] });
+    }
     void (async () => {
       try {
         const response = await api.sendCommand(trimmed);
@@ -395,7 +405,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       }
       await refresh();
     })();
-  }, [pendingConfirm, pendingBulk, resolveConfirm, appendReceipt, refresh]);
+  }, [pendingConfirm, pendingBulk, resolveConfirm, appendReceipt, refresh, labelFor]);
 
   // D2.2: TicketSheet's own run-thread `MessageCard` wires `onCommand` to
   // `(text) => onCommand(lane.id, text)` -- this same exact-match switch. A

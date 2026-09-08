@@ -410,6 +410,7 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
             <a className="m" style={{ fontSize: '10.5px' }} {...actionable(() => onOpenSandbox(lane.id))}>sandbox</a>
             {verbose ? (
               <span
+                data-testid="ticket-sheet-id-chip"
                 className="chip m" title="click to copy the run id"
                 {...actionable(() => {
                   void navigator.clipboard?.writeText(lane.id).then(() => setIdCopied(true)).catch(() => undefined);
