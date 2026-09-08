@@ -143,15 +143,24 @@ function StoryPanel({ story }: { story: LaneStory | null }): JSX.Element | null 
  *  either fact somewhere else on the sheet. Renders nothing (rather than a loading
  *  placeholder) until the first fetch lands, matching `StoryPanel`'s own convention. */
 function SummaryPanel({
-  summary, onRecheck, onReaudit, reauditRunning, auditRef, highlightAudit,
+  summary, loadFailed, onRecheck, onReaudit, reauditRunning, auditRef, highlightAudit,
 }: {
   summary: LaneSummary | null;
+  loadFailed?: boolean;
   onRecheck: () => void;
   onReaudit: () => void;
   reauditRunning: boolean;
   auditRef?: RefObject<HTMLDivElement | null>;
   highlightAudit?: boolean;
 }): JSX.Element | null {
+  if (loadFailed) {
+    return (
+      <div data-testid="ticket-sheet-summary" style={{ padding: '18px 22px', borderBottom: '1px solid var(--line)' }}>
+        <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 10 }}>Summary</div>
+        <div className="m" style={{ fontSize: '11.5px', color: 'var(--block)' }}>could not load the summary.</div>
+      </div>
+    );
+  }
   if (!summary) return null;
   const { audit, readiness } = summary;
   const auditLine = audit
@@ -233,6 +242,7 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
   const [journal, setJournal] = useState<JournalNarrativeEntry[]>([]);
   const [story, setStory] = useState<LaneStory | null>(null);
   const [summary, setSummary] = useState<LaneSummary | null>(null);
+  const [summaryLoadFailed, setSummaryLoadFailed] = useState(false);
   const [reauditRunning, setReauditRunning] = useState(false);
   const [draft, setDraft] = useState('');
   const [highlightAudit, setHighlightAudit] = useState(false);
@@ -254,7 +264,9 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
     api.getRunThread(lane.id).then((r) => { if (active) setThread(r.messages); }).catch(() => undefined);
     api.getRunJournal(lane.id).then((r) => { if (active) setJournal(r.entries); }).catch(() => undefined);
     api.getRunStory(lane.id).then((r) => { if (active) setStory(r); }).catch(() => undefined);
-    api.getRunSummary(lane.id).then((r) => { if (active) setSummary(r); }).catch(() => undefined);
+    setSummaryLoadFailed(false);
+    api.getRunSummary(lane.id).then((r) => { if (active) setSummary(r); })
+      .catch(() => { if (active) setSummaryLoadFailed(true); });
     setReauditRunning(false);
     return () => {
       active = false;
@@ -373,7 +385,7 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
         </div>
       ) : null}
       <SummaryPanel
-        summary={summary} onRecheck={handleRecheck} onReaudit={handleReaudit} reauditRunning={reauditRunning}
+        summary={summary} loadFailed={summaryLoadFailed} onRecheck={handleRecheck} onReaudit={handleReaudit} reauditRunning={reauditRunning}
         auditRef={auditRef} highlightAudit={highlightAudit}
       />
       <div style={{ padding: '20px 22px', borderBottom: '1px solid var(--line)' }}>

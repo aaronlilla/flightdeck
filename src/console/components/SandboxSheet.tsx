@@ -28,10 +28,13 @@ const SEVERITY_COLOR: Record<SandboxLogSeverity, string> = {
 export function SandboxSheet({ lane, onClose, onKill, onCopiedPath }: SandboxSheetProps): JSX.Element {
   const [sandbox, setSandbox] = useState<LaneSandbox | null>(lane.sandbox);
   const [log, setLog] = useState<SandboxLogLine[]>([]);
+  const [loadFailed, setLoadFailed] = useState(false);
 
   useEffect(() => {
     let active = true;
-    api.getRunSandbox(lane.id).then((r) => { if (active) { setSandbox(r.sandbox); setLog(r.log); } }).catch(() => undefined);
+    setLoadFailed(false);
+    api.getRunSandbox(lane.id).then((r) => { if (active) { setSandbox(r.sandbox); setLog(r.log); } })
+      .catch(() => { if (active) setLoadFailed(true); });
     return () => { active = false; };
   }, [lane.id]);
 
@@ -63,9 +66,11 @@ export function SandboxSheet({ lane, onClose, onKill, onCopiedPath }: SandboxShe
         </div>
         <div style={{ background: 'var(--well)', borderRadius: 3, padding: '12px 14px', boxShadow: 'inset 0 2px 5px rgba(0,0,0,.6)' }}>
           <div className="m" style={{ fontSize: '10.5px', lineHeight: 1.9, color: '#9aa08c' }}>
-            {log.length === 0
-              ? <div style={{ color: '#59614d' }}>no sandbox log</div>
-              : log.map((line, i) => <div key={i} style={{ color: SEVERITY_COLOR[line.severity] }}>{line.text}</div>)}
+            {loadFailed
+              ? <div style={{ color: 'var(--block)' }}>could not load the sandbox log.</div>
+              : (log.length === 0
+                ? <div style={{ color: '#59614d' }}>no sandbox log</div>
+                : log.map((line, i) => <div key={i} style={{ color: SEVERITY_COLOR[line.severity] }}>{line.text}</div>))}
           </div>
         </div>
       </div>

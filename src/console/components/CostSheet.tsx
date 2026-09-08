@@ -18,14 +18,16 @@ export interface CostSheetProps {
 export function CostSheet({ lane, onClose, onKill }: CostSheetProps): JSX.Element {
   const [steps, setSteps] = useState<CostStep[]>([]);
   const [capEnforcementFailedJid, setCapEnforcementFailedJid] = useState<string | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
 
   useEffect(() => {
     let active = true;
+    setLoadFailed(false);
     api.getRunCost(lane.id).then((r) => {
       if (!active) return;
       setSteps(r.steps);
       setCapEnforcementFailedJid(r.capEnforcementFailedJid);
-    }).catch(() => undefined);
+    }).catch(() => { if (active) setLoadFailed(true); });
     return () => { active = false; };
   }, [lane.id]);
 
@@ -53,7 +55,10 @@ export function CostSheet({ lane, onClose, onKill }: CostSheetProps): JSX.Elemen
           <span style={{ flex: 1 }} />
           {over ? <span className="btnR" onClick={() => onKill(lane.id)}>Kill attempt</span> : null}
         </div>
-        {steps.length > 0 ? (
+        {loadFailed ? (
+          <div className="m" style={{ fontSize: 11, color: 'var(--block)' }}>could not load the step breakdown.</div>
+        ) : null}
+        {!loadFailed && steps.length > 0 ? (
           <div>
             <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 8 }}>By step</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
