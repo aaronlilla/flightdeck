@@ -15,9 +15,10 @@ import { fileURLToPath } from 'node:url';
 
 import { CONSOLE_ROUTES, HEARTBEAT_MS } from '../shared/console-model.js';
 import { computeNext } from '../forge/console/summary.js';
+import { orderChains } from '../forge/console/blockers.js';
 import type {
-  ActionResult, Caps, Integration, JournalEntry, Lane, LaneSummary, Message, QueueAddRequest, QueueAddResponse,
-  QueueItem, QueueSource, ReauditResponse, Rule,
+  ActionResult, Blocker, Caps, Integration, JournalEntry, Lane, LaneSummary, Message, QueueAddRequest,
+  QueueAddResponse, QueueItem, QueueSource, ReauditResponse, Rule,
 } from '../shared/console-model.js';
 import { fmtTokens } from '../shared/format-tokens.js';
 import { shortenShas } from '../shared/humanize.js';
@@ -81,6 +82,45 @@ interface Db {
    *  stub's stand-in for a council round actually running and landing a fresh
    *  attestation. */
   staleAuditLane: string | null;
+  /** Iteration 4: the Blockers view's own fixture data. Empty by default -- most
+   *  scenarios have nothing to show there, and the `blockers-chain` fixture is what
+   *  seeds a real three-step chain for its own Playwright coverage. */
+  blockers: Blocker[];
+}
+
+/** The billing -> checks -> question chain the Blockers view spec (`tests/e2e/blockers.spec.ts`)
+ *  drives step by step: resolving billing enables checks, resolving checks enables the
+ *  question, and the whole chain collapses under "Resolved today" once the question is
+ *  answered too. */
+function seedBlockersChain(): Blocker[] {
+  const now = Date.now() - 20 * 60_000;
+  const lane = { laneId: 'S-stale-session', label: 'the stale-session fix' };
+  return [
+    {
+      id: 'billing:aaronlilla/flightdeck', kind: 'billing', title: 'GitHub Actions billing is off for aaronlilla/flightdeck',
+      detail: 'The verify jobs on PR #39 were refused in 3s: "recent account payments have failed or your '
+        + 'spending limit needs to be increased".',
+      youCanResolve: true, howToResolve: 'Turn billing back on at github.com/settings/billing, then click Resolved.',
+      links: [{ label: 'GitHub billing settings', url: 'https://github.com/settings/billing' }],
+      blocks: [lane], blockedBy: [], state: 'open', since: now, checkedAt: null, resolvedAt: null,
+      thenWhat: 'Re-runs the checks on PR #39, then resumes the stale-session fix.', lastCheck: null,
+    },
+    {
+      id: 'checks:aaronlilla/flightdeck#39', kind: 'checks', title: 'Checks failing on PR #39 (aaronlilla/flightdeck)',
+      detail: 'PR #39 on aaronlilla/flightdeck has failing checks.', youCanResolve: true,
+      howToResolve: 'Fix and push, or click Resolved to re-run checks.',
+      links: [{ label: 'PR #39', url: 'https://github.com/aaronlilla/flightdeck/pull/39' }],
+      blocks: [lane], blockedBy: ['billing:aaronlilla/flightdeck'], state: 'open', since: now, checkedAt: null,
+      resolvedAt: null, thenWhat: 'Resumes the stale-session fix.', lastCheck: null,
+    },
+    {
+      id: 'question:q1', kind: 'question', title: 'PR #39 is open. Can you fix billing?',
+      detail: 'PR #39 is open. Can you fix billing?', youCanResolve: true,
+      howToResolve: 'Answer it from the rail or here.', links: [],
+      blocks: [lane], blockedBy: ['checks:aaronlilla/flightdeck#39'], state: 'open', since: now, checkedAt: null,
+      resolvedAt: null, thenWhat: 'Resumes the run once answered.', lastCheck: null,
+    },
+  ];
 }
 
 function seedDb(): Db {
@@ -98,6 +138,7 @@ function seedDb(): Db {
     qn: 0,
     queueOn: true,
     staleAuditLane: null,
+    blockers: [],
   };
 }
 
@@ -151,6 +192,8 @@ const FIXTURES: Record<string, () => Db> = {
   // its head has moved past the sha the attestation actually reviewed -- for the ticket
   // sheet summary block's own Playwright coverage.
   'summary-stale': () => ({ ...seedDb(), staleAuditLane: 'FLT-193' }),
+  // Iteration 4: the Blockers view's own three-step chain (billing -> checks -> question).
+  'blockers-chain': () => ({ ...seedDb(), blockers: seedBlockersChain() }),
 };
 
 function resetToFixture(name: string): void {
@@ -450,6 +493,38 @@ function addQueueItem(body: QueueAddRequest): QueueAddResponse {
     return { ok: true, items };
   }
   return { ok: false, items: [], error: `unknown source ${String(body.source)}` };
+}
+
+/** `POST /blockers/:id/resolve` and `.../check`'s fixture behaviour: a step earlier in
+ *  its own chain still open refuses the claim, an already-resolved blocker is a no-op
+ *  echo, and a genuine resolve marks it done and restarts the lane once nothing else in
+ *  its chain still blocks it -- the same "one at a time, in order" rule the real
+ *  `BlockersRoutes` enforces (`src/forge/console/blockers-route.ts`). */
+function resolveBlockerFixture(id: string, claim: boolean): { ok: boolean; state: string; lastCheck: string | null; started: string[] } {
+  const blocker = db.blockers.find((b) => b.id === id);
+  if (!blocker) return { ok: false, state: 'open', lastCheck: 'no such blocker', started: [] };
+  if (blocker.state === 'resolved') return { ok: true, state: 'resolved', lastCheck: blocker.lastCheck, started: [] };
+  const waitingOn = blocker.blockedBy.find((depId) => db.blockers.find((b) => b.id === depId)?.state !== 'resolved');
+  if (waitingOn) {
+    return { ok: false, state: 'open', lastCheck: `still waiting on ${waitingOn}`, started: [] };
+  }
+  if (claim && !blocker.youCanResolve) {
+    return { ok: false, state: 'open', lastCheck: 'nothing to click here', started: [] };
+  }
+  if (!claim) {
+    blocker.lastCheck = 'still open';
+    blocker.checkedAt = Date.now();
+    return { ok: false, state: 'open', lastCheck: blocker.lastCheck, started: [] };
+  }
+  blocker.state = 'resolved';
+  blocker.resolvedAt = Date.now();
+  blocker.checkedAt = blocker.resolvedAt;
+  blocker.lastCheck = 'confirmed';
+  const stillBlocked = new Set(
+    db.blockers.filter((b) => b.state !== 'resolved').flatMap((b) => b.blocks.map((x) => x.laneId)),
+  );
+  const started = blocker.blocks.map((b) => b.laneId).filter((laneId) => !stillBlocked.has(laneId));
+  return { ok: true, state: 'resolved', lastCheck: blocker.lastCheck, started };
 }
 
 function serveStatic(request: IncomingMessage, response: ServerResponse, urlPath: string): void {
@@ -783,6 +858,12 @@ export function createStubServer() {
         return;
       }
 
+      if (urlPath === '/blockers' && method === 'GET') {
+        const open = db.blockers.filter((b) => b.state !== 'resolved');
+        json(response, 200, { blockers: db.blockers, chains: orderChains(open) });
+        return;
+      }
+
       const runThreadMatch = /^\/run\/([^/]+)\/thread$/.exec(urlPath);
       if (runThreadMatch && method === 'GET') {
         const id = decodeURIComponent(runThreadMatch[1] as string);
@@ -1009,6 +1090,14 @@ export function createStubServer() {
       if (urlPath === '/queue' && method === 'POST') {
         const body = await readJson<QueueAddRequest>(request);
         json(response, 200, addQueueItem(body));
+        return;
+      }
+
+      const blockerItemMatch = /^\/blockers\/([^/]+)\/(resolve|check)$/.exec(urlPath);
+      if (blockerItemMatch && method === 'POST') {
+        const id = decodeURIComponent(blockerItemMatch[1] as string);
+        const claim = blockerItemMatch[2] === 'resolve';
+        json(response, 200, resolveBlockerFixture(id, claim));
         return;
       }
       if (urlPath === '/queue/pause' && method === 'POST') {
