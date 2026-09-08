@@ -107,7 +107,11 @@ export function FlightReview({ proposals, now, onApply, onDismiss, onRestore, on
         <div className="plate" style={{ padding: '12px 14px' }}><div className="lbl" style={{ color: 'var(--ink2)' }}>wasted tokens</div><div className="m" style={{ fontSize: 22, fontWeight: 700, marginTop: 4, color: 'var(--block)' }}>{fmtTokens(metrics?.tokensWasted ?? 0)}</div></div>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-        {rules.map((r) => <RuleCard key={r.id} rule={r} onApply={onApply} onDismiss={onDismiss} onRestore={onRestore} onUndo={onUndo} />)}
+        {rules.length > 0 ? (
+          rules.map((r) => <RuleCard key={r.id} rule={r} onApply={onApply} onDismiss={onDismiss} onRestore={onRestore} onUndo={onUndo} />)
+        ) : (
+          <div className="m" style={{ fontSize: 12, color: 'var(--ink3)', padding: '24px 0', textAlign: 'center' }}>no proposals yet.</div>
+        )}
       </div>
     </div>
   );

@@ -100,3 +100,16 @@ describe('FlightReview header', () => {
     expect(screen.getByText('Flight review · 14:07')).toBeInTheDocument();
   });
 });
+
+// Sweep #15: no proposals rendered a bare, empty section with no explanation.
+describe('FlightReview empty state', () => {
+  it('says "no proposals yet" when there are none', () => {
+    renderReview([]);
+    expect(screen.getByText('no proposals yet.')).toBeInTheDocument();
+  });
+
+  it('never shows the empty state when there is at least one proposal', () => {
+    renderReview([rule({ kind: 'cost' })]);
+    expect(screen.queryByText('no proposals yet.')).not.toBeInTheDocument();
+  });
+});
