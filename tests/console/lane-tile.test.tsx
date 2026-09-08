@@ -277,3 +277,28 @@ describe('the title slot is tall enough for the type it carries', () => {
     expect(Number.parseFloat(slot!.style.height)).toBeGreaterThanOrEqual(2 * lineHeight);
   });
 });
+
+// Looked at on 2026-09-08 at 2560px: with the title line at --fs-title, a lane with no
+// title of its own printed its ticket key twice, once in the header and again right
+// under it. At 12px that repetition was quiet; at 16px it reads as a bug.
+describe('a tile never prints its own key twice', () => {
+  it('leaves the title slot empty when the only text would repeat the key', () => {
+    render(
+      <LaneTile lane={lane({ title: null, ticket: 'FLT-204', id: 'FLT-204' })}
+        feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />,
+    );
+    expect(screen.getAllByText('FLT-204')).toHaveLength(1);
+    // The slot is still reserved, so a tile beside one with a title stays the same height.
+    const slot = document.querySelector('[data-testid="tile-title-slot"]') as HTMLElement;
+    expect(Number.parseFloat(slot.style.height)).toBeGreaterThanOrEqual(44);
+  });
+
+  it('still shows a real title under the key', () => {
+    render(
+      <LaneTile lane={lane({ title: 'Deposits round the wrong way', ticket: 'FLT-204' })}
+        feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />,
+    );
+    expect(screen.getByText('Deposits round the wrong way')).toBeInTheDocument();
+    expect(screen.getAllByText('FLT-204')).toHaveLength(1);
+  });
+});

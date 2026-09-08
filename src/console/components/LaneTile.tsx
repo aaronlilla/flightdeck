@@ -96,12 +96,14 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
   const didText = lane.did ? shortenShas(lane.did) : null;
   const nowText = shortenShas(lane.now);
 
-  // Row 2: the title line. A lane with a title shows it, sized down (the key already
-  // carries the weight in row 1); a lane with no title but a key shows the key again
-  // here rather than leaving the line empty; a lane with neither renders nothing.
-  // A lane with neither a title nor a ticket key (a manual run) is named by its own
-  // slug: the operator typed that name, so it is the one they know.
-  const titleLineText = lane.title ?? headline.key ?? (lane.kind === 'manual' && stripMachineIds(lane.id) === lane.id ? lane.id : null);
+  // Row 2: the title line. A lane with a title shows it; a lane with neither a title
+  // nor a ticket key (a manual run) is named by its own slug, since the operator typed
+  // that name and it is the one they know. A lane with only a key shows NOTHING here:
+  // the key is already the first thing on the card, and repeating it at --fs-title read
+  // as a duplicate the moment the type grew (looked at, 2026-09-08, 2560px). The slot
+  // keeps its height either way, so a row of tiles still lines up.
+  const titleLineText = lane.title
+    ?? (headline.key ? null : (lane.kind === 'manual' && stripMachineIds(lane.id) === lane.id ? lane.id : null));
   // The title reads at one size now. Weight, not size, is what separates a title
   // that repeats a key already shown above it from one carrying the only name a
   // lane has.
