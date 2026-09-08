@@ -387,7 +387,17 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
         <span>{band.text}</span>
         <span style={{ cursor: 'pointer' }} {...actionable(onClose)}>esc to close ✕</span>
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '16px 22px', borderBottom: '1px solid var(--line)' }}>
+      {/* The header through the pipeline can run long (a full Summary, a wide
+          pipeline) at a short viewport -- wrapped in its own scrollable region,
+          `flex: '0 1 auto'`, so IT gives way first. `ticket-sheet-body` below
+          carries a real pixel floor (`flex: '1 0 280px'`, no shrink) so the run
+          thread and the composer always keep enough room to stay usable, rather
+          than both regions fighting the squeeze and the thread losing down to a
+          height of 0 (found live: a click landed on the "Run thread" label
+          instead of the button under it, because the thread's own scroll
+          container had shrunk to nothing). */}
+      <div className="scroll" style={{ flex: '0 1 auto', minHeight: 0, overflowY: 'auto' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '16px 22px', borderBottom: '1px solid var(--line)' }}>
         {/* Item 3: the big line is the lane's own title, else its ticket key, else
             "Untitled run" -- never the run id, which lives only in the title attribute
             (and, in verbose mode, in the small id chip on the row below). */}
@@ -477,11 +487,13 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
             );
           })}
         </div>
+        </div>
       </div>
       {/* Item 6: two independently scrolling columns -- the body itself never
           scrolls, so the composer stays reachable without hunting for it, at
-          1440x900 and at 1280x720. */}
-      <div data-testid="ticket-sheet-body" style={{ display: 'flex', minHeight: 0, flex: '1 1 auto', overflow: 'hidden' }}>
+          1440x900 and at 1280x720. `flex: '1 0 280px'` (no shrink) is the floor
+          the comment above explains. */}
+      <div data-testid="ticket-sheet-body" style={{ display: 'flex', flex: '1 0 280px', overflow: 'hidden' }}>
         <div data-testid="ticket-sheet-story" className="scroll" style={{ width: 340, flex: '1 1 300px', borderRight: '1px solid var(--line)', padding: '16px 22px', overflowY: 'auto' }}>
           <StoryPanel story={story} />
           {verbose ? (

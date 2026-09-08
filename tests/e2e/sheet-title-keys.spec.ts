@@ -23,7 +23,7 @@ test('the cost sheet titles itself with the ticket key, not the raw run id', asy
 test('the sandbox sheet titles itself with the ticket key, not the raw run id', async ({ page }) => {
   await page.goto('/');
   await page.getByTestId('lane-merged-1').click();
-  await page.getByTestId('ticket-sheet').locator('a', { hasText: /^(fd-|--)/ }).first().click();
+  await page.getByTestId('ticket-sheet').getByText('sandbox', { exact: true }).first().click();
   const sheet = page.getByTestId('sandbox-sheet');
   await expect(sheet).toBeVisible();
   await expect(sheet.getByText('FLT-702', { exact: false })).toBeVisible();

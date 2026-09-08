@@ -25,7 +25,7 @@ test('the sandbox sheet shows a could-not-load state when its own fetch fails, n
   await page.route('**/run/*/sandbox', (route) => route.fulfill({ status: 500, body: 'boom' }));
   await page.goto('/');
   await page.getByTestId('lane-FLT-201').click();
-  await page.getByTestId('ticket-sheet').getByText('fd-2201', { exact: true }).first().click();
+  await page.getByTestId('ticket-sheet').getByText('sandbox', { exact: true }).first().click();
   const sheet = page.getByTestId('sandbox-sheet');
   await expect(sheet).toBeVisible();
   await expect(sheet.getByText(/could not load/i)).toBeVisible();

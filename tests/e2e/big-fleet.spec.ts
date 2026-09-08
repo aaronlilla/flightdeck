@@ -56,5 +56,8 @@ test('the palette still finds a specific lane by id inside 2000 rows', async ({ 
   await expect(page.getByTestId('command-palette').getByText('FLT-9999', { exact: true })).toBeVisible();
   await page.keyboard.press('Enter');
   await expect(page.getByTestId('ticket-sheet')).toBeVisible();
-  await expect(page.getByTestId('ticket-sheet').getByText('FLT-9999', { exact: true })).toBeVisible();
+  // FLT-9999 shows up twice now (the big headline, and the ticket chip beside
+  // it) -- .first() picks the headline, which is what "opened the right sheet"
+  // actually needs to prove.
+  await expect(page.getByTestId('ticket-sheet').getByText('FLT-9999', { exact: true }).first()).toBeVisible();
 });

@@ -24,7 +24,10 @@ test('typing a query narrows the list, and Enter opens the first match', async (
   await page.keyboard.press('Enter');
   await expect(palette).toHaveCount(0);
   await expect(page.getByTestId('ticket-sheet')).toBeVisible();
-  await expect(page.getByTestId('ticket-sheet').getByText('FLT-204', { exact: true })).toBeVisible();
+  // FLT-204 shows up twice now (the big headline, and the ticket chip beside
+  // it) -- .first() picks the headline, which is what "opened the right sheet"
+  // actually needs to prove.
+  await expect(page.getByTestId('ticket-sheet').getByText('FLT-204', { exact: true }).first()).toBeVisible();
 });
 
 test('Escape closes the palette mid-filter without acting on the typed text', async ({ page }) => {

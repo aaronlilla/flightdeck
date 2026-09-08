@@ -20,6 +20,7 @@ import type {
   QueueItem, QueueSource, ReauditResponse, Rule,
 } from '../shared/console-model.js';
 import { fmtTokens } from '../shared/format-tokens.js';
+import { shortenShas } from '../shared/humanize.js';
 import { tokenAmount } from '../forge/console/command.js';
 import { seedCaps } from './fixtures/caps.js';
 import { seedIntegrations } from './fixtures/integrations.js';
@@ -252,7 +253,7 @@ function runThreadPlain(lane: Lane): Message[] {
       text: `Worked ${hhmm(lane.startedAt)} to ${hhmm(lane.observedAt)}: 140 commands, 45 file reads, 11 edits.`,
       ts: lane.observedAt, source: lane.id,
     },
-    { k: `${lane.id}-reply`, type: 'reply', text: lane.plain || lane.stepText, ts: lane.observedAt, source: 'conductor' },
+    { k: `${lane.id}-reply`, type: 'reply', text: shortenShas(lane.plain || lane.stepText), ts: lane.observedAt, source: 'conductor' },
   ];
   if (lane.question && !persisted.some((m) => m.type === 'question')) {
     messages.push({
@@ -325,7 +326,7 @@ function stubSummary(lane: Lane | undefined, id: string): LaneSummary {
   if (!pr) {
     const readiness = { ok: false, why: 'no PR is open yet', checks: null, behindBase: null, headMoved: false };
     return {
-      what, status: lane.plain || `${lane.stepText}.`, next: computeNext(lane, readiness), audit: null, readiness,
+      what, status: shortenShas(lane.plain || `${lane.stepText}.`), next: computeNext(lane, readiness), audit: null, readiness,
     };
   }
   const stale = db.staleAuditLane === lane.id;
@@ -352,7 +353,7 @@ function stubSummary(lane: Lane | undefined, id: string): LaneSummary {
   const readiness = { ok, why: ok ? null : why, checks: pr.checks ?? 'success', behindBase, headMoved: stale };
   return {
     what,
-    status: lane.plain || `${lane.stepText}.`,
+    status: shortenShas(lane.plain || `${lane.stepText}.`),
     next: computeNext(lane, readiness),
     audit,
     readiness,
