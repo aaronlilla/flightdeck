@@ -30,6 +30,7 @@ import { TopBar } from './components/TopBar.js';
 import { focusableIn, trapTab } from './focus-trap.js';
 import { initialState, reducer, StoreContext } from './store.js';
 import type { Message } from '../shared/console-model.js';
+import { commandEcho } from '../shared/humanize.js';
 import { EventStream, type EventStreamOptions } from './ws.js';
 
 const POLL_MS = 5000;
@@ -55,6 +56,13 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   const mounted = useRef(true);
   const stateRef = useRef(state);
   stateRef.current = state;
+  // `refresh` is a stable `useCallback` with an empty dependency list (see below); it
+  // reads the verbose flag through this ref rather than `state.verbose` directly for
+  // the same reason `stateRef` exists, and `onToggleVerbose` sets it by hand a beat
+  // ahead of the render that would otherwise catch it up, so the very next fetch it
+  // triggers already asks for the mode the operator just clicked.
+  const verboseRef = useRef(state.verbose);
+  verboseRef.current = state.verbose;
   // The confirm card is client-only until Confirm is clicked, but `refresh()` replaces
   // `state.thread` wholesale from the server's `/thread`, which never echoes it back.
   // `/events` fires on every journal event from every lane, including the one an
@@ -110,8 +118,8 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       // than silently standing in for real data.
       const [lanesR, threadR, journalR, integrationsR, capsR, proposalsR, queueR, consoleStateR] = await Promise.allSettled([
         api.getLanes({ all: true }),
-        api.getThread(), api.getJournal(), api.getIntegrations(), api.getCaps(), api.getProposals(), api.getQueue(),
-        api.getState(),
+        api.getThread({ verbose: verboseRef.current }), api.getJournal(), api.getIntegrations(), api.getCaps(),
+        api.getProposals(), api.getQueue(), api.getState(),
       ]);
       if (!mounted.current) return;
       const failedSlices: string[] = [];
@@ -232,6 +240,18 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     localCardsRef.current = [...localCardsRef.current, card];
     dispatch({ type: 'thread-append', messages: [card] });
   }, []);
+
+  // A person's name for a lane id or ticket key -- the ticket, else the title, else
+  // null (the machine id it came from, never printed as a fallback). Every place the
+  // board would otherwise echo a run id back at the operator (a Kill/Merge confirm, a
+  // typed `kill <id>` command, a question's "from <id>" header) goes through this.
+  const labelFor = useCallback((id: string): string | null => {
+    const lane = state.lanes.find((l) => l.id === id) ?? state.archivedLanes.find((l) => l.id === id);
+    if (!lane) return null;
+    if (lane.ticket) return lane.ticket;
+    if (lane.title) return lane.title.length > 60 ? `${lane.title.slice(0, 60)}…` : lane.title;
+    return null;
+  }, [state.lanes, state.archivedLanes]);
 
   const runAction = useCallback(async (fn: () => Promise<{ ok: boolean; jid: string | null; message: string; undoable: boolean }>) => {
     try {
@@ -390,7 +410,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     if (cmd === 'kill' || cmd === 'merge') {
       const k = `confirm-${id}-${Date.now()}`;
       const card: Message = {
-        k, type: 'confirm', text: `${cmd === 'kill' ? 'Kill' : 'Merge'} ${id}?`, ts: Date.now(), source: 'console',
+        k, type: 'confirm', text: `${cmd === 'kill' ? 'Kill' : 'Merge'} ${labelFor(id) ?? id}?`, ts: Date.now(), source: 'console',
         blast: cmd === 'kill' ? 'discards the working diff and stops the sandbox.' : 'merges the PR and closes the ticket.',
       };
       // Kept alongside the card's own thread entry so `refresh()` can put it back
@@ -435,7 +455,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
         void api.getLanes({ archived: true }).then((r) => dispatch({ type: 'archived-lanes', lanes: r.lanes })).catch(() => undefined);
       });
     } else processCommand(cmd);
-  }, [state.lanes, appendReceipt, refresh, runAction, processCommand]);
+  }, [state.lanes, appendReceipt, refresh, runAction, processCommand, labelFor]);
 
   // Typed composer text (and the rail's quick-command chips, which the prototype
   // also routes through `send()`) echoes an operator bubble before processing.
@@ -448,11 +468,13 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     // It needs the same `localCardsRef` protection `appendReceipt` gives a receipt, or
     // the very next `refresh()` (the 5s poll, or the `/events` frame this command's own
     // side effect can trigger) drops it the moment `state.thread` is replaced wholesale.
-    const card: Message = { k: `op-${Date.now()}-${Math.random()}`, type: 'operator', text: trimmed, ts: Date.now(), source: 'operator' };
+    const card: Message = {
+      k: `op-${Date.now()}-${Math.random()}`, type: 'operator', text: commandEcho(trimmed, { labelFor }), ts: Date.now(), source: 'operator',
+    };
     localCardsRef.current = [...localCardsRef.current, card];
     dispatch({ type: 'thread-append', messages: [card] });
     processCommand(trimmed);
-  }, [processCommand]);
+  }, [processCommand, labelFor]);
 
   // Reply/plan/confirm/question buttons in the rail: the prototype wires these
   // straight to a method call, never to `send()`, so no fake operator bubble.
@@ -564,10 +586,16 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
           caps={state.caps} tokensToday={state.caps?.tokensToday ?? 0} feed={state.feed} now={state.now}
           fetchLatencyMs={state.fetchLatencyMs}
           theme={state.theme}
+          verbose={state.verbose}
           onNav={(view) => dispatch({ type: 'view', view })}
           onOpenPalette={() => dispatch({ type: 'palette-open', open: true })}
           onOpenCost={() => dispatch({ type: 'sheet', sheet: { type: 'fleet-cost' } })}
           onToggleTheme={() => dispatch({ type: 'theme', theme: state.theme === 'thD' ? 'thL' : 'thD' })}
+          onToggleVerbose={() => {
+            verboseRef.current = !state.verbose;
+            dispatch({ type: 'verbose', verbose: !state.verbose });
+            void refresh();
+          }}
         />
         <NeedsYou items={needs} />
         {state.view === 'board' ? (
@@ -598,12 +626,13 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
               />
             </div>
             <ConductorRail
-              thread={state.thread} feed={state.feed} now={state.now} composer={state.composer}
+              thread={state.thread} feed={state.feed} now={state.now} composer={state.composer} verbose={state.verbose}
               onComposerChange={(text) => dispatch({ type: 'composer', text })}
               onSend={onRailSend}
               onCommand={onRailCommand}
               onUndo={onUndo}
               onOpenJournal={onOpenJournal}
+              labelFor={labelFor}
             />
           </div>
         ) : null}
@@ -689,7 +718,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
             <div ref={sheetContainerRef} tabIndex={-1} style={{ outline: 'none' }} onClick={(e) => e.stopPropagation()}>
               {state.sheet.type === 'ticket' && sheetLane ? (
                 <TicketSheet
-                  lane={sheetLane} feedLive={state.feed.live} now={state.now}
+                  lane={sheetLane} feedLive={state.feed.live} now={state.now} verbose={state.verbose}
                   focus={state.sheet.focus}
                   onClose={() => dispatch({ type: 'sheet', sheet: null })}
                   onCommand={onCommand}
@@ -699,6 +728,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
                   onAmendLane={(id, textMsg) => runAction(() => api.amendRun(id, textMsg))}
                   onOpenJournal={onOpenJournal}
                   onUndo={onUndo}
+                  labelFor={labelFor}
                 />
               ) : null}
               {state.sheet.type === 'cost' && sheetLane ? (
