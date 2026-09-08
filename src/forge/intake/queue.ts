@@ -16,12 +16,14 @@
  * from plain functions instead.
  */
 import { randomUUID } from 'node:crypto';
+import { basename } from 'node:path';
 
 import type { ChainCouncilFn, ChainGateFn, ChainGh, ChainLauncher } from '../chain.js';
 import type { QueueItem, QueueItemState, QueueSource } from '../../shared/console-model.js';
 import { evaluateAction } from '../rules/index.js';
 import { renderNotes } from '../council/renderNotes.js';
 import { terminalStateFor, type RepoKind } from './handoff.js';
+import { parseAfterLines } from './repoRoute.js';
 import type { QueueStore } from './queueStore.js';
 
 /**
@@ -47,9 +49,11 @@ function newItemId(): string {
 }
 
 function blankItem(id: string, source: QueueSource, input: string, ticket: string | null, at: number): QueueItem {
+  const after = parseAfterLines(input);
   return {
     id, source, input, ticket, repo: null, briefPath: null, branch: null, worktreePath: null, base: null,
     state: 'queued', reason: null, runKey: null, pr: null, journalIds: [], createdAt: at, updatedAt: at,
+    ...(after.length ? { after } : {}),
   };
 }
 
@@ -244,6 +248,10 @@ export interface QueueRuntimeDeps {
    *  the queue's own decision (every item stops at a draft PR) lives in this file, not
    *  in whatever the caller wires this to. */
   gate: ChainGateFn;
+  /** Whether feature/<branch> is already merged into origin/main on the repo's checkout.
+   *  Backs an after: <slug> entry that names no queue item. Absent means such an entry
+   *  never resolves. */
+  branchMerged?: (repo: string, branch: string) => Promise<boolean>;
   clock(): number;
   killSwitch(): boolean;
   paused(): boolean;
@@ -310,6 +318,36 @@ async function relaunchOnRetryOrPark(
     return advanceItem(relaunching, deps);
   }
   return writeTransition(item, { state: 'parked', reason }, deps, 'queue.parked', extra);
+}
+
+function slugMatches(candidate: QueueItem, slug: string): boolean {
+  const lower = slug.toLowerCase();
+  return Boolean(
+    candidate.input?.toLowerCase().includes(lower)
+    || (candidate.briefPath && basename(candidate.briefPath).toLowerCase().includes(lower))
+    || candidate.branch?.toLowerCase().includes(lower),
+  );
+}
+
+/** Whether every after: entry on item has resolved: an item in state 'done', or (when no
+ *  queue item matches the slug) deps.branchMerged reporting that the branch already merged.
+ *  Returns the reason to hold the item on when it has not resolved, or null when it is clear
+ *  to start. The two reason shapes are deliberately different: a matched but not-done
+ *  predecessor reads "waiting on <slug>", an unmatched one reads "waiting on unknown item:
+ *  <slug>", and the queue view renders the two differently. */
+async function unresolvedAfterReason(
+  item: QueueItem, items: QueueItem[], deps: QueueRuntimeDeps,
+): Promise<string | null> {
+  for (const slug of item.after ?? []) {
+    const matches = items.filter((other) => other.id !== item.id && slugMatches(other, slug));
+    if (matches.length > 0) {
+      if (matches.every((m) => m.state === 'done')) continue;
+      return `waiting on ${slug}`;
+    }
+    if (deps.branchMerged && item.repo && await deps.branchMerged(item.repo, `feature/${slug}`)) continue;
+    return `waiting on unknown item: ${slug}`;
+  }
+  return null;
 }
 
 /**
@@ -593,6 +631,15 @@ export async function runQueueTick(deps: QueueRuntimeDeps, items: QueueItem[]): 
   let started = 0;
   for (const item of queued) {
     if (slots <= 0) break;
+    if (item.after?.length) {
+      const reason = await unresolvedAfterReason(item, items, deps);
+      if (reason) {
+        if (item.reason !== reason) {
+          writeTransition(item, { reason }, deps, 'queue.waiting', { hop: 'after' });
+        }
+        continue;
+      }
+    }
     slots -= 1;
     started += 1;
     toAdvance.push(item);
