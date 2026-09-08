@@ -252,7 +252,11 @@ export class ConductorAgent {
     const runDeps = () => writes.runActionsDeps();
     return {
       list_lanes: async () => {
-        const view = reads.lanesResponse();
+        // The whole board including finished lanes (all=true), so a lane the operator
+        // can still kill, verify or remove is visible; retired lanes stay hidden
+        // (archived=false) until unretired. The live probe (2026-09-08) caught the
+        // default view hiding the very dead lane the operator asked to remove.
+        const view = reads.lanesResponse(true, false);
         return { text: conductorStateSummary({ lanes: view.lanes, asks: this.deps.inbox.open(), tokensToday: view.tokensToday }) };
       },
       lane_detail: async ({ lane: token }) => {
@@ -519,7 +523,9 @@ export class ConductorAgent {
   }
 
   private composeMessage(text: string, context: ConductorContext): string {
-    const view = this.deps.reads.lanesResponse();
+    // all=true so a finished/unverified lane the operator can still act on (the mission
+    // lane) is in the block the model reads; archived=false keeps a retired lane out.
+    const view = this.deps.reads.lanesResponse(true, false);
     const state = conductorStateSummary({
       lanes: view.lanes, asks: this.deps.inbox.open(), tokensToday: view.tokensToday,
       ...(context.run ? { sheetLane: context.run } : {}),
