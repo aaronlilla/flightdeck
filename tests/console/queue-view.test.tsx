@@ -159,7 +159,7 @@ describe('QueueView add work', () => {
   it('switches to the brief source and adds pasted text', () => {
     const { onAdd } = renderQueue([]);
     fireEvent.click(screen.getByText('brief'));
-    const textarea = screen.getByPlaceholderText('# Goal: ...');
+    const textarea = screen.getByPlaceholderText(/^# Goal: .../);
     fireEvent.change(textarea, { target: { value: '# Goal: fix it' } });
     fireEvent.click(screen.getByText('Add ⏎'));
     expect(onAdd).toHaveBeenCalledWith('brief', '# Goal: fix it');
