@@ -17,10 +17,10 @@
  * exactly how a session reached 543,000 tokens with nothing noticing.
  */
 import { Engine, buildForgeMcpServer, type EngineConfig, type ForgeToolHandlers, type PreToolVerdict, type QueryFn } from '../adapter/engine.js';
-import { FORGE_TOOL_NAMES, type Incarnation } from './contracts.js';
+import { FORGE_TOOL_NAMES, redact, type Incarnation } from './contracts.js';
 import {
-  classifyDriftRead, driftBlocker, readMergeableDetailed, resolveMergeableRead,
-  type DriftClock, type Mergeable, type MergeableRead,
+  classifyDriftRead, credentialBlocker, driftBlocker, readMergeableDetailed,
+  resolveMergeableRead, type DriftClock, type Mergeable, type MergeableRead,
 } from './drift.js';
 import { classifyCommand } from './command-class.js';
 import { toolTarget } from './tool-target.js';
@@ -706,11 +706,14 @@ export interface SdkEngineDeps {
    */
   checkDrift?: (cwd: string) => Promise<Mergeable | MergeableRead>;
   /**
-   * Where an auth or rate-limit `gh` failure goes instead of the inbox. With none wired,
-   * the lapse is journaled and the run carries on: no rebase clears an expired token, so
-   * an ask about one is worse than silence. `forge run` wires a real `CredentialHorizon`,
-   * which parks under `credential:<account>` -- the key `warden-tick.ts` clears once the
-   * credential is good again.
+   * Where an auth or rate-limit `gh` failure goes, alongside the ask raised on the board.
+   * `forge run` wires a real `CredentialHorizon`, which takes the single-flight login
+   * lock and parks under `credential:<account>` on a second lapse.
+   *
+   * That park is not self-clearing today. `warden-tick.ts:359-365` would clear it, but it
+   * is gated on `credentialHorizon` and `openCredentialAccounts`, and `forge up` passes
+   * neither, so nothing calls `CredentialHorizon.tick()`. The ask on the board is what a
+   * person actually answers; treat the park as bookkeeping until that tick is wired.
    */
   credentialHorizon?: CredentialLapseSink;
   /** The credential a `gh` lapse parks behind. `github` matches the console's own
@@ -745,7 +748,10 @@ async function ghDriftCheck(cwd: string): Promise<MergeableRead> {
   const result = await execRun({
     argv: ['gh', 'pr', 'view', '--json', 'mergeable,baseRefName'], cwd, owner: 'drift', cls: 'script',
   });
-  return readMergeableDetailed(result.tail);
+  // Redacted before it is stored, not before it is shown. `gh` prints a token in some
+  // error URLs, and a `MergeableRead` is carried far enough from here that the only
+  // reliable place to scrub it is where it is created.
+  return readMergeableDetailed(redact(result.tail));
 }
 
 /** The one method the drift path needs from `CredentialHorizon`, typed narrowly so a
@@ -1037,7 +1043,21 @@ export class SdkEngine implements EngineLike {
                       + `failure on ${outcome.account}; recorded as a credential lapse `
                       + 'rather than base drift',
                   });
-                  if (!credentialHorizon) return;
+                  // The entry a person answers. `onLapse` starts a login flow and, on a
+                  // second lapse, parks under `credential:<account>` -- but nothing calls
+                  // `CredentialHorizon.tick()` in the shipped binary, so neither the park
+                  // nor the lock is cleared by anything except the process exiting. Raise
+                  // the ask first, so the way out exists whatever the horizon does.
+                  const ask = credentialBlocker(request.run, outcome.account, outcome.reason);
+                  inbox.raise(ask);
+                  journal.append({
+                    event: 'run.blocked', run: request.run, actor: 'runner', reason: ask.question,
+                  });
+                  // Only an auth failure goes to the login flow. A rate limit clears with
+                  // time, and `onLapse` would take the single-flight login lock, tell
+                  // Aaron the account "needs a fresh login", and hold that lock against a
+                  // genuinely expired token on the same account that does need it.
+                  if (outcome.reason !== 'auth' || !credentialHorizon) return;
                   const disposition = await credentialHorizon.onLapse(
                     outcome.account, request.run, thisIncarnation(),
                   );
@@ -1049,26 +1069,19 @@ export class SdkEngine implements EngineLike {
                 }
 
                 if (outcome.kind === 'clear') {
-                  // The wording is the key, and the wording carries the real base
-                  // branch, so clearing has to try the same names a raise could have
-                  // used. `read.base` covers a blocker raised while the base was
-                  // readable; `undefined` covers one raised when it was not, which is a
-                  // different sentence and so a different entry.
-                  const bases = read.base === undefined ? [undefined] : [read.base, undefined];
-                  for (const base of bases) {
-                    for (const priorState of ['CONFLICTING', 'UNKNOWN'] as const) {
-                      const prior = base === undefined
-                        ? driftBlocker(request.run, priorState)
-                        : driftBlocker(request.run, priorState, base);
-                      if (!prior) continue;
-                      const key = askKey(prior);
-                      const entry = inbox.entry(key);
-                      if (!entry || entry.answer !== undefined) continue;
-                      inbox.answer(key, 'cleared: a later read found the branch mergeable');
-                      journal.append({
-                        event: 'run.unblocked', run: request.run, actor: 'runner', reason: prior.question,
-                      });
-                    }
+                  // Every open base-drift ask this run is behind, found by reading the
+                  // inbox rather than by rebuilding the wording that was used to raise
+                  // it. The wording carries the base branch and the key is a hash of the
+                  // wording, so a pull request retargeted between two reads leaves an ask
+                  // no reconstruction from the current read can name. That ask sat open
+                  // on a branch that was already mergeable.
+                  for (const entry of inbox.open()) {
+                    if (!entry.runs.includes(request.run)) continue;
+                    if (!/^Base drift\b/.test(entry.question)) continue;
+                    inbox.answer(entry.key, 'cleared: a later read found the branch mergeable');
+                    journal.append({
+                      event: 'run.unblocked', run: request.run, actor: 'runner', reason: entry.question,
+                    });
                   }
                   return;
                 }

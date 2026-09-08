@@ -6,7 +6,8 @@ import { describe, expect, it } from 'vitest';
 
 import type { DriftClock, Mergeable } from '../../src/forge/drift.js';
 import {
-  classifyDrift, classifyDriftRead, classifyUnknown, driftBlocker, readMergeableDetailed,
+  classifyDrift, classifyDriftRead, classifyUnknown, credentialBlocker, driftBlocker,
+  readMergeableDetailed,
   resolveMergeable, resolveMergeableRead,
 } from '../../src/forge/drift.js';
 
@@ -81,9 +82,10 @@ describe('B.5: gh UNKNOWN classification', () => {
   });
 
   it('classifyDrift: an auth or rate-limit UNKNOWN is a credential lapse, never a blocker', () => {
-    expect(classifyDrift('r1', 'gh auth login required')).toEqual({ kind: 'credential-lapse', account: 'gh' });
+    expect(classifyDrift('r1', 'gh auth login required'))
+      .toEqual({ kind: 'credential-lapse', account: 'gh', reason: 'auth' });
     expect(classifyDrift('r1', 'API rate limit exceeded', 'the base branch', 'gh-bot'))
-      .toEqual({ kind: 'credential-lapse', account: 'gh-bot' });
+      .toEqual({ kind: 'credential-lapse', account: 'gh-bot', reason: 'rate-limit' });
   });
 
   it('classifyDrift: CONFLICTING and a plain unreadable UNKNOWN both stay a blocker', () => {
@@ -124,7 +126,10 @@ describe('W1: the reason survives the read and the retry window', () => {
   it('classifyDriftRead routes an auth read and a rate-limit read to a credential lapse', () => {
     for (const specimen of [AUTH_SPECIMEN, RATE_LIMIT_SPECIMEN]) {
       const outcome = classifyDriftRead('r1', readMergeableDetailed(specimen), 'github');
-      expect(outcome).toEqual({ kind: 'credential-lapse', account: 'github' });
+      expect(outcome).toEqual({
+        kind: 'credential-lapse', account: 'github',
+        reason: specimen === AUTH_SPECIMEN ? 'auth' : 'rate-limit',
+      });
     }
   });
 
@@ -147,5 +152,33 @@ describe('W1: the reason survives the read and the retry window', () => {
     expect(calls).toBe(10);
     expect(read.state).toBe('UNKNOWN');
     expect(read.reason).toBeUndefined();
+  });
+});
+
+describe('the reason is only read off output that is not a mergeable answer', () => {
+  it('a still-computing UNKNOWN is not a credential lapse because its base branch is named 403', () => {
+    // `gh` answered. The state is genuinely undecided, and `baseRefName` is just a
+    // branch name. Matching AUTH_PATTERNS or RATE_LIMIT_PATTERNS against a successful
+    // JSON answer reads the payload as if it were an error message.
+    for (const base of ['release/403-hotfix', 'fix-401', 'ticket-401-403']) {
+      const read = readMergeableDetailed(JSON.stringify({ mergeable: 'UNKNOWN', baseRefName: base }));
+      expect(read.state).toBe('UNKNOWN');
+      expect(read.reason).toBeUndefined();
+      expect(read.base).toBe(base);
+    }
+  });
+
+  it('output that is not a mergeable answer at all is still classified', () => {
+    expect(readMergeableDetailed('HTTP 403: API rate limit exceeded').reason).toBe('rate-limit');
+    expect(readMergeableDetailed('HTTP 401: Bad credentials').reason).toBe('auth');
+    expect(readMergeableDetailed('not logged into any GitHub hosts').reason).toBe('auth');
+  });
+
+  it('a credential lapse asks for the thing that would actually fix it', () => {
+    const ask = credentialBlocker('r1', 'github', 'auth');
+    expect(ask.kind).toBe('blocker');
+    expect(ask.question).toContain('github');
+    expect(ask.question).not.toMatch(/rebase/i);
+    expect(ask.question).not.toMatch(/base drift/i);
   });
 });

@@ -97,10 +97,51 @@ export function readMergeableDetailed(output: string): MergeableRead {
   const base = readBaseRef(text);
   const withBase = base === undefined ? {} : { base };
   if (state !== 'UNKNOWN') return { state, output: text, ...withBase };
-  const reason = classifyUnknown(text);
+  // Only output that is not an answer gets classified. `gh` reporting
+  // `{"mergeable":"UNKNOWN"}` has answered: the state is undecided while GitHub computes
+  // it, and there is no failure to explain. Running the patterns over a successful
+  // payload reads the branch name as an error message, so a pull request based on
+  // `release/403-hotfix` came back as a rate limit and a run was sent to the credential
+  // horizon over a branch name.
+  const reason = answeredMergeable(text) ? 'other' : classifyUnknown(text);
   return reason === 'other'
     ? { state, output: text, ...withBase }
     : { state, reason, output: text, ...withBase };
+}
+
+/** Whether `gh` answered the question at all, whatever the answer was. */
+function answeredMergeable(output: string): boolean {
+  try {
+    const parsed = JSON.parse(output ?? '') as { mergeable?: unknown };
+    return typeof parsed?.mergeable === 'string';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The ask a credential lapse raises, so a person has something to answer.
+ *
+ * `CredentialHorizon` parks under `credential:<account>` and clears on `tick()`, which
+ * nothing in the shipped binary calls yet, so a park on its own is a wall with no door.
+ * This entry is the door. It names the credential and the thing that fixes it, and it
+ * never mentions rebasing: no rebase has ever cleared an expired token.
+ *
+ * Keyed on wording like every other blocker, so several runs behind one lapsed account
+ * share one entry and one answer releases all of them.
+ */
+export function credentialBlocker(run: string, account: string, reason: 'auth' | 'rate-limit'): Ask {
+  const because = reason === 'auth'
+    ? `the ${account} credential is not logged in`
+    : `the ${account} credential is over its rate limit`;
+  return {
+    run,
+    kind: 'blocker',
+    question: `Credential lapse: ${because}, so the branch cannot be checked against its `
+      + `base. Reconnect ${account} on the console's Integrations panel, then answer this `
+      + 'to carry on.',
+    options: ['reconnected, continue', 'stop and leave it for review'],
+  };
 }
 
 /**
@@ -124,7 +165,7 @@ export function readBaseRef(output: string): string | undefined {
 
 export type DriftOutcome =
   | { kind: 'clear' }
-  | { kind: 'credential-lapse'; account: string }
+  | { kind: 'credential-lapse'; account: string; reason: 'auth' | 'rate-limit' }
   | { kind: 'blocker'; ask: Ask };
 
 /**
@@ -158,7 +199,9 @@ export function classifyDriftRead(
 ): DriftOutcome {
   const { state, reason, base } = read;
   if (state === 'MERGEABLE') return { kind: 'clear' };
-  if (reason === 'auth' || reason === 'rate-limit') return { kind: 'credential-lapse', account: ghAccount };
+  if (reason === 'auth' || reason === 'rate-limit') {
+    return { kind: 'credential-lapse', account: ghAccount, reason };
+  }
   const ask = base === undefined ? driftBlocker(run, state) : driftBlocker(run, state, base);
   // driftBlocker only returns undefined for MERGEABLE, already handled above, but the
   // type still allows it -- fall back to a blocker rather than silently clearing.

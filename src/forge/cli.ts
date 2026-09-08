@@ -827,9 +827,11 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       // Where a `gh` credential lapse from the drift check lands. An expired token
       // reads as an unknown mergeable state, and answering that with "rebase onto the
       // base branch" asks for something no rebase can deliver. The park goes under
-      // `credential:github`: the key `warden-tick.ts` clears once the credential is good
-      // again, and the id the console's own GitHub integration row uses, so the two name
-      // one credential rather than two.
+      // `credential:github`, the id the console's own GitHub integration row uses, so the
+      // two name one credential rather than two. `warden-tick.ts:359-365` is written to
+      // clear that key, but it is gated on deps `forge up` does not pass, so nothing
+      // calls `tick()` yet: the run's way back is the ask the drift path raises on the
+      // board, not this park.
       const credentialHorizon = new CredentialHorizon({
         journal: actuatorJournal,
         blockers: new BlockerBoard({ journal: actuatorJournal, actuator }),

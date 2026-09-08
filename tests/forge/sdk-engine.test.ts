@@ -1649,9 +1649,17 @@ describe('W1: an auth or rate-limit gh failure is a credential lapse, never a re
 
       // Positively: the lapse was recorded, with the gh account and this run's name.
       // Asserting only "no ask was raised" would also pass if the check simply threw.
-      expect(lapses).toEqual([{ account: 'github', run: `w1-${slug}`, pid: process.pid }]);
-      const inbox = new Inbox(join(home, `inbox-w1-${slug}`));
-      expect(inbox.open()).toHaveLength(0);
+      // The login flow is for an expired token only. A rate limit is told to Aaron and
+      // waited out; taking the login lock for one starves a real auth lapse.
+      expect(lapses).toEqual(slug === 'auth'
+        ? [{ account: 'github', run: 'w1-auth', pid: process.pid }]
+        : []);
+      // No base-drift ask. The one entry raised names the credential and never a rebase.
+      const open = new Inbox(join(home, `inbox-w1-${slug}`)).open();
+      expect(open).toHaveLength(1);
+      expect(open[0]?.question).not.toMatch(/rebase/i);
+      expect(open[0]?.question).not.toMatch(/base drift/i);
+      expect(open[0]?.question).toContain('github');
       // The journal line a person reads. The live probe printed "hit a auth failure"
       // before this assertion existed.
       const note = replay(journalPath).events.find(
@@ -1747,7 +1755,9 @@ describe('W1: an auth or rate-limit gh failure is a credential lapse, never a re
     horizonJournal.close();
 
     expect(raised).toEqual([{ key: 'credential:github', run: 'w1-key' }]);
-    expect(new Inbox(join(home, 'inbox-w1-key')).open()).toHaveLength(0);
+    const openKey = new Inbox(join(home, 'inbox-w1-key')).open();
+    expect(openKey).toHaveLength(1);
+    expect(openKey[0]?.question).not.toMatch(/rebase/i);
   });
 });
 
@@ -1824,5 +1834,69 @@ describe('W2: the base-drift question names the base branch it is talking about'
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(new Inbox(inboxDir).open()).toHaveLength(0);
+  });
+});
+
+describe('findings from the design critique, held as regressions', () => {
+  function fakeDriftClock(): { now: () => number; sleep: (ms: number) => Promise<void> } {
+    let now = 0;
+    return { now: () => now, sleep: async (ms) => { now += ms; } };
+  }
+
+  function pushOnce() {
+    return fakeQuery([[{
+      text: 'pushed', usage: { input: 10, cacheRead: 0, cacheCreation: 0, output: 1 },
+      toolUse: { name: 'Bash', input: { command: 'git push' } },
+    }]]);
+  }
+
+  it('a pull request retargeted between two reads still clears the blocker it raised', async () => {
+    const inboxDir = join(home, 'inbox-retarget');
+    const gotchasDir = join(home, 'gotchas-retarget');
+
+    const { fn } = pushOnce();
+    await new SdkEngine({
+      journalPath, inboxDir, gotchasDir, queryFn: fn,
+      checkDrift: async () => readMergeableDetailed(
+        JSON.stringify({ mergeable: 'CONFLICTING', baseRefName: 'develop' }),
+      ),
+      driftClock: fakeDriftClock(),
+    }).run({ ...REQUEST, run: 'retarget', env: { PATH: '/usr/bin' } });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(new Inbox(inboxDir).open()).toHaveLength(1);
+
+    // The pull request is retargeted from develop to main, so the next read names a
+    // different base. The open ask still describes develop, and its key is a hash of
+    // that wording, so reconstructing this read's wording never finds it.
+    const { fn: fn2 } = pushOnce();
+    await new SdkEngine({
+      journalPath, inboxDir, gotchasDir, queryFn: fn2,
+      checkDrift: async () => readMergeableDetailed(
+        JSON.stringify({ mergeable: 'MERGEABLE', baseRefName: 'main' }),
+      ),
+      driftClock: fakeDriftClock(),
+    }).run({ ...REQUEST, run: 'retarget', env: { PATH: '/usr/bin' } });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(new Inbox(inboxDir).open()).toHaveLength(0);
+  });
+
+  it('a credential lapse leaves a question a person can answer, not only a journal note', async () => {
+    const inboxDir = join(home, 'inbox-lapse-ask');
+    const { fn } = pushOnce();
+    await new SdkEngine({
+      journalPath, inboxDir, gotchasDir: join(home, 'gotchas-lapse-ask'), queryFn: fn,
+      checkDrift: async () => readMergeableDetailed('not logged into any GitHub hosts'),
+      driftClock: fakeDriftClock(),
+      credentialHorizon: { onLapse: async () => 'started' },
+    }).run({ ...REQUEST, run: 'lapse-ask', env: { PATH: '/usr/bin' } });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // Nothing in the shipped binary calls CredentialHorizon.tick(), so a park under
+    // credential:github has no automatic way back. The board entry is the way back.
+    const open = new Inbox(inboxDir).open();
+    expect(open).toHaveLength(1);
+    expect(open[0]?.question).toContain('github');
+    expect(open[0]?.question).not.toMatch(/rebase/i);
   });
 });
