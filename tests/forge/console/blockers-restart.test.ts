@@ -62,7 +62,7 @@ describe('buildRestarters', () => {
       state: 'parked', reason: 'blocked on billing', runKey: 'run-1', pr: null,
       journalIds: [], createdAt: 1, updatedAt: 1,
     });
-    const view: LanesResponse = { at: 0, tokensToday: 0, tokensPerMin: 0, lanes: [laneStub('run-1', 'blocked')] };
+    const view: LanesResponse = { at: 0, tokensToday: 0, tokensPerMin: 0, links: { jiraSite: null, defaultRepo: null }, lanes: [laneStub('run-1', 'blocked')] };
     let resumeCalls = 0;
     const receipts: string[] = [];
     const restarters = buildRestarters({
@@ -80,7 +80,7 @@ describe('buildRestarters', () => {
 
   it('resumes a parked run with no queue item through the injected resumeRun', async () => {
     const queueStore = new QueueStore(join(dir, 'queue.jsonl'));
-    const view: LanesResponse = { at: 0, tokensToday: 0, tokensPerMin: 0, lanes: [laneStub('run-2', 'paused')] };
+    const view: LanesResponse = { at: 0, tokensToday: 0, tokensPerMin: 0, links: { jiraSite: null, defaultRepo: null }, lanes: [laneStub('run-2', 'paused')] };
     let resumed: string[] = [];
     const restarters = buildRestarters({
       queueStore, lanesView: () => view,
@@ -95,7 +95,7 @@ describe('buildRestarters', () => {
 
   it('skips a lane that is already running', async () => {
     const queueStore = new QueueStore(join(dir, 'queue.jsonl'));
-    const view: LanesResponse = { at: 0, tokensToday: 0, tokensPerMin: 0, lanes: [laneStub('run-3', 'running')] };
+    const view: LanesResponse = { at: 0, tokensToday: 0, tokensPerMin: 0, links: { jiraSite: null, defaultRepo: null }, lanes: [laneStub('run-3', 'running')] };
     let resumeCalls = 0;
     const restarters = buildRestarters({
       queueStore, lanesView: () => view, resumeRun: async () => { resumeCalls += 1; return { ok: true }; },
