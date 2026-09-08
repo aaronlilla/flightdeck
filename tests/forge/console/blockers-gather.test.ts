@@ -84,6 +84,7 @@ describe('gatherBlockers', () => {
         sandbox: null, blockedBy: null, runaway: false, needsAaron: null, title: 'a fix',
         kind: 'ticket', sourceUrl: null, plain: '', mergeable: { ok: false, why: 'checks failed' },
         attempts: 1, retiredAt: null, now: '', did: null, you: null,
+        live: { alive: false, pid: null, lastEventAt: null, checkedAt: 0 },
       }],
     };
     const gather = gatherBlockers({ inbox, integrations, lanesView: () => view, registry });
@@ -194,5 +195,6 @@ function laneStub(id: string): LanesResponse['lanes'][number] {
     heart: false, since: 5, startedAt: 5, endedAt: null, question: null,
     pr: null, sandbox: null, blockedBy: null, runaway: false, needsAaron: null, title: null,
     kind: 'manual', sourceUrl: null, plain: '', now: '', did: null, you: null, mergeable: null, attempts: 1, retiredAt: null,
+    live: { alive: false, pid: null, lastEventAt: null, checkedAt: 0 },
   };
 }

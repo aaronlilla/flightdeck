@@ -7,7 +7,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
-  buildBacklogJql, queueBackendHandoff, queueCommentOnPr, queueMergeAllowed, queueProductionWorkflowExists,
+  briefIdFor, buildBacklogJql, queueBackendHandoff, queueCommentOnPr, queueMergeAllowed, queueProductionWorkflowExists,
 } from '../../src/forge/queue-wire.ts';
 import { readChainEnv } from '../../src/forge/chain-env.ts';
 
@@ -82,6 +82,18 @@ describe('queueProductionWorkflowExists: A.7', () => {
     const chainEnv = readChainEnv({});
     const exists = await queueProductionWorkflowExists(chainEnv);
     expect(await exists('acme/rn')).toBe(false);
+  });
+});
+
+describe('briefIdFor: 13:35 BBZ-233 specimen', () => {
+  it('joins the packet id and the queue item id so a re-queued ticket gets its own brief file', () => {
+    expect(briefIdFor('queue-BBZ-233', 'Q-2181b071')).toBe('queue-BBZ-233-Q-2181b071');
+  });
+
+  it('gives two items for the same ticket two different ids, so neither collides on the run key', () => {
+    const first = briefIdFor('queue-BBZ-233', 'Q-0fff83b0');
+    const second = briefIdFor('queue-BBZ-233', 'Q-2181b071');
+    expect(first).not.toBe(second);
   });
 });
 

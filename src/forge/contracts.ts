@@ -177,6 +177,10 @@ export const FORGE_EVENT_NAMES = [
   // a kill it refused for lack of a decision, and a fleet-probe health note that is never
   // acted on (liveness.ts's fleet-unknown, surfaced but not treated as a run's own fault).
   'run.killed', 'warden.refused', 'warden.health',
+  // The console's own liveness ticker (`server.ts`): a websocket-only push, never
+  // journaled, telling a connected board that one lane's own process just flipped
+  // alive or dead between polls.
+  'lane.live',
   // The Governor stream's own (roadmap P4.2, `src/forge/governor.ts`): `result.usage`
   // carries the SDK result message's own `modelUsage` map, journaled by the engine on a
   // segment's end row; `burn.mismatch` is the reconciliation between that sum and B.3.6's

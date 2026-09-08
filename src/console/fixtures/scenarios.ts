@@ -47,6 +47,7 @@ function lane(partial: Partial<Lane> & Pick<Lane, 'id' | 'state'>): Lane {
     blockedBy: null,
     runaway: false,
     needsAaron: null,
+    live: { alive: false, pid: null, lastEventAt: null, checkedAt: T0 },
     ...partial,
   };
   if (partial.now === undefined) built.now = built.plain;

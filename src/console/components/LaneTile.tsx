@@ -103,6 +103,15 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
   const titleFontSize = headline.key ? 12 : 13;
   const titleFontWeight = headline.key ? 400 : 700;
 
+  // The live marker: whether a lane's own worker is there right now, checked fresh by
+  // the server every 2s -- distinct from `state`, which only ever says what the run
+  // last reported about itself. A `running` claim with no live process behind it is a
+  // stalled claim, not a working one, and reads red with no pulse; an alive worker
+  // pulses and ticks its own last-event age down every second off `now` (the tile's
+  // own clock prop, never a timer of its own).
+  const liveSecondsAgo = lane.live.lastEventAt !== null ? Math.max(0, Math.round((now - lane.live.lastEventAt) / 1000)) : null;
+  const stalled = lane.state === 'running' && !lane.live.alive;
+
   return (
     <div
       className="lane"
@@ -117,6 +126,21 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
           <span className="m" style={{ fontSize: 13, fontWeight: 700 }}><Linkify text={headline.key} repo={lane.repo ?? undefined} /></span>
         ) : <span />}
         <span className="lbl" style={{ color: st.color, cursor: 'help', flex: 'none' }}>{st.glyph} {st.label}</span>
+      </div>
+      {/* Reserved whether or not there is anything to show, same as every other
+         variable slot on this tile -- a lane with no live marker is no shorter than
+         one with one. */}
+      <div style={{ height: 12, display: 'flex', alignItems: 'center', gap: 4 }}>
+        {lane.live.alive ? (
+          <>
+            <span className="live-pulse" aria-hidden="true" />
+            <span className="m" style={{ fontSize: 9, color: 'var(--run)' }}>
+              live{liveSecondsAgo !== null ? ` · last event ${liveSecondsAgo}s ago` : ''}
+            </span>
+          </>
+        ) : stalled ? (
+          <span className="m" style={{ fontSize: 9, fontWeight: 700, color: 'var(--block)' }}>STALLED · no process</span>
+        ) : null}
       </div>
       <div
         className="m"

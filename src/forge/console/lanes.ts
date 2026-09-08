@@ -682,6 +682,10 @@ export function buildLane(input: LaneBuildInput): Lane {
     did: computeDid(runEvents, input.prFor(id)),
     now: '',
     you: null,
+    // `reads.ts#lanesResponse` overwrites this with the real process-alive check
+    // (`live.ts#computeLive`) -- this fold alone has no `isAlive` probe to run, so it
+    // reads as not-alive/not-checked rather than guessing.
+    live: { alive: false, pid: null, lastEventAt: null, checkedAt: now },
   };
   built.plain = plainStatus(built, { now });
   built.now = built.plain;

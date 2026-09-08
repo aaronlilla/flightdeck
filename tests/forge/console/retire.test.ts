@@ -24,7 +24,7 @@ function lane(overrides: Partial<Lane> = {}): Lane {
     ctxTokens: 0, ctxCeiling: 0, ctxCompactAt: 0, tokens: 0, tokenCap: null, tokensPerMin: 0,
     fails: 0, hop: 0, hopStatus: 'live', observedAt: 0, verifiedAt: null, heart: false,
     since: 0, startedAt: 0, endedAt: null, question: null, pr: null, sandbox: null,
-    blockedBy: null, runaway: false, needsAaron: null, did: null, now: '', you: null,
+    blockedBy: null, runaway: false, needsAaron: null, live: { alive: false, pid: null, lastEventAt: null, checkedAt: 0 }, did: null, now: '', you: null,
     ...overrides,
   };
 }

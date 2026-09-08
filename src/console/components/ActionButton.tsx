@@ -53,12 +53,19 @@ export function ActionButton<A extends any[], R>(props: ActionButtonProps<A, R>)
       <span
         {...activate}
         className={`${className}${handle.pending ? ' btnBusy' : ''}`}
-        style={{ ...style, ...(blocked ? { opacity: 0.55, cursor: 'default' } : {}) }}
+        style={{
+          ...style,
+          ...(handle.pending ? { display: 'inline-flex', alignItems: 'center', gap: 6 } : {}),
+          ...(blocked ? { opacity: 0.55, cursor: 'default' } : {}),
+        }}
         aria-disabled={blocked}
         aria-busy={handle.pending}
         data-testid={testId ?? `action-${spec.id}${ref ? `-${ref}` : ''}`}
         data-pending={handle.pending ? 'true' : 'false'}
       >
+        {/* The spinner the action-feedback stream put on the two lane CTAs, here
+            instead so every catalog control gets it rather than those two. */}
+        {handle.pending ? <span className="fdSpinner" aria-hidden="true" /> : null}
         {handle.pending ? (busy ?? `${spec.label}…`) : (children ?? spec.label)}
       </span>
       {outcome === 'inline' ? (

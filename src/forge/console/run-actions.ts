@@ -12,7 +12,8 @@
  * repository does the thing yet, the handler answers 501 rather than pretending.
  */
 import { asRunId, type Actuator } from '../contracts.js';
-import { foldChainState, type ChainPacketState } from '../chain.js';
+import { foldChainState, type ChainGh, type ChainPacketState } from '../chain.js';
+import { chainGh } from '../chain-wire.js';
 import { run as execRun, type RunRequest } from '../exec.js';
 import { replay } from '../journal.js';
 import { chainLinks } from './lanes.js';
@@ -48,6 +49,13 @@ export interface RunActionsDeps {
    *  repo/PR/base/worktree. Defaults to `defaultQueuePath()`, which follows
    *  `FORGE_HOME`. A specimen only. */
   queueStore?: QueueStore;
+  /** 2026-09-08: overrides the by-branch PR lookup `reauditRun` falls back to when a
+   *  run has no queue item to carry a PR number. Defaults to `chainGh().findPrByHead`
+   *  (chain-wire.ts), the same `gh pr list --repo <repo> --head <branch>` read the
+   *  chain gate itself makes at gate time (`chain.ts`'s own `deps.gh.findPrByHead`),
+   *  since nothing folds a PR number onto a chain row (`chain.gated` carries only
+   *  verdict/attestationPath). A specimen never shells out. */
+  findPrByHead?: ChainGh['findPrByHead'];
 }
 
 export type RunActionResponse = {
@@ -379,7 +387,11 @@ export type ReauditActionResponse = { status: number; body: ReauditResponse | { 
  *  than waiting out however long the round takes. The result lands as a new attestation
  *  and a `council.*` journal sequence, readable off the next `GET /run/:id/summary`.
  *
- * Refuses outright when there is no repo/PR on record for this run, or when the lane
+ * A queue-sourced run carries its own PR number; a chain-only run (no queue item, just
+ * a Jira/chain packet) does not, so this looks its PR up by branch the same way the
+ * chain gate does before giving up. Refuses outright (501) when there is no repo on
+ * record at all, or (409) when a repo and branch are on record but no PR was found for
+ * that branch, naming the branch and repo it searched. Also refuses (409) when the lane
  * is not in a state a re-audit makes sense for: a queue item still `review`, or a lane
  * that has already finished one way or another (`done`/`unverified`/`killed`) with a PR
  * open. A run still `running`/`planning`/`queued` has nothing on a head yet to audit. */
@@ -388,11 +400,31 @@ export async function reauditRun(run: string, deps: RunActionsDeps): Promise<Rea
   const item = queueStore.all().find((row) => row.runKey === run);
   const chainRow = findChainRowForRun(run, deps.journalPath);
   const repo = item?.repo ?? chainRow?.repo ?? null;
-  const prNo = item?.pr?.no ?? null;
   const base = item?.base ?? null;
   const cwd = item?.worktreePath ?? chainRow?.provisioned?.worktreePath ?? null;
+  const branch = chainRow?.provisioned?.branch ?? null;
 
-  if (!repo || !prNo) {
+  if (!repo) {
+    return { status: 501, body: { error: 'not wired', reason: `no repo/PR on record for run ${run} to re-audit` } };
+  }
+
+  let prNo = item?.pr?.no ?? null;
+  // A queue item always carries its own PR number; a chain-only run (a Jira/chain
+  // lane with no queue item) never gets one folded onto its chain row -- `chain.gated`
+  // only ever carries a verdict and an attestation path. The chain gate hits this same
+  // gap by asking `gh` for the PR on the packet's own branch at gate time
+  // (`chain.ts`'s `deps.gh.findPrByHead`), so this does the same lookup rather than
+  // giving up with the run's own branch sitting right there on the chain row.
+  if (!prNo && branch) {
+    const findPrByHead = deps.findPrByHead ?? chainGh().findPrByHead;
+    const found = await findPrByHead(repo, branch);
+    if (!found) {
+      return { status: 409, body: { error: `no open PR for branch ${branch} in ${repo}`, reason: 'no-pr-for-branch' } };
+    }
+    prNo = found.number;
+  }
+
+  if (!prNo) {
     return { status: 501, body: { error: 'not wired', reason: `no repo/PR on record for run ${run} to re-audit` } };
   }
 

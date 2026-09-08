@@ -1,21 +1,39 @@
 // @vitest-environment jsdom
-import type { ReactElement } from 'react';
+import type { JSX, ReactElement } from 'react';
+import { useReducer } from 'react';
 import { render as rtlRender, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { TicketSheet } from '../../src/console/components/TicketSheet.js';
-import { StoreContext, initialState } from '../../src/console/store.js';
-import type { Lane, Message } from '../../src/shared/console-model.js';
+import { Toast } from '../../src/console/components/Toast.js';
+import { initialState, reducer, StoreContext } from '../../src/console/store.js';
+import type { Lane, LaneSummary, Message } from '../../src/shared/console-model.js';
 
 // `TicketSheet` renders `Linkify` (in the summary, the story and the thread) which
 // reads `links` off the store -- every render in this file goes through a provider
-// carrying the default (no jiraSite, no defaultRepo).
-function render(node: ReactElement): ReturnType<typeof rtlRender> {
-  const state = { ...initialState(), links: { jiraSite: null, defaultRepo: null } };
-  return rtlRender(<StoreContext.Provider value={{ state, dispatch: vi.fn() }}>{node}</StoreContext.Provider>);
+// carrying the default (no jiraSite, no defaultRepo). A real reducer (not a mocked
+// no-op dispatch) so `useAction`'s and the reaudit poll's `pending-set`/
+// `pending-clear`/`toast` dispatches actually change what renders, the same shape
+// App.tsx gives every component in production -- and a mounted `<Toast>` alongside
+// the sheet, since a failed action's feedback is a toast, not a receipt card here.
+function Harness({ node }: { node: ReactElement }): JSX.Element {
+  const [state, dispatch] = useReducer(reducer, undefined, () => ({ ...initialState(), links: { jiraSite: null, defaultRepo: null } }));
+  return (
+    <StoreContext.Provider value={{ state, dispatch }}>
+      {node}
+      <Toast toast={state.toast} />
+    </StoreContext.Provider>
+  );
 }
 
+function render(node: ReactElement): ReturnType<typeof rtlRender> {
+  return rtlRender(<Harness node={node} />);
+}
+
+// `actions.ts` reads `api.ApiError` and `api.isConfirmPending`, so spreading the real
+// module is what keeps them real; hand-rolling `ApiError` in the factory covers one of
+// the two and leaves the next one to fail the same way.
 vi.mock('../../src/console/api.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/console/api.js')>();
   return {
@@ -41,7 +59,7 @@ function lane(extra: Partial<Lane> = {}): Lane {
     ctxTokens: 40_000, ctxCeiling: 200_000, ctxCompactAt: 180_000, tokens: 1, tokenCap: 10, tokensPerMin: 0,
     fails: 0, hop: 0, hopStatus: 'live', observedAt: Date.now(), verifiedAt: Date.now(), heart: true, since: Date.now(),
     startedAt: Date.now(), endedAt: null, question: null, pr: null, sandbox: null, blockedBy: null, runaway: false,
-    needsAaron: null, did: null, now: '', you: null,
+    needsAaron: null, live: { alive: false, pid: null, lastEventAt: null, checkedAt: 0 }, did: null, now: '', you: null,
     ...extra,
   };
 }
@@ -501,9 +519,8 @@ describe('TicketSheet: Summary block', () => {
     vi.mocked(api.getRunThread).mockResolvedValue({ messages: [] });
     vi.mocked(api.getRunJournal).mockResolvedValue({ entries: [] });
     vi.mocked(api.getRunStory).mockResolvedValue({ id: 'x', title: null, kind: 'manual', ticket: null, brief: null, entries: [] });
-    vi.mocked(api.recheckRun).mockResolvedValue({
-      what: [], status: 'fresh', next: 'Merge it.', audit: null, readiness: { ok: true, why: null, checks: 'success', behindBase: 0, headMoved: false },
-    });
+    let resolveRecheck!: (value: LaneSummary) => void;
+    vi.mocked(api.recheckRun).mockReturnValue(new Promise((resolve) => { resolveRecheck = resolve; }));
     render(
       <TicketSheet
         lane={lane()} feedLive now={Date.now()}
@@ -514,7 +531,37 @@ describe('TicketSheet: Summary block', () => {
     await waitFor(() => expect(screen.getByText('stale')).toBeInTheDocument());
     await userEvent.click(screen.getByText('Re-check'));
     expect(vi.mocked(api.recheckRun)).toHaveBeenCalledWith('jira_AB-12_1788460932645');
+    await waitFor(() => expect(screen.getByText('Re-checking…')).toBeInTheDocument());
+    expect(screen.getByText('Re-checking…').closest('[data-busy]')).toHaveAttribute('aria-busy', 'true');
+    resolveRecheck({
+      what: [], status: 'fresh', next: 'Merge it.', audit: null, readiness: { ok: true, why: null, checks: 'success', behindBase: 0, headMoved: false },
+    });
     await waitFor(() => expect(screen.getByText('fresh')).toBeInTheDocument());
+    expect(screen.getByText('Re-check')).toBeInTheDocument();
+    // The catalog's own sentence for a re-check names what it found, rather than the
+    // fixed "Re-checked." the call site used to pass in.
+    expect(screen.getByTestId('toast')).toHaveTextContent('re-checked: Merge it.');
+  });
+
+  it('Re-check never swallows a failure -- shows a visible toast instead', async () => {
+    vi.mocked(api.getRunSummary).mockResolvedValue({
+      what: [], status: 'stale', next: 'Wait for checks.', audit: null,
+      readiness: { ok: false, why: 'checks are pending', checks: 'pending', behindBase: null, headMoved: false },
+    });
+    vi.mocked(api.getRunThread).mockResolvedValue({ messages: [] });
+    vi.mocked(api.getRunJournal).mockResolvedValue({ entries: [] });
+    vi.mocked(api.getRunStory).mockResolvedValue({ id: 'x', title: null, kind: 'manual', ticket: null, brief: null, entries: [] });
+    vi.mocked(api.recheckRun).mockRejectedValue(new api.ApiError(500, 'recheck blew up'));
+    render(
+      <TicketSheet
+        lane={lane()} feedLive now={Date.now()}
+        onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop} onUndo={noop} onOpenJournal={noop}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText('stale')).toBeInTheDocument());
+    await userEvent.click(screen.getByText('Re-check'));
+    await waitFor(() => expect(screen.getByTestId('toast')).toHaveTextContent('recheck blew up'));
+    expect(screen.getByText('Re-check')).toBeInTheDocument();
   });
 
   it('Re-audit disables itself while running, then re-enables once the audit head catches up', async () => {
@@ -542,7 +589,35 @@ describe('TicketSheet: Summary block', () => {
     await userEvent.click(screen.getByText('Re-audit'));
     expect(vi.mocked(api.reauditRun)).toHaveBeenCalledWith('jira_AB-12_1788460932645');
     await waitFor(() => expect(screen.getByText('Re-auditing…')).toBeInTheDocument());
+    expect(screen.getByText('Re-auditing…').closest('[data-busy]')).toHaveAttribute('aria-busy', 'true');
     await waitFor(() => expect(screen.getByTestId('ticket-sheet-audit')).toHaveTextContent('PASS'), { timeout: 5_000 });
+    expect(screen.getByText('Re-audit')).toBeInTheDocument();
+    expect(screen.getByTestId('toast')).toHaveTextContent('Re-audit finished');
+  });
+
+  // The live board's own defect: a 501 `{"error":"not wired","reason":"no repo/PR on
+  // record..."}` flipped the button back to "Re-audit" with nothing else shown --
+  // `handleReaudit`'s `.catch(() => setReauditRunning(false))` threw the error text
+  // away. Both fields must now show up in the toast.
+  it('a 501 "not wired" reaudit failure shows both the error and the reason in a toast', async () => {
+    const id = 'jira_REAUDIT-501_1788460932999';
+    vi.mocked(api.getRunSummary).mockResolvedValue({ what: [], status: '', next: '', audit: null, readiness: null });
+    vi.mocked(api.getRunThread).mockResolvedValue({ messages: [] });
+    vi.mocked(api.getRunJournal).mockResolvedValue({ entries: [] });
+    vi.mocked(api.getRunStory).mockResolvedValue({ id, title: null, kind: 'manual', ticket: null, brief: null, entries: [] });
+    vi.mocked(api.reauditRun).mockRejectedValue(
+      new api.ApiError(501, 'not wired: no repo/PR on record for run x to re-audit'),
+    );
+    render(
+      <TicketSheet
+        lane={lane({ id })} feedLive now={Date.now()}
+        onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop} onUndo={noop} onOpenJournal={noop}
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId('ticket-sheet-audit')).toHaveTextContent('Not audited.'));
+    await userEvent.click(screen.getByText('Re-audit'));
+    await waitFor(() => expect(screen.getByTestId('toast')).toHaveTextContent('not wired'));
+    expect(screen.getByTestId('toast')).toHaveTextContent('no repo/PR on record');
     expect(screen.getByText('Re-audit')).toBeInTheDocument();
   });
 });

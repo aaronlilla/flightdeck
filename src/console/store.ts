@@ -121,6 +121,11 @@ export interface State {
    *  ids stripped. Verbose asks every read for `?verbose=1` instead: raw rows, ids
    *  intact. Remembered in `localStorage` the same way `theme` is. */
   verbose: boolean;
+  /** 2026-09-08: one entry per action in flight, keyed by whatever `useAction` (or
+   *  a hand-rolled equivalent, e.g. the reaudit poll) was given as its own key --
+   *  the single source every busy button and the top bar's "Working: ..." line
+   *  read from. A run/lane action's key is conventionally `${cmd}:${id}`. */
+  pending: Record<string, { label: string; since: number }>;
 }
 
 export type Action =
@@ -156,7 +161,9 @@ export type Action =
   | { type: 'theme'; theme: 'thD' | 'thL' }
   | { type: 'composer'; text: string }
   | { type: 'lane-composer'; run: string; text: string }
-  | { type: 'verbose'; verbose: boolean };
+  | { type: 'verbose'; verbose: boolean }
+  | { type: 'pending-set'; key: string; label: string }
+  | { type: 'pending-clear'; key: string };
 
 function readStoredVerbose(): boolean {
   try {
@@ -201,6 +208,7 @@ export function initialState(): State {
     composer: '',
     laneComposer: {},
     verbose: readStoredVerbose(),
+    pending: {},
   };
 }
 
@@ -309,6 +317,14 @@ export function reducer(state: State, action: Action): State {
         // still works for this session, it just won't be remembered.
       }
       return { ...state, verbose: action.verbose };
+    case 'pending-set':
+      return { ...state, pending: { ...state.pending, [action.key]: { label: action.label, since: Date.now() } } };
+    case 'pending-clear': {
+      if (!(action.key in state.pending)) return state;
+      const rest = { ...state.pending };
+      delete rest[action.key];
+      return { ...state, pending: rest };
+    }
     default:
       return state;
   }

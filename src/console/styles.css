@@ -42,3 +42,12 @@ input{outline:none}
 @keyframes fdmerge{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--run) 70%,transparent)}100%{box-shadow:0 0 0 18px color-mix(in srgb,var(--run) 0%,transparent)}}
 @keyframes fdpop{0%{transform:scale(.6);opacity:0}60%{transform:scale(1.15);opacity:1}100%{transform:scale(1)}}
 @keyframes fdin{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@keyframes fdspin{to{transform:rotate(360deg)}}
+[data-busy="1"]{opacity:.7;cursor:default;pointer-events:none}
+.fdSpinner{display:inline-block;width:9px;height:9px;border-radius:50%;border:1.5px solid currentColor;border-top-color:transparent;animation:fdspin .6s linear infinite;flex:none}
+@media (prefers-reduced-motion:reduce){.fdSpinner{animation:none;border-top-color:currentColor;opacity:.6}}
+/* A lane (or the board header) whose worker answered a liveness check just now: a
+   pulsing dot so a working item reads as working at a glance. A viewer who has asked
+   for less motion gets a steady dot instead of the pulse. */
+.live-pulse{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--run);animation:fdpulse 1.2s ease-in-out infinite;flex:none}
+@media (prefers-reduced-motion:reduce){.live-pulse{animation:none;opacity:1}}

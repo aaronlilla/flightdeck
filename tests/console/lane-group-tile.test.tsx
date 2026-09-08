@@ -22,7 +22,7 @@ function lane(extra: Partial<Lane> = {}): Lane {
     ctxTokens: 40_000, ctxCeiling: 200_000, ctxCompactAt: 180_000, tokens: 200_000, tokenCap: 2_000_000, tokensPerMin: 0,
     fails: 0, hop: 0, hopStatus: 'live', observedAt: Date.now(), verifiedAt: Date.now(), heart: true, since: Date.now(),
     startedAt: Date.now(), endedAt: null, question: null, pr: null, sandbox: null, blockedBy: null, runaway: false,
-    needsAaron: null, did: null, now: '', you: null,
+    needsAaron: null, live: { alive: false, pid: null, lastEventAt: null, checkedAt: 0 }, did: null, now: '', you: null,
     ...extra,
   };
   // The disclosure's own earlier-attempt line reads `lane.now` -- mirror `plain` here
@@ -73,5 +73,23 @@ describe('LaneGroupTile', () => {
     await userEvent.click(screen.getByText('attempt 3 of 3'));
     const texts = screen.getAllByText(/oldest attempt\.|middle attempt\./).map((el) => el.textContent);
     expect(texts).toEqual(['oldest attempt.', 'middle attempt.']);
+  });
+
+  describe('live count', () => {
+    it('shows how many lanes in the group are alive right now', () => {
+      const now = Date.now();
+      const groups = groupLanesByTicket([
+        lane({ id: 'r1', attempt: 1, startedAt: 1, live: { alive: true, pid: 1, lastEventAt: now, checkedAt: now } }),
+        lane({ id: 'r2', attempt: 2, startedAt: 2, live: { alive: true, pid: 2, lastEventAt: now, checkedAt: now } }),
+      ]);
+      render(<LaneGroupTile group={groups[0]!} feedLive now={now} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
+      expect(screen.getByTestId('group-live-count')).toHaveTextContent('2 live');
+    });
+
+    it('shows nothing when no lane in the group is alive', () => {
+      const groups = groupLanesByTicket([lane({ id: 'r1' })]);
+      render(<LaneGroupTile group={groups[0]!} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
+      expect(screen.queryByTestId('group-live-count')).toBeNull();
+    });
   });
 });

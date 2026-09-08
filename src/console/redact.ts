@@ -32,8 +32,17 @@ export function redactText(text: string): string {
  */
 export function redactErrorBody(body: string): string {
   try {
-    const parsed = JSON.parse(body) as { error?: unknown };
-    if (typeof parsed.error === 'string') return redactText(parsed.error);
+    const parsed = JSON.parse(body) as { error?: unknown; reason?: unknown };
+    if (typeof parsed.error === 'string') {
+      // A `reason` alongside `error` (e.g. `{"error":"not wired","reason":"no repo/PR
+      // on record..."}`) is the actual explanation -- folded into one string here so
+      // every downstream reader (a toast, a receipt card) gets the whole sentence
+      // rather than just the one-word `error` field.
+      // A reason that is a bare machine code such as `wrong-state` adds nothing for a
+      // reader; only a reason written as words is appended.
+      const reason = typeof parsed.reason === 'string' && /\s/.test(parsed.reason.trim()) ? parsed.reason : null;
+      return redactText(reason ? `${parsed.error}: ${reason}` : parsed.error);
+    }
   } catch {
     // Not JSON. Fall through to the generic message below.
   }

@@ -10,7 +10,7 @@ import type { JSX } from 'react';
  */
 import { useCallback, useEffect, useReducer, useRef } from 'react';
 
-import { ACTIONS, ActionsContext, EFFECT_SLICES, type ActionsHost } from './actions.js';
+import { ACTIONS, ActionsContext, EFFECT_SLICES, errorText, showToast, type ActionsHost } from './actions.js';
 import * as api from './api.js';
 import { BlockersView } from './components/BlockersView.js';
 import { CommandPalette, buildPaletteItems } from './components/CommandPalette.js';
@@ -307,10 +307,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   // A toast shows the same text an action's own control shows, on views where the
   // rail is not mounted (queue, settings). The control's inline result is the primary
   // feedback; this is the glance-level copy.
-  const queueToast = useCallback((text: string, ok: boolean) => {
-    dispatch({ type: 'toast', toast: { glyph: ok ? '✓' : '✕', title: text, sub: '', big: '', color: ok ? undefined : 'var(--block)' } });
-    setTimeout(() => dispatch({ type: 'toast', toast: null }), 4000);
-  }, []);
+  const queueToast = useCallback((text: string, ok: boolean) => showToast(dispatch, text, ok), []);
 
   // The prototype's own `handle(text)` -- confirm/decline resolution, else a
   // POST /command round trip -- runs identically whether the text was typed into
@@ -351,7 +348,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
           if (target) resolvedOverridesRef.current.set(target.k, { resolved: resolvedValue, at: Date.now() });
         }
       } catch (caught) {
-        const message = caught instanceof api.ApiError ? caught.message : 'the command did not go through';
+        const message = caught instanceof api.ApiError ? errorText(caught) : 'the command did not go through';
         appendReceipt(null, message, false);
         dispatch({ type: 'action-result', key, result: { kind: 'done', ok: false, text: message, jid: null, at: Date.now(), link: null } });
       }
@@ -415,7 +412,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       dispatch({ type: 'action-result', key, result: { kind: 'done', ok: result.ok, text: result.message, jid: result.jid, at: Date.now(), link: { kind: 'journal', jid, label: 'journal' } } });
       appendReceipt(result.jid, result.message, result.undoable);
     }, (caught: unknown) => {
-      const message = caught instanceof api.ApiError ? caught.message : 'the undo did not go through';
+      const message = caught instanceof api.ApiError ? errorText(caught) : 'the undo did not go through';
       dispatch({ type: 'action-result', key, result: { kind: 'done', ok: false, text: message, jid: null, at: Date.now(), link: null } });
       appendReceipt(null, message, false);
     }).then(() => { for (const slice of EFFECT_SLICES.journal) void refreshSlice(slice); });
@@ -489,6 +486,9 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   );
 
   const repos = [...new Set(state.lanes.map((l) => l.repo).filter((r): r is string => Boolean(r)))];
+  // The top bar's own live count, off the liveness ticker's `lane.live` rather than
+  // the lane state, so a row whose process died reads as not live at once.
+  const liveCount = state.lanes.filter((l) => l.live.alive).length;
   const settingsBadge = state.integrations.filter((i) => i.status === 'down').length;
   const reviewBadge = state.proposals?.rules.filter((r) => r.status === 'open').length ?? 0;
   const queueBadge = state.queue.filter((i) => i.state === 'parked' || i.state === 'failed').length;
@@ -501,6 +501,8 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
         <DisconnectedBanner feed={state.feed} onRetry={() => void refresh()} />
         <QueueOffBanner queueOn={state.queueOn} />
         <TopBar
+          pending={state.pending}
+          liveCount={liveCount}
           view={state.view} settingsBadge={settingsBadge} reviewBadge={reviewBadge} queueBadge={queueBadge}
           blockersBadge={blockersBadge}
           caps={state.caps} tokensToday={state.caps?.tokensToday ?? 0} feed={state.feed} now={state.now}

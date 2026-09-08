@@ -9,13 +9,16 @@
  *   forge answer KEY ANSWER   answer a question a worker parked on
  *   forge decide RUN kill R   the only way a kill decision id gets made
  *   forge stop --all          park every run with a handoff and end all spend
+ *   forge queue add INPUT     queue a ticket, brief path or hotfix against the running server
+ *   forge queue ls            list what is on the queue, filtered or as JSON
+ *   forge inbox               Jira tickets waiting on a reply, an answer, or a status fix
  *
  * `stop --all` is the control that has to work when nothing else does, so it takes no
  * arguments it could get wrong, is safe to run twice, and says plainly when there was
  * nothing to stop. It parks rather than kills: the work survives and `forge up` continues
  * it. A stop that lost an afternoon is a stop nobody dares press.
  */
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import type { QueryFn } from '../adapter/engine.js';
@@ -43,6 +46,8 @@ import { planFromPacket } from './intake/planner.js';
 import { parseRepoMap } from './intake/repoRoute.js';
 import { resolvePlanProvider } from './intake/reasoner.js';
 import { readWatermark, writeWatermark } from './intake/watermarkStore.js';
+import { fetchInboxIssues, classifyInbox } from './intake/inbox.js';
+import { serverRequest } from './server-request.js';
 import { readProcessList, watchedProcesses, probeProcessListCached } from './fleetwatch.js';
 import { Gotchas } from './gotcha.js';
 import { Inbox, isAskStale } from './inbox.js';
@@ -286,6 +291,18 @@ function parseRunArgs(rest: string[]): {
 
 function money(amount: number): string {
   return `$${amount.toFixed(2)}`;
+}
+
+/** Same shape `queue-route.ts` checks a ticket source's input against: a project
+ *  prefix, a dash, a number. */
+const TICKET_KEY_RE = /^[A-Z][A-Z0-9_]*-\d+$/;
+
+function isExistingFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -1138,6 +1155,102 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       // No fixture wired to the CLI yet (P4.7 integration point): an empty run is an
       // honest "nothing to do" rather than a fabricated example write.
       return { code: 0, lines: planIntakeWrites([]) };
+    }
+
+    case 'queue': {
+      const sub = rest[0];
+      if (sub === 'add') {
+        const input = rest[1];
+        if (!input) return { code: 2, lines: ['forge queue add INPUT [--source ticket|brief|hotfix]'] };
+        const sourceFlag = rest.indexOf('--source');
+        const explicitSource = sourceFlag >= 0 ? rest[sourceFlag + 1] : undefined;
+        const source = explicitSource
+          ?? (TICKET_KEY_RE.test(input) ? 'ticket' : isExistingFile(input) ? 'brief' : undefined);
+        if (!source) {
+          return {
+            code: 1,
+            lines: [`refusing to queue "${input.slice(0, 60)}": it is not a ticket key like `
+              + 'ABC-123, and not a path to an existing file. Pass --source to force one.'],
+          };
+        }
+        const added = await serverRequest('/queue', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ source, input }),
+        }, deps.fetchFn);
+        if (added.down) return { code: 1, lines: [added.error!] };
+        const body = added.body as { ok: boolean; items?: Array<{ id: string; state: string }>; error?: string } | undefined;
+        if (!added.ok || !body?.ok) {
+          return { code: 1, lines: [body?.error ?? `queue add failed: HTTP ${added.status}`] };
+        }
+        return {
+          code: 0,
+          lines: (body.items ?? []).map((item) => `${item.id} ${item.state}`),
+        };
+      }
+      if (sub === 'ls') {
+        const stateFlag = rest.indexOf('--state');
+        const stateFilter = stateFlag >= 0 ? rest[stateFlag + 1] : undefined;
+        const wantsJson = rest.includes('--json');
+        const wantsAll = rest.includes('--all');
+        const listed = await serverRequest('/queue', {}, deps.fetchFn);
+        if (listed.down) return { code: 1, lines: [listed.error!] };
+        const body = listed.body as {
+          items?: Array<{
+            id: string; source: string; ticket: string | null; input: string; state: string;
+            branch: string | null; pr: { url: string } | null; reason: string | null;
+          }>;
+        } | undefined;
+        if (!listed.ok || !body) return { code: 1, lines: [`queue ls failed: HTTP ${listed.status}`] };
+        let items = body.items ?? [];
+        if (stateFilter) items = items.filter((item) => item.state === stateFilter);
+        else if (!wantsAll) items = items.filter((item) => item.state !== 'done');
+        if (wantsJson) return { code: 0, lines: [JSON.stringify(items)] };
+        if (!items.length) return { code: 0, lines: ['nothing queued'] };
+        return {
+          code: 0,
+          lines: items.map((item) => [
+            item.id,
+            item.source.padEnd(6),
+            (item.ticket ?? item.input).slice(0, 40).padEnd(40),
+            item.state.padEnd(9),
+            (item.branch ?? '-').padEnd(20),
+            item.pr?.url ?? '-',
+            (item.reason ?? '').slice(0, 120),
+          ].join(' ')),
+        };
+      }
+      return { code: 2, lines: ['forge queue add INPUT | forge queue ls [--state S] [--json] [--all]'] };
+    }
+
+    case 'inbox': {
+      const missing = JIRA_ENV_VARS.filter((name) => !process.env[name]);
+      if (missing.length) return { code: 1, lines: [`inbox failed: missing ${missing.join(', ')}`] };
+      const daysFlag = rest.indexOf('--days');
+      const days = daysFlag >= 0 ? Number(rest[daysFlag + 1]) : 7;
+      const wantsJson = rest.includes('--json');
+      const fetched = await fetchInboxIssues({
+        site: process.env['FORGE_JIRA_SITE']!, email: process.env['FORGE_JIRA_EMAIL']!,
+        token: process.env['FORGE_JIRA_TOKEN']!, days, fetchFn: deps.fetchFn,
+      });
+      const probe = await probeJira({
+        site: process.env['FORGE_JIRA_SITE']!, email: process.env['FORGE_JIRA_EMAIL']!,
+        token: process.env['FORGE_JIRA_TOKEN']!, fetchFn: deps.fetchFn,
+      });
+      if (!probe.ok) return { code: 1, lines: [`inbox failed: could not identify the current user (HTTP ${probe.status})`] };
+      const buckets = classifyInbox(fetched, { accountId: probe.accountId ?? '' }, Date.now());
+      if (wantsJson) return { code: 0, lines: [JSON.stringify(buckets)] };
+      const lines: string[] = [];
+      const section = (title: string, rows: typeof buckets.needsReply) => {
+        lines.push(`${title} (${rows.length})`);
+        for (const row of rows) {
+          lines.push(`  ${row.key.padEnd(10)} ${row.status.padEnd(14)} ${(row.assignee ?? '-').padEnd(18)} `
+            + `${(row.lastCommenter ?? '-').padEnd(18)} ${String(row.ageDays).padStart(3)}d  ${row.summary.slice(0, 60)}`);
+        }
+      };
+      section('needs reply', buckets.needsReply);
+      section('awaiting others', buckets.awaitingOthers);
+      section('status drift', buckets.statusDrift);
+      return { code: 0, lines };
     }
 
     case 'council': {

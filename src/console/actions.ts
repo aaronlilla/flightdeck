@@ -17,7 +17,7 @@
 import { createContext, useCallback, useContext, useRef } from 'react';
 
 import * as api from './api.js';
-import type { ActionLink, ActionOutcome, View } from './store.js';
+import type { Action as StoreAction, ActionLink, ActionOutcome, View } from './store.js';
 import { useStore } from './store.js';
 import type { SliceName } from '../shared/console-events.js';
 import type { ActionResult, Message } from '../shared/console-model.js';
@@ -308,9 +308,34 @@ export type ActionId = keyof typeof ACTIONS;
 /** The sentence an `ApiError` or any other rejection should show: the server's own
  *  words, already redacted by `api.ts`, never a generic "something went wrong". */
 export function errorText(error: unknown): string {
-  if (error instanceof api.ApiError) return error.message || `the server answered ${error.status}`;
+  if (error instanceof api.ApiError) {
+    const raw = error.message;
+    // A fresh `ApiError` already carries the server's `error`/`reason` folded into one
+    // string by `redactErrorBody`, but an older path or a test's own mocked rejection
+    // can still hand over the raw JSON body, and neither field may be dropped.
+    try {
+      const parsed = JSON.parse(raw) as { error?: unknown; reason?: unknown };
+      if (typeof parsed.error === 'string') {
+        return typeof parsed.reason === 'string' ? `${parsed.error}: ${parsed.reason}` : parsed.error;
+      }
+    } catch {
+      // Not JSON: `raw` is already the sentence `redactErrorBody` produced.
+    }
+    return raw || `the server answered ${error.status}`;
+  }
   if (error instanceof Error) return error.message;
   return String(error);
+}
+
+const SUCCESS_TOAST_MS = 4_000;
+const FAILURE_TOAST_MS = 8_000;
+
+/** A toast that clears itself: green success after 4s, red failure after 8s so a
+ *  longer error actually gets read. The views with no rail of their own (Queue,
+ *  Blockers, Settings) show every outcome this way as well as inline. */
+export function showToast(dispatch: (action: StoreAction) => void, text: string, ok: boolean): void {
+  dispatch({ type: 'toast', toast: { glyph: ok ? '✓' : '✕', title: text, sub: '', big: '', color: ok ? undefined : 'var(--block)' } });
+  setTimeout(() => dispatch({ type: 'toast', toast: null }), ok ? SUCCESS_TOAST_MS : FAILURE_TOAST_MS);
 }
 
 export function actionKey(id: string, ref?: string): string {
@@ -371,6 +396,7 @@ export function useAction<A extends any[], R>(entry: ActionSpec<A, R>, ref?: str
   const token = current?.result?.kind === 'confirm' ? current.result.token : null;
 
   const settle = useCallback((outcome: ActionOutcome, receipt: boolean) => {
+    dispatch({ type: 'pending-clear', key });
     dispatch({ type: 'action-result', key, result: outcome });
     if (outcome.kind === 'done' && receipt && entry.railReceipt !== false) {
       dispatch({ type: 'thread-append', messages: [receiptCard(outcome.jid, outcome.ok, outcome.text)], local: true });
@@ -381,6 +407,9 @@ export function useAction<A extends any[], R>(entry: ActionSpec<A, R>, ref?: str
 
   const call = useCallback(async (args: A, confirm?: string): Promise<ActionOutcome & { raw?: R }> => {
     dispatch({ type: 'action-pending', key });
+    // The top bar's own busy line reads `state.pending`, keyed the same way, so one
+    // click lights both the control and the bar rather than only the control.
+    dispatch({ type: 'pending-set', key, label: entry.label });
     try {
       const result = await entry.call(args, confirm);
       if (entry.reversible === false && api.isConfirmPending(result)) {

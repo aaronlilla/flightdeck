@@ -29,7 +29,7 @@ import { runQueueHandoff } from './intake/queueHandoff.js';
 import type { PollItemDetail } from './intake/poller.js';
 import { planFromPacket } from './intake/planner.js';
 import { resolvePlanProvider } from './intake/reasoner.js';
-import { parseRepoMap, routeRepo, repoFromBrief } from './intake/repoRoute.js';
+import { parseRepoMap, routeRepo, repoFromBrief, ticketFromBrief } from './intake/repoRoute.js';
 import { Journal } from './journal.js';
 import { loadPolicy } from './policy.js';
 import { queueBriefsDir, journalPath, killSwitchPath } from './paths.js';
@@ -91,6 +91,15 @@ export function queueSearch(configFn: () => JiraConfig | undefined = jiraConfigF
   };
 }
 
+/** The brief file id `planTicket` writes under, and therefore the run key
+ *  `chain-wire.ts#runKeyForBrief` derives from its basename: the packet id (`queue-
+ *  <ticket>`) joined to the queue item's own id, so a re-queued ticket never lands on
+ *  the same brief file, and therefore never the same run key, as an earlier item for
+ *  that ticket. See the 2026-09-08 13:35 BBZ-233 specimen in `planTicket` below. */
+export function briefIdFor(packetId: string, itemId: string): string {
+  return `${packetId}-${itemId}`;
+}
+
 function packetFor(ticket: string, repo: string, detail: PollItemDetail | undefined): Packet {
   return {
     id: `queue-${ticket}`,
@@ -133,7 +142,7 @@ export function queuePlanner(configFn: () => JiraConfig | undefined = jiraConfig
   }
 
   return {
-    async planTicket(ticket): Promise<QueuePlannedBrief> {
+    async planTicket(ticket, itemId): Promise<QueuePlannedBrief> {
       const config = configFn();
       let repo = routeRepo(repoRules, { ticket, labels: [], components: [], issuetype: '' });
       let detail: PollItemDetail | undefined;
@@ -152,7 +161,7 @@ export function queuePlanner(configFn: () => JiraConfig | undefined = jiraConfig
       try {
         const reasoner = reasonerFor(resolvePlanProvider(loadPolicy().reasoner), { journal });
         const planned = await planFromPacket(packet, reasoner);
-        const briefPath = await writeBrief(planned.packetId, planned.text);
+        const briefPath = await writeBrief(briefIdFor(planned.packetId, itemId), planned.text);
         return { ticket, repo, briefPath };
       } finally {
         journal.close();
@@ -160,26 +169,35 @@ export function queuePlanner(configFn: () => JiraConfig | undefined = jiraConfig
     },
 
     // A pasted brief has no ticket for the rules to match, so a `repo: owner/name` line
-    // in the brief wins; without one the map's default applies as before.
+    // in the brief wins; without one the map's default applies as before. A `ticket:
+    // KEY-123` line names the real Jira key: the brief file's own id stays a unique
+    // synthetic string, but the item's `ticket` field (branch naming, jiraHandoff, routing)
+    // takes the real key, so a hand-written brief reaches its own ticket's Jira handoff
+    // instead of a synthetic `queue-brief-<timestamp>` one.
     async planBrief(text): Promise<QueuePlannedBrief> {
       const id = `queue-brief-${Date.now()}`;
-      const repo = repoFromBrief(text) ?? routeRepo(repoRules, { ticket: id, labels: [], components: [], issuetype: '' });
+      const ticket = ticketFromBrief(text) ?? id;
+      const repo = repoFromBrief(text)
+        ?? routeRepo(repoRules, { ticket, labels: [], components: [], issuetype: '' });
       const briefPath = await writeBrief(id, text);
-      return { ticket: id, repo, briefPath };
+      return { ticket, repo, briefPath };
     },
 
-    // A.6: the `hotfix-` prefix is load-bearing -- `chain-env.ts#branchFor` reads it off
-    // the ticket string to route this item onto `hotfix/<slug>` instead of an ordinary
-    // feature branch.
+    // A.6: the `hotfix-` prefix is load-bearing: `chain-env.ts#branchFor` reads it off the
+    // ticket string to route this item onto `hotfix/<slug>` instead of an ordinary feature
+    // branch. A `ticket: KEY-123` line still wins for routing and handoff, same as
+    // planBrief, while the brief file's own id keeps the `hotfix-` prefix branchFor needs.
     async planHotfix(text): Promise<QueuePlannedBrief> {
       const id = `hotfix-${Date.now()}`;
-      const repo = repoFromBrief(text) ?? routeRepo(repoRules, { ticket: id, labels: [], components: [], issuetype: '' });
+      const ticket = ticketFromBrief(text) ?? id;
+      const repo = repoFromBrief(text)
+        ?? routeRepo(repoRules, { ticket, labels: [], components: [], issuetype: '' });
       const briefPath = await writeBrief(
         id,
         `${text}\n\nThis is a hotfix: it ships to dev on Merge and to production only on a `
           + 'separate Promote click.',
       );
-      return { ticket: id, repo, briefPath };
+      return { ticket, repo, briefPath };
     },
   };
 }

@@ -71,7 +71,13 @@ export interface QueuePlannedBrief {
 }
 
 export interface QueuePlanner {
-  planTicket(ticket: string): Promise<QueuePlannedBrief>;
+  /** `itemId` is this queue item's own id (`Q-xxxxxxxx`), folded into the brief file's
+   *  name alongside the ticket. A re-queued ticket, a fresh item added after an earlier
+   *  one for the same ticket was removed, needs its own brief file and its own run key.
+   *  Without `itemId`, `runOutcome` (`chain-wire.ts`) folds the new run onto the old
+   *  one's terminal journal state, as happened at 13:35 on 2026-09-08: BBZ-233's new
+   *  item Q-2181b071 read the removed item Q-0fff83b0's `parked` verdict as its own. */
+  planTicket(ticket: string, itemId: string): Promise<QueuePlannedBrief>;
   /** A pasted brief carries no ticket of its own; the planner mints one (or the caller
    *  passes the queue item's own id) so the rest of the pipeline has something to name
    *  the branch and the run after. */
@@ -300,7 +306,7 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
         ? await deps.planner.planBrief(item.input)
         : item.source === 'hotfix'
           ? await (deps.planner.planHotfix ?? deps.planner.planBrief)(item.input)
-          : await deps.planner.planTicket(item.ticket ?? item.input);
+          : await deps.planner.planTicket(item.ticket ?? item.input, item.id);
     } catch (error) {
       return writeTransition(item, { state: 'failed', reason: tailOf(messageOf(error)) }, deps, 'queue.failed', { hop: 'plan' });
     }

@@ -219,6 +219,10 @@ describe('App', () => {
     // Give a `/thread` refetch (the 5s poll, or a live event) time to land right behind it.
     await new Promise((resolve) => { setTimeout(resolve, 500); });
     expect(within(rail).getByText('Refused')).toBeInTheDocument();
+    // `redactErrorBody` folds a `reason` alongside `error` into the text, so a 501
+    // carrying both reads as one sentence rather than dropping the reason. Scoped to
+    // the rail: the same sentence now also renders on the control and in the toast,
+    // more copies on the same screen entirely by design.
     expect(within(rail).getByText('compaction has no successor worker built yet')).toBeInTheDocument();
     expect(tile).toHaveAttribute('data-state', 'exhausted');
   });
