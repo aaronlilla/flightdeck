@@ -9,6 +9,7 @@
  * worker that actually moves an item forward (`runQueueTick`) is `forge up`'s own timer;
  * this class never calls it, and never spawns anything itself.
  */
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import {
@@ -69,6 +70,19 @@ function readBody<T>(request: IncomingMessage): Promise<T | null> {
   });
 }
 
+/** A Jira key: a project prefix, a dash, a number. Anything else never reaches Jira as
+ *  a query, which is how a pasted file path used to come back as a JQL 400. */
+const TICKET_KEY = /^[A-Z][A-Z0-9_]*-\d+$/;
+
+/** The brief source takes pasted text or, when the whole input is one line naming an
+ *  existing `.md` file on this machine, that file's contents. */
+function briefTextFrom(input: string): string {
+  const line = input.trim();
+  if (line.includes('\n') || !/\.md$/i.test(line) || !existsSync(line)) return input;
+  if (!statSync(line).isFile()) return input;
+  return readFileSync(line, 'utf8');
+}
+
 export class QueueRoutes {
   constructor(private readonly opts: QueueRoutesOptions) {}
 
@@ -94,10 +108,18 @@ export class QueueRoutes {
     }
     try {
       switch (body.source) {
-        case 'ticket':
-          return { ok: true, items: [addTicketItem(this.opts.store, body.input.trim())] };
+        case 'ticket': {
+          const key = body.input.trim();
+          if (!TICKET_KEY.test(key)) {
+            return {
+              ok: false, items: [],
+              error: `"${key.slice(0, 60)}" is not a ticket key like ABC-123. For a brief file or pasted text, pick the brief source.`,
+            };
+          }
+          return { ok: true, items: [addTicketItem(this.opts.store, key)] };
+        }
         case 'brief':
-          return { ok: true, items: [addBriefItem(this.opts.store, body.input)] };
+          return { ok: true, items: [addBriefItem(this.opts.store, briefTextFrom(body.input))] };
         case 'hotfix':
           return { ok: true, items: [addHotfixItem(this.opts.store, body.input)] };
         case 'query':
