@@ -222,15 +222,80 @@ function stubJournalNarrative(lane: Lane): { t: number; text: string; color: str
   return entries;
 }
 
+function hhmm(t: number): string {
+  const d = new Date(t);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/** A run-id-shaped string for this lane, for the verbose fixture rows -- not the
+ *  lane's own real id, since a jira_-style id already carries a ticket key that
+ *  would make the machine-id regex match `plain` fixtures for the wrong reason. */
+function syntheticRunId(lane: Lane): string {
+  return `S-${createHash('sha1').update(lane.id).digest('hex').slice(0, 16)}`;
+}
+
+/**
+ * Item 9: `/run/:id/thread` parity with the real contract -- plain by default (tool
+ * calls folded into one `activity` digest, a `reply` with the lane's own plain
+ * sentence, an `Asked you:` event for a parked lane's question, no machine id
+ * anywhere in the text), raw rows with ids intact under `?verbose=1`.
+ */
+function runThreadPlain(lane: Lane): Message[] {
+  // The lane's own persisted messages (`db.thread`, filtered to this lane) stay --
+  // a pending question with its answer options is a real, interactive card, never
+  // something a digest is allowed to swallow -- the synthetic activity/reply/asked
+  // rows lead the thread, ahead of whatever real cards this lane already carries.
+  const persisted = db.thread.filter((m) => m.lane === lane.id);
+  const messages: Message[] = [
+    {
+      k: `${lane.id}-activity`, type: 'activity',
+      text: `Worked ${hhmm(lane.startedAt)} to ${hhmm(lane.observedAt)}: 140 commands, 45 file reads, 11 edits.`,
+      ts: lane.observedAt, source: lane.id,
+    },
+    { k: `${lane.id}-reply`, type: 'reply', text: lane.plain || lane.stepText, ts: lane.observedAt, source: 'conductor' },
+  ];
+  if (lane.question && !persisted.some((m) => m.type === 'question')) {
+    messages.push({
+      k: `${lane.id}-asked`, type: 'event', text: `Asked you: ${lane.question.text}`,
+      ts: lane.question.askedAt, source: lane.id,
+    });
+  }
+  return [...messages, ...persisted];
+}
+
+function runThreadVerbose(lane: Lane): Message[] {
+  const rid = syntheticRunId(lane);
+  const persisted = db.thread.filter((m) => m.lane === lane.id);
+  const messages: Message[] = [
+    { k: `${rid}-started`, type: 'event', text: `${rid} STARTED`, ts: lane.startedAt, source: lane.id },
+    { k: `${rid}-bash1`, type: 'event', text: `${rid} RUNNING BASH`, ts: lane.startedAt + 60_000, source: lane.id },
+    { k: `${rid}-bash2`, type: 'event', text: `${rid} RUNNING BASH`, ts: lane.startedAt + 120_000, source: lane.id },
+    {
+      k: `${rid}-receipt`, type: 'receipt', text: `${rid} finished a tool call`, ts: lane.observedAt, source: 'console',
+      jid: `J-${rid.slice(2, 10)}`, undoable: false,
+    },
+  ];
+  if (lane.question && !persisted.some((m) => m.type === 'question')) {
+    messages.push({
+      k: `${rid}-ask`, type: 'question', text: lane.question.text, ts: lane.question.askedAt, source: lane.id,
+      askKey: lane.question.key, opts: lane.question.opts,
+    });
+  }
+  return [...messages, ...persisted];
+}
+
 /** H2.4: the ticket sheet's Story section (`GET /run/:id/story`) -- built off this
  *  fixture lane's own fields, the same stand-in approach `stubJournalNarrative`
  *  already takes for the journal panel. */
-function stubStory(lane: Lane | undefined, id: string): import('../shared/console-model.js').LaneStory {
+function stubStory(lane: Lane | undefined, id: string, verbose = false): import('../shared/console-model.js').LaneStory {
   if (!lane) {
     return { id, title: null, kind: 'manual', ticket: null, brief: null, entries: [] };
   }
+  // Item 9: plain mode never names the run id -- a lane with no ticket reads "this
+  // run" the same way `stripMachineIds` would; verbose mode names it in full.
+  const startedOn = lane.ticket ?? (verbose ? lane.id : 'this run');
   const entries: import('../shared/console-model.js').LaneStoryEntry[] = [
-    { at: lane.startedAt, kind: 'ticket', text: `started on ${lane.ticket ?? lane.id}`, url: lane.sourceUrl },
+    { at: lane.startedAt, kind: 'ticket', text: `started on ${startedOn}`, url: lane.sourceUrl },
   ];
   if (lane.sandbox) entries.push({ at: lane.startedAt + 60_000, kind: 'branch', text: `branch ${lane.sandbox.branch ?? lane.id.toLowerCase()} pushed`, url: null });
   if (lane.pr) entries.push({ at: lane.since - 30_000, kind: 'pr', text: `opened PR #${lane.pr.no}`, url: lane.pr.url });
@@ -701,7 +766,7 @@ export function createStubServer() {
       if (runStoryMatch && method === 'GET') {
         const id = decodeURIComponent(runStoryMatch[1] as string);
         const l = findLane(id);
-        json(response, 200, stubStory(l, id));
+        json(response, 200, stubStory(l, id, query.get('verbose') === '1'));
         return;
       }
 
@@ -720,7 +785,10 @@ export function createStubServer() {
       const runThreadMatch = /^\/run\/([^/]+)\/thread$/.exec(urlPath);
       if (runThreadMatch && method === 'GET') {
         const id = decodeURIComponent(runThreadMatch[1] as string);
-        json(response, 200, { messages: db.thread.filter((m) => m.lane === id) });
+        const verbose = query.get('verbose') === '1';
+        const lane = findLane(id);
+        const messages = lane ? (verbose ? runThreadVerbose(lane) : runThreadPlain(lane)) : [];
+        json(response, 200, verbose ? { messages, verbose: true } : { messages });
         return;
       }
       const runPrMatch = /^\/run\/([^/]+)\/pr$/.exec(urlPath);

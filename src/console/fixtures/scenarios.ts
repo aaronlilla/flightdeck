@@ -310,10 +310,12 @@ export function humanBoardLanes(): Lane[] {
   }));
 
   out.push(lane({
+    // 2026-09-08: a 40-char sha, uncut, and a 90-char title -- the tile geometry
+    // e2e specs need a fixture that actually overflows a tile to bite on.
     id: 'long-title-1', ticket: 'FLT-705', kind: 'ticket', state: 'running',
     title: 'the withdrawal fee rounds down instead of to the nearest cent on every payout over five hundred dollars, which the finance team flagged after last week\'s reconciliation',
     sourceUrl: 'https://example.invalid/browse/FLT-705',
-    plain: 'Working since 09:10 on a Sonnet session, 6 turns in, last did: read the fee calculator.',
+    plain: 'Working since 09:10 on a Sonnet session, 6 turns in, last did: fixed 7e57ca8958472653575ea6d29c7003526c3ec723 in the fee calculator.',
   }));
 
   out.push(lane({
