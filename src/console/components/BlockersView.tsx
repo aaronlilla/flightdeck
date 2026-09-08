@@ -1,4 +1,4 @@
-import type { JSX } from 'react';
+import type { JSX, ReactNode } from 'react';
 import { useState } from 'react';
 
 import { hm } from '../freshness.js';
@@ -11,10 +11,35 @@ export interface BlockersViewProps {
   chains: string[][];
   onResolve: (id: string) => Promise<BlockersActionResult>;
   onCheck: (id: string) => Promise<BlockersActionResult>;
-  /** Renders a ticket key or PR number as a link. Falls back to a plain `<a>` built
-   *  from the site/repo conventions when no shared `Linkify` component exists in this
-   *  worktree yet (iteration 4's own sibling stream owns that file). */
+  /** Where a bare `BBZ-1234` in a blocker's own text goes when nothing in that
+   *  blocker's `links` already names it. Absent means a ticket key with no matching
+   *  link renders as plain text rather than a guessed URL. */
   jiraSite?: string;
+}
+
+const LINKIFY_TOKEN = /(BBZ-\d+|PR #\d+)/g;
+
+/** No `Linkify` component exists in this worktree (the sibling stream that would have
+ *  added one never landed here), so title, detail and lane labels are linkified in
+ *  place: a `BBZ-` key or a `PR #n` token is wrapped in an `<a>` when the blocker's own
+ *  `links` array already names a URL for it (the server built those from the real PR
+ *  and ticket it detected), and a bare `BBZ-` key falls back to `jiraSite` when that is
+ *  set. A `PR #n` with no matching link stays plain text -- this view has no repo of
+ *  its own to guess a GitHub URL from. */
+function linkify(text: string, links: Blocker['links'], jiraSite: string | undefined, keyPrefix: string): ReactNode[] {
+  const parts = text.split(LINKIFY_TOKEN);
+  return parts.map((part, i) => {
+    if (!LINKIFY_TOKEN.test(part)) { LINKIFY_TOKEN.lastIndex = 0; return part; }
+    LINKIFY_TOKEN.lastIndex = 0;
+    const match = links.find((link) => link.label === part || link.label.includes(part));
+    const url = match?.url ?? (part.startsWith('BBZ-') && jiraSite ? `${jiraSite}/browse/${part}` : null);
+    if (!url) return part;
+    return (
+      <a key={`${keyPrefix}-${i}`} href={url} target="_blank" rel="noopener noreferrer" style={{ color: 'inherit' }}>
+        {part}
+      </a>
+    );
+  });
 }
 
 interface StepResult {
@@ -81,10 +106,11 @@ function StepButtons({ blocker, enabled, onResolve, onCheck }: {
   );
 }
 
-function ChainStep({ blocker, stepN, enabled, onResolve, onCheck }: {
+function ChainStep({ blocker, stepN, enabled, onResolve, onCheck, jiraSite }: {
   blocker: Blocker; stepN: number; enabled: boolean;
   onResolve: (id: string) => Promise<BlockersActionResult>;
   onCheck: (id: string) => Promise<BlockersActionResult>;
+  jiraSite: string | undefined;
 }): JSX.Element {
   return (
     <div
@@ -98,18 +124,25 @@ function ChainStep({ blocker, stepN, enabled, onResolve, onCheck }: {
         <div className="m" style={{ fontSize: 12.5, fontWeight: 700, display: 'flex', gap: 8, alignItems: 'baseline' }}>
           <span style={{ color: 'var(--ink3)' }}>{stepN}</span>
           <span style={{ color: enabled ? 'var(--block)' : 'var(--ink3)' }}>{enabled ? '●' : '○'}</span>
-          <span>{blocker.title}</span>
+          <span>{linkify(blocker.title, blocker.links, jiraSite, `${blocker.id}-title`)}</span>
         </div>
         <span className="lbl" style={{ color: enabled ? 'var(--block)' : 'var(--ink3)' }}>
           {enabled ? 'OPEN' : `WAITING ON ${stepN - 1}`}
         </span>
       </div>
-      <div className="m" style={{ fontSize: 11, color: 'var(--ink2)' }}>{blocker.detail}</div>
+      <div className="m" style={{ fontSize: 11, color: 'var(--ink2)' }}>
+        {linkify(blocker.detail, blocker.links, jiraSite, `${blocker.id}-detail`)}
+      </div>
       <div className="m" style={{ fontSize: 11, color: 'var(--ink2)' }}>To resolve: {blocker.howToResolve}</div>
       <div className="m" style={{ fontSize: 10.5, color: 'var(--ink3)' }}>Then: {blocker.thenWhat}</div>
       {blocker.blocks.length ? (
         <div className="m" style={{ fontSize: 10.5, color: 'var(--ink3)' }}>
-          Blocks: {blocker.blocks.map((b) => b.label).join(', ')}
+          Blocks: {blocker.blocks.map((b, i) => (
+            <span key={b.laneId}>
+              {i > 0 ? ', ' : ''}
+              {linkify(b.label, blocker.links, jiraSite, `${blocker.id}-block-${b.laneId}`)}
+            </span>
+          ))}
         </div>
       ) : null}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginTop: 2 }}>
@@ -124,7 +157,7 @@ function ChainStep({ blocker, stepN, enabled, onResolve, onCheck }: {
  *  through its own steps in order -- only the first still-open step in a chain is
  *  actionable, the rest read dimmed until it clears. Resolved chains collapse under
  *  "Resolved today". */
-export function BlockersView({ blockers, chains, onResolve, onCheck }: BlockersViewProps): JSX.Element {
+export function BlockersView({ blockers, chains, onResolve, onCheck, jiraSite }: BlockersViewProps): JSX.Element {
   const byId = new Map(blockers.map((b) => [b.id, b]));
   const openChains = chains.filter((chain) => chain.some((id) => byId.get(id)?.state === 'open'));
   const resolvedToday = blockers.filter((b) => b.state === 'resolved');
@@ -151,7 +184,7 @@ export function BlockersView({ blockers, chains, onResolve, onCheck }: BlockersV
             return (
               <ChainStep
                 key={id} blocker={blocker} stepN={i + 1} enabled={i === firstOpenIndex}
-                onResolve={onResolve} onCheck={onCheck}
+                onResolve={onResolve} onCheck={onCheck} jiraSite={jiraSite}
               />
             );
           })}

@@ -84,3 +84,55 @@ describe('BlockersView', () => {
     expect(screen.getByText(/GitHub Actions billing is off/)).toBeInTheDocument();
   });
 });
+
+describe('BlockersView links (iteration 6, no Linkify.tsx in this worktree)', () => {
+  it('links a PR # token in the title and detail when the blocker\'s own links name it', () => {
+    const lane = { laneId: 'S-run1', label: 'the stale-session fix' };
+    const now = Date.now();
+    const checks: Blocker = {
+      id: 'checks:o/n#39', kind: 'checks', title: 'Checks failing on PR #39 (o/n)',
+      detail: 'PR #39 on o/n has failing checks.', youCanResolve: true, howToResolve: 'Fix and push.',
+      links: [{ label: 'PR #39', url: 'https://github.com/o/n/pull/39' }], blocks: [lane], blockedBy: [],
+      state: 'open', since: now, checkedAt: null, resolvedAt: null, thenWhat: 'Resumes the stale-session fix.', lastCheck: null,
+    };
+    render(<BlockersView blockers={[checks]} chains={[[checks.id]]} onResolve={vi.fn()} onCheck={vi.fn()} />);
+    const links = screen.getAllByRole('link', { name: 'PR #39' });
+    expect(links.length).toBeGreaterThan(0);
+    for (const link of links) {
+      expect(link).toHaveAttribute('href', 'https://github.com/o/n/pull/39');
+      expect(link).toHaveAttribute('target', '_blank');
+    }
+  });
+
+  it('links a bare BBZ- key through jiraSite when nothing in links names it', () => {
+    const question: Blocker = {
+      id: 'question:abc123', kind: 'question', title: 'BBZ-42: which environment?',
+      detail: 'BBZ-42 needs an environment pick.', youCanResolve: true, howToResolve: 'Answer it.',
+      links: [], blocks: [], blockedBy: [], state: 'open', since: Date.now(), checkedAt: null,
+      resolvedAt: null, thenWhat: 'Resumes once answered.', lastCheck: null,
+    };
+    render(
+      <BlockersView
+        blockers={[question]} chains={[[question.id]]} onResolve={vi.fn()} onCheck={vi.fn()}
+        jiraSite="https://boltbetz-bankroll-dev.atlassian.net"
+      />,
+    );
+    const links = screen.getAllByRole('link', { name: 'BBZ-42' });
+    expect(links.length).toBeGreaterThan(0);
+    for (const link of links) {
+      expect(link).toHaveAttribute('href', 'https://boltbetz-bankroll-dev.atlassian.net/browse/BBZ-42');
+    }
+  });
+
+  it('links a lane label named "Blocks:" through the blocker\'s own links', () => {
+    const checks: Blocker = {
+      id: 'checks:o/n#39', kind: 'checks', title: 'Checks failing on PR #39', detail: 'd', youCanResolve: true,
+      howToResolve: 'h', links: [{ label: 'PR #39', url: 'https://github.com/o/n/pull/39' }],
+      blocks: [{ laneId: 'S-run1', label: 'PR #39' }], blockedBy: [], state: 'open', since: Date.now(),
+      checkedAt: null, resolvedAt: null, thenWhat: 't', lastCheck: null,
+    };
+    render(<BlockersView blockers={[checks]} chains={[[checks.id]]} onResolve={vi.fn()} onCheck={vi.fn()} />);
+    const links = screen.getAllByRole('link', { name: 'PR #39' });
+    expect(links.length).toBeGreaterThan(1);
+  });
+});
