@@ -7,6 +7,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
+import { appendOnce } from '../journal.js';
 import type { Lane } from '../../shared/console-model.js';
 
 export function retiredPath(forgeHomeDir: string): string {
@@ -96,4 +97,38 @@ export function retirePreview(path: string, lanes: Lane[]): { id: string; title:
   return lanes
     .filter((lane) => !already.has(lane.id) && retireEligible(lane))
     .map((lane) => ({ id: lane.id, title: lane.title }));
+}
+
+export interface RetireLaneDeps {
+  forgeHomeDir: string;
+  journalPath: string;
+  /** The archived-inclusive lanes view (`ConsoleReads.lanesResponse(true, true)`), the
+   *  one the eligibility rule reads a lane's heart and PR off. */
+  lanesAll: () => Lane[];
+  now?: () => number;
+}
+
+export type RetireLaneOutcome =
+  | { status: 200; body: { ok: true; jid: null; message: string; undoable: boolean } }
+  | { status: 404 | 409; body: { error: string } };
+
+/**
+ * The one implementation behind `POST /run/:id/retire` / `unretire`, the rail's typed
+ * `remove | archive | retire <lane>` and the Conductor agent's `retire` / `unretire`
+ * tools (2026-09-08). Retiring an ineligible lane is refused outright; unretiring is
+ * never refused. Both append the `lane.retired` journal row the board and the story read.
+ */
+export function retireLane(id: string, retiring: boolean, deps: RetireLaneDeps): RetireLaneOutcome {
+  if (retiring) {
+    const lane = deps.lanesAll().find((row) => row.id === id);
+    if (!lane) return { status: 404, body: { error: `${id} is not a registered run` } };
+    if (!retireEligible(lane)) {
+      return { status: 409, body: { error: `${id} is still open -- retiring only removes a finished lane from the board` } };
+    }
+  }
+  const at = (deps.now ?? Date.now)();
+  if (retiring) retireRun(retiredPath(deps.forgeHomeDir), id, at);
+  else unretireRun(retiredPath(deps.forgeHomeDir), id, at);
+  appendOnce(deps.journalPath, { event: 'lane.retired', run: id, actor: 'console', retired: retiring });
+  return { status: 200, body: { ok: true, jid: null, message: `${retiring ? 'retired' : 'unretired'} ${id}`, undoable: retiring } };
 }

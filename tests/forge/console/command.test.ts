@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -11,6 +11,7 @@ import { Inbox } from '../../../src/forge/inbox.js';
 import { Registry } from '../../../src/forge/registry.js';
 import { ConsoleWrites, parseIntent } from '../../../src/forge/console/command.js';
 import { tokensToday } from '../../../src/forge/console/lanes.js';
+import { readRetired, retiredPath } from '../../../src/forge/console/retire.js';
 import { fmtTokens } from '../../../src/shared/format-tokens.js';
 
 class FakeActuator implements Actuator {
@@ -557,8 +558,78 @@ describe('ConsoleWrites: replies in words, multi-line (deliverable 5)', () => {
     const cards = await writes.command('do a barrel roll');
     const reply = cards.find((card) => card.type === 'reply')!;
     expect(reply.text).toBe(
-      'I did not understand that. Try one of: pause, resume, kill <ticket>, merge ready lanes, '
-      + 'raise daily cap to <n>, cap <ticket> at <n>, why is <ticket> stuck, what\'s stuck, spend today, status, answer <text>.',
+      'I did not understand that. Try one of: pause, resume, kill <ticket>, remove <ticket>, reopen <ticket>, '
+      + "verify <ticket>, merge ready lanes, raise daily cap to <n>, cap <ticket> at <n>, why is <ticket> stuck, what's stuck, spend today, status, answer <text>.",
     );
+  });
+});
+
+// W1 follow-up (2026-09-08): `parseIntent` learned remove/archive/retire, reopen and verify,
+// but `executeIntent` had no case for any of them, so a typed "remove <lane>" still
+// answered "I did not understand that" -- the exact reply from the mission. These prove
+// each verb reaches its real function: retire through a confirm card into the retired
+// log and the journal, reopen and verify straight into `run-actions.ts` (whose own
+// refusal text is the proof the call was made).
+describe('grammar verbs remove/archive/retire, reopen, verify actually execute', () => {
+  function writesWithBoard(lanes: unknown[]): ConsoleWrites {
+    return new ConsoleWrites({
+      journalPath, registry, inbox, actuator,
+      authorized: () => true,
+      ledgerPath: join(dir, `actions-${Math.random()}.jsonl`),
+      capsOverridesPath: join(dir, `caps-${Math.random()}.json`),
+      rulesConfigPath: join(dir, `rules-${Math.random()}.json`),
+      integrationsConfigPath: join(dir, `integrations-${Math.random()}.json`),
+      forgeHomeDir: dir,
+      lanesView: () => ({ at: Date.now(), lanes: lanes as never, tokensToday: 0, tokensPerMin: 0, links: { jiraSite: null, defaultRepo: null } }),
+      lanesViewAll: () => ({ at: Date.now(), lanes: lanes as never, tokensToday: 0, tokensPerMin: 0, links: { jiraSite: null, defaultRepo: null } }),
+    });
+  }
+
+  it('"remove <lane>" proposes a retire behind a confirm card and writes nothing until confirm', async () => {
+    const withBoard = writesWithBoard([
+      { id: '2026-09-04-acme-c2', ticket: null, title: 'a dead lane', state: 'unverified', heart: false, pr: null, kind: 'manual', startedAt: 1 },
+    ]);
+    const cards = await withBoard.command('remove 2026-09-04-acme-c2');
+    const confirm = cards.find((card) => card.type === 'confirm');
+    expect(confirm, `expected a confirm card, got ${JSON.stringify(cards.map((c) => [c.type, c.text]))}`).toBeDefined();
+    expect(confirm!.blast).toMatch(/leaves the board/);
+    expect(existsSync(retiredPath(dir))).toBe(false);
+    expect(replay(journalPath).events.some((e) => e.event === 'lane.retired')).toBe(false);
+
+    const token = confirm!.btns!.find((btn) => btn.cmd.startsWith('confirm '))!.cmd.split(' ')[1]!;
+    const after = await withBoard.command(`confirm ${token}`);
+    expect(after.find((card) => card.type === 'receipt')?.text).toMatch(/retired/);
+    expect([...readRetired(retiredPath(dir)).keys()]).toEqual(['2026-09-04-acme-c2']);
+    expect(replay(journalPath).events.some((e) => e.event === 'lane.retired' && e['run'] === '2026-09-04-acme-c2')).toBe(true);
+    withBoard.stop();
+  });
+
+  it('"archive <lane>" on a lane with a live heart refuses at confirm time with the retire rule, and retires nothing', async () => {
+    const withBoard = writesWithBoard([
+      { id: 'live-1', ticket: 'ACME-7', title: 'still running', state: 'running', heart: true, pr: null, kind: 'queue', startedAt: 1 },
+    ]);
+    const cards = await withBoard.command('archive ACME-7');
+    const confirm = cards.find((card) => card.type === 'confirm')!;
+    const token = confirm.btns!.find((btn) => btn.cmd.startsWith('confirm '))!.cmd.split(' ')[1]!;
+    const after = await withBoard.command(`confirm ${token}`);
+    expect(after.find((card) => card.type === 'refusal')?.text).toMatch(/still open/);
+    expect(existsSync(retiredPath(dir))).toBe(false);
+    withBoard.stop();
+  });
+
+  it('"reopen <lane>" reaches reopenRun (its own state rule answers, not the grammar\'s "did not understand")', async () => {
+    registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'alpha', actor: 'runner' });
+    const cards = await writes.command('reopen alpha');
+    const refusal = cards.find((card) => card.type === 'refusal');
+    expect(refusal?.text).toMatch(/reopen needs killed\/blocked\/exhausted, not running/);
+  });
+
+  it('"verify <lane>" reaches verifyRun (its own "no chain packet" reason answers)', async () => {
+    registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'alpha', actor: 'runner' });
+    const cards = await writes.command('verify alpha');
+    const refusal = cards.find((card) => card.type === 'refusal');
+    expect(refusal?.text).toMatch(/no chain packet names a repo for run alpha/);
   });
 });

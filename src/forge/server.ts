@@ -45,7 +45,7 @@ import {
   registryDir, serverTokenPath,
 } from './paths.js';
 import { routerEnabled } from './policy.js';
-import { retireEligible, retireFinished, retirePreview, retiredPath, retireRun, unretireRun } from './console/retire.js';
+import { retireFinished, retireLane, retirePreview, retiredPath, type RetireLaneDeps } from './console/retire.js';
 import { mergeReadyReportFrom } from './console/lanes.js';
 import { chainStatusRows, foldChainState } from './chain.js';
 import { processAlive, Registry } from './registry.js';
@@ -345,6 +345,8 @@ export class ForgeServer {
       authorized: (request, response) => this.authorized(request, response),
       stuck: this.stuckFn,
       lanesView: () => this.consoleReads.lanesResponse(),
+      lanesViewAll: () => this.consoleReads.lanesResponse(true, true),
+      forgeHomeDir: this.forgeHomeDir,
       queueStore: this.queueStoreForMerge,
       ...(options.modelPolicyPath ? { modelPolicyPath: options.modelPolicyPath } : {}),
     });
@@ -927,22 +929,17 @@ export class ForgeServer {
    */
   private retireOne(request: IncomingMessage, response: ServerResponse, id: string, retiring: boolean): void {
     if (!this.authorized(request, response)) return;
-    if (retiring) {
-      const lane = this.consoleReads.lanesResponse(true, true).lanes.find((row) => row.id === id);
-      if (!lane) {
-        json(response, 404, { error: `${id} is not a registered run` });
-        return;
-      }
-      if (!retireEligible(lane)) {
-        json(response, 409, { error: `${id} is still open -- retiring only removes a finished lane from the board` });
-        return;
-      }
-    }
-    const at = Date.now();
-    if (retiring) retireRun(retiredPath(this.forgeHomeDir), id, at);
-    else unretireRun(retiredPath(this.forgeHomeDir), id, at);
-    appendOnce(this.journalPath, { event: 'lane.retired', run: id, actor: 'console', retired: retiring });
-    json(response, 200, { ok: true, jid: null, message: `${retiring ? 'retired' : 'unretired'} ${id}`, undoable: retiring });
+    const outcome = retireLane(id, retiring, this.retireLaneDeps());
+    json(response, outcome.status, outcome.body);
+  }
+
+  /** The one retire implementation (`retire.ts#retireLane`) this route, the rail's
+   *  typed `remove <lane>` and the Conductor agent's `retire` tool all share. */
+  private retireLaneDeps(): RetireLaneDeps {
+    return {
+      forgeHomeDir: this.forgeHomeDir, journalPath: this.journalPath,
+      lanesAll: () => this.consoleReads.lanesResponse(true, true).lanes,
+    };
   }
 
   /**
