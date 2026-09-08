@@ -118,12 +118,12 @@ describe('POST /blockers/:id/resolve', () => {
     const inputs: DetectionInputs = {
       now: 1, asks: [], integrations: [], billing: [], registryLive: new Set(),
       lanes: [{
-        id: 'S-run1', title: 'BBMS fix', repo: 'boltbetz/BBManagementSystemV2', state: 'blocked', observedAt: 1,
+        id: 'S-run1', title: 'widgets fix', repo: 'acme/widgets-api', state: 'blocked', observedAt: 1,
         pr: { no: 80, checks: 'success' }, mergeable: { ok: false, why: 'controlled code: only joe-at-bb merges this repo' },
       }],
     };
     const routes = new BlockersRoutes(opts({ gather: async () => inputs }));
-    const result = await routes.resolve('owner:boltbetz/BBManagementSystemV2#80');
+    const result = await routes.resolve('owner:acme/widgets-api#80');
     expect(result.ok).toBe(false);
     expect(result.state).toBe('open');
   });

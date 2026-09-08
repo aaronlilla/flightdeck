@@ -104,23 +104,23 @@ describe('BlockersView links (iteration 6, no Linkify.tsx in this worktree)', ()
     }
   });
 
-  it('links a bare BBZ- key through jiraSite when nothing in links names it', () => {
+  it('links a bare ticket key through jiraSite when nothing in links names it', () => {
     const question: Blocker = {
-      id: 'question:abc123', kind: 'question', title: 'BBZ-42: which environment?',
-      detail: 'BBZ-42 needs an environment pick.', youCanResolve: true, howToResolve: 'Answer it.',
+      id: 'question:abc123', kind: 'question', title: 'ACM-42: which environment?',
+      detail: 'ACM-42 needs an environment pick.', youCanResolve: true, howToResolve: 'Answer it.',
       links: [], blocks: [], blockedBy: [], state: 'open', since: Date.now(), checkedAt: null,
       resolvedAt: null, thenWhat: 'Resumes once answered.', lastCheck: null,
     };
     render(
       <BlockersView
         blockers={[question]} chains={[[question.id]]} onResolve={vi.fn()} onCheck={vi.fn()}
-        jiraSite="https://boltbetz-bankroll-dev.atlassian.net"
+        jiraSite="https://acme.atlassian.net"
       />,
     );
-    const links = screen.getAllByRole('link', { name: 'BBZ-42' });
+    const links = screen.getAllByRole('link', { name: 'ACM-42' });
     expect(links.length).toBeGreaterThan(0);
     for (const link of links) {
-      expect(link).toHaveAttribute('href', 'https://boltbetz-bankroll-dev.atlassian.net/browse/BBZ-42');
+      expect(link).toHaveAttribute('href', 'https://acme.atlassian.net/browse/ACM-42');
     }
   });
 

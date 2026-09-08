@@ -326,7 +326,7 @@ describe('stdioMcpProbe', () => {
 describe('jiraMyselfUrl', () => {
   it('accepts the site with or without its scheme and never doubles it', async () => {
     const { jiraMyselfUrl } = await import('../../../src/forge/console/integrations.js');
-    expect(jiraMyselfUrl('https://boltbetz-bankroll-dev.atlassian.net')).toBe('https://boltbetz-bankroll-dev.atlassian.net/rest/api/3/myself');
-    expect(jiraMyselfUrl('boltbetz-bankroll-dev.atlassian.net/')).toBe('https://boltbetz-bankroll-dev.atlassian.net/rest/api/3/myself');
+    expect(jiraMyselfUrl('https://acme.atlassian.net')).toBe('https://acme.atlassian.net/rest/api/3/myself');
+    expect(jiraMyselfUrl('acme.atlassian.net/')).toBe('https://acme.atlassian.net/rest/api/3/myself');
   });
 });

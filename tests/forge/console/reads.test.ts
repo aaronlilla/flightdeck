@@ -134,6 +134,9 @@ describe('ConsoleReads.lanesResponse: title and sourceUrl', () => {
       forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
       inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore, jiraSite: 'https://x.atlassian.net',
       gitLog: async () => [],
+      // Without this the story reaches for the real `gh` to read PR #119, which is a
+      // five-second timeout on a CI runner with no GitHub session.
+      ghDetailLookup: async () => undefined,
     });
 
     const server = reads as unknown as { runStoryResponse(run: string): Promise<{ entries: Array<{ text: string }> }> };

@@ -11,28 +11,29 @@ export interface BlockersViewProps {
   chains: string[][];
   onResolve: (id: string) => Promise<BlockersActionResult>;
   onCheck: (id: string) => Promise<BlockersActionResult>;
-  /** Where a bare `BBZ-1234` in a blocker's own text goes when nothing in that
+  /** Where a bare ticket key (`ABC-1234`) in a blocker's own text goes when nothing in that
    *  blocker's `links` already names it. Absent means a ticket key with no matching
    *  link renders as plain text rather than a guessed URL. */
   jiraSite?: string;
 }
 
-const LINKIFY_TOKEN = /(BBZ-\d+|PR #\d+)/g;
+const LINKIFY_TOKEN = /([A-Z]{2,6}-\d+|PR #\d+)/g;
 
 /** No `Linkify` component exists in this worktree (the sibling stream that would have
  *  added one never landed here), so title, detail and lane labels are linkified in
- *  place: a `BBZ-` key or a `PR #n` token is wrapped in an `<a>` when the blocker's own
+ *  place: a ticket key or a `PR #n` token is wrapped in an `<a>` when the blocker's own
  *  `links` array already names a URL for it (the server built those from the real PR
- *  and ticket it detected), and a bare `BBZ-` key falls back to `jiraSite` when that is
+ *  and ticket it detected), and a bare ticket key falls back to `jiraSite` when that is
  *  set. A `PR #n` with no matching link stays plain text -- this view has no repo of
  *  its own to guess a GitHub URL from. */
 function linkify(text: string, links: Blocker['links'], jiraSite: string | undefined, keyPrefix: string): ReactNode[] {
   const parts = text.split(LINKIFY_TOKEN);
   return parts.map((part, i) => {
-    if (!LINKIFY_TOKEN.test(part)) { LINKIFY_TOKEN.lastIndex = 0; return part; }
-    LINKIFY_TOKEN.lastIndex = 0;
+    // A fresh, non-global test per part: a shared global regex carries lastIndex between
+    // calls and quietly answers false for a token it would otherwise match.
+    if (!/^(?:[A-Z]{2,6}-\d+|PR #\d+)$/.test(part)) return part;
     const match = links.find((link) => link.label === part || link.label.includes(part));
-    const url = match?.url ?? (part.startsWith('BBZ-') && jiraSite ? `${jiraSite}/browse/${part}` : null);
+    const url = match?.url ?? (/^[A-Z]{2,6}-\d+$/.test(part) && jiraSite ? `${jiraSite}/browse/${part}` : null);
     if (!url) return part;
     return (
       <a key={`${keyPrefix}-${i}`} href={url} target="_blank" rel="noopener noreferrer" style={{ color: 'inherit' }}>

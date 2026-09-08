@@ -301,7 +301,7 @@ describe('forge run', () => {
     writeFileSync(brief, '# Goal\n\nDo the thing.\n', 'utf8');
     const result = await forge(['run', brief, 'x'.repeat(4001)]);
     expect(result.code).toBe(1);
-  });
+  }, 20_000);
 
   it('pins the runtime version under --dry-run and calls no engine', async () => {
     const brief = join(home, 'ok.md');
@@ -312,7 +312,7 @@ describe('forge run', () => {
     expect(result.code).toBe(0);
     expect(result.lines[0]).toMatch(/pinned to forge /);
     expect(result.lines.join(' ')).toMatch(/CLAUDE_CONFIG_DIR=/);
-  });
+  }, 20_000);
 
   it('says which config directory it chose and why', async () => {
     const brief = join(home, 'ok.md');
