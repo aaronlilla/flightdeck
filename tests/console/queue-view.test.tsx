@@ -344,3 +344,25 @@ describe('a brief card names its item instead of printing the brief', () => {
     expect(screen.getAllByTestId('queue-card-title').some((el) => el.textContent === 'Q-3')).toBe(true);
   });
 });
+
+describe('the card body keeps the truth a state already carried', () => {
+  it('shows a done item its own reason, not its repo', () => {
+    renderQueue([item({
+      id: 'Q-done', state: 'done', repo: 'aaronlilla/flightdeck',
+      reason: 'PR #64 merged outside the queue',
+    })]);
+    // Linkify splits the PR mention into its own node, so the body is read whole.
+    const body = document.querySelector('[data-testid="queue-card-body"]') as HTMLElement;
+    expect(body.textContent).toContain('merged outside the queue');
+    expect(body.textContent).not.toContain('aaronlilla/flightdeck');
+  });
+
+  it('never prints the same sentence as both title and body', () => {
+    const brief = ['the queue card prints the whole brief', '', 'more text'].join(String.fromCharCode(10));
+    renderQueue([item({
+      id: 'Q-dupe', source: 'brief', ticket: null, repo: null, input: brief,
+      title: 'The queue card prints the whole brief',
+    })]);
+    expect(screen.getAllByText(/queue card prints the whole brief/i)).toHaveLength(1);
+  });
+});

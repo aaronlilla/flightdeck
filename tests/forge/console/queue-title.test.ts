@@ -17,6 +17,8 @@ import { ForgeServer } from '../../../src/forge/server.js';
 import { Lanes } from '../../../src/forge/supervisor.js';
 import type { QueueItem, QueueResponse } from '../../../src/shared/console-model.js';
 
+const NL = String.fromCharCode(10);
+
 function item(overrides: Partial<QueueItem>): QueueItem {
   return {
     id: 'Q-1', source: 'brief', input: '', ticket: null, repo: null, briefPath: null,
@@ -61,12 +63,29 @@ describe('queueTitleFor', () => {
       .toBe('board-readability, four cards a row');
   });
 
+  it('falls back rather than naming an item after a stray dash', () => {
+    const brief = '# BBZ-233 -' + String.fromCharCode(10) + String.fromCharCode(10) + 'The identity check reads 425 as a failure.' + String.fromCharCode(10);
+    expect(queueTitleFor(item({ source: 'brief', input: brief, ticket: 'BBZ-233' })))
+      .toBe('The identity check reads 425 as a failure.');
+  });
+
   it('titles a ticket item from the heading of its brief on disk', () => {
     const dir = mkdtempSync(join(tmpdir(), 'queue-title-'));
     const path = join(dir, 'brief.md');
     writeFileSync(path, '# BB-9: Deposits round the wrong way\n\nbody\n', 'utf8');
     expect(queueTitleFor(item({ source: 'ticket', input: 'BB-9', ticket: 'BB-9', briefPath: path })))
       .toBe('Deposits round the wrong way');
+  });
+
+  it('retitles when the brief on disk changes, and does not read it again when it has not', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'queue-title-cache-'));
+    const path = join(dir, 'brief.md');
+    writeFileSync(path, '# First heading' + NL + NL + 'body' + NL, 'utf8');
+    const ticketItem = item({ source: 'ticket', input: 'BB-9', ticket: 'BB-9', briefPath: path });
+    expect(queueTitleFor(ticketItem)).toBe('First heading');
+    expect(queueTitleFor(ticketItem)).toBe('First heading');
+    writeFileSync(path, '# Second heading, longer than the first' + NL + NL + 'body' + NL, 'utf8');
+    expect(queueTitleFor(ticketItem)).toBe('Second heading, longer than the first');
   });
 
   it('gives a ticket item with no brief on disk no title at all', () => {

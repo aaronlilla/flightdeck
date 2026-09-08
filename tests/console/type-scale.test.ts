@@ -37,7 +37,7 @@ function walk(dir: string, ext: string): string[] {
 const TSX_FONT_SIZE = /fontSize:\s*([^,}\n]+)/g;
 const TOKEN_FORM = /^(['"])var\(--fs-[a-z-]+\)\1$/;
 /** A `font:` shorthand in a component style object, e.g. `font: '11.5px/1.3 ...'`. */
-const TSX_FONT_SHORTHAND = /\bfont:\s*['"][^'"]*?\b([0-9][0-9.]*)px/g;
+const TSX_FONT_SHORTHAND = /\bfont:\s*['"`][^'"`]*?\b([0-9][0-9.]*)px/g;
 /** A module-level `const` that holds a bare number and is named like a size: the
  *  indirection the token rule above would otherwise miss. */
 const TSX_SIZE_CONST = /^const\s+(\w*(?:fs|font|size)\w*)\s*=\s*([0-9][0-9.]*)\s*;/gim;

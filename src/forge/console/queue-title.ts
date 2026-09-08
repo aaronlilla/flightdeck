@@ -10,20 +10,46 @@
  * It runs on the way out of `GET /queue`, never on the way in: an item written to disk
  * before `title` existed answers with one, and no migration ever has to run.
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 
 import { firstBodyParagraph, titleFromHeading } from './lanes.js';
 import type { QueueItem } from '../../shared/console-model.js';
 
 const LEADING_SEPARATOR = /^[,;:\-–—]+\s*/;
 
+/** `GET /queue` answers a 5s poll and every SSE-driven refresh, and a ticket item's
+ *  title comes off a brief on disk. Reading every brief on every one of those was a
+ *  blocking read per item per request, so the heading is kept against the file's own
+ *  mtime and size: an edited brief still retitles on the next read, an unchanged one
+ *  costs a `stat`. */
+interface CachedHeading { mtimeMs: number; size: number; ticket: string | null; heading: string | null }
+const headingCache = new Map<string, CachedHeading>();
+
 function headingOfFile(path: string | null, ticket: string | null): string | null {
-  if (!path || !existsSync(path)) return null;
+  if (!path) return null;
+  let stamp: { mtimeMs: number; size: number };
   try {
-    return titleFromHeading(readFileSync(path, 'utf8'), ticket);
+    if (!existsSync(path)) {
+      headingCache.delete(path);
+      return null;
+    }
+    const stat = statSync(path);
+    stamp = { mtimeMs: stat.mtimeMs, size: stat.size };
   } catch {
     return null;
   }
+  const cached = headingCache.get(path);
+  if (cached && cached.mtimeMs === stamp.mtimeMs && cached.size === stamp.size && cached.ticket === ticket) {
+    return cached.heading;
+  }
+  let heading: string | null = null;
+  try {
+    heading = titleFromHeading(readFileSync(path, 'utf8'), ticket);
+  } catch {
+    return null;
+  }
+  headingCache.set(path, { ...stamp, ticket, heading });
+  return heading;
 }
 
 /** `titleFromHeading` removes the ticket key and nothing else, so a heading written
@@ -35,7 +61,10 @@ function headingOfFile(path: string | null, ticket: string | null): string | nul
 function withoutOrphanedPunctuation(title: string | null): string | null {
   if (title === null) return null;
   const trimmed = title.replace(LEADING_SEPARATOR, '');
-  if (trimmed === title || !trimmed) return title;
+  // Nothing left once the separator comes off (a heading of `# BBZ-233 -`): null, so the
+  // caller's own fallback runs. Returning the bare dash would name the card after it.
+  if (!trimmed) return null;
+  if (trimmed === title) return title;
   return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
 }
 

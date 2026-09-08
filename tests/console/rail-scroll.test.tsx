@@ -97,10 +97,11 @@ describe('nothing in the rail runs off the side', () => {
     return {
       k: 'q-1', type: 'question', text: 'Which base should the retry branch start from?',
       ts: Date.now(), source: 'conductor',
-      options: [1, 2, 3].map((n) => ({
-        label: `option ${n} ${'a decision spelled out at length '.repeat(6)}`,
-        cmd: `pick ${n}`,
-      })),
+      // `opts`, not `options`: ConductorRail renders `message.opts` (string[]), and a
+      // fixture with the wrong field name rendered no option buttons at all, which left
+      // this test asserting nothing about the widest thing in the rail.
+      askKey: 'ask-1',
+      opts: [1, 2, 3].map((n) => `option ${n} ${'a decision spelled out at length '.repeat(6)}`),
     } as unknown as Message;
   }
 
@@ -121,6 +122,9 @@ describe('nothing in the rail runs off the side', () => {
   it('never leaves a nowrap element without an overflow rule', () => {
     render(railFor([longQuestion(), longReceipt(), longPr()]));
     const thread = screen.getByTestId('rail-thread');
+    // Guard the fixture itself: a question whose options do not render would make the
+    // walk below pass by having nothing wide to walk over.
+    expect(thread.querySelectorAll('[data-testid="question-options"] > span')).toHaveLength(3);
     const offenders: string[] = [];
     for (const el of thread.querySelectorAll<HTMLElement>('*')) {
       if (el.style.whiteSpace !== 'nowrap') continue;

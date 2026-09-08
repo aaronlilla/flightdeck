@@ -51,7 +51,10 @@ const HEADING_ANY = /^#{1,6}\s/;
  *  `input`: a brief item carries its whole markdown text there, and printing it is what
  *  made these cards unreadable. */
 function cardBody(item: QueueItem): string | null {
-  if ((item.state === 'parked' || item.state === 'failed') && item.reason) return item.reason;
+  // Any state that wrote itself a reason gets to say it. A done item carries the merge
+  // and deploy outcome there ("PR #64 merged outside the queue"), and showing its repo
+  // instead loses the only place the console tells you what happened to it.
+  if (item.reason) return item.reason;
   if (item.repo && item.repo !== 'unknown') return item.repo;
   if (item.source !== 'brief' && item.source !== 'hotfix') return null;
   const lines = item.input.split(NEWLINES);
@@ -59,7 +62,10 @@ function cardBody(item: QueueItem): string | null {
   for (const raw of headingAt >= 0 ? lines.slice(headingAt + 1) : lines) {
     const line = raw.trim();
     if (!line || HEADING_ANY.test(line)) continue;
-    if (item.title && line.startsWith(item.title.slice(0, 24))) continue;
+    // The title was capitalised on its way out of the server, so this comparison is
+    // case-insensitive: matching exactly printed the same sentence twice, once as the
+    // name and once as the body.
+    if (item.title && line.toLowerCase().startsWith(item.title.slice(0, 24).toLowerCase())) continue;
     return line.length > 200 ? `${line.slice(0, 200).trimEnd()}…` : line;
   }
   return null;
