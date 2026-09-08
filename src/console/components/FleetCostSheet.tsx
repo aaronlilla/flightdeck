@@ -1,6 +1,6 @@
 import type { JSX } from 'react';
 
-import { capText, costClass } from '../laneVM.js';
+import { capText, costClass, laneHeadline } from '../laneVM.js';
 import type { Lane } from '../../shared/console-model.js';
 import { fmtTokens } from '../../shared/format-tokens.js';
 
@@ -33,7 +33,7 @@ export function FleetCostSheet({ lanes, tokensToday, onClose, onOpenLane }: Flee
             style={{ display: 'grid', gridTemplateColumns: '110px 90px 1fr 90px 110px', gap: 12, padding: '7px 22px', fontSize: 11, alignItems: 'center', cursor: 'pointer' }}
             onClick={() => onOpenLane(lane.id)}
           >
-            <span style={{ fontWeight: 700 }}>{lane.id}</span>
+            <span style={{ fontWeight: 700 }} title={laneHeadline(lane).runId}>{laneHeadline(lane).main}</span>
             <span style={{ color: 'var(--ink2)' }}>{lane.model}</span>
             <span style={{ color: 'var(--ink2)' }}>{lane.state}</span>
             <span className={costClass(lane)} style={{ fontSize: 12, padding: '2px 6px' }}>{fmtTokens(lane.tokens)}</span>

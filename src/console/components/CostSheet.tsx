@@ -2,7 +2,7 @@ import type { JSX } from 'react';
 import { useEffect, useState } from 'react';
 
 import * as api from '../api.js';
-import { capText, costClass } from '../laneVM.js';
+import { capText, costClass, laneHeadline } from '../laneVM.js';
 import { hm } from '../freshness.js';
 import type { CostStep, Lane } from '../../shared/console-model.js';
 import { fmtTokens } from '../../shared/format-tokens.js';
@@ -39,7 +39,7 @@ export function CostSheet({ lane, onClose, onKill }: CostSheetProps): JSX.Elemen
   return (
     <div className="plate" data-testid="cost-sheet" style={{ width: 520, maxWidth: 'calc(100vw - 40px)' }}>
       <div className="lbl" style={{ padding: '7px 20px', display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--line)' }}>
-        <span>Cost · {lane.id}</span>
+        <span title={laneHeadline(lane).runId}>Cost · {laneHeadline(lane).main}</span>
         <span style={{ cursor: 'pointer' }} onClick={onClose}>esc ✕</span>
       </div>
       <div style={{ padding: '18px 22px', display: 'flex', flexDirection: 'column', gap: 14 }}>

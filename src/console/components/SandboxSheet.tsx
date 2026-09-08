@@ -2,7 +2,7 @@ import type { JSX } from 'react';
 import { useEffect, useState } from 'react';
 
 import * as api from '../api.js';
-import { stateOf } from '../laneVM.js';
+import { laneHeadline, stateOf } from '../laneVM.js';
 import type { Lane, LaneSandbox, SandboxLogLine, SandboxLogSeverity } from '../../shared/console-model.js';
 
 export interface SandboxSheetProps {
@@ -42,7 +42,7 @@ export function SandboxSheet({ lane, onClose, onKill, onCopiedPath }: SandboxShe
   return (
     <div className="plate" data-testid="sandbox-sheet" style={{ width: 620, maxWidth: 'calc(100vw - 40px)' }}>
       <div className="lbl" style={{ padding: '7px 20px', display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--line)' }}>
-        <span>Sandbox · {sandbox?.id ?? '--'} · {lane.id}</span>
+        <span title={laneHeadline(lane).runId}>Sandbox · {sandbox?.id ?? '--'} · {laneHeadline(lane).main}</span>
         <span style={{ cursor: 'pointer' }} onClick={onClose}>esc ✕</span>
       </div>
       <div style={{ padding: '16px 22px', display: 'flex', flexDirection: 'column', gap: 12 }}>
