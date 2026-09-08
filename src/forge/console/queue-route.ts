@@ -199,6 +199,9 @@ export class QueueRoutes {
         return true;
       }
       const outcome = await promoteItem(item, body, this.opts.promoteDeps);
+      if (outcome.ok) {
+        this.opts.store.append({ id, at: Date.now(), promotedAt: Date.now(), promotedVersion: body.version, updatedAt: Date.now() });
+      }
       const result: ActionResult = { ok: outcome.ok, jid: null, message: outcome.message, undoable: false };
       respond(response, outcome.code, result);
       return true;

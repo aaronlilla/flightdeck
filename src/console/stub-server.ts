@@ -974,8 +974,15 @@ export function createStubServer() {
           json(response, 409, { ok: false, jid: null, message: `${id} is not a merged hotfix`, undoable: false });
           return;
         }
+        const promoteBody = await readJson<{ version?: string; message?: string }>(request);
+        if (!promoteBody.version || !promoteBody.message) {
+          json(response, 400, { ok: false, jid: null, message: 'a promote needs a version and a message', undoable: false });
+          return;
+        }
         item.updatedAt = Date.now();
-        json(response, 200, { ok: true, jid: null, message: `${id} promoted to production`, undoable: false });
+        item.promotedAt = Date.now();
+        item.promotedVersion = promoteBody.version;
+        json(response, 200, { ok: true, jid: null, message: `production publish dispatched for ${promoteBody.version}`, undoable: false });
         return;
       }
 

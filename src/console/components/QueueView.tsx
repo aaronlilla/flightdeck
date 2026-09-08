@@ -20,7 +20,7 @@ export interface QueueViewProps {
   /** A.7: Merge and Promote are optional -- a caller that hasn't wired them yet still
    *  gets a working board, just without those two buttons on a review/done card. */
   onMerge?: (id: string) => void;
-  onPromote?: (id: string) => void;
+  onPromote?: (id: string, version: string, message: string) => void;
 }
 
 interface StateTaxon {
@@ -45,9 +45,12 @@ const SOURCE_LABEL: Record<QueueSource, string> = {
 
 function QueueCard({ item, onRemove, onRetry, onMerge, onPromote }: {
   item: QueueItem; onRemove: (id: string) => void; onRetry: (id: string) => void;
-  onMerge?: (id: string) => void; onPromote?: (id: string) => void;
+  onMerge?: (id: string) => void; onPromote?: (id: string, version: string, message: string) => void;
 }): JSX.Element {
   const taxon = STATE_TAXONOMY[item.state];
+  const [promoteOpen, setPromoteOpen] = useState(false);
+  const [promoteVersion, setPromoteVersion] = useState('');
+  const [promoteMessage, setPromoteMessage] = useState('');
   return (
     <div className="lane" style={{ borderColor: taxon.color }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
@@ -86,10 +89,37 @@ function QueueCard({ item, onRemove, onRetry, onMerge, onPromote }: {
               </span>
             ) : null}
           </>
+        ) : item.state === 'done' && item.source === 'hotfix' && item.promotedAt ? (
+          <div className="m" style={{ fontSize: 9.5, color: 'var(--ink3)', textAlign: 'center' }}>
+            promoted {item.promotedVersion}
+          </div>
         ) : item.state === 'done' && item.source === 'hotfix' && onPromote ? (
-          <span className="btnA" style={{ padding: '7px 9px', fontSize: 9.5, width: '100%', textAlign: 'center' }} onClick={() => onPromote(item.id)}>
-            Promote
-          </span>
+          promoteOpen ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+              <input
+                className="inp m" style={{ fontSize: 10.5 }} placeholder="version, e.g. 1.4.2"
+                value={promoteVersion} onChange={(e) => setPromoteVersion(e.target.value)}
+              />
+              <input
+                className="inp m" style={{ fontSize: 10.5 }} placeholder="one-line release message"
+                value={promoteMessage} onChange={(e) => setPromoteMessage(e.target.value)}
+              />
+              <span
+                className="btnA"
+                style={{ padding: '7px 9px', fontSize: 9.5, width: '100%', textAlign: 'center', opacity: promoteVersion.trim() && promoteMessage.trim() ? 1 : 0.5 }}
+                onClick={() => {
+                  if (!promoteVersion.trim() || !promoteMessage.trim()) return;
+                  onPromote(item.id, promoteVersion.trim(), promoteMessage.trim());
+                }}
+              >
+                Confirm promote
+              </span>
+            </div>
+          ) : (
+            <span className="btnA" style={{ padding: '7px 9px', fontSize: 9.5, width: '100%', textAlign: 'center' }} onClick={() => setPromoteOpen(true)}>
+              Promote
+            </span>
+          )
         ) : (
           <span
             className={taxon.cta.cls}

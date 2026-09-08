@@ -471,6 +471,12 @@ export interface QueueItem {
    *  the gate already resolved that path once. Absent for an item that never reached a
    *  council round (parked earlier, still queued, and so on). */
   attestationPath?: string | null;
+  /** A.7: when a hotfix's own Promote actually ran, and the version string the operator
+   *  typed for it -- absent for anything that has not been promoted (which is every
+   *  non-hotfix item, and a hotfix still sitting on `done`). Once set, the card shows
+   *  "promoted <version>" instead of the Promote button. */
+  promotedAt?: number | null;
+  promotedVersion?: string | null;
 }
 
 export interface QueueResponse {

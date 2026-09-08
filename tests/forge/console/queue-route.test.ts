@@ -212,6 +212,62 @@ describe('POST /queue/:id/merge and /promote: A.7', () => {
   });
 });
 
+// Sweep #4: the real Promote click posted `{}` while this route always required
+// `{version, message}`, so it 400ed on every click in production; only a 501-wiring
+// specimen ever exercised this route before. A server with promote wiring configured
+// proves both the 400 refusal and that a successful promote is recorded on the item.
+describe('POST /queue/:id/promote with wiring configured: sweep #4', () => {
+  let wiredServer: ForgeServer;
+  let wiredBase: string;
+  let wiredStore: QueueStore;
+
+  beforeEach(async () => {
+    wiredStore = new QueueStore(join(dir, 'queue-wired.jsonl'));
+    wiredServer = new ForgeServer({
+      lanes: new Lanes(join(dir, 'lanes')), inbox: new Inbox(join(dir, 'inbox')),
+      journalPath: join(dir, 'fleet.jsonl'), port: 0, token, modelPolicyPath: join(dir, 'model-policy.json'),
+      queueStore: wiredStore, queueSearch: search, queueMaxInFlight: 2,
+      queuePromoteDeps: { productionWorkflowExists: async () => true, promote: async () => undefined },
+    });
+    wiredBase = `http://127.0.0.1:${await wiredServer.listen()}`;
+  });
+
+  afterEach(async () => {
+    await wiredServer.close();
+  });
+
+  async function addDoneHotfix(): Promise<string> {
+    const response = await fetch(`${wiredBase}/queue`, authed({
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ source: 'hotfix', input: 'login crashes' }),
+    }));
+    const added = await response.json() as QueueAddResponse;
+    const id = added.items[0]!.id;
+    wiredStore.append({ id, at: Date.now(), state: 'done', updatedAt: Date.now() });
+    return id;
+  }
+
+  it('refuses an empty-body promote with 400, the same way the server does', async () => {
+    const id = await addDoneHotfix();
+    const promote = await fetch(`${wiredBase}/queue/${id}/promote`, authed({ method: 'POST' }));
+    expect(promote.status).toBe(400);
+    const body = await promote.json() as ActionResult;
+    expect(body.message).toBe('a promote needs a version and a message');
+  });
+
+  it('records promotedAt/promotedVersion on a successful promote', async () => {
+    const id = await addDoneHotfix();
+    const promote = await fetch(`${wiredBase}/queue/${id}/promote`, authed({
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ version: '1.4.2', message: 'hotfix release' }),
+    }));
+    expect(promote.status).toBe(200);
+    const items = wiredStore.all();
+    const item = items.find((i) => i.id === id);
+    expect(item?.promotedVersion).toBe('1.4.2');
+    expect(item?.promotedAt).toBeGreaterThan(0);
+  });
+});
+
 describe('POST /queue/pause and /resume', () => {
   it('flips the paused flag GET /queue reports', async () => {
     const paused = await fetch(`${base}/queue/pause`, authed({ method: 'POST' }));

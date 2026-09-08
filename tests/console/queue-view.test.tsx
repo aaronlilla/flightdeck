@@ -66,11 +66,24 @@ describe('QueueView item states', () => {
     expect(onMerge).toHaveBeenCalledWith('Q-1');
   });
 
-  it('A.7: shows a Promote action on a done hotfix card only when onPromote is wired, and fires it', () => {
+  it('A.7: shows a Promote action on a done hotfix card only when onPromote is wired, and collects a version and message before firing it', () => {
     const onPromote = vi.fn();
     renderQueue([item({ id: 'Q-2', source: 'hotfix', state: 'done' })], { onPromote });
     fireEvent.click(screen.getByText('Promote'));
-    expect(onPromote).toHaveBeenCalledWith('Q-2');
+    // Sweep #4: the real server always required {version, message}; Confirm promote
+    // with nothing typed must never fire onPromote with an empty body.
+    fireEvent.click(screen.getByText('Confirm promote'));
+    expect(onPromote).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByPlaceholderText(/version/i), { target: { value: '1.4.2' } });
+    fireEvent.change(screen.getByPlaceholderText(/release message/i), { target: { value: 'hotfix release' } });
+    fireEvent.click(screen.getByText('Confirm promote'));
+    expect(onPromote).toHaveBeenCalledWith('Q-2', '1.4.2', 'hotfix release');
+  });
+
+  it('A.7: a promoted item shows its version instead of the Promote button', () => {
+    renderQueue([item({ id: 'Q-2', source: 'hotfix', state: 'done', promotedAt: Date.now(), promotedVersion: '1.4.2' })]);
+    expect(screen.getByText('promoted 1.4.2')).toBeInTheDocument();
+    expect(screen.queryByText('Promote')).not.toBeInTheDocument();
   });
 
   it('A.7: never shows Promote on a done item that is not a hotfix', () => {

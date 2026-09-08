@@ -593,7 +593,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
             onPause={() => void runQueueAction(() => api.pauseQueue())}
             onResume={() => void runQueueAction(() => api.resumeQueue())}
             onMerge={(id) => void runQueueAction(() => api.mergeQueueItem(id))}
-            onPromote={(id) => void runQueueAction(() => api.promoteQueueItem(id))}
+            onPromote={(id, version, message) => void runQueueAction(() => api.promoteQueueItem(id, version, message))}
           />
         ) : null}
 

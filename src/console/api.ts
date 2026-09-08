@@ -295,6 +295,6 @@ export function mergeQueueItem(id: string): Promise<ActionResult> {
   return post<ActionResult>(`/queue/${encodeURIComponent(id)}/merge`, {});
 }
 
-export function promoteQueueItem(id: string): Promise<ActionResult> {
-  return post<ActionResult>(`/queue/${encodeURIComponent(id)}/promote`, {});
+export function promoteQueueItem(id: string, version: string, message: string): Promise<ActionResult> {
+  return post<ActionResult>(`/queue/${encodeURIComponent(id)}/promote`, { version, message });
 }
