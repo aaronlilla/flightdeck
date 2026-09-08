@@ -186,10 +186,10 @@ export function BlockersView({ blockers, chains, jiraSite }: BlockersViewProps):
         </div>
       ))}
       {resolvedToday.length ? (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
+        <div data-testid="blockers-resolved-today" style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
           <span className="lbl" style={{ color: 'var(--ink2)' }}>Resolved today</span>
           {resolvedToday.map((b) => (
-            <div key={b.id} className="m" style={{ fontSize: 11, color: 'var(--ink3)', display: 'flex', gap: 8 }}>
+            <div key={b.id} data-testid={`blocker-resolved-${b.id}`} className="m" style={{ fontSize: 11, color: 'var(--ink3)', display: 'flex', gap: 8 }}>
               <span style={{ color: 'var(--run)' }}>✓</span>
               <span>{b.title}</span>
               <span style={{ color: 'var(--ink3)' }}>{b.resolvedAt ? hm(b.resolvedAt) : ''}</span>

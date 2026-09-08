@@ -23,8 +23,10 @@ test('a pending confirm card survives a live refetch that does not carry it', as
   await page.getByTestId('lane-FLT-201').click();
   await expect(page.getByTestId('ticket-sheet')).toBeVisible();
   await page.getByTestId('ticket-sheet').getByText('Kill', { exact: true }).click();
-  const confirm = page.getByText('Confirm — irreversible');
+  const confirm = page.getByTestId('action-confirm-killRun-FLT-201');
   await expect(confirm).toBeVisible();
+  await expect(confirm).toContainText('Confirm, irreversible');
+  await expect(confirm).toContainText('FLT-201');
 
   // The stub's own `/thread` never received this card (it is client-only until
   // Confirm is clicked) -- so the next poll cycle (every 5s) refetches a
@@ -32,7 +34,7 @@ test('a pending confirm card survives a live refetch that does not carry it', as
   // rather than merely asserting the card was never touched.
   await page.waitForTimeout(5_500);
   await expect(confirm).toBeVisible();
-  await expect(page.getByText('Kill FLT-201?')).toBeVisible();
+  await expect(confirm).toContainText('FLT-201');
 });
 
 test('a total feed drop shows the lost banner while the pending confirm from before the drop stays put', async ({ page }) => {
@@ -42,8 +44,9 @@ test('a total feed drop shows the lost banner while the pending confirm from bef
   await page.getByTestId('lane-FLT-201').click();
   await expect(page.getByTestId('ticket-sheet')).toBeVisible();
   await page.getByTestId('ticket-sheet').getByText('Kill', { exact: true }).click();
-  const confirm = page.getByText('Confirm — irreversible');
+  const confirm = page.getByTestId('action-confirm-killRun-FLT-201');
   await expect(confirm).toBeVisible();
+  await expect(confirm).toContainText('Confirm, irreversible');
 
   await page.route('**/lanes*', (route) => route.abort());
   await page.route('**/thread', (route) => route.abort());
@@ -61,5 +64,5 @@ test('a total feed drop shows the lost banner while the pending confirm from bef
   // still there and still names the same lane, not silently cleared or
   // conflated with the generic disconnected state.
   await expect(confirm).toBeVisible();
-  await expect(page.getByText('Kill FLT-201?')).toBeVisible();
+  await expect(confirm).toContainText('FLT-201');
 });

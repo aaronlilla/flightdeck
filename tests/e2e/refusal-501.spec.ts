@@ -24,7 +24,9 @@ test('a 501 write renders as a dashed refusal card, and the lane never flips to 
 
   const refusal = page.getByText('Refused', { exact: true });
   await expect(refusal).toBeVisible();
-  await expect(page.getByText('compaction has no successor worker built yet')).toBeVisible();
+  // The same sentence now also renders inline beside the control, so scope to the
+  // dashed refusal card in the rail thread to keep this assertion unambiguous.
+  await expect(page.getByTestId('rail-thread').getByText('compaction has no successor worker built yet')).toBeVisible();
 
   // Never pretends the action ran: still exhausted, never quietly promoted.
   await expect(tile).toHaveAttribute('data-state', 'exhausted');
