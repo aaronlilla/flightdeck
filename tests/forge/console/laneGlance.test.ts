@@ -121,8 +121,10 @@ describe('computeYou agrees with computeNext, per state', () => {
     expect(computeYou(lane({ state: 'unverified', pr }))).toBe('Verify it, or read PR #44.');
   });
 
-  it('unverified without a PR: Verify it, or Kill it.', () => {
-    expect(computeYou(lane({ state: 'unverified' }))).toBe('Verify it, or Kill it.');
+  it('unverified without a PR: Verify it, or Clean up retires it.', () => {
+    // Kill refuses an unverified run (nothing is running to kill), so the ask must not
+    // name it; Clean up is the exit that actually works.
+    expect(computeYou(lane({ state: 'unverified' }))).toBe('Verify it, or Clean up retires it.');
   });
 
   it('done with a PR not ready: Not ready: <why>. Re-check later.', () => {

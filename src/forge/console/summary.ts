@@ -250,7 +250,7 @@ export function computeNext(lane: Lane, readiness: LaneReadiness | null): string
     case 'verify-pr':
       return `Verify it, or read PR #${lane.pr!.no} yourself before deciding.`;
     case 'verify-no-pr':
-      return 'Verify it, or Kill it if the session left nothing worth keeping.';
+      return 'Verify it, or Clean up retires it if the session left nothing worth keeping.';
     case 'not-ready':
       return readiness?.why ? `Not ready to merge yet: ${readiness.why}. Re-check once that clears.` : 'Merge it.';
     case 'done-cleanup':

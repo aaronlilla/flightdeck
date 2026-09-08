@@ -41,6 +41,23 @@ describe('retireEligible', () => {
     expect(retireEligible(lane({ state: 'unverified', kind: 'probe' }))).toBe(true);
   });
 
+  it('a finished manual or chain run is eligible on unverified with no process and no PR', () => {
+    // Seen live 2026-09-08: a manual run that ended `unverified` with no PR had no exit
+    // at all -- kill, reopen and verify all refused it, and Clean up skipped it.
+    expect(retireEligible(lane({ state: 'unverified', kind: 'manual' }))).toBe(true);
+    expect(retireEligible(lane({ state: 'unverified', kind: 'chain' }))).toBe(true);
+  });
+
+  it('an unverified run with an open unmerged PR, or a live process, stays on the board', () => {
+    const withPr = lane({ state: 'unverified', pr: { no: 1, url: 'x', files: 0, add: 0, del: 0, draft: true, merged: false } });
+    expect(retireEligible(withPr)).toBe(false);
+    expect(retireEligible(lane({ state: 'unverified', heart: true }))).toBe(false);
+  });
+
+  it('a non-probe exhausted run is not eligible: Kill and Reopen still reach it', () => {
+    expect(retireEligible(lane({ state: 'exhausted', kind: 'manual' }))).toBe(false);
+  });
+
   it('running, parked and blocked are never eligible', () => {
     expect(retireEligible(lane({ state: 'running' }))).toBe(false);
     expect(retireEligible(lane({ state: 'parked' }))).toBe(false);
