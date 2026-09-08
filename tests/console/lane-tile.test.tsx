@@ -212,6 +212,19 @@ describe('LaneTile', () => {
       expect(screen.queryByText(/STALLED/)).toBeNull();
     });
 
+    it('sits in the tile footer, centred beside the freshness stamp, not under the header (2026-09-08)', () => {
+      const now = Date.now();
+      const { container } = render(
+        <LaneTile lane={lane({ live: { alive: true, pid: 123, lastEventAt: now - 2_000, checkedAt: now } })} feedLive now={now} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />,
+      );
+      const marker = screen.getByTestId('live-marker');
+      expect(screen.getByTestId('tile-footer').contains(marker)).toBe(true);
+      expect(marker.querySelector('.live-pulse')).not.toBeNull();
+      expect((marker as HTMLElement).style.justifySelf).toBe('center');
+      const header = container.querySelector('.lane > div:first-child') as HTMLElement;
+      expect(header.querySelector('.live-pulse')).toBeNull();
+    });
+
     it('renders a red STALLED marker with no pulse for a running lane whose worker is gone', () => {
       const now = Date.now();
       const { container } = render(

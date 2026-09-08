@@ -131,21 +131,6 @@ export function LaneTile({ lane, feedLive, now, pending = {}, onOpen, onOpenCost
         ) : <span />}
         <span className="lbl" style={{ color: st.color, cursor: 'help', flex: 'none' }}>{st.glyph} {st.label}</span>
       </div>
-      {/* Reserved whether or not there is anything to show, same as every other
-         variable slot on this tile -- a lane with no live marker is no shorter than
-         one with one. */}
-      <div style={{ height: 12, display: 'flex', alignItems: 'center', gap: 4 }}>
-        {lane.live.alive ? (
-          <>
-            <span className="live-pulse" aria-hidden="true" />
-            <span className="m" style={{ fontSize: 9, color: 'var(--run)' }}>
-              live{liveSecondsAgo !== null ? ` · last event ${liveSecondsAgo}s ago` : ''}
-            </span>
-          </>
-        ) : stalled ? (
-          <span className="m" style={{ fontSize: 9, fontWeight: 700, color: 'var(--block)' }}>STALLED · no process</span>
-        ) : null}
-      </div>
       <div
         className="m"
         title={titleLineText ?? undefined}
@@ -277,8 +262,27 @@ export function LaneTile({ lane, feedLive, now, pending = {}, onOpen, onOpenCost
           })}
         </div>
       ) : null}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 7, borderTop: '1px solid var(--line)', paddingTop: 7 }}>
-        <span className={freshnessClass(fresh)} style={{ alignSelf: 'flex-start' }}>{freshnessStamp(fresh)}</span>
+      <div data-testid="tile-footer" style={{ display: 'flex', flexDirection: 'column', gap: 7, borderTop: '1px solid var(--line)', paddingTop: 7 }}>
+        {/* Freshness stamp on the left, the live marker centred in the space beside it. The
+           marker lived under the header row until 2026-09-08, where it collided with the
+           title; the footer row had the room. The slot is reserved either way so a tile
+           with no marker is no shorter than its neighbours. */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'center', minHeight: 14 }}>
+          <span className={freshnessClass(fresh)} style={{ justifySelf: 'start' }}>{freshnessStamp(fresh)}</span>
+          <span data-testid="live-marker" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, justifySelf: 'center' }}>
+            {lane.live.alive ? (
+              <>
+                <span className="live-pulse" aria-hidden="true" />
+                <span className="m" style={{ fontSize: 9, color: 'var(--run)', whiteSpace: 'nowrap' }}>
+                  live{liveSecondsAgo !== null ? ` · last event ${liveSecondsAgo}s ago` : ''}
+                </span>
+              </>
+            ) : stalled ? (
+              <span className="m" style={{ fontSize: 9, fontWeight: 700, color: 'var(--block)', whiteSpace: 'nowrap' }}>STALLED · no process</span>
+            ) : null}
+          </span>
+          <span />
+        </div>
         <div style={{ display: 'flex', gap: 6 }}>
           <span
             className={cta.cls} aria-busy={ctaBusy ? 'true' : undefined} data-busy={ctaBusy ? '1' : undefined}
