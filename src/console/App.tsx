@@ -27,6 +27,7 @@ import { Settings } from './components/Settings.js';
 import { TicketSheet } from './components/TicketSheet.js';
 import { Toast } from './components/Toast.js';
 import { TopBar } from './components/TopBar.js';
+import { focusableIn, trapTab } from './focus-trap.js';
 import { initialState, reducer, StoreContext } from './store.js';
 import type { Message } from '../shared/console-model.js';
 import { EventStream, type EventStreamOptions } from './ws.js';
@@ -522,6 +523,25 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
 
+  // Sweep #11: a modal sheet had no focus trap -- Tab walked off it and onto the tiles
+  // it covers. While a sheet is open, Tab (and Shift+Tab) cycles within it alone, and
+  // focus lands inside it the moment it opens.
+  const sheetContainerRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!state.sheet) return;
+    const container = sheetContainerRef.current;
+    if (!container) return;
+    const ring = focusableIn(container);
+    (ring[0] ?? container).focus();
+    function onKeyDown(e: KeyboardEvent): void {
+      if (e.key !== 'Tab' || !container) return;
+      const next = trapTab(focusableIn(container), document.activeElement, e.shiftKey);
+      if (next) { e.preventDefault(); next.focus(); }
+    }
+    container.addEventListener('keydown', onKeyDown);
+    return () => container.removeEventListener('keydown', onKeyDown);
+  }, [state.sheet]);
+
   const paletteItems = buildPaletteItems(
     state.paletteQuery, state.lanes, state.journal,
     (id) => dispatch({ type: 'sheet', sheet: { type: 'ticket', id } }),
@@ -666,7 +686,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
             style={{ position: 'fixed', inset: 0, zIndex: 20, background: 'color-mix(in srgb,var(--bg) 62%,transparent)', display: 'flex', justifyContent: 'center', alignItems: 'flex-start', padding: '34px 20px', overflow: 'auto' }}
             onClick={() => dispatch({ type: 'sheet', sheet: null })}
           >
-            <div onClick={(e) => e.stopPropagation()}>
+            <div ref={sheetContainerRef} tabIndex={-1} style={{ outline: 'none' }} onClick={(e) => e.stopPropagation()}>
               {state.sheet.type === 'ticket' && sheetLane ? (
                 <TicketSheet
                   lane={sheetLane} feedLive={state.feed.live} now={state.now}
