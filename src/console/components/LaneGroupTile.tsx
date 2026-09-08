@@ -39,21 +39,12 @@ export function LaneGroupTile({ group, feedLive, now, pending = {}, onOpen, onOp
   const liveCount = group.lanes.filter((l) => l.live.alive).length;
   return (
     <div style={{ position: 'relative' }}>
-      {liveCount > 0 ? (
-        <span
-          data-testid="group-live-count"
-          className="m"
-          style={{
-            position: 'absolute', top: 6, right: 8, zIndex: 1, display: 'flex', alignItems: 'center', gap: 4,
-            fontSize: 9, color: 'var(--run)', pointerEvents: 'none',
-          }}
-        >
-          <span className="live-pulse" aria-hidden="true" />
-          {liveCount} live
-        </span>
-      ) : null}
+      {/* The count rides on the tile's own footer marker ("2 live · last event 4s ago"),
+         the one place a live marker renders; an absolute badge here sat on top of the
+         header's status label (2026-09-08). */}
       <LaneTile
         lane={newest} feedLive={feedLive} now={now} pending={pending} onOpen={onOpen} onOpenCost={onOpenCost} onCommand={onCommand} onTip={onTip}
+        liveCount={liveCount}
         attempts={earlier.length > 0 ? { position, total: group.lanes.length } : undefined}
         earlier={earlier.length > 0 ? earlier : undefined}
       />

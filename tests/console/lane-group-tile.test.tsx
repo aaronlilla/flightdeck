@@ -83,13 +83,15 @@ describe('LaneGroupTile', () => {
         lane({ id: 'r2', attempt: 2, startedAt: 2, live: { alive: true, pid: 2, lastEventAt: now, checkedAt: now } }),
       ]);
       render(<LaneGroupTile group={groups[0]!} feedLive now={now} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
-      expect(screen.getByTestId('group-live-count')).toHaveTextContent('2 live');
+      expect(screen.getByTestId('live-marker')).toHaveTextContent('2 live');
+      expect(screen.queryByTestId('group-live-count')).toBeNull();
     });
 
     it('shows nothing when no lane in the group is alive', () => {
       const groups = groupLanesByTicket([lane({ id: 'r1' })]);
       render(<LaneGroupTile group={groups[0]!} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
-      expect(screen.queryByTestId('group-live-count')).toBeNull();
+      expect(screen.getByTestId('live-marker').querySelector('.live-pulse')).toBeNull();
+      expect(screen.getByTestId('live-marker')).not.toHaveTextContent(/live/);
     });
   });
 });
