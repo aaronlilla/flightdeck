@@ -92,7 +92,7 @@ function confirmCard(source: string, blast: string, token: string): Message {
     k: randomUUID(), type: 'confirm', text: 'confirm?', ts: Date.now(), source, blast,
     btns: [
       { label: 'Confirm', cmd: `confirm ${token}`, cls: 'destroy' },
-      { label: 'Not now', cmd: 'cancel' },
+      { label: 'Not now', cmd: `dismiss ${token}` },
     ],
   };
 }
@@ -102,7 +102,7 @@ function planCard(source: string, items: PlanItem[], token: string): Message {
     k: randomUUID(), type: 'plan', text: 'plan', ts: Date.now(), source, items,
     btns: [
       { label: 'Run plan', cmd: `run ${token}`, cls: 'go' },
-      { label: 'Not now', cmd: 'cancel' },
+      { label: 'Not now', cmd: `dismiss ${token}` },
     ],
   };
 }
@@ -129,6 +129,7 @@ export type Intent =
   | { kind: 'answer'; text: string }
   | { kind: 'confirm'; token: string }
   | { kind: 'run-plan'; token: string }
+  | { kind: 'dismiss'; token: string }
   | { kind: 'cancel' }
   | { kind: 'unknown'; text: string };
 
@@ -150,6 +151,7 @@ export function parseIntent(raw: string): Intent {
   if (/^cancel$/i.test(text)) return { kind: 'cancel' };
   if ((match = text.match(/^confirm\s+(\S+)$/i))) return { kind: 'confirm', token: match[1]! };
   if ((match = text.match(/^run\s+(\S+)$/i))) return { kind: 'run-plan', token: match[1]! };
+  if ((match = text.match(/^dismiss\s+(\S+)$/i))) return { kind: 'dismiss', token: match[1]! };
   if (/^pause\b/i.test(text)) {
     const repoMatch = text.match(/on\s+(\S+)/i);
     return { kind: 'pause', ...(repoMatch ? { repo: repoMatch[1] } : {}) };
@@ -395,6 +397,16 @@ export class ConsoleWrites {
         if (!pending) return [refusalCard(source, `nothing pending for ${intent.token}`)];
         this.pendingPlans.delete(intent.token);
         return pending.run();
+      }
+
+      // A card's own "Not now": declines a pending confirm or plan by its token
+      // rather than the untargeted `cancel`, so one dismiss can never resolve a
+      // different pending card than the one its button was on.
+      case 'dismiss': {
+        if (this.pendingConfirms.delete(intent.token) || this.pendingPlans.delete(intent.token)) {
+          return [replyCard(source, 'dismissed')];
+        }
+        return [refusalCard(source, `nothing pending for ${intent.token}`)];
       }
 
       case 'pause': {

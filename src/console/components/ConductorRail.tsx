@@ -126,8 +126,18 @@ export function MessageCard({
           </div>
           {!message.resolved ? (
             <div style={{ display: 'flex', gap: 8, padding: '0 12px 12px' }}>
-              <span className="btnP" onClick={() => onCommand(`run ${message.k}`)}>Run plan →</span>
-              <span className="btnS" onClick={() => onCommand(`dismiss ${message.k}`)}>Not now</span>
+              {message.btns && message.btns.length > 0 ? (
+                message.btns.map((b) => (
+                  <span key={b.label} className={b.cls === 'go' ? 'btnP' : 'btnS'} onClick={() => onCommand(b.cmd)}>
+                    {b.label}{b.cls === 'go' ? ' →' : ''}
+                  </span>
+                ))
+              ) : (
+                <>
+                  <span className="btnP" onClick={() => onCommand(`run ${message.k}`)}>Run plan →</span>
+                  <span className="btnS" onClick={() => onCommand(`dismiss ${message.k}`)}>Not now</span>
+                </>
+              )}
             </div>
           ) : null}
         </div>
@@ -144,8 +154,18 @@ export function MessageCard({
           </div>
           {!message.resolved ? (
             <div style={{ display: 'flex', gap: 10, padding: '0 12px 12px' }}>
-              <span className="btnR" onClick={() => onCommand(`confirm ${message.k}`)}>Confirm</span>
-              <span className="btnS" onClick={() => onCommand(`decline ${message.k}`)}>Not now</span>
+              {message.btns && message.btns.length > 0 ? (
+                message.btns.map((b) => (
+                  <span key={b.label} className={b.cls === 'destroy' ? 'btnR' : 'btnS'} onClick={() => onCommand(b.cmd)}>
+                    {b.label}
+                  </span>
+                ))
+              ) : (
+                <>
+                  <span className="btnR" onClick={() => onCommand(`confirm ${message.k}`)}>Confirm</span>
+                  <span className="btnS" onClick={() => onCommand(`decline ${message.k}`)}>Not now</span>
+                </>
+              )}
             </div>
           ) : null}
         </div>

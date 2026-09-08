@@ -73,6 +73,15 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   // this never grows into a second, unbounded copy of the thread.
   const localCardsRef = useRef<Message[]>([]);
   const LOCAL_CARD_TTL_MS = 30_000;
+  // A server round-trip confirm/plan card (from `POST /command`) is persisted to
+  // `thread.jsonl` unresolved and never mutated there once its own button is clicked,
+  // so `refresh()`'s wholesale replace of `state.thread` would otherwise keep
+  // reviving it as "awaiting you"/"awaiting go" with live buttons forever. Clicking
+  // Confirm/Run plan/Not now records the outcome here, keyed by the card's own `k`
+  // (found by matching the exact btn command just sent), and `refresh()` re-applies
+  // it onto the freshly fetched thread until it ages out, the same TTL idea as
+  // `localCardsRef`, applied to a field rather than a whole card.
+  const resolvedOverridesRef = useRef<Map<string, { resolved: 'confirmed' | 'declined'; at: number }>>(new Map());
   // Load-verify finding: the 5s poll and every `/events` frame both call `refresh`, with
   // nothing stopping either from starting a second one while the first is still waiting
   // on a slow `/lanes` (the response that a few thousand lanes over a few hundred
@@ -118,6 +127,15 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       localCardsRef.current = localCardsRef.current.filter((card) => card.ts >= cutoff);
       for (const card of localCardsRef.current) {
         if (!incomingThread.some((m) => m.k === card.k)) incomingThread = [...incomingThread, card];
+      }
+      for (const [k, override] of [...resolvedOverridesRef.current]) {
+        if (override.at < cutoff) resolvedOverridesRef.current.delete(k);
+      }
+      if (resolvedOverridesRef.current.size > 0) {
+        incomingThread = incomingThread.map((m) => {
+          const override = resolvedOverridesRef.current.get(m.k);
+          return override && m.resolved === undefined ? { ...m, resolved: override.resolved } : m;
+        });
       }
       dispatch({ type: 'thread', thread: incomingThread });
       dispatch({ type: 'journal', journal: journal.rows });
@@ -271,22 +289,36 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   const processCommand = useCallback((text: string) => {
     const trimmed = text.trim();
     if (!trimmed) return;
-    if (pendingConfirm && trimmed.startsWith('confirm ')) { resolveConfirm(pendingConfirm.k, true); return; }
-    if (pendingConfirm && trimmed.startsWith('decline ')) { resolveConfirm(pendingConfirm.k, false); return; }
-    const confirmMatch = trimmed.match(/^confirm (.+)$/);
-    const declineMatch = trimmed.match(/^decline (.+)$/);
-    if (confirmMatch) { resolveConfirm(confirmMatch[1] as string, true); return; }
-    if (declineMatch) { resolveConfirm(declineMatch[1] as string, false); return; }
+    // A lane-tile Kill/Merge and the two filter-bar bulk actions each keep their own
+    // pending confirm as local state (see `pendingConfirm`/`pendingBulk` above) and
+    // never round-trip to the server for the confirm/decline itself, so only a
+    // command that names exactly that pending card's own `k` is handled here. Any
+    // other `confirm <token>` / `dismiss <token>` / `run <token>` (a card the server
+    // issued from a typed command) falls through to `api.sendCommand` below, which is
+    // where its token actually lives.
+    if (pendingConfirm && trimmed === `confirm ${pendingConfirm.k}`) { resolveConfirm(pendingConfirm.k, true); return; }
+    if (pendingConfirm && trimmed === `decline ${pendingConfirm.k}`) { resolveConfirm(pendingConfirm.k, false); return; }
+    if (pendingBulk && trimmed === `confirm ${pendingBulk.k}`) { resolveConfirm(pendingBulk.k, true); return; }
+    if (pendingBulk && trimmed === `decline ${pendingBulk.k}`) { resolveConfirm(pendingBulk.k, false); return; }
     void (async () => {
       try {
         const response = await api.sendCommand(trimmed);
         if (response.cards.length > 0) dispatch({ type: 'thread-append', messages: response.cards });
+        // The card this command actioned lives only in `thread.jsonl`, unresolved:
+        // see `resolvedOverridesRef` above for why `refresh()` needs this recorded
+        // rather than patched once here.
+        const tokenAction = trimmed.match(/^(confirm|run|dismiss)\s+\S+$/i);
+        if (tokenAction) {
+          const resolvedValue: 'confirmed' | 'declined' = /^dismiss\s/i.test(trimmed) ? 'declined' : 'confirmed';
+          const target = stateRef.current.thread.find((m) => m.btns?.some((b) => b.cmd === trimmed));
+          if (target) resolvedOverridesRef.current.set(target.k, { resolved: resolvedValue, at: Date.now() });
+        }
       } catch (caught) {
         appendReceipt(null, caught instanceof api.ApiError ? caught.message : 'the command did not go through', false);
       }
       await refresh();
     })();
-  }, [pendingConfirm, resolveConfirm, appendReceipt, refresh]);
+  }, [pendingConfirm, pendingBulk, resolveConfirm, appendReceipt, refresh]);
 
   // D2.2: TicketSheet's own run-thread `MessageCard` wires `onCommand` to
   // `(text) => onCommand(lane.id, text)` -- this same exact-match switch. A

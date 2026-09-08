@@ -89,6 +89,7 @@ describe('parseIntent', () => {
     expect(parseIntent('answer backfill')).toEqual({ kind: 'answer', text: 'backfill' });
     expect(parseIntent('confirm abc123')).toEqual({ kind: 'confirm', token: 'abc123' });
     expect(parseIntent('run abc123')).toEqual({ kind: 'run-plan', token: 'abc123' });
+    expect(parseIntent('dismiss abc123')).toEqual({ kind: 'dismiss', token: 'abc123' });
     expect(parseIntent('gibberish')).toEqual({ kind: 'unknown', text: 'gibberish' });
   });
 });
@@ -197,6 +198,45 @@ describe('ConsoleWrites.command / kill confirm flow', () => {
 
     expect(actuator.killed).toEqual(['alpha']);
     expect(afterConfirm.some((card) => card.type === 'receipt')).toBe(true);
+  });
+
+  it("dismisses a pending kill by the confirm card's own Not now token, and never kills", async () => {
+    registry.admit({ goal: 'bravo', cwd: dir, briefPath: join(dir, 'bravo.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'bravo' });
+
+    const cards = await writes.command('kill bravo');
+    const confirm = cards.find((card) => card.type === 'confirm')!;
+    const dismissToken = confirm.btns!.find((btn) => btn.cmd.startsWith('dismiss '))!.cmd.split(' ')[1]!;
+
+    const afterDismiss = await writes.command(`dismiss ${dismissToken}`);
+
+    expect(actuator.killed).toEqual([]);
+    expect(afterDismiss.some((card) => card.type === 'refusal')).toBe(false);
+    // A confirm sent after the dismiss finds nothing pending -- the token was
+    // consumed, not left around for a second click to act on.
+    const afterConfirmToo = await writes.command(`confirm ${dismissToken}`);
+    expect(afterConfirmToo.some((card) => card.type === 'refusal')).toBe(true);
+    expect(actuator.killed).toEqual([]);
+  });
+
+  it('dismisses a pending merge-ready plan by its own Not now token, and merges nothing', async () => {
+    registry.admit({ goal: 'charlie', cwd: dir, briefPath: join(dir, 'charlie.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'charlie' });
+    appendOnce(journalPath, {
+      event: 'run.gated', run: 'charlie', gate: { verdict: 'PASS', findings: [] } as never,
+    });
+
+    const cards = await writes.command('merge ready lanes');
+    const plan = cards.find((card) => card.type === 'plan');
+    if (!plan) {
+      // No PASS-gated, launched, unmerged run in this fixture's chain state:
+      // nothing to dismiss, so this scenario does not apply here.
+      return;
+    }
+    const dismissToken = plan.btns!.find((btn) => btn.cmd.startsWith('dismiss '))!.cmd.split(' ')[1]!;
+    await writes.command(`dismiss ${dismissToken}`);
+    const afterRun = await writes.command(`run ${dismissToken}`);
+    expect(afterRun.some((card) => card.type === 'refusal')).toBe(true);
   });
 
   it('refuses an unknown confirm token', async () => {

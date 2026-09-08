@@ -36,6 +36,43 @@ describe('ConductorRail', () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
+  // A server round-trip confirm card (from typing "kill <lane>" into the composer)
+  // carries the real token in its own `btns`, not in `message.k` -- see
+  // `src/forge/console/command.ts`'s `confirmCard`. Confirm/Not now must send that
+  // token, not a fallback built off the card's own `k`.
+  it('routes a btns-carrying confirm card through its own token, not message.k', async () => {
+    const onCommand = vi.fn();
+    renderRail([{
+      k: 'card-k-not-the-token', type: 'confirm', text: 'confirm?', ts: Date.now(), source: 'conductor', blast: 'kills FLT-1.',
+      btns: [
+        { label: 'Confirm', cmd: 'confirm real-token-1', cls: 'destroy' },
+        { label: 'Not now', cmd: 'dismiss real-token-1' },
+      ],
+    }], feedUp, { onCommand });
+    await userEvent.click(screen.getByText('Confirm'));
+    expect(onCommand).toHaveBeenCalledWith('confirm real-token-1');
+    onCommand.mockClear();
+    await userEvent.click(screen.getByText('Not now'));
+    expect(onCommand).toHaveBeenCalledWith('dismiss real-token-1');
+  });
+
+  it('routes a btns-carrying plan card through its own token, not message.k', async () => {
+    const onCommand = vi.fn();
+    renderRail([{
+      k: 'plan-k-not-the-token', type: 'plan', text: 'plan', ts: Date.now(), source: 'conductor',
+      items: [{ text: 'merge FLT-1', irreversible: true }],
+      btns: [
+        { label: 'Run plan', cmd: 'run real-plan-token', cls: 'go' },
+        { label: 'Not now', cmd: 'dismiss real-plan-token' },
+      ],
+    }], feedUp, { onCommand });
+    await userEvent.click(screen.getByText('Run plan →'));
+    expect(onCommand).toHaveBeenCalledWith('run real-plan-token');
+    onCommand.mockClear();
+    await userEvent.click(screen.getByText('Not now'));
+    expect(onCommand).toHaveBeenCalledWith('dismiss real-plan-token');
+  });
+
   it('defaults an unresolved confirm card status to "awaiting you"', () => {
     renderRail([{ k: 'c1', type: 'confirm', text: 'Kill FLT-1?', ts: Date.now(), source: 'console', blast: 'discards the diff.' }]);
     expect(screen.getByText('awaiting you')).toBeInTheDocument();

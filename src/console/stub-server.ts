@@ -6,7 +6,7 @@
  * the way the real server is meant to: kill kills, caps refuse above the hard
  * limit, an answer resumes a parked lane.
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { extname, join } from 'node:path';
@@ -99,6 +99,15 @@ function seedDb(): Db {
 }
 
 let db = seedDb();
+
+// A kill/merge-ready confirm or plan card from `runCommand` below carries its own
+// token in `btns` (the same shape as the real grammar in
+// `src/forge/console/command.ts`), and Confirm/Run plan/Not now resolve here by
+// that token rather than by the card's own `k` -- the rail routes a button's own
+// `cmd` straight through, so the token this map is keyed on is exactly the text
+// that comes back.
+const pendingConfirms = new Map<string, () => Message[]>();
+const pendingPlans = new Map<string, () => Message[]>();
 
 /**
  * Named e2e scenarios, keyed the way `POST /__test/fixture?name=<id>` looks
@@ -418,21 +427,67 @@ function runCommand(text: string): Message[] {
   const laneRefMatch = /\b([a-z]{2,4}-\d{2,4})\b/i.exec(t);
   const laneRef = laneRefMatch ? (laneRefMatch[1] as string).toUpperCase() : null;
 
-  if (/^confirm /i.test(t)) return []; // handled client-side against the local confirm card
+  // A stale token (the pending confirm/plan already ran, or the fixture reset
+  // underneath it) reads the same as a token that was never valid.
+  if (/^dismiss\s+(\S+)$/i.test(t)) {
+    const token = (/^dismiss\s+(\S+)$/i.exec(t) as RegExpExecArray)[1] as string;
+    if (pendingConfirms.delete(token) || pendingPlans.delete(token)) {
+      return [{ k: `c-${now}`, type: 'reply', text: 'dismissed', ts: now, source: 'conductor' }];
+    }
+    return [{ k: `c-${now}`, type: 'refusal', text: `nothing pending for ${token}`, ts: now, source: 'conductor' }];
+  }
+  if (/^confirm\s+(\S+)$/i.test(t)) {
+    const token = (/^confirm\s+(\S+)$/i.exec(t) as RegExpExecArray)[1] as string;
+    const pending = pendingConfirms.get(token);
+    if (!pending) return [{ k: `c-${now}`, type: 'refusal', text: `nothing pending for ${token}`, ts: now, source: 'conductor' }];
+    pendingConfirms.delete(token);
+    return pending();
+  }
+  if (/^run\s+(\S+)$/i.test(t)) {
+    const token = (/^run\s+(\S+)$/i.exec(t) as RegExpExecArray)[1] as string;
+    const pending = pendingPlans.get(token);
+    if (!pending) return [{ k: `c-${now}`, type: 'refusal', text: `nothing pending for ${token}`, ts: now, source: 'conductor' }];
+    pendingPlans.delete(token);
+    return pending();
+  }
   if (/^kill\b/i.test(t) && laneRef) {
     const lane = findLane(laneRef);
     if (!lane) return [{ k: `c-${now}`, type: 'refusal', text: `no lane named ${laneRef}`, ts: now, source: 'conductor' }];
+    const token = randomUUID();
+    pendingConfirms.set(token, () => {
+      lane.state = 'killed'; lane.heart = false; lane.tokensPerMin = 0; lane.hopStatus = 'blocked';
+      const jid = journal('run.killed', `${laneRef} killed`, laneRef, false);
+      appendEvent(`${laneRef} killed`, laneRef);
+      publish({ type: 'run.killed', run: laneRef });
+      return [{ k: `r-${Date.now()}`, type: 'receipt', text: `${laneRef} killed`, ts: Date.now(), source: 'conductor', jid, undoable: false }];
+    });
     return [{
       k: `confirm-${now}`, type: 'confirm', text: `Kill ${laneRef}?`, ts: now, source: 'conductor',
       blast: 'discards the working diff and stops the sandbox.',
+      btns: [
+        { label: 'Confirm', cmd: `confirm ${token}`, cls: 'destroy' },
+        { label: 'Not now', cmd: `dismiss ${token}` },
+      ],
     }];
   }
   if (/^merge ready lanes/i.test(t)) {
     const ready = db.lanes.filter((l) => l.state === 'done');
     if (ready.length === 0) return [{ k: `c-${now}`, type: 'reply', text: 'no lanes are ready to merge.', ts: now, source: 'conductor' }];
+    const token = randomUUID();
+    pendingPlans.set(token, () => ready.map((l) => {
+      l.state = 'merged'; l.hop = 5; l.hopStatus = 'done';
+      const jid = journal('chain.merged', `${l.id} merged`, l.id, false);
+      appendEvent(`${l.id} merged`, l.id);
+      publish({ type: 'chain.merged', run: l.id });
+      return { k: `r-${Date.now()}-${l.id}`, type: 'receipt', text: `${l.id} merged`, ts: Date.now(), source: 'conductor', jid, undoable: false } as Message;
+    }));
     return [{
       k: `plan-${now}`, type: 'plan', text: 'merge ready lanes', ts: now, source: 'conductor',
       items: ready.map((l) => ({ text: `merge ${l.id}`, irreversible: true })),
+      btns: [
+        { label: 'Run plan', cmd: `run ${token}`, cls: 'go' },
+        { label: 'Not now', cmd: `dismiss ${token}` },
+      ],
     }];
   }
   if (/^(raise|set) daily cap to (\d+)/i.test(t)) {
