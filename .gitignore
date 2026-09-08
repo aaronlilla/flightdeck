@@ -1,6 +1,7 @@
 node_modules/
 dist/
 build/
+desktop/.dev-userdata/
 *.tsbuildinfo
 desktop/release/
 

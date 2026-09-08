@@ -40,6 +40,9 @@ export default defineConfig({
     assetsInlineLimit: 256 * 1024,
   },
   server: {
+    // Every route the client in src/console/api.ts calls. A route missing here gets
+    // Vite's index.html instead of JSON, and the board reads that as the server being
+    // unreachable; tests/console/vite-proxy-routes.test.ts keeps the two lists together.
     proxy: {
       '/lanes': proxied(),
       '/thread': proxied(),
@@ -49,6 +52,13 @@ export default defineConfig({
       '/proposals': proxied(),
       '/command': proxied(),
       '/run': proxied(),
+      '/state': proxied(),
+      '/queue': proxied(),
+      '/send': proxied(),
+      '/amend': proxied(),
+      '/clear': proxied(),
+      '/merge-ready': proxied(),
+      '/retire-finished': proxied(),
       '/events': proxied(true),
     },
   },
