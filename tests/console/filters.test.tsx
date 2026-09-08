@@ -60,6 +60,22 @@ describe('Filters chips', () => {
     expect(screen.getByText('Probes')).toBeInTheDocument();
   });
 
+  // Sweep #16: the chip counted raw lanes while the grid groups by ticket -- two
+  // retired attempts on one ticket showed "Archived 2" for a grid that renders one tile.
+  it('counts archived groups, not raw lanes, when two retired lanes share a ticket', () => {
+    render(
+      <Filters
+        filter="all" sort="cost" repos={[]} lanes={[lane('running')]}
+        archivedLanes={[
+          lane('killed', { id: 'FLT-2-a1', ticket: 'FLT-2', attempt: 1, retiredAt: 1 }),
+          lane('killed', { id: 'FLT-2-a2', ticket: 'FLT-2', attempt: 2, retiredAt: 2 }),
+        ]}
+        showProbes={false} now={Date.now()} onFilter={vi.fn()} onSort={vi.fn()} onToggleProbes={vi.fn()} onCleanUp={vi.fn()} onMergeReady={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('Archived 1')).toBeInTheDocument();
+  });
+
   it('the all count excludes probes until the Probes chip is on', () => {
     const lanes = [lane('running'), lane('running', { id: 'FLT-2', ticket: null, kind: 'probe' })];
     const { rerender } = render(<Filters filter="all" sort="cost" repos={[]} lanes={lanes} archivedLanes={[]} showProbes={false} now={Date.now()} onFilter={vi.fn()} onSort={vi.fn()} onToggleProbes={vi.fn()} onCleanUp={vi.fn()} onMergeReady={vi.fn()} />);

@@ -63,7 +63,7 @@ export function Filters({
         className={`chip chipB ${filter === 'archived' ? 'chipOn' : ''}`}
         onClick={() => onFilter('archived')}
       >
-        Archived {archivedLanes.length}
+        Archived {groupLanesByTicket(archivedLanes).length}
       </span>
       <span className={`chip chipB ${showProbes ? 'chipOn' : ''}`} onClick={onToggleProbes}>
         Probes
