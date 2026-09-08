@@ -53,6 +53,10 @@ import { route as routeMessage } from './router.js';
 import { RunInbox, deliverAnswer } from './runinbox.js';
 import { assertRunListening } from './console/listening.js';
 import { amendRunBrief, type AmendDeps } from './console/amend.js';
+import { ConductorAgent } from './console/agent.js';
+import type { QueryFn } from '../adapter/engine.js';
+import { conductorAgentEnabled, reasonerTimeoutMsFor } from './policy.js';
+import { CONDUCTOR_CLASS } from './console/agent.js';
 import { Breaker, clearKillSwitch, Fleet, type LaneRecord, type Lanes } from './supervisor.js';
 
 /** Reads the server's own bearer token, minting one on first use. */
@@ -187,6 +191,11 @@ export interface ForgeServerOptions {
    *  (`blockers-gather.ts`) wired against this server's own inbox, integrations, lane
    *  view, registry and queue store. A specimen only. */
   blockersGather?: () => Promise<DetectionInputs>;
+  /** The Conductor agent's SDK `query`, or a fake. A specimen always sets this;
+   *  production leaves it unset and the agent opens a real session on the fleet
+   *  account. `conductorIdleMs` overrides the five-minute idle close. */
+  conductorQueryFn?: QueryFn;
+  conductorIdleMs?: number;
   /** Overrides the Blockers view's own confirmers. Defaults to `buildConfirmers`
    *  (`blockers-confirm.ts`). A specimen only. */
   blockersConfirmers?: Partial<Record<BlockerKind, Confirmer>>;
@@ -229,6 +238,8 @@ export class ForgeServer {
   private readonly packetsDirPath: string;
 
   private readonly forgeHomeDir: string;
+
+  private readonly modelPolicyPathOpt: string | undefined;
 
   private readonly reasoner: Reasoner | undefined;
 
@@ -277,6 +288,9 @@ export class ForgeServer {
 
   private readonly blockersRoutes: BlockersRoutes;
 
+  /** The Conductor agent behind `POST /command` (`console/agent.ts`). */
+  readonly conductor: ConductorAgent;
+
   private readonly queueStoreForMerge: QueueStore;
 
   private readonly queueMergeDepsOpt: QueueMergeDeps | undefined;
@@ -300,6 +314,7 @@ export class ForgeServer {
     this.consoleDistDir = options.consoleDistDir ?? defaultConsoleDistDir();
     this.packetsDirPath = options.packetsDir ?? defaultPacketsDir();
     this.forgeHomeDir = options.forgeHomeDir ?? forgeHome();
+    this.modelPolicyPathOpt = options.modelPolicyPath;
     this.reasoner = options.reasoner;
     this.consoleReads = options.consoleReads
       ?? new ConsoleReads(options.modelPolicyPath ? { modelPolicyPath: options.modelPolicyPath } : {});
@@ -336,6 +351,15 @@ export class ForgeServer {
       ...(options.queueMergeDeps ? { mergeDeps: options.queueMergeDeps } : {}),
       ...(options.queuePromoteDeps ? { promoteDeps: options.queuePromoteDeps } : {}),
     });
+    this.conductor = new ConductorAgent({
+      writes: this.consoleWrites, reads: this.consoleReads, queue: this.queueRoutes,
+      amend: this.amendDeps(), inbox: this.inbox, journalPath: this.journalPath,
+      publish: (event) => this.publish(event),
+      ...(options.conductorQueryFn ? { queryFn: options.conductorQueryFn } : {}),
+      ...(options.modelPolicyPath ? { policyPath: options.modelPolicyPath } : {}),
+      ...(options.conductorIdleMs !== undefined ? { idleMs: options.conductorIdleMs } : {}),
+    });
+    this.consoleWrites.attachAgent(this.conductor);
     this.blockersRoutes = new BlockersRoutes({
       journalPath: this.journalPath,
       authorized: (request, response) => this.authorized(request, response),
@@ -425,6 +449,7 @@ export class ForgeServer {
       this.liveTimer = undefined;
     }
     this.consoleWrites.stop();
+    await this.conductor.stop();
     for (const socket of this.sockets) socket.destroy();
     this.sockets.clear();
     const server = this.http;
@@ -553,6 +578,14 @@ export class ForgeServer {
       // `router.enabled` in the policy file takes effect on the console's next poll
       // without restarting the server.
       router_enabled: routerEnabled(),
+      // The Conductor agent (2026-09-08): whether the rail routes to it, and the class
+      // timeout the client shows a "did not answer" row after. Read fresh, like
+      // `router_enabled`, so a policy edit takes effect on the next poll.
+      conductor: {
+        enabled: conductorAgentEnabled(this.modelPolicyPathOpt),
+        timeoutMs: reasonerTimeoutMsFor(CONDUCTOR_CLASS, this.modelPolicyPathOpt),
+        open: this.conductor.open,
+      },
       // C.3: read fresh on every call, same as router_enabled -- the desktop status
       // window and the console's top bar both need to say when the queue subsystem is
       // not running at all, distinct from a running queue that is merely paused.
