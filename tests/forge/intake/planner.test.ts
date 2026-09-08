@@ -4,7 +4,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Packet, Reasoner } from '../../../src/forge/contracts.ts';
-import { planFromPacket } from '../../../src/forge/intake/planner.ts';
+import { buildPlannerPrompt, planFromPacket } from '../../../src/forge/intake/planner.ts';
 
 function packet(): Packet {
   return {
@@ -48,5 +48,53 @@ describe('planFromPacket', () => {
     const reasoner: Reasoner = { provider: 'claude', async call() { return { text: 'x' }; } };
     const result = await planFromPacket(packet(), reasoner);
     expect(typeof result.text).toBe('string');
+  });
+
+  it('passes the built prompt to the reasoner and returns its text unchanged', async () => {
+    let seenPrompt: string | undefined;
+    const reasoner: Reasoner = {
+      provider: 'claude',
+      async call(input) { seenPrompt = input.prompt; return { text: '# Goal: fix it\n' }; },
+    };
+    const result = await planFromPacket(packet(), reasoner);
+    expect(seenPrompt).toBe(buildPlannerPrompt(packet()));
+    expect(result.text).toBe('# Goal: fix it\n');
+  });
+});
+
+// BBZ-175 specimen: the reasoner has no tools and no device, so an unruled prompt let it
+// ask a worker for iOS/Android screenshots and a snapshot test, and cite a screen by name
+// instead of a path. This rules block is what keeps the next brief from doing that again.
+describe('buildPlannerPrompt', () => {
+  const prompt = buildPlannerPrompt(packet());
+
+  it('still carries the packet id and the "# Goal:" instruction', () => {
+    expect(prompt).toContain('jira:BBZ-1:100');
+    expect(prompt).toContain('# Goal:');
+  });
+
+  it('forbids device/screenshot verification by the worker', () => {
+    expect(prompt.toLowerCase()).toContain('screenshot');
+    expect(prompt.toLowerCase()).toContain('haiping');
+  });
+
+  it('forbids snapshot tests', () => {
+    expect(prompt.toLowerCase()).toContain('snapshot');
+  });
+
+  it('requires file:line citation from a first status update', () => {
+    expect(prompt.toLowerCase()).toContain('file:line');
+  });
+
+  it('forbids stubs and placeholders standing in for real implementations', () => {
+    expect(prompt.toLowerCase()).toContain('stub');
+  });
+
+  it('requires a draft PR, never a merge or a direct Jira write by the worker', () => {
+    expect(prompt.toLowerCase()).toContain('draft pr');
+  });
+
+  it('stays under 60 lines', () => {
+    expect(prompt.split('\n').length).toBeLessThan(60);
   });
 });
