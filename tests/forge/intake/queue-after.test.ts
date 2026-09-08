@@ -133,6 +133,22 @@ describe('runQueueTick: after gating', () => {
     expect(store.get('q2')).toMatchObject({ state: 'running', reason: null, after: [] });
   });
 
+  it('matches a slug whole, so after: BBZ-20 never resolves against a running BBZ-205', async () => {
+    const store = tempStore();
+    appendRaw(store, {
+      id: 'q1', input: 'BBZ-205', ticket: 'BBZ-205', state: 'running', runKey: 'queue-BBZ-205',
+      briefPath: 'C:/briefs/queue-BBZ-205.md', branch: 'feature/bbz-205',
+      worktreePath: 'C:/worktrees/repo--bbz-205', base: 'develop',
+    });
+    appendRaw(store, { id: 'q2', input: 'A-2', after: ['BBZ-20'] });
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: false }) },
+    });
+
+    await runQueueTick(deps, store.all());
+    expect(store.get('q2')).toMatchObject({ state: 'queued', reason: 'waiting on unknown item: BBZ-20' });
+  });
+
   it('holds an item queued naming a slug that matches no queue item and no merged branch', async () => {
     const store = tempStore();
     appendRaw(store, { id: 'q1', input: 'A-1', after: ['nonexistent-slug'] });

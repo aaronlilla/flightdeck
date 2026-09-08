@@ -334,13 +334,25 @@ async function relaunchOnRetryOrPark(
   return writeTransition(item, { state: 'parked', reason }, deps, 'queue.parked', extra);
 }
 
+/** Whole-slug match only: `after: BBZ-20` names BBZ-20, never BBZ-205. A slug matches an
+ *  item whose `input`, brief file name (with or without the `queue-` prefix and `.md`),
+ *  or branch (bare, or as `branchFor(slug)`) is that slug exactly, case-insensitively. */
 function slugMatches(candidate: QueueItem, slug: string): boolean {
   const lower = slug.toLowerCase();
-  return Boolean(
-    candidate.input?.toLowerCase().includes(lower)
-    || (candidate.briefPath && basename(candidate.briefPath).toLowerCase().includes(lower))
-    || candidate.branch?.toLowerCase().includes(lower),
-  );
+  const names = new Set<string>();
+  if (candidate.input) names.add(candidate.input.toLowerCase());
+  if (candidate.ticket) names.add(candidate.ticket.toLowerCase());
+  if (candidate.briefPath) {
+    const file = basename(candidate.briefPath).toLowerCase().replace(/\.md$/, '');
+    names.add(file);
+    if (file.startsWith('queue-')) names.add(file.slice('queue-'.length));
+  }
+  if (candidate.branch) {
+    const branch = candidate.branch.toLowerCase();
+    names.add(branch);
+    names.add(branch.replace(/^(feature|hotfix)\//, ''));
+  }
+  return names.has(lower) || names.has(branchFor(slug).toLowerCase());
 }
 
 /** Whether every after: entry on item has resolved: an item in state 'done', or (when no
