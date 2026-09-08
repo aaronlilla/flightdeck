@@ -253,7 +253,6 @@ export function Settings(props: SettingsProps): JSX.Element {
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'stretch', width: 230 }}>
                     <span className="btnR" style={{ padding: 12, fontSize: 12 }} onClick={() => onReconnect(d.id)}>{d.fixLabel ?? 'Reconnect via SSO'} →</span>
-                    <span className="btnS">Paste credentials</span>
                     <span className="m" style={{ fontSize: '9.5px', color: 'var(--ink3)', textAlign: 'center' }}>≈ 20s · no restart</span>
                   </div>
                 </div>
@@ -271,7 +270,6 @@ export function Settings(props: SettingsProps): JSX.Element {
             <div className="plate" style={{ padding: 0 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 16px', borderBottom: '1px solid var(--line)' }}>
                 <span className="lbl">MCP servers</span>
-                <span className="m" style={{ fontSize: 10, color: 'var(--ink2)' }}><a>+ add server</a></span>
               </div>
               <div className="m" style={{ fontSize: '11.5px' }}>
                 {mcps.map((i) => <Row key={i.id} i={i} now={now} onCheck={onCheck} onReconnect={onReconnect} />)}

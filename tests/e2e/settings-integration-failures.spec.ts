@@ -27,3 +27,10 @@ test('a failed reconnect shows up as a receipt, not silence', async ({ page }) =
   await expect(page.getByTestId('toast')).toBeVisible();
   await expect(page.getByTestId('toast')).toContainText('the server did not say why');
 });
+
+test('the settings screen has no dead "Paste credentials" or "+ add server" controls', async ({ page }) => {
+  await page.goto('/');
+  await page.getByText('Settings').click();
+  await expect(page.getByText('Paste credentials')).toHaveCount(0);
+  await expect(page.getByText('+ add server')).toHaveCount(0);
+});
