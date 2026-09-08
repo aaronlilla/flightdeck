@@ -2,6 +2,7 @@ import type { JSX } from 'react';
 import { useRef, useState } from 'react';
 
 import { actionable } from '../keyboard-actionable.js';
+import type { State } from '../store.js';
 import { Linkify } from './Linkify.js';
 import type { QueueItem, QueueItemState, QueueSource } from '../../shared/console-model.js';
 
@@ -23,6 +24,15 @@ export interface QueueViewProps {
    *  gets a working board, just without those two buttons on a review/done card. */
   onMerge?: (id: string) => void;
   onPromote?: (id: string, version: string, message: string) => void;
+  /** queue-throughput W3: the width stepper's own write, one step (+1/-1) at a time,
+   *  clamped to 1-12 client-side before it ever reaches `POST /queue/width` -- the
+   *  server clamps the same range, this just keeps a doomed request from firing.
+   *  Absent means no stepper renders, same optional-control pattern as onMerge. */
+  onSetWidth?: (maxInFlight: number) => void;
+  /** The board's own busy-key map (App.tsx's `state.pending`), keyed the same way
+   *  `LaneTile` reads it -- `pending['queue-width']` present disables the stepper while
+   *  a change is in flight, so a second click can't race the first. */
+  pending?: State['pending'];
 }
 
 interface StateTaxon {
@@ -44,6 +54,17 @@ const STATE_TAXONOMY: Record<QueueItemState, StateTaxon> = {
 const SOURCE_LABEL: Record<QueueSource, string> = {
   ticket: 'ticket', brief: 'brief', query: 'query', backlog: 'backlog', hotfix: 'hotfix',
 };
+
+/** queue-throughput W3: the waits-on line's color, keyed off which of `queue.ts`'s two
+ *  `unresolvedAfterReason` strings the item is currently parked on -- an unmatched slug
+ *  (`waiting on unknown item: <slug>`) reads as a block, a matched but not-done
+ *  predecessor (`waiting on <slug>`) reads as a park, and no reason at all (every after
+ *  entry already resolved but the tick hasn't started it yet) reads as the quiet default. */
+function waitsOnColor(reason: string | null): string {
+  if (reason?.startsWith('waiting on unknown item:')) return 'var(--block)';
+  if (reason?.startsWith('waiting on ')) return 'var(--park)';
+  return 'var(--ink3)';
+}
 
 function QueueCard({ item, onRemove, onRetry, onMerge, onPromote }: {
   item: QueueItem; onRemove: (id: string) => void; onRetry: (id: string) => void;
@@ -76,6 +97,11 @@ function QueueCard({ item, onRemove, onRetry, onMerge, onPromote }: {
       <div className="m" style={{ fontSize: 11.5, color: 'var(--ink2)', minHeight: 32, overflow: 'hidden', textOverflow: 'ellipsis' }}>
         <Linkify text={item.reason ?? item.repo ?? item.input} repo={item.repo} />
       </div>
+      {item.after && item.after.length > 0 ? (
+        <div className="m" style={{ fontSize: 10, color: waitsOnColor(item.reason) }}>
+          waits on: {item.after.join(', ')}
+        </div>
+      ) : null}
       {item.state === 'review' && item.councilNotes && item.councilNotes.length > 0 ? (
         <div className="m" style={{ fontSize: 9.5, color: 'var(--ink3)' }}>
           council notes: <Linkify text={item.councilNotes.join('; ')} repo={item.repo} />
@@ -251,8 +277,12 @@ function AddWork({ onAdd }: { onAdd: (source: QueueSource, input: string) => voi
  *  `.lane` shape, grouped by nothing but state color -- the same flat grid `LanesGrid`
  *  already uses for the run board. */
 export function QueueView(props: QueueViewProps): JSX.Element {
-  const { items, paused, pauseReason, maxInFlight, onAdd, onRemove, onRetry, onPause, onResume, onMerge, onPromote } = props;
+  const {
+    items, paused, pauseReason, maxInFlight, onAdd, onRemove, onRetry, onPause, onResume, onMerge, onPromote,
+    onSetWidth, pending = {},
+  } = props;
   const inFlight = items.filter((i) => i.state === 'planning' || i.state === 'running').length;
+  const widthBusy = Boolean(pending['queue-width']);
   // Sweep #18: the nav badge counts parked+failed while this header counted every
   // item, so "Queue 8" next to "Queue · 28 items" read as two disagreeing numbers
   // rather than one total and one subset of it.
@@ -267,6 +297,25 @@ export function QueueView(props: QueueViewProps): JSX.Element {
         </span>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <span className="m" style={{ fontSize: 11, color: 'var(--ink2)' }}>{inFlight} / {maxInFlight} in flight</span>
+          {onSetWidth ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4, opacity: widthBusy ? 0.5 : 1 }}>
+              <span
+                className="btnS" aria-label="decrease queue width"
+                style={{ padding: '4px 8px', fontSize: 10.5, cursor: widthBusy || maxInFlight <= 1 ? 'default' : 'pointer' }}
+                {...actionable(() => { if (!widthBusy && maxInFlight > 1) onSetWidth(maxInFlight - 1); })}
+              >
+                −
+              </span>
+              <span className="m" style={{ fontSize: 10.5, color: 'var(--ink3)', minWidth: 14, textAlign: 'center' }}>width {maxInFlight}</span>
+              <span
+                className="btnS" aria-label="increase queue width"
+                style={{ padding: '4px 8px', fontSize: 10.5, cursor: widthBusy || maxInFlight >= 12 ? 'default' : 'pointer' }}
+                {...actionable(() => { if (!widthBusy && maxInFlight < 12) onSetWidth(maxInFlight + 1); })}
+              >
+                +
+              </span>
+            </div>
+          ) : null}
           {paused ? (
             <>
               <span className="chip" style={{ color: 'var(--park)', borderColor: 'var(--park)' }}>

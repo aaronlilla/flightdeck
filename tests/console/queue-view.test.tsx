@@ -27,14 +27,16 @@ function renderQueue(items: QueueItem[], overrides: Partial<Parameters<typeof Qu
   const onRetry = vi.fn();
   const onPause = vi.fn();
   const onResume = vi.fn();
+  const onSetWidth = vi.fn();
   render(
     <QueueView
       items={items} paused={false} maxInFlight={2}
       onAdd={onAdd} onRemove={onRemove} onRetry={onRetry} onPause={onPause} onResume={onResume}
+      onSetWidth={onSetWidth}
       {...overrides}
     />,
   );
-  return { onAdd, onRemove, onRetry, onPause, onResume };
+  return { onAdd, onRemove, onRetry, onPause, onResume, onSetWidth };
 }
 
 describe('QueueView empty state', () => {
@@ -226,5 +228,60 @@ describe('QueueView header', () => {
   it('omits the needs-attention clause entirely when nothing is parked or failed', () => {
     renderQueue([item({ id: 'Q-1', state: 'queued' })]);
     expect(screen.getByText('Queue · 1 item')).toBeInTheDocument();
+  });
+});
+
+describe('QueueView width stepper', () => {
+  it('increases the width by one on +', () => {
+    const { onSetWidth } = renderQueue([], { maxInFlight: 4 });
+    fireEvent.click(screen.getByLabelText('increase queue width'));
+    expect(onSetWidth).toHaveBeenCalledWith(5);
+  });
+
+  it('decreases the width by one on -', () => {
+    const { onSetWidth } = renderQueue([], { maxInFlight: 4 });
+    fireEvent.click(screen.getByLabelText('decrease queue width'));
+    expect(onSetWidth).toHaveBeenCalledWith(3);
+  });
+
+  it('refuses to go above 12', () => {
+    const { onSetWidth } = renderQueue([], { maxInFlight: 12 });
+    fireEvent.click(screen.getByLabelText('increase queue width'));
+    expect(onSetWidth).not.toHaveBeenCalled();
+  });
+
+  it('refuses to go below 1', () => {
+    const { onSetWidth } = renderQueue([], { maxInFlight: 1 });
+    fireEvent.click(screen.getByLabelText('decrease queue width'));
+    expect(onSetWidth).not.toHaveBeenCalled();
+  });
+
+  it('disables both stepper controls while a width change is pending', () => {
+    const { onSetWidth } = renderQueue([], { maxInFlight: 4, pending: { 'queue-width': { label: 'Setting queue width…', since: 0 } } });
+    fireEvent.click(screen.getByLabelText('increase queue width'));
+    fireEvent.click(screen.getByLabelText('decrease queue width'));
+    expect(onSetWidth).not.toHaveBeenCalled();
+  });
+});
+
+describe('QueueView waits-on line', () => {
+  it('renders nothing extra for an item with no after entries', () => {
+    renderQueue([item({ id: 'Q-1', state: 'queued' })]);
+    expect(screen.queryByText(/waits on:/)).not.toBeInTheDocument();
+  });
+
+  it('shows the waits-on line for an item with after entries', () => {
+    renderQueue([item({ id: 'Q-1', state: 'queued', after: ['a', 'b'], reason: 'waiting on a' })]);
+    expect(screen.getByText('waits on: a, b')).toBeInTheDocument();
+  });
+
+  it('highlights a known, not-yet-done predecessor differently from an unknown one', () => {
+    renderQueue([
+      item({ id: 'Q-1', state: 'queued', after: ['a'], reason: 'waiting on a' }),
+      item({ id: 'Q-2', state: 'queued', after: ['ghost'], reason: 'waiting on unknown item: ghost' }),
+    ]);
+    const knownLine = screen.getByText('waits on: a');
+    const unknownLine = screen.getByText('waits on: ghost');
+    expect(knownLine.style.color).not.toEqual(unknownLine.style.color);
   });
 });

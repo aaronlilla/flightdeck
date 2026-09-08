@@ -759,6 +759,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
         {state.view === 'queue' ? (
           <QueueView
             items={state.queue} paused={state.queuePaused} pauseReason={state.queuePauseReason} maxInFlight={state.queueMaxInFlight}
+            pending={state.pending}
             onAdd={(source, input) => void (async () => {
               const key = 'queue-add';
               if (key in stateRef.current.pending) return;
@@ -786,6 +787,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
             onResume={() => void runQueueAction('queue-resume', 'Resuming the queue…', () => api.resumeQueue())}
             onMerge={(id) => void runQueueAction(`queue-merge:${id}`, 'Merging…', () => api.mergeQueueItem(id))}
             onPromote={(id, version, message) => void runQueueAction(`queue-promote:${id}`, 'Promoting…', () => api.promoteQueueItem(id, version, message))}
+            onSetWidth={(value) => void runQueueAction('queue-width', `Setting width to ${value}…`, () => api.postQueueWidth(value))}
           />
         ) : null}
         {state.view === 'blockers' ? (
