@@ -119,8 +119,11 @@ export function MessageCard({
       // root-cause report inside its run thread -- a reply is labeled that only
       // when it actually came from the conductor/console/system; anything else
       // names the run it came from (or "Worker" when nothing can name it).
+      // 2026-09-08: a rail reply names the path that answered it, so a grammar
+      // fallback never reads as the agent having spoken.
+      const conductorLabel = message.path === 'grammar' ? 'Conductor (grammar)' : 'Conductor';
       const replySource = replyLabel
-        ?? (CONDUCTOR_REPLY_SOURCES.has(message.source) ? 'Conductor' : (labelFor?.(message.source) ?? 'Worker'));
+        ?? (CONDUCTOR_REPLY_SOURCES.has(message.source) ? conductorLabel : (labelFor?.(message.source) ?? 'Worker'));
       return (
         <div style={{ maxWidth: '92%' }}>
           <div className="lbl" data-testid="reply-label" style={{ color: 'var(--ink3)', marginBottom: 3 }}>{replySource}</div>
@@ -151,7 +154,7 @@ export function MessageCard({
     case 'thinking':
       return (
         <div style={{ display: 'flex', gap: 5, alignItems: 'center' }}>
-          <span className="lbl" style={{ color: 'var(--ink3)' }}>conductor is planning</span>
+          <span className="lbl" data-testid="conductor-working" style={{ color: 'var(--ink3)' }}>{message.text || 'conductor is planning'}</span>
           <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--ink3)', animation: 'fddot 1.2s infinite' }} />
           <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--ink3)', animation: 'fddot 1.2s infinite .2s' }} />
           <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--ink3)', animation: 'fddot 1.2s infinite .4s' }} />

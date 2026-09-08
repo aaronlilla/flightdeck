@@ -248,8 +248,10 @@ export function setCaps(body: { dailyTokens?: number; runTokens?: number }): Pro
   return post<Caps>('/caps', body);
 }
 
-export function sendCommand(text: string): Promise<CommandResponse> {
-  return post<CommandResponse>('/command', { text });
+/** `run` is the lane whose sheet the text was typed into, so the Conductor agent gets
+ *  it as context and "kill and remove this" has a "this". */
+export function sendCommand(text: string, run?: string): Promise<CommandResponse> {
+  return post<CommandResponse>('/command', run ? { text, run } : { text });
 }
 
 export function checkIntegration(id: string): Promise<IntegrationsResponse> {
