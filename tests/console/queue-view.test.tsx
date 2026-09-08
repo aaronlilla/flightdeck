@@ -56,14 +56,30 @@ describe('QueueView item states', () => {
     expect(screen.getByText('3 files, +12/-4')).toBeInTheDocument();
   });
 
-  it('A.7: shows a Merge action on a review card only when onMerge is wired, and fires it', () => {
+  it('A.7: shows a Merge action on a review card only when onMerge is wired, and asks before firing it', () => {
+    // Sweep #5: the board's own Merge asks first; a queue card's Merge must too.
     const onMerge = vi.fn();
     renderQueue(
       [item({ state: 'review', pr: { no: 9, url: 'https://github.com/o/n/pull/9', files: 1, add: 1, del: 0, draft: true } })],
       { onMerge },
     );
     fireEvent.click(screen.getByText('Merge'));
+    expect(onMerge).not.toHaveBeenCalled();
+    expect(screen.getByText('Confirm merge')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Confirm merge'));
     expect(onMerge).toHaveBeenCalledWith('Q-1');
+  });
+
+  it('A.7: Cancel on the merge confirmation never fires onMerge', () => {
+    const onMerge = vi.fn();
+    renderQueue(
+      [item({ state: 'review', pr: { no: 9, url: 'https://github.com/o/n/pull/9', files: 1, add: 1, del: 0, draft: true } })],
+      { onMerge },
+    );
+    fireEvent.click(screen.getByText('Merge'));
+    fireEvent.click(screen.getByText('Cancel'));
+    expect(onMerge).not.toHaveBeenCalled();
+    expect(screen.getByText('Merge')).toBeInTheDocument();
   });
 
   it('A.7: shows a Promote action on a done hotfix card only when onPromote is wired, and collects a version and message before firing it', () => {

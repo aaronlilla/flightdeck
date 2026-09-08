@@ -51,6 +51,11 @@ function QueueCard({ item, onRemove, onRetry, onMerge, onPromote }: {
   const [promoteOpen, setPromoteOpen] = useState(false);
   const [promoteVersion, setPromoteVersion] = useState('');
   const [promoteMessage, setPromoteMessage] = useState('');
+  // Sweep #5: the board's own Merge asks first (App.tsx's pendingConfirm); a queue
+  // card's Merge fired straight away. Kept as inline state here rather than routed
+  // through the rail's confirm card, since a queue card's own outcome is meant to
+  // show on the Queue tab itself (sweep #3), not require a look at the rail.
+  const [mergeConfirmOpen, setMergeConfirmOpen] = useState(false);
   return (
     <div className="lane" style={{ borderColor: taxon.color }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
@@ -83,8 +88,23 @@ function QueueCard({ item, onRemove, onRetry, onMerge, onPromote }: {
             <div className="m" style={{ fontSize: 9.5, color: 'var(--ink3)', textAlign: 'center' }}>
               {item.pr.files} file{item.pr.files === 1 ? '' : 's'}, +{item.pr.add}/-{item.pr.del}
             </div>
-            {onMerge ? (
-              <span className="btnA" style={{ padding: '7px 9px', fontSize: 9.5, width: '100%', textAlign: 'center' }} onClick={() => onMerge(item.id)}>
+            {onMerge && mergeConfirmOpen ? (
+              <div style={{ display: 'flex', gap: 6 }}>
+                <span
+                  className="btnR" style={{ padding: '7px 9px', fontSize: 9.5, flex: 1, textAlign: 'center' }}
+                  onClick={() => { setMergeConfirmOpen(false); onMerge(item.id); }}
+                >
+                  Confirm merge
+                </span>
+                <span
+                  className="btnS" style={{ padding: '7px 9px', fontSize: 9.5, flex: 1, textAlign: 'center' }}
+                  onClick={() => setMergeConfirmOpen(false)}
+                >
+                  Cancel
+                </span>
+              </div>
+            ) : onMerge ? (
+              <span className="btnA" style={{ padding: '7px 9px', fontSize: 9.5, width: '100%', textAlign: 'center' }} onClick={() => setMergeConfirmOpen(true)}>
                 Merge
               </span>
             ) : null}
