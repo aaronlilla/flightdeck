@@ -88,6 +88,30 @@ describe('POST /queue', () => {
     expect(body.items[0]).toMatchObject({ source: 'brief', ticket: null });
   });
 
+  it('reads a pasted brief from a path when the input is a .md file on disk', async () => {
+    const briefPath = join(dir, 'a-brief.md');
+    writeFileSync(briefPath, ['# Goal: from a file', 'repo: owner/tools', ''].join('\n'), 'utf8');
+    const response = await fetch(`${base}/queue`, authed({
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ source: 'brief', input: `  ${briefPath}  ` }),
+    }));
+    const body = await response.json() as QueueAddResponse;
+    expect(body.items[0]).toMatchObject({ source: 'brief', ticket: null });
+    expect(body.items[0]!.input).toContain('# Goal: from a file');
+  });
+
+  it('refuses a ticket input that is not a key, without asking Jira', async () => {
+    const response = await fetch(`${base}/queue`, authed({
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ source: 'ticket', input: 'C:/somewhere/brief.md' }),
+    }));
+    const body = await response.json() as QueueAddResponse;
+    expect(body.ok).toBe(false);
+    expect(body.items).toEqual([]);
+    expect(body.error).toMatch(/ticket key/);
+    expect(body.error).toMatch(/brief/);
+  });
+
   it('adds one item per ticket a query resolves', async () => {
     const response = await fetch(`${base}/queue`, authed({
       method: 'POST', headers: { 'content-type': 'application/json' },
