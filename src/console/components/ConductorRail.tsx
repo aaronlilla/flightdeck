@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { useContext, useState } from 'react';
+import { useCallback, useContext, useLayoutEffect, useRef, useState } from 'react';
 
 import { computeFreshness, compactFreshnessStamp, freshnessClass, hm } from '../freshness.js';
 import { actionable } from '../keyboard-actionable.js';
@@ -336,8 +336,60 @@ export interface ConductorRailProps {
 }
 
 /** Right rail, single thread; composer disabled with a reason banner when the feed is down. */
+/** How close to the bottom, in pixels, still counts as reading the newest message. */
+const PINNED_SLACK_PX = 24;
+
+/**
+ * Chat scrolling for the thread. The list opens pinned to its newest message and stays
+ * pinned as messages arrive; the moment the reader scrolls up it holds still, counts
+ * what lands below, and offers a pill that jumps back down. Scrolling to the bottom by
+ * hand re-pins. Measured off the scroll container itself, never off React state, so a
+ * message that arrives mid-scroll cannot be mistaken for the reader letting go.
+ */
+function useChatScroll(messageCount: number, newestKey: string | undefined): {
+  ref: React.RefObject<HTMLDivElement | null>; unread: number; onScroll: () => void; jump: () => void;
+} {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const pinned = useRef(true);
+  const [unread, setUnread] = useState(0);
+  const lastCount = useRef(messageCount);
+
+  const isAtBottom = (el: HTMLDivElement): boolean => el.scrollHeight - el.scrollTop - el.clientHeight <= PINNED_SLACK_PX;
+
+  const jump = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    pinned.current = true;
+    setUnread(0);
+  }, []);
+
+  const onScroll = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    const atBottom = isAtBottom(el);
+    pinned.current = atBottom;
+    if (atBottom) setUnread(0);
+  }, []);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    const arrived = Math.max(0, messageCount - lastCount.current);
+    lastCount.current = messageCount;
+    if (!el) return;
+    if (pinned.current) {
+      el.scrollTop = el.scrollHeight;
+    } else if (arrived > 0) {
+      setUnread((n) => n + arrived);
+    }
+  }, [messageCount, newestKey]);
+
+  return { ref, unread, onScroll, jump };
+}
+
 export function ConductorRail(props: ConductorRailProps): JSX.Element {
   const { thread, feed, now, composer, verbose = false, labelFor, onComposerChange, onSend, onCommand, onUndo, onOpenJournal } = props;
+  const scroll = useChatScroll(thread.length, thread.at(-1)?.k);
   const isPending = (m: Message): boolean => (
     (m.type === 'question' && m.answer === undefined)
     || (m.type === 'confirm' && m.resolved === undefined)
@@ -364,12 +416,24 @@ export function ConductorRail(props: ConductorRailProps): JSX.Element {
           {pending > 0 ? `${pending} waiting ↓` : ''}
         </span>
       </div>
-      <div className="scroll" data-testid="rail-thread" style={{ flex: 1, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12, opacity: feed.live ? 1 : 0.6 }}>
+      <div style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex', flexDirection: 'column' }}>
+      <div ref={scroll.ref} onScroll={scroll.onScroll} className="scroll" data-testid="rail-thread" style={{ flex: 1, minHeight: 0, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12, opacity: feed.live ? 1 : 0.6 }}>
         {collapseWardenEvents(thread).map((m) => (
           <div key={m.k} id={`rail-msg-${m.k}`}>
             <MessageCard message={m} feedLive={feed.live} now={now} verbose={verbose} labelFor={labelFor} onCommand={onCommand} onUndo={onUndo} onOpenJournal={onOpenJournal} />
           </div>
         ))}
+      </div>
+      {scroll.unread > 0 ? (
+        <span
+          className="chip chipB chipOn"
+          data-testid="rail-jump"
+          style={{ position: 'absolute', left: '50%', bottom: 10, transform: 'translateX(-50%)', boxShadow: '0 2px 8px rgba(0,0,0,.45)' }}
+          {...actionable(scroll.jump)}
+        >
+          {scroll.unread} new ↓
+        </span>
+      ) : null}
       </div>
       {feed.live ? (
         <>
