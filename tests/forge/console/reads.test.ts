@@ -472,3 +472,63 @@ describe('ConsoleReads.lanesResponse: archived bypasses the 24h finished-lane wi
     expect(archived.lanes.map((l) => l.id)).toContain('beta');
   });
 });
+
+describe('ConsoleReads.runStoryResponse: story scoping (deliverable 1)', () => {
+  it('never matches a packet-less lane against other packet-less rows in the journal', async () => {
+    const forgeHomeDir = tempDir('console-reads-story-scope-');
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'S-self1', actor: 'runner' });
+    for (let i = 0; i < 50; i += 1) {
+      journal.append({ event: 'run.parked', run: `S-other${i}`, actor: 'runner', reason: `park ${i}` });
+    }
+    journal.close();
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put('S-self1', { column: 'S-self1' });
+
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore: new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl')),
+      jiraSite: null, gitLog: async () => [],
+    });
+
+    const server = reads as unknown as { runStoryResponse(run: string): Promise<{ entries: Array<{ text: string; kind: string }> }> };
+    const story = await server.runStoryResponse('S-self1');
+    const parkEntries = story.entries.filter((e) => e.kind === 'park' || e.text.includes('park'));
+    expect(parkEntries).toHaveLength(0);
+  });
+
+  it('passes the git log function the queue item\'s own base and created time as a range', async () => {
+    const forgeHomeDir = tempDir('console-reads-story-range-');
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'queue-BBZ-1', actor: 'runner' });
+    journal.close();
+
+    const queueStore = new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl'));
+    queueStore.append({
+      id: 'Q-1', at: 1, source: 'ticket', input: 'BBZ-1', ticket: 'BBZ-1', repo: 'o/n',
+      briefPath: null, branch: 'feature/bbz-1', worktreePath: forgeHomeDir, base: 'develop',
+      state: 'running', reason: null, runKey: 'queue-BBZ-1', pr: null, journalIds: [],
+      createdAt: 4_000, updatedAt: 4_000,
+    });
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put('queue-BBZ-1', { column: 'BBZ-1' });
+
+    let seenRange: { base: string | null; since: number } | undefined;
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore, jiraSite: null,
+      gitLog: async (_worktreePath: string, range?: { base: string | null; since: number }) => {
+        seenRange = range;
+        return [];
+      },
+    });
+
+    const server = reads as unknown as { runStoryResponse(run: string): Promise<unknown> };
+    await server.runStoryResponse('queue-BBZ-1');
+    expect(seenRange).toEqual({ base: 'develop', since: 4_000 });
+  });
+});

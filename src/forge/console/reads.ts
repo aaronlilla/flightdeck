@@ -91,7 +91,7 @@ export interface ConsoleReadsOptions {
   mergeAllowed?: (repo: string) => boolean;
   /** H1.6: overrides `git log` of a lane's own worktree for `GET /run/:id/story`'s
    *  commit entries. A specimen never shells out. */
-  gitLog?: (worktreePath: string) => Promise<GitCommit[]>;
+  gitLog?: (worktreePath: string, range: GitLogRange) => Promise<GitCommit[]>;
   /** 2026-09-07: overrides the ticket sheet summary's own drift facts (`GET`/`POST
    *  /run/:id/{summary,recheck}`). A specimen never shells out. Defaults to real git
    *  against `FORGE_REPO_CHECKOUTS`. */
@@ -170,13 +170,58 @@ function defaultGhDetailLookup(): GhDetailLookupFn {
   };
 }
 
-/** H1.6: `git log`, subjects only, oldest first -- the ticket sheet's own commit list.
- *  A worktree that no longer exists (a lane long since cleaned up) reads as no commits
- *  rather than throwing. */
-function defaultGitLog(): (worktreePath: string) => Promise<GitCommit[]> {
-  return async (worktreePath: string): Promise<GitCommit[]> => {
+/** The base a story's own commit range is read against: `queueItem.base` when the
+ *  queue set one, else whichever of `origin/develop`, `origin/main`, `main` this
+ *  worktree actually has, else `null` (no base resolved at all). */
+export interface GitLogRange {
+  base: string | null;
+  since: number;
+}
+
+async function resolveMergeBaseRange(worktreePath: string, base: string): Promise<string[] | null> {
+  const mergeBase = await execRun({
+    argv: ['git', 'merge-base', base, 'HEAD'],
+    cwd: worktreePath, owner: 'console-story-mergebase', cls: 'script',
+  });
+  if (!mergeBase.ok) return null;
+  const sha = (mergeBase.full ?? mergeBase.tail).trim();
+  return sha ? [`${sha}..HEAD`] : null;
+}
+
+const FALLBACK_BASE_CANDIDATES = ['origin/develop', 'origin/main', 'main'];
+
+/** H1.6 / story scoping: `git log`, subjects only, oldest first, scoped to the range a
+ *  story's commit entries should actually cover -- never the whole repository (2026-09-08
+ *  finding: a self lane with no queue base listed the whole flightdeck history, 218
+ *  commits back to 2026-08-10).
+ *
+ * `range.base` (`queueItem.base`) wins when set: `git log --reverse
+ * <merge-base(base,HEAD)>..HEAD`. With no base set, this tries `origin/develop`, then
+ * `origin/main`, then `main` in turn and uses the first that resolves. When neither the
+ * given base nor any fallback resolves (no such ref, or the worktree is not a git repo
+ * at all), this falls back to `git log --since=<range.since>` -- never the unranged
+ * whole-history log the bug used to run. A worktree that no longer exists (a lane long
+ * since cleaned up) reads as no commits rather than throwing. */
+function defaultGitLog(): (worktreePath: string, range: GitLogRange) => Promise<GitCommit[]> {
+  return async (worktreePath: string, range: GitLogRange): Promise<GitCommit[]> => {
+    let scope: string[] | null = null;
+    if (range.base) {
+      scope = await resolveMergeBaseRange(worktreePath, range.base);
+    } else {
+      for (const candidate of FALLBACK_BASE_CANDIDATES) {
+        const check = await execRun({
+          argv: ['git', 'rev-parse', '--verify', candidate],
+          cwd: worktreePath, owner: 'console-story-base-check', cls: 'script',
+        });
+        if (check.ok) {
+          scope = await resolveMergeBaseRange(worktreePath, candidate);
+          if (scope) break;
+        }
+      }
+    }
+    const rangeArgs = scope ?? [`--since=${new Date(range.since).toISOString()}`];
     const result = await execRun({
-      argv: ['git', 'log', '--reverse', '--format=%H%x09%ct%x09%s'],
+      argv: ['git', 'log', '--reverse', ...rangeArgs, '--format=%H%x09%ct%x09%s'],
       cwd: worktreePath, owner: 'console-story-gitlog', cls: 'script', fullOutput: true,
     });
     if (!result.ok) return [];
@@ -228,7 +273,7 @@ export class ConsoleReads {
 
   private readonly mergeAllowedFn: (repo: string) => boolean;
 
-  private readonly gitLogFn: (worktreePath: string) => Promise<GitCommit[]>;
+  private readonly gitLogFn: (worktreePath: string, range: GitLogRange) => Promise<GitCommit[]>;
 
   private readonly driftFn: DriftFn;
 
@@ -639,13 +684,24 @@ export class ConsoleReads {
 
     const links = chainLinks(fleet.runs, run);
     const runKeys = new Set(links.map((link) => link.key));
-    const events = fleet.events.filter((row) => (row.run && runKeys.has(row.run)) || row.packetId === packet?.packetId);
+    // Story scoping (2026-09-08 finding): a lane with no packet at all used to match
+    // `row.packetId === packet?.packetId`, which reads as `undefined === undefined` and
+    // matched every packet-less row in the whole journal -- 16,132 of 16,173 rows on the
+    // live board, every one of them a park belonging to some other run. `packet` is only
+    // ever consulted when this lane actually has one.
+    const events = fleet.events.filter((row) => (
+      (row.run && runKeys.has(row.run)) || (packet !== undefined && row.packetId === packet.packetId)
+    ));
 
     const briefPath = queueItem?.briefPath ?? packet?.briefPath ?? this.registry.get(run)?.briefPath ?? null;
     const briefText = briefPath && existsSync(briefPath) ? readFileSync(briefPath, 'utf8') : null;
 
     const worktreePath = queueItem?.worktreePath ?? packet?.provisioned?.worktreePath ?? null;
-    const gitCommits = worktreePath && existsSync(worktreePath) ? await this.gitLogFn(worktreePath) : [];
+    const range: GitLogRange = {
+      base: queueItem?.base ?? null,
+      since: queueItem?.createdAt ?? lane?.startedAt ?? Date.now(),
+    };
+    const gitCommits = worktreePath && existsSync(worktreePath) ? await this.gitLogFn(worktreePath, range) : [];
 
     let attestation;
     const repo = queueItem?.repo ?? packet?.repo ?? null;
