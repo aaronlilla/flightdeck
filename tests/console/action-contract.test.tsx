@@ -80,6 +80,7 @@ const CASES: Record<string, Case> = {
   retryQueueItem: { args: ['Q-1'], result: { ...OK, message: 'Q-1 requeued' }, text: 'Q-1 requeued' },
   pauseQueue: { args: [], result: { ...OK, message: 'queue paused' }, text: 'queue paused' },
   resumeQueue: { args: [], result: { ...OK, message: 'queue resumed' }, text: 'queue resumed' },
+  postQueueWidth: { args: [12], result: { ...OK, message: 'queue width set to 12' }, text: 'queue width set to 12' },
   mergeQueueItem: { args: ['Q-1'], result: { ...OK, message: 'Q-1 merged' }, text: 'Q-1 merged' },
   promoteQueueItem: { args: ['Q-1', '1.3.0', 'hotfix'], result: { ...OK, message: 'Q-1 promoted' }, text: 'Q-1 promoted' },
 };
