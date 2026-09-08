@@ -159,7 +159,12 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
         const cutoff = Date.now() - LOCAL_CARD_TTL_MS;
         localCardsRef.current = localCardsRef.current.filter((card) => card.ts >= cutoff);
         for (const card of localCardsRef.current) {
-          if (!incomingThread.some((m) => m.k === card.k)) incomingThread = [...incomingThread, card];
+          if (incomingThread.some((m) => m.k === card.k)) continue;
+          // The server persists the operator's own card too (`ConsoleWrites.command`),
+          // under its own key: once that copy arrives, the local bubble for the same
+          // words sent moments before is the same message and must not show twice.
+          if (card.type === 'operator' && incomingThread.some((m) => m.type === 'operator' && m.text === card.text && Math.abs(m.ts - card.ts) < LOCAL_CARD_TTL_MS)) continue;
+          incomingThread = [...incomingThread, card];
         }
         for (const [k, override] of [...resolvedOverridesRef.current]) {
           if (override.at < cutoff) resolvedOverridesRef.current.delete(k);
@@ -178,6 +183,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       if (proposals) dispatch({ type: 'proposals', proposals });
       if (queue) dispatch({ type: 'queue', items: queue.items, paused: queue.paused, maxInFlight: queue.maxInFlight, pauseReason: queue.pauseReason });
       if (consoleState) dispatch({ type: 'queue-on', on: consoleState.queue_on });
+      if (consoleState?.conductor) dispatch({ type: 'conductor-timeout', timeoutMs: consoleState.conductor.timeoutMs });
       if (blockers) dispatch({ type: 'blockers', blockers });
       // The server moved onto a new build (a restart, a self cutover): this page's
       // components are the old ones, so reload rather than paint new data with them.
@@ -413,20 +419,49 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       localCardsRef.current = [...localCardsRef.current, card];
       dispatch({ type: 'thread-append', messages: [card] });
     }
+    // W4 (2026-09-08): a model call takes seconds, and a rail that shows nothing for
+    // five seconds reads as broken. A local working row goes up the moment the message
+    // leaves, tool receipts stream in over the live feed underneath it, and it comes
+    // down when the reply lands. If the class timeout passes first, the row says so.
+    const tokenAction = trimmed.match(/^(confirm|run|dismiss)\s+\S+$/i);
+    const working: Message | null = tokenAction ? null : {
+      k: `working-${Date.now()}-${Math.random()}`, type: 'thinking', text: 'Conductor is working…', ts: Date.now(), source: 'conductor',
+    };
+    let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+    if (working) {
+      localCardsRef.current = [...localCardsRef.current, working];
+      dispatch({ type: 'thread-append', messages: [working] });
+      const seconds = Math.round(stateRef.current.conductorTimeoutMs / 1000);
+      timeoutTimer = setTimeout(() => {
+        const text = `the Conductor did not answer in ${seconds}s; the grammar answered instead…`;
+        localCardsRef.current = localCardsRef.current.map((card) => (card.k === working.k ? { ...card, text } : card));
+        dispatch({ type: 'thread', thread: stateRef.current.thread.map((card) => (card.k === working.k ? { ...card, text } : card)) });
+      }, stateRef.current.conductorTimeoutMs);
+    }
+    const dropWorking = () => {
+      if (!working) return;
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+      localCardsRef.current = localCardsRef.current.filter((card) => card.k !== working.k);
+      dispatch({ type: 'thread', thread: stateRef.current.thread.filter((card) => card.k !== working.k) });
+    };
     void (async () => {
       try {
         const response = await api.sendCommand(trimmed);
-        if (response.cards.length > 0) dispatch({ type: 'thread-append', messages: response.cards });
+        dropWorking();
+        // The server echoes the operator's own card first (`ConsoleWrites.command`);
+        // this rail already showed its own bubble, so only the answer is appended.
+        const answer = response.cards.filter((card) => card.type !== 'operator');
+        if (answer.length > 0) dispatch({ type: 'thread-append', messages: answer });
         // The card this command actioned lives only in `thread.jsonl`, unresolved:
         // see `resolvedOverridesRef` above for why `refresh()` needs this recorded
         // rather than patched once here.
-        const tokenAction = trimmed.match(/^(confirm|run|dismiss)\s+\S+$/i);
         if (tokenAction) {
           const resolvedValue: 'confirmed' | 'declined' = /^dismiss\s/i.test(trimmed) ? 'declined' : 'confirmed';
           const target = stateRef.current.thread.find((m) => m.btns?.some((b) => b.cmd === trimmed));
           if (target) resolvedOverridesRef.current.set(target.k, { resolved: resolvedValue, at: Date.now() });
         }
       } catch (caught) {
+        dropWorking();
         appendReceipt(null, caught instanceof api.ApiError ? errorText(caught) : 'the command did not go through', false);
       }
       await refresh();
@@ -824,7 +859,15 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
                   onCommand={onCommand}
                   onOpenCost={(id) => dispatch({ type: 'sheet', sheet: { type: 'cost', id } })}
                   onOpenSandbox={(id) => dispatch({ type: 'sheet', sheet: { type: 'sandbox', id } })}
-                  onSendLane={(id, textMsg) => runAction(`send:${id}`, 'Sending…', () => api.sendToRun(id, textMsg))}
+                  // W3 (2026-09-08): the composer talks to the Conductor with the lane as
+                  // context, never straight into an inbox nobody may read. The sheet
+                  // renders the cards itself; `refresh()` picks up the rail's copy.
+                  conductorTimeoutMs={state.conductorTimeoutMs}
+                  onSendLane={async (id, textMsg) => {
+                    const response = await api.sendCommand(textMsg, id);
+                    void refresh();
+                    return response;
+                  }}
                   onAmendLane={(id, textMsg) => runAction(`amend:${id}`, 'Amending…', () => api.amendRun(id, textMsg))}
                   onOpenJournal={onOpenJournal}
                   onUndo={onUndo}

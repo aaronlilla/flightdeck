@@ -286,6 +286,9 @@ export const FORGE_EVENT_NAMES = [
   // Retire/Unretire click or the bulk `POST /retire-finished` -- never written by any
   // worker or automation.
   'lane.retired',
+  // The Conductor agent (2026-09-08): one usage row per model turn on the rail, and one
+  // live-feed frame per tool receipt so the console refetches the thread mid-turn.
+  'conductor.usage', 'conductor.receipt',
   // H1.8: one lane's own outcome from the bulk `POST /merge-ready` -- always an
   // operator's own click, never a worker acting on its own.
   'merge-ready.merged',

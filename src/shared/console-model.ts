@@ -346,6 +346,9 @@ export interface Message {
   undone?: boolean;
   /** Freshness of the fact behind an event chip. */
   verifiedAt?: number | null;
+  /** Which path answered a rail message: the Conductor agent, or the regex grammar it
+   *  falls back to. Absent on every row older than the agent. */
+  path?: 'agent' | 'grammar';
 }
 
 export interface ThreadResponse {
@@ -647,6 +650,9 @@ export interface RunJournalResponse {
  */
 export interface ConsoleStateSummary {
   queue_on: boolean;
+  /** The Conductor agent behind the rail (2026-09-08): whether the rail routes to it
+   *  and the class timeout after which the client says it did not answer. */
+  conductor?: { enabled: boolean; timeoutMs: number; open?: boolean };
   /** The revision the server is running, so an open board can notice the server moved
    *  on underneath it (a self cutover, a restart onto a new head) and reload itself
    *  instead of rendering new data with stale components (2026-09-07: a window open

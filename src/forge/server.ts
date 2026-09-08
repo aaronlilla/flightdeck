@@ -45,12 +45,18 @@ import {
   registryDir, serverTokenPath,
 } from './paths.js';
 import { routerEnabled } from './policy.js';
-import { retireEligible, retireFinished, retirePreview, retiredPath, retireRun, unretireRun } from './console/retire.js';
+import { retireFinished, retireLane, retirePreview, retiredPath, type RetireLaneDeps } from './console/retire.js';
 import { mergeReadyReportFrom } from './console/lanes.js';
 import { chainStatusRows, foldChainState } from './chain.js';
 import { processAlive, Registry } from './registry.js';
 import { route as routeMessage } from './router.js';
 import { RunInbox, deliverAnswer } from './runinbox.js';
+import { assertRunListening } from './console/listening.js';
+import { amendRunBrief, type AmendDeps } from './console/amend.js';
+import { ConductorAgent } from './console/agent.js';
+import type { QueryFn } from '../adapter/engine.js';
+import { conductorAgentEnabled, reasonerTimeoutMsFor } from './policy.js';
+import { CONDUCTOR_CLASS } from './console/agent.js';
 import { Breaker, clearKillSwitch, Fleet, type LaneRecord, type Lanes } from './supervisor.js';
 
 /** Reads the server's own bearer token, minting one on first use. */
@@ -61,37 +67,7 @@ export function ensureServerToken(path: string = serverTokenPath()): string {
   return token;
 }
 
-/**
- * Same two regexes `conformance-drift.ts` uses to find and bound a brief's own
- * `## Definition of Done` section (duplicated rather than imported, since that module
- * belongs to the drift checker and this one only needs the same shape). `appendAmendment`
- * folds an amendment's text into that section -- the section the drift checker re-reads
- * every tick -- and also appends a dated `## Amendment` section so a later reader can see
- * the brief was corrected after the fact, rather than only see a Definition of Done that
- * quietly grew.
- */
-const DOD_HEADING = /^##[ \t]+Definition of Done[ \t]*\r?\n/im;
-const NEXT_HEADING = /^##[ \t]+\S/m;
-
-/** Exported for its own specimen; used by `/amend`. */
-export function appendAmendment(brief: string, text: string): string {
-  const stamp = new Date().toISOString();
-  const start = DOD_HEADING.exec(brief);
-  let withDoD = brief;
-  if (start) {
-    const bodyStart = start.index + start[0].length;
-    const rest = brief.slice(bodyStart);
-    NEXT_HEADING.lastIndex = 0;
-    const next = NEXT_HEADING.exec(rest);
-    const insertAt = bodyStart + (next ? next.index : rest.length);
-    const before = brief.slice(0, insertAt);
-    const after = brief.slice(insertAt);
-    const needsBlankLine = !before.endsWith('\n\n') && !before.endsWith('\n');
-    withDoD = `${before}${needsBlankLine ? '\n' : ''}- Amendment (${stamp}): ${text}\n${after}`;
-  }
-  const separator = withDoD.endsWith('\n') ? '\n' : '\n\n';
-  return `${withDoD}${separator}## Amendment (${stamp})\n\n${text}\n`;
-}
+export { appendAmendment } from './console/amend.js';
 
 /** The maximum a request body may be before it is refused outright. */
 export const MAX_BODY_BYTES = 64 * 1024;
@@ -215,6 +191,11 @@ export interface ForgeServerOptions {
    *  (`blockers-gather.ts`) wired against this server's own inbox, integrations, lane
    *  view, registry and queue store. A specimen only. */
   blockersGather?: () => Promise<DetectionInputs>;
+  /** The Conductor agent's SDK `query`, or a fake. A specimen always sets this;
+   *  production leaves it unset and the agent opens a real session on the fleet
+   *  account. `conductorIdleMs` overrides the five-minute idle close. */
+  conductorQueryFn?: QueryFn;
+  conductorIdleMs?: number;
   /** Overrides the Blockers view's own confirmers. Defaults to `buildConfirmers`
    *  (`blockers-confirm.ts`). A specimen only. */
   blockersConfirmers?: Partial<Record<BlockerKind, Confirmer>>;
@@ -257,6 +238,8 @@ export class ForgeServer {
   private readonly packetsDirPath: string;
 
   private readonly forgeHomeDir: string;
+
+  private readonly modelPolicyPathOpt: string | undefined;
 
   private readonly reasoner: Reasoner | undefined;
 
@@ -305,6 +288,9 @@ export class ForgeServer {
 
   private readonly blockersRoutes: BlockersRoutes;
 
+  /** The Conductor agent behind `POST /command` (`console/agent.ts`). */
+  readonly conductor: ConductorAgent;
+
   private readonly queueStoreForMerge: QueueStore;
 
   private readonly queueMergeDepsOpt: QueueMergeDeps | undefined;
@@ -328,6 +314,7 @@ export class ForgeServer {
     this.consoleDistDir = options.consoleDistDir ?? defaultConsoleDistDir();
     this.packetsDirPath = options.packetsDir ?? defaultPacketsDir();
     this.forgeHomeDir = options.forgeHomeDir ?? forgeHome();
+    this.modelPolicyPathOpt = options.modelPolicyPath;
     this.reasoner = options.reasoner;
     this.consoleReads = options.consoleReads
       ?? new ConsoleReads(options.modelPolicyPath ? { modelPolicyPath: options.modelPolicyPath } : {});
@@ -344,6 +331,8 @@ export class ForgeServer {
       authorized: (request, response) => this.authorized(request, response),
       stuck: this.stuckFn,
       lanesView: () => this.consoleReads.lanesResponse(),
+      lanesViewAll: () => this.consoleReads.lanesResponse(true, true),
+      forgeHomeDir: this.forgeHomeDir,
       queueStore: this.queueStoreForMerge,
       ...(options.modelPolicyPath ? { modelPolicyPath: options.modelPolicyPath } : {}),
     });
@@ -362,6 +351,15 @@ export class ForgeServer {
       ...(options.queueMergeDeps ? { mergeDeps: options.queueMergeDeps } : {}),
       ...(options.queuePromoteDeps ? { promoteDeps: options.queuePromoteDeps } : {}),
     });
+    this.conductor = new ConductorAgent({
+      writes: this.consoleWrites, reads: this.consoleReads, queue: this.queueRoutes,
+      amend: this.amendDeps(), inbox: this.inbox, journalPath: this.journalPath,
+      publish: (event) => this.publish(event),
+      ...(options.conductorQueryFn ? { queryFn: options.conductorQueryFn } : {}),
+      ...(options.modelPolicyPath ? { policyPath: options.modelPolicyPath } : {}),
+      ...(options.conductorIdleMs !== undefined ? { idleMs: options.conductorIdleMs } : {}),
+    });
+    this.consoleWrites.attachAgent(this.conductor);
     this.blockersRoutes = new BlockersRoutes({
       journalPath: this.journalPath,
       authorized: (request, response) => this.authorized(request, response),
@@ -451,6 +449,7 @@ export class ForgeServer {
       this.liveTimer = undefined;
     }
     this.consoleWrites.stop();
+    await this.conductor.stop();
     for (const socket of this.sockets) socket.destroy();
     this.sockets.clear();
     const server = this.http;
@@ -579,6 +578,14 @@ export class ForgeServer {
       // `router.enabled` in the policy file takes effect on the console's next poll
       // without restarting the server.
       router_enabled: routerEnabled(),
+      // The Conductor agent (2026-09-08): whether the rail routes to it, and the class
+      // timeout the client shows a "did not answer" row after. Read fresh, like
+      // `router_enabled`, so a policy edit takes effect on the next poll.
+      conductor: {
+        enabled: conductorAgentEnabled(this.modelPolicyPathOpt),
+        timeoutMs: reasonerTimeoutMsFor(CONDUCTOR_CLASS, this.modelPolicyPathOpt),
+        open: this.conductor.open,
+      },
       // C.3: read fresh on every call, same as router_enabled -- the desktop status
       // window and the console's top bar both need to say when the queue subsystem is
       // not running at all, distinct from a running queue that is merely paused.
@@ -817,12 +824,23 @@ export class ForgeServer {
   /**
    * `POST /send`: queues a message into a run's own inbox, the same `RunInbox.send` that
    * `forge send RUN TEXT` calls. Delivered by the run's next tool call, per `runinbox.ts`.
+   *
+   * W1: refuses outright when nothing is listening -- no record on the board at all, or
+   * a record with `heart: false` -- rather than writing a file nobody will ever read and
+   * answering 200 as if it had. `assertRunListening` is the one check both this route
+   * and the Conductor agent's `send_to_run` tool call, so a message routed through the
+   * agent gets the same refusal a typed `/send` does.
    */
   private send(request: IncomingMessage, response: ServerResponse): void {
     if (!this.authorized(request, response)) return;
     this.readJson<{ run?: string; text?: string }>(request, response, (parsed) => {
       if (!parsed || !parsed.run || !parsed.text) {
         json(response, 400, { error: 'a send needs a run and text' });
+        return;
+      }
+      const verdict = assertRunListening(parsed.run, () => this.consoleReads.lanesResponse(true, true));
+      if (!verdict.listening) {
+        json(response, 409, { error: verdict.reason });
         return;
       }
       new RunInbox(parsed.run).send(parsed.text, 'console');
@@ -846,20 +864,15 @@ export class ForgeServer {
         json(response, 400, { error: 'an amendment needs a run and text' });
         return;
       }
-      const record = this.registry.get(parsed.run);
-      if (!record) {
-        json(response, 404, { error: `nothing runs ${parsed.run}` });
-        return;
-      }
-      const brief = readFileSync(record.briefPath, 'utf8');
-      writeFileSync(record.briefPath, appendAmendment(brief, parsed.text), 'utf8');
-      new RunInbox(parsed.run).send(`Amendment: ${parsed.text}`, 'console');
-      appendOnce(this.journalPath, {
-        event: 'brief.amended', run: parsed.run, actor: 'console', text: parsed.text,
-      });
-      this.publish({ event: 'brief.amended', run: parsed.run });
-      json(response, 200, { ok: true });
+      const outcome = amendRunBrief(parsed.run, parsed.text, this.amendDeps());
+      json(response, outcome.status, outcome.body);
     });
+  }
+
+  /** The one amend implementation (`amend.ts#amendRunBrief`) this route and the
+   *  Conductor agent's `amend_run` tool share. */
+  private amendDeps(): AmendDeps {
+    return { registry: this.registry, journalPath: this.journalPath, publish: (event) => this.publish(event) };
   }
 
   /**
@@ -915,22 +928,17 @@ export class ForgeServer {
    */
   private retireOne(request: IncomingMessage, response: ServerResponse, id: string, retiring: boolean): void {
     if (!this.authorized(request, response)) return;
-    if (retiring) {
-      const lane = this.consoleReads.lanesResponse(true, true).lanes.find((row) => row.id === id);
-      if (!lane) {
-        json(response, 404, { error: `${id} is not a registered run` });
-        return;
-      }
-      if (!retireEligible(lane)) {
-        json(response, 409, { error: `${id} is still open -- retiring only removes a finished lane from the board` });
-        return;
-      }
-    }
-    const at = Date.now();
-    if (retiring) retireRun(retiredPath(this.forgeHomeDir), id, at);
-    else unretireRun(retiredPath(this.forgeHomeDir), id, at);
-    appendOnce(this.journalPath, { event: 'lane.retired', run: id, actor: 'console', retired: retiring });
-    json(response, 200, { ok: true, jid: null, message: `${retiring ? 'retired' : 'unretired'} ${id}`, undoable: retiring });
+    const outcome = retireLane(id, retiring, this.retireLaneDeps());
+    json(response, outcome.status, outcome.body);
+  }
+
+  /** The one retire implementation (`retire.ts#retireLane`) this route, the rail's
+   *  typed `remove <lane>` and the Conductor agent's `retire` tool all share. */
+  private retireLaneDeps(): RetireLaneDeps {
+    return {
+      forgeHomeDir: this.forgeHomeDir, journalPath: this.journalPath,
+      lanesAll: () => this.consoleReads.lanesResponse(true, true).lanes,
+    };
   }
 
   /**

@@ -27,8 +27,9 @@ import type { Registry } from '../registry.js';
 import type { RunRequest } from '../exec.js';
 import type { Lanes } from '../supervisor.js';
 import type { QueueStore } from '../intake/queueStore.js';
-import { governorBudget } from '../policy.js';
+import { conductorAgentEnabled, governorBudget } from '../policy.js';
 import { forgeHome } from '../paths.js';
+import { retireLane } from './retire.js';
 import { consoleDir, recordAction, ActionsLedger, actionsLedgerPath } from './actions-ledger.js';
 import {
   compactRun, killRun, mergeRun, pauseRun, reauditRun, reopenRun, restoreRunCap,
@@ -47,6 +48,7 @@ import {
 import type { ActionResult, LanesResponse, Message, PlanItem } from '../../shared/console-model.js';
 import { fmtTokens } from '../../shared/format-tokens.js';
 import { stripMachineIds } from '../../shared/humanize.js';
+import type { ConductorAgent, ConductorContext } from './agent.js';
 
 const REASON_LIMIT = 140;
 
@@ -112,6 +114,13 @@ export function plainReceiptCard(text: string): Message {
   return { k: randomUUID(), type: 'receipt', text, ts: Date.now(), source: 'blockers', resolved: 'ran' };
 }
 
+/** The one sentence a failed run action has to say: `message` (an `ActionResult`),
+ *  else `reason` (a 501 "not wired"), else `error` (a state refusal), else the fallback. */
+export function actionFailureText(body: unknown, fallback: string): string {
+  const row = (body ?? {}) as { message?: string; reason?: string; error?: string };
+  return row.message ?? row.reason ?? row.error ?? fallback;
+}
+
 function receiptCard(source: string, result: ActionResult): Message {
   return {
     k: randomUUID(), type: 'receipt', text: result.message, ts: Date.now(), source,
@@ -155,6 +164,9 @@ export type Intent =
   | { kind: 'pause'; repo?: string }
   | { kind: 'resume'; lane?: string }
   | { kind: 'kill'; lane: string }
+  | { kind: 'retire'; lane: string }
+  | { kind: 'reopen'; lane: string }
+  | { kind: 'verify'; lane: string }
   | { kind: 'merge-ready' }
   | { kind: 'set-daily-cap'; amount: number }
   | { kind: 'set-run-cap'; lane: string; amount: number }
@@ -199,6 +211,9 @@ export function parseIntent(raw: string): Intent {
   if ((match = text.match(/^resume\s+(\S+)$/i))) return { kind: 'resume', lane: match[1]! };
   if (/^resume$/i.test(text)) return { kind: 'resume' };
   if ((match = text.match(/^kill\s+(\S+)$/i))) return { kind: 'kill', lane: match[1]! };
+  if ((match = text.match(/^(?:remove|archive|retire)\s+(\S+)$/i))) return { kind: 'retire', lane: match[1]! };
+  if ((match = text.match(/^reopen\s+(\S+)$/i))) return { kind: 'reopen', lane: match[1]! };
+  if ((match = text.match(/^verify\s+(\S+)$/i))) return { kind: 'verify', lane: match[1]! };
   if (/^merge\s+ready\s+lanes?$/i.test(text)) return { kind: 'merge-ready' };
   if ((match = text.match(/^(?:raise|set)\s+daily\s+cap\s+to\s+(\d+(?:\.\d+)?)([km])?$/i))) {
     return { kind: 'set-daily-cap', amount: tokenAmount(match[1]!, match[2]) };
@@ -250,6 +265,12 @@ export interface ConsoleWritesDeps {
    *  repo/PR/base/worktree (`POST /run/:id/reaudit`). Defaults to `RunActionsDeps`'s own
    *  default (`defaultQueuePath()`, which follows `FORGE_HOME`) when unset. */
   queueStore?: QueueStore;
+  /** What `remove | archive | retire <lane>` retires against: the archived-inclusive
+   *  lanes view (`lanesResponse(true, true)`) the retire rule reads heart and PR off.
+   *  Falls back to `lanesView` when unset. */
+  lanesViewAll?: () => LanesResponse;
+  /** Where `retired.jsonl` lives. Defaults to `forgeHome()`. A specimen only. */
+  forgeHomeDir?: string;
 }
 
 function readBody<T>(request: IncomingMessage): Promise<T | null> {
@@ -296,6 +317,10 @@ export class ConsoleWrites {
 
   private enforcement: { stop(): void } | undefined;
 
+  /** The Conductor agent `command()` hands a message to when policy has it on. Attached
+   *  by `server.ts` after construction, since the agent's tools need this instance. */
+  private agent: ConductorAgent | undefined;
+
   constructor(private readonly deps: ConsoleWritesDeps) {
     this.ledger = new ActionsLedger(deps.ledgerPath ?? actionsLedgerPath());
     this.integrations = new IntegrationsRegistry({
@@ -316,6 +341,10 @@ export class ConsoleWrites {
    *  over the same config file. */
   integrationsRegistry(): IntegrationsRegistry {
     return this.integrations;
+  }
+
+  attachAgent(agent: ConductorAgent): void {
+    this.agent = agent;
   }
 
   /** Starts the 10-second rule-enforcement tick. Called once by `server.ts#listen()`;
@@ -357,7 +386,7 @@ export class ConsoleWrites {
     };
   }
 
-  private capsWriteDeps(): CapsWriteDeps {
+  capsWriteDeps(): CapsWriteDeps {
     return {
       journalPath: this.deps.journalPath, ledger: this.ledger,
       overridesPath: this.overridesPath(),
@@ -470,6 +499,44 @@ export class ConsoleWrites {
     }
   }
 
+  /** The retire implementation shared with `server.ts`'s route and the agent's tool. */
+  retireDeps() {
+    return {
+      forgeHomeDir: this.deps.forgeHomeDir ?? forgeHome(), journalPath: this.deps.journalPath,
+      lanesAll: () => (this.deps.lanesViewAll ?? this.deps.lanesView)?.().lanes ?? [],
+    };
+  }
+
+  /**
+   * Registers a server-side confirm for an irreversible action and returns the token
+   * and the card. The grammar's kill/retire and every irreversible Conductor-agent tool
+   * (W2) go through this one map, so a typed or clicked `confirm <token>` finds the
+   * pending action wherever it was proposed.
+   */
+  propose(source: string, blast: string, run: () => Promise<Message[]>): { token: string; card: Message } {
+    const token = randomUUID();
+    this.pendingConfirms.set(token, { blast, run });
+    return { token, card: confirmCard(source, blast, token) };
+  }
+
+  /** Whether `confirm <token>` would still find something to run. */
+  hasPending(token: string): boolean {
+    return this.pendingConfirms.has(token);
+  }
+
+  /** One grammar intent, run and answered as cards, with nothing written to the thread:
+   *  the Conductor agent's tools go through this for the intents the grammar already
+   *  implements (pause-all, resume-all, merge-ready, caps, stuck, spend, answer). */
+  runIntent(intent: Intent, source: string): Promise<Message[]> {
+    return this.executeIntent(intent, source);
+  }
+
+  /** The whole grammar on one message, cards only, nothing written to the thread. The
+   *  agent's fallback path. */
+  runGrammar(text: string, source: string): Promise<Message[]> {
+    return this.executeIntent(parseIntent(text), source);
+  }
+
   private async executeIntent(intent: Intent, source: string): Promise<Message[]> {
     switch (intent.kind) {
       case 'cancel':
@@ -540,17 +607,46 @@ export class ConsoleWrites {
         const view = this.deps.lanesView?.();
         const label = labelFor(view, laneId);
         const blast = `${label} stops now; its worktree and process are gone.`;
-        const token = randomUUID();
-        this.pendingConfirms.set(token, {
-          blast,
-          run: async () => {
-            const outcome = await killRun(laneId, 'killed from the console', this.runActionsDeps());
-            return [outcome.status === 200
-              ? receiptCard(source, outcome.body as ActionResult)
-              : refusalCard(source, (outcome.body as { message?: string }).message ?? `could not kill ${label}`)];
-          },
+        const { card } = this.propose(source, blast, async () => {
+          const outcome = await killRun(laneId, 'killed from the console', this.runActionsDeps());
+          return [outcome.status === 200
+            ? receiptCard(source, outcome.body as ActionResult)
+            : refusalCard(source, (outcome.body as { message?: string }).message ?? `could not kill ${label}`)];
         });
-        return [confirmCard(source, blast, token)];
+        return [card];
+      }
+
+      case 'retire': {
+        const resolved = this.resolveLaneId(intent.lane);
+        if (typeof resolved !== 'string') return [refusalCard(source, resolved.refusal)];
+        const laneId = resolved;
+        const label = labelFor(this.deps.lanesView?.(), laneId);
+        const blast = `${label} leaves the board; it stays under Archived and can be brought back.`;
+        const { card } = this.propose(source, blast, async () => {
+          const outcome = retireLane(laneId, true, this.retireDeps());
+          return [outcome.status === 200
+            ? receiptCard(source, outcome.body)
+            : refusalCard(source, outcome.body.error)];
+        });
+        return [card];
+      }
+
+      case 'reopen': {
+        const resolved = this.resolveLaneId(intent.lane);
+        if (typeof resolved !== 'string') return [refusalCard(source, resolved.refusal)];
+        const outcome = await reopenRun(resolved, this.runActionsDeps());
+        return [outcome.status === 200
+          ? receiptCard(source, outcome.body as ActionResult)
+          : refusalCard(source, actionFailureText(outcome.body, `could not reopen ${resolved}`))];
+      }
+
+      case 'verify': {
+        const resolved = this.resolveLaneId(intent.lane);
+        if (typeof resolved !== 'string') return [refusalCard(source, resolved.refusal)];
+        const outcome = await verifyRun(resolved, this.runActionsDeps());
+        return [outcome.status === 200
+          ? receiptCard(source, outcome.body as ActionResult)
+          : refusalCard(source, actionFailureText(outcome.body, `could not verify ${resolved}`))];
       }
 
       case 'merge-ready': {
@@ -655,15 +751,29 @@ export class ConsoleWrites {
 
       case 'unknown':
       default:
-        return [replyCard(source, 'I did not understand that. Try one of: pause, resume, kill <ticket>, merge ready lanes, '
-          + "raise daily cap to <n>, cap <ticket> at <n>, why is <ticket> stuck, what's stuck, spend today, status, answer <text>.")];
+        return [replyCard(source, 'I did not understand that. Try one of: pause, resume, kill <ticket>, remove <ticket>, reopen <ticket>, '
+          + "verify <ticket>, merge ready lanes, raise daily cap to <n>, cap <ticket> at <n>, why is <ticket> stuck, what's stuck, spend today, status, answer <text>.")];
     }
   }
 
-  async command(text: string): Promise<Message[]> {
+  /**
+   * One operator message. A card's own button (`confirm`, `dismiss`, `run`, `cancel`)
+   * is answered by the grammar before the agent is consulted, so a click never costs a
+   * model call and a token never reaches the model. Everything else goes to the
+   * Conductor agent when `conductor.agent.enabled` is on (the shipped default) and it
+   * is attached; the grammar answers otherwise, and every reply row says which path did.
+   */
+  async command(text: string, context: ConductorContext = {}): Promise<Message[]> {
     const operatorCard: Message = { k: randomUUID(), type: 'operator', text, ts: Date.now(), source: 'operator' };
     appendThread(operatorCard);
-    const cards = await this.executeIntent(parseIntent(text), 'conductor');
+    const intent = parseIntent(text);
+    const isCardButton = intent.kind === 'confirm' || intent.kind === 'dismiss' || intent.kind === 'run-plan' || intent.kind === 'cancel';
+    if (!isCardButton && this.agent && conductorAgentEnabled(this.deps.modelPolicyPath)) {
+      const reply = await this.agent.handle(text, context);
+      return [operatorCard, ...reply.cards];
+    }
+    const cards = (await this.executeIntent(intent, 'conductor'))
+      .map((card) => (isCardButton ? card : { ...card, path: 'grammar' as const }));
     for (const card of cards) appendThread(card);
     return [operatorCard, ...cards];
   }
@@ -749,12 +859,12 @@ export class ConsoleWrites {
 
     if (path === '/command' && method === 'POST') {
       if (!this.deps.authorized(request, response)) return true;
-      const body = await readBody<{ text?: string }>(request);
+      const body = await readBody<{ text?: string; run?: string }>(request);
       if (!body?.text) {
         respond(response, 400, { error: 'a command needs text' });
         return true;
       }
-      const cards = await this.command(body.text);
+      const cards = await this.command(body.text, body.run ? { run: body.run } : {});
       respond(response, 200, { cards });
       return true;
     }

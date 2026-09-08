@@ -191,8 +191,24 @@ function forgeReportText(row: ForgeEvent): string {
  *  jid is what `POST /journal/:jid/undo` needs back. Everything else keeps the plain
  *  event rendering the board already uses everywhere.
  */
+/** A Conductor exchange recorded against this run (2026-09-08): the operator's own
+ *  words from a sheet composer, the agent's reply, or a tool receipt, rendered as the
+ *  same card the rail shows so the sheet carries the whole exchange. */
+function conductorRowToMessage(k: string, row: ForgeEvent): Message {
+  const kind = typeof row.kind === 'string' ? row.kind : 'reply';
+  const type: Message['type'] = kind === 'receipt' || kind === 'refusal' || kind === 'operator' || kind === 'confirm' || kind === 'plan' ? kind : 'reply';
+  const path = row.path === 'agent' || row.path === 'grammar' ? row.path : undefined;
+  return {
+    k, type, text: String(row.text ?? ''), ts: row.at,
+    source: kind === 'operator' ? 'operator' : 'conductor',
+    ...(type === 'receipt' ? { resolved: 'ran' as const } : {}),
+    ...(path ? { path } : {}),
+  };
+}
+
 function runRowToMessage(run: string, row: ForgeEvent): Message {
   const k = `run-${run}-${row.id}`;
+  if (row.event === 'conductor.receipt') return conductorRowToMessage(k, row);
   if (row.event === 'forge.report') {
     return { k, type: 'reply', text: forgeReportText(row), ts: row.at, source: run };
   }
@@ -342,6 +358,8 @@ function plainMessageFor(run: string, row: ForgeEvent): Message | null {
         k, type: 'reply', text: stripMachineIds(typeof row.evidence === 'string' ? row.evidence : 'done'),
         ts: row.at, source: run,
       };
+    case 'conductor.receipt':
+      return conductorRowToMessage(k, row);
     case 'decision.made':
       return { k, type: 'receipt', text: stripMachineIds(textFor(row)), ts: row.at, source: run, jid: jidFor(row) };
     case 'forge.ask':

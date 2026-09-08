@@ -45,7 +45,10 @@ export interface TicketSheetProps {
    *  re-fetching its own run thread, since the thread it already holds was fetched
    *  once on open and a send otherwise never appears in it until the sheet is
    *  closed and reopened. */
-  onSendLane: (id: string, text: string) => void | Promise<void>;
+  onSendLane: (id: string, text: string) => void | Promise<void | { cards: Message[] }>;
+  /** How long the composer's working row waits before it says the Conductor did not
+   *  answer. `/state`'s `conductor.timeoutMs`; defaults to the class default. */
+  conductorTimeoutMs?: number;
   /** C.1: the same composer's draft, delivered as a brief amendment (`POST /amend`)
    *  rather than a plain inbox message. */
   onAmendLane: (id: string, text: string) => void | Promise<void>;
@@ -333,7 +336,7 @@ function JournalPanel({ entries, repo }: { entries: JournalNarrativeEntry[]; rep
 export function TicketSheet(props: TicketSheetProps): JSX.Element {
   const {
     lane, feedLive, now, focus, verbose = false, labelFor, onClose, onToggleVerbose, onCommand, onOpenCost, onOpenSandbox,
-    onSendLane, onAmendLane, onUndo, onOpenJournal,
+    onSendLane, onAmendLane, onUndo, onOpenJournal, conductorTimeoutMs = 120_000,
   } = props;
   const [thread, setThread] = useState<Message[]>([]);
   const [journal, setJournal] = useState<JournalNarrativeEntry[]>([]);
@@ -401,15 +404,53 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
     startReaudit(lane.id, storeDispatch, displayName);
   }, [lane.id, storeDispatch, displayName]);
 
+  // W1: appends a reply row into this sheet's own thread for a rejected send or amend.
+  // The rail already got its own receipt/refusal (App.tsx's `runAction`), but the rail
+  // sits behind the open sheet -- an operator watching the sheet saw nothing at all
+  // until this, exactly the silence the mission complained about.
+  const appendSheetError = useCallback((error: unknown) => {
+    const text = error instanceof Error ? error.message : String(error);
+    const row: Message = {
+      k: `sheet-${Date.now()}-${Math.random()}`, type: 'refusal', text, ts: Date.now(), source: 'console',
+    };
+    setThread((prev) => [...prev, row]);
+  }, []);
+
   // A send lands on the run's own thread server-side, but the thread above was fetched
   // once on open and never polls -- without this, the message the operator just typed
   // would silently vanish from the sheet until it was closed and reopened.
   const sendAndRefetch = useCallback((text: string) => {
+    // W3/W4 (2026-09-08): the composer talks to the Conductor. A working row goes up
+    // at once and turns into the timeout text if nothing comes back in time; the reply
+    // cards (operator bubble, receipts, reply, any confirm card) replace it. An older
+    // `onSendLane` that returns nothing keeps the refetch it always had.
+    const workingKey = `working-${Date.now()}-${Math.random()}`;
+    const operator: Message = { k: `op-${Date.now()}-${Math.random()}`, type: 'operator', text, ts: Date.now(), source: 'operator' };
+    const working: Message = { k: workingKey, type: 'thinking', text: 'Conductor is working…', ts: Date.now(), source: 'conductor' };
+    setThread((prev) => [...prev, operator, working]);
+    const seconds = Math.round(conductorTimeoutMs / 1000);
+    const timer = setTimeout(() => {
+      setThread((prev) => prev.map((row) => (row.k === workingKey
+        ? { ...row, text: `the Conductor did not answer in ${seconds}s; the grammar answered instead…` }
+        : row)));
+    }, conductorTimeoutMs);
     Promise.resolve(onSendLane(lane.id, text))
-      .then(() => api.getRunThread(lane.id, { verbose }))
-      .then((r) => setThread(r.messages))
-      .catch(() => undefined);
-  }, [onSendLane, lane.id, verbose]);
+      .then(async (result) => {
+        clearTimeout(timer);
+        if (result && 'cards' in result) {
+          const answer = result.cards.filter((row) => row.type !== 'operator');
+          setThread((prev) => [...prev.filter((row) => row.k !== workingKey), ...answer]);
+          return;
+        }
+        const r = await api.getRunThread(lane.id, { verbose });
+        setThread(r.messages);
+      })
+      .catch((error: unknown) => {
+        clearTimeout(timer);
+        setThread((prev) => prev.filter((row) => row.k !== workingKey));
+        appendSheetError(error);
+      });
+  }, [onSendLane, lane.id, verbose, appendSheetError, conductorTimeoutMs]);
 
   // C.1: same shape as sendAndRefetch, but through the amendment path, so a correction
   // typed into this composer shows up in the run's own thread the same way a send does.
@@ -417,8 +458,8 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
     Promise.resolve(onAmendLane(lane.id, text))
       .then(() => api.getRunThread(lane.id, { verbose }))
       .then((r) => setThread(r.messages))
-      .catch(() => undefined);
-  }, [onAmendLane, lane.id, verbose]);
+      .catch(appendSheetError);
+  }, [onAmendLane, lane.id, verbose, appendSheetError]);
 
   // Item 6: the thread scrolls to its newest message on open and after a send.
   // jsdom (the test environment) has no `scrollTo` on a plain element, so this
@@ -615,7 +656,7 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
                 // Item 6: every reply on this run's own thread is that run's own
                 // report -- `labelFor` here is the board-wide title lookup, which
                 // otherwise resolves a reply's label to the lane's whole title.
-                replyLabel="Worker"
+                replyLabel={m.source === 'conductor' ? undefined : 'Worker'}
                 onCommand={(text) => onCommand(lane.id, text)} onUndo={onUndo}
                 onOpenJournal={onOpenJournal}
               />

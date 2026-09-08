@@ -183,6 +183,30 @@ describe('killRun', () => {
     expect(actuator.killed).toHaveLength(0);
     expect(readFileSync(journalPath, 'utf8').trim().split('\n')).toHaveLength(1);
   });
+
+  // W1: the mission lane (2026-09-04-forge-c2-rn) read `{state: unverified, heart:
+  // false}` on the board, and Kill's own tile CTA ("Verify it, or Kill it") offered a
+  // kill the server refused with `wrongState` -- the lane had no way to leave the board
+  // at all. `unverified` and `exhausted` join the allowed states.
+  it('allows a kill on an unverified run, so a finished-but-unresolved lane is never a dead end', async () => {
+    registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.finished', run: 'alpha', verdict: 'unverified' });
+
+    const result = await killRun('alpha', 'clean up the dead lane', deps);
+
+    expect(result.status).toBe(200);
+    expect(actuator.killed).toHaveLength(1);
+  });
+
+  it('allows a kill on an exhausted run', async () => {
+    registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.finished', run: 'alpha', verdict: 'exhausted' });
+
+    const result = await killRun('alpha', 'clean up', deps);
+
+    expect(result.status).toBe(200);
+    expect(actuator.killed).toHaveLength(1);
+  });
 });
 
 describe('pauseRun / resumeRun', () => {

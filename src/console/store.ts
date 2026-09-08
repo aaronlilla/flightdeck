@@ -61,6 +61,9 @@ export interface State {
   /** D2.4: `/state`'s own `queue_on` flag. Starts `true` so the "Queue is off" banner
    *  never flashes before the console's first `/state` fetch lands. */
   queueOn: boolean;
+  /** How long the rail waits for the Conductor before its working row says it did not
+   *  answer; `/state`'s own `conductor.timeoutMs`. */
+  conductorTimeoutMs: number;
   /** H2.2: probe lanes hide behind this toggle on every filter but Archived. */
   showProbes: boolean;
   /** H2.2: the Archived filter's own fetch (`GET /lanes?archived=1`) -- retired
@@ -107,6 +110,7 @@ export type Action =
   | { type: 'queue'; items: QueueItem[]; paused: boolean; maxInFlight: number; pauseReason?: string | null }
   | { type: 'blockers'; blockers: BlockersResponse }
   | { type: 'queue-on'; on: boolean }
+  | { type: 'conductor-timeout'; timeoutMs: number }
   | { type: 'toggle-probes' }
   | { type: 'archived-lanes'; lanes: Lane[] }
   | { type: 'loaded' }
@@ -153,6 +157,7 @@ export function initialState(): State {
     queuePauseReason: null,
     queueMaxInFlight: 2,
     queueOn: true,
+    conductorTimeoutMs: 120_000,
     showProbes: false,
     archivedLanes: [],
     loaded: false,
@@ -198,6 +203,8 @@ export function reducer(state: State, action: Action): State {
       };
     case 'blockers':
       return { ...state, blockers: action.blockers };
+    case 'conductor-timeout':
+      return { ...state, conductorTimeoutMs: action.timeoutMs };
     case 'queue-on':
       return { ...state, queueOn: action.on };
     case 'toggle-probes':
