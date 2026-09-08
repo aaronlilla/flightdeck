@@ -151,7 +151,7 @@ describe('App', () => {
     await userEvent.click(screen.getByTestId('lane-FLT-201'));
     await waitFor(() => expect(screen.getByTestId('ticket-sheet')).toBeInTheDocument());
     const sheet = screen.getByTestId('ticket-sheet');
-    const input = within(sheet).getByPlaceholderText('message FLT-201…');
+    const input = within(sheet).getByPlaceholderText(/Tell this run something/);
     await userEvent.type(input, 'status of the migration?');
     await userEvent.click(within(sheet).getByText('Send ⏎'));
     await waitFor(() => expect(screen.getByTestId('ticket-sheet').textContent).toMatch(/status of the migration\?/));

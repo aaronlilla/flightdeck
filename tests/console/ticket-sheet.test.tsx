@@ -37,6 +37,7 @@ function renderSheet(
   journal: { t: number; text: string; color: string }[] = [], onAmendLane = noop,
   story: { entries: { at: number; kind: string; text: string; url: string | null }[]; brief: { path: string; excerpt: string } | null } = { entries: [], brief: null },
   focus?: 'audit',
+  verbose = false,
 ) {
   vi.mocked(api.getRunThread).mockResolvedValue({ messages });
   vi.mocked(api.getRunJournal).mockResolvedValue({ entries: journal });
@@ -44,10 +45,10 @@ function renderSheet(
     id: laneExtra.id ?? 'jira_AB-12_1788460932645', title: laneExtra.title ?? null, kind: laneExtra.kind ?? 'manual',
     ticket: null, brief: story.brief, entries: story.entries,
   });
-  vi.mocked(api.getRunSummary).mockResolvedValue({ what: [], status: '', audit: null, readiness: null });
+  vi.mocked(api.getRunSummary).mockResolvedValue({ what: [], status: '', next: '', audit: null, readiness: null });
   return render(
     <TicketSheet
-      lane={lane(laneExtra)} feedLive now={Date.now()} focus={focus}
+      lane={lane(laneExtra)} feedLive now={Date.now()} focus={focus} verbose={verbose}
       onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop} onSendLane={noop}
       onAmendLane={onAmendLane} onUndo={noop} onOpenJournal={noop}
     />,
@@ -55,16 +56,25 @@ function renderSheet(
 }
 
 describe('TicketSheet', () => {
-  it('heads the band with the ticket alone, carrying the full run id in its title attribute', () => {
+  // 2026-09-08: the big line is the lane's title when there is one, else the
+  // ticket, else "Untitled run" -- never the run id, which lives only in the
+  // title attribute.
+  it('heads with the ticket when there is no title, carrying the full run id in its title attribute', () => {
     renderSheet([]);
-    const headline = screen.getByText('AB-12');
-    expect(headline).toHaveAttribute('title', 'jira_AB-12_1788460932645');
+    const headlines = screen.getAllByText('AB-12');
+    expect(headlines.some((el) => el.getAttribute('title') === 'jira_AB-12_1788460932645')).toBe(true);
     expect(screen.queryByText('jira_AB-12_1788460932645')).not.toBeInTheDocument();
   });
 
-  it('heads the band with the run id alone when there is no ticket', () => {
+  it('heads with the title over the ticket when the lane has both', () => {
+    renderSheet([], { title: 'the withdrawal fee is off by one' });
+    expect(screen.getByText('the withdrawal fee is off by one')).toBeInTheDocument();
+  });
+
+  it('reads "Untitled run" when there is neither a title nor a ticket, never the run id', () => {
     renderSheet([], { ticket: null });
-    expect(screen.getByText('jira_AB-12_1788460932645')).toBeInTheDocument();
+    expect(screen.getByText('Untitled run')).toBeInTheDocument();
+    expect(screen.queryByText('jira_AB-12_1788460932645')).not.toBeInTheDocument();
   });
 
   // The diff row for this line said the prototype uses "esc ✕"; the prototype's own
@@ -76,14 +86,22 @@ describe('TicketSheet', () => {
     expect(screen.getByText('esc to close ✕')).toBeInTheDocument();
   });
 
-  it('shows the run\'s own narrative journal, fetched separately from the thread', async () => {
+  // Item 5: the Journal panel renders only in verbose mode.
+  it('shows the run\'s own narrative journal, fetched separately from the thread, in verbose mode', async () => {
     renderSheet([{ k: 'e1', type: 'event', text: 'heartbeat', ts: 2, source: 'system' }], {}, [
       { t: 1, text: 'polled AB-12 from queue', color: 'var(--ink2)' },
       { t: 2, text: 'sandbox fd-1 provisioned', color: 'var(--ink2)' },
-    ]);
+    ], noop, { entries: [], brief: null }, undefined, true);
     await waitFor(() => expect(screen.getByText('polled AB-12 from queue')).toBeInTheDocument());
     expect(screen.getByText('sandbox fd-1 provisioned')).toBeInTheDocument();
     expect(vi.mocked(api.getRunJournal)).toHaveBeenCalledWith('jira_AB-12_1788460932645');
+  });
+
+  it('renders no Journal panel in plain mode', async () => {
+    renderSheet([], {}, [{ t: 1, text: 'polled AB-12 from queue', color: 'var(--ink2)' }]);
+    await waitFor(() => expect(screen.getByTestId('ticket-sheet-story')).toBeInTheDocument());
+    expect(screen.queryByText('polled AB-12 from queue')).not.toBeInTheDocument();
+    expect(screen.queryByText('Journal')).not.toBeInTheDocument();
   });
 
   it('never shows lane.reason in the journal column -- the prototype has no such line', () => {
@@ -184,12 +202,24 @@ describe('TicketSheet', () => {
       expect(screen.getByText('live')).toBeInTheDocument();
     });
 
-    it('shows the sandbox id as the provision node\'s sub-label', () => {
+    // Item 3: the pipeline's provision node names the branch, a name the operator
+    // recognizes, never the sandbox's own id; a sandbox with no branch reads "worktree".
+    it('shows the branch name as the provision node\'s sub-label', () => {
       renderSheet([], {
         hop: 2,
-        sandbox: { id: 'fd-9001', path: null, branch: 'b', pid: 1, sessionId: null, region: 'local', instanceType: 'x' },
+        sandbox: { id: 'fd-9001', path: null, branch: 'feature/flt-201', pid: 1, sessionId: null, region: 'local', instanceType: 'x' },
       });
-      const subLabel = screen.getAllByText('fd-9001').find((el) => el.tagName === 'DIV');
+      const subLabel = screen.getAllByText('feature/flt-201').find((el) => el.tagName === 'DIV');
+      expect(subLabel).toBeDefined();
+      expect(screen.queryByText('fd-9001')).not.toBeInTheDocument();
+    });
+
+    it('falls back to "worktree" when the sandbox carries no branch', () => {
+      renderSheet([], {
+        hop: 2,
+        sandbox: { id: 'fd-9001', path: null, branch: null, pid: 1, sessionId: null, region: 'local', instanceType: 'x' },
+      });
+      const subLabel = screen.getAllByText('worktree').find((el) => el.tagName === 'DIV');
       expect(subLabel).toBeDefined();
     });
   });
@@ -215,7 +245,7 @@ describe('TicketSheet', () => {
   it('C.1: shows an Amend action beside Send and posts the composer\'s draft through onAmendLane', async () => {
     const onAmendLane = vi.fn();
     renderSheet([], {}, [], onAmendLane);
-    const input = screen.getByPlaceholderText(/message /);
+    const input = screen.getByPlaceholderText(/Tell this run something/);
     await userEvent.type(input, 'also handle the null case');
     await userEvent.click(screen.getByText('Amend'));
     expect(onAmendLane).toHaveBeenCalledWith('jira_AB-12_1788460932645', 'also handle the null case');
@@ -228,17 +258,19 @@ describe('TicketSheet', () => {
     expect(onAmendLane).not.toHaveBeenCalled();
   });
 
-  // H2.4
-  it('shows the kind chip and a source link when the lane carries a sourceUrl', () => {
+  // H2.4, updated by item 3: the ticket chip itself becomes the source link when
+  // there is one, rather than a separate "source ↗" chip.
+  it('shows the kind chip and links the ticket chip to sourceUrl when the lane carries one', () => {
     renderSheet([], { kind: 'ticket', sourceUrl: 'https://example.invalid/browse/AB-12' });
     expect(screen.getByText('ticket')).toBeInTheDocument();
-    const link = screen.getByText('source ↗');
-    expect(link.closest('a')).toHaveAttribute('href', 'https://example.invalid/browse/AB-12');
+    const link = screen.getAllByText('AB-12').find((el) => el.closest('a'));
+    expect(link?.closest('a')).toHaveAttribute('href', 'https://example.invalid/browse/AB-12');
   });
 
-  it('renders no source link when the lane has none', () => {
+  it('renders the ticket chip as plain text, not a link, when the lane has no sourceUrl', () => {
     renderSheet([], { sourceUrl: null });
-    expect(screen.queryByText('source ↗')).not.toBeInTheDocument();
+    const chips = screen.getAllByText('AB-12');
+    expect(chips.every((el) => el.closest('a') === null)).toBe(true);
   });
 
   it('renders the Story section as a dated list of sentences, before the journal panel', async () => {
@@ -283,7 +315,7 @@ describe('TicketSheet: Summary block', () => {
   it('scrolls to and highlights the audit line when opened with focus="audit", and lists the deciding findings', async () => {
     Element.prototype.scrollIntoView = vi.fn();
     vi.mocked(api.getRunSummary).mockResolvedValue({
-      what: [], status: 's',
+      what: [], status: 's', next: 'Read the finding and decide.',
       audit: {
         verdict: 'FIX FIRST', reviewed: 3, total: 4, at: Date.now(), head: 'abc1234',
         findings: 2, findingsText: ['reviewer-a: the retry can double-charge', 'reviewer-b: no empty-body test'],
@@ -310,6 +342,7 @@ describe('TicketSheet: Summary block', () => {
     vi.mocked(api.getRunSummary).mockResolvedValue({
       what: ['wired the summary block.', 'added the drift check.'],
       status: 'Working since 1:00 on a Sonnet session, 3 turns in.',
+      next: 'Merge it.',
       audit: {
         verdict: 'PASS WITH NOTES', reviewed: 4, total: 4, at: Date.parse('2026-09-07T12:35:00Z'),
         head: '3982779abc', findings: 3, findingsText: [], stale: false, staleWhy: null,
@@ -338,6 +371,7 @@ describe('TicketSheet: Summary block', () => {
   it('shows "Not audited" and the not-ready reason when there is no council verdict yet', async () => {
     vi.mocked(api.getRunSummary).mockResolvedValue({
       what: [], status: 'Draft PR #9 is open with checks pending and no council verdict yet; waiting for your Merge.',
+      next: 'Wait for checks.',
       audit: null, readiness: { ok: false, why: 'not audited yet', checks: 'pending', behindBase: null, headMoved: false },
     });
     vi.mocked(api.getRunThread).mockResolvedValue({ messages: [] });
@@ -356,14 +390,14 @@ describe('TicketSheet: Summary block', () => {
 
   it('Re-check calls the API and refreshes the summary in place', async () => {
     vi.mocked(api.getRunSummary).mockResolvedValue({
-      what: [], status: 'stale', audit: null,
+      what: [], status: 'stale', next: 'Wait for checks.', audit: null,
       readiness: { ok: false, why: 'checks are pending', checks: 'pending', behindBase: null, headMoved: false },
     });
     vi.mocked(api.getRunThread).mockResolvedValue({ messages: [] });
     vi.mocked(api.getRunJournal).mockResolvedValue({ entries: [] });
     vi.mocked(api.getRunStory).mockResolvedValue({ id: 'x', title: null, kind: 'manual', ticket: null, brief: null, entries: [] });
     vi.mocked(api.recheckRun).mockResolvedValue({
-      what: [], status: 'fresh', audit: null, readiness: { ok: true, why: null, checks: 'success', behindBase: 0, headMoved: false },
+      what: [], status: 'fresh', next: 'Merge it.', audit: null, readiness: { ok: true, why: null, checks: 'success', behindBase: 0, headMoved: false },
     });
     render(
       <TicketSheet
@@ -381,11 +415,11 @@ describe('TicketSheet: Summary block', () => {
   it('Re-audit disables itself while running, then re-enables once the audit head catches up', async () => {
     vi.mocked(api.getRunSummary)
       .mockResolvedValueOnce({
-        what: [], status: 's', audit: { verdict: 'FIX FIRST', reviewed: 1, total: 4, at: 1, head: 'old', findings: 1, findingsText: [], stale: true, staleWhy: 'moved' },
+        what: [], status: 's', next: 'Re-audit.', audit: { verdict: 'FIX FIRST', reviewed: 1, total: 4, at: 1, head: 'old', findings: 1, findingsText: [], stale: true, staleWhy: 'moved' },
         readiness: { ok: false, why: 'the PR head moved since the audit', checks: 'success', behindBase: 0, headMoved: true },
       })
       .mockResolvedValueOnce({
-        what: [], status: 's', audit: { verdict: 'PASS', reviewed: 4, total: 4, at: 2, head: 'new', findings: 0, findingsText: [], stale: false, staleWhy: null },
+        what: [], status: 's', next: 'Merge it.', audit: { verdict: 'PASS', reviewed: 4, total: 4, at: 2, head: 'new', findings: 0, findingsText: [], stale: false, staleWhy: null },
         readiness: { ok: true, why: null, checks: 'success', behindBase: 0, headMoved: false },
       });
     vi.mocked(api.getRunThread).mockResolvedValue({ messages: [] });

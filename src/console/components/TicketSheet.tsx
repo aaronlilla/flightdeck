@@ -19,6 +19,15 @@ export interface TicketSheetProps {
    *  so the sheet can scroll to and highlight the audit line rather than leaving the
    *  operator to find it themselves. */
   focus?: 'audit';
+  /** 2026-09-08: plain by default -- the thread and the story ask the server for
+   *  the raw rows only in verbose mode; the Journal panel and the id chip beside
+   *  the headline render only then too. Defaults to `false` so a caller that has
+   *  not wired the switch through yet still gets a working, plain sheet. */
+  verbose?: boolean;
+  /** A person's name for a lane id -- used by the run thread's own question cards
+   *  ("Question from <label>"). Optional so a caller with no board-wide lookup yet
+   *  still gets a working sheet. */
+  labelFor?: (id: string) => string | null;
   onClose: () => void;
   onCommand: (id: string, cmd: string) => void;
   onOpenCost: (id: string) => void;
@@ -63,7 +72,9 @@ const HOP_STYLE: Record<'done' | 'merged' | 'live' | 'blocked' | 'parked' | 'gho
 function hopSubLabel(index: number, lane: Lane): string {
   switch (index) {
     case 0: return 'queue';
-    case 1: return lane.sandbox?.id ?? '';
+    // 2026-09-08: the branch name, not the sandbox's own id -- a name the operator
+    // recognizes rather than another machine string.
+    case 1: return lane.sandbox?.branch ?? 'worktree';
     case 2: return lane.model;
     case 3: return 'council judge ×3';
     case 4: return lane.pr ? `PR #${lane.pr.no} → main` : '';
@@ -114,7 +125,7 @@ function StoryPanel({ story }: { story: LaneStory | null }): JSX.Element | null 
       {story.entries.length > 0 ? (
         <>
           <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 10 }}>Story</div>
-          <div className="m" style={{ fontSize: 11, lineHeight: 2, color: 'var(--ink2)' }}>
+          <div className="m" style={{ fontSize: 11, lineHeight: 2, color: 'var(--ink2)', overflowWrap: 'anywhere' }}>
             {story.entries.map((entry, i) => (
               <div key={i}>
                 <span style={{ color: 'var(--ink3)', fontWeight: 600 }}>{hm(entry.at)}</span>{' '}
@@ -177,48 +188,58 @@ function SummaryPanel({
     : null;
 
   return (
-    <div data-testid="ticket-sheet-summary" style={{ padding: '18px 22px', borderBottom: '1px solid var(--line)' }}>
-      <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 10 }}>Summary</div>
-      {summary.what.length > 0 ? (
-        <ul className="m" style={{ margin: '0 0 12px', paddingLeft: 18, fontSize: '11.5px', color: 'var(--ink)', lineHeight: 1.6 }}>
-          {summary.what.map((line, i) => <li key={i}>{line}</li>)}
-        </ul>
-      ) : (
-        <div className="m" style={{ fontSize: '11.5px', color: 'var(--ink3)', marginBottom: 12 }}>Nothing on record yet.</div>
-      )}
-      <div className="m" style={{ fontSize: '11.5px', color: 'var(--ink2)', marginBottom: 6 }}>{summary.status}</div>
-      <div
-        ref={auditRef} data-testid="ticket-sheet-audit" className="m"
-        style={{
-          fontSize: '11.5px', color: 'var(--ink2)', marginBottom: 6,
-          outline: highlightAudit ? '2px solid var(--hand)' : 'none', outlineOffset: 4,
-          transition: 'outline-color .3s',
-        }}
-      >
-        {auditLine}
-        {audit && audit.findingsText.length > 0 ? (
-          <ul style={{ margin: '4px 0 0', paddingLeft: 18, lineHeight: 1.6 }}>
-            {audit.findingsText.map((line, i) => <li key={i}>{line}</li>)}
+    <div data-testid="ticket-sheet-summary" style={{ padding: '18px 22px', borderBottom: '1px solid var(--line)', display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div>
+        <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 10 }}>What happened</div>
+        {summary.what.length > 0 ? (
+          <ul className="m" style={{ margin: 0, paddingLeft: 18, fontSize: '11.5px', color: 'var(--ink)', lineHeight: 1.6 }}>
+            {summary.what.map((line, i) => <li key={i}>{line}</li>)}
           </ul>
-        ) : null}
-      </div>
-      <div data-testid="ticket-sheet-readiness" className="m" style={{ fontSize: '11.5px', marginBottom: 12 }}>
-        {readiness?.ok ? (
-          <span style={{ color: 'var(--run)', fontWeight: 700 }}>Ready to merge.</span>
         ) : (
-          <span style={{ color: 'var(--block)' }}>Not ready: {readiness?.why ?? 'unknown'}.</span>
+          <div className="m" style={{ fontSize: '11.5px', color: 'var(--ink3)' }}>Nothing on record yet.</div>
         )}
-        {driftNote ? <span style={{ color: 'var(--ink3)' }}> {driftNote}.</span> : null}
       </div>
-      <div style={{ display: 'flex', gap: 8 }}>
-        <span className="btnS" style={{ padding: '6px 10px', fontSize: '9.5px' }} {...actionable(onRecheck)}>Re-check</span>
-        <span
-          className="btnS"
-          style={{ padding: '6px 10px', fontSize: '9.5px', opacity: reauditRunning ? 0.5 : 1, cursor: reauditRunning ? 'default' : 'pointer' }}
-          {...actionable(reauditRunning ? () => undefined : onReaudit)}
+      <div>
+        <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 10 }}>Where it is</div>
+        <div className="m" style={{ fontSize: '11.5px', color: 'var(--ink2)', marginBottom: 6 }}>{summary.status}</div>
+        <div
+          ref={auditRef} data-testid="ticket-sheet-audit" className="m"
+          style={{
+            fontSize: '11.5px', color: 'var(--ink2)', marginBottom: 6,
+            outline: highlightAudit ? '2px solid var(--hand)' : 'none', outlineOffset: 4,
+            transition: 'outline-color .3s',
+          }}
         >
-          {reauditRunning ? 'Re-auditing…' : 'Re-audit'}
-        </span>
+          {auditLine}
+          {audit && audit.findingsText.length > 0 ? (
+            <ul style={{ margin: '4px 0 0', paddingLeft: 18, lineHeight: 1.6 }}>
+              {audit.findingsText.map((line, i) => <li key={i}>{line}</li>)}
+            </ul>
+          ) : null}
+        </div>
+        <div data-testid="ticket-sheet-readiness" className="m" style={{ fontSize: '11.5px' }}>
+          {readiness?.ok ? (
+            <span style={{ color: 'var(--run)', fontWeight: 700 }}>Ready to merge.</span>
+          ) : (
+            <span style={{ color: 'var(--block)' }}>Not ready: {readiness?.why ?? 'unknown'}.</span>
+          )}
+          {driftNote ? <span style={{ color: 'var(--ink3)' }}> {driftNote}.</span> : null}
+        </div>
+      </div>
+      <div>
+        <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 10 }}>Next step</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <span className="m" data-testid="ticket-sheet-next" style={{ fontSize: '11.5px', fontWeight: 700, color: 'var(--ink)' }}>{summary.next}</span>
+          <span style={{ flex: 1 }} />
+          <span className="btnS" style={{ padding: '6px 10px', fontSize: '9.5px' }} {...actionable(onRecheck)}>Re-check</span>
+          <span
+            className="btnS"
+            style={{ padding: '6px 10px', fontSize: '9.5px', opacity: reauditRunning ? 0.5 : 1, cursor: reauditRunning ? 'default' : 'pointer' }}
+            {...actionable(reauditRunning ? () => undefined : onReaudit)}
+          >
+            {reauditRunning ? 'Re-auditing…' : 'Re-audit'}
+          </span>
+        </div>
       </div>
     </div>
   );
@@ -226,7 +247,7 @@ function SummaryPanel({
 
 function JournalPanel({ entries }: { entries: JournalNarrativeEntry[] }): JSX.Element {
   return (
-    <div className="m" style={{ fontSize: 11, lineHeight: 2, color: 'var(--ink2)' }}>
+    <div className="m" style={{ fontSize: 11, lineHeight: 2, color: 'var(--ink2)', overflowWrap: 'anywhere' }}>
       {entries.map((entry, i) => (
         <div key={i}>
           <span style={{ color: entry.color, fontWeight: 600 }}>{hm(entry.t)}</span> <span>{entry.text}</span>
@@ -238,7 +259,10 @@ function JournalPanel({ entries }: { entries: JournalNarrativeEntry[] }): JSX.El
 
 /** Ticket sheet: band, id/model/repo/attempt, cost, context, pipeline rail, journal, run thread. */
 export function TicketSheet(props: TicketSheetProps): JSX.Element {
-  const { lane, feedLive, now, focus, onClose, onCommand, onOpenCost, onOpenSandbox, onSendLane, onAmendLane, onUndo, onOpenJournal } = props;
+  const {
+    lane, feedLive, now, focus, verbose = false, labelFor, onClose, onCommand, onOpenCost, onOpenSandbox, onSendLane,
+    onAmendLane, onUndo, onOpenJournal,
+  } = props;
   const [thread, setThread] = useState<Message[]>([]);
   const [journal, setJournal] = useState<JournalNarrativeEntry[]>([]);
   const [story, setStory] = useState<LaneStory | null>(null);
@@ -247,8 +271,10 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
   const [reauditRunning, setReauditRunning] = useState(false);
   const [draft, setDraft] = useState('');
   const [highlightAudit, setHighlightAudit] = useState(false);
+  const [idCopied, setIdCopied] = useState(false);
   const reauditPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const auditRef = useRef<HTMLDivElement | null>(null);
+  const threadRef = useRef<HTMLDivElement | null>(null);
 
   // Sweep #8: "View council" must land on the council content it promised, not just
   // the sheet in general. Fires once summary data actually exists to scroll to.
@@ -262,9 +288,9 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
 
   useEffect(() => {
     let active = true;
-    api.getRunThread(lane.id).then((r) => { if (active) setThread(r.messages); }).catch(() => undefined);
+    api.getRunThread(lane.id, { verbose }).then((r) => { if (active) setThread(r.messages); }).catch(() => undefined);
     api.getRunJournal(lane.id).then((r) => { if (active) setJournal(r.entries); }).catch(() => undefined);
-    api.getRunStory(lane.id).then((r) => { if (active) setStory(r); }).catch(() => undefined);
+    api.getRunStory(lane.id, { verbose }).then((r) => { if (active) setStory(r); }).catch(() => undefined);
     setSummaryLoadFailed(false);
     api.getRunSummary(lane.id).then((r) => { if (active) setSummary(r); })
       .catch(() => { if (active) setSummaryLoadFailed(true); });
@@ -273,7 +299,10 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
       active = false;
       if (reauditPollRef.current) clearTimeout(reauditPollRef.current);
     };
-  }, [lane.id]);
+    // The rail and the sheet both refetch on the same switch (item 1): opening the
+    // sheet with verbose already on asks for raw rows from the start, and flipping
+    // it while the sheet is open refetches the thread and the story in place.
+  }, [lane.id, verbose]);
 
   const handleRecheck = useCallback(() => {
     api.recheckRun(lane.id).then(setSummary).catch(() => undefined);
@@ -306,19 +335,27 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
   // would silently vanish from the sheet until it was closed and reopened.
   const sendAndRefetch = useCallback((text: string) => {
     Promise.resolve(onSendLane(lane.id, text))
-      .then(() => api.getRunThread(lane.id))
+      .then(() => api.getRunThread(lane.id, { verbose }))
       .then((r) => setThread(r.messages))
       .catch(() => undefined);
-  }, [onSendLane, lane.id]);
+  }, [onSendLane, lane.id, verbose]);
 
   // C.1: same shape as sendAndRefetch, but through the amendment path, so a correction
   // typed into this composer shows up in the run's own thread the same way a send does.
   const amendAndRefetch = useCallback((text: string) => {
     Promise.resolve(onAmendLane(lane.id, text))
-      .then(() => api.getRunThread(lane.id))
+      .then(() => api.getRunThread(lane.id, { verbose }))
       .then((r) => setThread(r.messages))
       .catch(() => undefined);
-  }, [onAmendLane, lane.id]);
+  }, [onAmendLane, lane.id, verbose]);
+
+  // Item 6: the thread scrolls to its newest message on open and after a send.
+  // jsdom (the test environment) has no `scrollTo` on a plain element, so this
+  // guards rather than crashing every render in a test.
+  useEffect(() => {
+    const el = threadRef.current;
+    if (el && typeof el.scrollTo === 'function') el.scrollTo({ top: el.scrollHeight });
+  }, [thread]);
 
   const headline = laneHeadline(lane);
   const cta = laneCta(lane);
@@ -350,16 +387,39 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
         <span>{band.text}</span>
         <span style={{ cursor: 'pointer' }} {...actionable(onClose)}>esc to close ✕</span>
       </div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 22px', borderBottom: '1px solid var(--line)', flexWrap: 'wrap', gap: '12px 20px' }}>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, whiteSpace: 'nowrap' }}>
-          <span className="m" title={headline.runId} style={{ fontSize: 22, fontWeight: 700 }}>{headline.main}</span>
-          {lane.title ? <span className="m" style={{ fontSize: 14, color: 'var(--ink2)' }}>{lane.title}</span> : null}
-          <span className="chip">{kindLabel(lane.kind)}</span>
-          {lane.sourceUrl ? <a className="m" href={lane.sourceUrl} target="_blank" rel="noreferrer" style={{ fontSize: '10.5px' }}>source ↗</a> : null}
-          <span className="chip">{lane.model}</span>
-          <span className="chip">{lane.repo}</span>
-          <span className="chip">attempt {lane.attempt}</span>
-          <a className="m" style={{ fontSize: '10.5px' }} {...actionable(() => onOpenSandbox(lane.id))}>{lane.sandbox?.id ?? '--'}</a>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '16px 22px', borderBottom: '1px solid var(--line)' }}>
+        {/* Item 3: the big line is the lane's own title, else its ticket key, else
+            "Untitled run" -- never the run id, which lives only in the title attribute
+            (and, in verbose mode, in the small id chip on the row below). */}
+        <span className="m" title={headline.runId} style={{ fontSize: 22, fontWeight: 700 }}>
+          {lane.title ?? lane.ticket ?? 'Untitled run'}
+        </span>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px 20px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            {lane.ticket ? (
+              lane.sourceUrl ? (
+                <a className="chip chipB" href={lane.sourceUrl} target="_blank" rel="noreferrer">{lane.ticket}</a>
+              ) : (
+                <span className="chip">{lane.ticket}</span>
+              )
+            ) : null}
+            <span className="chip">{kindLabel(lane.kind)}</span>
+            <span className="chip">{lane.model}</span>
+            <span className="chip">{lane.repo}</span>
+            <span className="chip">attempt {lane.attempt}</span>
+            <a className="m" style={{ fontSize: '10.5px' }} {...actionable(() => onOpenSandbox(lane.id))}>sandbox</a>
+            {verbose ? (
+              <span
+                className="chip m" title="click to copy the run id"
+                {...actionable(() => {
+                  void navigator.clipboard?.writeText(lane.id).then(() => setIdCopied(true)).catch(() => undefined);
+                  setTimeout(() => setIdCopied(false), 1_500);
+                })}
+              >
+                id {lane.id}{idCopied ? ' · copied' : ''}
+              </span>
+            ) : null}
+          </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 20, flexWrap: 'wrap' }}>
           <div style={{ textAlign: 'right' }}>
@@ -417,11 +477,18 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
           })}
         </div>
       </div>
-      <div data-testid="ticket-sheet-body" style={{ display: 'flex', minHeight: 0, flex: '1 1 auto', flexWrap: 'wrap', overflowY: 'auto' }}>
-        <div data-testid="ticket-sheet-story" style={{ width: 340, flex: '1 1 300px', borderRight: '1px solid var(--line)', padding: '16px 22px' }}>
+      {/* Item 6: two independently scrolling columns -- the body itself never
+          scrolls, so the composer stays reachable without hunting for it, at
+          1440x900 and at 1280x720. */}
+      <div data-testid="ticket-sheet-body" style={{ display: 'flex', minHeight: 0, flex: '1 1 auto', overflow: 'hidden' }}>
+        <div data-testid="ticket-sheet-story" className="scroll" style={{ width: 340, flex: '1 1 300px', borderRight: '1px solid var(--line)', padding: '16px 22px', overflowY: 'auto' }}>
           <StoryPanel story={story} />
-          <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 10 }}>Journal</div>
-          <JournalPanel entries={journal} />
+          {verbose ? (
+            <>
+              <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 10 }}>Journal</div>
+              <JournalPanel entries={journal} />
+            </>
+          ) : null}
           {lane.pr ? (
             <>
               <div className="lbl" style={{ color: 'var(--ink2)', margin: '16px 0 8px' }}>Draft output</div>
@@ -439,20 +506,20 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
             </>
           ) : null}
         </div>
-        <div style={{ flex: '2 1 380px', padding: '16px 22px', display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <div className="lbl" style={{ color: 'var(--ink2)', flex: 'none' }}>Run thread — {lane.id} only</div>
-          <div data-testid="ticket-sheet-thread" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div style={{ flex: '2 1 380px', minHeight: 0, padding: '16px 22px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div className="lbl" style={{ color: 'var(--ink2)', flex: 'none' }}>Run thread</div>
+          <div ref={threadRef} data-testid="ticket-sheet-thread" className="scroll" style={{ flex: '1 1 auto', minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 12 }}>
             {thread.map((m) => (
               <MessageCard
-                key={m.k} message={m} feedLive={feedLive} now={now}
+                key={m.k} message={m} feedLive={feedLive} now={now} verbose={verbose} labelFor={labelFor}
                 onCommand={(text) => onCommand(lane.id, text)} onUndo={onUndo}
                 onOpenJournal={onOpenJournal}
               />
             ))}
           </div>
-          <div style={{ marginTop: 'auto', background: 'var(--well)', boxShadow: 'inset 0 2px 5px rgba(0,0,0,.6)', borderRadius: 3, padding: '8px 8px 8px 12px', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ flex: 'none', background: 'var(--well)', boxShadow: 'inset 0 2px 5px rgba(0,0,0,.6)', borderRadius: 3, padding: '8px 8px 8px 12px', display: 'flex', alignItems: 'center', gap: 8 }}>
             <input
-              className="inp" placeholder={`message ${lane.id}…`} value={draft}
+              className="inp" placeholder="Tell this run something… Send delivers it now; Amend rewrites its brief" value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter' && draft.trim()) { sendAndRefetch(draft); setDraft(''); } }}
             />
