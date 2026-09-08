@@ -44,6 +44,23 @@ describe('queueTitleFor', () => {
       .toBe('The queue page and the board look totally ridiculous');
   });
 
+  // Found on the live queue, 2026-09-08: `# Goal: BBZ-233, a valid Plaid identity pass
+  // reads as a failure` titled ", a valid Plaid identity pass reads as a failure" --
+  // the ticket key comes off and its punctuation stays behind. The heading rule these
+  // titles share (`titleFromHeading`) strips the key alone, so lane tiles show the same
+  // fragment; this repairs it on the way out of the queue.
+  it('leaves no punctuation behind where the ticket key was', () => {
+    const brief = '# Goal: BBZ-233, a valid Plaid identity pass reads as a failure\n\nbody\n';
+    expect(queueTitleFor(item({ source: 'brief', input: brief, ticket: 'BBZ-233' })))
+      .toBe('A valid Plaid identity pass reads as a failure');
+  });
+
+  it('leaves a title that never had a key alone', () => {
+    const brief = '# Goal: board-readability, four cards a row\n\nbody\n';
+    expect(queueTitleFor(item({ source: 'brief', input: brief })))
+      .toBe('board-readability, four cards a row');
+  });
+
   it('titles a ticket item from the heading of its brief on disk', () => {
     const dir = mkdtempSync(join(tmpdir(), 'queue-title-'));
     const path = join(dir, 'brief.md');
