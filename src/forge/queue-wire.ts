@@ -294,6 +294,27 @@ export function queueProductionWorkflowExists(chainEnv: ChainEnv): (repo: string
   };
 }
 
+/** Whether `feature/<branch>` is already merged into `origin/main` on the repo's
+ *  checkout -- backs an `after: <slug>` entry naming no queue item. Fetches first so a
+ *  merge that landed since the checkout was last touched still counts; a repo with no
+ *  checkout configured, or a fetch that fails, answers `false` rather than guessing. */
+export function queueBranchMerged(chainEnv: ChainEnv): NonNullable<QueueRuntimeDeps['branchMerged']> {
+  return async (repo, branch) => {
+    const checkout = checkoutFor(chainEnv, repo);
+    if (!checkout) return false;
+    const fetch = await execRun({
+      argv: ['git', '-C', checkout, 'fetch', '--prune', 'origin'],
+      cwd: checkout, owner: 'queue', cls: 'script',
+    });
+    if (!fetch.ok) return false;
+    const result = await execRun({
+      argv: ['git', '-C', checkout, 'merge-base', '--is-ancestor', `origin/${branch}`, 'origin/main'],
+      cwd: checkout, owner: 'queue', cls: 'script',
+    });
+    return result.ok;
+  };
+}
+
 /**
  * A.7: builds the Merge click's own dependencies -- ready for a caller with a
  * `ForgeDeps` in hand (`forge up`'s own wiring, `cli.ts`'s `up` case) to hand to
@@ -377,6 +398,7 @@ export function buildQueueRuntimeDeps(
     store,
     commentOnPr: queueCommentOnPr(),
     repoKindFor: (repo) => repoKindForEnv(chainEnv, repo),
+    branchMerged: queueBranchMerged(chainEnv),
     backendHandoff: queueBackendHandoff(),
     jiraHandoff: queueJiraHandoff(),
     prSnapshot: queuePrSnapshot(),
