@@ -19,7 +19,7 @@
 import { Engine, buildForgeMcpServer, type EngineConfig, type ForgeToolHandlers, type PreToolVerdict, type QueryFn } from '../adapter/engine.js';
 import { FORGE_TOOL_NAMES, redact, type Incarnation } from './contracts.js';
 import {
-  classifyDriftRead, credentialBlocker, driftBlocker, readMergeableDetailed,
+  classifyDriftRead, credentialBlocker, readMergeableDetailed,
   resolveMergeableRead, type DriftClock, type Mergeable, type MergeableRead,
 } from './drift.js';
 import { classifyCommand } from './command-class.js';
