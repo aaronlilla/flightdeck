@@ -4,6 +4,7 @@
  * way `tests/forge/console/auth.test.ts` proves every other console route.
  */
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { fetchConfirmed } from '../../helpers/confirmed.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -180,10 +181,10 @@ describe('POST /queue/:id/remove and /retry', () => {
     }))).json() as QueueAddResponse;
     const id = added.items[0]!.id;
 
-    const removed = await fetch(`${base}/queue/${id}/remove`, authed({ method: 'POST' }));
+    const removed = await fetchConfirmed(`${base}/queue/${id}/remove`, authed({ method: 'POST' }));
     expect(removed.status).toBe(200);
 
-    const again = await fetch(`${base}/queue/${id}/remove`, authed({ method: 'POST' }));
+    const again = await fetchConfirmed(`${base}/queue/${id}/remove`, authed({ method: 'POST' }));
     expect(again.status).toBe(404);
   });
 
@@ -281,7 +282,7 @@ describe('POST /queue/:id/promote with wiring configured: sweep #4', () => {
 
   it('records promotedAt/promotedVersion on a successful promote', async () => {
     const id = await addDoneHotfix();
-    const promote = await fetch(`${wiredBase}/queue/${id}/promote`, authed({
+    const promote = await fetchConfirmed(`${wiredBase}/queue/${id}/promote`, authed({
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ version: '1.4.2', message: 'hotfix release' }),
     }));
     expect(promote.status).toBe(200);

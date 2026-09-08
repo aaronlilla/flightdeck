@@ -88,11 +88,12 @@ describe('the console rule-enforcement tick', () => {
     expect(setIntervalSpy).not.toHaveBeenCalled();
 
     await server.listen();
-    // One timer for the heartbeat, one for the rule-enforcement tick.
-    expect(setIntervalSpy).toHaveBeenCalledTimes(2);
+    // One timer for the heartbeat, one for the journal watch that feeds the live
+    // spine, one for the rule-enforcement tick.
+    expect(setIntervalSpy).toHaveBeenCalledTimes(3);
 
     await server.close();
-    expect(clearIntervalSpy).toHaveBeenCalledTimes(2);
+    expect(clearIntervalSpy).toHaveBeenCalledTimes(3);
 
     setIntervalSpy.mockRestore();
     clearIntervalSpy.mockRestore();

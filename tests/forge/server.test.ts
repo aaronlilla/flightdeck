@@ -23,6 +23,7 @@ import { Registry } from '../../src/forge/registry.js';
 import { RunInbox } from '../../src/forge/runinbox.js';
 import { Breaker, readKillSwitch, Lanes } from '../../src/forge/supervisor.js';
 import { ForgeServer, FORGE_PORT } from '../../src/forge/server.js';
+import { fetchConfirmed } from '../helpers/confirmed.js';
 import { ConsoleReads } from '../../src/forge/console/reads.js';
 
 let dir: string;
@@ -458,7 +459,7 @@ describe('POST /clear on a stale inbox ask', () => {
   it('F3: refuses to retire an ask that still has a live run', async () => {
     server.inbox.raise({ run: 'alpha', question: 'Which environment?', options: ['dev'] });
     const [key] = server.inbox.open().map((e) => e.key);
-    const response = await fetch(`${base}/clear`, {
+    const response = await fetchConfirmed(`${base}/clear`, {
       method: 'POST',
       headers: { 'x-forge-token': server.token, 'content-type': 'application/json' },
       body: JSON.stringify({ inboxKey: key }),
@@ -470,7 +471,7 @@ describe('POST /clear on a stale inbox ask', () => {
   it('F3: retires a stale ask and journals inbox.retired with the key and runs', async () => {
     server.inbox.raise({ run: 'ghost', question: 'Probe: continue to the end?' });
     const [key] = server.inbox.open().map((e) => e.key);
-    const response = await fetch(`${base}/clear`, {
+    const response = await fetchConfirmed(`${base}/clear`, {
       method: 'POST',
       headers: { 'x-forge-token': server.token, 'content-type': 'application/json' },
       body: JSON.stringify({ inboxKey: key }),
@@ -714,7 +715,7 @@ describe('POST /answer', () => {
 
 describe('POST /stop', () => {
   it('W6: parks every running lane and engages the kill switch', async () => {
-    const response = await fetch(`${base}/stop`, {
+    const response = await fetchConfirmed(`${base}/stop`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-forge-token': server.token },
       body: JSON.stringify({ reason: 'test stop' }),
@@ -987,7 +988,7 @@ describe('GET / (the built console)', () => {
 
 describe('POST /run/:id/retire and /run/:id/unretire (H1.7)', () => {
   it('refuses to retire a lane that is still running', async () => {
-    const response = await fetch(`${base}/run/alpha/retire`, {
+    const response = await fetchConfirmed(`${base}/run/alpha/retire`, {
       method: 'POST', headers: { 'x-forge-token': server.token },
     });
     expect(response.status).toBe(409);
@@ -1001,7 +1002,7 @@ describe('POST /run/:id/retire and /run/:id/unretire (H1.7)', () => {
     const lanes = new Lanes(join(dir, 'lanes'));
     lanes.put('beta', { column: 'c2' });
 
-    const retire = await fetch(`${base}/run/beta/retire`, {
+    const retire = await fetchConfirmed(`${base}/run/beta/retire`, {
       method: 'POST', headers: { 'x-forge-token': server.token },
     });
     expect(retire.status).toBe(200);
@@ -1032,7 +1033,7 @@ describe('POST /retire-finished (H1.7)', () => {
     const lanes = new Lanes(join(dir, 'lanes'));
     lanes.put('beta', { column: 'c2' });
 
-    const response = await fetch(`${base}/retire-finished`, {
+    const response = await fetchConfirmed(`${base}/retire-finished`, {
       method: 'POST', headers: { 'x-forge-token': server.token },
     });
     expect(response.status).toBe(200);
@@ -1138,7 +1139,7 @@ describe('GET /merge-ready and POST /merge-ready (H1.8)', () => {
       })).json() as { ready: Array<{ id: string }> };
       expect(before.ready.map((r) => r.id)).toEqual(['queue-BBZ-96']);
 
-      const result = await fetch(`${queueBase}/merge-ready`, {
+      const result = await fetchConfirmed(`${queueBase}/merge-ready`, {
         method: 'POST', headers: { 'x-forge-token': withQueue.token },
       });
       expect(result.status).toBe(200);
