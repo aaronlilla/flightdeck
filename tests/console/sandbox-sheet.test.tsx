@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
 import { SandboxSheet } from '../../src/console/components/SandboxSheet.js';
@@ -22,9 +23,12 @@ function lane(extra: Partial<Lane> = {}): Lane {
   };
 }
 
-function renderSheet(laneExtra: Partial<Lane> = {}, log: { text: string; severity: 'info' | 'progress' | 'retry' | 'error' }[] = []) {
+function renderSheet(
+  laneExtra: Partial<Lane> = {}, log: { text: string; severity: 'info' | 'progress' | 'retry' | 'error' }[] = [],
+  onCopiedPath = vi.fn(),
+) {
   vi.mocked(api.getRunSandbox).mockResolvedValue({ sandbox: lane(laneExtra).sandbox, log });
-  return render(<SandboxSheet lane={lane(laneExtra)} onClose={vi.fn()} onKill={vi.fn()} />);
+  return { onCopiedPath, ...render(<SandboxSheet lane={lane(laneExtra)} onClose={vi.fn()} onKill={vi.fn()} onCopiedPath={onCopiedPath} />) };
 }
 
 describe('SandboxSheet', () => {
@@ -49,5 +53,27 @@ describe('SandboxSheet', () => {
   it('keeps the timestamp muted, separate from the line\'s own severity color, when a stamp is present', async () => {
     renderSheet({}, [{ text: '2026-09-06T00:00:00.000Z build failed: exit 1', severity: 'error' }]);
     await waitFor(() => expect(screen.getByText(/build failed/)).toBeInTheDocument());
+  });
+
+  // Sweep #9: "Open shell" had no onClick at all -- it copies the sandbox's own
+  // worktree path to the clipboard, the nearest real thing a click here can do.
+  describe('Open shell', () => {
+    it('copies the sandbox path to the clipboard and reports it', async () => {
+      Object.assign(navigator, { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } });
+      const { onCopiedPath } = renderSheet({
+        sandbox: { id: 'fd-2201', path: '/tmp/sandboxes/flt-201', branch: 'feature/flt-201', pid: 1, sessionId: null, region: 'local', instanceType: 'win32/x64' },
+      });
+      await userEvent.click(screen.getByText('Open shell'));
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('/tmp/sandboxes/flt-201');
+      await waitFor(() => expect(onCopiedPath).toHaveBeenCalledWith('/tmp/sandboxes/flt-201'));
+    });
+
+    it('does nothing when the sandbox has no path on record', async () => {
+      Object.assign(navigator, { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } });
+      const { onCopiedPath } = renderSheet();
+      await userEvent.click(screen.getByText('Open shell'));
+      expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
+      expect(onCopiedPath).not.toHaveBeenCalled();
+    });
   });
 });

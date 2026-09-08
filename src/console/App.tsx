@@ -634,7 +634,10 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
                 <JournalSheet rows={state.journal} run={state.sheet.run} onClose={() => dispatch({ type: 'sheet', sheet: null })} onUndo={onUndo} />
               ) : null}
               {state.sheet.type === 'sandbox' && sheetLane ? (
-                <SandboxSheet lane={sheetLane} onClose={() => dispatch({ type: 'sheet', sheet: null })} onKill={(id) => onCommand(id, 'kill')} />
+                <SandboxSheet
+                  lane={sheetLane} onClose={() => dispatch({ type: 'sheet', sheet: null })} onKill={(id) => onCommand(id, 'kill')}
+                  onCopiedPath={(path) => queueToast(`copied ${path} to clipboard`, true)}
+                />
               ) : null}
             </div>
           </div>

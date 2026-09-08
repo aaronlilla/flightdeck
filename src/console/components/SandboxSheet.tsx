@@ -9,6 +9,12 @@ export interface SandboxSheetProps {
   lane: Lane;
   onClose: () => void;
   onKill: (id: string) => void;
+  /** Sweep #9: "Open shell" had no onClick at all. There is no real terminal this
+   *  sheet can open into, so it copies the sandbox's own worktree path to the
+   *  clipboard instead -- the fastest real thing a click here can do -- and reports
+   *  it with a toast. Optional so a caller that has not wired a toast yet still gets
+   *  a working sheet, just without the confirmation. */
+  onCopiedPath?: (path: string) => void;
 }
 
 const SEVERITY_COLOR: Record<SandboxLogSeverity, string> = {
@@ -19,7 +25,7 @@ const SEVERITY_COLOR: Record<SandboxLogSeverity, string> = {
 };
 
 /** Sandbox sheet: region/instance/model/state, log tail, Open shell, Kill sandbox. */
-export function SandboxSheet({ lane, onClose, onKill }: SandboxSheetProps): JSX.Element {
+export function SandboxSheet({ lane, onClose, onKill, onCopiedPath }: SandboxSheetProps): JSX.Element {
   const [sandbox, setSandbox] = useState<LaneSandbox | null>(lane.sandbox);
   const [log, setLog] = useState<SandboxLogLine[]>([]);
 
@@ -43,7 +49,16 @@ export function SandboxSheet({ lane, onClose, onKill }: SandboxSheetProps): JSX.
           <span className="chip">{lane.model}</span>
           <span className="chip" style={{ color: st.color, borderColor: st.color }}>{st.label}</span>
           <span style={{ flex: 1 }} />
-          <span className="btnS">Open shell</span>
+          <span
+            className="btnS"
+            style={{ opacity: sandbox?.path ? 1 : 0.5, cursor: sandbox?.path ? 'pointer' : 'default' }}
+            onClick={() => {
+              if (!sandbox?.path) return;
+              void navigator.clipboard?.writeText(sandbox.path).then(() => onCopiedPath?.(sandbox.path as string));
+            }}
+          >
+            Open shell
+          </span>
           <span className="btnR" onClick={() => onKill(lane.id)}>Kill sandbox</span>
         </div>
         <div style={{ background: 'var(--well)', borderRadius: 3, padding: '12px 14px', boxShadow: 'inset 0 2px 5px rgba(0,0,0,.6)' }}>
