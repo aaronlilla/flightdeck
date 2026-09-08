@@ -489,6 +489,25 @@ describe('observedAt vs the noise-refreshed RunState.lastEventAt', () => {
   });
 });
 
+describe('computeLanes: plain and reason strip machine ids (deliverable 10)', () => {
+  it('a reason with a 40-char sha renders with 7, on both plain and reason', () => {
+    const { path, journal } = tempJournal();
+    const sha = '88d44ec96baea849f7c1e8c0a1b2c3d4e5f6a7b8'.slice(0, 40);
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.append({
+      event: 'run.blocked', run: 'alpha', actor: 'runner', reason: `checks are failure on head ${sha}`,
+    });
+    journal.close();
+    const fleet = replay(path);
+    const lane = laneRecord({ slug: 'alpha', column: 'c1' });
+
+    const [built] = computeLanes(baseInput({ laneRecords: [lane], fleet }), 1_000).lanes;
+    expect(built!.reason).toContain(sha.slice(0, 7));
+    expect(built!.reason).not.toContain(sha);
+    expect(built!.plain).not.toContain(sha);
+  });
+});
+
 describe('windowLanes', () => {
   const HOUR = 3_600_000;
   const now = 100 * HOUR;

@@ -14,6 +14,7 @@ import type { ClassSpec } from '../policy.js';
 import type { Hop, Lane, LaneKind, LanePr, LaneQuestion, LaneSandbox, LaneState, LanesResponse, MergeReadyReport } from '../../shared/console-model.js';
 import { textFor } from './journal-route.js';
 import { plainStatus } from './plain.js';
+import { shortenShas, stripMachineIds } from '../../shared/humanize.js';
 
 /** Journal rows that carry no narrative on their own: burn accounting, per-tool
  *  chatter, warden health pings. `stepText` and the "why is X stuck" reply both skip
@@ -682,6 +683,20 @@ export function computeLanes(input: LanesInput, now: number): LanesResponse {
   }
   for (const built of lanes) {
     built.attempts = built.ticket ? ticketCounts.get(built.ticket)! : 1;
+  }
+
+  // Deliverable 10: `plain` and `reason` leave this function free of machine ids -- a
+  // 40-character sha in a `checks are failure on head <sha>` reason used to reach the
+  // board unshortened. `labelFor` reads the ticket/title this same response already
+  // computed for a lane, so a reason naming another lane on the board names it the way
+  // a person would, not by its raw run id.
+  const labelFor = (id: string): string | null => {
+    const found = lanes.find((candidate) => candidate.id === id);
+    return found ? (found.ticket ?? found.title) : null;
+  };
+  for (const built of lanes) {
+    built.plain = shortenShas(stripMachineIds(built.plain, { labelFor }));
+    if (built.reason) built.reason = shortenShas(stripMachineIds(built.reason, { labelFor }));
   }
 
   return {
