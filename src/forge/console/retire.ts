@@ -16,13 +16,22 @@ export function retiredPath(forgeHomeDir: string): string {
 const FINISHED_PROBE_STATES = new Set<Lane['state']>(['done', 'unverified', 'exhausted']);
 
 /** Whether a lane is a candidate for `POST /run/:id/retire` or `POST /retire-finished`:
- *  done, merged or killed outright (a finished probe counts even on `exhausted` or
- *  `unverified`, states a probe alone reaches by design), with no unmerged PR still
- *  open on it and no live process behind it. A lane failing any of these stays on the
- *  board -- retiring is never a way to make an unresolved lane disappear. */
+ *  done, merged, killed or unverified outright (a finished probe counts on `exhausted`
+ *  too), with no unmerged PR still open on it and no live process behind it. A lane
+ *  failing any of these stays on the board -- retiring is never a way to make an
+ *  unresolved lane disappear.
+ *
+ *  `unverified` counts for every kind, not probes alone: it is what a `run.finished`
+ *  row folds to when its verdict is neither done nor exhausted nor killed, so the run
+ *  is over by the journal's own definition. Seen live 2026-09-08: a manual run that
+ *  ended `unverified` with no PR had no exit at all -- Kill, Reopen and Verify each
+ *  refused it, and Clean up skipped it, so the card could never leave the board.
+ *  `exhausted` stays probe-only, since Kill and Reopen both still reach a non-probe
+ *  exhausted run. */
 export function retireEligible(lane: Lane): boolean {
   const finishedProbe = lane.kind === 'probe' && FINISHED_PROBE_STATES.has(lane.state);
-  const finished = lane.state === 'done' || lane.state === 'merged' || lane.state === 'killed' || finishedProbe;
+  const finished = lane.state === 'done' || lane.state === 'merged' || lane.state === 'killed'
+    || lane.state === 'unverified' || finishedProbe;
   if (!finished) return false;
   if (lane.pr && !lane.pr.merged) return false;
   if (lane.heart) return false;

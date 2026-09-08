@@ -163,7 +163,9 @@ export function computeYou(lane: Lane): string | null {
     case 'verify-pr':
       return `Verify it, or read PR #${lane.pr?.no}.`;
     case 'verify-no-pr':
-      return 'Verify it, or Kill it.';
+      // Not "Kill it": kill refuses an unverified run (nothing is running to kill).
+      // Clean up is the exit that actually works for one with no PR.
+      return 'Verify it, or Clean up retires it.';
     case 'not-ready': {
       const why = lane.mergeable && lane.mergeable.ok === false ? lane.mergeable.why : 'not ready yet';
       return `Not ready: ${why}. Re-check later.`;

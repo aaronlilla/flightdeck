@@ -305,6 +305,11 @@ describe('computeNext', () => {
     expect(computeNext(lane, notReady)).toBe('Read the reason, then Resume it or Kill it.');
   });
 
+  it('unverified with no PR points at Clean up, never at Kill', () => {
+    const next = computeNext({ ...base, state: 'unverified', pr: null } as Lane, notReady);
+    expect(next).toBe('Verify it, or Clean up retires it if the session left nothing worth keeping.');
+  });
+
   it('never answers a bare state word', () => {
     for (const state of ['running', 'handed-off', 'paused', 'parked', 'blocked', 'exhausted', 'unverified', 'done', 'merged', 'killed'] as const) {
       const next = computeNext({ ...base, state } as Lane, notReady);
