@@ -562,6 +562,12 @@ export interface QueueItem {
    *  Optional because every construction site in the repo predates it and this file is
    *  append-only for the streams sharing it: the read path is the one that fills it. */
   title?: string | null;
+  /** Every `after: <slug>` line parsed off this item's own brief text
+   *  (`repoRoute.ts#parseAfterLines`). Absent or empty starts as soon as a slot is
+   *  free, same as before this field existed. A slug resolves once every queue item
+   *  matching it (by `input`, `briefPath` basename or `branch`) is `done`, or a
+   *  `feature/<slug>` branch is already merged into `origin/main`. */
+  after?: string[];
 }
 
 export interface QueueResponse {

@@ -36,6 +36,12 @@ import { queueBriefsDir, journalPath, killSwitchPath } from './paths.js';
 import { reasonerFor } from './reasoner-claude.js';
 import { readKillSwitch } from './supervisor.js';
 import { readQueuePaused } from './console/queue-pause.js';
+import { readQueueWidth } from './console/queue-width.js';
+
+// `queue-route.ts` reads the live width through this re-export, mirroring the inline
+// `readPaused: () => readQueuePaused()` field `buildQueueRuntimeDeps` already builds
+// below -- the same live-off-disk pattern, just not tied to a `QueueRuntimeDeps` field.
+export { readQueueWidth, writeQueueWidth } from './console/queue-width.js';
 
 const JIRA_ENV_VARS = ['FORGE_JIRA_SITE', 'FORGE_JIRA_EMAIL', 'FORGE_JIRA_TOKEN'] as const;
 
@@ -294,6 +300,27 @@ export function queueProductionWorkflowExists(chainEnv: ChainEnv): (repo: string
   };
 }
 
+/** Whether `feature/<branch>` is already merged into `origin/main` on the repo's
+ *  checkout -- backs an `after: <slug>` entry naming no queue item. Fetches first so a
+ *  merge that landed since the checkout was last touched still counts; a repo with no
+ *  checkout configured, or a fetch that fails, answers `false` rather than guessing. */
+export function queueBranchMerged(chainEnv: ChainEnv): NonNullable<QueueRuntimeDeps['branchMerged']> {
+  return async (repo, branch) => {
+    const checkout = checkoutFor(chainEnv, repo);
+    if (!checkout) return false;
+    const fetch = await execRun({
+      argv: ['git', '-C', checkout, 'fetch', '--prune', 'origin'],
+      cwd: checkout, owner: 'queue', cls: 'script',
+    });
+    if (!fetch.ok) return false;
+    const result = await execRun({
+      argv: ['git', '-C', checkout, 'merge-base', '--is-ancestor', `origin/${branch}`, 'origin/main'],
+      cwd: checkout, owner: 'queue', cls: 'script',
+    });
+    return result.ok;
+  };
+}
+
 /**
  * A.7: builds the Merge click's own dependencies -- ready for a caller with a
  * `ForgeDeps` in hand (`forge up`'s own wiring, `cli.ts`'s `up` case) to hand to
@@ -353,7 +380,8 @@ export function queuePromoteDeps(chainEnv: ChainEnv): QueuePromoteDeps {
 }
 
 export function buildQueueRuntimeDeps(
-  chainEnv: ChainEnv, fleetConfigDir: string, deps: ForgeDeps, store: QueueRuntimeDeps['store'], maxInFlight = 2,
+  chainEnv: ChainEnv, fleetConfigDir: string, deps: ForgeDeps, store: QueueRuntimeDeps['store'],
+  maxInFlight: () => number = readQueueWidth,
 ): QueueRuntimeDeps {
   return {
     planner: queuePlanner(),
@@ -365,6 +393,9 @@ export function buildQueueRuntimeDeps(
     clock: () => Date.now(),
     killSwitch: () => readKillSwitch(killSwitchPath()).engaged,
     paused: () => readQueuePaused(),
+    // Called fresh on every tick, same as `paused` above -- `readQueueWidth` (default)
+    // re-reads `queueWidthPath()` off disk each time, so a `POST /queue/width` takes
+    // effect on the next tick with no restart and no rebuilt deps object.
     maxInFlight,
     append: (event) => {
       const journal = new Journal(journalPath());
@@ -377,6 +408,12 @@ export function buildQueueRuntimeDeps(
     store,
     commentOnPr: queueCommentOnPr(),
     repoKindFor: (repo) => repoKindForEnv(chainEnv, repo),
+    branchMerged: queueBranchMerged(chainEnv),
+    // A queued item's own `repo` is null until it is planned, which happens after the
+    // after: gate runs -- see `mergedOnKnownRepo` in `intake/queue.ts` for why this
+    // fallback list, not `item.repo`, is what a real item actually resolves a
+    // merged-branch after: entry against.
+    mergeCheckRepos: chainEnv.checkouts.map((entry) => entry.repo),
     backendHandoff: queueBackendHandoff(),
     jiraHandoff: queueJiraHandoff(),
     prSnapshot: queuePrSnapshot(),

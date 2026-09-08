@@ -281,6 +281,10 @@ export const ACTIONS = {
     id: 'resumeQueue', label: 'Resume queue', reversible: true, effect: 'queue',
     call: () => api.resumeQueue(), text: fromActionResult, ok: okOf, jid: jidOf, link: () => viewLink('queue', 'queue'),
   }),
+  postQueueWidth: spec<[number], ActionResult>({
+    id: 'postQueueWidth', label: 'Set queue width', reversible: true, effect: 'queue',
+    call: ([maxInFlight]) => api.postQueueWidth(maxInFlight), text: fromActionResult, ok: okOf, jid: jidOf, link: () => viewLink('queue', 'queue'),
+  }),
   mergeQueueItem: spec<[string], Gated<ActionResult>>({
     id: 'mergeQueueItem', label: 'Merge', reversible: false, effect: 'queue',
     call: ([id], confirm) => api.mergeQueueItem(id, confirm),
