@@ -161,6 +161,35 @@ describe('computeThread: plain mode (deliverable 8)', () => {
     const operator = result.messages.find((m) => m.type === 'operator');
     expect(operator?.text).toBe('kill S-b9d39bae548707e0');
   });
+
+  // Item 7: a confirm card's text and blast line, and a question card's opts, all
+  // carry machine ids the same way a reply or refusal can -- every text-bearing field
+  // on every card needs the same strip, not only the fields the earlier fix covered.
+  it('strips machine ids out of a persisted confirm card\'s text and blast line', () => {
+    const persisted: Message[] = [
+      {
+        k: 'm1', type: 'confirm', text: 'confirm? queue-BBZ-182 is killed immediately', ts: 1, source: 'system',
+        blast: 'its worktree and process are gone for jira_BBZ-182_1788543015139',
+      },
+    ];
+    const result = computeThread(persisted, [], 10_000);
+    const confirm = result.messages.find((m) => m.type === 'confirm');
+    expect(confirm?.text).not.toMatch(/queue-BBZ-182|jira_/);
+    expect(confirm?.text).toContain('BBZ-182');
+    expect(confirm?.blast).not.toMatch(/jira_/);
+    expect(confirm?.blast).toContain('BBZ-182');
+  });
+
+  it('strips machine ids out of a live open question card', () => {
+    const entry: InboxEntry = {
+      key: 'ask-1', question: 'PR #39 (S-b9d39bae548707e0) is open, draft, and mergeable', options: ['Yes'],
+      kind: 'question', runs: ['S-b9d39bae548707e0'], goals: [], asked: 1, at: 2_000, disposition: 'park',
+    };
+    const result = computeThread([], [], 10_000, [entry]);
+    const question = result.messages.find((m) => m.type === 'question');
+    expect(question?.text).not.toMatch(/S-[0-9a-f]{12,}/);
+    expect(question?.text).toContain('this run');
+  });
 });
 
 describe('computeRunThread', () => {

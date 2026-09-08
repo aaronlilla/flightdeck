@@ -112,20 +112,27 @@ export interface ComputeThreadOptions {
 
 /** Deliverable 8: a persisted rail row humanized at read time, so an operator bubble or
  *  a receipt written before this deliverable shipped reads in words on its very next
- *  fetch -- nothing needs rewriting on disk. `question`/`plan`/`confirm`/`pr`/`event`/
- *  `thinking` rows already carry their own words and pass through untouched. */
+ *  fetch -- nothing needs rewriting on disk. An `operator` command reads through
+ *  `commandEcho`, a `receipt` through `receiptText`; every other type's own `text`
+ *  reads through plain `stripMachineIds`.
+ *
+ *  Item 7: that same strip runs over every OTHER text-bearing field a card can carry
+ *  too -- a confirm card's `blast` line, a plan or question card's `items[].text`, and
+ *  a question card's own `opts[]` -- not just `text`. `askKey`, `jid`, `k`, `source`
+ *  and `lane` are keys the client needs to match a card to its action, never text a
+ *  person reads, and stay exactly as they are. */
 function humanizeMessage(message: Message, labelFor: TitleForFn, questionFor: (key: string) => string | null): Message {
-  switch (message.type) {
-    case 'operator':
-      return { ...message, text: commandEcho(message.text, { labelFor }) };
-    case 'receipt':
-      return { ...message, text: receiptText(message.text, { labelFor, questionFor }) };
-    case 'reply':
-    case 'refusal':
-      return { ...message, text: stripMachineIds(message.text, { labelFor }) };
-    default:
-      return message;
-  }
+  const stripText = (text: string): string => stripMachineIds(text, { labelFor });
+  const text = message.type === 'operator' ? commandEcho(message.text, { labelFor })
+    : message.type === 'receipt' ? receiptText(message.text, { labelFor, questionFor })
+      : stripText(message.text);
+  return {
+    ...message,
+    text,
+    ...(typeof message.blast === 'string' ? { blast: stripText(message.blast) } : {}),
+    ...(message.items ? { items: message.items.map((item) => ({ ...item, text: stripText(item.text) })) } : {}),
+    ...(message.opts ? { opts: message.opts.map(stripText) } : {}),
+  };
 }
 
 /**
@@ -146,7 +153,7 @@ export function computeThread(
     .map((row) => chipFor(row, titleFor));
   const chips = [...ordinaryChips, ...wardenChipMessages(windowed.filter((row) => WARDEN_CHIP_EVENTS.has(row.event)), titleFor)];
   const persistedKeys = new Set(persisted.map((message) => message.k));
-  const questions = openAsks
+  let questions = openAsks
     .map(questionMessageFor)
     .filter((message) => !persistedKeys.has(message.k));
   let persistedRows = persisted;
@@ -154,6 +161,11 @@ export function computeThread(
     const allAsks = options.allAsks ?? openAsks;
     const questionFor = (key: string): string | null => allAsks.find((ask) => ask.key === key)?.question ?? null;
     persistedRows = persisted.map((message) => humanizeMessage(message, titleFor, questionFor));
+    // Item 7: a freshly-generated question card (one no one has answered yet, so
+    // nothing about it is persisted) carries whatever the run's own ask text says --
+    // it needs the same strip, or a live parked run's question reaches the rail with
+    // its own run id or ask key sitting in plain view.
+    questions = questions.map((message) => humanizeMessage(message, titleFor, questionFor));
   }
   const messages = [...persistedRows, ...chips, ...questions].sort((a, b) => a.ts - b.ts);
   return { messages };
