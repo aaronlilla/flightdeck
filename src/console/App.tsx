@@ -432,9 +432,21 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   }, []);
 
   const sheet = state.sheet;
+  // An archived lane's sheet id never resolves off `state.lanes` alone -- a retired
+  // lane leaves the live board, but its tile (Archived filter) still opens the sheet.
   const sheetLane = sheet && sheet.type !== 'journal' && sheet.type !== 'fleet-cost'
-    ? state.lanes.find((l) => l.id === sheet.id)
+    ? state.lanes.find((l) => l.id === sheet.id) ?? state.archivedLanes.find((l) => l.id === sheet.id)
     : undefined;
+
+  // The lane behind an open sheet can vanish off the board entirely -- retired and
+  // then swept out of the archived list, or otherwise gone by the time the next poll
+  // lands. Close cleanly with a receipt rather than leaving a blank sheet on screen.
+  useEffect(() => {
+    if (!sheet || sheet.type === 'journal' || sheet.type === 'fleet-cost' || sheetLane) return;
+    dispatch({ type: 'sheet', sheet: null });
+    appendReceipt(null, `${sheet.id} is no longer on the board.`, false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sheet, sheetLane]);
 
   const needs = buildNeeds(state.lanes, state.integrations, (kind, id) => {
     if (kind === 'lane') dispatch({ type: 'sheet', sheet: { type: 'ticket', id } });

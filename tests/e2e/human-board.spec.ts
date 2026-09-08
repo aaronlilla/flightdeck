@@ -92,6 +92,31 @@ test('H2.4: the ticket sheet shows the kind, a source link, and the Story sectio
   await expect(sheet.getByText('Story')).toBeVisible();
 });
 
+test('archived-lane fix: clicking a retired lane under Archived opens its ticket sheet, not a blank one', async ({ page }) => {
+  await page.goto('/');
+  await page.getByText('Clean up', { exact: true }).click();
+  await page.getByText('Confirm', { exact: true }).click();
+  await expect(page.getByText(/retired \d+ lanes/)).toBeVisible();
+  await page.getByText(/^Archived \d+$/).click();
+  await page.getByTestId('lane-merged-1').click();
+  const sheet = page.getByTestId('ticket-sheet');
+  await expect(sheet).toBeVisible();
+  await expect(sheet.getByText('FLT-702', { exact: true })).toBeVisible();
+  await expect(sheet.getByText('Story')).toBeVisible();
+});
+
+test('archived-lane fix: a sheet whose lane vanishes closes cleanly with a receipt', async ({ page }) => {
+  await page.goto('/');
+  await page.getByTestId('lane-merged-1').click();
+  await expect(page.getByTestId('ticket-sheet')).toBeVisible();
+  // The lane behind the open sheet vanishes off the board entirely (swept, retired
+  // somewhere else, whatever) -- the sheet must not sit there blank forever.
+  await page.request.post('/__test/fixture?name=empty-fleet');
+  await expect(page.getByTestId('ticket-sheet')).toBeHidden({ timeout: 8_000 });
+  await expect(page.getByText(/no longer on the board/)).toBeVisible();
+  await page.request.post('/__test/fixture?name=human-board');
+});
+
 test('H2.6: the palette finds a lane by its title, not its run id', async ({ page }) => {
   await page.goto('/');
   await page.keyboard.press('Control+k');

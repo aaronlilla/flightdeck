@@ -603,9 +603,12 @@ export function createStubServer() {
           json(response, 200, { at: Date.now(), lanes: archived, tokensToday: 0, tokensPerMin: 0 });
           return;
         }
-        const tokensToday = db.lanes.reduce((sum, l) => sum + l.tokens, 0);
-        const tokensPerMin = db.lanes.reduce((sum, l) => sum + (l.state === 'running' ? l.tokensPerMin : 0), 0);
-        json(response, 200, { at: Date.now(), lanes: db.lanes, tokensToday, tokensPerMin });
+        // Matches the real server (ConsoleReads#lanesResponse): the default/`all=1`
+        // view never carries a retired lane -- that is `archived=1`'s own slot above.
+        const live = db.lanes.filter((l) => l.retiredAt === null);
+        const tokensToday = live.reduce((sum, l) => sum + l.tokens, 0);
+        const tokensPerMin = live.reduce((sum, l) => sum + (l.state === 'running' ? l.tokensPerMin : 0), 0);
+        json(response, 200, { at: Date.now(), lanes: live, tokensToday, tokensPerMin });
         return;
       }
       if (urlPath === '/thread' && method === 'GET') {
