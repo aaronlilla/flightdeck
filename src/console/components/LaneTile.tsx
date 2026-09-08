@@ -1,4 +1,5 @@
 import type { JSX, MouseEvent } from 'react';
+import { LaneCta } from './LaneCta.js';
 import { useEffect, useRef, useState } from 'react';
 
 import { actionable } from '../keyboard-actionable.js';
@@ -234,13 +235,10 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
             return (
               <div key={l.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
                 <span className="m" style={{ fontSize: '10.5px', color: 'var(--ink2)' }}>{l.now}</span>
-                <span
-                  className={earlierCta.cls}
-                  style={{ padding: '5px 8px', fontSize: 9, flex: 'none' }}
-                  {...actionable((e) => { e?.stopPropagation?.(); onCommand(l.id, earlierCta.cmd); })}
-                >
-                  {earlierCta.label}
-                </span>
+                <LaneCta
+                  lane={l} cmd={earlierCta.cmd} label={earlierCta.label} cls={earlierCta.cls}
+                  style={{ padding: '5px 8px', fontSize: 9, flex: 'none' }} onCommand={onCommand} stopPropagation
+                />
               </div>
             );
           })}
@@ -248,18 +246,16 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
       ) : null}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 7, borderTop: '1px solid var(--line)', paddingTop: 7 }}>
         <span className={freshnessClass(fresh)} style={{ alignSelf: 'flex-start' }}>{freshnessStamp(fresh)}</span>
-        <div style={{ display: 'flex', gap: 6 }}>
-          <span
-            className={cta.cls}
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+          <LaneCta
+            lane={lane} cmd={cta.cmd} label={cta.label} cls={cta.cls}
             // `.btnS` (2026-09-08: `Watch live`/`Gate log` etc.) carries a real 1px
             // border the other CTA classes render as a box-shadow ring instead --
             // a fixed height plus border-box keeps every CTA the same footer height
             // regardless of which button class a lane's own state picks.
             style={{ padding: '7px 9px', fontSize: '9.5px', flex: 1, height: 32, boxSizing: 'border-box' }}
-            {...actionable((e) => { e?.stopPropagation?.(); onCommand(lane.id, cta.cmd); })}
-          >
-            {cta.label}
-          </span>
+            onCommand={onCommand} stopPropagation
+          />
         </div>
         {/* One reserved line whether or not there is a reason, so a tile with one is no taller than its neighbours. */}
         <span className="m" title={why ?? undefined} style={{ fontSize: '9.5px', lineHeight: '14px', height: 14, color: 'var(--ink3)', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', display: 'block' }}>{why ?? ''}</span>

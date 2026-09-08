@@ -1,4 +1,6 @@
 import type { JSX } from 'react';
+import { ACTIONS } from '../actions.js';
+import { ActionButton } from './ActionButton.js';
 import { useState } from 'react';
 
 import type { ProposalsResponse, Rule } from '../../shared/console-model.js';
@@ -9,9 +11,6 @@ import { Linkify } from './Linkify.js';
 export interface FlightReviewProps {
   proposals: ProposalsResponse | null;
   now: number;
-  onApply: (id: string) => void;
-  onDismiss: (id: string) => void;
-  onRestore: (id: string) => void;
   onUndo: (jid: string) => void;
 }
 
@@ -42,8 +41,8 @@ function kindTaxon(kind: string): KindTaxon {
   return KIND_TAXONOMY[kind] ?? { label: kind.toUpperCase(), color: 'var(--ink3)', btnCls: 'btnP' };
 }
 
-function RuleCard({ rule, onApply, onDismiss, onRestore, onUndo }: {
-  rule: Rule; onApply: (id: string) => void; onDismiss: (id: string) => void; onRestore: (id: string) => void; onUndo: (jid: string) => void;
+function RuleCard({ rule, onUndo }: {
+  rule: Rule; onUndo: (jid: string) => void;
 }): JSX.Element {
   const [expanded, setExpanded] = useState(rule.expanded ?? false);
   const taxon = kindTaxon(rule.kind);
@@ -67,10 +66,10 @@ function RuleCard({ rule, onApply, onDismiss, onRestore, onUndo }: {
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, justifyContent: 'center' }}>
         {rule.status === 'open' ? (
           <>
-            <span className={taxon.btnCls} style={{ padding: 11 }} onClick={() => onApply(rule.id)}>Apply rule →</span>
+            <ActionButton spec={ACTIONS.applyProposal} args={[rule.id]} className={taxon.btnCls} style={{ padding: 11 }} busy="Applying…">Apply rule →</ActionButton>
             <div style={{ display: 'flex', gap: 8 }}>
               <span className="btnS" style={{ flex: 1 }} onClick={() => setExpanded(true)}>Evidence</span>
-              <span className="btnS" style={{ flex: 1 }} onClick={() => onDismiss(rule.id)}>Dismiss</span>
+              <ActionButton spec={ACTIONS.dismissProposal} args={[rule.id]} className="btnS" style={{ flex: 1 }} busy="Dismissing…">Dismiss</ActionButton>
             </div>
           </>
         ) : null}
@@ -83,7 +82,7 @@ function RuleCard({ rule, onApply, onDismiss, onRestore, onUndo }: {
         {rule.status === 'dismissed' ? (
           <>
             <span className="m" style={{ fontSize: 11, color: 'var(--ink3)', textAlign: 'center' }}>dismissed</span>
-            <span className="btnS" onClick={() => onRestore(rule.id)}>Restore</span>
+            <ActionButton spec={ACTIONS.restoreProposal} args={[rule.id]} className="btnS" busy="Restoring…">Restore</ActionButton>
           </>
         ) : null}
       </div>
@@ -92,7 +91,7 @@ function RuleCard({ rule, onApply, onDismiss, onRestore, onUndo }: {
 }
 
 /** Flight review: metrics tiles + Conductor proposals, each Apply/Evidence/Dismiss. */
-export function FlightReview({ proposals, now, onApply, onDismiss, onRestore, onUndo }: FlightReviewProps): JSX.Element {
+export function FlightReview({ proposals, now, onUndo }: FlightReviewProps): JSX.Element {
   const metrics = proposals?.metrics;
   const rules = proposals?.rules ?? [];
   return (
@@ -109,7 +108,7 @@ export function FlightReview({ proposals, now, onApply, onDismiss, onRestore, on
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         {rules.length > 0 ? (
-          rules.map((r) => <RuleCard key={r.id} rule={r} onApply={onApply} onDismiss={onDismiss} onRestore={onRestore} onUndo={onUndo} />)
+          rules.map((r) => <RuleCard key={r.id} rule={r} onUndo={onUndo} />)
         ) : (
           <div className="m" style={{ fontSize: 12, color: 'var(--ink3)', padding: '24px 0', textAlign: 'center' }}>no proposals yet.</div>
         )}

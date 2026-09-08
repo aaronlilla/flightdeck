@@ -1,4 +1,8 @@
 import type { JSX, RefObject } from 'react';
+import { ACTIONS, useAction } from '../actions.js';
+import type { ActionOutcome } from '../store.js';
+import { ActionOutcomeView } from './ActionButton.js';
+import { LaneCta } from './LaneCta.js';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import * as api from '../api.js';
@@ -41,10 +45,8 @@ export interface TicketSheetProps {
    *  re-fetching its own run thread, since the thread it already holds was fetched
    *  once on open and a send otherwise never appears in it until the sheet is
    *  closed and reopened. */
-  onSendLane: (id: string, text: string) => void | Promise<void>;
   /** C.1: the same composer's draft, delivered as a brief amendment (`POST /amend`)
    *  rather than a plain inbox message. */
-  onAmendLane: (id: string, text: string) => void | Promise<void>;
   onUndo: (jid: string) => void;
   onOpenJournal: (jid: string) => void;
 }
@@ -160,13 +162,16 @@ function StoryPanel({ story, repo }: { story: LaneStory | null; repo?: string | 
  *  either fact somewhere else on the sheet. Renders nothing (rather than a loading
  *  placeholder) until the first fetch lands, matching `StoryPanel`'s own convention. */
 function SummaryPanel({
-  summary, loadFailed, onRecheck, onReaudit, reauditRunning, auditRef, highlightAudit, repo,
+  summary, loadFailed, onRecheck, onReaudit, reauditRunning, recheckRunning, recheckResult, reauditResult, auditRef, highlightAudit, repo,
 }: {
   summary: LaneSummary | null;
   loadFailed?: boolean;
   onRecheck: () => void;
   onReaudit: () => void;
   reauditRunning: boolean;
+  recheckRunning: boolean;
+  recheckResult: ActionOutcome | null;
+  reauditResult: ActionOutcome | null;
   auditRef?: RefObject<HTMLDivElement | null>;
   highlightAudit?: boolean;
   repo?: string | null;
@@ -236,7 +241,13 @@ function SummaryPanel({
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <span className="m" data-testid="ticket-sheet-next" style={{ fontSize: '11.5px', fontWeight: 700, color: 'var(--ink)' }}><Linkify text={summary.next} repo={repo} /></span>
           <span style={{ flex: 1 }} />
-          <span className="btnS" style={{ padding: '6px 10px', fontSize: '9.5px' }} {...actionable(onRecheck)}>Re-check</span>
+          <span
+            className="btnS" style={{ padding: '6px 10px', fontSize: '9.5px', opacity: recheckRunning ? 0.55 : 1 }}
+            aria-busy={recheckRunning} aria-disabled={recheckRunning} data-testid="ticket-sheet-recheck"
+            {...actionable(recheckRunning ? () => undefined : onRecheck)}
+          >
+            {recheckRunning ? 'Re-checking…' : 'Re-check'}
+          </span>
           <span
             className="btnS"
             style={{ padding: '6px 10px', fontSize: '9.5px', opacity: reauditRunning ? 0.5 : 1, cursor: reauditRunning ? 'default' : 'pointer' }}
@@ -244,6 +255,14 @@ function SummaryPanel({
           >
             {reauditRunning ? 'Re-auditing…' : 'Re-audit'}
           </span>
+          {recheckResult?.kind === 'done' && !recheckRunning ? (
+            <span className="m" data-testid="ticket-sheet-recheck-result" style={{ fontSize: '10.5px', color: recheckResult.ok ? 'var(--run)' : 'var(--block)' }}>
+              {recheckResult.ok ? '✓' : '✕'} {recheckResult.text}
+            </span>
+          ) : null}
+          {reauditResult?.kind === 'done' && !reauditResult.ok ? (
+            <span className="m" data-testid="ticket-sheet-reaudit-result" style={{ fontSize: '10.5px', color: 'var(--block)' }}>✕ {reauditResult.text}</span>
+          ) : null}
         </div>
       </div>
     </div>
@@ -266,7 +285,7 @@ function JournalPanel({ entries, repo }: { entries: JournalNarrativeEntry[]; rep
 export function TicketSheet(props: TicketSheetProps): JSX.Element {
   const {
     lane, feedLive, now, focus, verbose = false, labelFor, onClose, onToggleVerbose, onCommand, onOpenCost, onOpenSandbox,
-    onSendLane, onAmendLane, onUndo, onOpenJournal,
+    onUndo, onOpenJournal,
   } = props;
   const [thread, setThread] = useState<Message[]>([]);
   const [journal, setJournal] = useState<JournalNarrativeEntry[]>([]);
@@ -309,9 +328,15 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
     // it while the sheet is open refetches the thread and the story in place.
   }, [lane.id, verbose]);
 
+  // Re-check and Re-audit are catalog actions: busy state, inline answer, rail
+  // receipt. The summary panel still takes the fresh summary a re-check returns.
+  const recheck = useAction(ACTIONS.recheckRun, lane.id);
+  const reaudit = useAction(ACTIONS.reauditRun, lane.id);
   const handleRecheck = useCallback(() => {
-    api.recheckRun(lane.id).then(setSummary).catch(() => undefined);
-  }, [lane.id]);
+    void recheck.run(lane.id).then((outcome) => {
+      if (outcome.kind === 'done' && outcome.ok) api.getRunSummary(lane.id).then(setSummary).catch(() => undefined);
+    });
+  }, [lane.id, recheck]);
 
   // Polls the summary until the audit's own head no longer trails the PR's current one
   // (`readiness.headMoved` false once a fresh attestation lands), so the button stays
@@ -329,11 +354,11 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
 
   const handleReaudit = useCallback(() => {
     setReauditRunning(true);
-    api.reauditRun(lane.id).then((result) => {
-      if (!result.started) { setReauditRunning(false); return; }
+    void reaudit.run(lane.id).then((outcome) => {
+      if (outcome.kind !== 'done' || !outcome.ok) { setReauditRunning(false); return; }
       reauditPollRef.current = setTimeout(() => pollAfterReaudit(lane.id), 3_000);
-    }).catch(() => setReauditRunning(false));
-  }, [lane.id, pollAfterReaudit]);
+    });
+  }, [lane.id, pollAfterReaudit, reaudit]);
 
   // W1: appends a reply row into this sheet's own thread for a rejected send or amend.
   // The rail already got its own receipt/refusal (App.tsx's `runAction`), but the rail
@@ -350,21 +375,23 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
   // A send lands on the run's own thread server-side, but the thread above was fetched
   // once on open and never polls -- without this, the message the operator just typed
   // would silently vanish from the sheet until it was closed and reopened.
+  const send = useAction(ACTIONS.sendToRun, lane.id);
+  const amend = useAction(ACTIONS.amendRun, lane.id);
   const sendAndRefetch = useCallback((text: string) => {
-    Promise.resolve(onSendLane(lane.id, text))
-      .then(() => api.getRunThread(lane.id, { verbose }))
-      .then((r) => setThread(r.messages))
-      .catch(appendSheetError);
-  }, [onSendLane, lane.id, verbose, appendSheetError]);
+    void send.run(lane.id, text).then((outcome) => {
+      if (outcome.kind === 'done' && !outcome.ok) { appendSheetError(new Error(outcome.text)); return; }
+      api.getRunThread(lane.id, { verbose }).then((r) => setThread(r.messages)).catch(appendSheetError);
+    });
+  }, [send, lane.id, verbose, appendSheetError]);
 
   // C.1: same shape as sendAndRefetch, but through the amendment path, so a correction
   // typed into this composer shows up in the run's own thread the same way a send does.
   const amendAndRefetch = useCallback((text: string) => {
-    Promise.resolve(onAmendLane(lane.id, text))
-      .then(() => api.getRunThread(lane.id, { verbose }))
-      .then((r) => setThread(r.messages))
-      .catch(appendSheetError);
-  }, [onAmendLane, lane.id, verbose, appendSheetError]);
+    void amend.run(lane.id, text).then((outcome) => {
+      if (outcome.kind === 'done' && !outcome.ok) { appendSheetError(new Error(outcome.text)); return; }
+      api.getRunThread(lane.id, { verbose }).then((r) => setThread(r.messages)).catch(appendSheetError);
+    });
+  }, [amend, lane.id, verbose, appendSheetError]);
 
   // Item 6: the thread scrolls to its newest message on open and after a send.
   // jsdom (the test environment) has no `scrollTo` on a plain element, so this
@@ -476,10 +503,10 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
             </div>
           </div>
           <span className={freshnessClass(fresh)}>{freshnessStamp(fresh)}</span>
-          <div style={{ display: 'flex', gap: 6 }}>
-            <span className={cta.cls} style={{ padding: '7px 11px', fontSize: '9.5px' }} {...actionable(() => onCommand(lane.id, cta.cmd))}>{cta.label}</span>
-            {canPause ? <span className="btnS" style={{ padding: '7px 11px', fontSize: '9.5px' }} {...actionable(() => onCommand(lane.id, 'pause'))}>Pause</span> : null}
-            {canKill ? <span className="btnR" style={{ padding: '7px 11px', fontSize: '9.5px' }} {...actionable(() => onCommand(lane.id, 'kill'))}>Kill</span> : null}
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end' }}>
+            <LaneCta lane={lane} cmd={cta.cmd} label={cta.label} cls={cta.cls} style={{ padding: '7px 11px', fontSize: '9.5px' }} onCommand={onCommand} />
+            {canPause ? <LaneCta lane={lane} cmd="pause" label="Pause" cls="btnS" style={{ padding: '7px 11px', fontSize: '9.5px' }} onCommand={onCommand} /> : null}
+            {canKill ? <LaneCta lane={lane} cmd="kill" label="Kill" cls="btnR" style={{ padding: '7px 11px', fontSize: '9.5px' }} onCommand={onCommand} /> : null}
           </div>
         </div>
       </div>
@@ -490,6 +517,7 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
       ) : null}
       <SummaryPanel
         summary={summary} loadFailed={summaryLoadFailed} onRecheck={handleRecheck} onReaudit={handleReaudit} reauditRunning={reauditRunning}
+        recheckRunning={recheck.pending} recheckResult={recheck.result} reauditResult={reaudit.result}
         auditRef={auditRef} highlightAudit={highlightAudit} repo={lane.repo}
       />
       <div style={{ padding: '20px 22px', borderBottom: '1px solid var(--line)' }}>
@@ -572,8 +600,24 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter' && draft.trim()) { sendAndRefetch(draft); setDraft(''); } }}
             />
-            <span className="btnP" style={{ padding: '5px 10px', fontSize: '9.5px' }} {...actionable(() => { if (draft.trim()) { sendAndRefetch(draft); setDraft(''); } })}>Send ⏎</span>
-            <span className="btnS" style={{ padding: '5px 10px', fontSize: '9.5px' }} {...actionable(() => { if (draft.trim()) { amendAndRefetch(draft); setDraft(''); } })}>Amend</span>
+            <span
+              className="btnP" style={{ padding: '5px 10px', fontSize: '9.5px', opacity: send.pending ? 0.55 : 1 }}
+              aria-busy={send.pending} aria-disabled={send.pending} data-testid={`action-sendToRun-${lane.id}`} data-pending={send.pending ? 'true' : 'false'}
+              {...actionable(() => { if (draft.trim() && !send.pending) { sendAndRefetch(draft); setDraft(''); } })}
+            >
+              {send.pending ? 'Sending…' : 'Send ⏎'}
+            </span>
+            <span
+              className="btnS" style={{ padding: '5px 10px', fontSize: '9.5px', opacity: amend.pending ? 0.55 : 1 }}
+              aria-busy={amend.pending} aria-disabled={amend.pending} data-testid={`action-amendRun-${lane.id}`} data-pending={amend.pending ? 'true' : 'false'}
+              {...actionable(() => { if (draft.trim() && !amend.pending) { amendAndRefetch(draft); setDraft(''); } })}
+            >
+              {amend.pending ? 'Amending…' : 'Amend'}
+            </span>
+          </div>
+          <div style={{ display: 'flex', gap: 10, minHeight: 0 }}>
+            <ActionOutcomeView result={send.result} pending={send.pending} specId="sendToRun" actionRef={lane.id} onConfirm={() => undefined} onDismiss={send.dismiss} onClear={send.clear} />
+            <ActionOutcomeView result={amend.result} pending={amend.pending} specId="amendRun" actionRef={lane.id} onConfirm={() => undefined} onDismiss={amend.dismiss} onClear={amend.clear} />
           </div>
         </div>
       </div>

@@ -3,7 +3,8 @@
  * `BlockersView`: chain ordering, later steps dimmed and disabled until the step above
  * clears, the checking/not-yet renderings, and the empty state.
  */
-import { render, screen } from '@testing-library/react';
+import { screen } from '@testing-library/react';
+import { render } from './helpers/with-store.js';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 

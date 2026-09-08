@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
-import { render, screen, waitFor } from '@testing-library/react';
+import { screen, waitFor } from '@testing-library/react';
+import { render } from './helpers/with-store.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import { CostSheet } from '../../src/console/components/CostSheet.js';

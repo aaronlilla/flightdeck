@@ -2,12 +2,15 @@ import type { JSX } from 'react';
 /**
  * The console's root component: one store, fed from `/lanes`, `/thread`,
  * `/journal`, `/integrations`, `/caps`, `/proposals` on load and every 5s
- * after (the fallback), refreshed early on any `/events` frame. A heartbeat
- * frame marks the feed live and stamps `feed.lastHeartbeatAt`; two failed
- * fetches in a row, or the socket closing, flips `feed.live` false.
+ * after (the fallback). A `{ type: 'slice' }` frame on `/events` refetches that
+ * one slice; any other named event refetches everything. A heartbeat frame marks
+ * the feed live, stamps `feed.lastHeartbeatAt` and re-reads `/state` alone (the
+ * build check); two failed fetches in a row, or the socket closing, flips
+ * `feed.live` false.
  */
-import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useReducer, useRef } from 'react';
 
+import { ACTIONS, ActionsContext, EFFECT_SLICES, type ActionsHost } from './actions.js';
 import * as api from './api.js';
 import { BlockersView } from './components/BlockersView.js';
 import { CommandPalette, buildPaletteItems } from './components/CommandPalette.js';
@@ -29,7 +32,8 @@ import { TicketSheet } from './components/TicketSheet.js';
 import { Toast } from './components/Toast.js';
 import { TopBar } from './components/TopBar.js';
 import { focusableIn, trapTab } from './focus-trap.js';
-import { initialState, reducer, StoreContext } from './store.js';
+import { initialState, reducer, StoreContext, type ActionLink } from './store.js';
+import { isSliceEvent, type SliceName } from '../shared/console-events.js';
 import type { Message } from '../shared/console-model.js';
 import { commandEcho } from '../shared/humanize.js';
 import { EventStream, type EventStreamOptions } from './ws.js';
@@ -46,12 +50,6 @@ function receiptCard(jid: string | null, text: string, undoable: boolean): Messa
 
 export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   const [state, dispatch] = useReducer(reducer, undefined, initialState);
-  const [pendingConfirm, setPendingConfirm] = useState<{ k: string; id: string; cmd: 'kill' | 'merge'; card: Message } | null>(null);
-  // H2.3: the two bulk actions in the filter bar share this same confirm-card
-  // mechanism, keyed by kind rather than by lane id.
-  const [pendingBulk, setPendingBulk] = useState<{ k: string; kind: 'retire-finished' | 'merge-ready'; card: Message } | null>(null);
-  const pendingBulkRef = useRef(pendingBulk);
-  pendingBulkRef.current = pendingBulk;
   const failCount = useRef(0);
   const servedBuildRef = useRef<string | null>(null);
   const mounted = useRef(true);
@@ -64,34 +62,13 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   // triggers already asks for the mode the operator just clicked.
   const verboseRef = useRef(state.verbose);
   verboseRef.current = state.verbose;
-  // The confirm card is client-only until Confirm is clicked, but `refresh()` replaces
-  // `state.thread` wholesale from the server's `/thread`, which never echoes it back.
-  // `/events` fires on every journal event from every lane, including the one an
-  // operator is mid-confirm on killing, so a refresh can land in the gap between the
-  // card appearing and the click -- silently, with no error. Kept in a ref (rather than
-  // read from `pendingConfirm` directly) because `refresh` is a stable `useCallback`
-  // with no dependency on it.
-  const pendingConfirmRef = useRef(pendingConfirm);
-  pendingConfirmRef.current = pendingConfirm;
-  // D2.1: `runAction` appends a receipt/refusal card (via `appendReceipt`) and then
-  // immediately awaits `refresh()`. `refresh()` replaces `state.thread` wholesale from
-  // `/thread`, which has no row for a client-only card the way it has none for the
-  // confirm card above -- so without this, a 501's refusal card renders for one tick
-  // and vanishes the instant that same `refresh()` call lands. Kept as a short-lived
-  // list (same mechanism as `pendingConfirmRef`) rather than merged in forever: a card
-  // ages out once the server's own thread has had a reasonable window to carry it, so
-  // this never grows into a second, unbounded copy of the thread.
-  const localCardsRef = useRef<Message[]>([]);
-  const LOCAL_CARD_TTL_MS = 30_000;
   // A server round-trip confirm/plan card (from `POST /command`) is persisted to
   // `thread.jsonl` unresolved and never mutated there once its own button is clicked,
-  // so `refresh()`'s wholesale replace of `state.thread` would otherwise keep
-  // reviving it as "awaiting you"/"awaiting go" with live buttons forever. Clicking
-  // Confirm/Run plan/Not now records the outcome here, keyed by the card's own `k`
-  // (found by matching the exact btn command just sent), and `refresh()` re-applies
-  // it onto the freshly fetched thread until it ages out, the same TTL idea as
-  // `localCardsRef`, applied to a field rather than a whole card.
+  // so a `/thread` replace would otherwise keep reviving it as "awaiting you" with live
+  // buttons forever. Clicking Confirm/Run plan/Not now records the outcome here, keyed
+  // by the card's own `k`, and every thread fetch re-applies it until it ages out.
   const resolvedOverridesRef = useRef<Map<string, { resolved: 'confirmed' | 'declined'; at: number }>>(new Map());
+  const LOCAL_CARD_TTL_MS = 30_000;
   // Load-verify finding: the 5s poll and every `/events` frame both call `refresh`, with
   // nothing stopping either from starting a second one while the first is still waiting
   // on a slow `/lanes` (the response that a few thousand lanes over a few hundred
@@ -99,6 +76,79 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   // only compounds the load that caused it -- the fix is to skip a refresh outright
   // while one is already in flight, never to queue it.
   const refreshing = useRef(false);
+
+  // The store re-attaches this page's own local cards on every `thread` replace (see
+  // `localCards` in store.ts); the resolved-override patch above is the one thread
+  // adjustment that still lives here.
+  const applyResolved = useCallback((messages: Message[]): Message[] => {
+    const cutoff = Date.now() - LOCAL_CARD_TTL_MS;
+    for (const [k, override] of [...resolvedOverridesRef.current]) {
+      if (override.at < cutoff) resolvedOverridesRef.current.delete(k);
+    }
+    if (resolvedOverridesRef.current.size === 0) return messages;
+    return messages.map((m) => {
+      const override = resolvedOverridesRef.current.get(m.k);
+      return override && m.resolved === undefined ? { ...m, resolved: override.resolved } : m;
+    });
+  }, []);
+
+  /** One slice, refetched on its own: what a `{ type: 'slice' }` frame asks for, and
+   *  what an action's own effect refetches the moment it answers. */
+  const refreshSlice = useCallback(async (slice: SliceName) => {
+    try {
+      switch (slice) {
+        case 'lanes': {
+          const lanes = await api.getLanes({ all: true });
+          if (mounted.current) dispatch({ type: 'lanes', lanes: lanes.lanes, links: lanes.links });
+          break;
+        }
+        case 'conductor': {
+          const thread = await api.getThread({ verbose: verboseRef.current });
+          if (mounted.current) dispatch({ type: 'thread', thread: applyResolved(thread.messages) });
+          break;
+        }
+        case 'journal': {
+          const journal = await api.getJournal();
+          if (mounted.current) dispatch({ type: 'journal', journal: journal.rows });
+          break;
+        }
+        case 'integrations': {
+          const integrations = await api.getIntegrations();
+          if (mounted.current) dispatch({ type: 'integrations', integrations: integrations.items });
+          break;
+        }
+        case 'caps': {
+          const caps = await api.getCaps();
+          if (mounted.current) dispatch({ type: 'caps', caps });
+          break;
+        }
+        case 'proposals': {
+          const proposals = await api.getProposals();
+          if (mounted.current) dispatch({ type: 'proposals', proposals });
+          break;
+        }
+        case 'queue': {
+          const queue = await api.getQueue();
+          if (mounted.current) dispatch({ type: 'queue', items: queue.items, paused: queue.paused, maxInFlight: queue.maxInFlight, pauseReason: queue.pauseReason });
+          break;
+        }
+        case 'blockers': {
+          const blockers = await api.getBlockers();
+          if (mounted.current) dispatch({ type: 'blockers', blockers });
+          break;
+        }
+        case 'accounts':
+          // No accounts slice is read by this console yet; the frame is accepted so a
+          // server publishing it is not an error here.
+          break;
+        default:
+          break;
+      }
+    } catch {
+      // A single slice failing to refetch is not a lost feed: the 5s poll reports
+      // that on its own terms. Nothing here is swallowed into a green.
+    }
+  }, [applyResolved]);
 
   const refresh = useCallback(async () => {
     if (refreshing.current) return;
@@ -143,34 +193,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       const endedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
       dispatch({ type: 'fetch-latency', ms: Math.round(endedAt - startedAt) });
       if (lanes) dispatch({ type: 'lanes', lanes: lanes.lanes, links: lanes.links });
-      if (thread) {
-        // Re-attach an unconfirmed confirm card the server's own `/thread` never
-        // carries, rather than letting this refetch silently erase the last line of
-        // defence before an irreversible action.
-        const pending = pendingConfirmRef.current;
-        const pendingBulkCard = pendingBulkRef.current;
-        let incomingThread = pending && !thread.messages.some((m) => m.k === pending.k)
-          ? [...thread.messages, pending.card]
-          : thread.messages;
-        if (pendingBulkCard && !incomingThread.some((m) => m.k === pendingBulkCard.k)) {
-          incomingThread = [...incomingThread, pendingBulkCard.card];
-        }
-        const cutoff = Date.now() - LOCAL_CARD_TTL_MS;
-        localCardsRef.current = localCardsRef.current.filter((card) => card.ts >= cutoff);
-        for (const card of localCardsRef.current) {
-          if (!incomingThread.some((m) => m.k === card.k)) incomingThread = [...incomingThread, card];
-        }
-        for (const [k, override] of [...resolvedOverridesRef.current]) {
-          if (override.at < cutoff) resolvedOverridesRef.current.delete(k);
-        }
-        if (resolvedOverridesRef.current.size > 0) {
-          incomingThread = incomingThread.map((m) => {
-            const override = resolvedOverridesRef.current.get(m.k);
-            return override && m.resolved === undefined ? { ...m, resolved: override.resolved } : m;
-          });
-        }
-        dispatch({ type: 'thread', thread: incomingThread });
-      }
+      if (thread) dispatch({ type: 'thread', thread: applyResolved(thread.messages) });
       if (journal) dispatch({ type: 'journal', journal: journal.rows });
       if (integrations) dispatch({ type: 'integrations', integrations: integrations.items });
       if (caps) dispatch({ type: 'caps', caps });
@@ -214,9 +237,23 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     const stream = new EventStream(
       {
         onEvent: (event) => {
+          if (isSliceEvent(event)) {
+            void refreshSlice(event.slice);
+            return;
+          }
           if ((event as { type?: string }).type === 'heartbeat') {
             dispatch({ type: 'heartbeat', at: (event as { at?: number }).at ?? Date.now() });
             dispatch({ type: 'feed-live' });
+            // The build check rides the heartbeat: `/state` alone, never every slice.
+            void api.getState().then((consoleState) => {
+              if (!mounted.current || !consoleState.build) return;
+              if (servedBuildRef.current && servedBuildRef.current !== consoleState.build) {
+                window.location.reload();
+                return;
+              }
+              servedBuildRef.current = consoleState.build;
+            }).catch(() => undefined);
+            return;
           }
           void refresh();
         },
@@ -236,13 +273,24 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       clearInterval(clock);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refresh]);
+  }, [refresh, refreshSlice]);
 
   const appendReceipt = useCallback((jid: string | null, text: string, undoable: boolean) => {
-    const card = receiptCard(jid, text, undoable);
-    localCardsRef.current = [...localCardsRef.current, card];
-    dispatch({ type: 'thread-append', messages: [card] });
+    dispatch({ type: 'thread-append', messages: [receiptCard(jid, text, undoable)], local: true });
   }, []);
+
+  /** What every `useAction` in the tree needs from the page: the slice refetch, how
+   *  to follow a link to an effect, and how to release a declined server confirm. */
+  const actionsHost: ActionsHost = {
+    refreshSlices: (slices) => { for (const slice of slices) void refreshSlice(slice); },
+    follow: (link: ActionLink) => {
+      if (link.kind === 'lane') dispatch({ type: 'sheet', sheet: { type: 'ticket', id: link.id } });
+      else if (link.kind === 'view') dispatch({ type: 'view', view: link.view });
+      else if (link.kind === 'journal') dispatch({ type: 'sheet', sheet: { type: 'journal', run: link.jid } });
+      else if (typeof window !== 'undefined') window.open(link.href, '_blank', 'noopener');
+    },
+    release: (token) => { void api.sendCommand(`dismiss ${token}`).catch(() => undefined); },
+  };
 
   // A person's name for a lane id or ticket key -- the ticket, else the title, else
   // null (the machine id it came from, never printed as a fallback). Every place the
@@ -256,110 +304,13 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     return null;
   }, [state.lanes, state.archivedLanes]);
 
-  const runAction = useCallback(async (fn: () => Promise<{ ok: boolean; jid: string | null; message: string; undoable: boolean }>) => {
-    try {
-      const result = await fn();
-      appendReceipt(result.jid, result.message, result.undoable);
-    } catch (caught) {
-      const message = caught instanceof api.ApiError ? caught.message : 'the action did not go through';
-      appendReceipt(null, message, false);
-    }
-    await refresh();
-  }, [appendReceipt, refresh]);
-
-  // The rail's own receipt is invisible from the Queue tab, so an add/remove/retry/
-  // merge/promote there landed with no feedback at all short of switching tabs to check
-  // the rail. A toast (the component already existed, unused) shows the same text on
-  // the Queue tab itself, and clears itself after a few seconds the way a toast should.
+  // A toast shows the same text an action's own control shows, on views where the
+  // rail is not mounted (queue, settings). The control's inline result is the primary
+  // feedback; this is the glance-level copy.
   const queueToast = useCallback((text: string, ok: boolean) => {
     dispatch({ type: 'toast', toast: { glyph: ok ? '✓' : '✕', title: text, sub: '', big: '', color: ok ? undefined : 'var(--block)' } });
     setTimeout(() => dispatch({ type: 'toast', toast: null }), 4000);
   }, []);
-
-  const runQueueAction = useCallback(async (fn: () => Promise<{ ok: boolean; jid: string | null; message: string; undoable: boolean }>) => {
-    try {
-      const result = await fn();
-      appendReceipt(result.jid, result.message, result.undoable);
-      queueToast(result.message, result.ok);
-    } catch (caught) {
-      const message = caught instanceof api.ApiError ? caught.message : 'the action did not go through';
-      appendReceipt(null, message, false);
-      queueToast(message, false);
-    }
-    await refresh();
-  }, [appendReceipt, refresh, queueToast]);
-
-  const resolveConfirm = useCallback((k: string, confirmed: boolean) => {
-    dispatch({
-      type: 'thread',
-      thread: state.thread.map((m) => (m.k === k ? { ...m, resolved: confirmed ? 'confirmed' : 'declined' } : m)),
-    });
-    if (confirmed && pendingConfirm && pendingConfirm.k === k) {
-      const fn = pendingConfirm.cmd === 'kill' ? () => api.killRun(pendingConfirm.id, 'operator confirmed') : () => api.mergeRun(pendingConfirm.id);
-      void runAction(fn);
-    }
-    if (confirmed && pendingBulk && pendingBulk.k === k) {
-      if (pendingBulk.kind === 'retire-finished') {
-        void runAction(async (): Promise<{ ok: boolean; jid: string | null; message: string; undoable: boolean }> => {
-          const r = await api.postRetireFinished();
-          return { ok: r.ok, jid: null, message: `retired ${r.retired.length} lanes`, undoable: false };
-        }).then(() => {
-          void api.getLanes({ archived: true }).then((res) => dispatch({ type: 'archived-lanes', lanes: res.lanes })).catch(() => undefined);
-        });
-      } else {
-        void runAction(async (): Promise<{ ok: boolean; jid: string | null; message: string; undoable: boolean }> => {
-          const r = await api.postMergeReady();
-          const merged = r.outcomes.filter((row) => row.ok);
-          const failed = r.outcomes.filter((row) => !row.ok);
-          const tail = failed.length > 0 ? `, ${failed.length} could not merge` : '';
-          return { ok: r.ok, jid: null, message: `merged ${merged.length} lanes${tail}`, undoable: false };
-        });
-      }
-    }
-    setPendingConfirm(null);
-    setPendingBulk(null);
-  }, [state.thread, pendingConfirm, pendingBulk, runAction]);
-
-  const onCleanUp = useCallback(() => {
-    void (async () => {
-      try {
-        const preview = await api.getRetireFinishedPreview();
-        if (preview.items.length === 0) { appendReceipt(null, 'nothing to retire.', false); return; }
-        const k = `confirm-cleanup-${Date.now()}`;
-        const titles = preview.items.map((i) => i.title ?? i.id).join(', ');
-        const card: Message = {
-          k, type: 'confirm', text: `Retire ${preview.items.length} finished lanes:`, ts: Date.now(), source: 'console', blast: titles,
-        };
-        setPendingBulk({ k, kind: 'retire-finished', card });
-        dispatch({ type: 'thread-append', messages: [card] });
-      } catch (caught) {
-        appendReceipt(null, caught instanceof api.ApiError ? caught.message : 'clean up did not go through', false);
-      }
-    })();
-  }, [appendReceipt]);
-
-  const onMergeReady = useCallback(() => {
-    void (async () => {
-      try {
-        const preview = await api.getMergeReadyPreview();
-        if (preview.ready.length === 0 && preview.notReady.length === 0) { appendReceipt(null, 'nothing is ready to merge.', false); return; }
-        const k = `confirm-merge-ready-${Date.now()}`;
-        const readyPart = preview.ready.map((r) => (r.pr ? `${r.title ?? r.id} (PR #${r.pr.no})` : (r.title ?? r.id))).join(', ');
-        const notReadyPart = preview.notReady.map((r) => `${r.title ?? r.id}: ${r.why}`).join('; ');
-        const blast = [
-          preview.ready.length > 0 ? `ready: ${readyPart}` : null,
-          preview.notReady.length > 0 ? `not ready: ${notReadyPart}` : null,
-        ].filter(Boolean).join(' · ');
-        const card: Message = {
-          k, type: 'confirm', text: `Merge ${preview.ready.length} ready lanes:`, ts: Date.now(), source: 'console', blast,
-        };
-        setPendingBulk({ k, kind: 'merge-ready', card });
-        dispatch({ type: 'thread-append', messages: [card] });
-      } catch (caught) {
-        appendReceipt(null, caught instanceof api.ApiError ? caught.message : 'merge ready did not go through', false);
-      }
-    })();
-  }, [appendReceipt]);
 
   // The prototype's own `handle(text)` -- confirm/decline resolution, else a
   // POST /command round trip -- runs identically whether the text was typed into
@@ -369,17 +320,8 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   const processCommand = useCallback((text: string) => {
     const trimmed = text.trim();
     if (!trimmed) return;
-    // A lane-tile Kill/Merge and the two filter-bar bulk actions each keep their own
-    // pending confirm as local state (see `pendingConfirm`/`pendingBulk` above) and
-    // never round-trip to the server for the confirm/decline itself, so only a
-    // command that names exactly that pending card's own `k` is handled here. Any
-    // other `confirm <token>` / `dismiss <token>` / `run <token>` (a card the server
-    // issued from a typed command) falls through to `api.sendCommand` below, which is
-    // where its token actually lives.
-    if (pendingConfirm && trimmed === `confirm ${pendingConfirm.k}`) { resolveConfirm(pendingConfirm.k, true); return; }
-    if (pendingConfirm && trimmed === `decline ${pendingConfirm.k}`) { resolveConfirm(pendingConfirm.k, false); return; }
-    if (pendingBulk && trimmed === `confirm ${pendingBulk.k}`) { resolveConfirm(pendingBulk.k, true); return; }
-    if (pendingBulk && trimmed === `decline ${pendingBulk.k}`) { resolveConfirm(pendingBulk.k, false); return; }
+    // Every confirm, dismiss and run token lives in the server's own pending map, so
+    // every one of them round-trips through `/command`; nothing is resolved locally.
     // Item 7: clicking a question's option (or typing a free-text answer) still
     // bypasses `onRailSend`'s operator bubble -- this is the one place that path
     // still needs one, since "Answered: <option>" is the one honest thing to say
@@ -387,13 +329,18 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     // echoes nothing, matching the design this rail already had.
     if (/^answer\s/i.test(trimmed)) {
       const card: Message = { k: `op-${Date.now()}-${Math.random()}`, type: 'operator', text: commandEcho(trimmed, { labelFor }), ts: Date.now(), source: 'operator' };
-      localCardsRef.current = [...localCardsRef.current, card];
-      dispatch({ type: 'thread-append', messages: [card] });
+      dispatch({ type: 'thread-append', messages: [card], local: true });
     }
+    // The composer's own contract: pending within one render (the rail reads this
+    // key), the reply cards as the inline result, and the effect refetched.
+    const key = 'sendCommand:rail';
+    dispatch({ type: 'action-pending', key });
     void (async () => {
       try {
         const response = await api.sendCommand(trimmed);
         if (response.cards.length > 0) dispatch({ type: 'thread-append', messages: response.cards });
+        const refused = response.cards.some((card) => card.type === 'refusal');
+        dispatch({ type: 'action-result', key, result: { kind: 'done', ok: !refused, text: response.cards[0]?.text ?? 'no reply', jid: null, at: Date.now(), link: null } });
         // The card this command actioned lives only in `thread.jsonl`, unresolved:
         // see `resolvedOverridesRef` above for why `refresh()` needs this recorded
         // rather than patched once here.
@@ -404,11 +351,13 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
           if (target) resolvedOverridesRef.current.set(target.k, { resolved: resolvedValue, at: Date.now() });
         }
       } catch (caught) {
-        appendReceipt(null, caught instanceof api.ApiError ? caught.message : 'the command did not go through', false);
+        const message = caught instanceof api.ApiError ? caught.message : 'the command did not go through';
+        appendReceipt(null, message, false);
+        dispatch({ type: 'action-result', key, result: { kind: 'done', ok: false, text: message, jid: null, at: Date.now(), link: null } });
       }
-      await refresh();
+      for (const slice of EFFECT_SLICES[ACTIONS.sendCommand.effect]) void refreshSlice(slice);
     })();
-  }, [pendingConfirm, pendingBulk, resolveConfirm, appendReceipt, refresh, labelFor]);
+  }, [appendReceipt, refreshSlice, labelFor]);
 
   // D2.2: TicketSheet's own run-thread `MessageCard` wires `onCommand` to
   // `(text) => onCommand(lane.id, text)` -- this same exact-match switch. A
@@ -420,22 +369,6 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   // up on the exact same command path either way.
   const onCommand = useCallback((id: string, cmd: string) => {
     const lane = state.lanes.find((l) => l.id === id);
-    if (cmd === 'kill' || cmd === 'merge') {
-      const k = `confirm-${id}-${Date.now()}`;
-      const card: Message = {
-        k, type: 'confirm', text: `${cmd === 'kill' ? 'Kill' : 'Merge'} ${labelFor(id) ?? id}?`, ts: Date.now(), source: 'console',
-        blast: cmd === 'kill' ? 'discards the working diff and stops the sandbox.' : 'merges the PR and closes the ticket.',
-      };
-      // Kept alongside the card's own thread entry so `refresh()` can put it back
-      // verbatim if a `/thread` refetch lands before the operator confirms.
-      setPendingConfirm({ k, id, cmd, card });
-      // The confirm card lives in the rail; a sheet's modal overlay sits above it and
-      // would make Confirm/Not now unreachable, so the sheet closes the moment an
-      // irreversible action starts.
-      dispatch({ type: 'sheet', sheet: null });
-      dispatch({ type: 'thread-append', messages: [card] });
-      return;
-    }
     if (cmd === 'watch' || cmd === 'council' || cmd === 'gate-log' || cmd === 'answer') {
       dispatch({ type: 'sheet', sheet: { type: 'ticket', id, ...(cmd === 'council' ? { focus: 'audit' } : {}) } });
       return;
@@ -444,31 +377,12 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       if (lane?.pr?.url && typeof window !== 'undefined') window.open(lane.pr.url, '_blank', 'noopener');
       return;
     }
-    if (cmd === 'reconnect-aws') {
-      if (lane?.blockedBy) {
-        void (async () => {
-          try {
-            const r = await api.reconnectIntegration(lane.blockedBy as string);
-            appendReceipt(r.jid, r.message, false);
-          } catch (caught) {
-            appendReceipt(null, caught instanceof api.ApiError ? caught.message : 'reconnect did not go through', false);
-          }
-          await refresh();
-        })();
-      }
-      return;
-    }
-    if (cmd === 'pause') void runAction(() => api.pauseRun(id));
-    else if (cmd === 'resume') void runAction(() => api.resumeRun(id));
-    else if (cmd === 'compact') void runAction(() => api.compactRun(id));
-    else if (cmd === 'verify') void runAction(() => api.verifyRun(id));
-    else if (cmd === 'reopen') void runAction(() => api.reopenRun(id));
-    else if (cmd === 'unretire') {
-      void runAction(() => api.unretireRun(id)).then(() => {
-        void api.getLanes({ archived: true }).then((r) => dispatch({ type: 'archived-lanes', lanes: r.lanes })).catch(() => undefined);
-      });
-    } else processCommand(cmd);
-  }, [state.lanes, appendReceipt, refresh, runAction, processCommand, labelFor]);
+    // A lane mutation (kill, merge, pause, resume, compact, verify, reopen, unretire,
+    // reconnect) renders as `LaneCta`, which runs the catalog action where it was
+    // clicked; a command reaching here that is none of the openers above is free text
+    // from a card button and goes to the grammar.
+    processCommand(cmd);
+  }, [state.lanes, processCommand]);
 
   // Typed composer text (and the rail's quick-command chips, which the prototype
   // also routes through `send()`) echoes an operator bubble before processing.
@@ -484,8 +398,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     const card: Message = {
       k: `op-${Date.now()}-${Math.random()}`, type: 'operator', text: commandEcho(trimmed, { labelFor }), ts: Date.now(), source: 'operator',
     };
-    localCardsRef.current = [...localCardsRef.current, card];
-    dispatch({ type: 'thread-append', messages: [card] });
+    dispatch({ type: 'thread-append', messages: [card], local: true });
     processCommand(trimmed);
   }, [processCommand, labelFor]);
 
@@ -493,7 +406,20 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   // straight to a method call, never to `send()`, so no fake operator bubble.
   const onRailCommand = useCallback((text: string) => { processCommand(text); }, [processCommand]);
 
-  const onUndo = useCallback((jid: string) => { void runAction(() => api.undoJournal(jid)); }, [runAction]);
+  // Undo from a rail card or the journal sheet: the catalog entry, run without a
+  // control of its own, so the receipt still lands in the rail and the slices refetch.
+  const onUndo = useCallback((jid: string) => {
+    const key = `undoJournal:${jid}`;
+    dispatch({ type: 'action-pending', key });
+    void api.undoJournal(jid).then((result) => {
+      dispatch({ type: 'action-result', key, result: { kind: 'done', ok: result.ok, text: result.message, jid: result.jid, at: Date.now(), link: { kind: 'journal', jid, label: 'journal' } } });
+      appendReceipt(result.jid, result.message, result.undoable);
+    }, (caught: unknown) => {
+      const message = caught instanceof api.ApiError ? caught.message : 'the undo did not go through';
+      dispatch({ type: 'action-result', key, result: { kind: 'done', ok: false, text: message, jid: null, at: Date.now(), link: null } });
+      appendReceipt(null, message, false);
+    }).then(() => { for (const slice of EFFECT_SLICES.journal) void refreshSlice(slice); });
+  }, [appendReceipt, refreshSlice]);
 
   const onOpenJournal = useCallback((jid: string) => {
     dispatch({ type: 'sheet', sheet: { type: 'journal', run: jid } });
@@ -518,29 +444,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
 
   const needs = buildNeeds(state.lanes, state.integrations, (kind, id) => {
     if (kind === 'lane') dispatch({ type: 'sheet', sheet: { type: 'ticket', id } });
-    else void (async () => {
-      try {
-        const r = await api.reconnectIntegration(id);
-        appendReceipt(r.jid, r.message, false);
-      } catch (caught) {
-        appendReceipt(null, caught instanceof api.ApiError ? caught.message : 'reconnect did not go through', false);
-      }
-      await refresh();
-    })();
-  }, () => dispatch({ type: 'view', view: 'settings' }), state.now, (key) => {
-    void (async () => {
-      try {
-        // `receiptCard` reads success off `jid` being non-null (`type: jid ? 'receipt' :
-        // 'refusal'`), so a genuine success with no jid would render as a red Refused
-        // card -- pass the server's own jid through rather than a hardcoded null.
-        const dismissed = await api.dismissAsk(key);
-        appendReceipt(dismissed.jid, 'stale ask dismissed.', false);
-      } catch (caught) {
-        appendReceipt(null, caught instanceof api.ApiError ? caught.message : 'dismiss did not go through', false);
-      }
-      await refresh();
-    })();
-  });
+  }, () => dispatch({ type: 'view', view: 'settings' }), state.now);
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent): void {
@@ -592,6 +496,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
 
   return (
     <StoreContext.Provider value={{ state, dispatch }}>
+      <ActionsContext.Provider value={actionsHost}>
       <div className={`${state.theme} app`} tabIndex={-1}>
         <DisconnectedBanner feed={state.feed} onRetry={() => void refresh()} />
         <QueueOffBanner queueOn={state.queueOn} />
@@ -628,8 +533,6 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
                 }}
                 onSort={(sort) => dispatch({ type: 'sort', sort })}
                 onToggleProbes={() => dispatch({ type: 'toggle-probes' })}
-                onCleanUp={onCleanUp}
-                onMergeReady={onMergeReady}
               />
               <LanesGrid
                 lanes={state.filter === 'archived' ? state.archivedLanes : state.lanes}
@@ -655,73 +558,18 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
           <Settings
             integrations={state.integrations} caps={state.caps} journalCount={state.journal.length}
             journal={state.journal} rules={state.proposals?.rules ?? []} lanes={state.lanes} feed={state.feed} now={state.now}
-            onCheck={(id) => void (async () => {
-              try {
-                const r = await api.checkIntegration(id);
-                dispatch({ type: 'integrations', integrations: r.items });
-              } catch (caught) {
-                // The rail (where a receipt/refusal card would render) is only mounted
-                // on the board view, so a Settings-screen action needs the toast --
-                // visible on every view -- not just a receipt nobody here can see.
-                queueToast(caught instanceof api.ApiError ? caught.message : 'check did not go through', false);
-              }
-            })()}
-            onReconnect={(id) => void (async () => {
-              try {
-                const r = await api.reconnectIntegration(id);
-                appendReceipt(r.jid, r.message, false);
-                queueToast(r.message, true);
-              } catch (caught) {
-                queueToast(caught instanceof api.ApiError ? caught.message : 'reconnect did not go through', false);
-              }
-              await refresh();
-            })()}
-            onCheckAll={() => void refresh()}
-            onSaveCaps={async (dailyTokens, runTokens) => {
-              try {
-                const caps = await api.setCaps({ dailyTokens, runTokens });
-                dispatch({ type: 'caps', caps });
-              } catch (caught) {
-                appendReceipt(null, caught instanceof api.ApiError ? caught.message : 'caps did not save', false);
-              }
-            }}
+            onCheckAll={() => void refreshSlice('integrations')}
+            onToast={queueToast}
             onOpenJournal={() => dispatch({ type: 'sheet', sheet: { type: 'journal' } })}
           />
         ) : null}
         {state.view === 'review' ? (
-          <FlightReview
-            proposals={state.proposals} now={state.now}
-            onApply={(id) => void runAction(() => api.applyProposal(id)).then(() => refresh())}
-            onDismiss={(id) => void runAction(() => api.dismissProposal(id))}
-            onRestore={(id) => void runAction(() => api.restoreProposal(id))}
-            onUndo={onUndo}
-          />
+          <FlightReview proposals={state.proposals} now={state.now} onUndo={onUndo} />
         ) : null}
         {state.view === 'queue' ? (
           <QueueView
             items={state.queue} paused={state.queuePaused} pauseReason={state.queuePauseReason} maxInFlight={state.queueMaxInFlight}
-            onAdd={(source, input) => void (async () => {
-              try {
-                const result = await api.addToQueue({ source, input });
-                if (result.ok) {
-                  queueToast(`added ${result.items.length} item${result.items.length === 1 ? '' : 's'} to the queue`, true);
-                } else {
-                  appendReceipt(null, result.error ?? 'the add did not go through', false);
-                  queueToast(result.error ?? 'the add did not go through', false);
-                }
-              } catch (caught) {
-                const message = caught instanceof api.ApiError ? caught.message : 'the add did not go through';
-                appendReceipt(null, message, false);
-                queueToast(message, false);
-              }
-              await refresh();
-            })()}
-            onRemove={(id) => void runQueueAction(() => api.removeQueueItem(id))}
-            onRetry={(id) => void runQueueAction(() => api.retryQueueItem(id))}
-            onPause={() => void runQueueAction(() => api.pauseQueue())}
-            onResume={() => void runQueueAction(() => api.resumeQueue())}
-            onMerge={(id) => void runQueueAction(() => api.mergeQueueItem(id))}
-            onPromote={(id, version, message) => void runQueueAction(() => api.promoteQueueItem(id, version, message))}
+            onToast={queueToast}
           />
         ) : null}
         {state.view === 'blockers' ? (
@@ -734,8 +582,6 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
             // step straight into "Resolved today" with no transient in between. The
             // normal 5s poll (or the next `/events` heartbeat) picks up the real state
             // once the operator has had a chance to see the outcome of their own click.
-            onResolve={(id) => api.resolveBlocker(id)}
-            onCheck={(id) => api.checkBlocker(id)}
           />
         ) : null}
 
@@ -766,15 +612,13 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
                   onCommand={onCommand}
                   onOpenCost={(id) => dispatch({ type: 'sheet', sheet: { type: 'cost', id } })}
                   onOpenSandbox={(id) => dispatch({ type: 'sheet', sheet: { type: 'sandbox', id } })}
-                  onSendLane={(id, textMsg) => runAction(() => api.sendToRun(id, textMsg))}
-                  onAmendLane={(id, textMsg) => runAction(() => api.amendRun(id, textMsg))}
                   onOpenJournal={onOpenJournal}
                   onUndo={onUndo}
                   labelFor={labelFor}
                 />
               ) : null}
               {state.sheet.type === 'cost' && sheetLane ? (
-                <CostSheet lane={sheetLane} onClose={() => dispatch({ type: 'sheet', sheet: null })} onKill={(id) => onCommand(id, 'kill')} />
+                <CostSheet lane={sheetLane} onClose={() => dispatch({ type: 'sheet', sheet: null })} />
               ) : null}
               {state.sheet.type === 'fleet-cost' ? (
                 <FleetCostSheet
@@ -788,7 +632,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
               ) : null}
               {state.sheet.type === 'sandbox' && sheetLane ? (
                 <SandboxSheet
-                  lane={sheetLane} onClose={() => dispatch({ type: 'sheet', sheet: null })} onKill={(id) => onCommand(id, 'kill')}
+                  lane={sheetLane} onClose={() => dispatch({ type: 'sheet', sheet: null })}
                   onCopiedPath={(path) => queueToast(`copied ${path} to clipboard`, true)}
                 />
               ) : null}
@@ -806,6 +650,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
         <Toast toast={state.toast} />
         <HoverCard tip={state.tip} />
       </div>
+      </ActionsContext.Provider>
     </StoreContext.Provider>
   );
 }

@@ -18,6 +18,7 @@ import type {
   LanesResponse,
   LaneSummary,
   MergeReadyReport,
+  Message,
   ProposalsResponse,
   QueueAddRequest,
   QueueAddResponse,
@@ -144,30 +145,28 @@ export function reauditRun(id: string): Promise<ReauditResponse> {
 export interface RetireFinishedPreview {
   items: { id: string; title: string | null }[];
 }
-export interface RetireFinishedResult {
-  ok: boolean;
+export interface RetireFinishedResult extends ActionResult {
   retired: string[];
 }
 export function getRetireFinishedPreview(): Promise<RetireFinishedPreview> {
   return call<RetireFinishedPreview>('/retire-finished');
 }
-export function postRetireFinished(): Promise<RetireFinishedResult> {
-  return post<RetireFinishedResult>('/retire-finished', {});
+export function postRetireFinished(confirm?: string): Promise<Gated<RetireFinishedResult>> {
+  return post<Gated<RetireFinishedResult>>('/retire-finished', withConfirm({}, confirm));
 }
 
 /** H2.3: what a bulk merge would do (`GET /merge-ready`, `MergeReadyReport` --
  *  already in the shared contract), and doing it (`POST /merge-ready`). The
  *  per-lane outcome shape matches the real server (src/forge/server.ts
  *  mergeReadyPost): one entry per lane a merge was actually attempted on. */
-export interface MergeReadyResult {
-  ok: boolean;
+export interface MergeReadyResult extends ActionResult {
   outcomes: { id: string; ok: boolean; message: string }[];
 }
 export function getMergeReadyPreview(): Promise<MergeReadyReport> {
   return call<MergeReadyReport>('/merge-ready');
 }
-export function postMergeReady(): Promise<MergeReadyResult> {
-  return post<MergeReadyResult>('/merge-ready', {});
+export function postMergeReady(confirm?: string): Promise<Gated<MergeReadyResult>> {
+  return post<Gated<MergeReadyResult>>('/merge-ready', withConfirm({}, confirm));
 }
 
 export function getBlockers(): Promise<BlockersResponse> {
@@ -186,8 +185,47 @@ function post<T>(path: string, body?: unknown): Promise<T> {
   return call<T>(path, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) });
 }
 
-export function killRun(id: string, reason: string): Promise<ActionResult> {
-  return post<ActionResult>(`/run/${encodeURIComponent(id)}/kill`, { reason });
+/**
+ * An irreversible route answers 202 with this shape until the same request comes back
+ * carrying `confirm: token`. The token lives in the server's own pending map, the one a
+ * typed `confirm <token>` in the rail resolves too, so nothing irreversible ever runs on
+ * a confirm the page made up for itself.
+ */
+export interface ConfirmPending {
+  ok: false;
+  pending: true;
+  token: string;
+  blast: string;
+  card: Message;
+}
+
+export function isConfirmPending(value: unknown): value is ConfirmPending {
+  const row = value as { pending?: unknown; token?: unknown };
+  return Boolean(row) && row.pending === true && typeof row.token === 'string';
+}
+
+/** The answer an irreversible call gives: the real result once confirmed, or the
+ *  pending confirm before that. */
+export type Gated<T> = T | ConfirmPending;
+
+function withConfirm(body: Record<string, unknown>, confirm: string | undefined): Record<string, unknown> {
+  return confirm ? { ...body, confirm } : body;
+}
+
+export function killRun(id: string, reason: string, confirm?: string): Promise<Gated<ActionResult>> {
+  return post<Gated<ActionResult>>(`/run/${encodeURIComponent(id)}/kill`, withConfirm({ reason }, confirm));
+}
+
+/** `POST /stop`: every running lane parks with a handoff request and the kill switch
+ *  engages. Irreversible, so it runs behind the same confirm as a kill. */
+export function stopAll(confirm?: string): Promise<Gated<ActionResult & { stopped: string[] }>> {
+  return post<Gated<ActionResult & { stopped: string[] }>>('/stop', withConfirm({ reason: 'stopped from the console' }, confirm));
+}
+
+/** `POST /run/:id/retire`: the lane leaves the board's default view. The undo is
+ *  `unretireRun`, which is never gated. */
+export function retireRun(id: string, confirm?: string): Promise<Gated<ActionResult>> {
+  return post<Gated<ActionResult>>(`/run/${encodeURIComponent(id)}/retire`, withConfirm({}, confirm));
 }
 
 export function pauseRun(id: string, reason?: string): Promise<ActionResult> {
@@ -198,8 +236,8 @@ export function resumeRun(id: string): Promise<ActionResult> {
   return post<ActionResult>(`/run/${encodeURIComponent(id)}/resume`, {});
 }
 
-export function mergeRun(id: string): Promise<ActionResult> {
-  return post<ActionResult>(`/run/${encodeURIComponent(id)}/merge`, {});
+export function mergeRun(id: string, confirm?: string): Promise<Gated<ActionResult>> {
+  return post<Gated<ActionResult>>(`/run/${encodeURIComponent(id)}/merge`, withConfirm({}, confirm));
 }
 
 export function reopenRun(id: string): Promise<ActionResult> {
@@ -244,8 +282,8 @@ export function amendRun(run: string, text: string): Promise<ActionResult> {
     .then((result) => ({ ok: result.ok, jid: null, message: `amended ${run}`, undoable: false }));
 }
 
-export function setCaps(body: { dailyTokens?: number; runTokens?: number }): Promise<Caps> {
-  return post<Caps>('/caps', body);
+export function setCaps(body: { dailyTokens?: number; runTokens?: number }, confirm?: string): Promise<Gated<Caps>> {
+  return post<Gated<Caps>>('/caps', withConfirm(body, confirm));
 }
 
 export function sendCommand(text: string): Promise<CommandResponse> {
@@ -279,8 +317,8 @@ export function undoJournal(jid: string): Promise<ActionResult> {
 /** Needs-you fix: a stale ask (24h+ old, with no readable question) never resolves on
  *  its own -- `Dismiss` retires it off the inbox through the same `/clear` path a
  *  breaker-blocked lane already uses, so it stops sitting at the board forever. */
-export function dismissAsk(inboxKey: string): Promise<{ ok: boolean; jid: string | null }> {
-  return post<{ ok: boolean; jid: string | null }>('/clear', { inboxKey });
+export function dismissAsk(inboxKey: string, confirm?: string): Promise<Gated<ActionResult>> {
+  return post<Gated<ActionResult>>('/clear', withConfirm({ inboxKey }, confirm));
 }
 
 export function getQueue(): Promise<QueueResponse> {
@@ -291,8 +329,8 @@ export function addToQueue(body: QueueAddRequest): Promise<QueueAddResponse> {
   return post<QueueAddResponse>('/queue', body);
 }
 
-export function removeQueueItem(id: string): Promise<ActionResult> {
-  return post<ActionResult>(`/queue/${encodeURIComponent(id)}/remove`, {});
+export function removeQueueItem(id: string, confirm?: string): Promise<Gated<ActionResult>> {
+  return post<Gated<ActionResult>>(`/queue/${encodeURIComponent(id)}/remove`, withConfirm({}, confirm));
 }
 
 export function retryQueueItem(id: string): Promise<ActionResult> {
@@ -307,10 +345,10 @@ export function resumeQueue(): Promise<ActionResult> {
   return post<ActionResult>('/queue/resume', {});
 }
 
-export function mergeQueueItem(id: string): Promise<ActionResult> {
-  return post<ActionResult>(`/queue/${encodeURIComponent(id)}/merge`, {});
+export function mergeQueueItem(id: string, confirm?: string): Promise<Gated<ActionResult>> {
+  return post<Gated<ActionResult>>(`/queue/${encodeURIComponent(id)}/merge`, withConfirm({}, confirm));
 }
 
-export function promoteQueueItem(id: string, version: string, message: string): Promise<ActionResult> {
-  return post<ActionResult>(`/queue/${encodeURIComponent(id)}/promote`, { version, message });
+export function promoteQueueItem(id: string, version: string, message: string, confirm?: string): Promise<Gated<ActionResult>> {
+  return post<Gated<ActionResult>>(`/queue/${encodeURIComponent(id)}/promote`, withConfirm({ version, message }, confirm));
 }

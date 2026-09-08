@@ -37,6 +37,9 @@ export interface TipSpec {
   color?: string;
 }
 
+/** How long a card this page appended itself outlives a `/thread` replace. */
+export const LOCAL_CARD_TTL_MS = 30_000;
+
 export interface ToastSpec {
   glyph: string;
   title: string;
@@ -45,8 +48,37 @@ export interface ToastSpec {
   color?: string;
 }
 
+/** Where a control's own action stands: in flight, or finished with a result. Keyed
+ *  in `State.actions` by the action id and the thing it was about, so the control that
+ *  was clicked, and only that control, renders its pending state and its result. */
+export interface ActionState {
+  pending: boolean;
+  startedAt: number;
+  result: ActionOutcome | null;
+}
+
+/** What a control shows after its action answered: the server's own message or the
+ *  verbatim error, a journal id when the server minted one, a link to the effect, or
+ *  a server-side confirm still waiting on the operator. */
+export type ActionOutcome =
+  | { kind: 'done'; ok: boolean; text: string; jid: string | null; at: number; link: ActionLink | null }
+  | { kind: 'confirm'; token: string; blast: string; at: number };
+
+export type ActionLink =
+  | { kind: 'lane'; id: string; label: string }
+  | { kind: 'view'; view: View; label: string }
+  | { kind: 'url'; href: string; label: string }
+  | { kind: 'journal'; jid: string; label: string };
+
 export interface State {
   lanes: Lane[];
+  /** Per-control action state, see `ActionState`. */
+  actions: Record<string, ActionState>;
+  /** Cards this page appended itself (receipts, refusals, operator bubbles) that the
+   *  server's own `/thread` never echoes back. A `thread` replace re-attaches any
+   *  younger than `LOCAL_CARD_TTL_MS`, so a receipt survives the refetch that lands
+   *  right behind the action that produced it. */
+  localCards: Message[];
   feed: Feed;
   thread: Message[];
   journal: JournalEntry[];
@@ -94,7 +126,10 @@ export interface State {
 export type Action =
   | { type: 'lanes'; lanes: Lane[]; tokensToday?: number; links?: State['links'] }
   | { type: 'thread'; thread: Message[] }
-  | { type: 'thread-append'; messages: Message[] }
+  | { type: 'thread-append'; messages: Message[]; local?: boolean }
+  | { type: 'action-pending'; key: string }
+  | { type: 'action-result'; key: string; result: ActionOutcome }
+  | { type: 'action-clear'; key: string }
   | { type: 'journal'; journal: JournalEntry[] }
   | { type: 'integrations'; integrations: Integration[] }
   | { type: 'caps'; caps: Caps }
@@ -148,6 +183,8 @@ export function initialState(): State {
     queueOn: true,
     showProbes: false,
     archivedLanes: [],
+    actions: {},
+    localCards: [],
     loaded: false,
     now: Date.now(),
     links: { jiraSite: null, defaultRepo: null },
@@ -171,10 +208,32 @@ export function reducer(state: State, action: Action): State {
   switch (action.type) {
     case 'lanes':
       return { ...state, lanes: action.lanes, loaded: true, links: action.links ?? state.links };
-    case 'thread':
-      return { ...state, thread: action.thread };
+    case 'thread': {
+      const cutoff = Date.now() - LOCAL_CARD_TTL_MS;
+      const localCards = state.localCards.filter((card) => card.ts >= cutoff);
+      let thread = action.thread;
+      for (const card of localCards) {
+        if (!thread.some((m) => m.k === card.k)) thread = [...thread, card];
+      }
+      return { ...state, thread, localCards };
+    }
     case 'thread-append':
-      return { ...state, thread: [...state.thread, ...action.messages] };
+      return {
+        ...state,
+        thread: [...state.thread, ...action.messages],
+        localCards: action.local ? [...state.localCards, ...action.messages] : state.localCards,
+      };
+    case 'action-pending':
+      return { ...state, actions: { ...state.actions, [action.key]: { pending: true, startedAt: Date.now(), result: null } } };
+    case 'action-result':
+      return {
+        ...state,
+        actions: { ...state.actions, [action.key]: { pending: false, startedAt: state.actions[action.key]?.startedAt ?? Date.now(), result: action.result } },
+      };
+    case 'action-clear': {
+      const { [action.key]: _dropped, ...rest } = state.actions;
+      return { ...state, actions: rest };
+    }
     case 'journal':
       return { ...state, journal: action.journal };
     case 'integrations':

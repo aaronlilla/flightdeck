@@ -1,4 +1,5 @@
 import type { JSX } from 'react';
+import { useStore } from '../store.js';
 import { useCallback, useContext, useLayoutEffect, useRef, useState } from 'react';
 
 import { computeFreshness, compactFreshnessStamp, freshnessClass, hm } from '../freshness.js';
@@ -389,6 +390,11 @@ function useChatScroll(messageCount: number, newestKey: string | undefined): {
 
 export function ConductorRail(props: ConductorRailProps): JSX.Element {
   const { thread, feed, now, composer, verbose = false, labelFor, onComposerChange, onSend, onCommand, onUndo, onOpenJournal } = props;
+  // The composer's own action state (`App.tsx#processCommand` keys it `sendCommand:rail`):
+  // a working row within one render of Send, and the send control held while the
+  // grammar answers. The reply cards are the inline result and land in the thread.
+  const composerAction = useStore().state.actions['sendCommand:rail'];
+  const composerBusy = composerAction?.pending ?? false;
   const scroll = useChatScroll(thread.length, thread.at(-1)?.k);
   const isPending = (m: Message): boolean => (
     (m.type === 'question' && m.answer === undefined)
@@ -446,10 +452,21 @@ export function ConductorRail(props: ConductorRailProps): JSX.Element {
             <input
               className="inp" placeholder="command… e.g. why is lane 3 stuck" value={composer}
               onChange={(e) => onComposerChange(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter' && composer.trim()) { onSend(composer); onComposerChange(''); } }}
+              onKeyDown={(e) => { if (e.key === 'Enter' && composer.trim() && !composerBusy) { onSend(composer); onComposerChange(''); } }}
             />
-            <span className="btnP" style={{ padding: '5px 10px', fontSize: '9.5px' }} {...actionable(() => { if (composer.trim()) { onSend(composer); onComposerChange(''); } })}>Send ⏎</span>
+            <span
+              className="btnP" style={{ padding: '5px 10px', fontSize: '9.5px', opacity: composerBusy ? 0.55 : 1 }}
+              aria-busy={composerBusy} aria-disabled={composerBusy} data-testid="action-sendCommand-rail" data-pending={composerBusy ? 'true' : 'false'}
+              {...actionable(() => { if (composer.trim() && !composerBusy) { onSend(composer); onComposerChange(''); } })}
+            >
+              {composerBusy ? 'Working…' : 'Send ⏎'}
+            </span>
           </div>
+          {composerBusy ? (
+            <div className="m" data-testid="rail-working" style={{ margin: '-8px 16px 12px', fontSize: '10.5px', color: 'var(--ink2)' }}>working…</div>
+          ) : composerAction?.result?.kind === 'done' && !composerAction.result.ok ? (
+            <div className="m" data-testid="rail-composer-result" style={{ margin: '-8px 16px 12px', fontSize: '10.5px', color: 'var(--block)' }}>✕ {composerAction.result.text}</div>
+          ) : null}
         </>
       ) : (
         <div className="lbl" style={{ margin: '0 16px 16px', background: 'var(--block)', color: 'var(--aInk)', borderRadius: 3, padding: '12px 14px', lineHeight: 1.8, letterSpacing: '.8px' }}>
