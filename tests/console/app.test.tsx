@@ -119,6 +119,26 @@ describe('App', () => {
     await waitFor(() => expect(screen.getByTestId('lane-FLT-204')).toHaveAttribute('data-state', 'killed'));
   });
 
+  it("the operator's own composer text survives a refresh right behind it", async () => {
+    // Sweep #2: `refresh()` replaces `state.thread` wholesale from the stub's own
+    // `/thread`, which never echoes the operator's typed text back (only the reply
+    // cards a command produces) -- so the bubble `onRailSend` appends locally used to
+    // vanish the moment the next `/events` frame (or the 5s poll) landed right behind
+    // it, sometimes within milliseconds of the operator sending it.
+    render(<App eventStreamOptions={{ WebSocketImpl: FakeSocket as unknown as typeof WebSocket }} />);
+    await waitFor(() => expect(screen.getByTestId('rail-thread')).toBeInTheDocument());
+    await waitFor(() => expect(FakeSocket.instances.length).toBeGreaterThan(0));
+    await userEvent.type(screen.getByPlaceholderText(/command…/), 'status{Enter}');
+    // The command's own reply landing means its round trip (including the `refresh()`
+    // right behind it) is done, so a *second*, independent refresh below is the one
+    // under test rather than a race with the first.
+    await waitFor(() => expect(screen.getByText(/lanes total/)).toBeInTheDocument());
+    expect(screen.getByText('status')).toBeInTheDocument();
+    FakeSocket.instances[0]!.onmessage?.({ data: JSON.stringify({ type: 'tool.start', run: 'FLT-201' }) });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.getByText('status')).toBeInTheDocument();
+  });
+
   it('delivers a ticket-sheet message to that run, not the board-wide command classifier', async () => {
     // TicketSheet's composer is captioned "message {lane.id}...", so the operator has
     // every reason to believe free text typed there reaches that one run. Wiring it

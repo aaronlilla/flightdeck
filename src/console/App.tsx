@@ -385,10 +385,15 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   const onRailSend = useCallback((text: string) => {
     const trimmed = text.trim();
     if (!trimmed) return;
-    dispatch({
-      type: 'thread-append',
-      messages: [{ k: `op-${Date.now()}-${Math.random()}`, type: 'operator', text: trimmed, ts: Date.now(), source: 'operator' }],
-    });
+    // The stub and the real grammar both append only the reply/confirm/plan cards a
+    // command produces to their own thread, never an echo of the operator's own text
+    // (see `/command` above) -- so this bubble is client-only, exactly like a receipt.
+    // It needs the same `localCardsRef` protection `appendReceipt` gives a receipt, or
+    // the very next `refresh()` (the 5s poll, or the `/events` frame this command's own
+    // side effect can trigger) drops it the moment `state.thread` is replaced wholesale.
+    const card: Message = { k: `op-${Date.now()}-${Math.random()}`, type: 'operator', text: trimmed, ts: Date.now(), source: 'operator' };
+    localCardsRef.current = [...localCardsRef.current, card];
+    dispatch({ type: 'thread-append', messages: [card] });
     processCommand(trimmed);
   }, [processCommand]);
 
