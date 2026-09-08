@@ -270,8 +270,9 @@ describe('ConsoleWrites.command / kill confirm flow', () => {
       lanesView: () => ({
         at: Date.now(),
         lanes: [
-          { id: 'alpha', state: 'running' } as never, { id: 'beta', state: 'running' } as never,
-          { id: 'gamma', state: 'blocked' } as never,
+          { id: 'alpha', ticket: 'BBZ-1', state: 'running' } as never,
+          { id: 'beta', ticket: 'BBZ-2', state: 'running' } as never,
+          { id: 'gamma', ticket: 'BBZ-3', state: 'blocked' } as never,
         ],
         tokensToday: 12.5, tokensPerMin: 0.75,
       }),
@@ -282,17 +283,18 @@ describe('ConsoleWrites.command / kill confirm flow', () => {
     const reply = cards.find((card) => card.type === 'reply')!;
     expect(reply.text).toContain('2 running');
     expect(reply.text).toContain('1 blocked');
-    expect(reply.text).toContain('13 tokens today');
-    expect(reply.text).toContain('gamma (blocked)');
+    expect(reply.text).toContain('Spent 13 tokens today');
+    expect(reply.text).toContain('- BBZ-3 (blocked):');
     withView.stop();
   });
 
   it('lists at most five lanes needing attention, by id and state, labeling a runaway as such', async () => {
     const lanes = [
-      { id: 'a', state: 'parked' }, { id: 'b', state: 'blocked' },
-      { id: 'c', state: 'running', runaway: true },
-      { id: 'd', state: 'parked' }, { id: 'e', state: 'blocked' }, { id: 'f', state: 'parked' },
-      { id: 'ok', state: 'running' },
+      { id: 'a', ticket: 'BBZ-11', state: 'parked' }, { id: 'b', ticket: 'BBZ-12', state: 'blocked' },
+      { id: 'c', ticket: 'BBZ-13', state: 'running', runaway: true },
+      { id: 'd', ticket: 'BBZ-14', state: 'parked' }, { id: 'e', ticket: 'BBZ-15', state: 'blocked' },
+      { id: 'f', ticket: 'BBZ-16', state: 'parked' },
+      { id: 'ok', ticket: 'BBZ-17', state: 'running' },
     ];
     const withView = new ConsoleWrites({
       journalPath, registry, inbox, actuator,
@@ -309,10 +311,10 @@ describe('ConsoleWrites.command / kill confirm flow', () => {
     const cards = await withView.command('status');
 
     const reply = cards.find((card) => card.type === 'reply')!;
-    expect(reply.text).toContain('needs attention');
-    expect(reply.text).toContain('c (runaway)');
-    expect(reply.text).not.toContain('ok (');
-    const namedLanes = /needs attention: ([^.]+)\./.exec(reply.text)?.[1]?.split(', ') ?? [];
+    expect(reply.text).toContain('Needs you:');
+    expect(reply.text).toContain('- BBZ-13 (runaway):');
+    expect(reply.text).not.toContain('- BBZ-17 (');
+    const namedLanes = reply.text.split('\n').filter((line) => line.startsWith('- '));
     expect(namedLanes).toHaveLength(5);
     withView.stop();
   });
@@ -328,7 +330,9 @@ describe('ConsoleWrites.command / kill confirm flow', () => {
     const cards = await writes.command('why is alpha stuck');
 
     const reply = cards.find((card) => card.type === 'reply')!;
-    expect(reply.text.startsWith('blocked: base drift')).toBe(true);
+    // No lanesView wired here, so labelFor has nothing to name "alpha" by -- the same
+    // "a run" fallback deliverable 5 defines for a lane the caller cannot look up.
+    expect(reply.text.startsWith('a run is blocked: base drift')).toBe(true);
     expect(reply.text).not.toContain('burn.mismatch');
   });
 
@@ -389,7 +393,9 @@ describe('ConsoleWrites: lane addressing by ticket key or title (deliverable 4)'
 
     const cards = await withLanes.command('kill BBZ-182');
     const confirm = cards.find((card) => card.type === 'confirm')!;
-    expect(confirm.blast).toContain('queue-BBZ-182-2');
+    const token = confirm.btns!.find((btn) => btn.cmd.startsWith('confirm '))!.cmd.split(' ')[1]!;
+    await withLanes.command(`confirm ${token}`);
+    expect(actuator.killed).toEqual(['queue-BBZ-182-2']);
     withLanes.stop();
   });
 
@@ -452,7 +458,93 @@ describe('ConsoleWrites: lane addressing by ticket key or title (deliverable 4)'
 
     const cards = await withLanes.command('kill worker');
     const confirm = cards.find((card) => card.type === 'confirm')!;
-    expect(confirm.blast).toContain('queue-brief-tidy');
+    const token = confirm.btns!.find((btn) => btn.cmd.startsWith('confirm '))!.cmd.split(' ')[1]!;
+    await withLanes.command(`confirm ${token}`);
+    expect(actuator.killed).toEqual(['queue-brief-tidy']);
     withLanes.stop();
+  });
+});
+
+describe('ConsoleWrites: replies in words, multi-line (deliverable 5)', () => {
+  function writesWithLanes(lanes: unknown[], tokensToday = 306_000_000, tokensPerMin = 2_400): ConsoleWrites {
+    return new ConsoleWrites({
+      journalPath, registry, inbox, actuator,
+      authorized: () => true,
+      ledgerPath: join(dir, `actions-${Math.random()}.jsonl`),
+      capsOverridesPath: join(dir, `caps-${Math.random()}.json`),
+      rulesConfigPath: join(dir, `rules-${Math.random()}.json`),
+      integrationsConfigPath: join(dir, `integrations-${Math.random()}.json`),
+      lanesView: () => ({ at: Date.now(), lanes: lanes as never, tokensToday, tokensPerMin }),
+    });
+  }
+
+  it('status: two summary lines, then Needs you with one line per attention lane', async () => {
+    const withLanes = writesWithLanes([
+      { id: 'a', ticket: 'BBZ-226', state: 'blocked', reason: 'checks are failure on head 88d44ec96baea849f7c1e8c0a1b2c3d4e5f6a7b8' },
+      { id: 'b', state: 'running' },
+    ]);
+    const cards = await withLanes.command('status');
+    const reply = cards.find((card) => card.type === 'reply')!;
+    const lines = reply.text.split('\n');
+    expect(lines[0]).toBe('2 lanes: 1 blocked, 1 running.');
+    expect(lines[1]).toBe('Spent 306M tokens today, burning 2.4k tokens a minute.');
+    expect(lines[2]).toBe('Needs you:');
+    expect(lines[3]).toMatch(/^- BBZ-226 \(blocked\): checks are failure on head [0-9a-f]{7}$/);
+    withLanes.stop();
+  });
+
+  it('what\'s stuck: nothing is stuck, or one line per signal using the shared phrasing', async () => {
+    const noneStuck = writesWithLanes([]);
+    const noneCards = await noneStuck.command("what's stuck");
+    expect(noneCards.find((c) => c.type === 'reply')!.text).toBe('Nothing is stuck.');
+    noneStuck.stop();
+
+    const withStuck = new ConsoleWrites({
+      journalPath, registry, inbox, actuator,
+      authorized: () => true,
+      ledgerPath: join(dir, `actions-${Math.random()}.jsonl`),
+      capsOverridesPath: join(dir, `caps-${Math.random()}.json`),
+      rulesConfigPath: join(dir, `rules-${Math.random()}.json`),
+      integrationsConfigPath: join(dir, `integrations-${Math.random()}.json`),
+      lanesView: () => ({ at: Date.now(), lanes: [{ id: 'alpha', ticket: 'BBZ-1', state: 'running' }] as never, tokensToday: 0, tokensPerMin: 0 }),
+      stuck: () => [{ key: 'alpha', signal: 'context', threshold: 1, observed: 1, since: 1, hint: 'x' }],
+    });
+    const stuckCards = await withStuck.command("what's stuck");
+    const reply = stuckCards.find((c) => c.type === 'reply')!;
+    expect(reply.text).toBe('- BBZ-1: context ceiling reached, handed off to a fresh session');
+    withStuck.stop();
+  });
+
+  it('merge ready lanes: plan items name the PR number and the ticket', async () => {
+    registry.admit({ goal: 'queue-BBZ-99', cwd: dir, briefPath: join(dir, 'a.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'queue-BBZ-99', actor: 'runner' });
+    appendOnce(journalPath, { event: 'chain.launched', actor: 'chain', packetId: 'p1', runKey: 'queue-BBZ-99' });
+    appendOnce(journalPath, { event: 'chain.gated', actor: 'chain', packetId: 'p1', verdict: 'PASS' });
+    const withLanes = writesWithLanes([
+      { id: 'queue-BBZ-99', ticket: 'BBZ-99', state: 'done', pr: { no: 118, url: 'https://x/118', draft: false } },
+    ]);
+    const cards = await withLanes.command('merge ready lanes');
+    const plan = cards.find((card) => card.type === 'plan')!;
+    expect(plan.items!.map((item) => item.text)).toContain('Merge PR #118 (BBZ-99)');
+    withLanes.stop();
+  });
+
+  it('kill: the confirm blast names the label, in words', async () => {
+    registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'alpha', actor: 'runner' });
+    const withLanes = writesWithLanes([{ id: 'alpha', ticket: 'BBZ-50', state: 'running' }]);
+    const cards = await withLanes.command('kill alpha');
+    const confirm = cards.find((card) => card.type === 'confirm')!;
+    expect(confirm.blast).toBe('BBZ-50 stops now; its worktree and process are gone.');
+    withLanes.stop();
+  });
+
+  it('unknown: the exact suggestion sentence', async () => {
+    const cards = await writes.command('do a barrel roll');
+    const reply = cards.find((card) => card.type === 'reply')!;
+    expect(reply.text).toBe(
+      'I did not understand that. Try one of: pause, resume, kill <ticket>, merge ready lanes, '
+      + 'raise daily cap to <n>, cap <ticket> at <n>, why is <ticket> stuck, what\'s stuck, spend today, status, answer <text>.',
+    );
   });
 });

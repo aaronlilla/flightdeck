@@ -38,32 +38,63 @@ import { capsOverridesPath, effectiveHardTokens, readCapsOverrides } from './cap
 import { restoreCaps, writeCaps, type CapsWriteDeps } from './caps-write.js';
 import { IntegrationsRegistry, type IntegrationsDeps } from './integrations.js';
 import { laneStateNowFor, meaningfulEvents, tokensToday } from './lanes.js';
-import { textFor } from './journal-route.js';
+import { signalPhrase } from './journal-narrative.js';
+import { plainEventText } from './thread.js';
 import {
   applyRule, dismissRule, restoreRule, rulesPath, setRuleStatus, startEnforcementTick,
   type RulesDeps,
 } from './rules.js';
 import type { ActionResult, LanesResponse, Message, PlanItem } from '../../shared/console-model.js';
 import { fmtTokens } from '../../shared/format-tokens.js';
+import { stripMachineIds, ticketInId } from '../../shared/humanize.js';
+
+const LABEL_TITLE_LIMIT = 60;
+const REASON_LIMIT = 140;
+
+/** Deliverable 5: what a person calls a lane, off the same lanes view every reply
+ *  reads from -- its ticket key first, then its title (trimmed to 60 characters), else
+ *  whatever ticket key is embedded in its own id, else a bare "a run". A caller with no
+ *  `lanesView` wired at all has nothing to look a lane up in, so this reads the same
+ *  fallback a lane it cannot find gets: never the raw run id. */
+function labelFor(view: LanesResponse | undefined, id: string): string {
+  const lane = view?.lanes.find((candidate) => candidate.id === id);
+  if (lane?.ticket) return lane.ticket;
+  if (lane?.title) return lane.title.length > LABEL_TITLE_LIMIT ? lane.title.slice(0, LABEL_TITLE_LIMIT) : lane.title;
+  return ticketInId(id) ?? 'a run';
+}
+
+function truncate(text: string, limit: number): string {
+  return text.length > limit ? text.slice(0, limit) : text;
+}
 
 /** Up to five lanes worth an operator's attention right now: parked, blocked, or
  *  running away on cost, labeled with whichever of those is true (a lane is never
  *  parked/blocked and runaway at once -- runaway only applies while running or handed
  *  off). `status` names them so the reply is something to act on, not just a count. */
-function attentionLanes(view: LanesResponse): string[] {
+function attentionLines(view: LanesResponse): string[] {
   return view.lanes
     .filter((lane) => lane.state === 'parked' || lane.state === 'blocked' || lane.runaway)
     .slice(0, 5)
-    .map((lane) => `${lane.id} (${lane.runaway ? 'runaway' : lane.state})`);
+    .map((lane) => {
+      const state = lane.runaway ? 'runaway' : lane.state;
+      const rawReason = lane.reason ?? (lane.runaway ? 'over its token cap' : 'no reason recorded');
+      const reason = truncate(stripMachineIds(rawReason, { labelFor: (id) => labelFor(view, id) }), REASON_LIMIT);
+      return `- ${labelFor(view, lane.id)} (${state}): ${reason}`;
+    });
 }
 
 function statusText(view: LanesResponse): string {
   const counts = new Map<string, number>();
   for (const lane of view.lanes) counts.set(lane.state, (counts.get(lane.state) ?? 0) + 1);
-  const byState = [...counts.entries()].map(([state, n]) => `${n} ${state}`).join(', ') || 'no lanes';
-  const attention = attentionLanes(view);
-  const attentionText = attention.length ? ` needs attention: ${attention.join(', ')}.` : '';
-  return `${byState}. spent ${fmtTokens(view.tokensToday)} tokens today, burning ${fmtTokens(view.tokensPerMin)} tokens/min.${attentionText}`;
+  const byState = [...counts.entries()].map(([state, n]) => `${n} ${state}`).join(', ') || 'none';
+  const total = view.lanes.length;
+  const lines = [
+    `${total} lane${total === 1 ? '' : 's'}: ${byState}.`,
+    `Spent ${fmtTokens(view.tokensToday)} tokens today, burning ${fmtTokens(view.tokensPerMin)} tokens a minute.`,
+  ];
+  const attention = attentionLines(view);
+  if (attention.length) lines.push('Needs you:', ...attention);
+  return lines.join('\n');
 }
 
 function threadPath(): string {
@@ -492,24 +523,32 @@ export class ConsoleWrites {
         const resolved = this.resolveLaneId(intent.lane);
         if (typeof resolved !== 'string') return [refusalCard(source, resolved.refusal)];
         const laneId = resolved;
+        const view = this.deps.lanesView?.();
+        const label = labelFor(view, laneId);
+        const blast = `${label} stops now; its worktree and process are gone.`;
         const token = randomUUID();
         this.pendingConfirms.set(token, {
-          blast: `${laneId} is killed immediately; its worktree and process are gone`,
+          blast,
           run: async () => {
             const outcome = await killRun(laneId, 'killed from the console', this.runActionsDeps());
             return [outcome.status === 200
               ? receiptCard(source, outcome.body as ActionResult)
-              : refusalCard(source, (outcome.body as { message?: string }).message ?? `could not kill ${laneId}`)];
+              : refusalCard(source, (outcome.body as { message?: string }).message ?? `could not kill ${label}`)];
           },
         });
-        return [confirmCard(source, `${laneId} is killed immediately; its worktree and process are gone`, token)];
+        return [confirmCard(source, blast, token)];
       }
 
       case 'merge-ready': {
         const ready = this.readyToMergeRuns();
-        if (!ready.length) return [replyCard(source, 'no lanes are ready to merge')];
+        if (!ready.length) return [replyCard(source, 'Nothing is ready to merge.')];
+        const view = this.deps.lanesView?.();
         const token = randomUUID();
-        const items: PlanItem[] = ready.map((run) => ({ text: `merge ${run}`, irreversible: true }));
+        const items: PlanItem[] = ready.map((run) => {
+          const lane = view?.lanes.find((candidate) => candidate.id === run);
+          const label = labelFor(view, run);
+          return { text: lane?.pr?.no ? `Merge PR #${lane.pr.no} (${label})` : `Merge ${label}`, irreversible: true };
+        });
         this.pendingPlans.set(token, {
           items,
           run: async () => {
@@ -519,7 +558,7 @@ export class ConsoleWrites {
               cards.push(outcome.status === 200
                 ? receiptCard(source, outcome.body as ActionResult)
                 : refusalCard(source, (outcome.body as { error?: string; message?: string }).message
-                  ?? (outcome.body as { error?: string }).error ?? `could not merge ${run}`));
+                  ?? (outcome.body as { error?: string }).error ?? `could not merge ${labelFor(view, run)}`));
             }
             return cards;
           },
@@ -547,25 +586,30 @@ export class ConsoleWrites {
         const resolved = this.resolveLaneId(intent.lane);
         if (typeof resolved !== 'string') return [refusalCard(source, resolved.refusal)];
         const laneId = resolved;
+        const view = this.deps.lanesView?.();
+        const label = labelFor(view, laneId);
         const signals = (this.deps.stuck?.() ?? []).filter((signal) => signal.key === laneId);
         const fleet = replay(this.deps.journalPath);
         const runEvents = fleet.events.filter((event) => event.run === laneId);
-        if (!signals.length && !runEvents.length) return [replyCard(source, `nothing known about ${laneId}`)];
+        if (!signals.length && !runEvents.length) return [replyCard(source, `Nothing is known about ${label}.`)];
         const chain = foldChainState(fleet.events);
         const { state, reason } = laneStateNowFor(laneId, { fleet, chain, laneRecord: this.deps.lanes?.get(laneId) });
-        const lastThree = meaningfulEvents(runEvents).slice(-3).map((event) => textFor(event));
-        const parts = [
-          reason ? `${state}: ${reason}` : state,
-          ...signals.map((signal) => `${signal.signal}: ${signal.hint}`),
-          ...lastThree,
-        ];
-        return [replyCard(source, parts.join(' | '))];
+        const reasonText = reason ? stripMachineIds(reason, { labelFor: (id) => labelFor(view, id) }) : 'no reason recorded';
+        const lines = [`${label} is ${state}: ${reasonText}`];
+        for (const signal of signals) lines.push(signalPhrase(signal.signal));
+        const lastThree = meaningfulEvents(runEvents).slice(-3).map((event) => plainEventText(event));
+        if (lastThree.length) {
+          lines.push('Last it did:', ...lastThree);
+        }
+        return [replyCard(source, lines.join('\n'))];
       }
 
       case 'what-stuck': {
         const signals = this.deps.stuck?.() ?? [];
-        if (!signals.length) return [replyCard(source, 'nothing is stuck')];
-        return [replyCard(source, signals.map((signal) => `${signal.key}: ${signal.signal}`).join(', '))];
+        if (!signals.length) return [replyCard(source, 'Nothing is stuck.')];
+        const view = this.deps.lanesView?.();
+        const lines = signals.map((signal) => `- ${labelFor(view, signal.key)}: ${signalPhrase(signal.signal)}`);
+        return [replyCard(source, lines.join('\n'))];
       }
 
       case 'spend-today':
@@ -597,8 +641,8 @@ export class ConsoleWrites {
 
       case 'unknown':
       default:
-        return [replyCard(source, "I understand: pause, resume, kill <lane>, merge ready lanes, "
-          + "raise daily cap to N tokens, cap <lane> at N tokens, why is <lane> stuck, what's stuck, spend today, status, answer <text>.")];
+        return [replyCard(source, 'I did not understand that. Try one of: pause, resume, kill <ticket>, merge ready lanes, '
+          + "raise daily cap to <n>, cap <ticket> at <n>, why is <ticket> stuck, what's stuck, spend today, status, answer <text>.")];
     }
   }
 
