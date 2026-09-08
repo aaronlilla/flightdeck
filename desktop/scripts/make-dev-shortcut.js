@@ -40,7 +40,7 @@ app.whenReady().then(() => {
       cwd: root,
       icon,
       iconIndex: 0,
-      description: 'Forge Console from the C:/dev/flightdeck checkout, dev mode',
+      description: 'Forge Console from this checkout, dev mode',
       appUserModelId: 'com.forge.console',
     });
     console.log(`${ok && existsSync(path) ? 'wrote' : 'FAILED'} ${path}`);

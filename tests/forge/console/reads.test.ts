@@ -509,7 +509,7 @@ describe('ConsoleReads.lanesResponse: title and sourceUrl', () => {
 
     const journalPath = join(forgeHomeDir, 'fleet.jsonl');
     const journal = new Journal(journalPath);
-    journal.append({ event: 'intake.planned', packetId: 'p1', repo: 'BOLTBETZ-LLC/v2-React-Native' });
+    journal.append({ event: 'intake.planned', packetId: 'p1', repo: 'acme/widgets' });
     journal.append({ event: 'chain.launched', packetId: 'p1', runKey });
     journal.append({ event: 'chain.provisioned', packetId: 'p1', worktreePath: 'w', branch: 'feature/bbz-226' });
     journal.append({ event: 'run.finished', run: runKey, verdict: 'done' });
@@ -524,10 +524,10 @@ describe('ConsoleReads.lanesResponse: title and sourceUrl', () => {
       inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore, jiraSite: null,
       ghBranchLookup: async (repo, branch) => {
         branchCalls += 1;
-        expect(repo).toBe('BOLTBETZ-LLC/v2-React-Native');
+        expect(repo).toBe('acme/widgets');
         expect(branch).toBe('feature/bbz-226');
         return {
-          number: 107, url: 'https://github.com/BOLTBETZ-LLC/v2-React-Native/pull/107', isDraft: true,
+          number: 107, url: 'https://github.com/acme/widgets/pull/107', isDraft: true,
           mergedAt: null, title: 'BBZ-226 fix', headRefOid: 'f284c65',
         };
       },
@@ -542,7 +542,7 @@ describe('ConsoleReads.lanesResponse: title and sourceUrl', () => {
 
     const second = reads.lanesResponse().lanes[0]!;
     expect(second.pr).toEqual({
-      no: 107, url: 'https://github.com/BOLTBETZ-LLC/v2-React-Native/pull/107', draft: true,
+      no: 107, url: 'https://github.com/acme/widgets/pull/107', draft: true,
       merged: false, title: 'BBZ-226 fix', mergedAt: null,
     });
     expect(branchCalls).toBe(1);

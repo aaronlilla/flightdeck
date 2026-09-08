@@ -64,32 +64,32 @@ describe('parseEnvCmd', () => {
 
 describe('planStart', () => {
   it('plans the launcher script when console.launch.cmd exists, on Windows', () => {
-    const fs: StartCommandFs = { existsSync: (p) => p === '/home/.forge/console.launch.cmd' };
-    const plan = planStart(fs, join, '/repo', '/apps/Console.exe', '/home', 'win32');
+    const fs: StartCommandFs = { existsSync: (p) => p === '/h/.forge/console.launch.cmd' };
+    const plan = planStart(fs, join, '/repo', '/apps/Console.exe', '/h', 'win32');
     expect(plan.kind).toBe('launcher');
     if (plan.kind !== 'launcher') throw new Error('expected launcher plan');
-    expect(plan.scriptPath).toBe('/home/.forge/console.launch.cmd');
+    expect(plan.scriptPath).toBe('/h/.forge/console.launch.cmd');
     expect(plan.command).toBe('powershell');
     expect(plan.args.join(' ')).toContain('Win32_Process');
-    expect(plan.args.join(' ')).toContain('/home/.forge/console.launch.cmd');
+    expect(plan.args.join(' ')).toContain('/h/.forge/console.launch.cmd');
   });
 
   it('runs the launcher script directly off Windows', () => {
-    const fs: StartCommandFs = { existsSync: (p) => p === '/home/.forge/console.launch.cmd' };
-    const plan = planStart(fs, join, '/repo', '/apps/Console.exe', '/home', 'linux');
+    const fs: StartCommandFs = { existsSync: (p) => p === '/h/.forge/console.launch.cmd' };
+    const plan = planStart(fs, join, '/repo', '/apps/Console.exe', '/h', 'linux');
     expect(plan).toEqual({
       kind: 'launcher',
-      command: '/home/.forge/console.launch.cmd',
+      command: '/h/.forge/console.launch.cmd',
       args: [],
-      cwd: '/home',
+      cwd: '/h',
       env: {},
-      scriptPath: '/home/.forge/console.launch.cmd',
+      scriptPath: '/h/.forge/console.launch.cmd',
     });
   });
 
   it('falls back to the plain command with no env file when neither file exists', () => {
     const fs: StartCommandFs = { existsSync: () => false };
-    const plan = planStart(fs, join, '/repo', '/usr/bin/node', '/home', 'win32');
+    const plan = planStart(fs, join, '/repo', '/usr/bin/node', '/h', 'win32');
     expect(plan).toEqual({
       kind: 'command',
       command: 'npm.cmd',
@@ -101,12 +101,12 @@ describe('planStart', () => {
   });
 
   it('merges console.env.cmd settings into the fallback command when there is no launcher', () => {
-    const envFile = '/home/.forge/console.env.cmd';
+    const envFile = '/h/.forge/console.env.cmd';
     const fs: StartCommandFs = {
       existsSync: (p) => p === '/repo/dist/forge/cli.js' || p === envFile,
       readFileSync: (p, _encoding) => (p === envFile ? 'set FORGE_QUEUE=on\r\nrem comment\r\nset FORGE_JIRA_TOKEN=abc=def\r\n' : ''),
     };
-    const plan = planStart(fs, join, '/repo', '/apps/Console.exe', '/home', 'win32');
+    const plan = planStart(fs, join, '/repo', '/apps/Console.exe', '/h', 'win32');
     expect(plan).toEqual({
       kind: 'command',
       command: '/apps/Console.exe',

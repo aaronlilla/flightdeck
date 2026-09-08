@@ -25,7 +25,7 @@ describe('bringUpConsole', () => {
       fs: { existsSync: (p) => p === '/repo/dist/forge/cli.js' },
       join,
       nodeExecPath: '/node',
-      homeDir: '/home',
+      homeDir: '/h',
       waitUntilReachable: async () => true,
       onLog: () => {},
     });
@@ -42,7 +42,7 @@ describe('bringUpConsole', () => {
       fs: { existsSync: (p) => p === '/repo/dist/forge/cli.js' },
       join,
       nodeExecPath: '/node',
-      homeDir: '/home',
+      homeDir: '/h',
       waitUntilReachable: async () => true,
       onLog: () => {},
     });
@@ -59,7 +59,7 @@ describe('bringUpConsole', () => {
       fs: { existsSync: (p) => p === '/repo/dist/forge/cli.js' },
       join,
       nodeExecPath: '/node',
-      homeDir: '/home',
+      homeDir: '/h',
       waitUntilReachable: async () => false,
       onLog: () => {},
     };
@@ -75,19 +75,19 @@ describe('bringUpConsole', () => {
     const outcome = await bringUpConsole('/repo', {
       probe: async () => ({ reachable: false }),
       spawn,
-      fs: { existsSync: (p) => p === '/home/.forge/console.launch.cmd' },
+      fs: { existsSync: (p) => p === '/h/.forge/console.launch.cmd' },
       join,
       nodeExecPath: '/node',
-      homeDir: '/home',
+      homeDir: '/h',
       waitUntilReachable: async () => true,
       onLog: (line) => logs.push(line),
     });
     expect(outcome).toEqual({ mode: 'attach' });
     expect(spawn).toHaveBeenCalledTimes(1);
     const [command, , , env] = spawn.mock.calls[0]!;
-    expect(command).toBe(process.platform === 'win32' ? 'powershell' : '/home/.forge/console.launch.cmd');
+    expect(command).toBe(process.platform === 'win32' ? 'powershell' : '/h/.forge/console.launch.cmd');
     expect(env).toEqual({});
-    expect(logs.some((line) => line.includes('/home/.forge/console.launch.cmd'))).toBe(true);
+    expect(logs.some((line) => line.includes('/h/.forge/console.launch.cmd'))).toBe(true);
     expect(logs.some((line) => line.includes('not this app'))).toBe(true);
   });
 });

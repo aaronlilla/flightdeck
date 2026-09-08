@@ -454,7 +454,7 @@ describe('reauditRun', () => {
   // only ever carries verdict/attestationPath), so the old code answered 501 with "no
   // repo/PR on record" even though the branch to look one up on was right there.
   it('looks a PR up by branch when a chain row has a repo and branch but no queue item, then re-audits it', async () => {
-    appendOnce(journalPath, { event: 'intake.planned', packetId: 'p1', repo: 'BOLTBETZ-LLC/v2-React-Native' });
+    appendOnce(journalPath, { event: 'intake.planned', packetId: 'p1', repo: 'acme/widgets' });
     appendOnce(journalPath, { event: 'chain.launched', packetId: 'p1', runKey: 'alpha' });
     appendOnce(journalPath, { event: 'chain.provisioned', packetId: 'p1', worktreePath: dir, branch: 'feature/bbz-226' });
     appendOnce(journalPath, { event: 'run.finished', run: 'alpha', verdict: 'done' });
@@ -462,7 +462,7 @@ describe('reauditRun', () => {
     let lookedUp: { repo: string; branch: string } | undefined;
     const findPrByHead = async (repo: string, branch: string) => {
       lookedUp = { repo, branch };
-      return { number: 107, url: 'https://github.com/BOLTBETZ-LLC/v2-React-Native/pull/107' };
+      return { number: 107, url: 'https://github.com/acme/widgets/pull/107' };
     };
 
     let spawnedArgs: string[] | undefined;
@@ -473,7 +473,7 @@ describe('reauditRun', () => {
 
     const result = await reauditRun('alpha', { ...deps, ...queueDeps(), findPrByHead });
 
-    expect(lookedUp).toEqual({ repo: 'BOLTBETZ-LLC/v2-React-Native', branch: 'feature/bbz-226' });
+    expect(lookedUp).toEqual({ repo: 'acme/widgets', branch: 'feature/bbz-226' });
     expect(result.status).toBe(200);
     expect((result.body as { started: boolean }).started).toBe(true);
     expect(spawnedArgs).toContain('--pr');
@@ -481,7 +481,7 @@ describe('reauditRun', () => {
   });
 
   it('refuses with 409 naming the branch and repo when the by-branch lookup finds no PR', async () => {
-    appendOnce(journalPath, { event: 'intake.planned', packetId: 'p1', repo: 'BOLTBETZ-LLC/v2-React-Native' });
+    appendOnce(journalPath, { event: 'intake.planned', packetId: 'p1', repo: 'acme/widgets' });
     appendOnce(journalPath, { event: 'chain.launched', packetId: 'p1', runKey: 'alpha' });
     appendOnce(journalPath, { event: 'chain.provisioned', packetId: 'p1', worktreePath: dir, branch: 'feature/bbz-226' });
     appendOnce(journalPath, { event: 'run.finished', run: 'alpha', verdict: 'done' });
@@ -494,7 +494,7 @@ describe('reauditRun', () => {
     const body = result.body as { error: string; reason: string };
     expect(body.reason).toBe('no-pr-for-branch');
     expect(body.error).toContain('feature/bbz-226');
-    expect(body.error).toContain('BOLTBETZ-LLC/v2-React-Native');
+    expect(body.error).toContain('acme/widgets');
   });
 
   it('still answers 501 for a run with neither a queue item nor a chain row', async () => {
