@@ -514,6 +514,11 @@ export interface RunJournalResponse {
  */
 export interface ConsoleStateSummary {
   queue_on: boolean;
+  /** The revision the server is running, so an open board can notice the server moved
+   *  on underneath it (a self cutover, a restart onto a new head) and reload itself
+   *  instead of rendering new data with stale components (2026-09-07: a window open
+   *  since the morning showed the old tiles over the new sentences). */
+  build?: string;
 }
 
 /**

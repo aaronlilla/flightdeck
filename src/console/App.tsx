@@ -50,6 +50,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   const pendingBulkRef = useRef(pendingBulk);
   pendingBulkRef.current = pendingBulk;
   const failCount = useRef(0);
+  const servedBuildRef = useRef<string | null>(null);
   const mounted = useRef(true);
   const stateRef = useRef(state);
   stateRef.current = state;
@@ -125,6 +126,15 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       dispatch({ type: 'proposals', proposals });
       dispatch({ type: 'queue', items: queue.items, paused: queue.paused, maxInFlight: queue.maxInFlight, pauseReason: queue.pauseReason });
       dispatch({ type: 'queue-on', on: consoleState.queue_on });
+      // The server moved onto a new build (a restart, a self cutover): this page's
+      // components are the old ones, so reload rather than paint new data with them.
+      if (consoleState.build) {
+        if (servedBuildRef.current && servedBuildRef.current !== consoleState.build) {
+          window.location.reload();
+          return;
+        }
+        servedBuildRef.current = consoleState.build;
+      }
       dispatch({ type: 'feed-live' });
     } catch {
       if (mounted.current) {

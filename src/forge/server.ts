@@ -25,6 +25,7 @@ import { ConsoleReads } from './console/reads.js';
 import { HEARTBEAT_MS } from '../shared/console-model.js';
 import { ConsoleWrites } from './console/command.js';
 import { QueueRoutes } from './console/queue-route.js';
+import { runtimeVersion } from './launcher.js';
 import { readQueuePaused, writeQueuePaused } from './console/queue-pause.js';
 import type { Actuator, Reasoner } from './contracts.js';
 import { isAskStale, projectStaleness, type Inbox } from './inbox.js';
@@ -488,6 +489,7 @@ export class ForgeServer {
       // window and the console's top bar both need to say when the queue subsystem is
       // not running at all, distinct from a running queue that is merely paused.
       queue_on: process.env['FORGE_QUEUE'] === '1',
+      build: runtimeVersion(),
       // The self loop's own count of what it found, queued and merged about this fleet
       // (`self-wire.ts`); absent when FORGE_SELF_REPO is unset.
       self: this.selfStatus?.() ?? null,

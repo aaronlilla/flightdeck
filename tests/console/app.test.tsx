@@ -5,7 +5,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { App } from '../../src/console/App.js';
-import { createStubServer, resetStubDb } from '../../src/console/stub-server.js';
+import { createStubServer, resetStubDb, setStubBuild } from '../../src/console/stub-server.js';
 
 class FakeSocket {
   static instances: FakeSocket[] = [];
@@ -55,6 +55,26 @@ describe('App', () => {
     expect(screen.getAllByText(/FLT-|BBZ-/).length).toBeGreaterThan(0);
     await userEvent.click(screen.getByTestId('lane-FLT-201'));
     await waitFor(() => expect(screen.getByTestId('ticket-sheet')).toBeInTheDocument());
+  });
+
+  it('reloads itself once the server reports a different build than the one it first saw', { timeout: 15000 }, async () => {
+    const reload = vi.fn();
+    const original = window.location;
+    Object.defineProperty(window, 'location', { configurable: true, value: { ...original, reload } });
+    try {
+      setStubBuild('build-a');
+      render(<App eventStreamOptions={{ WebSocketImpl: FakeSocket as unknown as typeof WebSocket }} />);
+      await waitFor(() => expect(screen.getByTestId('lane-FLT-201')).toBeInTheDocument());
+      expect(reload).not.toHaveBeenCalled();
+      setStubBuild('build-b');
+      // Any feed event triggers a refresh; the refresh reads the new build and reloads
+      // instead of rendering the new data with old code.
+      FakeSocket.instances[0]?.onmessage?.({ data: JSON.stringify({ type: 'heartbeat', at: Date.now() }) });
+      await waitFor(() => expect(reload).toHaveBeenCalled(), { timeout: 8000 });
+    } finally {
+      setStubBuild('stub-1');
+      Object.defineProperty(window, 'location', { configurable: true, value: original });
+    }
   });
 
   it('walks board -> answer a parked lane -> receipt card in the rail', async () => {

@@ -431,6 +431,8 @@ function runCommand(text: string): Message[] {
   return [{ k: `c-${now}`, type: 'reply', text: "I understand pause, resume, kill <lane>, merge ready lanes, cap <lane> at N tokens, answer, what's stuck, spend today, status.", ts: now, source: 'conductor' }];
 }
 
+let stubBuild = 'stub-1';
+export function setStubBuild(build: string): void { stubBuild = build; }
 export function createStubServer() {
   const server = createServer((request, response) => {
     void (async () => {
@@ -473,7 +475,7 @@ export function createStubServer() {
       // D2.4: the one field of the real server's own `/state` the web console needs.
       // Not in `CONSOLE_ROUTES` (same as the real server: `/state` carries no token).
       if (urlPath === '/state' && method === 'GET') {
-        json(response, 200, { queue_on: db.queueOn });
+        json(response, 200, { queue_on: db.queueOn, build: stubBuild });
         return;
       }
 
