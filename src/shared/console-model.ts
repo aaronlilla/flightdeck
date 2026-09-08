@@ -554,6 +554,14 @@ export interface QueueItem {
    *  "promoted <version>" instead of the Promote button. */
   promotedAt?: number | null;
   promotedVersion?: string | null;
+  /** 2026-09-08: the one line a person reads on the card -- a brief's own heading, or
+   *  its first sentence when the heading is a bare slug, or the heading of the brief a
+   *  ticket item routed to. Filled by `GET /queue` at read time (never at add time), so
+   *  an item written before this field existed still answers with one; `null` when
+   *  nothing on the item can name it and the card falls back to the ticket key or id.
+   *  Optional because every construction site in the repo predates it and this file is
+   *  append-only for the streams sharing it: the read path is the one that fills it. */
+  title?: string | null;
 }
 
 export interface QueueResponse {

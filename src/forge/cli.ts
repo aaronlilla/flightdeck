@@ -1208,6 +1208,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           items?: Array<{
             id: string; source: string; ticket: string | null; input: string; state: string;
             branch: string | null; pr: { url: string } | null; reason: string | null;
+            title?: string | null;
           }>;
         } | undefined;
         if (!listed.ok || !body) return { code: 1, lines: [`queue ls failed: HTTP ${listed.status}`] };
@@ -1221,7 +1222,9 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           lines: items.map((item) => [
             item.id,
             item.source.padEnd(6),
-            (item.ticket ?? item.input).slice(0, 40).padEnd(40),
+            // `input` is a brief's whole markdown text: naming the item beats printing
+            // the first 40 characters of its front matter.
+            (item.title ?? item.ticket ?? item.id).slice(0, 40).padEnd(40),
             item.state.padEnd(9),
             (item.branch ?? '-').padEnd(20),
             item.pr?.url ?? '-',
