@@ -360,6 +360,10 @@ function plainMessageFor(run: string, row: ForgeEvent): Message | null {
     }
     case 'permission.denied': {
       if (typeof row.reason !== 'string' || !row.reason) return null;
+      // Item 4: a denial parked on the same ask a `run.parked`/`forge.ask` row already
+      // named says nothing new -- the live thread read "Asked to use ToolSearch; parked
+      // instead" as its own row right under the ask it was actually about.
+      if (row.reason.startsWith('parking on')) return null;
       return { ...event, text: `Asked to use ${stripMachineIds(String(row.tool ?? 'a tool'))}; parked instead` };
     }
     case 'run.killed':
@@ -403,6 +407,55 @@ function foldRepeatedReplies(messages: Message[]): Message[] {
   return result;
 }
 
+/** Item 4: a `run.parked` row read as an ask ("Parked: Asked you: X") and the actual
+ *  `forge.ask` row it named ("Asked you: X") say the exact same thing when they land
+ *  within 5s of each other -- the live thread showed both. The `run.parked` half is
+ *  the one dropped: `forge.ask` is the row that answers, and its own "Asked you:" line
+ *  is what a Resume/Kill or a click-to-answer card sits under. */
+const PARK_ASK_WINDOW_MS = 5_000;
+const PARKED_AS_ASK_PREFIX = 'Parked: Asked you: ';
+const ASK_PREFIX = 'Asked you: ';
+
+function foldParkedAskDuplicate(messages: Message[]): Message[] {
+  const dropped = new Set<number>();
+  for (let i = 0; i < messages.length; i += 1) {
+    const message = messages[i]!;
+    if (!message.text.startsWith(PARKED_AS_ASK_PREFIX)) continue;
+    const rest = message.text.slice(PARKED_AS_ASK_PREFIX.length);
+    const matchIndex = messages.findIndex((other, j) => (
+      j !== i && other.text === `${ASK_PREFIX}${rest}` && Math.abs(other.ts - message.ts) <= PARK_ASK_WINDOW_MS
+    ));
+    if (matchIndex >= 0) dropped.add(i);
+  }
+  return messages.filter((_message, index) => !dropped.has(index));
+}
+
+/** Item 9: consecutive identical event lines (a relaunch storm, the same denial
+ *  re-fired) collapse into one line with a count -- `Relaunched (x5)`, the way
+ *  `collapseWardenChips` already collapses the rail's own warden-health chips. Only
+ *  ever folds `event` messages, adjacent in the already-ordered stream: a `reply` or
+ *  `activity` message keeps its own identity even when its text happens to repeat. */
+const REPEAT_COUNT_SUFFIX = /\s\(x(\d+)\)$/;
+
+function baseRepeatText(text: string): string {
+  return text.replace(REPEAT_COUNT_SUFFIX, '');
+}
+
+function foldConsecutiveDuplicates(messages: Message[]): Message[] {
+  const result: Message[] = [];
+  for (const message of messages) {
+    const prev = result[result.length - 1];
+    if (prev && prev.type === 'event' && message.type === 'event' && baseRepeatText(prev.text) === baseRepeatText(message.text)) {
+      const priorCount = REPEAT_COUNT_SUFFIX.exec(prev.text)?.[1];
+      const count = (priorCount ? Number(priorCount) : 1) + 1;
+      result[result.length - 1] = { ...prev, ts: message.ts, text: `${baseRepeatText(prev.text)} (x${count})` };
+      continue;
+    }
+    result.push(message);
+  }
+  return result;
+}
+
 function buildPlainRunMessages(run: string, own: ForgeEvent[]): Message[] {
   const messages: Message[] = [];
   let i = 0;
@@ -422,7 +475,7 @@ function buildPlainRunMessages(run: string, own: ForgeEvent[]): Message[] {
     if (message) messages.push(message);
     i += 1;
   }
-  return foldRepeatedReplies(messages);
+  return foldConsecutiveDuplicates(foldRepeatedReplies(foldParkedAskDuplicate(messages)));
 }
 
 export interface ComputeRunThreadOptions {

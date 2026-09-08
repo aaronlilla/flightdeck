@@ -78,6 +78,23 @@ describe('computeWhat', () => {
     expect(computeWhat({ story: null, pr: null, drift: noDrift() })).toEqual([]);
   });
 
+  // Item 3: "What happened" line 1 read `S-b9d39bae548707e0: dedupe warden.health on
+  // an open unregistered trip.` on the live board -- the PR title carried the run id.
+  // Every `what` line goes through the same `stripMachineIds` the rest of the sheet
+  // already does.
+  it('strips run ids and shortens shas out of every sentence, PR title included', () => {
+    const pr: PrFacts = {
+      title: 'S-b9d39bae548707e0: dedupe warden.health on an open unregistered trip',
+      body: null, checks: null, merged: null,
+    };
+    const drift: DriftFacts = { ...noDrift(), commits: [`fixed in ${'a'.repeat(40)}`] };
+    const what = computeWhat({ story: null, pr, drift });
+    for (const line of what) {
+      expect(line).not.toMatch(/S-[0-9a-f]{12,}/);
+      expect(line).not.toMatch(/\b[0-9a-f]{40}\b/);
+    }
+  });
+
   // Item 9: with no PR open, drift.commits is never populated (it only ever reads a
   // PR's own commit range), so "what happened" fell back straight to the title alone.
   // The story panel's own `commit` entries are the run's own commits too; they stand

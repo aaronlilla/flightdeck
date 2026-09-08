@@ -406,6 +406,70 @@ describe('computeRunThread: plain mode (deliverable 7)', () => {
     expect(texts).toContain('Parked: Asked you: PR #39 is open');
   });
 
+  // Item 4: the live thread read `Parked: Asked you: PR #39 (this run) is open...`
+  // immediately followed by `Asked you: PR #39 (this run) is open...` -- the
+  // `run.parked` row and the `forge.ask` row saying the exact same thing. Within 5s of
+  // each other, they collapse to the one `Asked you:` line.
+  it('collapses a run.parked-as-ask row and a matching forge.ask within 5s into one Asked you: line', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner', at: 0 });
+    journal.append({
+      event: 'run.parked', run: 'alpha', actor: 'runner', at: 1_000,
+      reason: 'parking on a1b2c3d4e5f6a7b8: PR #39 is open, draft, and mergeable',
+    });
+    journal.append({
+      event: 'forge.ask', run: 'alpha', actor: 'worker', at: 3_000,
+      question: 'PR #39 is open, draft, and mergeable',
+    });
+    journal.close();
+    const fleet = replay(path);
+
+    const result = computeRunThread('alpha', fleet.events, []);
+    const texts = result.messages.map((m) => m.text);
+    const asks = texts.filter((t) => t.includes('PR #39 is open, draft, and mergeable'));
+    expect(asks).toEqual(['Asked you: PR #39 is open, draft, and mergeable']);
+  });
+
+  // Item 4: a `permission.denied` whose reason starts with `parking on` says nothing
+  // the ask line above it did not already say -- it is dropped, not rendered as its
+  // own "Asked to use X; parked instead" row.
+  it('drops a permission.denied row whose reason starts with "parking on"', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.append({
+      event: 'permission.denied', run: 'alpha', actor: 'runner', tool: 'ToolSearch',
+      reason: 'parking on a1b2c3d4e5f6a7b8: continue?',
+    });
+    journal.close();
+    const fleet = replay(path);
+
+    const result = computeRunThread('alpha', fleet.events, []);
+    const denials = result.messages.filter((m) => m.text.includes('Asked to use'));
+    expect(denials).toHaveLength(0);
+  });
+
+  // Item 9: consecutive identical event lines (a relaunch storm, a repeated denial)
+  // collapse into one line with a count, the way `collapseWardenChips` already does
+  // for the rail -- never a wall of copies of the same sentence.
+  it('collapses consecutive identical event lines with a count', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    for (let i = 0; i < 5; i += 1) {
+      journal.append({ event: 'run.relaunched', run: 'alpha', actor: 'runner' });
+    }
+    for (let i = 0; i < 2; i += 1) {
+      journal.append({ event: 'permission.denied', run: 'alpha', actor: 'runner', tool: 'ToolSearch', reason: 'not allowed' });
+    }
+    journal.close();
+    const fleet = replay(path);
+
+    const result = computeRunThread('alpha', fleet.events, []);
+    const texts = result.messages.map((m) => m.text);
+    expect(texts).toContain('Relaunched (x5)');
+    expect(texts).toContain('Asked to use ToolSearch; parked instead (x2)');
+    expect(texts.filter((t) => t.startsWith('Relaunched'))).toHaveLength(1);
+  });
+
   it('a note row reads "Note: <message>" when message is a string, and is dropped otherwise', () => {
     const { path, journal } = tempJournal();
     journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });

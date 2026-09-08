@@ -13,6 +13,7 @@ import type {
 } from '../../shared/console-model.js';
 import type { CouncilAttestation } from '../contracts.js';
 import { nextCategoryFor } from './laneGlance.js';
+import { stripMachineIds } from '../../shared/humanize.js';
 
 const MAX_WHAT_SENTENCES = 6;
 const MIN_WHAT_SENTENCES = 3;
@@ -105,7 +106,11 @@ export function computeWhat(input: Pick<LaneSummaryInput, 'story' | 'pr' | 'drif
   const seen = new Set<string>();
   const push = (text: string | null | undefined): void => {
     if (!text) return;
-    const sentence = ensureSentence(stripStoryPrefix(text));
+    // Item 3: "what happened" line 1 read `S-b9d39bae548707e0: dedupe warden.health on
+    // an open unregistered trip.` on the live board -- a PR title carried the run id
+    // straight through. Every sentence here goes through the same `stripMachineIds`
+    // every other panel on the sheet already runs its own text through.
+    const sentence = stripMachineIds(ensureSentence(stripStoryPrefix(text)));
     if (!sentence || seen.has(sentence)) return;
     seen.add(sentence);
     sentences.push(sentence);
