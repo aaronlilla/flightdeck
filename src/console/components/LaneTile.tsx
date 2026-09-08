@@ -45,6 +45,8 @@ export interface LaneTileProps {
   /** The group's earlier attempts, oldest first -- rendered inside the disclosure
    *  `attempts` opens. Ignored when `attempts` is unset. */
   earlier?: Lane[];
+  /** How many attempts in this lane's group have a worker answering right now; the footer marker reads "2 live" past one. */
+  liveCount?: number;
 }
 
 /**
@@ -57,7 +59,7 @@ export interface LaneTileProps {
  * the grid (`LanesGrid.tsx`) reads `gridAutoRows: auto` rather than stretching a `1fr`
  * row over a tile whose own height varies.
  */
-export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, onTip, attempts, earlier }: LaneTileProps): JSX.Element {
+export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, onTip, attempts, earlier, liveCount }: LaneTileProps): JSX.Element {
   const st = stateOf(lane.state);
   const [attemptsOpen, setAttemptsOpen] = useState(false);
   const headline = tileHeadlineParts(lane);
@@ -126,21 +128,6 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
           <span className="m" style={{ fontSize: 13, fontWeight: 700 }}><Linkify text={headline.key} repo={lane.repo ?? undefined} /></span>
         ) : <span />}
         <span className="lbl" style={{ color: st.color, cursor: 'help', flex: 'none' }}>{st.glyph} {st.label}</span>
-      </div>
-      {/* Reserved whether or not there is anything to show, same as every other
-         variable slot on this tile -- a lane with no live marker is no shorter than
-         one with one. */}
-      <div style={{ height: 12, display: 'flex', alignItems: 'center', gap: 4 }}>
-        {lane.live.alive ? (
-          <>
-            <span className="live-pulse" aria-hidden="true" />
-            <span className="m" style={{ fontSize: 9, color: 'var(--run)' }}>
-              live{liveSecondsAgo !== null ? ` · last event ${liveSecondsAgo}s ago` : ''}
-            </span>
-          </>
-        ) : stalled ? (
-          <span className="m" style={{ fontSize: 9, fontWeight: 700, color: 'var(--block)' }}>STALLED · no process</span>
-        ) : null}
       </div>
       <div
         className="m"
@@ -268,8 +255,24 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
           })}
         </div>
       ) : null}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 7, borderTop: '1px solid var(--line)', paddingTop: 7 }}>
+      <div data-testid="tile-footer" style={{ display: 'flex', flexDirection: 'column', gap: 7, borderTop: '1px solid var(--line)', paddingTop: 7 }}>
+        {/* Freshness stamp on the left, the live marker centred in the space beside it. The
+           marker lived under the header row until 2026-09-08, where it collided with the
+           title; the footer row had the room. The slot is reserved either way so a tile
+           with no marker is no shorter than its neighbours. */}
         <span className={freshnessClass(fresh)} style={{ alignSelf: 'flex-start' }}>{freshnessStamp(fresh)}</span>
+        <div data-testid="live-marker" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 5, height: 14 }}>
+          {lane.live.alive || (liveCount ?? 0) > 0 ? (
+            <>
+              <span className="live-pulse" aria-hidden="true" />
+              <span className="m" style={{ fontSize: 10, color: 'var(--run)', whiteSpace: 'nowrap' }}>
+                {(liveCount ?? 0) > 1 ? `${liveCount} live` : 'live'}{liveSecondsAgo !== null ? ` · last event ${liveSecondsAgo}s ago` : ''}
+              </span>
+            </>
+          ) : stalled ? (
+            <span className="m" style={{ fontSize: 10, fontWeight: 700, color: 'var(--block)', whiteSpace: 'nowrap' }}>STALLED · no process</span>
+          ) : null}
+        </div>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
           <LaneCta
             lane={lane} cmd={cta.cmd} label={cta.label} cls={cta.cls}
