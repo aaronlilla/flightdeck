@@ -44,7 +44,7 @@ function WindowBar({ label, window, now }: { label: string; window: AccountWindo
         </span>
       </div>
       <div style={{ height: 6, borderRadius: 3, background: 'var(--well)', boxShadow: 'inset 0 1px 2px rgba(0,0,0,.5)', overflow: 'hidden' }}>
-        <div style={{ width: `${pct ?? 0}%`, height: '100%', background: color, transition: 'width .3s' }} />
+        <div style={{ width: '100%', height: '100%', background: color, transform: `scaleX(${(pct ?? 0) / 100})`, transformOrigin: 'left', transition: 'transform .3s' }} />
       </div>
       <span className="m" style={{ fontSize: 10, color: 'var(--ink3)' }}>{note}</span>
     </div>
