@@ -17,7 +17,7 @@ import {
   branchFor, readChainEnv, worktreePathFor, type ChainEnv,
 } from '../../../src/forge/chain-env.js';
 import {
-  CHAIN_LAUNCH_CONDITION, chainLaunchArgv, hasRunRegistered, launchWaitMs, provisionWorktree,
+  CHAIN_LAUNCH_CONDITION, chainLaunchArgv, chainLaunchGoalArgv, hasRunRegistered, launchWaitMs, provisionWorktree,
   runOutcome, runWorktreeSetup, waitForLaunchToRegister, type ProvisionFs,
 } from '../../../src/forge/chain-wire.js';
 import type { RunRequest, RunResult } from '../../../src/forge/exec.js';
@@ -447,6 +447,34 @@ describe('chainLaunchArgv', () => {
     const argv = chainLaunchArgv([], '/repo/dist/forge/cli.js', 'C:/briefs/p1.md');
     expect(argv).not.toContain(expect.stringMatching(/chain-wire/));
     expect(argv[0]).toBe('/repo/dist/forge/cli.js');
+  });
+});
+
+/** 2026-09-08: the argv a goal item's launch spawns -- the block as the second
+ *  argument, never the goal path's own file contents, and `--goal` naming which one
+ *  it is. */
+describe('chainLaunchGoalArgv', () => {
+  it('is execArgv, argv[1], run, the goal path, the block, --goal, then --run-key -- in that order', () => {
+    const argv = chainLaunchGoalArgv(
+      ['--loader', 'tsx'], '/repo/src/forge/cli.ts', 'C:/goals/g1.md', '/goal do the thing', 'g1-Q-abc123',
+    );
+    expect(argv).toEqual([
+      '--loader', 'tsx', '/repo/src/forge/cli.ts', 'run', 'C:/goals/g1.md', '/goal do the thing',
+      '--goal', '--run-key', 'g1-Q-abc123',
+    ]);
+  });
+
+  it('carries the block as one argv entry even when it has spaces, never split', () => {
+    const argv = chainLaunchGoalArgv([], '/repo/dist/forge/cli.js', 'C:/goals/g1.md', '/goal a b c', 'g1-Q-1');
+    expect(argv).toEqual(['/repo/dist/forge/cli.js', 'run', 'C:/goals/g1.md', '/goal a b c', '--goal', '--run-key', 'g1-Q-1']);
+  });
+
+  it('2026-09-08: carries the caller-supplied run key rather than the bare goal-path basename, so two queue items off the same file never collide', () => {
+    const argv = chainLaunchGoalArgv([], '/repo/cli.js', 'C:/goals/same-file.md', '/goal x', 'same-file-Q-first');
+    expect(argv).toContain('same-file-Q-first');
+    const argvSecond = chainLaunchGoalArgv([], '/repo/cli.js', 'C:/goals/same-file.md', '/goal x', 'same-file-Q-second');
+    expect(argvSecond).toContain('same-file-Q-second');
+    expect(argv).not.toEqual(argvSecond);
   });
 });
 

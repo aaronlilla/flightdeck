@@ -30,7 +30,7 @@ export interface ToolOutcome {
   undoable?: boolean;
 }
 
-export const QUEUE_SOURCES = ['ticket', 'brief', 'query', 'backlog', 'hotfix'] as const;
+export const QUEUE_SOURCES = ['ticket', 'brief', 'query', 'backlog', 'hotfix', 'goal'] as const;
 
 export interface ConductorToolHandlers {
   list_lanes: (input: Record<string, never>) => Promise<ToolOutcome>;

@@ -19,6 +19,7 @@ import { randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 
 import type { ChainCouncilFn, ChainGateFn, ChainGh, ChainLauncher } from '../chain.js';
+import { runKeyForBrief } from '../chain.js';
 import type { QueueItem, QueueItemState, QueueSource } from '../../shared/console-model.js';
 import { branchFor } from '../chain-env.js';
 import { evaluateAction } from '../rules/index.js';
@@ -26,6 +27,7 @@ import { renderNotes } from '../council/renderNotes.js';
 import { terminalStateFor, type RepoKind } from './handoff.js';
 import { parseAfterLines } from './repoRoute.js';
 import type { QueueStore } from './queueStore.js';
+import { workspaceRoot } from '../paths.js';
 
 /**
  * A.1: `ChainCouncilResult` (`chain.ts`) carries no findings text, only a verdict and an
@@ -112,6 +114,20 @@ export function addBriefItem(store: QueueStore, briefText: string, now: number =
  *  `planBrief`, which is the whole difference: the base and branch this item lands on. */
 export function addHotfixItem(store: QueueStore, text: string, now: number = Date.now()): QueueItem {
   const item = blankItem(newItemId(), 'hotfix', text, null, now);
+  store.append({ ...item, at: now });
+  return item;
+}
+
+/** 2026-09-08: a goal file (a brief under `.claude/goals/` with a sibling
+ *  `.block.txt`, or an exported task carrying a fenced ```goal-spec block) queued
+ *  with its `/goal` condition already resolved (`goalFile.ts#resolveGoalBlock`,
+ *  called by the caller before this, never by `advanceItem` itself -- a long-running
+ *  item launches on the block it was queued with, not a re-read that could have
+ *  changed under it). `briefPath` is set up front, same value as `input`: a goal item
+ *  never goes through the planner, and `advanceItem`'s own `!item.briefPath` check is
+ *  what tells the two sources apart. */
+export function addGoalItem(store: QueueStore, goalPath: string, block: string, now: number = Date.now()): QueueItem {
+  const item: QueueItem = { ...blankItem(newItemId(), 'goal', goalPath, null, now), briefPath: goalPath, goalBlock: block };
   store.append({ ...item, at: now });
   return item;
 }
@@ -249,6 +265,10 @@ export interface QueueRuntimeDeps {
    *  the queue's own decision (every item stops at a draft PR) lives in this file, not
    *  in whatever the caller wires this to. */
   gate: ChainGateFn;
+  /** 2026-09-08: launches a `goal` item -- its own worktree, its own gates, no brief
+   *  file to plan or amend. Absent means a goal item always fails at the launch hop;
+   *  every other source ignores this. */
+  launchGoal?: (input: { goalPath: string; block: string; cwd: string; runKey: string }) => Promise<{ runKey: string }>;
   /** Whether feature/<branch> is already merged into origin/main on the repo's checkout.
    *  Backs an after: <slug> entry that names no queue item. Absent means such an entry
    *  never resolves. */
@@ -405,6 +425,45 @@ async function unresolvedAfterReason(
  */
 export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Promise<QueueItem> {
   let item = itemIn;
+
+  // 2026-09-08: a `goal` item skips planning, provisioning, the council and the gate
+  // entirely -- a goal brief already claimed its own worktree with `/workon` and
+  // carries its own guardrails and acceptance criteria as its `/goal` condition, so
+  // there is no repo to route, no brief to plan, and no draft PR for this file's own
+  // council/gate hops to review. It only ever moves `queued` -> `running` -> a
+  // terminal state the run's own verdict decides, never through `review`.
+  if (item.source === 'goal') {
+    if (!item.runKey) {
+      if (!deps.launchGoal) {
+        return writeTransition(
+          item, { state: 'failed', reason: 'no launchGoal dependency wired for this environment' },
+          deps, 'queue.failed', { hop: 'launch' },
+        );
+      }
+      try {
+        const goalPath = item.briefPath ?? item.input;
+        // 2026-09-08 (run-key collision fix): unique per item, never the bare
+        // basename `runKeyForBrief` alone gives -- re-adding the same goal file used
+        // to reuse the previous run's key and directory, so the new launch's own
+        // `waitForLaunchToRegister` read the OLD run as already registered.
+        const runKey = `${runKeyForBrief(goalPath)}-${item.id}`;
+        const launched = await deps.launchGoal({
+          goalPath, block: item.goalBlock ?? '', cwd: workspaceRoot(), runKey,
+        });
+        return writeTransition(item, { runKey: launched.runKey, state: 'running' }, deps, 'queue.launched', { runKey: launched.runKey });
+      } catch (error) {
+        return writeTransition(item, { state: 'failed', reason: tailOf(messageOf(error)) }, deps, 'queue.failed', { hop: 'launch' });
+      }
+    }
+    const status = await deps.launcher.status(item.runKey);
+    if (!status.finished) return item;
+    return status.verdict === 'done'
+      ? writeTransition(
+        item, { state: 'done', reason: status.lastText ? `goal loop ended: ${status.lastText}` : 'goal loop ended' },
+        deps, 'queue.done', {},
+      )
+      : writeTransition(item, { state: 'failed', reason: status.verdict ?? 'unknown' }, deps, 'queue.failed', { hop: 'run' });
+  }
 
   if (!item.briefPath) {
     // Clears a stale after:-gate `reason` and `after` list the moment the item leaves

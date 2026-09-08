@@ -478,7 +478,7 @@ export interface ProposalsResponse {
  *  (A.6) -- no Jira ticket at all, branching off the repo's hotfix base rather than its
  *  ordinary one. A hotfix ships to dev on Merge and to production on a separate Promote
  *  click (A.7); it is never merged straight to production. */
-export type QueueSource = 'ticket' | 'brief' | 'query' | 'backlog' | 'hotfix';
+export type QueueSource = 'ticket' | 'brief' | 'query' | 'backlog' | 'hotfix' | 'goal';
 
 /** `queued` waits for a slot; `planning` and `running` are the two the worker keeps
  *  in flight; `parked` is a question, a refusal, or a gate that did not pass -- always a
@@ -554,6 +554,11 @@ export interface QueueItem {
    *  "promoted <version>" instead of the Promote button. */
   promotedAt?: number | null;
   promotedVersion?: string | null;
+  /** goal source only (2026-09-08): the resolved `/goal ...` condition this item was
+   *  added with -- the worker's own first prompt, carried on the item rather than
+   *  re-resolved off disk every tick, since a long-running item should launch on the
+   *  block it was queued with even if the goal file changes under it. */
+  goalBlock?: string;
   /** 2026-09-08: the one line a person reads on the card -- a brief's own heading, or
    *  its first sentence when the heading is a bare slug, or the heading of the brief a
    *  ticket item routed to. Filled by `GET /queue` at read time (never at add time), so

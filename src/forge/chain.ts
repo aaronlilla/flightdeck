@@ -112,6 +112,12 @@ export interface ChainRunStatus {
   /** The run's last handoff text, carried into `chain.blocked` when the verdict is not
    *  `done` so a person reads why without opening the run's own journal. */
   lastHandoff?: string;
+  /** 2026-09-08: the goal loop's own last assistant turn, up to 160 characters,
+   *  carried off the `run.finished` row a goal-mode worker journals -- so `queue.ts`'s
+   *  goal branch can show "Goal met ..." or "stopped after N turns ..." without a
+   *  second read of the run's own journal. Absent for every non-goal run and for a
+   *  goal run whose last turn had no text. */
+  lastText?: string;
 }
 
 /**

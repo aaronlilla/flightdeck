@@ -101,6 +101,32 @@ describe('POST /queue', () => {
     expect(body.items[0]!.input).toContain('# Goal: from a file');
   });
 
+  it('2026-09-08: adds one item for a goal file carrying an inline /goal line', async () => {
+    const goalPath = join(dir, 'a-goal.md');
+    writeFileSync(goalPath, '/goal Work the thing to completion.\n', 'utf8');
+    const response = await fetch(`${base}/queue`, authed({
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ source: 'goal', input: goalPath }),
+    }));
+    const body = await response.json() as QueueAddResponse;
+    expect(body.ok).toBe(true);
+    expect(body.items[0]).toMatchObject({
+      source: 'goal', briefPath: goalPath, goalBlock: '/goal Work the thing to completion.',
+    });
+  });
+
+  it('2026-09-08: 400s a goal input naming a file that does not exist', async () => {
+    const response = await fetch(`${base}/queue`, authed({
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ source: 'goal', input: join(dir, 'no-such-goal.md') }),
+    }));
+    expect(response.status).toBe(200);
+    const body = await response.json() as QueueAddResponse;
+    expect(body.ok).toBe(false);
+    expect(body.items).toEqual([]);
+    expect(body.error).toMatch(/not found/);
+  });
+
   it('refuses a ticket input that is not a key, without asking Jira', async () => {
     const response = await fetch(`${base}/queue`, authed({
       method: 'POST', headers: { 'content-type': 'application/json' },

@@ -14,7 +14,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { ChainCouncilFn, ChainGateFn, ChainGh, ChainLauncher, ChainRunStatus } from '../../../src/forge/chain.js';
 import {
-  addBacklogItems, addBriefItem, addHotfixItem, addQueryItems, addTicketItem, advanceItem, mergeItem, promoteItem,
+  addBacklogItems, addBriefItem, addGoalItem, addHotfixItem, addQueryItems, addTicketItem, advanceItem, mergeItem, promoteItem,
   QUEUE_IN_FLIGHT_STATES, removeItem, retryItem, runQueueTick,
   type QueuePlanner, type QueueRuntimeDeps, type QueueTicketSearch,
 } from '../../../src/forge/intake/queue.js';
@@ -35,6 +35,7 @@ interface FixtureOverrides {
   killSwitch?: () => boolean;
   paused?: () => boolean;
   maxInFlight?: () => number;
+  launchGoal?: QueueRuntimeDeps['launchGoal'];
 }
 
 function buildDeps(store: QueueStore, overrides: FixtureOverrides = {}): { deps: QueueRuntimeDeps; events: Record<string, unknown>[] } {
@@ -73,6 +74,7 @@ function buildDeps(store: QueueStore, overrides: FixtureOverrides = {}): { deps:
       return { id };
     },
     store,
+    ...(overrides.launchGoal ? { launchGoal: overrides.launchGoal } : {}),
   };
   return { deps, events };
 }
@@ -95,6 +97,110 @@ describe('addTicketItem / addBriefItem', () => {
     const store = tempStore();
     const item = addHotfixItem(store, 'null check crashes the login screen', 1000);
     expect(item).toMatchObject({ source: 'hotfix', input: 'null check crashes the login screen', ticket: null, state: 'queued' });
+  });
+
+  it('2026-09-08: adds a queued goal item carrying its resolved /goal block and the goal path as briefPath', () => {
+    const store = tempStore();
+    const item = addGoalItem(store, 'C:/dev/.claude/goals/2026-09-08-thing.md', '/goal Work the thing.', 1000);
+    expect(item).toMatchObject({
+      source: 'goal', input: 'C:/dev/.claude/goals/2026-09-08-thing.md',
+      briefPath: 'C:/dev/.claude/goals/2026-09-08-thing.md', goalBlock: '/goal Work the thing.',
+      ticket: null, repo: null, state: 'queued',
+    });
+    expect(store.all()).toEqual([item]);
+  });
+});
+
+describe('advanceItem: goal source', () => {
+  it('skips the planner and provisioning, launching directly on the resolved block', async () => {
+    const store = tempStore();
+    const item = addGoalItem(store, 'C:/dev/.claude/goals/2026-09-08-thing.md', '/goal Work the thing.', 1000);
+    let launchedWith: { goalPath: string; block: string; cwd: string } | undefined;
+    const { deps } = buildDeps(store, {
+      launchGoal: async (input) => { launchedWith = input; return { runKey: 'goal-run-1' }; },
+    });
+
+    const advanced = await advanceItem(item, deps);
+
+    expect(advanced.state).toBe('running');
+    expect(advanced.runKey).toBe('goal-run-1');
+    expect(launchedWith?.block).toBe('/goal Work the thing.');
+    expect(launchedWith?.goalPath).toBe('C:/dev/.claude/goals/2026-09-08-thing.md');
+  });
+
+  it('fails outright with no launchGoal dependency wired', async () => {
+    const store = tempStore();
+    const item = addGoalItem(store, 'C:/dev/.claude/goals/2026-09-08-thing.md', '/goal Work the thing.', 1000);
+    const { deps } = buildDeps(store);
+
+    const advanced = await advanceItem(item, deps);
+
+    expect(advanced.state).toBe('failed');
+  });
+
+  it('reaches done once the run finishes with verdict done, skipping review entirely', async () => {
+    const store = tempStore();
+    const item = addGoalItem(store, 'C:/dev/.claude/goals/2026-09-08-thing.md', '/goal Work the thing.', 1000);
+    const { deps } = buildDeps(store, {
+      launchGoal: async () => ({ runKey: 'goal-run-2' }),
+      launcher: { status: async () => ({ finished: false }) },
+    });
+
+    const launched = await advanceItem(item, deps);
+    const { deps: deps2 } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done' }) },
+    });
+    const finished = await advanceItem(launched, deps2);
+
+    expect(finished.state).toBe('done');
+    expect(finished.reason).toBe('goal loop ended');
+  });
+
+  it('2026-09-08: appends the run\'s last-turn text to the done reason when the status carries one', async () => {
+    const store = tempStore();
+    const item = addGoalItem(store, 'C:/dev/.claude/goals/2026-09-08-thing.md', '/goal Work the thing.', 1000);
+    const { deps } = buildDeps(store, { launchGoal: async () => ({ runKey: 'goal-run-4' }) });
+    const launched = await advanceItem(item, deps);
+
+    const { deps: deps2 } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', lastText: 'Goal met: probe file written.' }) },
+    });
+    const finished = await advanceItem(launched, deps2);
+
+    expect(finished.reason).toBe('goal loop ended: Goal met: probe file written.');
+  });
+
+  it('2026-09-08: passes launchGoal a run key unique to this item, never the bare goal-path basename', async () => {
+    const store = tempStore();
+    const itemA = addGoalItem(store, 'C:/dev/.claude/goals/same-file.md', '/goal Work the thing.', 1000);
+    const itemB = addGoalItem(store, 'C:/dev/.claude/goals/same-file.md', '/goal Work the thing.', 1001);
+    const runKeysSeen: string[] = [];
+    const { deps } = buildDeps(store, {
+      launchGoal: async (input) => { runKeysSeen.push(input.runKey); return { runKey: input.runKey }; },
+    });
+
+    await advanceItem(itemA, deps);
+    await advanceItem(itemB, deps);
+
+    expect(runKeysSeen).toHaveLength(2);
+    expect(runKeysSeen[0]).not.toBe(runKeysSeen[1]);
+    expect(runKeysSeen[0]).toContain(itemA.id);
+    expect(runKeysSeen[1]).toContain(itemB.id);
+  });
+
+  it('fails when the run finishes with a non-done verdict', async () => {
+    const store = tempStore();
+    const item = addGoalItem(store, 'C:/dev/.claude/goals/2026-09-08-thing.md', '/goal Work the thing.', 1000);
+    const { deps } = buildDeps(store, { launchGoal: async () => ({ runKey: 'goal-run-3' }) });
+    const launched = await advanceItem(item, deps);
+
+    const { deps: deps2 } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'blocked' }) },
+    });
+    const finished = await advanceItem(launched, deps2);
+
+    expect(finished.state).toBe('failed');
+    expect(finished.reason).toBe('blocked');
   });
 });
 

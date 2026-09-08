@@ -85,6 +85,7 @@ import {
 } from './chain.js';
 import { readChainEnv } from './chain-env.js';
 import { buildChainDeps, hasRunRegistered } from './chain-wire.js';
+import { isGoalFile } from './intake/goalFile.js';
 
 export interface CliResult {
   code: number;
@@ -249,17 +250,34 @@ function briefUnderRealGoalsDir(briefPath: string): boolean {
  */
 function parseRunArgs(rest: string[]): {
   dryRun: boolean; maxContext?: number; maxTurns?: number; condition: string; invalid?: string;
-  autoAnswer?: string;
+  autoAnswer?: string; goal: boolean; runKey?: string;
 } {
   let dryRun = false;
+  let goal = false;
   let maxContext: number | undefined;
   let maxTurns: number | undefined;
   let invalid: string | undefined;
   let autoAnswer: string | undefined;
+  let runKey: string | undefined;
   const words: string[] = [];
   for (let index = 0; index < rest.length; index += 1) {
     const token = rest[index]!;
     if (token === '--dry-run') { dryRun = true; continue; }
+    // 2026-09-08: a `goal` queue item's launch -- the argument past the goal path is
+    // the resolved /goal condition itself, never file contents, and this flag is what
+    // tells `forge run` so, the same way `chainLaunchGoalArgv` builds its argv.
+    if (token === '--goal') { goal = true; continue; }
+    // 2026-09-08 (BBZ collision fix): names this run's own key instead of letting it
+    // fall back to `runKeyForBrief`'s bare basename -- two queue items launched off
+    // the same goal file otherwise collide on both the run directory and the
+    // registry row the second launch's `waitForLaunchToRegister` would then read as
+    // already-registered from the first.
+    if (token === '--run-key') {
+      const raw = rest[index += 1];
+      if (!raw) invalid ??= '--run-key needs a value';
+      runKey = raw;
+      continue;
+    }
     if (token === '--max-context') {
       const raw = rest[index += 1];
       const value = Number(raw);
@@ -283,10 +301,11 @@ function parseRunArgs(rest: string[]): {
     words.push(token);
   }
   return {
-    dryRun, condition: words.join(' '),
+    dryRun, goal, condition: words.join(' '),
     ...(maxContext !== undefined ? { maxContext } : {}),
     ...(maxTurns !== undefined ? { maxTurns } : {}),
     ...(autoAnswer !== undefined ? { autoAnswer } : {}),
+    ...(runKey !== undefined ? { runKey } : {}),
     ...(invalid ? { invalid } : {}),
   };
 }
@@ -676,11 +695,19 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       } catch (error) {
         return { code: 2, lines: [`cannot read ${briefPath}: ${(error as Error).message}`] };
       }
-      const { dryRun, maxContext, maxTurns, condition, invalid, autoAnswer } = parseRunArgs(rest.slice(1));
+      const { dryRun, goal, maxContext, maxTurns, condition, invalid, autoAnswer, runKey: runKeyArg } = parseRunArgs(rest.slice(1));
       if (invalid) {
         // Refused before checkLaunch and before any lane is written: a NaN ceiling never
         // fires, which is the exact silent-unbounded-run this check exists to close.
         return { code: 2, lines: [`refusing to start: ${invalid}`] };
+      }
+      // 2026-09-08: `--goal` -- `briefPath` was still read above (so a bad path fails
+      // the same way for both, and the file's own text still reaches the log and
+      // `tierOfBrief`/`checkLaunch`'s scan), but the Worker's actual first prompt is
+      // the resolved /goal condition, never that file's contents.
+      if (goal) {
+        if (!condition) return { code: 2, lines: ['forge run --goal needs the /goal condition as its second argument'] };
+        brief = condition;
       }
       // Item 8, 2026-09-05: --auto-answer is for a probe or smoke run only -- a brief
       // that opens under a real goals directory (`.claude/goals/`, outside its own
@@ -703,7 +730,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       if (!verdict.ok) {
         return { code: 1, lines: ['refusing to start:', ...verdict.refusals.map((r) => `  ${r}`)] };
       }
-      const slug = runKeyForBrief(briefPath);
+      const slug = runKeyArg ?? runKeyForBrief(briefPath);
       const pin = pinnedRuntime(slug);
       const breaker = new Breaker(lanes);
       const configDir = fleetConfigDirChoice();
@@ -815,6 +842,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         ...(maxContext !== undefined ? { maxContext } : {}),
         ...(maxTurns !== undefined ? { maxTurns } : {}),
         ...(autoAnswer !== undefined ? { autoAnswer } : {}),
+        ...(goal ? { goalLoop: true } : {}),
       });
       let result: Awaited<ReturnType<Worker['run']>>;
       try {
@@ -1181,11 +1209,18 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       const sub = rest[0];
       if (sub === 'add') {
         const input = rest[1];
-        if (!input) return { code: 2, lines: ['forge queue add INPUT [--source ticket|brief|hotfix]'] };
+        if (!input) return { code: 2, lines: ['forge queue add INPUT [--source ticket|brief|hotfix|goal]'] };
         const sourceFlag = rest.indexOf('--source');
         const explicitSource = sourceFlag >= 0 ? rest[sourceFlag + 1] : undefined;
+        // 2026-09-08: an existing .md file that carries a sibling .block.txt, an
+        // inline /goal line, or a fenced goal-spec block auto-detects as `goal`
+        // before falling to the plain `brief` file-read source.
         const source = explicitSource
-          ?? (TICKET_KEY_RE.test(input) ? 'ticket' : isExistingFile(input) ? 'brief' : undefined);
+          ?? (TICKET_KEY_RE.test(input)
+            ? 'ticket'
+            : /\.md$/i.test(input) && isExistingFile(input) && isGoalFile(input)
+              ? 'goal'
+              : isExistingFile(input) ? 'brief' : undefined);
         if (!source) {
           return {
             code: 1,

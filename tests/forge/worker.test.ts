@@ -360,6 +360,21 @@ describe('B.3.4: done is verified', () => {
     expect(finished?.['verdict']).toBe('unverified');
   });
 
+  it('2026-09-08: yields done, not unverified, for a goal-loop run with no Verification block', async () => {
+    const worker = makeWorker(
+      [[{ text: 'Goal met: probe file written.', context: 10, done: true }]],
+      { goalLoop: true },
+    );
+    const result = await worker.run();
+
+    expect(result.verdict).toBe('done');
+    const finished = replay(journalPath).events
+      .find((e) => e.event === 'run.finished' && e.run === 'alpha');
+    expect(finished?.['verdict']).toBe('done');
+    expect(finished?.['goalLoop']).toBe(true);
+    expect(finished?.['lastText']).toBe('Goal met: probe file written.');
+  });
+
   it('runs the declared verification command and only marks done once it passes', async () => {
     const brief = '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnode -e process.exit(0)\n```\n';
     const calls: string[] = [];

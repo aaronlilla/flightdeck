@@ -32,6 +32,7 @@ import { createJiraFeed } from './intake/jira.js';
 import {
   intakeBriefsDir, journalPath, killSwitchPath, forgeHome, registryDir, runDir,
 } from './paths.js';
+import { runtimeVersion } from './launcher.js';
 import { Registry } from './registry.js';
 import { readWatermark, writeWatermark } from './intake/watermarkStore.js';
 import { planFromPacket } from './intake/planner.js';
@@ -132,6 +133,20 @@ export function chainLaunchArgv(execArgv: readonly string[], argv1: string, brie
 }
 
 /**
+ * 2026-09-08: the argv a `goal` queue item's launch spawns -- `goalPath` for logging
+ * and `checkLaunch`, `block` as the actual first prompt (`cli.ts`'s `--goal` flag
+ * reads it that way instead of the file's own contents), and `--goal` itself so `forge
+ * run` knows which of the two the second argument is. Built the same way
+ * `chainLaunchArgv` is: one function both the production launcher and a specimen
+ * asserting its shape read, so the spawned argv never drifts between the two.
+ */
+export function chainLaunchGoalArgv(
+  execArgv: readonly string[], argv1: string, goalPath: string, block: string, runKey: string,
+): string[] {
+  return [...execArgv, argv1, 'run', goalPath, block, '--goal', '--run-key', runKey];
+}
+
+/**
  * E2/E3: whether a run has actually started, read from the two places that would show
  * it: the registry row `forge run` admits before anything else, and the `run.started`
  * row the worker journals once it has a brief loaded. Either one is enough, and neither
@@ -189,9 +204,11 @@ export function runOutcome(
   }
   const finishedEvent = [...input.events].reverse()
     .find((event) => event['event'] === 'run.finished' && event['run'] === key);
+  const lastText = finishedEvent?.['lastText'] as string | undefined;
   return {
     finished: true,
     verdict: run.verdict ?? (finishedEvent?.['verdict'] as string | undefined) ?? run.state,
+    ...(lastText ? { lastText } : {}),
   };
 }
 
@@ -640,6 +657,53 @@ export function chainLauncher(chainEnv: ChainEnv, fleetConfigDir: string): Chain
         events: journalCache.read(journalPath()).events,
       });
     },
+  };
+}
+
+/**
+ * 2026-09-08: the production `launchGoal` for a `goal` queue item -- the same detached
+ * spawn the brief launcher's `launch()` runs, minus everything that only makes sense
+ * for a brief: no file read, no `completeBriefWithVerification` (a goal brief already
+ * carries its own guardrails and verification in its `/goal` condition), no worktree
+ * argument (the goal already claimed its own via `/workon`; `cwd` is the workspace
+ * root instead). `runKey` is the caller's own -- `queue.ts` makes it unique per queue
+ * item (`runKeyForBrief(goalPath)-<item id>`, never the bare basename alone), and it
+ * is passed straight through to `forge run --run-key` so both sides agree on the same
+ * name the status poller (`ChainLauncher.status`, reused unchanged) reads back.
+ */
+export function chainLaunchGoal(fleetConfigDir: string): NonNullable<QueueRuntimeDeps['launchGoal']> {
+  return async ({ goalPath, block, cwd, runKey }) => {
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    for (const name of WORKER_ENV_STRIP) delete env[name];
+    env['CLAUDE_CONFIG_DIR'] = fleetConfigDir;
+    env['FORGE_HOME'] = forgeHome();
+    env['FORGE_RUNTIME'] = runtimeVersion();
+
+    const logPath = join(runDir(runKey), 'launch.log');
+    mkdirSync(dirname(logPath), { recursive: true });
+    const logFd = openSync(logPath, 'a');
+    let child: ChildProcess;
+    try {
+      child = spawn(
+        process.execPath,
+        chainLaunchGoalArgv(process.execArgv, process.argv[1] ?? '', goalPath, block, runKey),
+        { cwd, env, detached: true, stdio: ['ignore', logFd, logFd] },
+      );
+    } finally {
+      closeSync(logFd);
+    }
+    child.unref();
+
+    await waitForLaunchToRegister({
+      runKey,
+      registry: new Registry(registryDir()),
+      readEvents: () => journalCache.read(journalPath()).events,
+      child,
+      readLogTail: () => readLogTailFile(logPath),
+      waitMs: launchWaitMs(),
+    });
+
+    return { runKey };
   };
 }
 
