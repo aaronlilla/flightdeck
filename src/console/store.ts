@@ -175,7 +175,16 @@ export function reducer(state: State, action: Action): State {
     case 'loaded':
       return { ...state, loaded: true };
     case 'tick':
-      return { ...state, now: action.now };
+      // Sweep #10: "retry in Ns" never ticked down -- `feed-lost` set retryInS once
+      // and nothing ever touched it again. The 5s poll in App.tsx already retries on
+      // its own cadence regardless of feed state, so this wraps back to 5 the moment
+      // it would hit 0 rather than freezing there, tracking that real retry rhythm.
+      return {
+        ...state, now: action.now,
+        feed: (!state.feed.live && state.feed.retryInS !== null)
+          ? { ...state.feed, retryInS: state.feed.retryInS <= 1 ? 5 : state.feed.retryInS - 1 }
+          : state.feed,
+      };
     case 'fetch-latency':
       return { ...state, fetchLatencyMs: action.ms };
     case 'feed-live':

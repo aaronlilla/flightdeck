@@ -24,6 +24,28 @@ describe('store reducer', () => {
     expect(state.feed.lostAt).toBeNull();
   });
 
+  // Sweep #10: "retry in Ns" never ticked down -- feed-lost set retryInS once and
+  // nothing else ever touched it.
+  it('counts retryInS down on each tick while the feed is down, wrapping back to 5', () => {
+    let state = initialState();
+    state = reducer(state, { type: 'feed-lost', reason: 'unreachable' });
+    expect(state.feed.retryInS).toBe(5);
+    state = reducer(state, { type: 'tick', now: 1 });
+    expect(state.feed.retryInS).toBe(4);
+    state = reducer(state, { type: 'tick', now: 2 });
+    state = reducer(state, { type: 'tick', now: 3 });
+    state = reducer(state, { type: 'tick', now: 4 });
+    expect(state.feed.retryInS).toBe(1);
+    state = reducer(state, { type: 'tick', now: 5 });
+    expect(state.feed.retryInS).toBe(5);
+  });
+
+  it('never touches retryInS while the feed is live', () => {
+    let state = initialState();
+    state = reducer(state, { type: 'tick', now: 1 });
+    expect(state.feed.retryInS).toBeNull();
+  });
+
   it('appends to the thread without dropping earlier messages', () => {
     let state = initialState();
     state = reducer(state, { type: 'thread', thread: [{ k: 'a', type: 'event', text: 'x', ts: 1, source: 'system' }] });
