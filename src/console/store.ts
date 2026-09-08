@@ -66,6 +66,9 @@ export interface State {
   archivedLanes: Lane[];
   loaded: boolean;
   now: number;
+  /** 2026-09-08: what `Linkify` needs to turn a Jira key or a PR mention into a link --
+   *  off the same `GET /lanes` response the board fetches. */
+  links: { jiraSite: string | null; defaultRepo: string | null };
   /** Duration of the last `/lanes` fetch, for the feed stamp's latency fallback. */
   fetchLatencyMs: number | null;
 
@@ -87,7 +90,7 @@ export interface State {
 }
 
 export type Action =
-  | { type: 'lanes'; lanes: Lane[]; tokensToday?: number }
+  | { type: 'lanes'; lanes: Lane[]; tokensToday?: number; links?: State['links'] }
   | { type: 'thread'; thread: Message[] }
   | { type: 'thread-append'; messages: Message[] }
   | { type: 'journal'; journal: JournalEntry[] }
@@ -143,6 +146,7 @@ export function initialState(): State {
     archivedLanes: [],
     loaded: false,
     now: Date.now(),
+    links: { jiraSite: null, defaultRepo: null },
     fetchLatencyMs: null,
     view: 'board',
     filter: 'all',
@@ -162,7 +166,7 @@ export function initialState(): State {
 export function reducer(state: State, action: Action): State {
   switch (action.type) {
     case 'lanes':
-      return { ...state, lanes: action.lanes, loaded: true };
+      return { ...state, lanes: action.lanes, loaded: true, links: action.links ?? state.links };
     case 'thread':
       return { ...state, thread: action.thread };
     case 'thread-append':

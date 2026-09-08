@@ -140,7 +140,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       failCount.current = failedSlices.length > 0 ? failCount.current + 1 : 0;
       const endedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
       dispatch({ type: 'fetch-latency', ms: Math.round(endedAt - startedAt) });
-      if (lanes) dispatch({ type: 'lanes', lanes: lanes.lanes });
+      if (lanes) dispatch({ type: 'lanes', lanes: lanes.lanes, links: lanes.links });
       if (thread) {
         // Re-attach an unconfirmed confirm card the server's own `/thread` never
         // carries, rather than letting this refetch silently erase the last line of
