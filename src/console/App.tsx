@@ -448,8 +448,11 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   }, () => dispatch({ type: 'view', view: 'settings' }), state.now, (key) => {
     void (async () => {
       try {
-        await api.dismissAsk(key);
-        appendReceipt(null, 'stale ask dismissed.', false);
+        // `receiptCard` reads success off `jid` being non-null (`type: jid ? 'receipt' :
+        // 'refusal'`), so a genuine success with no jid would render as a red Refused
+        // card -- pass the server's own jid through rather than a hardcoded null.
+        const dismissed = await api.dismissAsk(key);
+        appendReceipt(dismissed.jid, 'stale ask dismissed.', false);
       } catch (caught) {
         appendReceipt(null, caught instanceof api.ApiError ? caught.message : 'dismiss did not go through', false);
       }

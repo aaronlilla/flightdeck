@@ -158,4 +158,12 @@ describe('buildNeeds stale ask plate', () => {
     );
     expect(items[0]?.cta).not.toBe('Dismiss');
   });
+
+  // Sweep #6: a dismiss clears `lane.question` but leaves the lane `parked` -- nothing
+  // resumes it. Before this fix the lane fell straight into the ordinary "asks: -"
+  // plate, so a dismiss never actually left Needs You.
+  it('a parked lane with no question at all (a dismissed ask) is not a need anymore', () => {
+    const items = buildNeeds([lane({ ticket: 'FLT-9', question: null })], [], vi.fn());
+    expect(items).toHaveLength(0);
+  });
 });

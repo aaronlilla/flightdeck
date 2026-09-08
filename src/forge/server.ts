@@ -788,10 +788,13 @@ export class ForgeServer {
           return;
         }
         this.inbox.retire(parsed.inboxKey);
-        appendOnce(this.journalPath, {
+        const retired = appendOnce(this.journalPath, {
           event: 'inbox.retired', actor: 'console', key: parsed.inboxKey, runs: entry.runs,
         });
-        json(response, 200, { ok: true });
+        // The console reads success off a non-null `jid` (`receiptCard`'s
+        // `type: jid ? 'receipt' : 'refusal'`) -- with none here, a genuine dismiss
+        // rendered as a red Refused card.
+        json(response, 200, { ok: true, jid: retired.id });
         return;
       }
       if (parsed?.all === true) {

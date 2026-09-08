@@ -66,8 +66,12 @@ export function buildNeeds(
         titleId: headline.runId, sub: '', line: 'nothing readable was asked; this will never resolve on its own',
         cta: 'Dismiss', ctaCls: 'btnS', onClick: () => onDismissAsk(key), more: null,
       });
-    } else if (lane.state === 'parked') {
-      const question = lane.question?.text ?? '';
+      // A dismissed ask clears `lane.question` but leaves the lane `parked` -- nothing
+      // resumes it on a dismiss. Without the `lane.question` guard below, that lane
+      // fell straight into the ordinary "asks: -" plate forever: a dismiss never
+      // actually left Needs You, it just changed which plate the lane showed as.
+    } else if (lane.state === 'parked' && lane.question) {
+      const question = lane.question.text;
       // The prototype's own plate: `asks: ` plus the question, truncated to 70 chars
       // with an unconditional "…" (script_wrapped.txt 199: `text.slice(0,70)+'…'`,
       // appended even when the question is already short). It never covers an inbox

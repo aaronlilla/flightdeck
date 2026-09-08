@@ -122,4 +122,17 @@ describe('stub server', () => {
     expect(lanes.some((l) => l.kind === 'self')).toBe(true);
     expect(lanes.every((l) => l.title !== null && l.plain !== '')).toBe(true);
   });
+
+  // Sweep #6: the console reads success off a non-null jid (`receiptCard`'s
+  // `type: jid ? 'receipt' : 'refusal'`); a dismiss with no jid rendered as a red
+  // Refused card even though it succeeded.
+  it('POST /clear returns a jid on a successful dismiss, and clears the lane\'s question', async () => {
+    const cleared = await post<{ ok: boolean; jid: string | null }>('/clear', { inboxKey: 'ask-bbz-118' });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.ok).toBe(true);
+    expect(cleared.body.jid).toBeTruthy();
+    const { lanes } = await get<{ lanes: { id: string; question: unknown }[] }>('/lanes');
+    const lane = lanes.find((l) => l.id === 'BBZ-118');
+    expect(lane?.question).toBeNull();
+  });
 });
