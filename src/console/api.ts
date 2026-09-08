@@ -343,3 +343,11 @@ export function mergeQueueItem(id: string, confirm?: string): Promise<Gated<Acti
 export function promoteQueueItem(id: string, version: string, message: string, confirm?: string): Promise<Gated<ActionResult>> {
   return post<Gated<ActionResult>>(`/queue/${encodeURIComponent(id)}/promote`, withConfirm({ version, message }, confirm));
 }
+
+/** queue-throughput W3: the width stepper's write. 1-12 is enforced server-side
+ *  (`queue-route.ts`); an out-of-range value comes back as a 400 `ApiError` with the
+ *  message `maxInFlight must be an integer between 1 and 12`, same as any other
+ *  refused action here. */
+export function postQueueWidth(maxInFlight: number): Promise<ActionResult> {
+  return post<ActionResult>('/queue/width', { maxInFlight });
+}
