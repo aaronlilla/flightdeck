@@ -18,7 +18,8 @@ test('the epic chip selects the KEY placeholder, and Add refuses while it remain
 
   const input = page.locator('input.inp');
   await expect(input).toHaveValue('parent = KEY');
-  const selected = await input.evaluate((el: HTMLInputElement) => el.value.slice(el.selectionStart ?? 0, el.selectionEnd ?? 0));
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const selected = await input.evaluate((el: any) => el.value.slice(el.selectionStart ?? 0, el.selectionEnd ?? 0)) as string;
   expect(selected).toBe('KEY');
 
   await page.getByText('Add ⏎', { exact: true }).click();
