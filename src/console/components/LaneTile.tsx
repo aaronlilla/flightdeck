@@ -1,5 +1,5 @@
 import type { JSX, MouseEvent } from 'react';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { actionable } from '../keyboard-actionable.js';
 import {
@@ -22,13 +22,20 @@ export interface LaneTileProps {
   onOpenCost: (id: string) => void;
   onCommand: (id: string, cmd: string) => void;
   onTip: (tip: TipSpec | null) => void;
-  /** C.1: a quick correction that should not wait on opening the full ticket sheet.
-   *  Optional so every other caller of this tile keeps working unchanged. */
+  /** 2026-09-08: set only for the newest lane in a retried ticket's group. Renders
+   *  the "attempt N of M" chip on the chip row (instead of a second box hanging
+   *  below the tile) and, together with `earlier`, the disclosure that lists the
+   *  earlier attempts inside the tile, above the footer. */
+  attempts?: { position: number; total: number };
+  /** The group's earlier attempts, oldest first -- rendered inside the disclosure
+   *  `attempts` opens. Ignored when `attempts` is unset. */
+  earlier?: Lane[];
 }
 
 /** One board tile: id, model chip, state, step, context gauge, cost readout, freshness, one CTA. */
-export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, onTip }: LaneTileProps): JSX.Element {
+export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, onTip, attempts, earlier }: LaneTileProps): JSX.Element {
   const st = stateOf(lane.state);
+  const [attemptsOpen, setAttemptsOpen] = useState(false);
   const headline = tileHeadlineParts(lane);
   const cta = laneCta(lane);
   const why = mergeableWhy(lane);
@@ -63,7 +70,7 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
       className="lane"
       data-testid={`lane-${lane.id}`}
       data-state={lane.state}
-      style={{ borderColor: lane.state === 'parked' ? 'var(--park)' : undefined, opacity }}
+      style={{ borderColor: lane.state === 'parked' ? 'var(--park)' : undefined, opacity, height: '100%' }}
       {...actionable(() => onOpen(lane.id))}
     >
       {lane.state === 'parked' ? (
@@ -83,7 +90,7 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
               <span className="m" title={headline.runId} style={{ fontSize: 13, fontWeight: 700 }}>{headline.title ?? headline.runId}</span>
             )}
           </div>
-          <span style={{ display: 'flex', gap: 4, flex: 'none' }}>
+          <span style={{ display: 'flex', gap: 4, flex: 'none', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <span className="chip" style={{ fontSize: 9 }}>{kindLabel(lane.kind)}</span>
             <span
               className="chip"
@@ -92,6 +99,14 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
             >
               {lane.model}
             </span>
+            {attempts ? (
+              <span
+                className="chip chipB"
+                {...actionable((e) => { e?.stopPropagation?.(); setAttemptsOpen((v) => !v); })}
+              >
+                attempt {attempts.position} of {attempts.total}
+              </span>
+            ) : null}
           </span>
         </div>
         {headline.key && headline.title ? (
@@ -108,7 +123,14 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
         ) : null}
       </div>
       <div className="lbl" style={{ color: st.color, cursor: 'help' }}>{st.glyph} {st.label}</div>
-      <div style={{ font: '12.5px/1.45 "IBM Plex Sans",sans-serif', color: 'var(--ink2)', minHeight: 38 }}>
+      <div
+        title={plainLine(lane)}
+        style={{
+          font: '12.5px/1.45 "IBM Plex Sans",sans-serif', color: 'var(--ink2)', minHeight: 38,
+          display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+          overflowWrap: 'anywhere',
+        }}
+      >
         {plainLine(lane)}
       </div>
       <div style={{ cursor: 'help' }} onMouseEnter={(e) => showTip('ctx', e, ctxTip(lane, fresh))} onMouseLeave={() => hideTip('ctx')}>
@@ -134,7 +156,7 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
         </span>
       </div>
       {lane.pr ? (
-        <div className="m" style={{ fontSize: '10.5px', color: 'var(--ink2)' }}>
+        <div className="m" title={`PR #${prSummaryParts(lane.pr).no} · ${prSummaryParts(lane.pr).rest}`} style={{ fontSize: '10.5px', color: 'var(--ink2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           <a
             href={lane.pr.url} target="_blank" rel="noopener noreferrer"
             onClick={(e) => e.stopPropagation()} style={{ fontWeight: 700, color: 'var(--ink)' }}
@@ -144,7 +166,26 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
           {' · '}{prSummaryParts(lane.pr).rest}
         </div>
       ) : null}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 7, borderTop: '1px solid var(--line)', paddingTop: 7 }}>
+      {attempts && earlier && earlier.length > 0 && attemptsOpen ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, background: 'var(--well)', borderRadius: 3, padding: '8px 10px' }}>
+          {earlier.map((l) => {
+            const earlierCta = laneCta(l);
+            return (
+              <div key={l.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
+                <span className="m" style={{ fontSize: '10.5px', color: 'var(--ink2)' }}>{plainLine(l)}</span>
+                <span
+                  className={earlierCta.cls}
+                  style={{ padding: '5px 8px', fontSize: 9, flex: 'none' }}
+                  {...actionable((e) => { e?.stopPropagation?.(); onCommand(l.id, earlierCta.cmd); })}
+                >
+                  {earlierCta.label}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 7, borderTop: '1px solid var(--line)', paddingTop: 7, marginTop: 'auto' }}>
         <span className={freshnessClass(fresh)} style={{ alignSelf: 'flex-start' }}>{freshnessStamp(fresh)}</span>
         <div style={{ display: 'flex', gap: 6 }}>
           <span
