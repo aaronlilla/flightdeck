@@ -102,58 +102,90 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       // chip's, since they all read the same array -- disagreeing with what the grid
       // actually renders. One dataset, filtered the same way everywhere, keeps every
       // chip's count equal to what clicking it would show (fidelity sweep #2).
-      const [lanes, thread, journal, integrations, caps, proposals, queue, consoleState] = await Promise.all([
+      //
+      // `allSettled`, not `all`: one endpoint 500ing must never throw the whole batch
+      // away and blank a board whose lanes read came back fine (sweep #27). Each slice
+      // dispatches on its own; a rejected one is skipped and named in a toast rather
+      // than silently standing in for real data.
+      const [lanesR, threadR, journalR, integrationsR, capsR, proposalsR, queueR, consoleStateR] = await Promise.allSettled([
         api.getLanes({ all: true }),
         api.getThread(), api.getJournal(), api.getIntegrations(), api.getCaps(), api.getProposals(), api.getQueue(),
         api.getState(),
       ]);
       if (!mounted.current) return;
-      failCount.current = 0;
+      const failedSlices: string[] = [];
+      const settled = <T,>(result: PromiseSettledResult<T>, name: string): T | undefined => {
+        if (result.status === 'fulfilled') return result.value;
+        failedSlices.push(name);
+        return undefined;
+      };
+      const lanes = settled(lanesR, 'lanes');
+      const thread = settled(threadR, 'thread');
+      const journal = settled(journalR, 'journal');
+      const integrations = settled(integrationsR, 'integrations');
+      const caps = settled(capsR, 'caps');
+      const proposals = settled(proposalsR, 'proposals');
+      const queue = settled(queueR, 'queue');
+      const consoleState = settled(consoleStateR, 'state');
+
+      failCount.current = failedSlices.length > 0 ? failCount.current + 1 : 0;
       const endedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
       dispatch({ type: 'fetch-latency', ms: Math.round(endedAt - startedAt) });
-      dispatch({ type: 'lanes', lanes: lanes.lanes });
-      // Re-attach an unconfirmed confirm card the server's own `/thread` never carries,
-      // rather than letting this refetch silently erase the last line of defence before
-      // an irreversible action.
-      const pending = pendingConfirmRef.current;
-      const pendingBulkCard = pendingBulkRef.current;
-      let incomingThread = pending && !thread.messages.some((m) => m.k === pending.k)
-        ? [...thread.messages, pending.card]
-        : thread.messages;
-      if (pendingBulkCard && !incomingThread.some((m) => m.k === pendingBulkCard.k)) {
-        incomingThread = [...incomingThread, pendingBulkCard.card];
+      if (lanes) dispatch({ type: 'lanes', lanes: lanes.lanes });
+      if (thread) {
+        // Re-attach an unconfirmed confirm card the server's own `/thread` never
+        // carries, rather than letting this refetch silently erase the last line of
+        // defence before an irreversible action.
+        const pending = pendingConfirmRef.current;
+        const pendingBulkCard = pendingBulkRef.current;
+        let incomingThread = pending && !thread.messages.some((m) => m.k === pending.k)
+          ? [...thread.messages, pending.card]
+          : thread.messages;
+        if (pendingBulkCard && !incomingThread.some((m) => m.k === pendingBulkCard.k)) {
+          incomingThread = [...incomingThread, pendingBulkCard.card];
+        }
+        const cutoff = Date.now() - LOCAL_CARD_TTL_MS;
+        localCardsRef.current = localCardsRef.current.filter((card) => card.ts >= cutoff);
+        for (const card of localCardsRef.current) {
+          if (!incomingThread.some((m) => m.k === card.k)) incomingThread = [...incomingThread, card];
+        }
+        for (const [k, override] of [...resolvedOverridesRef.current]) {
+          if (override.at < cutoff) resolvedOverridesRef.current.delete(k);
+        }
+        if (resolvedOverridesRef.current.size > 0) {
+          incomingThread = incomingThread.map((m) => {
+            const override = resolvedOverridesRef.current.get(m.k);
+            return override && m.resolved === undefined ? { ...m, resolved: override.resolved } : m;
+          });
+        }
+        dispatch({ type: 'thread', thread: incomingThread });
       }
-      const cutoff = Date.now() - LOCAL_CARD_TTL_MS;
-      localCardsRef.current = localCardsRef.current.filter((card) => card.ts >= cutoff);
-      for (const card of localCardsRef.current) {
-        if (!incomingThread.some((m) => m.k === card.k)) incomingThread = [...incomingThread, card];
-      }
-      for (const [k, override] of [...resolvedOverridesRef.current]) {
-        if (override.at < cutoff) resolvedOverridesRef.current.delete(k);
-      }
-      if (resolvedOverridesRef.current.size > 0) {
-        incomingThread = incomingThread.map((m) => {
-          const override = resolvedOverridesRef.current.get(m.k);
-          return override && m.resolved === undefined ? { ...m, resolved: override.resolved } : m;
-        });
-      }
-      dispatch({ type: 'thread', thread: incomingThread });
-      dispatch({ type: 'journal', journal: journal.rows });
-      dispatch({ type: 'integrations', integrations: integrations.items });
-      dispatch({ type: 'caps', caps });
-      dispatch({ type: 'proposals', proposals });
-      dispatch({ type: 'queue', items: queue.items, paused: queue.paused, maxInFlight: queue.maxInFlight, pauseReason: queue.pauseReason });
-      dispatch({ type: 'queue-on', on: consoleState.queue_on });
+      if (journal) dispatch({ type: 'journal', journal: journal.rows });
+      if (integrations) dispatch({ type: 'integrations', integrations: integrations.items });
+      if (caps) dispatch({ type: 'caps', caps });
+      if (proposals) dispatch({ type: 'proposals', proposals });
+      if (queue) dispatch({ type: 'queue', items: queue.items, paused: queue.paused, maxInFlight: queue.maxInFlight, pauseReason: queue.pauseReason });
+      if (consoleState) dispatch({ type: 'queue-on', on: consoleState.queue_on });
       // The server moved onto a new build (a restart, a self cutover): this page's
       // components are the old ones, so reload rather than paint new data with them.
-      if (consoleState.build) {
+      if (consoleState?.build) {
         if (servedBuildRef.current && servedBuildRef.current !== consoleState.build) {
           window.location.reload();
           return;
         }
         servedBuildRef.current = consoleState.build;
       }
-      dispatch({ type: 'feed-live' });
+      if (failedSlices.length > 0) {
+        dispatch({
+          type: 'toast',
+          toast: {
+            glyph: '✕', title: `could not load: ${failedSlices.join(', ')}`, sub: '', big: '', color: 'var(--block)',
+          },
+        });
+        setTimeout(() => { if (mounted.current) dispatch({ type: 'toast', toast: null }); }, 4000);
+      }
+      if (failCount.current >= 2) dispatch({ type: 'feed-lost', reason: 'the fleet server is unreachable' });
+      else dispatch({ type: 'feed-live' });
     } catch {
       if (mounted.current) {
         failCount.current += 1;
