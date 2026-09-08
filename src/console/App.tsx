@@ -591,10 +591,25 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
           <Settings
             integrations={state.integrations} caps={state.caps} journalCount={state.journal.length}
             journal={state.journal} rules={state.proposals?.rules ?? []} lanes={state.lanes} feed={state.feed} now={state.now}
-            onCheck={(id) => void api.checkIntegration(id).then((r) => dispatch({ type: 'integrations', integrations: r.items }))}
+            onCheck={(id) => void (async () => {
+              try {
+                const r = await api.checkIntegration(id);
+                dispatch({ type: 'integrations', integrations: r.items });
+              } catch (caught) {
+                // The rail (where a receipt/refusal card would render) is only mounted
+                // on the board view, so a Settings-screen action needs the toast --
+                // visible on every view -- not just a receipt nobody here can see.
+                queueToast(caught instanceof api.ApiError ? caught.message : 'check did not go through', false);
+              }
+            })()}
             onReconnect={(id) => void (async () => {
-              const r = await api.reconnectIntegration(id);
-              appendReceipt(r.jid, r.message, false);
+              try {
+                const r = await api.reconnectIntegration(id);
+                appendReceipt(r.jid, r.message, false);
+                queueToast(r.message, true);
+              } catch (caught) {
+                queueToast(caught instanceof api.ApiError ? caught.message : 'reconnect did not go through', false);
+              }
               await refresh();
             })()}
             onCheckAll={() => void refresh()}
