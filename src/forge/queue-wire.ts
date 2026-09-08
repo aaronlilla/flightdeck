@@ -29,7 +29,7 @@ import { runQueueHandoff } from './intake/queueHandoff.js';
 import type { PollItemDetail } from './intake/poller.js';
 import { planFromPacket } from './intake/planner.js';
 import { resolvePlanProvider } from './intake/reasoner.js';
-import { parseRepoMap, routeRepo, repoFromBrief } from './intake/repoRoute.js';
+import { parseRepoMap, routeRepo, repoFromBrief, ticketFromBrief } from './intake/repoRoute.js';
 import { Journal } from './journal.js';
 import { loadPolicy } from './policy.js';
 import { queueBriefsDir, journalPath, killSwitchPath } from './paths.js';
@@ -160,26 +160,35 @@ export function queuePlanner(configFn: () => JiraConfig | undefined = jiraConfig
     },
 
     // A pasted brief has no ticket for the rules to match, so a `repo: owner/name` line
-    // in the brief wins; without one the map's default applies as before.
+    // in the brief wins; without one the map's default applies as before. A `ticket:
+    // KEY-123` line names the real Jira key: the brief file's own id stays a unique
+    // synthetic string, but the item's `ticket` field (branch naming, jiraHandoff, routing)
+    // takes the real key, so a hand-written brief reaches its own ticket's Jira handoff
+    // instead of a synthetic `queue-brief-<timestamp>` one.
     async planBrief(text): Promise<QueuePlannedBrief> {
       const id = `queue-brief-${Date.now()}`;
-      const repo = repoFromBrief(text) ?? routeRepo(repoRules, { ticket: id, labels: [], components: [], issuetype: '' });
+      const ticket = ticketFromBrief(text) ?? id;
+      const repo = repoFromBrief(text)
+        ?? routeRepo(repoRules, { ticket, labels: [], components: [], issuetype: '' });
       const briefPath = await writeBrief(id, text);
-      return { ticket: id, repo, briefPath };
+      return { ticket, repo, briefPath };
     },
 
-    // A.6: the `hotfix-` prefix is load-bearing -- `chain-env.ts#branchFor` reads it off
-    // the ticket string to route this item onto `hotfix/<slug>` instead of an ordinary
-    // feature branch.
+    // A.6: the `hotfix-` prefix is load-bearing: `chain-env.ts#branchFor` reads it off the
+    // ticket string to route this item onto `hotfix/<slug>` instead of an ordinary feature
+    // branch. A `ticket: KEY-123` line still wins for routing and handoff, same as
+    // planBrief, while the brief file's own id keeps the `hotfix-` prefix branchFor needs.
     async planHotfix(text): Promise<QueuePlannedBrief> {
       const id = `hotfix-${Date.now()}`;
-      const repo = repoFromBrief(text) ?? routeRepo(repoRules, { ticket: id, labels: [], components: [], issuetype: '' });
+      const ticket = ticketFromBrief(text) ?? id;
+      const repo = repoFromBrief(text)
+        ?? routeRepo(repoRules, { ticket, labels: [], components: [], issuetype: '' });
       const briefPath = await writeBrief(
         id,
         `${text}\n\nThis is a hotfix: it ships to dev on Merge and to production only on a `
           + 'separate Promote click.',
       );
-      return { ticket: id, repo, briefPath };
+      return { ticket, repo, briefPath };
     },
   };
 }

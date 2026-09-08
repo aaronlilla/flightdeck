@@ -114,3 +114,17 @@ export function repoFromBrief(text: string): string | null {
   }
   return null;
 }
+
+/**
+ * A brief written by hand for a real ticket carries no packet id the planner can hand
+ * to Jira. Without this, the synthetic `queue-brief-<timestamp>`/`hotfix-<timestamp>` id
+ * is all `routeRepo`, branch naming and `jiraHandoff` ever see, so a hand-written brief
+ * never reaches its own ticket's Jira handoff. A `ticket: KEY-123` line anywhere in the
+ * brief names that key; the brief file's own id stays synthetic and unique, only the
+ * item's `ticket` field (routing, branch name, handoff) takes the real key. Returns
+ * null without such a line, or when the value is not a Jira-shaped `PROJECT-123` key.
+ */
+export function ticketFromBrief(text: string): string | null {
+  const match = /^ticket:\s*([A-Z][A-Z0-9_]*-\d+)\s*$/m.exec(text);
+  return match ? match[1]! : null;
+}
