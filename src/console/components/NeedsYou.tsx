@@ -2,6 +2,7 @@ import type { JSX } from 'react';
 
 import { ago, hm } from '../freshness.js';
 import { laneHeadline } from '../laneVM.js';
+import { Linkify } from './Linkify.js';
 import type { Integration, Lane } from '../../shared/console-model.js';
 import { fmtTokens } from '../../shared/format-tokens.js';
 
@@ -118,10 +119,10 @@ export function NeedsYou({ items }: NeedsYouProps): JSX.Element | null {
           <span className="led" style={{ background: n.color, flex: 'none' }} />
           <div style={{ flex: 1, minWidth: 0 }}>
             <div className="m" title={n.titleId ?? undefined} style={{ fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              {n.title} <span style={{ color: 'var(--ink2)', fontWeight: 500 }}>{n.sub}</span>
+              <Linkify text={n.title} /> <span style={{ color: 'var(--ink2)', fontWeight: 500 }}>{n.sub}</span>
             </div>
             <div className="m" style={{ fontSize: 10, color: 'var(--ink2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              {n.line}
+              <Linkify text={n.line} />
               {n.more ? <> · <a style={{ color: 'var(--ink3)' }} onClick={n.more.onClick}>{n.more.label} ▸</a></> : null}
             </div>
           </div>

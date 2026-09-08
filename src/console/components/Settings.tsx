@@ -6,6 +6,7 @@ import type {
 } from '../../shared/console-model.js';
 import { hm } from '../freshness.js';
 import { fmtTokens } from '../../shared/format-tokens.js';
+import { Linkify } from './Linkify.js';
 
 /** A cap this file reads as `Infinity` (no console override yet, and nothing this board
  *  can honestly derive from the policy's own dollar-denominated defaults) prints as
@@ -390,7 +391,7 @@ export function Settings(props: SettingsProps): JSX.Element {
           <div className="m" style={{ fontSize: '10.5px', lineHeight: 2, color: 'var(--ink2)' }}>
             {recentJournal.length > 0 ? recentJournal.map((j) => (
               <div key={j.jid}>
-                <a style={{ color: 'var(--ink)', fontWeight: 600, textDecoration: 'none', cursor: 'pointer' }} onClick={onOpenJournal}>{hm(j.ts)}</a> {j.text}
+                <a style={{ color: 'var(--ink)', fontWeight: 600, textDecoration: 'none', cursor: 'pointer' }} onClick={onOpenJournal}>{hm(j.ts)}</a> <Linkify text={j.text} />
               </div>
             )) : <span style={{ color: 'var(--ink3)' }}>no journal entries yet</span>}
           </div>

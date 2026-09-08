@@ -1,11 +1,18 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { fireEvent, render as rtlRender, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { Settings, type SettingsProps } from '../../src/console/components/Settings.js';
+import { StoreContext, initialState } from '../../src/console/store.js';
 import type {
   Feed, Integration, JournalEntry, Lane, Rule,
 } from '../../src/shared/console-model.js';
+
+function render(node: ReactElement): ReturnType<typeof rtlRender> {
+  const state = { ...initialState(), links: { jiraSite: null, defaultRepo: null } };
+  return rtlRender(<StoreContext.Provider value={{ state, dispatch: vi.fn() }}>{node}</StoreContext.Provider>);
+}
 
 function integration(extra: Partial<Integration> = {}): Integration {
   return {

@@ -1,9 +1,16 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { fireEvent, render as rtlRender, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { QueueView } from '../../src/console/components/QueueView.js';
+import { StoreContext, initialState } from '../../src/console/store.js';
 import type { QueueItem } from '../../src/shared/console-model.js';
+
+function render(node: ReactElement): ReturnType<typeof rtlRender> {
+  const state = { ...initialState(), links: { jiraSite: null, defaultRepo: null } };
+  return rtlRender(<StoreContext.Provider value={{ state, dispatch: vi.fn() }}>{node}</StoreContext.Provider>);
+}
 
 function item(extra: Partial<QueueItem> = {}): QueueItem {
   return {

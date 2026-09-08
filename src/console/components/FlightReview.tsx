@@ -4,6 +4,7 @@ import { useState } from 'react';
 import type { ProposalsResponse, Rule } from '../../shared/console-model.js';
 import { fmtTokens } from '../../shared/format-tokens.js';
 import { hm } from '../freshness.js';
+import { Linkify } from './Linkify.js';
 
 export interface FlightReviewProps {
   proposals: ProposalsResponse | null;
@@ -51,15 +52,15 @@ function RuleCard({ rule, onApply, onDismiss, onRestore, onUndo }: {
       <div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
           <span className="chip" style={{ color: taxon.color, borderColor: taxon.color }}>{taxon.label}</span>
-          <span className="m" style={{ fontSize: 13, fontWeight: 700 }}>{rule.title}</span>
+          <span className="m" style={{ fontSize: 13, fontWeight: 700 }}><Linkify text={rule.title} /></span>
         </div>
         <div className="m" style={{ fontSize: 11, color: 'var(--ink2)' }}>
-          {rule.summary} · <a onClick={() => setExpanded((v) => !v)}>{expanded ? 'collapse ▴' : 'evidence ▸'}</a>
+          <Linkify text={rule.summary} /> · <a onClick={() => setExpanded((v) => !v)}>{expanded ? 'collapse ▴' : 'evidence ▸'}</a>
         </div>
         {expanded ? (
           <div className="m" style={{ fontSize: 11, lineHeight: 1.9, color: 'var(--ink2)', marginTop: 8, borderTop: '1px solid var(--line)', paddingTop: 8 }}>
-            <b style={{ color: 'var(--ink)' }}>evidence</b> {rule.evidence}<br />
-            <b style={{ color: 'var(--ink)' }}>effect</b> {rule.effect}
+            <b style={{ color: 'var(--ink)' }}>evidence</b> <Linkify text={rule.evidence} /><br />
+            <b style={{ color: 'var(--ink)' }}>effect</b> <Linkify text={rule.effect} />
           </div>
         ) : null}
       </div>

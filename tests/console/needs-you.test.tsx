@@ -1,9 +1,16 @@
 // @vitest-environment jsdom
-import { render, screen } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { render as rtlRender, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { buildNeeds, NeedsYou } from '../../src/console/components/NeedsYou.js';
+import { StoreContext, initialState } from '../../src/console/store.js';
 import type { Integration, Lane } from '../../src/shared/console-model.js';
+
+function render(node: ReactElement): ReturnType<typeof rtlRender> {
+  const state = { ...initialState(), links: { jiraSite: null, defaultRepo: null } };
+  return rtlRender(<StoreContext.Provider value={{ state, dispatch: vi.fn() }}>{node}</StoreContext.Provider>);
+}
 
 function lane(extra: Partial<Lane> = {}): Lane {
   return {
