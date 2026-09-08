@@ -89,6 +89,10 @@ export interface LaneAudit {
   at: number;
   head: string;
   findings: number;
+  /** One short line per deciding finding (`<member>: <claim>`) -- what "View council"
+   *  promises to show, so the summary's audit line names what actually decided the
+   *  verdict rather than just how many findings there were. Empty when there are none. */
+  findingsText: string[];
   stale: boolean;
   staleWhy: string | null;
 }

@@ -369,7 +369,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       return;
     }
     if (cmd === 'watch' || cmd === 'council' || cmd === 'gate-log' || cmd === 'answer') {
-      dispatch({ type: 'sheet', sheet: { type: 'ticket', id } });
+      dispatch({ type: 'sheet', sheet: { type: 'ticket', id, ...(cmd === 'council' ? { focus: 'audit' } : {}) } });
       return;
     }
     if (cmd === 'open-pr') {
@@ -609,6 +609,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
               {state.sheet.type === 'ticket' && sheetLane ? (
                 <TicketSheet
                   lane={sheetLane} feedLive={state.feed.live} now={state.now}
+                  focus={state.sheet.focus}
                   onClose={() => dispatch({ type: 'sheet', sheet: null })}
                   onCommand={onCommand}
                   onOpenCost={(id) => dispatch({ type: 'sheet', sheet: { type: 'cost', id } })}

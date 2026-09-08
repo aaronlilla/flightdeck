@@ -109,6 +109,7 @@ export function computeAudit(attestation: CouncilAttestation | null, drift: Drif
     at: attestation.at.value,
     head: attestation.head,
     findings: attestation.decidingFindings.length,
+    findingsText: attestation.decidingFindings.map((f) => `${f.member}: ${f.claim}`),
     stale: drift.headMoved,
     staleWhy: drift.headMoved ? 'the PR head has moved since this audit ran' : null,
   };

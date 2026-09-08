@@ -36,6 +36,7 @@ function renderSheet(
   messages: Message[], laneExtra: Partial<Lane> = {},
   journal: { t: number; text: string; color: string }[] = [], onAmendLane = noop,
   story: { entries: { at: number; kind: string; text: string; url: string | null }[]; brief: { path: string; excerpt: string } | null } = { entries: [], brief: null },
+  focus?: 'audit',
 ) {
   vi.mocked(api.getRunThread).mockResolvedValue({ messages });
   vi.mocked(api.getRunJournal).mockResolvedValue({ entries: journal });
@@ -46,7 +47,7 @@ function renderSheet(
   vi.mocked(api.getRunSummary).mockResolvedValue({ what: [], status: '', audit: null, readiness: null });
   return render(
     <TicketSheet
-      lane={lane(laneExtra)} feedLive now={Date.now()}
+      lane={lane(laneExtra)} feedLive now={Date.now()} focus={focus}
       onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop} onSendLane={noop}
       onAmendLane={onAmendLane} onUndo={noop} onOpenJournal={noop}
     />,
@@ -276,13 +277,42 @@ describe('TicketSheet', () => {
 });
 
 describe('TicketSheet: Summary block', () => {
+  // Sweep #8: "View council" opened the sheet with nothing pointing at the council
+  // content it promised. focus="audit" must scroll to and highlight the audit line
+  // once summary data lands, and the audit line must list the deciding findings.
+  it('scrolls to and highlights the audit line when opened with focus="audit", and lists the deciding findings', async () => {
+    Element.prototype.scrollIntoView = vi.fn();
+    vi.mocked(api.getRunSummary).mockResolvedValue({
+      what: [], status: 's',
+      audit: {
+        verdict: 'FIX FIRST', reviewed: 3, total: 4, at: Date.now(), head: 'abc1234',
+        findings: 2, findingsText: ['reviewer-a: the retry can double-charge', 'reviewer-b: no empty-body test'],
+        stale: false, staleWhy: null,
+      },
+      readiness: { ok: false, why: 'council verdict is FIX FIRST', checks: 'success', behindBase: 0, headMoved: false },
+    });
+    vi.mocked(api.getRunThread).mockResolvedValue({ messages: [] });
+    vi.mocked(api.getRunJournal).mockResolvedValue({ entries: [] });
+    vi.mocked(api.getRunStory).mockResolvedValue({ id: 'jira_AB-12_1788460932645', title: null, kind: 'manual', ticket: null, brief: null, entries: [] });
+    render(
+      <TicketSheet
+        lane={lane()} feedLive now={Date.now()} focus="audit"
+        onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop} onSendLane={noop}
+        onAmendLane={noop} onUndo={noop} onOpenJournal={noop}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText('reviewer-a: the retry can double-charge')).toBeInTheDocument());
+    expect(screen.getByText('reviewer-b: no empty-body test')).toBeInTheDocument();
+    await waitFor(() => expect(Element.prototype.scrollIntoView).toHaveBeenCalled());
+  });
+
   it('renders what/status/audit/readiness and Re-check/Re-audit buttons', async () => {
     vi.mocked(api.getRunSummary).mockResolvedValue({
       what: ['wired the summary block.', 'added the drift check.'],
       status: 'Working since 1:00 on a Sonnet session, 3 turns in.',
       audit: {
         verdict: 'PASS WITH NOTES', reviewed: 4, total: 4, at: Date.parse('2026-09-07T12:35:00Z'),
-        head: '3982779abc', findings: 3, stale: false, staleWhy: null,
+        head: '3982779abc', findings: 3, findingsText: [], stale: false, staleWhy: null,
       },
       readiness: { ok: true, why: null, checks: 'success', behindBase: 0, headMoved: false },
     });
@@ -351,11 +381,11 @@ describe('TicketSheet: Summary block', () => {
   it('Re-audit disables itself while running, then re-enables once the audit head catches up', async () => {
     vi.mocked(api.getRunSummary)
       .mockResolvedValueOnce({
-        what: [], status: 's', audit: { verdict: 'FIX FIRST', reviewed: 1, total: 4, at: 1, head: 'old', findings: 1, stale: true, staleWhy: 'moved' },
+        what: [], status: 's', audit: { verdict: 'FIX FIRST', reviewed: 1, total: 4, at: 1, head: 'old', findings: 1, findingsText: [], stale: true, staleWhy: 'moved' },
         readiness: { ok: false, why: 'the PR head moved since the audit', checks: 'success', behindBase: 0, headMoved: true },
       })
       .mockResolvedValueOnce({
-        what: [], status: 's', audit: { verdict: 'PASS', reviewed: 4, total: 4, at: 2, head: 'new', findings: 0, stale: false, staleWhy: null },
+        what: [], status: 's', audit: { verdict: 'PASS', reviewed: 4, total: 4, at: 2, head: 'new', findings: 0, findingsText: [], stale: false, staleWhy: null },
         readiness: { ok: true, why: null, checks: 'success', behindBase: 0, headMoved: false },
       });
     vi.mocked(api.getRunThread).mockResolvedValue({ messages: [] });

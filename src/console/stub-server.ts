@@ -269,6 +269,7 @@ function stubSummary(lane: Lane | undefined, id: string): LaneSummary {
     at: lane.since - 5 * 60_000,
     head: stale ? 'a1b2c3d0000000000000000000000000000000d' : 'a1b2c3d1111111111111111111111111111111d',
     findings: pr.merged ? 0 : 2,
+    findingsText: pr.merged ? [] : ['reviewer: the retry loop can double-charge on a timeout', 'reviewer: no test covers the empty-body case'],
     stale,
     staleWhy: stale ? 'the PR head has moved since this audit ran' : null,
   };

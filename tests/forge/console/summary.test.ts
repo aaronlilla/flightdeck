@@ -99,6 +99,21 @@ describe('computeAudit', () => {
     const audit = computeAudit(attestation(), { behindBase: null, headMoved: true });
     expect(audit).toMatchObject({ stale: true, staleWhy: expect.stringContaining('moved since') });
   });
+
+  // Sweep #8: "View council" promises to show the deciding findings, not just a
+  // count -- the summary must carry the text of each one.
+  it('carries one line per deciding finding, member and claim', () => {
+    const audit = computeAudit(attestation({
+      decidingFindings: [
+        { member: 'reviewer-a', claim: 'the retry can double-charge', evidence: 'x', severity: 'high', lens: 'money' } as never,
+        { member: 'reviewer-b', claim: 'no test covers the empty-body case', evidence: 'y', severity: 'medium', lens: 'coverage' } as never,
+      ],
+    }), noDrift());
+    expect(audit?.findingsText).toEqual([
+      'reviewer-a: the retry can double-charge',
+      'reviewer-b: no test covers the empty-body case',
+    ]);
+  });
 });
 
 describe('computeReadiness', () => {

@@ -1,4 +1,4 @@
-import type { JSX } from 'react';
+import type { JSX, RefObject } from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import * as api from '../api.js';
@@ -13,6 +13,11 @@ export interface TicketSheetProps {
   lane: Lane;
   feedLive: boolean;
   now: number;
+  /** Sweep #8: "View council" opens this sheet with nothing pointing at the council
+   *  content it promised -- set when the sheet was opened from that CTA specifically,
+   *  so the sheet can scroll to and highlight the audit line rather than leaving the
+   *  operator to find it themselves. */
+  focus?: 'audit';
   onClose: () => void;
   onCommand: (id: string, cmd: string) => void;
   onOpenCost: (id: string) => void;
@@ -138,12 +143,14 @@ function StoryPanel({ story }: { story: LaneStory | null }): JSX.Element | null 
  *  either fact somewhere else on the sheet. Renders nothing (rather than a loading
  *  placeholder) until the first fetch lands, matching `StoryPanel`'s own convention. */
 function SummaryPanel({
-  summary, onRecheck, onReaudit, reauditRunning,
+  summary, onRecheck, onReaudit, reauditRunning, auditRef, highlightAudit,
 }: {
   summary: LaneSummary | null;
   onRecheck: () => void;
   onReaudit: () => void;
   reauditRunning: boolean;
+  auditRef?: RefObject<HTMLDivElement | null>;
+  highlightAudit?: boolean;
 }): JSX.Element | null {
   if (!summary) return null;
   const { audit, readiness } = summary;
@@ -170,7 +177,21 @@ function SummaryPanel({
         <div className="m" style={{ fontSize: '11.5px', color: 'var(--ink3)', marginBottom: 12 }}>Nothing on record yet.</div>
       )}
       <div className="m" style={{ fontSize: '11.5px', color: 'var(--ink2)', marginBottom: 6 }}>{summary.status}</div>
-      <div data-testid="ticket-sheet-audit" className="m" style={{ fontSize: '11.5px', color: 'var(--ink2)', marginBottom: 6 }}>{auditLine}</div>
+      <div
+        ref={auditRef} data-testid="ticket-sheet-audit" className="m"
+        style={{
+          fontSize: '11.5px', color: 'var(--ink2)', marginBottom: 6,
+          outline: highlightAudit ? '2px solid var(--hand)' : 'none', outlineOffset: 4,
+          transition: 'outline-color .3s',
+        }}
+      >
+        {auditLine}
+        {audit && audit.findingsText.length > 0 ? (
+          <ul style={{ margin: '4px 0 0', paddingLeft: 18, lineHeight: 1.6 }}>
+            {audit.findingsText.map((line, i) => <li key={i}>{line}</li>)}
+          </ul>
+        ) : null}
+      </div>
       <div data-testid="ticket-sheet-readiness" className="m" style={{ fontSize: '11.5px', marginBottom: 12 }}>
         {readiness?.ok ? (
           <span style={{ color: 'var(--run)', fontWeight: 700 }}>Ready to merge.</span>
@@ -207,14 +228,26 @@ function JournalPanel({ entries }: { entries: JournalNarrativeEntry[] }): JSX.El
 
 /** Ticket sheet: band, id/model/repo/attempt, cost, context, pipeline rail, journal, run thread. */
 export function TicketSheet(props: TicketSheetProps): JSX.Element {
-  const { lane, feedLive, now, onClose, onCommand, onOpenCost, onOpenSandbox, onSendLane, onAmendLane, onUndo, onOpenJournal } = props;
+  const { lane, feedLive, now, focus, onClose, onCommand, onOpenCost, onOpenSandbox, onSendLane, onAmendLane, onUndo, onOpenJournal } = props;
   const [thread, setThread] = useState<Message[]>([]);
   const [journal, setJournal] = useState<JournalNarrativeEntry[]>([]);
   const [story, setStory] = useState<LaneStory | null>(null);
   const [summary, setSummary] = useState<LaneSummary | null>(null);
   const [reauditRunning, setReauditRunning] = useState(false);
   const [draft, setDraft] = useState('');
+  const [highlightAudit, setHighlightAudit] = useState(false);
   const reauditPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const auditRef = useRef<HTMLDivElement | null>(null);
+
+  // Sweep #8: "View council" must land on the council content it promised, not just
+  // the sheet in general. Fires once summary data actually exists to scroll to.
+  useEffect(() => {
+    if (focus !== 'audit' || !summary || !auditRef.current) return;
+    auditRef.current.scrollIntoView({ block: 'center' });
+    setHighlightAudit(true);
+    const timer = setTimeout(() => setHighlightAudit(false), 2_500);
+    return () => clearTimeout(timer);
+  }, [focus, summary]);
 
   useEffect(() => {
     let active = true;
@@ -339,7 +372,10 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
           Why not merged: {lane.mergeable.why}
         </div>
       ) : null}
-      <SummaryPanel summary={summary} onRecheck={handleRecheck} onReaudit={handleReaudit} reauditRunning={reauditRunning} />
+      <SummaryPanel
+        summary={summary} onRecheck={handleRecheck} onReaudit={handleReaudit} reauditRunning={reauditRunning}
+        auditRef={auditRef} highlightAudit={highlightAudit}
+      />
       <div style={{ padding: '20px 22px', borderBottom: '1px solid var(--line)' }}>
         <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 16 }}>Pipeline</div>
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'center', overflowX: 'auto' }}>
