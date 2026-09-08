@@ -667,9 +667,10 @@ export function createStubServer() {
       if (urlPath === '/lanes' && method === 'GET') {
         // H2.2: `archived=1` answers only the retired lanes -- a separate slot from the
         // live board, never mixed into the default/`all=1` response.
+        const links = { jiraSite: 'https://acme.atlassian.net', defaultRepo: db.lanes.find((l) => l.repo)?.repo ?? null };
         if (query.get('archived') === '1') {
           const archived = db.lanes.filter((l) => l.retiredAt !== null);
-          json(response, 200, { at: Date.now(), lanes: archived, tokensToday: 0, tokensPerMin: 0 });
+          json(response, 200, { at: Date.now(), lanes: archived, tokensToday: 0, tokensPerMin: 0, links });
           return;
         }
         // Matches the real server (ConsoleReads#lanesResponse): the default/`all=1`
@@ -677,7 +678,7 @@ export function createStubServer() {
         const live = db.lanes.filter((l) => l.retiredAt === null);
         const tokensToday = live.reduce((sum, l) => sum + l.tokens, 0);
         const tokensPerMin = live.reduce((sum, l) => sum + (l.state === 'running' ? l.tokensPerMin : 0), 0);
-        json(response, 200, { at: Date.now(), lanes: live, tokensToday, tokensPerMin });
+        json(response, 200, { at: Date.now(), lanes: live, tokensToday, tokensPerMin, links });
         return;
       }
       if (urlPath === '/thread' && method === 'GET') {

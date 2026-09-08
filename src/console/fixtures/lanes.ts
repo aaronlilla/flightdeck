@@ -59,6 +59,7 @@ export function seedLanes(): Lane[] {
     lane({
       id: 'FLT-201', ticket: 'FLT-201', state: 'running', heart: true, hop: 2, hopStatus: 'live',
       stepN: 3, stepTotal: 6, stepText: 'writing the withdrawal-fee integration test',
+      did: 'Ran 128 commands, 45 file reads, 11 edits.',
       ctxTokens: 86_000, tokens: 864_000, tokenCap: 4_000_000, tokensPerMin: 18_000,
       observedAt: now - 3_000, verifiedAt: now - 3_000, since: now - 42 * 60_000, startedAt: now - 42 * 60_000,
       sandbox: {
@@ -98,6 +99,7 @@ export function seedLanes(): Lane[] {
     lane({
       id: 'FLT-190', ticket: 'FLT-190', state: 'merged', heart: false, hop: 5, hopStatus: 'done',
       stepN: 6, stepTotal: 6, stepText: 'merged',
+      did: 'Opened PR #214: fix the payout rounding, 6 files +140 -22',
       ctxTokens: 95_000, tokens: 1_680_000, tokenCap: 4_000_000,
       observedAt: now - 40 * 60_000, verifiedAt: null, since: now - 40 * 60_000, startedAt: now - 2 * 3_600_000,
       pr: { no: 214, url: 'https://example.invalid/pr/214', files: 6, add: 140, del: 22, draft: false },

@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ConductorRail, QUICK_COMMANDS } from '../../src/console/components/ConductorRail.js';
+import { StoreContext, initialState } from '../../src/console/store.js';
 import type { Feed, Message } from '../../src/shared/console-model.js';
 
 const feedUp: Feed = { live: true, lostAt: null, reason: null, retryInS: null, lastHeartbeatAt: Date.now() };
@@ -19,12 +20,15 @@ function renderRail(thread: Message[], feed: Feed = feedUp, overrides: Partial<{
   const onSend = overrides.onSend ?? vi.fn();
   const onCommand = overrides.onCommand ?? vi.fn();
   const onOpenJournal = overrides.onOpenJournal ?? vi.fn();
+  const state = { ...initialState(), links: { jiraSite: null, defaultRepo: null } };
   render(
-    <ConductorRail
-      thread={thread} feed={feed} now={Date.now()} composer="" verbose={overrides.verbose ?? false}
-      onComposerChange={vi.fn()} onSend={onSend} onCommand={onCommand}
-      onUndo={vi.fn()} onOpenJournal={onOpenJournal} labelFor={overrides.labelFor}
-    />,
+    <StoreContext.Provider value={{ state, dispatch: vi.fn() }}>
+      <ConductorRail
+        thread={thread} feed={feed} now={Date.now()} composer="" verbose={overrides.verbose ?? false}
+        onComposerChange={vi.fn()} onSend={onSend} onCommand={onCommand}
+        onUndo={vi.fn()} onOpenJournal={onOpenJournal} labelFor={overrides.labelFor}
+      />
+    </StoreContext.Provider>,
   );
   return { onSend, onCommand, onOpenJournal };
 }

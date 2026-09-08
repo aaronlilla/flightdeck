@@ -7,6 +7,7 @@ import { actionable } from '../keyboard-actionable.js';
 import { costClass, ctxPercent, kindLabel, laneCta, laneHeadline, stateOf } from '../laneVM.js';
 import { computeFreshness, freshnessClass, freshnessStamp, hm } from '../freshness.js';
 import { MessageCard } from './ConductorRail.js';
+import { Linkify } from './Linkify.js';
 import type { JournalNarrativeEntry, Lane, LaneStory, LaneSummary, Message } from '../../shared/console-model.js';
 import { fmtTokens } from '../../shared/format-tokens.js';
 
@@ -117,7 +118,7 @@ function bandFor(lane: Lane): { text: string; bg: string; ink: string } {
 
 /** H2.4: the run's own story -- one dated sentence per entry, with a link when the
  *  entry names one (a PR, a ticket, a change). Rendered before the journal panel. */
-function StoryPanel({ story }: { story: LaneStory | null }): JSX.Element | null {
+function StoryPanel({ story, repo }: { story: LaneStory | null; repo?: string | null }): JSX.Element | null {
   const [briefOpen, setBriefOpen] = useState(false);
   if (!story || (story.entries.length === 0 && !story.brief)) return null;
   return (
@@ -132,7 +133,7 @@ function StoryPanel({ story }: { story: LaneStory | null }): JSX.Element | null 
                 {entry.url ? (
                   <a href={entry.url} style={{ color: 'var(--ink)' }}>{entry.text}</a>
                 ) : (
-                  <span>{entry.text}</span>
+                  <span><Linkify text={entry.text} repo={repo} /></span>
                 )}
               </div>
             ))}
@@ -155,7 +156,7 @@ function StoryPanel({ story }: { story: LaneStory | null }): JSX.Element | null 
  *  either fact somewhere else on the sheet. Renders nothing (rather than a loading
  *  placeholder) until the first fetch lands, matching `StoryPanel`'s own convention. */
 function SummaryPanel({
-  summary, loadFailed, onRecheck, onReaudit, reauditRunning, auditRef, highlightAudit,
+  summary, loadFailed, onRecheck, onReaudit, reauditRunning, auditRef, highlightAudit, repo,
 }: {
   summary: LaneSummary | null;
   loadFailed?: boolean;
@@ -164,6 +165,7 @@ function SummaryPanel({
   reauditRunning: boolean;
   auditRef?: RefObject<HTMLDivElement | null>;
   highlightAudit?: boolean;
+  repo?: string | null;
 }): JSX.Element | null {
   if (loadFailed) {
     return (
@@ -193,7 +195,7 @@ function SummaryPanel({
         <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 10 }}>What happened</div>
         {summary.what.length > 0 ? (
           <ul className="m" style={{ margin: 0, paddingLeft: 18, fontSize: '11.5px', color: 'var(--ink)', lineHeight: 1.6 }}>
-            {summary.what.map((line, i) => <li key={i}>{line}</li>)}
+            {summary.what.map((line, i) => <li key={i}><Linkify text={line} repo={repo} /></li>)}
           </ul>
         ) : (
           <div className="m" style={{ fontSize: '11.5px', color: 'var(--ink3)' }}>Nothing on record yet.</div>
@@ -201,7 +203,7 @@ function SummaryPanel({
       </div>
       <div>
         <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 10 }}>Where it is</div>
-        <div className="m" style={{ fontSize: '11.5px', color: 'var(--ink2)', marginBottom: 6 }}>{summary.status}</div>
+        <div className="m" style={{ fontSize: '11.5px', color: 'var(--ink2)', marginBottom: 6 }}><Linkify text={summary.status} repo={repo} /></div>
         <div
           ref={auditRef} data-testid="ticket-sheet-audit" className="m"
           style={{
@@ -229,7 +231,7 @@ function SummaryPanel({
       <div>
         <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 10 }}>Next step</div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <span className="m" data-testid="ticket-sheet-next" style={{ fontSize: '11.5px', fontWeight: 700, color: 'var(--ink)' }}>{summary.next}</span>
+          <span className="m" data-testid="ticket-sheet-next" style={{ fontSize: '11.5px', fontWeight: 700, color: 'var(--ink)' }}><Linkify text={summary.next} repo={repo} /></span>
           <span style={{ flex: 1 }} />
           <span className="btnS" style={{ padding: '6px 10px', fontSize: '9.5px' }} {...actionable(onRecheck)}>Re-check</span>
           <span
@@ -245,12 +247,12 @@ function SummaryPanel({
   );
 }
 
-function JournalPanel({ entries }: { entries: JournalNarrativeEntry[] }): JSX.Element {
+function JournalPanel({ entries, repo }: { entries: JournalNarrativeEntry[]; repo?: string | null }): JSX.Element {
   return (
     <div className="m" style={{ fontSize: 11, lineHeight: 2, color: 'var(--ink2)', overflowWrap: 'anywhere' }}>
       {entries.map((entry, i) => (
         <div key={i}>
-          <span style={{ color: entry.color, fontWeight: 600 }}>{hm(entry.t)}</span> <span>{entry.text}</span>
+          <span style={{ color: entry.color, fontWeight: 600 }}>{hm(entry.t)}</span> <span><Linkify text={entry.text} repo={repo} /></span>
         </div>
       ))}
     </div>
@@ -458,7 +460,7 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
       ) : null}
       <SummaryPanel
         summary={summary} loadFailed={summaryLoadFailed} onRecheck={handleRecheck} onReaudit={handleReaudit} reauditRunning={reauditRunning}
-        auditRef={auditRef} highlightAudit={highlightAudit}
+        auditRef={auditRef} highlightAudit={highlightAudit} repo={lane.repo}
       />
       <div style={{ padding: '20px 22px', borderBottom: '1px solid var(--line)' }}>
         <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 16 }}>Pipeline</div>
@@ -495,11 +497,11 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
           the comment above explains. */}
       <div data-testid="ticket-sheet-body" style={{ display: 'flex', flex: '1 0 280px', overflow: 'hidden' }}>
         <div data-testid="ticket-sheet-story" className="scroll" style={{ width: 340, flex: '1 1 300px', borderRight: '1px solid var(--line)', padding: '16px 22px', overflowY: 'auto' }}>
-          <StoryPanel story={story} />
+          <StoryPanel story={story} repo={lane.repo} />
           {verbose ? (
             <>
               <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 10 }}>Journal</div>
-              <JournalPanel entries={journal} />
+              <JournalPanel entries={journal} repo={lane.repo} />
             </>
           ) : null}
           {lane.pr ? (
