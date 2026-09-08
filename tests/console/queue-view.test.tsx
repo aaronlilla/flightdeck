@@ -49,7 +49,7 @@ function item(extra: Partial<QueueItem> = {}): QueueItem {
   return {
     id: 'Q-1', source: 'ticket', input: 'ABC-1', ticket: 'ABC-1', repo: null, briefPath: null,
     branch: null, worktreePath: null, base: null, state: 'queued', reason: null, runKey: null,
-    pr: null, journalIds: [], createdAt: Date.now(), updatedAt: Date.now(),
+    pr: null, journalIds: [], createdAt: Date.now(), updatedAt: Date.now(), title: null,
     ...extra,
   };
 }
@@ -294,5 +294,75 @@ describe('QueueView header', () => {
   it('omits the needs-attention clause entirely when nothing is parked or failed', () => {
     renderQueue([item({ id: 'Q-1', state: 'queued' })]);
     expect(screen.getByText('Queue · 1 item')).toBeInTheDocument();
+  });
+});
+
+// W1 (2026-09-08, Aaron off the live console): a queued brief carries its whole
+// markdown text as `input`, and the card printed it. The card names the item now.
+describe('a brief card names its item instead of printing the brief', () => {
+  const brief = [
+    '# Goal: board-readability — four cards a row, nothing under 12px',
+    '',
+    'The board and the queue page are unreadable at a normal viewing distance.',
+    '',
+    '## Sizing',
+    '',
+    `- Crosses repos: no. ${'padding text that runs on and on. '.repeat(90)}`,
+  ].join(String.fromCharCode(10));
+
+  function briefItem() {
+    return item({
+      id: 'Q-fb486741', source: 'brief', ticket: null, input: brief,
+      title: 'board-readability — four cards a row, nothing under 12px',
+    });
+  }
+
+  it('shows the heading as the card title', () => {
+    expect(brief.length).toBeGreaterThan(3000);
+    renderQueue([briefItem()]);
+    expect(screen.getByText('board-readability — four cards a row, nothing under 12px')).toBeInTheDocument();
+  });
+
+  it('never renders the brief body on the card', () => {
+    renderQueue([briefItem()]);
+    expect(screen.queryByText(/## Sizing/)).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('## Sizing');
+    expect(document.body.textContent).not.toContain('padding text that runs on');
+  });
+
+  it('clamps the card body to three lines', () => {
+    renderQueue([briefItem()]);
+    const body = document.querySelector('[data-testid="queue-card-body"]') as HTMLElement | null;
+    expect(body).not.toBeNull();
+    expect(body!.style.webkitLineClamp).toBe('3');
+  });
+
+  it('falls back to the ticket key, then the id, when there is no title', () => {
+    renderQueue([item({ id: 'Q-2', ticket: 'ABC-9', title: null })]);
+    expect(screen.getByTestId('queue-card-title')).toHaveTextContent('ABC-9');
+    renderQueue([item({ id: 'Q-3', ticket: null, title: null })]);
+    expect(screen.getAllByTestId('queue-card-title').some((el) => el.textContent === 'Q-3')).toBe(true);
+  });
+});
+
+describe('the card body keeps the truth a state already carried', () => {
+  it('shows a done item its own reason, not its repo', () => {
+    renderQueue([item({
+      id: 'Q-done', state: 'done', repo: 'aaronlilla/flightdeck',
+      reason: 'PR #64 merged outside the queue',
+    })]);
+    // Linkify splits the PR mention into its own node, so the body is read whole.
+    const body = document.querySelector('[data-testid="queue-card-body"]') as HTMLElement;
+    expect(body.textContent).toContain('merged outside the queue');
+    expect(body.textContent).not.toContain('aaronlilla/flightdeck');
+  });
+
+  it('never prints the same sentence as both title and body', () => {
+    const brief = ['the queue card prints the whole brief', '', 'more text'].join(String.fromCharCode(10));
+    renderQueue([item({
+      id: 'Q-dupe', source: 'brief', ticket: null, repo: null, input: brief,
+      title: 'The queue card prints the whole brief',
+    })]);
+    expect(screen.getAllByText(/queue card prints the whole brief/i)).toHaveLength(1);
   });
 });

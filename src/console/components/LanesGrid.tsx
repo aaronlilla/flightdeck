@@ -3,6 +3,7 @@ import type { JSX } from 'react';
 import type { Lane } from '../../shared/console-model.js';
 import type { Filter, Sort, State, TipSpec } from '../store.js';
 import { LaneGroupTile } from './LaneGroupTile.js';
+import { BOARD_GRID_COLUMNS, CARD_GAP_PX } from '../grid.js';
 import { groupLanesByTicket } from '../laneVM.js';
 
 const FINISHED_STATES = new Set(['done', 'merged', 'killed']);
@@ -66,19 +67,19 @@ export function LanesGrid(props: LanesGridProps): JSX.Element {
     <div
       className="scroll"
       style={{
-        flex: 1, padding: '12px 16px 16px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(215px,1fr))',
+        flex: 1, padding: '12px 16px 16px', display: 'grid', gridTemplateColumns: BOARD_GRID_COLUMNS,
         // 2026-09-08: `1fr` rows plus a tile that stretched to `height: 100%` is what
         // made the taller cards overlap on the live board -- `auto` rows sized to each
         // tile's own (now fixed-slot) content, with `alignItems: 'start'` so no tile
         // stretches to fill a row it does not need.
-        gridAutoRows: 'auto', alignItems: 'start', gap: 10, alignContent: 'start',
+        gridAutoRows: 'auto', alignItems: 'start', gap: CARD_GAP_PX, alignContent: 'start',
       }}
     >
       {groups.map((group) => (
         <LaneGroupTile key={group.key} group={group} feedLive={feedLive} now={now} pending={pending} onOpen={onOpen} onOpenCost={onOpenCost} onCommand={onCommand} onTip={onTip} />
       ))}
       {groups.length === 0 ? (
-        <div className="m" style={{ fontSize: 12, color: 'var(--ink3)', padding: 40, gridColumn: '1/-1', textAlign: 'center' }}>
+        <div className="m" style={{ fontSize: 'var(--fs-body)', color: 'var(--ink3)', padding: 40, gridColumn: '1/-1', textAlign: 'center' }}>
           no lanes match this filter
         </div>
       ) : null}

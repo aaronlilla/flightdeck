@@ -51,13 +51,13 @@ function RuleCard({ rule, onUndo }: {
       <div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
           <span className="chip" style={{ color: taxon.color, borderColor: taxon.color }}>{taxon.label}</span>
-          <span className="m" style={{ fontSize: 13, fontWeight: 700 }}><Linkify text={rule.title} /></span>
+          <span className="m" style={{ fontSize: 'var(--fs-ui)', fontWeight: 700 }}><Linkify text={rule.title} /></span>
         </div>
-        <div className="m" style={{ fontSize: 11, color: 'var(--ink2)' }}>
+        <div className="m" style={{ fontSize: 'var(--fs-body)', color: 'var(--ink2)' }}>
           <Linkify text={rule.summary} /> · <a onClick={() => setExpanded((v) => !v)}>{expanded ? 'collapse ▴' : 'evidence ▸'}</a>
         </div>
         {expanded ? (
-          <div className="m" style={{ fontSize: 11, lineHeight: 1.9, color: 'var(--ink2)', marginTop: 8, borderTop: '1px solid var(--line)', paddingTop: 8 }}>
+          <div className="m" style={{ fontSize: 'var(--fs-body)', lineHeight: 1.9, color: 'var(--ink2)', marginTop: 8, borderTop: '1px solid var(--line)', paddingTop: 8 }}>
             <b style={{ color: 'var(--ink)' }}>evidence</b> <Linkify text={rule.evidence} /><br />
             <b style={{ color: 'var(--ink)' }}>effect</b> <Linkify text={rule.effect} />
           </div>
@@ -75,13 +75,13 @@ function RuleCard({ rule, onUndo }: {
         ) : null}
         {rule.status === 'applied' ? (
           <>
-            <span className="m" style={{ fontSize: 11, color: 'var(--run)', textAlign: 'center' }}>✓ applied · {rule.jid}</span>
+            <span className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--run)', textAlign: 'center' }}>✓ applied · {rule.jid}</span>
             <span className="btnS" onClick={() => rule.jid && onUndo(rule.jid)}>Undo</span>
           </>
         ) : null}
         {rule.status === 'dismissed' ? (
           <>
-            <span className="m" style={{ fontSize: 11, color: 'var(--ink3)', textAlign: 'center' }}>dismissed</span>
+            <span className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)', textAlign: 'center' }}>dismissed</span>
             <ActionButton spec={ACTIONS.restoreProposal} args={[rule.id]} className="btnS" busy="Restoring…">Restore</ActionButton>
           </>
         ) : null}
@@ -98,19 +98,19 @@ export function FlightReview({ proposals, now, onUndo }: FlightReviewProps): JSX
     <div className="scroll" data-testid="review-view" style={{ flex: 1, padding: '28px 36px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', borderBottom: '2px solid var(--line2)', paddingBottom: 12, marginBottom: 22 }}>
         <span className="lbl">Flight review · {hm(now)}</span>
-        <span className="m" style={{ fontSize: 11, color: 'var(--ink2)' }}>{rules.length} proposals · applied rules get a journal id + undo</span>
+        <span className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink2)' }}>{rules.length} proposals · applied rules get a journal id + undo</span>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 12, marginBottom: 22 }}>
-        <div className="plate" style={{ padding: '12px 14px' }}><div className="lbl" style={{ color: 'var(--ink2)' }}>merged today</div><div className="m" style={{ fontSize: 22, fontWeight: 700, marginTop: 4, color: 'var(--run)' }}>{metrics?.mergedToday ?? 0}</div></div>
-        <div className="plate" style={{ padding: '12px 14px' }}><div className="lbl" style={{ color: 'var(--ink2)' }}>human wait</div><div className="m" style={{ fontSize: 22, fontWeight: 700, marginTop: 4, color: 'var(--park)' }}>{metrics?.humanWaitMin ?? 0}m</div></div>
-        <div className="plate" style={{ padding: '12px 14px' }}><div className="lbl" style={{ color: 'var(--ink2)' }}>tokens / merge</div><div className="m" style={{ fontSize: 22, fontWeight: 700, marginTop: 4 }}>{metrics?.tokensPerMerge !== null && metrics?.tokensPerMerge !== undefined ? fmtTokens(metrics.tokensPerMerge) : '--'}</div></div>
-        <div className="plate" style={{ padding: '12px 14px' }}><div className="lbl" style={{ color: 'var(--ink2)' }}>wasted tokens</div><div className="m" style={{ fontSize: 22, fontWeight: 700, marginTop: 4, color: 'var(--block)' }}>{fmtTokens(metrics?.tokensWasted ?? 0)}</div></div>
+        <div className="plate" style={{ padding: '12px 14px' }}><div className="lbl" style={{ color: 'var(--ink2)' }}>merged today</div><div className="m" style={{ fontSize: 'var(--fs-heading)', fontWeight: 700, marginTop: 4, color: 'var(--run)' }}>{metrics?.mergedToday ?? 0}</div></div>
+        <div className="plate" style={{ padding: '12px 14px' }}><div className="lbl" style={{ color: 'var(--ink2)' }}>human wait</div><div className="m" style={{ fontSize: 'var(--fs-heading)', fontWeight: 700, marginTop: 4, color: 'var(--park)' }}>{metrics?.humanWaitMin ?? 0}m</div></div>
+        <div className="plate" style={{ padding: '12px 14px' }}><div className="lbl" style={{ color: 'var(--ink2)' }}>tokens / merge</div><div className="m" style={{ fontSize: 'var(--fs-heading)', fontWeight: 700, marginTop: 4 }}>{metrics?.tokensPerMerge !== null && metrics?.tokensPerMerge !== undefined ? fmtTokens(metrics.tokensPerMerge) : '--'}</div></div>
+        <div className="plate" style={{ padding: '12px 14px' }}><div className="lbl" style={{ color: 'var(--ink2)' }}>wasted tokens</div><div className="m" style={{ fontSize: 'var(--fs-heading)', fontWeight: 700, marginTop: 4, color: 'var(--block)' }}>{fmtTokens(metrics?.tokensWasted ?? 0)}</div></div>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         {rules.length > 0 ? (
           rules.map((r) => <RuleCard key={r.id} rule={r} onUndo={onUndo} />)
         ) : (
-          <div className="m" style={{ fontSize: 12, color: 'var(--ink3)', padding: '24px 0', textAlign: 'center' }}>no proposals yet.</div>
+          <div className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)', padding: '24px 0', textAlign: 'center' }}>no proposals yet.</div>
         )}
       </div>
     </div>

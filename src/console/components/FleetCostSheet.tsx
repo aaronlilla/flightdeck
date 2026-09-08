@@ -23,21 +23,21 @@ export function FleetCostSheet({ lanes, tokensToday, onClose, onOpenLane }: Flee
       </div>
       <div style={{ padding: '18px 22px 8px', display: 'flex', alignItems: 'baseline', gap: 14 }}>
         <span className="lbl" style={{ color: 'var(--ink2)' }}>tokens today</span>
-        <span className="w0" style={{ fontSize: 22 }}>{fmtTokens(tokensToday)}</span>
+        <span className="w0" style={{ fontSize: 'var(--fs-heading)' }}>{fmtTokens(tokensToday)}</span>
       </div>
       <div className="scroll" style={{ maxHeight: 360, overflow: 'auto', padding: '4px 0 12px' }}>
         {sorted.map((lane) => (
           <div
             key={lane.id}
             className="m"
-            style={{ display: 'grid', gridTemplateColumns: '110px 90px 1fr 90px 110px', gap: 12, padding: '7px 22px', fontSize: 11, alignItems: 'center', cursor: 'pointer' }}
+            style={{ display: 'grid', gridTemplateColumns: '110px 90px 1fr 90px 110px', gap: 12, padding: '7px 22px', fontSize: 'var(--fs-meta)', alignItems: 'center', cursor: 'pointer' }}
             onClick={() => onOpenLane(lane.id)}
           >
             <span style={{ fontWeight: 700 }} title={laneHeadline(lane).runId}>{laneHeadline(lane).main}</span>
             <span style={{ color: 'var(--ink2)' }}>{lane.model}</span>
             <span style={{ color: 'var(--ink2)' }}>{lane.state}</span>
-            <span className={costClass(lane)} style={{ fontSize: 12, padding: '2px 6px' }}>{fmtTokens(lane.tokens)}</span>
-            <span style={{ color: 'var(--ink3)', fontSize: '9.5px' }}>{capText(lane)}</span>
+            <span className={costClass(lane)} style={{ fontSize: 'var(--fs-meta)', padding: '2px 6px' }}>{fmtTokens(lane.tokens)}</span>
+            <span style={{ color: 'var(--ink3)', fontSize: 'var(--fs-meta)' }}>{capText(lane)}</span>
           </div>
         ))}
       </div>

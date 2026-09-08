@@ -1,3 +1,12 @@
+/* One type scale for the whole console (2026-09-08, Aaron off the live board: "no text
+   should be below like 12px"). Every size in a component names one of these tokens; a
+   raw px number in a `.tsx` is a test failure (`tests/console/type-scale.test.ts`).
+   --fs-meta is the floor: chips, stamps, state labels, tooltips. --fs-ui is anything a
+   person clicks or types into. --fs-body is text they read. The root stays at the
+   browser's own 16px -- the tokens carry the scale, and lowering the root would only
+   shrink the text that never named a size. */
+:root{--fs-meta:12px;--fs-ui:13px;--fs-body:14px;--fs-title:16px;--fs-heading:20px}
+html{font-size:16px}
 html,body{margin:0;height:100%;background:#0c0e09}
 a{color:inherit;text-decoration:underline;text-underline-offset:2px;cursor:pointer}a:hover{opacity:.75}
 input{outline:none}
@@ -7,10 +16,10 @@ input{outline:none}
 --run:oklch(.46 .13 145);--hand:oklch(.46 .09 215);--pause:oklch(.5 .1 78);--park:oklch(.62 .13 78);--merge:oklch(.44 .06 195);--block:oklch(.5 .2 27);--exh:oklch(.52 .11 55)}
 .app{background:var(--bg);color:var(--ink);font-family:'IBM Plex Sans',sans-serif;height:100vh;display:flex;flex-direction:column;overflow:hidden}
 .m{font-family:'IBM Plex Mono',ui-monospace,monospace}
-.lbl{font:600 9.5px 'IBM Plex Mono',monospace;letter-spacing:1.4px;text-transform:uppercase}
-.stF{font:500 9.5px 'IBM Plex Mono',monospace;color:var(--run);letter-spacing:.3px;white-space:nowrap;cursor:help}
-.stO{font:500 9.5px 'IBM Plex Mono',monospace;color:var(--ink3);letter-spacing:.3px;border:1px dashed var(--line2);padding:1px 5px;border-radius:2px;white-space:nowrap;cursor:help}
-.chip{font:600 9px 'IBM Plex Mono',monospace;letter-spacing:.8px;text-transform:uppercase;border:1px solid var(--line2);color:var(--ink2);padding:2px 6px;border-radius:3px;white-space:nowrap}
+.lbl{font:600 var(--fs-meta)/1.35 'IBM Plex Mono',monospace;letter-spacing:1.4px;text-transform:uppercase}
+.stF{font:500 var(--fs-meta)/1.35 'IBM Plex Mono',monospace;color:var(--run);letter-spacing:.3px;white-space:nowrap;cursor:help}
+.stO{font:500 var(--fs-meta)/1.35 'IBM Plex Mono',monospace;color:var(--ink3);letter-spacing:.3px;border:1px dashed var(--line2);padding:1px 5px;border-radius:2px;white-space:nowrap;cursor:help}
+.chip{font:600 var(--fs-meta)/1.35 'IBM Plex Mono',monospace;letter-spacing:.8px;text-transform:uppercase;border:1px solid var(--line2);color:var(--ink2);padding:2px 6px;border-radius:3px;white-space:nowrap}
 .chipB{cursor:pointer}.chipB:hover{border-color:var(--ink);color:var(--ink)}
 .chipOn{background:var(--ink);color:var(--bg);border-color:var(--ink)}
 .w0,.w1,.w2,.ws{font-family:'IBM Plex Mono',monospace;font-weight:700;background:var(--well);border-radius:3px;padding:3px 8px;box-shadow:inset 0 2px 5px rgba(0,0,0,.65);border:1px solid rgba(0,0,0,.55);letter-spacing:.5px;display:inline-block;cursor:pointer}
@@ -22,18 +31,18 @@ input{outline:none}
 .lane:hover{border-color:var(--ink2)}
 .plate{border:1px solid var(--line2);border-radius:4px;box-shadow:inset 0 1px 0 var(--hi),0 1px 2px rgba(0,0,0,.3);background:var(--panel)}
 .youP{border:1px solid var(--line2);border-radius:4px;box-shadow:inset 0 1px 0 var(--hi),0 1px 2px rgba(0,0,0,.3);background:var(--panel)}
-.btnP,.btnA,.btnR,.btnS{font:700 10.5px 'IBM Plex Mono',monospace;letter-spacing:1px;text-transform:uppercase;padding:8px 12px;border-radius:3px;display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap;cursor:pointer;border:0;transition:filter .12s,transform .08s;box-sizing:border-box}
+.btnP,.btnA,.btnR,.btnS{font:700 var(--fs-ui)/1.35 'IBM Plex Mono',monospace;letter-spacing:1px;text-transform:uppercase;padding:8px 12px;border-radius:3px;display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap;cursor:pointer;border:0;transition:filter .12s,transform .08s;box-sizing:border-box}
 .btnP:hover,.btnA:hover,.btnR:hover{filter:brightness(1.15)}.btnP:active,.btnA:active,.btnR:active,.btnS:active{transform:translateY(1px)}
 .btnP{background:var(--run);color:var(--aInk);box-shadow:0 0 0 1px var(--run),0 0 12px color-mix(in srgb,var(--run) 45%,transparent)}
 .btnA{background:var(--park);color:var(--aInk);box-shadow:0 0 0 1px var(--park),0 0 12px color-mix(in srgb,var(--park) 45%,transparent)}
 .btnR{background:var(--block);color:var(--aInk);box-shadow:0 0 0 1px var(--block),0 0 12px color-mix(in srgb,var(--block) 45%,transparent)}
 .btnS{border:1px solid var(--line2);color:var(--ink2);background:transparent}.btnS:hover{border-color:var(--ink);color:var(--ink)}
-.tip{position:fixed;z-index:50;background:#050603;color:#dde3d0;border:1px solid #3c4430;border-radius:3px;padding:8px 10px;font:11px/1.5 'IBM Plex Sans',sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.6);width:250px;pointer-events:none}
+.tip{position:fixed;z-index:50;background:#050603;color:#dde3d0;border:1px solid #3c4430;border-radius:3px;padding:8px 10px;font:var(--fs-meta)/1.5 'IBM Plex Sans',sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.6);width:280px;pointer-events:none}
 .tip b{color:#9df598;font-weight:600}
 .led{width:9px;height:9px;border-radius:2px;display:inline-block;box-shadow:inset 0 1px 1px rgba(0,0,0,.5)}
-.inp{font:13px 'IBM Plex Sans',sans-serif;color:#dde3d0;background:transparent;border:0;flex:1}
+.inp{font:var(--fs-ui)/1.4 'IBM Plex Sans',sans-serif;color:#dde3d0;background:transparent;border:0;flex:1}
 .row{display:grid;grid-template-columns:20px 160px 1fr 80px 120px 130px;gap:14px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line)}
-.nav{font:600 11px 'IBM Plex Mono',monospace;color:var(--ink2);cursor:pointer;padding:4px 0;border-bottom:2px solid transparent;text-decoration:none;white-space:nowrap}
+.nav{font:600 var(--fs-ui)/1.35 'IBM Plex Mono',monospace;color:var(--ink2);cursor:pointer;padding:4px 0;border-bottom:2px solid transparent;text-decoration:none;white-space:nowrap}
 .nav:hover{color:var(--ink);opacity:1}.navOn{color:var(--ink);border-bottom-color:var(--run)}
 .scroll{overflow:auto;scrollbar-width:thin;scrollbar-color:var(--line2) transparent}
 @keyframes fdpulse{0%,100%{opacity:1}50%{opacity:.4}}

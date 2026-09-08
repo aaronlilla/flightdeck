@@ -48,12 +48,13 @@ describe('LaneTile board-at-a-glance rework', () => {
     expect(titleEl).toHaveAttribute('title', 'the withdrawal fee is off by one');
   });
 
-  it('shows the key alone on the title line when there is no title', () => {
+  it('shows the key once when there is no title', () => {
     renderTile(lane({ ticket: 'FLT-9', title: null }));
-    // Row 1 carries the key bold; the title line falls back to the key too, per the
-    // brief's own "a lane with no title shows the key alone on this line" -- so it is
-    // expected here twice, not deduplicated away.
-    expect(screen.getAllByText('FLT-9').length).toBe(2);
+    // Was 2 until 2026-09-08: the title line used to repeat the key rather than sit
+    // empty, which read as one quiet echo at 12px. With the title line at --fs-title it
+    // read as the same key printed twice on every card on the board, so the fallback is
+    // gone and the slot stays empty (and still reserved) instead.
+    expect(screen.getAllByText('FLT-9').length).toBe(1);
   });
 
   it('renders the chip row below the title, never beside it', () => {

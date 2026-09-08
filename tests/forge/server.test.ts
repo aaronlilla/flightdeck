@@ -1367,6 +1367,14 @@ function readTextFrames(buffer: Buffer): string[] {
   return frames;
 }
 
+// These two stand up a second real ForgeServer, bind a port and close it again. They
+// run in about 90ms on a developer machine and timed out at the 5s default twice on the
+// windows-latest runner on 2026-09-08 (run 34289785916), in a suite of 196 files sharing
+// one box. What stalls there is not diagnosed: `close()` already destroys its accepted
+// sockets, so it is not the usual keep-alive hang. The budget is generous rather than
+// tight so ordinary contention cannot fail them, and a real deadlock still will.
+const REAL_SERVER_TIMEOUT_MS = 20_000;
+
 describe('GET /blockers (iteration 6: mounted on the real server)', () => {
   it('answers 200 with {blockers, chains} on a fleet with one open ask', async () => {
     const { Inbox: InboxCtor } = await import('../../src/forge/inbox.js');
@@ -1389,7 +1397,7 @@ describe('GET /blockers (iteration 6: mounted on the real server)', () => {
     } finally {
       await withInbox.close();
     }
-  });
+  }, REAL_SERVER_TIMEOUT_MS);
 
   it('POST /blockers/:id/check answers 200 with an honest not-yet when nothing confirms the kind', async () => {
     const { Inbox: InboxCtor } = await import('../../src/forge/inbox.js');
@@ -1413,7 +1421,7 @@ describe('GET /blockers (iteration 6: mounted on the real server)', () => {
     } finally {
       await withInbox.close();
     }
-  });
+  }, REAL_SERVER_TIMEOUT_MS);
 });
 
 describe('listen: a port already held', () => {

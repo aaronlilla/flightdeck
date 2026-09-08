@@ -22,12 +22,12 @@ const HOVER_DELAY_MS = 250;
 // content (Did present or absent, a PR line or none) must produce the exact same
 // total tile height, or tiles sharing a row stop matching and the ones after them
 // overlap the row below.
-const LINE_H = 16;
-const YOU_BLOCK_H = 58;
-// One height for the title's 2-line slot regardless of whether it renders at 12px
-// (keyed) or 13px (keyless) -- a per-font-size height would make a keyed and a
-// keyless tile disagree on height in the same row.
-const TITLE_H = 34;
+const LINE_H = 20;
+const YOU_BLOCK_H = 74;
+// One height for the title's 2-line slot, and it holds two whole lines of
+// --fs-title at the 22px line-height below: a slot shorter than its own type clips
+// the second line of every two-line title, which is most of them.
+const TITLE_H = 44;
 
 export interface LaneTileProps {
   lane: Lane;
@@ -96,13 +96,17 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
   const didText = lane.did ? shortenShas(lane.did) : null;
   const nowText = shortenShas(lane.now);
 
-  // Row 2: the title line. A lane with a title shows it, sized down (the key already
-  // carries the weight in row 1); a lane with no title but a key shows the key again
-  // here rather than leaving the line empty; a lane with neither renders nothing.
-  // A lane with neither a title nor a ticket key (a manual run) is named by its own
-  // slug: the operator typed that name, so it is the one they know.
-  const titleLineText = lane.title ?? headline.key ?? (lane.kind === 'manual' && stripMachineIds(lane.id) === lane.id ? lane.id : null);
-  const titleFontSize = headline.key ? 12 : 13;
+  // Row 2: the title line. A lane with a title shows it; a lane with neither a title
+  // nor a ticket key (a manual run) is named by its own slug, since the operator typed
+  // that name and it is the one they know. A lane with only a key shows NOTHING here:
+  // the key is already the first thing on the card, and repeating it at --fs-title read
+  // as a duplicate the moment the type grew (looked at, 2026-09-08, 2560px). The slot
+  // keeps its height either way, so a row of tiles still lines up.
+  const titleLineText = lane.title
+    ?? (headline.key ? null : (lane.kind === 'manual' && stripMachineIds(lane.id) === lane.id ? lane.id : null));
+  // The title reads at one size now. Weight, not size, is what separates a title
+  // that repeats a key already shown above it from one carrying the only name a
+  // lane has.
   const titleFontWeight = headline.key ? 400 : 700;
 
   // The live marker: whether a lane's own worker is there right now, checked fresh by
@@ -123,17 +127,18 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
       style={{ borderColor: lane.state === 'parked' ? 'var(--park)' : undefined, opacity, boxSizing: 'border-box' }}
       {...actionable(() => onOpen(lane.id))}
     >
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 6, height: 18 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 6, height: 22 }}>
         {headline.key ? (
-          <span className="m" style={{ fontSize: 13, fontWeight: 700 }}><Linkify text={headline.key} repo={lane.repo ?? undefined} /></span>
+          <span className="m" style={{ fontSize: 'var(--fs-title)', fontWeight: 700 }}><Linkify text={headline.key} repo={lane.repo ?? undefined} /></span>
         ) : <span />}
         <span className="lbl" style={{ color: st.color, cursor: 'help', flex: 'none' }}>{st.glyph} {st.label}</span>
       </div>
       <div
         className="m"
         title={titleLineText ?? undefined}
+        data-testid="tile-title-slot"
         style={{
-          fontSize: titleFontSize, fontWeight: titleFontWeight, lineHeight: '17px', color: 'var(--ink)', width: '100%',
+          fontSize: 'var(--fs-title)', fontWeight: titleFontWeight, lineHeight: '22px', color: 'var(--ink)', width: '100%',
           overflowWrap: 'anywhere', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
           // A hard `height` (not `minHeight`), the same for every tile regardless of
           // font size or whether there is any title text at all: not the line-clamp's
@@ -150,7 +155,7 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
         {titleLineText ? <Linkify text={titleLineText} repo={lane.repo ?? undefined} /> : null}
       </div>
       <span style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-        <span className="chip" style={{ fontSize: 9 }}>{kindLabel(lane.kind)}</span>
+        <span className="chip">{kindLabel(lane.kind)}</span>
         <span
           className="chip"
           onMouseEnter={(e) => showTip('model', e, modelTip(lane, fresh))}
@@ -169,14 +174,14 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
       </span>
       {lane.you ? (
         <div className="youP" title={lane.you} style={{ borderLeft: '3px solid var(--park)', padding: '6px 9px', height: YOU_BLOCK_H, boxSizing: 'border-box', overflow: 'hidden' }}>
-          <div className="lbl" style={{ color: 'var(--park)', lineHeight: '12px', marginBottom: 2 }}>YOU</div>
-          <div style={{ fontSize: 12.5, lineHeight: '16px', fontWeight: 700, color: 'var(--ink)', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+          <div className="lbl" style={{ color: 'var(--park)', lineHeight: '17px', marginBottom: 2 }}>YOU</div>
+          <div style={{ fontSize: 'var(--fs-body)', lineHeight: '20px', fontWeight: 700, color: 'var(--ink)', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
             <Linkify text={lane.you} repo={lane.repo ?? undefined} />
           </div>
         </div>
       ) : (
         <div style={{ height: YOU_BLOCK_H, display: 'flex', alignItems: 'center', boxSizing: 'border-box' }}>
-          <span className="m" style={{ fontSize: 11, color: 'var(--ink3)' }}>Nothing needed from you.</span>
+          <span className="m" style={{ fontSize: 'var(--fs-body)', color: 'var(--ink3)' }}>Nothing needed from you.</span>
         </div>
       )}
       <div style={{ height: LINE_H, overflow: 'hidden' }}>
@@ -184,7 +189,7 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
           <div
             title={didText}
             style={{
-              font: '11.5px/1.3 "IBM Plex Sans",sans-serif', color: 'var(--ink2)', whiteSpace: 'nowrap',
+              font: 'var(--fs-body)/1.4 "IBM Plex Sans",sans-serif', color: 'var(--ink2)', whiteSpace: 'nowrap',
               overflow: 'hidden', textOverflow: 'ellipsis',
             }}
           >
@@ -197,7 +202,7 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
         title={nowText}
         style={{
           height: LINE_H, overflow: 'hidden',
-          font: '11.5px/1.3 "IBM Plex Sans",sans-serif', color: 'var(--ink2)', whiteSpace: 'nowrap',
+          font: 'var(--fs-body)/1.4 "IBM Plex Sans",sans-serif', color: 'var(--ink2)', whiteSpace: 'nowrap',
           textOverflow: 'ellipsis',
         }}
       >
@@ -209,8 +214,8 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
           <div style={{ position: 'absolute', top: 1, bottom: 1, left: 1, width: `${pct}%`, background: `repeating-linear-gradient(90deg, ${st.color} 0 5px, transparent 5px 7px)` }} />
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, whiteSpace: 'nowrap' }}>
-          <span className="m" style={{ fontSize: '9.5px', color: 'var(--ink2)' }}>context {pct}%</span>
-          <span className="m" style={{ fontSize: '9.5px', color: 'var(--ink3)' }}>ceiling {Math.round(lane.ctxCeiling / 1000)}k</span>
+          <span className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink2)' }}>context {pct}%</span>
+          <span className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>ceiling {Math.round(lane.ctxCeiling / 1000)}k</span>
         </div>
       </div>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
@@ -222,13 +227,13 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
         >
           {fmtTokens(lane.tokens)}
         </span>
-        <span className="m" style={{ fontSize: '9.5px', fontWeight: 700, color: 'var(--block)', whiteSpace: 'nowrap' }}>
+        <span className="m" style={{ fontSize: 'var(--fs-meta)', fontWeight: 700, color: 'var(--block)', whiteSpace: 'nowrap' }}>
           {tileCapText(lane)}
         </span>
       </div>
       <div style={{ height: LINE_H, overflow: 'hidden' }}>
         {lane.pr ? (
-          <div className="m" title={`PR #${prSummaryParts(lane.pr).no} · ${prSummaryParts(lane.pr).rest}`} style={{ fontSize: '10.5px', color: 'var(--ink2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <div className="m" title={`PR #${prSummaryParts(lane.pr).no} · ${prSummaryParts(lane.pr).rest}`} style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             <a
               href={lane.pr.url} target="_blank" rel="noopener noreferrer"
               onClick={(e) => e.stopPropagation()} style={{ fontWeight: 700, color: 'var(--ink)' }}
@@ -245,10 +250,10 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
             const earlierCta = laneCta(l);
             return (
               <div key={l.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
-                <span className="m" style={{ fontSize: '10.5px', color: 'var(--ink2)' }}>{l.now}</span>
+                <span className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink2)' }}>{l.now}</span>
                 <LaneCta
                   lane={l} cmd={earlierCta.cmd} label={earlierCta.label} cls={earlierCta.cls}
-                  style={{ padding: '5px 8px', fontSize: 9, flex: 'none' }} onCommand={onCommand} stopPropagation
+                  style={{ padding: '5px 8px', fontSize: 'var(--fs-ui)', flex: 'none' }} onCommand={onCommand} stopPropagation
                 />
               </div>
             );
@@ -261,16 +266,16 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
            title; the footer row had the room. The slot is reserved either way so a tile
            with no marker is no shorter than its neighbours. */}
         <span className={freshnessClass(fresh)} style={{ alignSelf: 'flex-start' }}>{freshnessStamp(fresh)}</span>
-        <div data-testid="live-marker" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 5, height: 14 }}>
+        <div data-testid="live-marker" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 5, height: 18 }}>
           {lane.live.alive || (liveCount ?? 0) > 0 ? (
             <>
               <span className="live-pulse" aria-hidden="true" />
-              <span className="m" style={{ fontSize: 10, color: 'var(--run)', whiteSpace: 'nowrap' }}>
+              <span className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--run)', whiteSpace: 'nowrap' }}>
                 {(liveCount ?? 0) > 1 ? `${liveCount} live` : 'live'}{liveSecondsAgo !== null ? ` · last event ${liveSecondsAgo}s ago` : ''}
               </span>
             </>
           ) : stalled ? (
-            <span className="m" style={{ fontSize: 10, fontWeight: 700, color: 'var(--block)', whiteSpace: 'nowrap' }}>STALLED · no process</span>
+            <span className="m" style={{ fontSize: 'var(--fs-meta)', fontWeight: 700, color: 'var(--block)', whiteSpace: 'nowrap' }}>STALLED · no process</span>
           ) : null}
         </div>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -280,12 +285,12 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
             // border the other CTA classes render as a box-shadow ring instead --
             // a fixed height plus border-box keeps every CTA the same footer height
             // regardless of which button class a lane's own state picks.
-            style={{ padding: '7px 9px', fontSize: '9.5px', flex: 1, height: 32, boxSizing: 'border-box' }}
+            style={{ padding: '7px 9px', fontSize: 'var(--fs-ui)', flex: 1, height: 36, boxSizing: 'border-box' }}
             onCommand={onCommand} stopPropagation
           />
         </div>
         {/* One reserved line whether or not there is a reason, so a tile with one is no taller than its neighbours. */}
-        <span className="m" title={why ?? undefined} style={{ fontSize: '9.5px', lineHeight: '14px', height: 14, color: 'var(--ink3)', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', display: 'block' }}>{why ?? ''}</span>
+        <span className="m" title={why ?? undefined} style={{ fontSize: 'var(--fs-meta)', lineHeight: '18px', height: 18, color: 'var(--ink3)', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', display: 'block' }}>{why ?? ''}</span>
       </div>
     </div>
   );

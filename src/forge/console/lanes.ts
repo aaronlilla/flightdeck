@@ -112,7 +112,7 @@ function capitalizeFirst(text: string): string {
  *  heading -- a self finding's summary sentence, on an already-written brief whose
  *  heading is nothing but the finding's bare kind. Trimmed to 120 characters at a word
  *  boundary and capitalised, so it reads as a title rather than a quoted line. */
-function firstBodyParagraph(brief: string): string | null {
+export function firstBodyParagraph(brief: string): string | null {
   const lines = brief.split(/\r?\n/);
   const headingIndex = lines.findIndex((line) => /^#[ \t]+/.test(line));
   const rest = headingIndex >= 0 ? lines.slice(headingIndex + 1) : lines;
