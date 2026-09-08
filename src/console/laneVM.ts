@@ -153,7 +153,15 @@ export function prSummaryParts(pr: LanePr): { no: number; url: string; rest: str
         : 'checks not read yet';
   const parts = [pr.draft ? 'draft' : 'open', checksText];
   if (pr.verdict) parts.push(`council ${pr.verdict}`);
-  if (pr.files !== undefined && pr.add !== undefined && pr.del !== undefined) {
+  // Sweep #17: a merged PR (BBZ-99, live) reported files/add/del all as 0 rather than
+  // absent -- printing "0 files +0 -0" as if that were a read diff rather than a stat
+  // nobody ever fetched for a PR that is done. `merged` gets its own word instead, and
+  // an all-zero reading anywhere else is treated the same as absent: unread, not empty.
+  const filesKnown = pr.files !== undefined && pr.add !== undefined && pr.del !== undefined
+    && !(pr.files === 0 && pr.add === 0 && pr.del === 0);
+  if (pr.merged) {
+    parts.push('merged');
+  } else if (filesKnown) {
     parts.push(`${pr.files} files +${pr.add} −${pr.del}`);
   }
   return { no: pr.no, url: pr.url, rest: parts.join(' · ') };

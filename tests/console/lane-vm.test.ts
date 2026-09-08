@@ -200,6 +200,21 @@ describe('prSummaryParts', () => {
     expect(prSummaryParts(pr).rest).not.toMatch(/files/);
     expect(prSummaryParts(pr).rest).not.toContain('0 files');
   });
+
+  // Sweep #17: BBZ-99, live, reported files/add/del all as 0 on a merged PR --
+  // printed as "0 files +0 -0" as if that were a read diff. A merged PR gets the
+  // word "merged" instead, and never the diff segment at all.
+  it('says merged, never a zero diff, once the PR has merged', () => {
+    const pr = { no: 99, url: 'https://example.invalid/pr/99', files: 0, add: 0, del: 0, draft: false, checks: 'success' as const, verdict: 'PASS', merged: true };
+    expect(prSummaryParts(pr).rest).toBe('open · checks ✓ · council PASS · merged');
+    expect(prSummaryParts(pr).rest).not.toContain('0 files');
+  });
+
+  it('drops the diff segment for an all-zero reading even when not merged, treating it as unread', () => {
+    const pr = { no: 100, url: 'https://example.invalid/pr/100', files: 0, add: 0, del: 0, draft: true, checks: 'pending' as const, verdict: null, merged: false };
+    expect(prSummaryParts(pr).rest).toBe('draft · checks running');
+    expect(prSummaryParts(pr).rest).not.toContain('0 files');
+  });
 });
 
 // H2.2
