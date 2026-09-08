@@ -20,6 +20,7 @@ import { basename } from 'node:path';
 
 import type { ChainCouncilFn, ChainGateFn, ChainGh, ChainLauncher } from '../chain.js';
 import type { QueueItem, QueueItemState, QueueSource } from '../../shared/console-model.js';
+import { branchFor } from '../chain-env.js';
 import { evaluateAction } from '../rules/index.js';
 import { renderNotes } from '../council/renderNotes.js';
 import { terminalStateFor, type RepoKind } from './handoff.js';
@@ -252,6 +253,17 @@ export interface QueueRuntimeDeps {
    *  Backs an after: <slug> entry that names no queue item. Absent means such an entry
    *  never resolves. */
   branchMerged?: (repo: string, branch: string) => Promise<boolean>;
+  /** Every repository this environment has a checkout for (`ChainEnv.checkouts`, wired
+   *  from `FORGE_REPO_CHECKOUTS` in `buildQueueRuntimeDeps`) -- the fallback list
+   *  `unresolvedAfterReason` asks `branchMerged` about when an `after: <slug>` entry
+   *  names no queue item and the gated item's own `repo` isn't known yet. `item.repo`
+   *  is `null` for the entire time a real item sits `queued` (`blankItem` sets it, and
+   *  `advanceItem` only fills it in once the item is planned, which happens after this
+   *  gate runs), so gating on `item.repo` alone made the merged-branch fallback dead
+   *  code for every item added through the ordinary add path. Absent or empty means no
+   *  fallback repo is known, the same "never resolves" answer as before this field
+   *  existed. */
+  mergeCheckRepos?: string[];
   clock(): number;
   killSwitch(): boolean;
   paused(): boolean;
@@ -337,6 +349,23 @@ function slugMatches(candidate: QueueItem, slug: string): boolean {
  *  to start. The two reason shapes are deliberately different: a matched but not-done
  *  predecessor reads "waiting on <slug>", an unmatched one reads "waiting on unknown item:
  *  <slug>", and the queue view renders the two differently. */
+/** Which repository or repositories `unresolvedAfterReason` should ask `branchMerged`
+ *  about for one unmatched `after: <slug>` entry. `item.repo` wins once it is known
+ *  (an item already planned), but a queued item's own `repo` is null the entire time
+ *  this gate runs -- `blankItem` sets it, and `advanceItem` only fills it in once the
+ *  item leaves `queued`, which happens after this check -- so the fallback list this
+ *  environment has a checkout for (`deps.mergeCheckRepos`) is what a real, never-yet-
+ *  planned item actually resolves against. */
+async function mergedOnKnownRepo(item: QueueItem, slug: string, deps: QueueRuntimeDeps): Promise<boolean> {
+  if (!deps.branchMerged) return false;
+  const branch = branchFor(slug);
+  const repos = item.repo ? [item.repo] : (deps.mergeCheckRepos ?? []);
+  for (const repo of repos) {
+    if (await deps.branchMerged(repo, branch)) return true;
+  }
+  return false;
+}
+
 async function unresolvedAfterReason(
   item: QueueItem, items: QueueItem[], deps: QueueRuntimeDeps,
 ): Promise<string | null> {
@@ -346,7 +375,7 @@ async function unresolvedAfterReason(
       if (matches.every((m) => m.state === 'done')) continue;
       return `waiting on ${slug}`;
     }
-    if (deps.branchMerged && item.repo && await deps.branchMerged(item.repo, `feature/${slug}`)) continue;
+    if (await mergedOnKnownRepo(item, slug, deps)) continue;
     return `waiting on unknown item: ${slug}`;
   }
   return null;
@@ -366,7 +395,14 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
   let item = itemIn;
 
   if (!item.briefPath) {
-    if (item.state !== 'planning') item = writeTransition(item, { state: 'planning' }, deps, 'queue.planning');
+    // Clears a stale after:-gate `reason` and `after` list the moment the item leaves
+    // `queued` -- neither was ever patched past this point before, so a resolved item
+    // carried a permanent "waiting on ..." line through planning, running and review
+    // (`reason`/`after` in `console-model.ts`; the queue view reads both straight off
+    // the item with no other staleness check).
+    if (item.state !== 'planning') {
+      item = writeTransition(item, { state: 'planning', reason: null, after: [] }, deps, 'queue.planning');
+    }
     let planned: QueuePlannedBrief;
     try {
       planned = item.source === 'brief'
