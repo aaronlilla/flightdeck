@@ -15,8 +15,8 @@ import { fileURLToPath } from 'node:url';
 
 import { CONSOLE_ROUTES, HEARTBEAT_MS } from '../shared/console-model.js';
 import type {
-  ActionResult, Caps, Integration, JournalEntry, Lane, Message, QueueAddRequest, QueueAddResponse,
-  QueueItem, QueueSource, Rule,
+  ActionResult, Caps, Integration, JournalEntry, Lane, LaneSummary, Message, QueueAddRequest, QueueAddResponse,
+  QueueItem, QueueSource, ReauditResponse, Rule,
 } from '../shared/console-model.js';
 import { fmtTokens } from '../shared/format-tokens.js';
 import { seedCaps } from './fixtures/caps.js';
@@ -72,6 +72,12 @@ interface Db {
    *  and spec, none of which cares about this field, never sees the "Queue is off"
    *  banner it never asked for. */
   queueOn: boolean;
+  /** 2026-09-07: the id of a lane this fixture wants `GET /run/:id/summary` to report
+   *  as stale (its audit's head trailing the PR's own), or `null` when none should be.
+   *  `POST /run/:id/reaudit` clears this for its own lane a couple seconds later, the
+   *  stub's stand-in for a council round actually running and landing a fresh
+   *  attestation. */
+  staleAuditLane: string | null;
 }
 
 function seedDb(): Db {
@@ -88,6 +94,7 @@ function seedDb(): Db {
     queuePauseReason: null,
     qn: 0,
     queueOn: true,
+    staleAuditLane: null,
   };
 }
 
@@ -128,6 +135,10 @@ const FIXTURES: Record<string, () => Db> = {
   // D2.4: the queue subsystem itself off, distinct from `queue-matrix`'s worker-paused
   // scenario above -- `/state`'s own `queue_on: false`.
   'queue-off': () => ({ ...seedDb(), queueOn: false }),
+  // 2026-09-07: FLT-193 (a `done` lane with an open PR) reports a stale council audit --
+  // its head has moved past the sha the attestation actually reviewed -- for the ticket
+  // sheet summary block's own Playwright coverage.
+  'summary-stale': () => ({ ...seedDb(), staleAuditLane: 'FLT-193' }),
 };
 
 function resetToFixture(name: string): void {
@@ -222,6 +233,50 @@ function stubStory(lane: Lane | undefined, id: string): import('../shared/consol
     ticket: lane.ticket ? { key: lane.ticket, url: lane.sourceUrl, summary: lane.title } : null,
     brief: lane.title ? { path: `briefs/${lane.ticket ?? lane.id}.md`, excerpt: lane.title } : null,
     entries,
+  };
+}
+
+/** 2026-09-07: the ticket sheet's Summary block (`GET`/`POST /run/:id/{summary,recheck}`),
+ *  built off this fixture lane's own fields, the same stand-in approach `stubStory`
+ *  already takes. A lane the fixture has flagged in `db.staleAuditLane` reports a stale
+ *  audit and un-ready drift; every other lane with a PR reports a clean one. */
+function stubSummary(lane: Lane | undefined, id: string): LaneSummary {
+  if (!lane) return { what: [], status: 'no such run', audit: null, readiness: null };
+  const what: string[] = [];
+  if (lane.title) what.push(`${lane.title}.`);
+  what.push(`${lane.stepText}.`.replace(/\.\.$/, '.'));
+  const pr = lane.pr;
+  if (!pr) {
+    return {
+      what, status: lane.plain || `${lane.stepText}.`, audit: null,
+      readiness: { ok: false, why: 'no PR is open yet', checks: null, behindBase: null, headMoved: false },
+    };
+  }
+  const stale = db.staleAuditLane === lane.id;
+  const audit = {
+    verdict: pr.merged ? 'PASS' : 'PASS WITH NOTES',
+    reviewed: 4,
+    total: 4,
+    at: lane.since - 5 * 60_000,
+    head: stale ? 'a1b2c3d0000000000000000000000000000000d' : 'a1b2c3d1111111111111111111111111111111d',
+    findings: pr.merged ? 0 : 2,
+    stale,
+    staleWhy: stale ? 'the PR head has moved since this audit ran' : null,
+  };
+  const behindBase = stale ? 3 : 0;
+  const ok = !stale && behindBase === 0 && pr.checks !== 'failure' && !pr.merged;
+  const why = pr.merged
+    ? 'already merged'
+    : stale
+      ? 'the PR head moved since the audit'
+      : pr.checks === 'failure'
+        ? 'checks are failure'
+        : null;
+  return {
+    what,
+    status: lane.plain || `${lane.stepText}.`,
+    audit,
+    readiness: { ok, why: ok ? null : why, checks: pr.checks ?? 'success', behindBase, headMoved: stale },
   };
 }
 
@@ -576,6 +631,13 @@ export function createStubServer() {
         return;
       }
 
+      const runSummaryMatch = /^\/run\/([^/]+)\/summary$/.exec(urlPath);
+      if (runSummaryMatch && method === 'GET') {
+        const id = decodeURIComponent(runSummaryMatch[1] as string);
+        json(response, 200, stubSummary(findLane(id), id));
+        return;
+      }
+
       if (urlPath === '/queue' && method === 'GET') {
         json(response, 200, { items: db.queue, paused: db.queuePaused, maxInFlight: 2, pauseReason: db.queuePauseReason });
         return;
@@ -717,6 +779,36 @@ export function createStubServer() {
         if (!lane.pr) lane.pr = { no: 900 + db.jn, url: 'https://example.invalid/pr/verify', files: 1, add: 1, del: 0, draft: true };
         const jid = journal('run.verified', `${id} verified`, id, false);
         json(response, 200, ok(jid, `${id} verified`, false, lane));
+        return;
+      }
+      const runRecheckMatch = /^\/run\/([^/]+)\/recheck$/.exec(urlPath);
+      if (runRecheckMatch && method === 'POST') {
+        const id = decodeURIComponent(runRecheckMatch[1] as string);
+        const lane = findLane(id);
+        if (!lane) { json(response, 404, { error: `no lane named ${id}` }); return; }
+        // A visible sign the click actually re-read something, the stub's own stand-in
+        // for the real server's fresh `gh pr view` + drift read: pending checks clear.
+        if (lane.pr && lane.pr.checks === 'pending') lane.pr = { ...lane.pr, checks: 'success' };
+        json(response, 200, stubSummary(lane, id));
+        return;
+      }
+      const runReauditMatch = /^\/run\/([^/]+)\/reaudit$/.exec(urlPath);
+      if (runReauditMatch && method === 'POST') {
+        const id = decodeURIComponent(runReauditMatch[1] as string);
+        const lane = findLane(id);
+        if (!lane || !lane.pr) {
+          const body: ReauditResponse = { started: false, reason: `no repo/PR on record for run ${id} to re-audit` };
+          json(response, 501, body);
+          return;
+        }
+        const body: ReauditResponse = { started: true };
+        json(response, 200, body);
+        // The stub's stand-in for a council round actually running: the sheet's own
+        // poll (every few seconds) sees the stale flag clear once this fires, the same
+        // shape a real attestation landing on disk would produce.
+        setTimeout(() => {
+          if (db.staleAuditLane === id) db.staleAuditLane = null;
+        }, 2_000);
         return;
       }
       const runCapMatch = /^\/run\/([^/]+)\/cap$/.exec(urlPath);

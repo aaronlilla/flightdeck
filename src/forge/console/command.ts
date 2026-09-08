@@ -26,11 +26,12 @@ import type { StuckSignal } from '../liveness.js';
 import type { Registry } from '../registry.js';
 import type { RunRequest } from '../exec.js';
 import type { Lanes } from '../supervisor.js';
+import type { QueueStore } from '../intake/queueStore.js';
 import { governorBudget } from '../policy.js';
 import { forgeHome } from '../paths.js';
 import { consoleDir, recordAction, ActionsLedger, actionsLedgerPath } from './actions-ledger.js';
 import {
-  compactRun, killRun, mergeRun, pauseRun, reopenRun, restoreRunCap,
+  compactRun, killRun, mergeRun, pauseRun, reauditRun, reopenRun, restoreRunCap,
   resumeRun, setRunCap, verifyRun, type RunActionsDeps,
 } from './run-actions.js';
 import { capsOverridesPath, effectiveHardTokens, readCapsOverrides } from './caps-read.js';
@@ -194,6 +195,10 @@ export interface ConsoleWritesDeps {
   rulesConfigPath?: string;
   integrationsConfigPath?: string;
   modelPolicyPath?: string;
+  /** 2026-09-07: overrides where `reauditRun` finds a queue-sourced lane's own
+   *  repo/PR/base/worktree (`POST /run/:id/reaudit`). Defaults to `RunActionsDeps`'s own
+   *  default (`defaultQueuePath()`, which follows `FORGE_HOME`) when unset. */
+  queueStore?: QueueStore;
 }
 
 function readBody<T>(request: IncomingMessage): Promise<T | null> {
@@ -288,6 +293,7 @@ export class ConsoleWrites {
       ...(this.deps.lanes ? { lanes: this.deps.lanes } : {}),
       ...(this.deps.spawnFn ? { spawnFn: this.deps.spawnFn } : {}),
       ...(this.deps.capsOverridesPath ? { capsOverridesPath: this.deps.capsOverridesPath } : {}),
+      ...(this.deps.queueStore ? { queueStore: this.deps.queueStore } : {}),
     };
   }
 
@@ -554,7 +560,7 @@ export class ConsoleWrites {
       return true;
     }
 
-    if ((match = path.match(/^\/run\/([^/]+)\/(kill|pause|resume|merge|reopen|compact|verify|cap)$/)) && method === 'POST') {
+    if ((match = path.match(/^\/run\/([^/]+)\/(kill|pause|resume|merge|reopen|compact|verify|cap|reaudit)$/)) && method === 'POST') {
       if (!this.deps.authorized(request, response)) return true;
       const run = decodeURIComponent(match[1]!);
       const action = match[2]!;
@@ -588,6 +594,9 @@ export class ConsoleWrites {
           outcome = await setRunCap(run, tokenCap, deps);
           break;
         }
+        case 'reaudit':
+          outcome = await reauditRun(run, deps);
+          break;
         default:
           outcome = { status: 404, body: { error: 'unknown action' } };
       }

@@ -10,6 +10,9 @@ vi.mock('../../src/console/api.js', () => ({
   getRunThread: vi.fn(),
   getRunJournal: vi.fn(),
   getRunStory: vi.fn(),
+  getRunSummary: vi.fn(),
+  recheckRun: vi.fn(),
+  reauditRun: vi.fn(),
 }));
 
 import * as api from '../../src/console/api.js';
@@ -40,6 +43,7 @@ function renderSheet(
     id: laneExtra.id ?? 'jira_AB-12_1788460932645', title: laneExtra.title ?? null, kind: laneExtra.kind ?? 'manual',
     ticket: null, brief: story.brief, entries: story.entries,
   });
+  vi.mocked(api.getRunSummary).mockResolvedValue({ what: [], status: '', audit: null, readiness: null });
   return render(
     <TicketSheet
       lane={lane(laneExtra)} feedLive now={Date.now()}
@@ -264,5 +268,108 @@ describe('TicketSheet', () => {
     expect(screen.queryByText('fix the withdrawal fee rounding')).not.toBeInTheDocument();
     await userEvent.click(screen.getByText('brief'));
     expect(screen.getByText('fix the withdrawal fee rounding')).toBeInTheDocument();
+  });
+});
+
+describe('TicketSheet: Summary block', () => {
+  it('renders what/status/audit/readiness and Re-check/Re-audit buttons', async () => {
+    vi.mocked(api.getRunSummary).mockResolvedValue({
+      what: ['wired the summary block.', 'added the drift check.'],
+      status: 'Working since 1:00 on a Sonnet session, 3 turns in.',
+      audit: {
+        verdict: 'PASS WITH NOTES', reviewed: 4, total: 4, at: Date.parse('2026-09-07T12:35:00Z'),
+        head: '3982779abc', findings: 3, stale: false, staleWhy: null,
+      },
+      readiness: { ok: true, why: null, checks: 'success', behindBase: 0, headMoved: false },
+    });
+    vi.mocked(api.getRunThread).mockResolvedValue({ messages: [] });
+    vi.mocked(api.getRunJournal).mockResolvedValue({ entries: [] });
+    vi.mocked(api.getRunStory).mockResolvedValue({ id: 'x', title: null, kind: 'manual', ticket: null, brief: null, entries: [] });
+    render(
+      <TicketSheet
+        lane={lane()} feedLive now={Date.now()}
+        onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop} onSendLane={noop}
+        onAmendLane={noop} onUndo={noop} onOpenJournal={noop}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText('wired the summary block.')).toBeInTheDocument());
+    expect(screen.getByText('added the drift check.')).toBeInTheDocument();
+    expect(screen.getByText('Working since 1:00 on a Sonnet session, 3 turns in.')).toBeInTheDocument();
+    expect(screen.getByTestId('ticket-sheet-audit')).toHaveTextContent('Council PASS WITH NOTES, 4 of 4 reviewed, 3 findings');
+    expect(screen.getByTestId('ticket-sheet-readiness')).toHaveTextContent('Ready to merge.');
+    expect(screen.getByText('Re-check')).toBeInTheDocument();
+    expect(screen.getByText('Re-audit')).toBeInTheDocument();
+  });
+
+  it('shows "Not audited" and the not-ready reason when there is no council verdict yet', async () => {
+    vi.mocked(api.getRunSummary).mockResolvedValue({
+      what: [], status: 'Draft PR #9 is open with checks pending and no council verdict yet; waiting for your Merge.',
+      audit: null, readiness: { ok: false, why: 'not audited yet', checks: 'pending', behindBase: null, headMoved: false },
+    });
+    vi.mocked(api.getRunThread).mockResolvedValue({ messages: [] });
+    vi.mocked(api.getRunJournal).mockResolvedValue({ entries: [] });
+    vi.mocked(api.getRunStory).mockResolvedValue({ id: 'x', title: null, kind: 'manual', ticket: null, brief: null, entries: [] });
+    render(
+      <TicketSheet
+        lane={lane()} feedLive now={Date.now()}
+        onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop} onSendLane={noop}
+        onAmendLane={noop} onUndo={noop} onOpenJournal={noop}
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId('ticket-sheet-audit')).toHaveTextContent('Not audited.'));
+    expect(screen.getByTestId('ticket-sheet-readiness')).toHaveTextContent('Not ready: not audited yet.');
+  });
+
+  it('Re-check calls the API and refreshes the summary in place', async () => {
+    vi.mocked(api.getRunSummary).mockResolvedValue({
+      what: [], status: 'stale', audit: null,
+      readiness: { ok: false, why: 'checks are pending', checks: 'pending', behindBase: null, headMoved: false },
+    });
+    vi.mocked(api.getRunThread).mockResolvedValue({ messages: [] });
+    vi.mocked(api.getRunJournal).mockResolvedValue({ entries: [] });
+    vi.mocked(api.getRunStory).mockResolvedValue({ id: 'x', title: null, kind: 'manual', ticket: null, brief: null, entries: [] });
+    vi.mocked(api.recheckRun).mockResolvedValue({
+      what: [], status: 'fresh', audit: null, readiness: { ok: true, why: null, checks: 'success', behindBase: 0, headMoved: false },
+    });
+    render(
+      <TicketSheet
+        lane={lane()} feedLive now={Date.now()}
+        onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop} onSendLane={noop}
+        onAmendLane={noop} onUndo={noop} onOpenJournal={noop}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText('stale')).toBeInTheDocument());
+    await userEvent.click(screen.getByText('Re-check'));
+    expect(vi.mocked(api.recheckRun)).toHaveBeenCalledWith('jira_AB-12_1788460932645');
+    await waitFor(() => expect(screen.getByText('fresh')).toBeInTheDocument());
+  });
+
+  it('Re-audit disables itself while running, then re-enables once the audit head catches up', async () => {
+    vi.mocked(api.getRunSummary)
+      .mockResolvedValueOnce({
+        what: [], status: 's', audit: { verdict: 'FIX FIRST', reviewed: 1, total: 4, at: 1, head: 'old', findings: 1, stale: true, staleWhy: 'moved' },
+        readiness: { ok: false, why: 'the PR head moved since the audit', checks: 'success', behindBase: 0, headMoved: true },
+      })
+      .mockResolvedValueOnce({
+        what: [], status: 's', audit: { verdict: 'PASS', reviewed: 4, total: 4, at: 2, head: 'new', findings: 0, stale: false, staleWhy: null },
+        readiness: { ok: true, why: null, checks: 'success', behindBase: 0, headMoved: false },
+      });
+    vi.mocked(api.getRunThread).mockResolvedValue({ messages: [] });
+    vi.mocked(api.getRunJournal).mockResolvedValue({ entries: [] });
+    vi.mocked(api.getRunStory).mockResolvedValue({ id: 'x', title: null, kind: 'manual', ticket: null, brief: null, entries: [] });
+    vi.mocked(api.reauditRun).mockResolvedValue({ started: true });
+    render(
+      <TicketSheet
+        lane={lane()} feedLive now={Date.now()}
+        onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop} onSendLane={noop}
+        onAmendLane={noop} onUndo={noop} onOpenJournal={noop}
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId('ticket-sheet-readiness')).toHaveTextContent('moved since the audit'));
+    await userEvent.click(screen.getByText('Re-audit'));
+    expect(vi.mocked(api.reauditRun)).toHaveBeenCalledWith('jira_AB-12_1788460932645');
+    await waitFor(() => expect(screen.getByText('Re-auditing…')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('ticket-sheet-audit')).toHaveTextContent('PASS'), { timeout: 5_000 });
+    expect(screen.getByText('Re-audit')).toBeInTheDocument();
   });
 });

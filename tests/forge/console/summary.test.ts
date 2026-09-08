@@ -1,0 +1,181 @@
+/**
+ * `computeLaneSummary` (2026-09-07): the ticket sheet's top summary block.
+ */
+import { describe, expect, it } from 'vitest';
+
+import {
+  computeAudit, computeLaneSummary, computeReadiness, computeWhat, type DriftFacts, type PrFacts,
+} from '../../../src/forge/console/summary.js';
+import { verified } from '../../../src/forge/contracts.js';
+import type { CouncilAttestation } from '../../../src/forge/contracts.js';
+import type { Lane, LaneStory } from '../../../src/shared/console-model.js';
+
+function attestation(overrides: Partial<CouncilAttestation> = {}): CouncilAttestation {
+  return {
+    repo: 'acme/widgets', pr: 9, head: 'head-sha-1', base: 'base-sha-1', round: 1,
+    verdict: 'PASS WITH NOTES',
+    decidingFindings: [{ claim: 'a nit', evidence: 'x', severity: 'low', lens: 'style' } as never],
+    lenses: [],
+    judge: { model: 'sonnet-5', verdict: 'PASS WITH NOTES' },
+    ci: { runId: 'run-1', headSha: 'head-sha-1' },
+    at: verified(12_345, 'gh pr view'),
+    coverage: { total: 4, missing: [] },
+    ...overrides,
+  };
+}
+
+function noDrift(): DriftFacts {
+  return { behindBase: null, headMoved: false };
+}
+
+function story(entries: LaneStory['entries']): LaneStory {
+  return { id: 'r1', title: 't', kind: 'ticket', ticket: null, brief: null, entries };
+}
+
+describe('computeWhat', () => {
+  it('uses the PR title as the first sentence', () => {
+    const pr: PrFacts = { title: 'add the merge chip', body: null, checks: null, merged: null };
+    expect(computeWhat({ story: null, pr })).toEqual(['add the merge chip.']);
+  });
+
+  it('adds the PR body\'s first paragraph and the story\'s commit subjects', () => {
+    const pr: PrFacts = { title: 'add the merge chip', body: 'This wires the button.\n\nMore detail here.', checks: null, merged: null };
+    const s = story([
+      { at: 1, kind: 'commit', text: 'Change abc1234: wire the merge button' },
+      { at: 2, kind: 'commit', text: 'Change def5678: fix a lint error' },
+    ]);
+    const what = computeWhat({ story: s, pr });
+    expect(what).toEqual([
+      'add the merge chip.',
+      'This wires the button.',
+      'wire the merge button.',
+      'fix a lint error.',
+    ]);
+  });
+
+  it('never exceeds six sentences', () => {
+    const s = story(Array.from({ length: 10 }, (_, i) => ({ at: i, kind: 'commit', text: `Change ${'a'.repeat(7)}: commit number ${i}` })));
+    expect(computeWhat({ story: s, pr: null }).length).toBeLessThanOrEqual(6);
+  });
+
+  it('falls back to the plan and ticket lines only when commits alone come up short', () => {
+    const s = story([
+      { at: 1, kind: 'ticket', text: 'Queued from Jira as BBZ-9 at 1:00 PM' },
+      { at: 2, kind: 'plan', text: 'Planned: wire the summary block' },
+      { at: 3, kind: 'commit', text: 'Change abc1234: add the block' },
+    ]);
+    const what = computeWhat({ story: s, pr: null });
+    expect(what).toEqual([
+      'add the block.',
+      'Queued from Jira as BBZ-9 at 1:00 PM.',
+      'wire the summary block.',
+    ]);
+  });
+
+  it('never pads: a lane with nothing on record gets an empty list, not invented sentences', () => {
+    expect(computeWhat({ story: null, pr: null })).toEqual([]);
+  });
+});
+
+describe('computeAudit', () => {
+  it('is null with no attestation on record', () => {
+    expect(computeAudit(null, noDrift())).toBeNull();
+  });
+
+  it('carries the verdict, coverage and finding count off the attestation', () => {
+    const audit = computeAudit(attestation(), noDrift());
+    expect(audit).toMatchObject({
+      verdict: 'PASS WITH NOTES', reviewed: 4, total: 4, at: 12_345, head: 'head-sha-1', findings: 1,
+      stale: false, staleWhy: null,
+    });
+  });
+
+  it('reports coverage gaps: reviewed is total minus missing', () => {
+    const audit = computeAudit(attestation({ coverage: { total: 4, missing: ['codex'] } }), noDrift());
+    expect(audit).toMatchObject({ reviewed: 3, total: 4 });
+  });
+
+  it('is stale the moment the head has moved since the attestation', () => {
+    const audit = computeAudit(attestation(), { behindBase: null, headMoved: true });
+    expect(audit).toMatchObject({ stale: true, staleWhy: expect.stringContaining('moved since') });
+  });
+});
+
+describe('computeReadiness', () => {
+  const okPr: PrFacts = { title: 't', body: null, checks: 'success', merged: false };
+  const okMergeable: Lane['mergeable'] = { ok: true };
+
+  it('is ready when checks are green, the council cleared, the repo is allow-listed, and there is no drift', () => {
+    const readiness = computeReadiness({ pr: okPr, attestation: attestation(), mergeable: okMergeable, drift: noDrift() });
+    expect(readiness).toEqual({ ok: true, why: null, checks: 'success', behindBase: null, headMoved: false });
+  });
+
+  it('is not ready with no PR open', () => {
+    const readiness = computeReadiness({ pr: null, attestation: null, mergeable: null, drift: noDrift() });
+    expect(readiness.ok).toBe(false);
+    expect(readiness.why).toContain('no PR is open yet');
+  });
+
+  it('is not ready when checks are red', () => {
+    const readiness = computeReadiness({ pr: { ...okPr, checks: 'failure' }, attestation: attestation(), mergeable: okMergeable, drift: noDrift() });
+    expect(readiness.ok).toBe(false);
+    expect(readiness.why).toContain('checks are failure');
+  });
+
+  it('is not ready with no council verdict yet', () => {
+    const readiness = computeReadiness({ pr: okPr, attestation: null, mergeable: okMergeable, drift: noDrift() });
+    expect(readiness.ok).toBe(false);
+    expect(readiness.why).toContain('not audited yet');
+  });
+
+  it('is not ready when the council verdict did not clear', () => {
+    const readiness = computeReadiness({
+      pr: okPr, attestation: attestation({ verdict: 'FIX FIRST' }), mergeable: okMergeable, drift: noDrift(),
+    });
+    expect(readiness.ok).toBe(false);
+    expect(readiness.why).toContain('FIX FIRST');
+  });
+
+  it('is not ready when the repo is off the merge allow-list', () => {
+    const readiness = computeReadiness({
+      pr: okPr, attestation: attestation(), mergeable: { ok: false, why: 'controlled code, ping Joe' }, drift: noDrift(),
+    });
+    expect(readiness.ok).toBe(false);
+    expect(readiness.why).toContain('controlled code, ping Joe');
+  });
+
+  it('is not ready when the PR head has moved since the audit', () => {
+    const readiness = computeReadiness({
+      pr: okPr, attestation: attestation(), mergeable: okMergeable, drift: { behindBase: null, headMoved: true },
+    });
+    expect(readiness.ok).toBe(false);
+    expect(readiness.why).toContain('the PR head moved since the audit');
+    expect(readiness.headMoved).toBe(true);
+  });
+
+  it('is not ready when the base has gained commits since the merge-base, and says how many', () => {
+    const readiness = computeReadiness({
+      pr: okPr, attestation: attestation(), mergeable: okMergeable, drift: { behindBase: 5, headMoved: false },
+    });
+    expect(readiness.ok).toBe(false);
+    expect(readiness.why).toContain('gained 5 commits since');
+    expect(readiness.behindBase).toBe(5);
+  });
+});
+
+describe('computeLaneSummary', () => {
+  it('folds what/status/audit/readiness off a lane, its story, PR facts, attestation and drift', () => {
+    const lane = { plain: 'Working since 1:00 on a Sonnet session, 3 turns in.', mergeable: { ok: true } } as Lane;
+    const summary = computeLaneSummary({
+      lane,
+      story: story([{ at: 1, kind: 'commit', text: 'Change abc1234: add the summary block' }]),
+      pr: { title: 'add the summary block', body: null, checks: 'success', merged: false },
+      attestation: attestation(),
+      drift: noDrift(),
+    });
+    expect(summary.status).toBe(lane.plain);
+    expect(summary.what.length).toBeGreaterThan(0);
+    expect(summary.audit?.verdict).toBe('PASS WITH NOTES');
+    expect(summary.readiness?.ok).toBe(true);
+  });
+});

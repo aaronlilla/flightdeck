@@ -72,8 +72,63 @@ export interface LaneStory {
  *  whose PR is ready by the queue's own rules, and every lane with a PR that is not,
  *  each with the reason in words. */
 export interface MergeReadyReport {
-  ready: Array<{ id: string; title: string | null; pr: LanePr }>;
-  notReady: Array<{ id: string; title: string | null; pr: LanePr; why: string }>;
+  ready: Array<{ id: string; title: string | null; pr: LanePr; readiness?: LaneReadiness }>;
+  notReady: Array<{ id: string; title: string | null; pr: LanePr; why: string; readiness?: LaneReadiness }>;
+}
+
+/**
+ * 2026-09-07: the ticket sheet's audit record, the council's own last verdict on this
+ * lane's PR, off the attestation the gate wrote to disk. `stale` is true the moment the
+ * PR's head has moved past the sha this attestation actually reviewed, so a person never
+ * reads a verdict as current when the diff underneath it has already changed.
+ */
+export interface LaneAudit {
+  verdict: string;
+  reviewed: number;
+  total: number;
+  at: number;
+  head: string;
+  findings: number;
+  stale: boolean;
+  staleWhy: string | null;
+}
+
+/**
+ * 2026-09-07: whether a lane's PR is proven ready for a person's own Merge click:
+ * checks, the council's verdict, the queue's merge allow-list, and drift (the PR head
+ * moving past its own audit, the base branch gaining commits since the PR's merge-base).
+ * `why` is null only when every one of those actually cleared; `behindBase`/`headMoved`
+ * carry on regardless, since a ready lane can still be worth flagging as close to drifting.
+ */
+export interface LaneReadiness {
+  ok: boolean;
+  why: string | null;
+  checks: 'success' | 'failure' | 'pending' | null;
+  behindBase: number | null;
+  headMoved: boolean;
+}
+
+/**
+ * 2026-09-07: the ticket sheet's own summary block, read before anything else on the
+ * sheet: what was done, the lane's own `plain` status, whether it was audited, and
+ * whether it is proven ready to merge. `what` is never padded: a lane with only one real
+ * fact on record (a PR title, a single commit) gets one sentence, not several invented
+ * ones to hit a target count.
+ */
+export interface LaneSummary {
+  what: string[];
+  status: string;
+  audit: LaneAudit | null;
+  readiness: LaneReadiness | null;
+}
+
+/** `POST /run/:id/reaudit`'s own response: the council round is fired in the
+ *  background (it can run for minutes), and this only confirms it started. The result
+ *  lands as a new attestation and a `council.*` journal sequence, the same as the
+ *  queue's own round, readable off the next `GET /run/:id/summary`. */
+export interface ReauditResponse {
+  started: boolean;
+  reason?: string;
 }
 
 export interface LaneQuestion {
@@ -539,6 +594,7 @@ export interface ConsoleStateSummary {
  *   GET  /run/:id/cost                   RunCostResponse
  *   GET  /run/:id/journal                RunJournalResponse
  *   GET  /run/:id/story                  LaneStory
+ *   GET  /run/:id/summary                LaneSummary
  *   GET  /queue                          QueueResponse
  *   WS   /events                         frames; `{type:'heartbeat', at}` every HEARTBEAT_MS
  *
@@ -550,6 +606,8 @@ export interface ConsoleStateSummary {
  *   POST /run/:id/reopen    {}           ActionResult
  *   POST /run/:id/compact   {}           ActionResult   hand off at the ceiling, resume successor
  *   POST /run/:id/verify    {}           ActionResult   runs the gate without merge
+ *   POST /run/:id/recheck   {}           LaneSummary    fresh PR/audit/drift facts, cache bypassed
+ *   POST /run/:id/reaudit   {}           ReauditResponse   runs the council again on the current head
  *   POST /run/:id/cap       {tokenCap}   ActionResult   undoable
  *   POST /caps              {dailyTokens?, runTokens?}  Caps | 422 {error, hardTokens}   undoable
  *   POST /command           {text}       CommandResponse

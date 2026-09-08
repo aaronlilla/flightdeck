@@ -733,9 +733,11 @@ export function chainGate(deps: ForgeDeps): ChainGateFn {
       ['gate', '--repo', repo, '--pr', String(pr), ...(merge ? ['--merge'] : [])],
       deps,
     );
+    const merged = Boolean(result.data?.['merged']);
     return {
-      merged: Boolean(result.data?.['merged']),
+      merged,
       ...(result.data?.['mergeSha'] ? { mergeSha: result.data['mergeSha'] as string } : {}),
+      ...(!merged && result.lines.length ? { reason: result.lines } : {}),
     };
   };
 }

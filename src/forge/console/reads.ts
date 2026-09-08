@@ -23,8 +23,8 @@ import type { StuckSignal } from '../liveness.js';
 import { Lanes, type LaneRecord } from '../supervisor.js';
 import { RunInbox } from '../runinbox.js';
 import type {
-  Caps, JournalResponse, Lane, LanePr, LaneStory, LanesResponse, ProposalsResponse, QueueItem, RunCostResponse,
-  RunJournalResponse, RunPrResponse, RunSandboxResponse, RunThreadResponse, ThreadResponse,
+  Caps, JournalResponse, Lane, LanePr, LaneStory, LanesResponse, LaneSummary, ProposalsResponse, QueueItem,
+  RunCostResponse, RunJournalResponse, RunPrResponse, RunSandboxResponse, RunThreadResponse, ThreadResponse,
 } from '../../shared/console-model.js';
 import { capsOverridesPath, computeCaps, readCapsOverrides } from './caps-read.js';
 import { ensureHardTokens } from './caps-write.js';
@@ -33,7 +33,10 @@ import { actionsLedgerPath, computeJournal, readActionsLedger } from './journal-
 import { computeJournalNarrative } from './journal-narrative.js';
 import { readAttestation } from '../council/attest.js';
 import { queueMergeAllowed } from '../queue-wire.js';
-import { chainLinks, computeLanes, mergeableFor, tokensToday, titleFor, titleFromHeading, windowLanes, type LanesInput } from './lanes.js';
+import {
+  chainLinks, computeLanes, mergeableFor, mergeReadyReportFrom, tokensToday, titleFor, titleFromHeading,
+  windowLanes, type LanesInput,
+} from './lanes.js';
 import { computeLaneStory, type GitCommit } from './story.js';
 import { readRetired, retiredPath } from './retire.js';
 import { plainForQueueItem, plainStatus, type QueueVerdict } from './plain.js';
@@ -45,6 +48,10 @@ import {
 import { computeProposals, readRules, rulesPath } from './proposals.js';
 import { computeSandbox, newestLogFile, packetForRun, tailLogWithSeverity } from './sandbox.js';
 import { computeRunThread, computeThread, readThread, threadPath } from './thread.js';
+import { computeLaneSummary, computeReadiness, type PrFacts } from './summary.js';
+import type { MergeReadyReport } from '../../shared/console-model.js';
+import { gitDrift, type DriftFn } from './drift.js';
+import { readChainEnv } from '../chain-env.js';
 
 export interface ConsoleReadsOptions {
   lanes?: Lanes;
@@ -85,6 +92,10 @@ export interface ConsoleReadsOptions {
   /** H1.6: overrides `git log` of a lane's own worktree for `GET /run/:id/story`'s
    *  commit entries. A specimen never shells out. */
   gitLog?: (worktreePath: string) => Promise<GitCommit[]>;
+  /** 2026-09-07: overrides the ticket sheet summary's own drift facts (`GET`/`POST
+   *  /run/:id/{summary,recheck}`). A specimen never shells out. Defaults to real git
+   *  against `FORGE_REPO_CHECKOUTS`. */
+  driftFn?: DriftFn;
 }
 
 /** The lane's own burn rate in tokens/hour, off the journal's real cumulative total for
@@ -138,7 +149,7 @@ function defaultGhDetailLookup(): GhDetailLookupFn {
     const result = await execRun({
       argv: [
         'gh', 'pr', 'view', String(pr), '--repo', repo, '--json',
-        'isDraft,mergedAt,statusCheckRollup,title,headRefOid',
+        'isDraft,mergedAt,statusCheckRollup,title,headRefOid,body',
       ],
       cwd: process.cwd(), owner: 'console-pr-detail', cls: 'script', fullOutput: true,
     });
@@ -146,12 +157,12 @@ function defaultGhDetailLookup(): GhDetailLookupFn {
     try {
       const parsed = JSON.parse(result.full ?? result.tail) as {
         isDraft?: boolean; mergedAt?: string | null; statusCheckRollup?: RawStatusCheckLike[];
-        title?: string; headRefOid?: string;
+        title?: string; headRefOid?: string; body?: string | null;
       };
       if (!parsed.headRefOid) return undefined;
       return {
         headSha: parsed.headRefOid, isDraft: parsed.isDraft ?? false, merged: Boolean(parsed.mergedAt),
-        title: parsed.title ?? '', checks: conclusionOf(parsed.statusCheckRollup),
+        title: parsed.title ?? '', checks: conclusionOf(parsed.statusCheckRollup), body: parsed.body ?? null,
       };
     } catch {
       return undefined;
@@ -186,7 +197,7 @@ function defaultAttestationReader(): AttestationReaderFn {
 
 /** The runs `GET /run/:id` matches, and everything under it -- `/run/:id/thread`,
  *  `/run/:id/pr`, `/run/:id/sandbox`, `/run/:id/cost`, `/run/:id/journal`. */
-const RUN_SUBROUTE = /^\/run\/([^/]+)\/(thread|pr|sandbox|cost|journal|story)$/;
+const RUN_SUBROUTE = /^\/run\/([^/]+)\/(thread|pr|sandbox|cost|journal|story|summary)$/;
 
 export class ConsoleReads {
   private readonly lanes: Lanes;
@@ -219,6 +230,8 @@ export class ConsoleReads {
 
   private readonly gitLogFn: (worktreePath: string) => Promise<GitCommit[]>;
 
+  private readonly driftFn: DriftFn;
+
   /** Item 7: run ids a background PR-detail refresh is already in flight for, so a
    *  lane polled again before the first `gh` read lands never queues a second one. */
   private readonly prRefreshInFlight = new Set<string>();
@@ -244,6 +257,7 @@ export class ConsoleReads {
     this.jiraSite = options.jiraSite !== undefined ? options.jiraSite : (process.env['FORGE_JIRA_SITE'] ?? null);
     this.mergeAllowedFn = options.mergeAllowed ?? queueMergeAllowed();
     this.gitLogFn = options.gitLog ?? defaultGitLog();
+    this.driftFn = options.driftFn ?? gitDrift(readChainEnv());
   }
 
   private chain(): Map<string, ChainPacketState> {
@@ -332,7 +346,7 @@ export class ConsoleReads {
     const runMatch = RUN_SUBROUTE.exec(path);
     if (runMatch) {
       const id = runMatch[1] ?? '';
-      const sub = runMatch[2] as 'thread' | 'pr' | 'sandbox' | 'cost' | 'journal' | 'story';
+      const sub = runMatch[2] as 'thread' | 'pr' | 'sandbox' | 'cost' | 'journal' | 'story' | 'summary';
       const run = decodeURIComponent(id);
       if (sub === 'thread') {
         json(response, 200, this.runThreadResponse(run));
@@ -352,6 +366,10 @@ export class ConsoleReads {
       }
       if (sub === 'story') {
         json(response, 200, await this.runStoryResponse(run));
+        return true;
+      }
+      if (sub === 'summary') {
+        json(response, 200, await this.runSummaryResponse(run));
         return true;
       }
       json(response, 200, this.runSandboxResponse(run));
@@ -646,6 +664,102 @@ export class ConsoleReads {
       ...(queueItem ? { queueItem } : {}), ...(attestation ? { attestation } : {}),
       gitCommits, ...(briefPath ? { briefPath } : {}), ...(briefText ? { briefText } : {}),
     });
+  }
+
+  /** `GET /run/:id/summary` (2026-09-07): the ticket sheet's top summary block, folded
+   *  from the same story `GET /run/:id/story` already builds plus a fresh read of the
+   *  PR's own title/body/checks, the attestation on disk for its current head, and
+   *  git's own drift facts. Never reads `lane.pr` off the 60-second PR cache: a person
+   *  clicking into the sheet wants today's truth, not whatever the last board poll
+   *  happened to cache. */
+  async runSummaryResponse(run: string): Promise<LaneSummary> {
+    const lane = this.lanesResponse(true, true).lanes.find((l) => l.id === run);
+    if (!lane) {
+      return { what: [], status: 'no such run', audit: null, readiness: null };
+    }
+    const story = await this.runStoryResponse(run);
+    const queueItem = this.queueStore.all().find((item) => item.runKey === run);
+    const chain = this.chain();
+    const packet = packetForRun(chain, run);
+    const repo = queueItem?.repo ?? packet?.repo ?? lane.repo ?? null;
+    const prNo = queueItem?.pr?.no ?? lane.pr?.no ?? null;
+    const base = queueItem?.base ?? null;
+
+    let pr: PrFacts | null = null;
+    let attestation;
+    let headSha: string | null = null;
+    let mergeable: Lane['mergeable'] | undefined;
+    if (repo && prNo) {
+      const detail = await this.ghDetailLookup(repo, prNo);
+      if (detail) {
+        headSha = detail.headSha;
+        pr = {
+          title: detail.title || lane.pr?.title || null, body: detail.body ?? null,
+          checks: detail.checks, merged: detail.merged,
+        };
+        attestation = readAttestation(repo, prNo, detail.headSha);
+        // Fresh, off the same `gh` read and attestation this summary already made --
+        // never `lane.mergeable`, which can still be carrying the last board poll's
+        // cached PR snapshot and disagree with the readiness line right next to it.
+        mergeable = mergeableFor({
+          pr: { no: prNo, url: lane.pr?.url ?? '', draft: detail.isDraft, checks: detail.checks, merged: detail.merged, verdict: attestation?.verdict ?? null },
+          repo, mergeAllowed: this.mergeAllowedFn,
+        });
+      }
+    }
+    const drift = repo && prNo && base
+      ? await this.driftFn({ repo, base, pr: prNo, headSha, attestationHead: attestation?.head ?? null })
+      : { behindBase: null, headMoved: false };
+
+    return computeLaneSummary({ lane, story, pr, attestation: attestation ?? null, drift, mergeable });
+  }
+
+  /** `GET /merge-ready` (2026-09-07 addition): the same per-PR readiness (checks, the
+   *  council's verdict, the allow-list, and drift) `GET /run/:id/summary` computes for
+   *  one lane's own ticket sheet, folded onto every row of the bulk preview so a person
+   *  never has to open each sheet in turn to see why an item that looks ready is not.
+   *  Reads off the same cached `lane.pr` `mergeReadyReportFrom` already used for its own
+   *  ready/not-ready split -- this never repeats that split's own allow-list refusal,
+   *  only adds the audit and drift facts on top of it. */
+  async mergeReadyReport(): Promise<MergeReadyReport> {
+    const lanes = this.lanesResponse(true).lanes;
+    const base = mergeReadyReportFrom(lanes);
+
+    const readinessFor = async (pr: LanePr, id: string): Promise<import('../../shared/console-model.js').LaneReadiness> => {
+      const queueItem = this.queueStore.all().find((row) => row.runKey === id);
+      const repo = queueItem?.repo ?? null;
+      const baseBranch = queueItem?.base ?? null;
+      const prFacts: PrFacts = { title: pr.title ?? null, body: null, checks: pr.checks ?? null, merged: pr.merged ?? null };
+      const attestationPath = repo ? newestAttestationPath(repo, pr.no) : null;
+      const attestation = attestationPath ? readAttestationAtPath(attestationPath) : undefined;
+      const drift = repo && baseBranch
+        ? await this.driftFn({ repo, base: baseBranch, pr: pr.no, headSha: null, attestationHead: attestation?.head ?? null })
+        : { behindBase: null, headMoved: false };
+      // The allow-list refusal already lives on `why` from `mergeReadyReportFrom`'s own
+      // split; this augments with the audit and drift facts on top of it, so `mergeable`
+      // here is always `{ ok: true }` -- never a second, possibly-disagreeing verdict on
+      // the same allow-list question.
+      return computeReadiness({ pr: prFacts, attestation: attestation ?? null, mergeable: { ok: true }, drift });
+    };
+
+    const ready = await Promise.all(base.ready.map(async (row) => ({ ...row, readiness: await readinessFor(row.pr, row.id) })));
+    const notReady = await Promise.all(base.notReady.map(async (row) => ({ ...row, readiness: await readinessFor(row.pr, row.id) })));
+    return { ready, notReady };
+  }
+
+  /** `POST /run/:id/recheck` (2026-09-07): the same facts `GET /run/:id/summary`
+   *  computes, with the shared `pr-cache.json` entry for this run dropped first, so the
+   *  board's own `lane.pr` (checks/verdict/merged) is refreshed on the next poll too,
+   *  not only this one sheet's own summary (which already reads `gh` fresh every call). */
+  async runRecheckResponse(run: string): Promise<LaneSummary> {
+    const cachePath = prCachePath(this.forgeHomeDir);
+    const cache = readPrCache(cachePath);
+    if (cache[run]) {
+      const next = { ...cache };
+      delete next[run];
+      writePrCache(cachePath, next);
+    }
+    return this.runSummaryResponse(run);
   }
 }
 
