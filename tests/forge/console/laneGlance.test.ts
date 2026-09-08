@@ -139,8 +139,11 @@ describe('computeYou agrees with computeNext, per state', () => {
     expect(computeYou(lane({ state: 'killed' }))).toBe('Reopen or clean up.');
   });
 
-  it('merged: null', () => {
-    expect(computeYou(lane({ state: 'merged' }))).toBeNull();
+  // Item 1: the tile's own ask agrees with the sheet's "Nothing needed; it merged.
+  // Clean up retires it." -- a bare null left the tile with nothing under a merged
+  // band while the sheet said something underneath it.
+  it('merged: Nothing needed; it merged. Clean up retires it.', () => {
+    expect(computeYou(lane({ state: 'merged' }))).toBe('Nothing needed; it merged. Clean up retires it.');
   });
 
   it('running / handed-off: null', () => {

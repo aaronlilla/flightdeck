@@ -37,6 +37,15 @@ function truncate(text: string, limit: number): string {
   return text.length > limit ? text.slice(0, limit) : text;
 }
 
+/** Item 1: the one sentence a merged PR gets, whatever state it outranked to get
+ *  there -- `Merged: PR #39 landed at HH:MM.`, or without the clock clause when the
+ *  PR's own `mergedAt` was never read. */
+export function prMergedSentence(pr: Lane['pr']): string {
+  if (!pr) return 'Merged.';
+  const time = pr.mergedAt ? ` at ${clockTime(pr.mergedAt)}` : '';
+  return `Merged: PR #${pr.no} landed${time}.`;
+}
+
 function reviewSentence(lane: Lane): string | null {
   const pr = lane.pr;
   if (!pr) return null;

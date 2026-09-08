@@ -398,6 +398,31 @@ describe('TicketSheet: Summary block', () => {
     expect(screen.getByTestId('ticket-sheet-readiness')).toHaveTextContent('Not ready: not audited yet.');
   });
 
+  // Item 1: the live board printed "the base branch gained 46 commits since. base
+  // gained 46 commits since." -- `readiness.why` already carries the drift clause
+  // (`summary.ts#computeReadiness`); the sheet must never say it a second time.
+  it('never repeats the drift clause -- readiness.why already carries it', async () => {
+    vi.mocked(api.getRunSummary).mockResolvedValue({
+      what: [], status: 's', next: 'Not ready yet.', audit: null,
+      readiness: {
+        ok: false, why: 'the base branch gained 46 commits since', checks: 'success', behindBase: 46, headMoved: false,
+      },
+    });
+    vi.mocked(api.getRunThread).mockResolvedValue({ messages: [] });
+    vi.mocked(api.getRunJournal).mockResolvedValue({ entries: [] });
+    vi.mocked(api.getRunStory).mockResolvedValue({ id: 'x', title: null, kind: 'manual', ticket: null, brief: null, entries: [] });
+    render(
+      <TicketSheet
+        lane={lane()} feedLive now={Date.now()}
+        onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop} onSendLane={noop}
+        onAmendLane={noop} onUndo={noop} onOpenJournal={noop}
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId('ticket-sheet-readiness')).toHaveTextContent('gained 46 commits since'));
+    const text = screen.getByTestId('ticket-sheet-readiness').textContent ?? '';
+    expect(text.match(/gained 46 commits since/g)).toHaveLength(1);
+  });
+
   it('Re-check calls the API and refreshes the summary in place', async () => {
     vi.mocked(api.getRunSummary).mockResolvedValue({
       what: [], status: 'stale', next: 'Wait for checks.', audit: null,

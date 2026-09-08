@@ -143,8 +143,9 @@ export function computeYou(lane: Lane): string | null {
   switch (category) {
     case 'retired':
     case 'nothing':
-    case 'merged-cleanup':
       return null;
+    case 'merged-cleanup':
+      return 'Nothing needed; it merged. Clean up retires it.';
     case 'kill-runaway':
       return 'Kill the attempt.';
     case 'merge':

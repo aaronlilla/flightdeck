@@ -172,6 +172,15 @@ export function computeReadiness(input: {
   const {
     pr, attestation, mergeable, drift,
   } = input;
+  // Item 1: a merged PR is done -- checks and the audit no longer decide anything, and
+  // saying "checks are failure; not audited yet; already merged" (all three true, only
+  // one of them the reason) was never the readable clause the merged-lane sentence
+  // needs. `already merged` is the whole story.
+  if (pr?.merged) {
+    return {
+      ok: false, why: 'already merged', checks: pr.checks ?? null, behindBase: null, headMoved: false,
+    };
+  }
   const reasons: string[] = [];
   if (!pr) {
     reasons.push('no PR is open yet');

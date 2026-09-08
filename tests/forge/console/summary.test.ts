@@ -227,6 +227,15 @@ describe('computeReadiness', () => {
     expect(readiness.why).toContain('gained 5 commits since');
     expect(readiness.behindBase).toBe(5);
   });
+
+  // Item 1: a merged PR is never "not ready" over checks or an audit that no longer
+  // matter -- it is done, and the only true thing left to say is that it already merged.
+  it('is "already merged" alone once the PR has merged, with no checks or audit clauses', () => {
+    const readiness = computeReadiness({
+      pr: { ...okPr, checks: 'failure', merged: true }, attestation: null, mergeable: { ok: false, why: 'already merged' }, drift: noDrift(),
+    });
+    expect(readiness).toEqual({ ok: false, why: 'already merged', checks: 'failure', behindBase: null, headMoved: false });
+  });
 });
 
 describe('computeLaneSummary', () => {

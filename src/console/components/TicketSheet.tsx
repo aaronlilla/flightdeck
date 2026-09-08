@@ -186,13 +186,6 @@ function SummaryPanel({
       + `${audit.findings} ${audit.findings === 1 ? 'finding' : 'findings'}, at ${hm(audit.at)} on ${audit.head.slice(0, 7)}`
       + (audit.stale ? ` -- stale: ${audit.staleWhy}` : '')
     : 'Not audited.';
-  const driftNote = readiness && (readiness.headMoved || (readiness.behindBase ?? 0) > 0)
-    ? [
-      readiness.headMoved ? 'head moved since the audit' : null,
-      readiness.behindBase ? `base gained ${readiness.behindBase} commit${readiness.behindBase === 1 ? '' : 's'} since` : null,
-    ].filter(Boolean).join('; ')
-    : null;
-
   return (
     <div data-testid="ticket-sheet-summary" style={{ padding: '18px 22px', borderBottom: '1px solid var(--line)', display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div>
@@ -229,7 +222,6 @@ function SummaryPanel({
           ) : (
             <span style={{ color: 'var(--block)' }}>Not ready: {readiness?.why ?? 'unknown'}.</span>
           )}
-          {driftNote ? <span style={{ color: 'var(--ink3)' }}> {driftNote}.</span> : null}
         </div>
       </div>
       <div>
