@@ -25,7 +25,7 @@ function attestation(overrides: Partial<CouncilAttestation> = {}): CouncilAttest
 }
 
 function noDrift(): DriftFacts {
-  return { behindBase: null, headMoved: false };
+  return { behindBase: null, headMoved: false, commits: [] };
 }
 
 function story(entries: LaneStory['entries']): LaneStory {
@@ -35,16 +35,18 @@ function story(entries: LaneStory['entries']): LaneStory {
 describe('computeWhat', () => {
   it('uses the PR title as the first sentence', () => {
     const pr: PrFacts = { title: 'add the merge chip', body: null, checks: null, merged: null };
-    expect(computeWhat({ story: null, pr })).toEqual(['add the merge chip.']);
+    expect(computeWhat({ story: null, pr, drift: noDrift() })).toEqual(['add the merge chip.']);
   });
 
-  it('adds the PR body\'s first paragraph and the story\'s commit subjects', () => {
+  it('adds the PR body\'s first paragraph and the PR\'s own commits off drift, never the story\'s whole-repo commit list', () => {
     const pr: PrFacts = { title: 'add the merge chip', body: 'This wires the button.\n\nMore detail here.', checks: null, merged: null };
+    // The story carries whole-repo commits (oldest first); computeWhat must ignore them
+    // and use only drift.commits -- the PR's own range, newest first.
     const s = story([
-      { at: 1, kind: 'commit', text: 'Change abc1234: wire the merge button' },
-      { at: 2, kind: 'commit', text: 'Change def5678: fix a lint error' },
+      { at: 1, kind: 'commit', text: 'Change zzz0000: unrelated repo history' },
     ]);
-    const what = computeWhat({ story: s, pr });
+    const drift: DriftFacts = { ...noDrift(), commits: ['wire the merge button', 'fix a lint error'] };
+    const what = computeWhat({ story: s, pr, drift });
     expect(what).toEqual([
       'add the merge chip.',
       'This wires the button.',
@@ -54,17 +56,17 @@ describe('computeWhat', () => {
   });
 
   it('never exceeds six sentences', () => {
-    const s = story(Array.from({ length: 10 }, (_, i) => ({ at: i, kind: 'commit', text: `Change ${'a'.repeat(7)}: commit number ${i}` })));
-    expect(computeWhat({ story: s, pr: null }).length).toBeLessThanOrEqual(6);
+    const drift: DriftFacts = { ...noDrift(), commits: Array.from({ length: 10 }, (_, i) => `commit number ${i}`) };
+    expect(computeWhat({ story: null, pr: null, drift }).length).toBeLessThanOrEqual(6);
   });
 
-  it('falls back to the plan and ticket lines only when commits alone come up short', () => {
+  it('falls back to the plan and ticket lines only when the PR\'s own commits alone come up short', () => {
     const s = story([
       { at: 1, kind: 'ticket', text: 'Queued from Jira as BBZ-9 at 1:00 PM' },
       { at: 2, kind: 'plan', text: 'Planned: wire the summary block' },
-      { at: 3, kind: 'commit', text: 'Change abc1234: add the block' },
     ]);
-    const what = computeWhat({ story: s, pr: null });
+    const drift: DriftFacts = { ...noDrift(), commits: ['add the block'] };
+    const what = computeWhat({ story: s, pr: null, drift });
     expect(what).toEqual([
       'add the block.',
       'Queued from Jira as BBZ-9 at 1:00 PM.',
@@ -73,7 +75,32 @@ describe('computeWhat', () => {
   });
 
   it('never pads: a lane with nothing on record gets an empty list, not invented sentences', () => {
-    expect(computeWhat({ story: null, pr: null })).toEqual([]);
+    expect(computeWhat({ story: null, pr: null, drift: noDrift() })).toEqual([]);
+  });
+
+  it('reduces the PR body to prose: drops a markdown heading, a fenced block, and list markers, keeping the first two sentences of the first paragraph', () => {
+    const pr: PrFacts = {
+      title: 'add the merge chip',
+      body: [
+        '## What',
+        '',
+        'This wires the merge button end to end. It also fixes a lint error. A third sentence should be dropped.',
+        '',
+        '- one',
+        '- two',
+        '',
+        '```json',
+        '{"handoff": true, "gate": "G7"}',
+        '```',
+      ].join('\n'),
+      checks: null,
+      merged: null,
+    };
+    const what = computeWhat({ story: null, pr, drift: noDrift() });
+    expect(what).toEqual([
+      'add the merge chip.',
+      'This wires the merge button end to end. It also fixes a lint error.',
+    ]);
   });
 });
 

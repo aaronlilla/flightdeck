@@ -14,6 +14,11 @@ import { run as execRun, type RunRequest } from '../exec.js';
 export interface DriftFacts {
   behindBase: number | null;
   headMoved: boolean;
+  /** The PR's own commit subjects, `git log --format=%s <merge-base>..<head>` against
+   *  `origin/<base>` -- newest first, six at most. `undefined`/empty whenever the range
+   *  could not be read (no checkout, a failed fetch or merge-base), never a guess drawn
+   *  from the worktree's whole history. */
+  commits?: string[];
 }
 
 export interface DriftInput {
@@ -38,25 +43,34 @@ const DRIFT_WALL_MS = 20_000;
  *  string comparison the caller already has both halves of, and `behindBase` is the
  *  only thing that needs a shell. A repo with no `FORGE_REPO_CHECKOUTS` entry, or a
  *  fetch that fails, answers `behindBase: null` -- never a guessed 0. */
+const MAX_DRIFT_COMMITS = 6;
+
 export function computeDrift(deps: { checkoutFor: (repo: string) => string | undefined; git: GitFn }): DriftFn {
   return async ({ repo, base, pr, headSha, attestationHead }) => {
     const headMoved = Boolean(headSha && attestationHead) && headSha !== attestationHead;
     const checkout = deps.checkoutFor(repo);
-    if (!checkout) return { behindBase: null, headMoved };
+    if (!checkout) return { behindBase: null, headMoved, commits: [] };
 
     const headRef = `refs/forge/console-drift-pr-${pr}`;
     const baseRef = 'refs/forge/console-drift-base';
     const fetched = await deps.git(checkout, ['fetch', '--force', 'origin', `${base}:${baseRef}`, `pull/${pr}/head:${headRef}`]);
-    if (!fetched.ok) return { behindBase: null, headMoved };
+    if (!fetched.ok) return { behindBase: null, headMoved, commits: [] };
 
     const mergeBase = await deps.git(checkout, ['merge-base', headRef, baseRef]);
-    if (!mergeBase.ok) return { behindBase: null, headMoved };
+    if (!mergeBase.ok) return { behindBase: null, headMoved, commits: [] };
     const mergeBaseSha = mergeBase.tail.trim();
-    if (!mergeBaseSha) return { behindBase: null, headMoved };
+    if (!mergeBaseSha) return { behindBase: null, headMoved, commits: [] };
 
     const counted = await deps.git(checkout, ['rev-list', '--count', `${mergeBaseSha}..${baseRef}`]);
     const behindBase = counted.ok ? Number.parseInt(counted.tail.trim(), 10) || 0 : null;
-    return { behindBase, headMoved };
+
+    // The PR's own commits, newest first -- `git log`'s default order needs no
+    // `--reverse`, unlike the story panel's whole-worktree timeline.
+    const logged = await deps.git(checkout, ['log', '--format=%s', `${mergeBaseSha}..${headRef}`]);
+    const commits = logged.ok
+      ? logged.tail.split('\n').map((line) => line.trim()).filter(Boolean).slice(0, MAX_DRIFT_COMMITS)
+      : [];
+    return { behindBase, headMoved, commits };
   };
 }
 

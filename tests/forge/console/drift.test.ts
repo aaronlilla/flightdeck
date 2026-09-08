@@ -17,7 +17,7 @@ describe('computeDrift', () => {
   it('answers behindBase: null with no checkout configured for the repo', async () => {
     const drift = computeDrift({ checkoutFor: () => undefined, git: fakeGit({}) });
     const result = await drift({ repo: 'o/n', base: 'develop', pr: 9, headSha: 'h1', attestationHead: 'h1' });
-    expect(result).toEqual({ behindBase: null, headMoved: false });
+    expect(result).toEqual({ behindBase: null, headMoved: false, commits: [] });
   });
 
   it('reports headMoved by comparing the PR head to the attestation head, independent of git', async () => {
@@ -39,10 +39,35 @@ describe('computeDrift', () => {
         fetch: { ok: true, tail: '' },
         'merge-base': { ok: true, tail: 'mergebasesha\n' },
         'rev-list': { ok: true, tail: '5\n' },
+        log: { ok: true, tail: '' },
       }),
     });
     const result = await drift({ repo: 'o/n', base: 'develop', pr: 9, headSha: 'h1', attestationHead: 'h1' });
     expect(result.behindBase).toBe(5);
+  });
+
+  it('reads the PR\'s own commits off the merge-base..head range, newest first, six at most', async () => {
+    const subjects = Array.from({ length: 8 }, (_, i) => `commit ${i}`);
+    const drift = computeDrift({
+      checkoutFor: () => '/checkout/o-n',
+      git: fakeGit({
+        fetch: { ok: true, tail: '' },
+        'merge-base': { ok: true, tail: 'mergebasesha\n' },
+        'rev-list': { ok: true, tail: '0\n' },
+        log: { ok: true, tail: `${subjects.join('\n')}\n` },
+      }),
+    });
+    const result = await drift({ repo: 'o/n', base: 'develop', pr: 9, headSha: 'h1', attestationHead: 'h1' });
+    expect(result.commits).toEqual(subjects.slice(0, 6));
+  });
+
+  it('answers commits: [] when the merge-base could not be read, never the whole repo history', async () => {
+    const drift = computeDrift({
+      checkoutFor: () => '/checkout/o-n',
+      git: fakeGit({ fetch: { ok: true, tail: '' }, 'merge-base': { ok: false, tail: '' } }),
+    });
+    const result = await drift({ repo: 'o/n', base: 'develop', pr: 9, headSha: 'h1', attestationHead: 'h1' });
+    expect(result.commits).toEqual([]);
   });
 
   it('answers behindBase: null when the fetch fails, never a guessed 0', async () => {

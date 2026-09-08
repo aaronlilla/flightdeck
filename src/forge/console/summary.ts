@@ -45,6 +45,9 @@ export interface DriftFacts {
   behindBase: number | null;
   /** Whether the PR's own head sha has moved past the sha the attestation reviewed. */
   headMoved: boolean;
+  /** The PR's own commit subjects, newest first, six at most -- never the story
+   *  panel's whole-worktree, oldest-first commit list. */
+  commits?: string[];
 }
 
 export interface LaneSummaryInput {
@@ -60,13 +63,41 @@ export interface LaneSummaryInput {
   mergeable?: Lane['mergeable'];
 }
 
+/** Reduces a PR body to prose for the summary block: fenced code blocks (the typed
+ *  handoff JSON travels in one of these) are dropped whole, then markdown headings and
+ *  list markers are dropped line by line, and the first two sentences of the first
+ *  remaining paragraph are kept. `null` when nothing prose-shaped survives. */
+function bodyToProse(body: string): string | null {
+  const withoutFences = body.replace(/```[\s\S]*?```/g, '');
+  const paragraphs: string[] = [];
+  let current: string[] = [];
+  for (const rawLine of withoutFences.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) {
+      if (current.length > 0) { paragraphs.push(current.join(' ')); current = []; }
+      continue;
+    }
+    if (/^#{1,6}\s/.test(line)) continue;
+    if (/^([-*+]|\d+\.)\s/.test(line)) continue;
+    current.push(line);
+  }
+  if (current.length > 0) paragraphs.push(current.join(' '));
+
+  const firstProse = paragraphs.find((p) => p.trim().length > 0);
+  if (!firstProse) return null;
+  const sentences = firstProse.match(/[^.!?]+[.!?]+(?:\s+|$)/g);
+  const kept = sentences ? sentences.slice(0, 2).join(' ') : firstProse;
+  return kept.replace(/\s+/g, ' ').trim();
+}
+
 /** "What was done": three to six sentences, drawn from the PR's own title, the first
- *  paragraph of its body, and the story's own commit subjects, falling back to the
- *  story's plan and ticket lines only when those alone come up short. Never padded: a
- *  lane with a single real fact on record gets a single sentence, not several invented
- *  ones stretched to reach a target count. */
-export function computeWhat(input: Pick<LaneSummaryInput, 'story' | 'pr'>): string[] {
-  const { story, pr } = input;
+ *  paragraph of its body reduced to prose, and the PR's own commits off `drift.commits`
+ *  (`git log` against the PR's own merge-base, never the story panel's whole-worktree
+ *  commit list) -- falling back to the story's plan and ticket lines only when those
+ *  alone come up short. Never padded: a lane with a single real fact on record gets a
+ *  single sentence, not several invented ones stretched to reach a target count. */
+export function computeWhat(input: Pick<LaneSummaryInput, 'story' | 'pr' | 'drift'>): string[] {
+  const { story, pr, drift } = input;
   const sentences: string[] = [];
   const seen = new Set<string>();
   const push = (text: string | null | undefined): void => {
@@ -78,13 +109,10 @@ export function computeWhat(input: Pick<LaneSummaryInput, 'story' | 'pr'>): stri
   };
 
   push(pr?.title ?? null);
-  if (pr?.body) {
-    const firstPara = pr.body.split(/\r?\n\s*\r?\n/)[0]?.trim() ?? '';
-    push(firstPara || null);
-  }
-  for (const entry of story?.entries ?? []) {
+  if (pr?.body) push(bodyToProse(pr.body));
+  for (const subject of drift.commits ?? []) {
     if (sentences.length >= MAX_WHAT_SENTENCES) break;
-    if (entry.kind === 'commit') push(entry.text);
+    push(subject);
   }
   if (sentences.length < MIN_WHAT_SENTENCES) {
     for (const entry of story?.entries ?? []) {
