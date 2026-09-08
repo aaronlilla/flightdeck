@@ -676,11 +676,18 @@ export function createStubServer() {
         return;
       }
       if (urlPath === '/merge-ready' && method === 'POST') {
-        const { ready, notReady } = mergeSplit();
-        for (const l of ready) { l.state = 'merged'; l.hop = 5; l.hopStatus = 'done'; journal('chain.merged', `${l.id} merged`, l.id, false); }
-        json(response, 200, {
-          ok: true, merged: ready.map((l) => l.id), failed: notReady.map(({ lane: l, why }) => ({ id: l.id, why })),
-        });
+        // Matches the real server's POST /merge-ready shape (src/forge/server.ts
+        // mergeReadyPost): {ok, outcomes: [{id, ok, message}]}, one entry per ready
+        // lane actually attempted -- a not-ready lane never had a merge attempted on
+        // it, so it carries no outcome, same as the real server.
+        const { ready } = mergeSplit();
+        const outcomes: { id: string; ok: boolean; message: string }[] = [];
+        for (const l of ready) {
+          l.state = 'merged'; l.hop = 5; l.hopStatus = 'done';
+          journal('chain.merged', `${l.id} merged`, l.id, false);
+          outcomes.push({ id: l.id, ok: true, message: `merged ${l.id}` });
+        }
+        json(response, 200, { ok: outcomes.every((row) => row.ok), outcomes });
         return;
       }
 

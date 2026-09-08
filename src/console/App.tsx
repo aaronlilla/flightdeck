@@ -253,8 +253,10 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       } else {
         void runAction(async (): Promise<{ ok: boolean; jid: string | null; message: string; undoable: boolean }> => {
           const r = await api.postMergeReady();
-          const tail = r.failed.length > 0 ? `, ${r.failed.length} could not merge` : '';
-          return { ok: r.ok, jid: null, message: `merged ${r.merged.length} lanes${tail}`, undoable: false };
+          const merged = r.outcomes.filter((row) => row.ok);
+          const failed = r.outcomes.filter((row) => !row.ok);
+          const tail = failed.length > 0 ? `, ${failed.length} could not merge` : '';
+          return { ok: r.ok, jid: null, message: `merged ${merged.length} lanes${tail}`, undoable: false };
         });
       }
     }

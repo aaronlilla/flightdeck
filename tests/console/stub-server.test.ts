@@ -112,12 +112,14 @@ describe('stub server', () => {
     expect(archived.lanes.map((l) => l.id)).not.toContain('FLT-193');
   });
 
-  it('previews and then performs a bulk merge of ready lanes', async () => {
+  it('previews and then performs a bulk merge of ready lanes, in the real server shape', async () => {
     const preview = await get<{ ready: { id: string }[]; notReady: { id: string }[] }>('/merge-ready');
     expect(preview.ready.map((r) => r.id)).toEqual(['FLT-193']);
     expect(preview.notReady).toEqual([]);
-    const { body } = await post<{ ok: boolean; merged: string[] }>('/merge-ready');
-    expect(body.merged).toEqual(['FLT-193']);
+    // Matches the real POST /merge-ready shape (src/forge/server.ts mergeReadyPost):
+    // {ok, outcomes: [{id, ok, message}]} -- never the older {merged, failed} shape.
+    const { body } = await post<{ ok: boolean; outcomes: { id: string; ok: boolean; message: string }[] }>('/merge-ready');
+    expect(body.outcomes).toEqual([{ id: 'FLT-193', ok: true, message: expect.any(String) }]);
     const { lanes } = await get<{ lanes: { id: string; state: string }[] }>('/lanes');
     expect(lanes.find((l) => l.id === 'FLT-193')?.state).toBe('merged');
   });

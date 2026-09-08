@@ -153,11 +153,11 @@ export function postRetireFinished(): Promise<RetireFinishedResult> {
 
 /** H2.3: what a bulk merge would do (`GET /merge-ready`, `MergeReadyReport` --
  *  already in the shared contract), and doing it (`POST /merge-ready`). The
- *  per-lane outcome shape for the POST isn't in the contract yet, same as above. */
+ *  per-lane outcome shape matches the real server (src/forge/server.ts
+ *  mergeReadyPost): one entry per lane a merge was actually attempted on. */
 export interface MergeReadyResult {
   ok: boolean;
-  merged: string[];
-  failed: { id: string; why: string }[];
+  outcomes: { id: string; ok: boolean; message: string }[];
 }
 export function getMergeReadyPreview(): Promise<MergeReadyReport> {
   return call<MergeReadyReport>('/merge-ready');
