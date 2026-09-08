@@ -436,3 +436,39 @@ describe('ConsoleReads.runSummaryResponse / runRecheckResponse (2026-09-07)', ()
     expect(cached?.pr?.checks).toBe('pending');
   });
 });
+
+describe('ConsoleReads.lanesResponse: archived bypasses the 24h finished-lane window', () => {
+  it('a lane retired well outside the 24h window still lists on lanesResponse(false, true)', async () => {
+    const forgeHomeDir = tempDir('console-reads-archived-');
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const longAgo = Date.now() - (48 * 60 * 60 * 1000);
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'beta', actor: 'runner', at: longAgo });
+    journal.append({
+      event: 'run.finished', run: 'beta', actor: 'runner', verdict: 'done', at: longAgo,
+    });
+    journal.close();
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put('beta', { column: 'c2' });
+
+    // Retiring straight through the on-disk log (not the HTTP route), so the retire
+    // itself never journals a fresh event that would keep the lane looking recently
+    // observed -- the real bug this specimen catches is the window filtering an old,
+    // already-retired lane out before the archived filter runs, not a fresh timestamp
+    // papering over the window.
+    const { retireRun, retiredPath } = await import('../../../src/forge/console/retire.js');
+    retireRun(retiredPath(forgeHomeDir), 'beta', longAgo + 1000);
+
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore: new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl')), jiraSite: null,
+    });
+
+    const notArchived = reads.lanesResponse(false, false);
+    expect(notArchived.lanes.map((l) => l.id)).not.toContain('beta');
+
+    const archived = reads.lanesResponse(false, true);
+    expect(archived.lanes.map((l) => l.id)).toContain('beta');
+  });
+});

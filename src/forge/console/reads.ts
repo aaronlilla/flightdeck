@@ -408,7 +408,10 @@ export class ConsoleReads {
       prFor: (run) => prCache[run]?.pr ?? null,
       tokensPerHour: (lane) => tokensPerHour(lane, fleet.runs[lane.slug]?.tokensUsed ?? 0, now),
     };
-    const response = windowLanes(computeLanes(input, now), now, all);
+    // `archived` bypasses the 24h finished-lane window the same way `all` does: an
+    // operator asking to see everything ever retired must see a lane retired long ago,
+    // never have it filtered out before the archived check even runs.
+    const response = windowLanes(computeLanes(input, now), now, all || archived);
     const retired = readRetired(retiredPath(this.forgeHomeDir));
     const lanes = response.lanes
       .map((lane) => this.withHumanFields(lane, chain, prCache, now))
