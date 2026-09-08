@@ -656,7 +656,7 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
                 // Item 6: every reply on this run's own thread is that run's own
                 // report -- `labelFor` here is the board-wide title lookup, which
                 // otherwise resolves a reply's label to the lane's whole title.
-                replyLabel="Worker"
+                replyLabel={m.source === 'conductor' ? undefined : 'Worker'}
                 onCommand={(text) => onCommand(lane.id, text)} onUndo={onUndo}
                 onOpenJournal={onOpenJournal}
               />

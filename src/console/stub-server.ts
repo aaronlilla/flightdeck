@@ -626,6 +626,19 @@ function runCommand(text: string, run?: string): Message[] {
     pendingPlans.delete(token);
     return pending();
   }
+  // Typed into a ticket sheet: the stub's agent tells that run, the way the old
+  // composer delivered straight to its inbox, and says so.
+  if (run) {
+    const lane = db.lanes.find((l) => l.id === run);
+    const label = lane?.ticket ?? run;
+    if (!lane || !lane.heart) {
+      return [{ k: `c-${now}`, type: 'reply', text: `${label} has no live session, so there is nobody to tell. Kill, verify or archive it instead.`, ts: now, source: 'conductor', path: 'agent' }];
+    }
+    return [
+      { k: `r-${now}`, type: 'receipt', text: `sent to ${label}`, ts: now, source: 'conductor', resolved: 'ran', path: 'agent' },
+      { k: `c-${now}`, type: 'reply', text: `Told ${label}: ${t}`, ts: now, source: 'conductor', path: 'agent' },
+    ];
+  }
   if (/^kill\b/i.test(t) && laneRef) {
     const lane = findLane(laneRef);
     if (!lane) return [{ k: `c-${now}`, type: 'refusal', text: `no lane named ${laneRef}`, ts: now, source: 'conductor' }];
@@ -717,17 +730,6 @@ function runCommand(text: string, run?: string): Message[] {
   if (/^status/i.test(t)) {
     const running = db.lanes.filter((l) => l.state === 'running').length;
     return [{ k: `c-${now}`, type: 'reply', text: `${running} running, ${db.lanes.length} lanes total.`, ts: now, source: 'conductor' }];
-  }
-  if (run) {
-    const lane = db.lanes.find((l) => l.id === run);
-    const label = lane?.ticket ?? run;
-    if (!lane || !lane.heart) {
-      return [{ k: `c-${now}`, type: 'reply', text: `${label} has no live session, so there is nobody to tell. Kill, verify or archive it instead.`, ts: now, source: 'conductor', path: 'agent' }];
-    }
-    return [
-      { k: `r-${now}`, type: 'receipt', text: `sent to ${label}`, ts: now, source: 'conductor', resolved: 'ran', path: 'agent' },
-      { k: `c-${now}`, type: 'reply', text: `Told ${label}: ${t}`, ts: now, source: 'conductor', path: 'agent' },
-    ];
   }
   return [{ k: `c-${now}`, type: 'reply', text: "I understand pause, resume, kill <lane>, merge ready lanes, cap <lane> at N tokens, answer, what's stuck, spend today, status.", ts: now, source: 'conductor' }];
 }
