@@ -43,7 +43,7 @@ import { planFromPacket } from './intake/planner.js';
 import { parseRepoMap } from './intake/repoRoute.js';
 import { resolvePlanProvider } from './intake/reasoner.js';
 import { readWatermark, writeWatermark } from './intake/watermarkStore.js';
-import { readProcessList, watchedProcesses } from './fleetwatch.js';
+import { readProcessList, watchedProcesses, probeProcessListCached } from './fleetwatch.js';
 import { Gotchas } from './gotcha.js';
 import { Inbox, isAskStale } from './inbox.js';
 import { replay, Journal, JournalCache } from './journal.js';
@@ -149,7 +149,7 @@ const JIRA_ENV_VARS = ['FORGE_JIRA_SITE', 'FORGE_JIRA_EMAIL', 'FORGE_JIRA_TOKEN'
  * probe outright, since a supplied argument always wins over a default one.
  */
 function fleetSnapshot(deps: ForgeDeps): ReturnType<typeof watchedProcesses> {
-  return watchedProcesses(deps.processes ? { ok: true, lines: deps.processes() } : undefined);
+  return watchedProcesses(deps.processes ? { ok: true, lines: deps.processes() } : probeProcessListCached());
 }
 
 /**

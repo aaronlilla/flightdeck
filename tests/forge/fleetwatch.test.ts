@@ -117,3 +117,19 @@ describe('watchedProcesses classifies each claude process by what its command li
     expect(processes.map((p) => p.kind)).toEqual(['interactive', 'interactive']);
   });
 });
+
+describe('probeProcessListCached', () => {
+  it('answers from the cache inside the ttl and never blocks on a refresh', async () => {
+    const { probeProcessListCached, resetProcessProbeCache } = await import('../../src/forge/fleetwatch.js');
+    resetProcessProbeCache();
+    let now = 1_000_000;
+    const first = probeProcessListCached(10_000, () => now);
+    expect(first.ok).toBe(true);
+    now += 1_000;
+    const started = Date.now();
+    const second = probeProcessListCached(10_000, () => now);
+    expect(Date.now() - started).toBeLessThan(200);
+    expect(second).toBe(first);
+    resetProcessProbeCache();
+  });
+});

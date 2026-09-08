@@ -5,7 +5,7 @@
  * and a specimen there can never accidentally reach a real process. This is the only
  * place that does.
  */
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -164,4 +164,47 @@ export function watchedProcesses(
       return { pid, isLogin: false, kind };
     })
     .filter((proc): proc is FleetProcess => Boolean(proc));
+}
+
+/**
+ * The same probe, served from a short-lived cache and refreshed off the event loop.
+ * The synchronous probe above costs one to three seconds of PowerShell on this
+ * machine, and it ran on every board read and every warden tick, which is what made
+ * a 900-byte page take six seconds to answer (2026-09-07). The first call pays the
+ * synchronous price once so a caller never sees an empty fleet it could mistake for a
+ * clean one; after that the last snapshot answers at once and a refresh runs in the
+ * background whenever it is older than `ttlMs`.
+ */
+let cachedProbe: { at: number; probe: ProcessProbe } | null = null;
+let refreshing = false;
+
+function probeArgs(): { file: string; args: string[] } {
+  return process.platform === 'win32'
+    ? { file: 'powershell', args: ['-NoProfile', '-NonInteractive', '-Command', 'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" }'] }
+    : { file: 'ps', args: ['-eo', 'pid,args'] };
+}
+
+export function probeProcessListCached(ttlMs = 10_000, now: () => number = Date.now): ProcessProbe {
+  if (!cachedProbe) {
+    cachedProbe = { at: now(), probe: probeProcessList() };
+    return cachedProbe.probe;
+  }
+  if (now() - cachedProbe.at >= ttlMs && !refreshing) {
+    refreshing = true;
+    const { file, args } = probeArgs();
+    execFile(file, args, { encoding: 'utf8', timeout: 5000, windowsHide: true }, (error, stdout) => {
+      refreshing = false;
+      cachedProbe = {
+        at: now(),
+        probe: error ? { ok: false, reason: error.message } : { ok: true, lines: String(stdout).split(String.fromCharCode(10)) },
+      };
+    });
+  }
+  return cachedProbe.probe;
+}
+
+/** Test seam: forget the cached snapshot. */
+export function resetProcessProbeCache(): void {
+  cachedProbe = null;
+  refreshing = false;
 }
