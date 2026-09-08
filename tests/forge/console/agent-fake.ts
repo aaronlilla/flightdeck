@@ -18,6 +18,9 @@ export interface ScriptedToolCall {
 
 export interface ScriptedTurn {
   tools?: ScriptedToolCall[];
+  /** Awaited before each tool call and once more before the reply, with the index of
+   *  the step about to run, so a test can look at the rail between two receipts. */
+  gate?: (step: number) => Promise<void>;
   /** The assistant's final text, or a function of the tool results seen this turn. */
   reply: string | ((results: string[]) => string);
   usage?: { input: number; cacheRead: number; cacheCreation: number; output: number };
@@ -72,7 +75,10 @@ export function scriptedQuery(script: ScriptedTurn[], sessionId = 'conductor-fak
           cache_creation_input_tokens: usage.cacheCreation, output_tokens: usage.output,
         };
         const results: string[] = [];
+        let stepIndex = 0;
         for (const step of turn.tools ?? []) {
+          if (turn.gate) await turn.gate(stepIndex);
+          stepIndex += 1;
           const id = `tu-${toolCalls.length + 1}`;
           yield {
             type: 'assistant', session_id: thisSession,
@@ -92,6 +98,7 @@ export function scriptedQuery(script: ScriptedTurn[], sessionId = 'conductor-fak
           yield { type: 'result', subtype: turn.errorSubtype, is_error: true, duration_ms: 5, total_cost_usd: 0 };
           continue;
         }
+        if (turn.gate) await turn.gate(stepIndex);
         const replyText = typeof turn.reply === 'function' ? turn.reply(results) : turn.reply;
         yield {
           type: 'assistant', session_id: thisSession,

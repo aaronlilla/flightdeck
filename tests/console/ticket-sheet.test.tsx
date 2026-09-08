@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import type { JSX, ReactElement } from 'react';
 import { useReducer } from 'react';
-import { render as rtlRender, screen, waitFor } from '@testing-library/react';
+import { render as rtlRender, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -639,5 +639,77 @@ describe('TicketSheet: reply label (item 6)', () => {
     );
     await waitFor(() => expect(screen.getByText('dedupe warden.health on an open unregistered trip')).toBeInTheDocument());
     expect(screen.getByTestId('reply-label')).toHaveTextContent('Worker');
+  });
+});
+
+// W3 (2026-09-08): the composer's Send goes to the Conductor with this lane as its
+// context, and the cards that come back (the receipt for each tool the agent ran, its
+// reply, any confirm card) render inside this sheet's own thread.
+describe('W3: the sheet composer talks to the Conductor', () => {
+  it('Send calls onSendLane with the lane id, and the returned reply rows land in the sheet thread', async () => {
+    vi.mocked(api.getRunThread).mockResolvedValue({ messages: [] });
+    vi.mocked(api.getRunJournal).mockResolvedValue({ entries: [] });
+    vi.mocked(api.getRunStory).mockResolvedValue({
+      id: 'jira_AB-12_1788460932645', title: null, kind: 'manual', ticket: null, brief: null, entries: [],
+    });
+    vi.mocked(api.getRunSummary).mockResolvedValue({ what: [], status: '', next: '', audit: null, readiness: null });
+    const onSendLane = vi.fn().mockResolvedValue({
+      cards: [
+        { k: 'op-1', type: 'operator', text: 'kill and remove this', ts: 1, source: 'operator' },
+        { k: 'r-1', type: 'receipt', text: 'kill and remove proposed for AB-12, waiting on Confirm', ts: 2, source: 'conductor', resolved: 'ran', path: 'agent' },
+        { k: 'c-1', type: 'reply', text: 'Kill and remove proposed; the Confirm card is waiting for you.', ts: 3, source: 'conductor', path: 'agent' },
+        { k: 'cf-1', type: 'confirm', text: 'confirm?', ts: 4, source: 'conductor', blast: 'AB-12 stops now and leaves the board.', btns: [{ label: 'Confirm', cmd: 'confirm tok-1', cls: 'destroy' }, { label: 'Not now', cmd: 'dismiss tok-1' }] },
+      ],
+    });
+    const onCommand = vi.fn();
+    render(
+      <TicketSheet
+        lane={lane()} feedLive now={Date.now()} verbose={false}
+        onClose={noop} onCommand={onCommand} onOpenCost={noop} onOpenSandbox={noop} onSendLane={onSendLane}
+        onAmendLane={noop} onUndo={noop} onOpenJournal={noop}
+      />,
+    );
+    const input = screen.getByPlaceholderText(/Tell this run something/);
+    await userEvent.type(input, 'kill and remove this');
+    await userEvent.click(screen.getByText('Send ⏎'));
+
+    expect(onSendLane).toHaveBeenCalledWith('jira_AB-12_1788460932645', 'kill and remove this');
+    const thread = screen.getByTestId('ticket-sheet-thread');
+    await waitFor(() => {
+      expect(thread.textContent).toMatch(/Kill and remove proposed; the Confirm card is waiting for you\./);
+    });
+    expect(thread.textContent).toMatch(/kill and remove proposed for AB-12, waiting on Confirm/);
+    expect(thread.textContent).toMatch(/kill and remove this/);
+    expect(within(thread).queryByTestId('conductor-working')).not.toBeInTheDocument();
+    await userEvent.click(within(thread).getByText('Confirm'));
+    expect(onCommand).toHaveBeenCalledWith('jira_AB-12_1788460932645', 'confirm tok-1');
+  });
+
+  it('a working row shows while the Conductor answers, and turns into the timeout text when it does not', async () => {
+    vi.mocked(api.getRunThread).mockResolvedValue({ messages: [] });
+    vi.mocked(api.getRunJournal).mockResolvedValue({ entries: [] });
+    vi.mocked(api.getRunStory).mockResolvedValue({
+      id: 'jira_AB-12_1788460932645', title: null, kind: 'manual', ticket: null, brief: null, entries: [],
+    });
+    vi.mocked(api.getRunSummary).mockResolvedValue({ what: [], status: '', next: '', audit: null, readiness: null });
+    let release: (value: { cards: Message[] }) => void = () => {};
+    const onSendLane = vi.fn().mockReturnValue(new Promise<{ cards: Message[] }>((resolve) => { release = resolve; }));
+    render(
+      <TicketSheet
+        lane={lane()} feedLive now={Date.now()} verbose={false} conductorTimeoutMs={30}
+        onClose={noop} onCommand={noop} onOpenCost={noop} onOpenSandbox={noop} onSendLane={onSendLane}
+        onAmendLane={noop} onUndo={noop} onOpenJournal={noop}
+      />,
+    );
+    await userEvent.type(screen.getByPlaceholderText(/Tell this run something/), 'status?');
+    await userEvent.click(screen.getByText('Send ⏎'));
+    const thread = screen.getByTestId('ticket-sheet-thread');
+    expect(within(thread).getByTestId('conductor-working').textContent).toBe('Conductor is working…');
+    await waitFor(() => {
+      expect(within(thread).getByTestId('conductor-working').textContent).toBe('the Conductor did not answer in 0s; the grammar answered instead…');
+    });
+    release({ cards: [{ k: 'c-2', type: 'reply', text: 'The Conductor could not answer (the Conductor did not answer in 120s). The grammar answered instead:', ts: 5, source: 'conductor', path: 'grammar' }] });
+    await waitFor(() => expect(within(thread).queryByTestId('conductor-working')).not.toBeInTheDocument());
+    expect(thread.textContent).toMatch(/The grammar answered instead:/);
   });
 });
