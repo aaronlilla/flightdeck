@@ -191,7 +191,7 @@ export function gatherBlockers(deps: BlockersGatherDeps): () => Promise<Detectio
 
     const view = deps.lanesView();
     const lanes: LaneInput[] = view.lanes.map((lane) => ({
-      id: lane.id, title: lane.title, repo: lane.repo, state: lane.state, observedAt: lane.observedAt,
+      id: lane.id, title: lane.title, ticket: lane.ticket, repo: lane.repo, state: lane.state, observedAt: lane.observedAt,
       pr: lane.pr ? { no: lane.pr.no, checks: lane.pr.checks ?? null } : null,
       mergeable: lane.mergeable,
     }));

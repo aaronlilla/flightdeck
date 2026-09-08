@@ -8,6 +8,7 @@
  * injected `gh` reader, and hands them to `detectBlockers`.
  */
 import { stripMachineIds } from '../../shared/humanize.js';
+import { labelFor as sharedLabelFor } from './lanes.js';
 import type { Blocker, BlockerKind } from '../../shared/console-model.js';
 
 /** What `detectBlockers` returns per blocker before the route layer folds in
@@ -37,6 +38,11 @@ export interface IntegrationInput {
 export interface LaneInput {
   id: string;
   title: string | null;
+  /** Item 8: the lane's own ticket key, when it has one -- `laneLabel` reads it ahead
+   *  of `title` the same way the board's own `laneLabelFor` (`lanes.ts#labelFor`)
+   *  already does everywhere else. Optional so a caller that has not wired it through
+   *  yet still reads a lane by its title, same as before. */
+  ticket?: string | null;
   repo: string | null;
   state: string;
   observedAt: number;
@@ -69,8 +75,13 @@ export interface DetectionInputs {
 const TEN_MINUTES_MS = 10 * 60_000;
 const OWNER_WHY = /^controlled code: only (.+) merges this repo$/;
 
+/** Item 8: every lane label on a blocker (`blocks[].label`, and every `Then:`/
+ *  `Blocks:` sentence built off it below) goes through the same shared `labelFor` the
+ *  rest of the board already uses -- a ticket key when the lane has one, else its
+ *  title trimmed to 60 characters at a word boundary. The live view printed a
+ *  120-character title twice per step; this is the one place that could still happen. */
 function laneLabel(lane: LaneInput | undefined, id: string): string {
-  return lane?.title ?? id;
+  return sharedLabelFor(id, () => (lane ? { ticket: lane.ticket ?? null, title: lane.title } : null));
 }
 
 function block(laneId: string, label: string): { laneId: string; label: string } {
@@ -107,21 +118,26 @@ function questionBlockers(inputs: DetectionInputs): BlockerSnapshot[] {
 
 function integrationBlockers(inputs: DetectionInputs): BlockerSnapshot[] {
   const laneById = new Map(inputs.lanes.map((lane) => [lane.id, lane]));
-  return inputs.integrations.filter((row) => row.status === 'down' || row.status === 'off').map((row) => ({
-    id: `integration:${row.id}`,
-    kind: 'integration' as BlockerKind,
-    title: `${row.name} is not connecting`,
-    detail: row.cause ?? `${row.name} failed its last health check.`,
-    youCanResolve: true,
-    howToResolve: row.fix ?? `${row.fixLabel ?? 'Reconnect'}, then click Resolved.`,
-    links: [],
-    blocks: row.dependents.map((laneId) => block(laneId, laneLabel(laneById.get(laneId), laneId))),
-    blockedBy: [],
-    since: row.since ?? inputs.now,
-    thenWhat: row.dependents.length
-      ? `Resumes ${row.dependents.length} blocked lane(s).`
-      : 'Nothing is waiting on this right now.',
-  }));
+  // Item 7: an integration nothing depends on -- Amplitude, context7, knowledge on the
+  // live board -- belongs in Settings, not here. `row.dependents` is already the real
+  // list (a lane whose `blockedBy` names this integration, folded in
+  // `integrations.ts#dependentsByIntegration`); a down/off row with none has nothing
+  // waiting on it.
+  return inputs.integrations
+    .filter((row) => (row.status === 'down' || row.status === 'off') && row.dependents.length > 0)
+    .map((row) => ({
+      id: `integration:${row.id}`,
+      kind: 'integration' as BlockerKind,
+      title: `${row.name} is not connecting`,
+      detail: row.cause ?? `${row.name} failed its last health check.`,
+      youCanResolve: true,
+      howToResolve: row.fix ?? `${row.fixLabel ?? 'Reconnect'}, then click Resolved.`,
+      links: [],
+      blocks: row.dependents.map((laneId) => block(laneId, laneLabel(laneById.get(laneId), laneId))),
+      blockedBy: [],
+      since: row.since ?? inputs.now,
+      thenWhat: `Resumes ${row.dependents.length} blocked lane(s).`,
+    }));
 }
 
 function checksBlockers(inputs: DetectionInputs): BlockerSnapshot[] {
@@ -144,7 +160,9 @@ function checksBlockers(inputs: DetectionInputs): BlockerSnapshot[] {
       links: [{ label: `PR #${lane.pr.no}`, url: `https://github.com/${lane.repo}/pull/${lane.pr.no}` }],
       blocks: onPr.map((l) => block(l.id, laneLabel(l, l.id))),
       blockedBy: billing ? [`billing:${lane.repo}`] : [],
-      since: inputs.now,
+      // Item 8: the failed run's own time, not the moment this view happened to poll
+      // -- `inputs.now` read as "since a second ago" on every single refresh.
+      since: lane.observedAt,
       thenWhat: onPr.length ? `Resumes ${onPr.map((l) => laneLabel(l, l.id)).join(', ')}.` : 'Resumes what was waiting on green checks.',
     });
   }
@@ -169,7 +187,10 @@ function billingBlockers(inputs: DetectionInputs): BlockerSnapshot[] {
       links: [{ label: 'GitHub billing settings', url: 'https://github.com/settings/billing' }],
       blocks: onPr.map((l) => block(l.id, laneLabel(l, l.id))),
       blockedBy: [],
-      since: inputs.now,
+      // Item 8: the failed run's own time when a lane on this PR is known; a billing
+      // refusal caught with no lane recorded against it yet falls back to `now` rather
+      // than guessing.
+      since: onPr[0]?.observedAt ?? inputs.now,
       thenWhat: `Re-runs the checks on PR #${row.pr}${onPr.length ? `, then resumes ${onPr.map((l) => laneLabel(l, l.id)).join(', ')}.` : '.'}`,
     });
   }

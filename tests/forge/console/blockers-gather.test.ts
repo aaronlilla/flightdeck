@@ -89,7 +89,7 @@ describe('gatherBlockers', () => {
     const gather = gatherBlockers({ inbox, integrations, lanesView: () => view, registry });
     const result = await gather();
     expect(result.lanes).toEqual([{
-      id: 'run-1', title: 'a fix', repo: 'o/n', state: 'blocked', observedAt: 5,
+      id: 'run-1', title: 'a fix', ticket: null, repo: 'o/n', state: 'blocked', observedAt: 5,
       pr: { no: 12, checks: 'failure' }, mergeable: { ok: false, why: 'checks failed' },
     }]);
   });
