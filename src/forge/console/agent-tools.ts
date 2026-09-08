@@ -24,6 +24,10 @@ export interface ToolOutcome {
   text: string;
   receipt?: string;
   cards?: Message[];
+  /** Ledger id and reversibility of the underlying action, so a receipt the agent shows
+   *  carries the same Undo affordance the button/grammar path does. */
+  jid?: string | null;
+  undoable?: boolean;
 }
 
 export const QUEUE_SOURCES = ['ticket', 'brief', 'query', 'backlog', 'hotfix'] as const;

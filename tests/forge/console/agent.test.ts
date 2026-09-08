@@ -25,6 +25,8 @@ import { ConductorAgent, conductorStateSummary } from '../../../src/forge/consol
 import { CONDUCTOR_TOOL_NAMES, IRREVERSIBLE_TOOLS, type ConductorToolName } from '../../../src/forge/console/agent-tools.js';
 import { ConsoleWrites } from '../../../src/forge/console/command.js';
 import type { Message } from '../../../src/shared/console-model.js';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { hangingQuery, refusingQuery, scriptedQuery, type ScriptedTurn } from './agent-fake.js';
 
 class FakeActuator implements Actuator {
@@ -573,5 +575,64 @@ describe('review fixes (2026-09-08)', () => {
     const thread = readFileSync(join(dir, 'console', 'thread.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line) as Message);
     expect(thread[0]!.type).toBe('refusal');
     expect(thread[0]!.resolved).toBeUndefined();
+  });
+});
+
+describe('a failed resumed session is not retried with the same message (no double side effects)', () => {
+  it('runs the tool once, then falls to the grammar, never re-sending to a second session', async () => {
+    // Turn 1 (no resume) replies. Turn 2 (a resume) runs queue_add and then its turn ends
+    // on an error, so the turn rejects AFTER the tool ran. The agent must not re-run the
+    // whole message on a third session, which would add the queue item twice.
+    const calls: Array<{ resume: string | undefined }> = [];
+    const fn = ((params: { prompt: AsyncIterable<{ message?: { content?: unknown } }>; options?: { resume?: string; mcpServers?: Record<string, { instance?: { connect: (t: unknown) => Promise<void> } }>; model?: string } }) => {
+      const resume = params.options?.resume;
+      calls.push({ resume });
+      const model = params.options?.model ?? '';
+      async function* generate() {
+        yield { type: 'system', subtype: 'init', session_id: 'resume-fake', model, cwd: '', tools: [], slash_commands: [] };
+        const inst = params.options?.mcpServers?.['conductor']?.instance;
+        let client: Client | undefined;
+        if (inst) {
+          const [ct, st] = InMemoryTransport.createLinkedPair();
+          await inst.connect(st);
+          client = new Client({ name: 'x', version: '0' });
+          await client.connect(ct);
+        }
+        const usage = { input_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 3 };
+        for await (const _p of params.prompt) {
+          if (!resume) {
+            yield { type: 'assistant', session_id: 'resume-fake', message: { model, content: [{ type: 'text', text: 'hi' }], usage } };
+            yield { type: 'result', subtype: 'success', is_error: false, duration_ms: 1, total_cost_usd: 0 };
+          } else {
+            yield { type: 'assistant', session_id: 'resume-fake', message: { model, content: [{ type: 'tool_use', id: 't1', name: 'mcp__conductor__queue_add', input: { source: 'ticket', input: 'ACME-9' } }], usage } };
+            const out = await client!.callTool({ name: 'queue_add', arguments: { source: 'ticket', input: 'ACME-9' } });
+            const text = (out.content as Array<{ text?: string }>).map((c) => c.text ?? '').join('');
+            yield { type: 'user', session_id: 'resume-fake', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text }] }] } };
+            yield { type: 'result', subtype: 'error_during_execution', is_error: true, duration_ms: 1, total_cost_usd: 0 };
+          }
+          return;
+        }
+      }
+      return generate() as never;
+    }) as unknown as Parameters<typeof scriptedQuery>[0] extends never ? never : ReturnType<typeof scriptedQuery>['fn'];
+
+    makeServer(fn, { idleMs: 1 });
+    const agent = server!.conductor as unknown as { deps: { setTimeoutFn?: typeof setTimeout } };
+    const idle: Array<() => void> = [];
+    agent.deps.setTimeoutFn = ((cb: () => void) => { idle.push(cb); return 1 as unknown as ReturnType<typeof setTimeout>; }) as unknown as typeof setTimeout;
+
+    await server!.conductor.handle('hello');
+    idle[idle.length - 1]!();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(server!.conductor.open).toBe(false);
+
+    const reply = await server!.conductor.handle('queue ACME-9');
+    expect(reply.path).toBe('grammar');
+    // Exactly two sessions opened: turn 1, and the resume. Never a third retry session.
+    expect(calls).toHaveLength(2);
+    expect(calls[0]!.resume).toBeUndefined();
+    expect(calls[1]!.resume).toBe('resume-fake');
+    // The queue add ran exactly once.
+    expect(new QueueStore(join(dir, 'queue.jsonl')).all().filter((item) => item.ticket === 'ACME-9')).toHaveLength(1);
   });
 });

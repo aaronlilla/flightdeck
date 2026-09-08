@@ -223,17 +223,6 @@ export function setRunCap(id: string, tokenCap: number): Promise<ActionResult> {
 }
 
 /**
- * The ticket sheet's own "message {lane.id}..." composer: `POST /send`, the server's
- * run-scoped delivery (`RunInbox.send`), never the board-wide `/command` classifier.
- * `/send` answers `{ ok: true }` only, so this shapes that into the same `ActionResult`
- * every other run action already returns, for `runAction`'s one receipt path.
- */
-export function sendToRun(run: string, text: string): Promise<ActionResult> {
-  return post<{ ok: boolean }>('/send', { run, text })
-    .then((result) => ({ ok: result.ok, jid: null, message: `sent to ${run}`, undoable: false }));
-}
-
-/**
  * C.1's Amend action: `POST /amend`, which appends the text to the run's own brief (and
  * its Definition of Done) and delivers it through the run's inbox. Same `{ ok: true }`
  * shape as `/send`, folded into `ActionResult` the same way for `runAction`'s one

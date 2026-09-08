@@ -149,11 +149,12 @@ function replyRow(text: string, path: ReplyPath): Message {
   return { k: randomUUID(), type: 'reply', text, ts: Date.now(), source: 'conductor', path };
 }
 
-function receiptRow(text: string, jid?: string | null, ran = true): Message {
+function receiptRow(text: string, jid?: string | null, ran = true, undoable = false): Message {
   return {
     k: randomUUID(), type: 'receipt', text, ts: Date.now(), source: 'conductor', path: 'agent',
     ...(ran ? { resolved: 'ran' as const } : {}),
     ...(jid ? { jid } : {}),
+    ...(undoable ? { undoable: true } : {}),
   };
 }
 
@@ -237,8 +238,9 @@ export class ConductorAgent {
 
   private fromAction(outcome: { status: number; body: unknown }, ok: string, failed: string): ToolOutcome {
     if (outcome.status === 200) {
-      const message = (outcome.body as ActionResult).message ?? ok;
-      return { text: message, receipt: message };
+      const body = outcome.body as ActionResult;
+      const message = body.message ?? ok;
+      return { text: message, receipt: message, jid: body.jid ?? null, undoable: body.undoable ?? false };
     }
     const text = actionFailureText(outcome.body, failed);
     return { text: `refused: ${text}`, receipt: `refused: ${text}` };
@@ -469,7 +471,7 @@ export class ConductorAgent {
         if (outcome.receipt) {
           const row = outcome.receipt.startsWith('refused:')
             ? refusalRow(outcome.receipt)
-            : receiptRow(outcome.receipt, undefined, !(outcome.cards && outcome.cards.length > 0));
+            : receiptRow(outcome.receipt, outcome.jid, !(outcome.cards && outcome.cards.length > 0), outcome.undoable ?? false);
           this.record(row, this.turnRun);
           this.deps.publish({ event: 'conductor.receipt', text: outcome.receipt, at: this.now() });
         }
@@ -620,40 +622,30 @@ export class ConductorAgent {
     this.turnRun = context.run;
     this.clearIdle();
     const startedAt = this.now();
+    let resumed = false;
     try {
       let engine = this.engine;
-      let resumed = false;
       if (!engine) {
         engine = this.openEngine(this.sessionId);
         resumed = this.sessionId !== null;
         this.engine = engine;
       }
       const message = this.composeMessage(text, context);
-      // Each attempt gets its own timeout: reusing one already-settled timer gave a retry
-      // zero budget, so it failed instantly and spawned a subprocess for nothing.
-      const runTurn = (eng: Engine): Promise<{ text: string; usage: Usage; model: string; context: number }> => {
-        let attemptTimer: ReturnType<typeof setTimeout> | undefined;
-        const to = new Promise<never>((_, reject) => {
-          attemptTimer = (this.deps.setTimeoutFn ?? setTimeout)(() => {
-            reject(new Error(`the Conductor did not answer in ${Math.round(timeoutMs / 1000)}s`));
-          }, timeoutMs);
-        });
-        return Promise.race([this.turn(eng, message), to]).finally(() => {
-          if (attemptTimer !== undefined) (this.deps.clearTimeoutFn ?? clearTimeout)(attemptTimer);
-        });
-      };
+      let attemptTimer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<never>((_, reject) => {
+        attemptTimer = (this.deps.setTimeoutFn ?? setTimeout)(() => {
+          reject(new Error(`the Conductor did not answer in ${Math.round(timeoutMs / 1000)}s`));
+        }, timeoutMs);
+      });
       let result: { text: string; usage: Usage; model: string; context: number };
       try {
-        result = await runTurn(engine);
-      } catch (error) {
-        // Retry once on a fresh session only when a RESUMED session errored, never when it
-        // timed out (reopening does not help a timeout, which goes straight to the grammar).
-        const timedOut = error instanceof Error && /did not answer in/.test(error.message);
-        if (!resumed || timedOut) throw error;
-        this.closeSession(false);
-        const fresh = this.openEngine(null);
-        this.engine = fresh;
-        result = await runTurn(fresh);
+        // One attempt only. A failed session is never re-run with the same message: its
+        // tools may already have executed once (a queue add, an inbox send), and a second
+        // session would run them again. On failure the outer catch drops the session and
+        // the grammar answers.
+        result = await Promise.race([this.turn(engine, message), timeout]);
+      } finally {
+        if (attemptTimer !== undefined) (this.deps.clearTimeoutFn ?? clearTimeout)(attemptTimer);
       }
       appendOnce(this.deps.journalPath, {
         event: 'conductor.usage', actor: 'conductor',
@@ -676,9 +668,10 @@ export class ConductorAgent {
       return { cards, path: 'agent' };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      // The session is dropped so a stalled subprocess never answers a later message
-      // with this one's reply; the id is kept for a resume.
-      this.closeSession(true);
+      // The session is dropped so a stalled subprocess never answers a later message with
+      // this one's reply. A session that was resumed and still failed has its id dropped
+      // too, so the next message opens fresh instead of resuming the same dead session.
+      this.closeSession(!resumed);
       // A cap change is irreversible-by-policy: even on the fallback it gets a Confirm
       // card, matching the agent's own set_daily_cap/set_run_cap tools, rather than the
       // grammar's immediate apply. Everything else runs through the grammar unchanged
