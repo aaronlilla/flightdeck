@@ -392,6 +392,24 @@ describe('advanceItem', () => {
     expect(current.ticket).toBe('ABC-1');
   });
 
+  it('13:35 BBZ-233 specimen: advanceItem passes the queue item\'s own id into planTicket, not just the ticket', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'BBZ-233', 1000);
+    const seenItemIds: (string | undefined)[] = [];
+    const { deps } = buildDeps(store, {
+      planner: {
+        planTicket: async (ticket, itemId) => {
+          seenItemIds.push(itemId);
+          return { ticket, repo: 'owner/name', briefPath: `C:/briefs/${ticket}-${itemId}.md` };
+        },
+      },
+    });
+
+    await advanceItem(item, deps);
+
+    expect(seenItemIds).toEqual([item.id]);
+  });
+
   it('walks a backlog-resolved ticket to review the same way', async () => {
     const store = tempStore();
     const search: QueueTicketSearch = { searchKeys: async () => ['ABC-9'] };
