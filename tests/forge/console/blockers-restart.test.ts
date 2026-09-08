@@ -32,7 +32,7 @@ function laneStub(id: string, state: LanesResponse['lanes'][number]['state']): L
     tokensPerMin: 0, fails: 0, hop: 0, hopStatus: 'live', observedAt: 5, verifiedAt: null,
     heart: false, since: 5, startedAt: 5, endedAt: null, question: null,
     pr: null, sandbox: null, blockedBy: null, runaway: false, needsAaron: null, title: null,
-    kind: 'manual', sourceUrl: null, plain: '', mergeable: null, attempts: 1, retiredAt: null,
+    kind: 'manual', sourceUrl: null, plain: '', now: '', did: null, you: null, mergeable: null, attempts: 1, retiredAt: null,
   };
 }
 
@@ -48,7 +48,7 @@ function blockerStub(overrides: Partial<Blocker>): Blocker {
 describe('buildRestarters', () => {
   it('has no restarter for question -- answering already resumes it', () => {
     const restarters = buildRestarters({
-      queueStore: new QueueStore(join(dir, 'queue.jsonl')), lanesView: () => ({ at: 0, lanes: [], tokensToday: 0, tokensPerMin: 0 }),
+      queueStore: new QueueStore(join(dir, 'queue.jsonl')), lanesView: () => ({ at: 0, lanes: [], tokensToday: 0, tokensPerMin: 0, links: { jiraSite: null, defaultRepo: null } }),
       resumeRun: async () => ({ ok: true }), appendReceipt: () => undefined,
     });
     expect(restarters.question).toBeUndefined();

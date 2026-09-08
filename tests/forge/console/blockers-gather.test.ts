@@ -27,7 +27,7 @@ afterEach(() => {
 });
 
 function emptyLanesView(): LanesResponse {
-  return { at: Date.now(), lanes: [], tokensToday: 0, tokensPerMin: 0 };
+  return { at: Date.now(), lanes: [], tokensToday: 0, tokensPerMin: 0, links: { jiraSite: null, defaultRepo: null } };
 }
 
 describe('gatherBlockers', () => {
@@ -73,7 +73,7 @@ describe('gatherBlockers', () => {
       journalPath: join(dir, 'fleet.jsonl'), ledger: { get: () => [] } as never, configPath: join(dir, 'integrations.json'), probes: {},
     });
     const view: LanesResponse = {
-      at: Date.now(), tokensToday: 0, tokensPerMin: 0,
+      at: Date.now(), tokensToday: 0, tokensPerMin: 0, links: { jiraSite: null, defaultRepo: null },
       lanes: [{
         id: 'run-1', ticket: null, model: 'sonnet-5', modelId: null, className: null,
         repo: 'o/n', attempt: 1, state: 'blocked', reason: null, stepN: 0, stepTotal: 0,
@@ -83,7 +83,7 @@ describe('gatherBlockers', () => {
         pr: { no: 12, url: 'https://github.com/o/n/pull/12', draft: false, checks: 'failure' },
         sandbox: null, blockedBy: null, runaway: false, needsAaron: null, title: 'a fix',
         kind: 'ticket', sourceUrl: null, plain: '', mergeable: { ok: false, why: 'checks failed' },
-        attempts: 1, retiredAt: null,
+        attempts: 1, retiredAt: null, now: '', did: null, you: null,
       }],
     };
     const gather = gatherBlockers({ inbox, integrations, lanesView: () => view, registry });
@@ -102,7 +102,7 @@ describe('gatherBlockers', () => {
       journalPath: join(dir, 'fleet.jsonl'), ledger: { get: () => [] } as never, configPath: join(dir, 'integrations.json'), probes: {},
     });
     const view: LanesResponse = {
-      at: Date.now(), tokensToday: 0, tokensPerMin: 0,
+      at: Date.now(), tokensToday: 0, tokensPerMin: 0, links: { jiraSite: null, defaultRepo: null },
       lanes: [
         laneStub('run-live'),
         laneStub('run-dead'),
@@ -127,7 +127,7 @@ describe('gatherBlockers', () => {
       state: 'review', reason: null, runKey: 'run-1', pr: null, journalIds: [], createdAt: 1, updatedAt: 1,
     });
     const lane = { ...laneStub('run-1'), repo: 'o/n', pr: { no: 12, url: 'x', draft: false, checks: 'failure' as const } };
-    const view: LanesResponse = { at: Date.now(), tokensToday: 0, tokensPerMin: 0, lanes: [lane] };
+    const view: LanesResponse = { at: Date.now(), tokensToday: 0, tokensPerMin: 0, links: { jiraSite: null, defaultRepo: null }, lanes: [lane] };
 
     let runListCalls = 0;
     let runViewCalls = 0;
@@ -168,7 +168,7 @@ describe('gatherBlockers', () => {
       state: 'review', reason: null, runKey: 'run-1', pr: null, journalIds: [], createdAt: 1, updatedAt: 1,
     });
     const lane = { ...laneStub('run-1'), repo: 'o/n', pr: { no: 12, url: 'x', draft: false, checks: 'failure' as const } };
-    const view: LanesResponse = { at: Date.now(), tokensToday: 0, tokensPerMin: 0, lanes: [lane] };
+    const view: LanesResponse = { at: Date.now(), tokensToday: 0, tokensPerMin: 0, links: { jiraSite: null, defaultRepo: null }, lanes: [lane] };
 
     const ghRunList: GhRunListFn = async () => (
       { databaseId: 555, conclusion: 'failure', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:05:00Z' }
@@ -193,6 +193,6 @@ function laneStub(id: string): LanesResponse['lanes'][number] {
     tokensPerMin: 0, fails: 0, hop: 0, hopStatus: 'live', observedAt: 5, verifiedAt: null,
     heart: false, since: 5, startedAt: 5, endedAt: null, question: null,
     pr: null, sandbox: null, blockedBy: null, runaway: false, needsAaron: null, title: null,
-    kind: 'manual', sourceUrl: null, plain: '', mergeable: null, attempts: 1, retiredAt: null,
+    kind: 'manual', sourceUrl: null, plain: '', now: '', did: null, you: null, mergeable: null, attempts: 1, retiredAt: null,
   };
 }
