@@ -87,9 +87,14 @@ describe('parseIntent', () => {
     expect(parseIntent("what's stuck")).toEqual({ kind: 'what-stuck' });
     expect(parseIntent('spend today')).toEqual({ kind: 'spend-today' });
     expect(parseIntent('status')).toEqual({ kind: 'status' });
-    expect(parseIntent('answer backfill')).toEqual({ kind: 'answer', askKey: null, text: 'backfill' });
+    expect(parseIntent('answer backfill')).toEqual({ kind: 'answer', askKey: null, optionIndex: null, text: 'backfill' });
     expect(parseIntent('answer f92af4249f6a27ae Restart the forge MCP connection'))
-      .toEqual({ kind: 'answer', askKey: 'f92af4249f6a27ae', text: 'Restart the forge MCP connection' });
+      .toEqual({ kind: 'answer', askKey: 'f92af4249f6a27ae', optionIndex: null, text: 'Restart the forge MCP connection' });
+    // W4: numeric answer forms -- `answer <key> <n>` and bare `answer <n>` resolve to the
+    // option at that 1-based index rather than being read as literal answer text.
+    expect(parseIntent('answer f92af4249f6a27ae 2'))
+      .toEqual({ kind: 'answer', askKey: 'f92af4249f6a27ae', optionIndex: 2, text: null });
+    expect(parseIntent('answer 3')).toEqual({ kind: 'answer', askKey: null, optionIndex: 3, text: null });
     expect(parseIntent('confirm abc123')).toEqual({ kind: 'confirm', token: 'abc123' });
     expect(parseIntent('run abc123')).toEqual({ kind: 'run-plan', token: 'abc123' });
     expect(parseIntent('dismiss abc123')).toEqual({ kind: 'dismiss', token: 'abc123' });
@@ -401,6 +406,50 @@ describe('ConsoleWrites.command / kill confirm flow', () => {
     expect(answered?.answer).toBe('Restart');
     const receipt = cards.find((card) => card.type === 'receipt')!;
     expect(receipt.text).toBe('Answered "Restart the forge MCP connection?": Restart');
+  });
+
+  it('W4: answers by number against the one open ask, resolving to that option\'s text', async () => {
+    inbox.raise({ run: 'alpha', question: 'backfill or nullable?', options: ['Backfill', 'Nullable', 'Something else'] });
+
+    const cards = await writes.command('answer 2');
+
+    expect(cards.some((card) => card.type === 'receipt')).toBe(true);
+    expect(inbox.open()).toHaveLength(0);
+  });
+
+  it('W4: answer <key> <n> resolves that ask\'s option by index regardless of how many asks are open', async () => {
+    const first = inbox.raise({ run: 'alpha', question: 'backfill or nullable?', options: ['Backfill', 'Nullable'] });
+    inbox.raise({ run: 'beta', question: 'restart now?', options: ['Yes', 'No'] });
+
+    const cards = await writes.command(`answer ${first.key} 2`);
+
+    const answered = inbox.entry(first.key);
+    expect(answered?.answer).toBe('Nullable');
+    const receipt = cards.find((card) => card.type === 'receipt')!;
+    expect(receipt.text).toBe('Answered "backfill or nullable?": Nullable');
+    expect(inbox.open()).toHaveLength(1);
+  });
+
+  it('W4: bare "answer <n>" replies with an ambiguity refusal when two or more asks are open', async () => {
+    inbox.raise({ run: 'alpha', question: 'backfill or nullable?', options: ['Backfill', 'Nullable'] });
+    inbox.raise({ run: 'beta', question: 'restart now?', options: ['Yes', 'No'] });
+
+    const cards = await writes.command('answer 1');
+
+    expect(cards.some((card) => card.type === 'receipt')).toBe(false);
+    const refusal = cards.find((card) => card.type === 'refusal')!;
+    expect(refusal.text).toMatch(/2 questions are open/i);
+    expect(inbox.open()).toHaveLength(2);
+  });
+
+  it('W4: an out-of-range option index is refused, not silently answered', async () => {
+    inbox.raise({ run: 'alpha', question: 'backfill or nullable?', options: ['Backfill', 'Nullable'] });
+
+    const cards = await writes.command('answer 9');
+
+    const refusal = cards.find((card) => card.type === 'refusal')!;
+    expect(refusal.text).toMatch(/out of range/i);
+    expect(inbox.open()).toHaveLength(1);
   });
 });
 

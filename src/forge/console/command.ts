@@ -19,7 +19,7 @@ import { dirname, join } from 'node:path';
 
 import type { Actuator } from '../contracts.js';
 import { foldChainState } from '../chain.js';
-import type { Inbox } from '../inbox.js';
+import type { Inbox, InboxEntry } from '../inbox.js';
 import { deliverAnswer } from '../runinbox.js';
 import { appendOnce, replay } from '../journal.js';
 import type { StuckSignal } from '../liveness.js';
@@ -174,7 +174,7 @@ export type Intent =
   | { kind: 'what-stuck' }
   | { kind: 'spend-today' }
   | { kind: 'status' }
-  | { kind: 'answer'; askKey: string | null; text: string }
+  | { kind: 'answer'; askKey: string | null; text: string | null; optionIndex: number | null }
   | { kind: 'confirm'; token: string }
   | { kind: 'run-plan'; token: string }
   | { kind: 'dismiss'; token: string }
@@ -232,10 +232,18 @@ export function parseIntent(raw: string): Intent {
   // it here, ahead of the plain free-text form below, is what stops the whole tail
   // ("f92af4249f6a27ae Restart the forge MCP connection") from being delivered to the
   // run as if the operator had typed the key as part of their answer.
-  if ((match = text.match(/^answer\s+([0-9a-f]{8,})\s+(.+)$/i))) {
-    return { kind: 'answer', askKey: match[1]!, text: match[2]! };
+  // W4: numeric answer forms -- `answer <key> <n>` and bare `answer <n>` resolve to the
+  // option at that 1-based index rather than being read as literal answer text.
+  if ((match = text.match(/^answer\s+([0-9a-f]{8,})\s+(\d+)$/i))) {
+    return { kind: 'answer', askKey: match[1]!, optionIndex: Number(match[2]), text: null };
   }
-  if ((match = text.match(/^answer\s+(.+)$/i))) return { kind: 'answer', askKey: null, text: match[1]! };
+  if ((match = text.match(/^answer\s+([0-9a-f]{8,})\s+(.+)$/i))) {
+    return { kind: 'answer', askKey: match[1]!, optionIndex: null, text: match[2]! };
+  }
+  if ((match = text.match(/^answer\s+(\d+)$/i))) {
+    return { kind: 'answer', askKey: null, optionIndex: Number(match[1]), text: null };
+  }
+  if ((match = text.match(/^answer\s+(.+)$/i))) return { kind: 'answer', askKey: null, optionIndex: null, text: match[1]! };
   return { kind: 'unknown', text };
 }
 
@@ -415,6 +423,22 @@ export class ConsoleWrites {
       ...(this.deps.capsOverridesPath ? { capsOverridesPath: this.deps.capsOverridesPath } : {}),
       ...(this.deps.queueStore ? { queueStore: this.deps.queueStore } : {}),
     };
+  }
+
+  /** Shared tail of `case 'answer'`: writes the answer to the inbox, delivers it to the
+   *  run, journals the action, and returns the receipt card. Used by both the numeric
+   *  and free-text answer forms so they resolve to the same recorded outcome. */
+  private async deliverAnswerFor(source: string, match: InboxEntry, answerText: string): Promise<Message[]> {
+    const answered = this.deps.inbox.answer(match.key, answerText);
+    if (!answered) return [refusalCard(source, `could not answer ${match.key}`)];
+    await deliverAnswer(answered, match.key, answerText);
+    const { jid } = recordAction(this.deps.journalPath, this.ledger, {
+      kind: 'answer', text: `answered ${match.key}: ${answerText}`, undo: null, extra: { askKey: match.key },
+    });
+    const questionHead = match.question.length > 70 ? `${match.question.slice(0, 70)}…` : match.question;
+    return [receiptCard(source, {
+      ok: true, jid, message: `Answered "${questionHead}": ${answerText}`, undoable: false,
+    })];
   }
 
   capsWriteDeps(): CapsWriteDeps {
@@ -799,20 +823,24 @@ export class ConsoleWrites {
 
       case 'answer': {
         const open = this.deps.inbox.open();
+        if (intent.optionIndex !== null) {
+          const targets = intent.askKey ? open.filter((ask) => ask.key === intent.askKey) : open;
+          if (!intent.askKey && targets.length > 1) {
+            return [refusalCard(source, `${targets.length} questions are open -- answer with the ask key, e.g. answer <key> ${intent.optionIndex}`)];
+          }
+          const match = targets[0];
+          if (!match) return [refusalCard(source, `no open question matches "${intent.askKey ?? intent.optionIndex}"`)];
+          const n = intent.optionIndex;
+          if (n < 1 || n > match.options.length) {
+            return [refusalCard(source, `${match.key} has ${match.options.length} option(s); ${n} is out of range`)];
+          }
+          return this.deliverAnswerFor(source, match, match.options[n - 1]!);
+        }
         const match = (intent.askKey ? open.find((ask) => ask.key === intent.askKey) : undefined)
-          ?? open.find((ask) => ask.question.toLowerCase().includes(intent.text.toLowerCase()))
+          ?? open.find((ask) => ask.question.toLowerCase().includes((intent.text ?? '').toLowerCase()))
           ?? (!intent.askKey && open.length === 1 ? open[0] : undefined);
         if (!match) return [refusalCard(source, `no open question matches "${intent.askKey ?? intent.text}"`)];
-        const answered = this.deps.inbox.answer(match.key, intent.text);
-        if (!answered) return [refusalCard(source, `could not answer ${match.key}`)];
-        await deliverAnswer(answered, match.key, intent.text);
-        const { jid } = recordAction(this.deps.journalPath, this.ledger, {
-          kind: 'answer', text: `answered ${match.key}: ${intent.text}`, undo: null, extra: { askKey: match.key },
-        });
-        const questionHead = match.question.length > 70 ? `${match.question.slice(0, 70)}…` : match.question;
-        return [receiptCard(source, {
-          ok: true, jid, message: `Answered "${questionHead}": ${intent.text}`, undoable: false,
-        })];
+        return this.deliverAnswerFor(source, match, intent.text!);
       }
 
       case 'unknown':

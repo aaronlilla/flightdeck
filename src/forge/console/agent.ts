@@ -388,7 +388,7 @@ export class ConductorAgent {
         return { text: receipt, receipt };
       },
       answer_ask: async ({ askKey, text }) => {
-        const line = this.cardsText(await writes.runIntent({ kind: 'answer', askKey: askKey ?? null, text }, 'conductor'));
+        const line = this.cardsText(await writes.runIntent({ kind: 'answer', askKey: askKey ?? null, text, optionIndex: null }, 'conductor'));
         return { text: line, receipt: line };
       },
       set_daily_cap: async ({ tokens }) => this.propose(
