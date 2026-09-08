@@ -1091,7 +1091,7 @@ describe('mergeItem: A.7', () => {
     expect(rows).toHaveLength(1);
     settle({ android: 'update 10cbd28a', ios: 'update 12cd45b8' });
     await new Promise((r) => setTimeout(r, 0));
-    expect(rows[1]).toMatchObject({ id: item.id, reason: 'OTA landed ios=update 12cd45b8 android=update 10cbd28a' });
+    expect(rows[1]).toMatchObject({ id: item.id, reason: 'OTA published: android update 10cbd28a, ios update 12cd45b8' });
   });
 
   it('records a deploy that never answered rather than leaving OTA pending forever', async () => {
@@ -1105,7 +1105,35 @@ describe('mergeItem: A.7', () => {
       store: { append: (row: Record<string, unknown>) => { rows.push(row); } } as never,
     });
     await new Promise((r) => setTimeout(r, 0));
-    expect(rows[1]).toMatchObject({ id: item.id, reason: 'merged; no develop deploy run was found for this merge' });
+    expect(rows[1]).toMatchObject({ id: item.id, reason: 'merged; deploy run not found after 30 minutes' });
+  });
+
+  it('marks the item mergedBy: queue at once so the merged-elsewhere sweep never relabels it (BBZ-178)', async () => {
+    const item = reviewItem();
+    const rows: Array<Record<string, unknown>> = [];
+    const result = await mergeItem(item, {
+      mergeAllowed: () => true,
+      gate: async () => ({ merged: true }),
+      clock: () => 3000,
+      store: { append: (row: Record<string, unknown>) => { rows.push(row); } } as never,
+    });
+    expect(result.item?.mergedBy).toBe('queue');
+    expect(result.item?.mergedAt).toBe(3000);
+    expect(rows[0]).toMatchObject({ id: item.id, mergedBy: 'queue', mergedAt: 3000 });
+  });
+
+  it('passes the gate\'s own mergeSha through to postMergeVerify', async () => {
+    const item = reviewItem();
+    let seenMergeSha: string | undefined;
+    await mergeItem(item, {
+      mergeAllowed: () => true,
+      gate: async () => ({ merged: true, mergeSha: '7883356abcdef' }),
+      postMergeVerify: async (input) => { seenMergeSha = input.mergeSha; return undefined; },
+      clock: () => 3000,
+      store: { append: () => {} } as never,
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(seenMergeSha).toBe('7883356abcdef');
   });
 
   it('reports a merge that did not complete, without setting done', async () => {
@@ -1284,5 +1312,23 @@ describe('a review item whose PR merged elsewhere', () => {
     await runQueueTick(deps, store.all());
     expect(store.get(item.id)?.state).toBe('done');
     expect(store.get(item.id)?.reason).toBe('PR #118 merged outside the queue');
+  });
+
+  it('never relabels a merge the queue performed itself, even off a stale snapshot (BBZ-178)', async () => {
+    const { resetMergedSweep } = await import('../../../src/forge/intake/queue.js');
+    resetMergedSweep();
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    store.append({ id: item.id, at: 2000, state: 'review', repo: 'owner/name', pr: { no: 122, url: 'u', files: 1, add: 1, del: 0, draft: true }, updatedAt: 2000 } as never);
+    // The queue's own Merge click landed on the store (state: done, mergedBy: queue)
+    // between the moment this tick's item snapshot was taken and the sweep running --
+    // the snapshot below still shows 'review', as `runQueueTick`'s caller would.
+    const staleSnapshot = store.all();
+    store.append({ id: item.id, at: 2100, state: 'done', reason: 'merged; OTA pending', mergedBy: 'queue', mergedAt: 2100, updatedAt: 2100 } as never);
+    const { deps } = buildDeps(store, {});
+    deps.prMerged = async (_repo, pr) => pr === 122;
+    await runQueueTick(deps, staleSnapshot);
+    expect(store.get(item.id)?.state).toBe('done');
+    expect(store.get(item.id)?.reason).toBe('merged; OTA pending');
   });
 });

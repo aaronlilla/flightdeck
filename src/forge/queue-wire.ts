@@ -330,7 +330,7 @@ export function queueMergeDeps(deps: ForgeDeps, store: QueueRuntimeDeps['store']
  *  15 min -- a deploy that builds instead of publishing runs longer than that, and its
  *  `build` action is already the answer once the decide job has spoken. */
 export function queuePostMergeVerify(chainEnv: ChainEnv): NonNullable<QueueMergeDeps['postMergeVerify']> {
-  return async ({ repo, branch }) => {
+  return async ({ repo, branch, mergeSha }) => {
     const checkout = checkoutFor(chainEnv, repo);
     if (!checkout) return undefined;
     const verify = developDeployVerifier({
@@ -341,7 +341,7 @@ export function queuePostMergeVerify(chainEnv: ChainEnv): NonNullable<QueueMerge
         return result.full ?? result.tail ?? '';
       },
     });
-    return verify({ repo, branch, mergedAt: Date.now() });
+    return verify({ repo, branch, mergedAt: Date.now(), ...(mergeSha ? { mergeSha } : {}) });
   };
 }
 

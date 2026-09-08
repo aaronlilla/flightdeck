@@ -599,12 +599,19 @@ export async function runQueueTick(deps: QueueRuntimeDeps, items: QueueItem[]): 
   }
 
   // Review items are not advanced, but a PR merged outside the queue must still close
-  // its item. Swept at most every two minutes so a tick stays cheap.
+  // its item. Swept at most every two minutes so a tick stays cheap. `items` can be
+  // stale by the time this runs (BBZ-178: the queue's own Merge click landed on the
+  // store, between this tick's own read and this loop, on an item this loop's snapshot
+  // still shows as 'review'), so before writing "merged outside the queue" every item
+  // is re-read straight off the store and skipped if it already carries the queue's own
+  // `mergedBy: 'queue'` mark -- that mark is never true unless `mergeItem` wrote it.
   if (deps.prMerged && Date.now() - lastMergedSweepAt >= MERGED_SWEEP_MS) {
     lastMergedSweepAt = Date.now();
     for (const item of items.filter((row) => row.state === 'review' && row.pr && row.repo)) {
       try {
         if (await deps.prMerged(item.repo!, item.pr!.no)) {
+          const current = deps.store.get(item.id) ?? item;
+          if (current.mergedBy === 'queue') continue;
           writeTransition(item, { state: 'done', reason: `PR #${item.pr!.no} merged outside the queue` }, deps, 'queue.done', { hop: 'merged-elsewhere' });
         }
       } catch {
@@ -648,7 +655,7 @@ export interface QueueMergeDeps {
   /** Polls the develop deploy for its per-platform OTA outcome, once the merge itself
    *  landed. Absent means this environment never wires it, and the item still lands on
    *  `done`, just without an OTA line in its reason. */
-  postMergeVerify?: (input: { repo: string; branch: string }) => Promise<{ android: string; ios: string } | undefined>;
+  postMergeVerify?: (input: { repo: string; branch: string; mergeSha?: string }) => Promise<{ android: string; ios: string } | undefined>;
   clock(): number;
   store: QueueStore;
 }
@@ -704,15 +711,24 @@ export async function mergeItem(item: QueueItem, deps: QueueMergeDeps): Promise<
   // the per-platform OTA outcome is written as a second row when the verifier answers,
   // and the click's own response never waits on it. A verifier that finds no run says
   // so in the reason, so 'OTA pending' can never be the item's last word.
+  //
+  // `mergedBy`/`mergedAt` (BBZ-178): the only record that this merge was the queue's own
+  // -- the merged-elsewhere sweep in `runQueueTick` checks it before it will ever write
+  // "merged outside the queue".
   const now = deps.clock();
   const verifying = Boolean(deps.postMergeVerify && item.branch);
-  const patch: Partial<QueueItem> = { state: 'done', reason: verifying ? 'merged; OTA pending' : null, updatedAt: now };
+  const patch: Partial<QueueItem> = {
+    state: 'done', reason: verifying ? 'merged; OTA pending' : null, updatedAt: now,
+    mergedBy: 'queue', mergedAt: now,
+  };
   deps.store.append({ id: item.id, at: now, ...patch });
   if (deps.postMergeVerify && item.branch) {
-    void deps.postMergeVerify({ repo: item.repo!, branch: item.branch })
+    void deps.postMergeVerify({ repo: item.repo!, branch: item.branch, ...(result.mergeSha ? { mergeSha: result.mergeSha } : {}) })
       .then((outcome) => outcome
-        ? `OTA landed ios=${outcome.ios} android=${outcome.android}`
-        : 'merged; no develop deploy run was found for this merge')
+        ? `OTA published: android ${outcome.android}, ios ${outcome.ios}`
+        // Matches `otaVerify.ts`'s `DEFAULT_MAX_WAIT_MS` (30 minutes) -- an operator
+        // reading this reason gets the cap that was actually enforced, not a guess.
+        : 'merged; deploy run not found after 30 minutes')
       .catch((error: unknown) => `merged; OTA check failed: ${error instanceof Error ? error.message : String(error)}`)
       .then((reason) => {
         const at = deps.clock();
