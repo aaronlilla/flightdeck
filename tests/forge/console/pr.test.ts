@@ -76,7 +76,7 @@ describe('computeRunPr', () => {
     const result = await computeRunPr('alpha', chain, {}, 1_000, lookup, detailLookup, attestationReader);
     expect(result.pr).toEqual({
       no: 12, url: 'https://example/pull/12', files: 2, add: 3, del: 1, draft: true,
-      checks: 'success', merged: false, title: 'add the merge chip', verdict: 'PASS WITH NOTES',
+      checks: 'success', merged: false, title: 'add the merge chip', verdict: 'PASS WITH NOTES', mergedAt: null,
     });
   });
 
@@ -110,7 +110,7 @@ describe('computeQueuePr', () => {
     };
     const result = await computeQueuePr('queue-BBZ-96', 'o/n', basic, {}, 1_000, detailLookup, attestationReader);
     expect(result.pr).toEqual({
-      ...basic, checks: 'success', merged: false, title: 'add the merge chip', verdict: 'PASS WITH NOTES',
+      ...basic, checks: 'success', merged: false, title: 'add the merge chip', verdict: 'PASS WITH NOTES', mergedAt: null,
     });
     expect(result.cache['queue-BBZ-96']).toEqual({ pr: result.pr, at: 1_000 });
   });
@@ -135,7 +135,7 @@ describe('computeBranchPr', () => {
     const result = await computeBranchPr('S-b9d39bae548707e0', 'o/n', 'feature/s-b9d39bae548707e0', {}, 1_000, branchLookup);
     expect(result.pr).toEqual({
       no: 39, url: 'https://github.com/o/n/pull/39', draft: true, merged: false,
-      title: 'dedupe warden.health on an open unregistered trip',
+      title: 'dedupe warden.health on an open unregistered trip', mergedAt: null,
     });
     expect(result.cache['S-b9d39bae548707e0']).toEqual({ pr: result.pr, at: 1_000 });
   });

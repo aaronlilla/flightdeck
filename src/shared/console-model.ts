@@ -46,6 +46,10 @@ export interface LanePr {
   verdict?: string | null;
   merged?: boolean | null;
   title?: string | null;
+  /** Item 1: epoch ms off the PR's own `mergedAt`, when `gh` has reported one -- `null`/
+   *  unset means the board does not know when it merged (or that it has not), never a
+   *  guessed time. */
+  mergedAt?: number | null;
 }
 
 /** One lane's record in order, as a person would tell it: what it is, what was done,

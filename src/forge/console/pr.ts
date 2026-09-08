@@ -66,6 +66,9 @@ export interface GhPrDetail {
    *  summary. `null` for a PR with an empty body, or read through a caller that never
    *  asked `gh` for it (`fromGh`'s own `GhPrLookup` shape has no body field at all). */
   body?: string | null;
+  /** Item 1: epoch ms off `gh`'s own `mergedAt`, when the PR has merged. `null` for one
+   *  that has not (or that `gh` did not report a time for). */
+  mergedAt?: number | null;
 }
 
 export type GhDetailLookupFn = (repo: string, pr: number) => Promise<GhPrDetail | undefined>;
@@ -125,7 +128,7 @@ export async function computeRunPr(
     const detail = await detailLookup(packet.repo, found.number);
     if (detail) {
       const verdict = attestationReader?.(packet.repo, found.number, detail.headSha)?.verdict ?? null;
-      pr = { ...pr, checks: detail.checks, merged: detail.merged, title: detail.title, verdict };
+      pr = { ...pr, checks: detail.checks, merged: detail.merged, title: detail.title, verdict, mergedAt: detail.mergedAt ?? null };
     } else {
       pr = { ...pr, checks: null, merged: null, title: null, verdict: null };
     }
@@ -151,7 +154,7 @@ export async function computeQueuePr(
   const detail = await detailLookup(repo, basic.no);
   if (!detail) return { pr: basic, cache: { ...cache, [run]: { pr: basic, at: now } } };
   const verdict = attestationReader?.(repo, basic.no, detail.headSha)?.verdict ?? null;
-  const pr: LanePr = { ...basic, checks: detail.checks, merged: detail.merged, title: detail.title, verdict };
+  const pr: LanePr = { ...basic, checks: detail.checks, merged: detail.merged, title: detail.title, verdict, mergedAt: detail.mergedAt ?? null };
   return { pr, cache: { ...cache, [run]: { pr, at: now } } };
 }
 
@@ -192,6 +195,6 @@ export async function computeBranchPr(
   const found = await branchLookup(repo, branch);
   if (!found) return { pr: null, cache: { ...cache, [run]: { pr: null, at: now } } };
 
-  const pr: LanePr = { no: found.number, url: found.url, draft: found.isDraft, merged: Boolean(found.mergedAt), title: found.title };
+  const pr: LanePr = { no: found.number, url: found.url, draft: found.isDraft, merged: Boolean(found.mergedAt), title: found.title, mergedAt: found.mergedAt ? Date.parse(found.mergedAt) : null };
   return { pr, cache: { ...cache, [run]: { pr, at: now } } };
 }

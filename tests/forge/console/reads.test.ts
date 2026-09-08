@@ -433,7 +433,7 @@ describe('ConsoleReads.lanesResponse: title and sourceUrl', () => {
     const second = reads.lanesResponse().lanes[0]!;
     expect(second.pr).toEqual({
       no: 119, url: 'https://github.com/o/n/pull/119', files: 6, add: 360, del: 5, draft: true,
-      checks: 'success', merged: false, title: 'add the merge chip', verdict: 'PASS WITH NOTES',
+      checks: 'success', merged: false, title: 'add the merge chip', verdict: 'PASS WITH NOTES', mergedAt: null,
     });
     expect(second.mergeable).toEqual({ ok: true });
     expect(ghCalls).toBe(1);
@@ -486,7 +486,7 @@ describe('ConsoleReads.lanesResponse: title and sourceUrl', () => {
     const second = reads.lanesResponse().lanes[0]!;
     expect(second.pr).toEqual({
       no: 39, url: 'https://github.com/o/n/pull/39', draft: true, merged: false,
-      title: 'dedupe warden.health on an open unregistered trip',
+      title: 'dedupe warden.health on an open unregistered trip', mergedAt: null,
     });
     expect(branchCalls).toBe(1);
   });
@@ -523,8 +523,98 @@ describe('ConsoleReads.lanesResponse: title and sourceUrl', () => {
     const result = await server.runPrResponse('queue-BBZ-96');
     expect(result.pr).toEqual({
       no: 119, url: 'https://github.com/o/n/pull/119', files: 6, add: 360, del: 5, draft: true,
-      checks: 'success', merged: false, title: 'add the merge chip', verdict: 'PASS WITH NOTES',
+      checks: 'success', merged: false, title: 'add the merge chip', verdict: 'PASS WITH NOTES', mergedAt: null,
     });
+  });
+
+  // Item 1: PR #39 merged at 01:57 while its queue item still read parked (refused,
+  // checks failing on an old head) -- the live tile kept saying PARKED with a stale
+  // reason instead of the one fact that actually settled it: the PR landed.
+  it('item 1: a merged PR outranks a parked queue item -- the lane reads merged, not parked', async () => {
+    const forgeHomeDir = tempDir('console-reads-');
+    const queueStore = new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl'));
+    queueStore.append({
+      id: 'Q-1', at: 1, source: 'self', input: 'S-b9d39bae548707e0', ticket: null, repo: 'aaronlilla/flightdeck',
+      briefPath: null, branch: 'feature/s-b9d39bae548707e0', worktreePath: 'w', base: 'develop',
+      state: 'parked', reason: 'refused: checks are failure on head f284c65, not green.',
+      runKey: 'S-b9d39bae548707e0',
+      pr: { no: 39, url: 'https://github.com/aaronlilla/flightdeck/pull/39', draft: false },
+      journalIds: [], createdAt: 1, updatedAt: 1,
+    });
+
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'S-b9d39bae548707e0', actor: 'runner' });
+    journal.append({ event: 'run.parked', run: 'S-b9d39bae548707e0', actor: 'warden', reason: 'refused: checks are failure on head f284c65, not green.' });
+    journal.close();
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put('S-b9d39bae548707e0', { column: 'self' });
+
+    const mergedAt = Date.UTC(2026, 8, 8, 1, 57);
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore, jiraSite: null,
+      mergeAllowed: () => true,
+      ghDetailLookup: async () => ({
+        headSha: 'f284c65', isDraft: false, merged: true, title: 'dedupe warden.health on an open unregistered trip',
+        checks: 'failure', mergedAt,
+      }),
+    });
+
+    // Before the background PR-detail read lands, the queue item's own parked state
+    // still stands -- only once the merged fact arrives does it outrank it.
+    const first = reads.lanesResponse().lanes[0]!;
+    expect(first.state).toBe('parked');
+    const server = reads as unknown as { settlePrRefreshes(): Promise<void> };
+    await server.settlePrRefreshes();
+
+    const merged = reads.lanesResponse().lanes[0]!;
+    expect(merged.state).toBe('merged');
+    expect(merged.reason).toBeNull();
+    expect(merged.plain).toBe(`Merged: PR #39 landed at ${clock(mergedAt)}.`);
+    expect(merged.you).toBe('Nothing needed; it merged. Clean up retires it.');
+    expect(merged.mergeable).toEqual({ ok: false, why: 'already merged' });
+  });
+
+  // The other half of item 1's own specimen pair: a parked queue item whose PR is
+  // still open reads parked exactly as before -- only a merged PR outranks it.
+  it('item 1: a parked queue item with an open (unmerged) PR still reads parked', async () => {
+    const forgeHomeDir = tempDir('console-reads-');
+    const queueStore = new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl'));
+    queueStore.append({
+      id: 'Q-1', at: 1, source: 'self', input: 'S-open', ticket: null, repo: 'aaronlilla/flightdeck',
+      briefPath: null, branch: 'feature/s-open', worktreePath: 'w', base: 'develop',
+      state: 'parked', reason: 'refused: checks are failure on head abc1234, not green.',
+      runKey: 'S-open', pr: { no: 40, url: 'https://github.com/aaronlilla/flightdeck/pull/40', draft: false },
+      journalIds: [], createdAt: 1, updatedAt: 1,
+    });
+
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'S-open', actor: 'runner' });
+    journal.append({ event: 'run.parked', run: 'S-open', actor: 'warden', reason: 'refused: checks are failure on head abc1234, not green.' });
+    journal.close();
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put('S-open', { column: 'self' });
+
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore, jiraSite: null,
+      mergeAllowed: () => true,
+      ghDetailLookup: async () => ({
+        headSha: 'abc1234', isDraft: false, merged: false, title: 'still open', checks: 'failure', mergedAt: null,
+      }),
+    });
+
+    reads.lanesResponse();
+    const server = reads as unknown as { settlePrRefreshes(): Promise<void> };
+    await server.settlePrRefreshes();
+
+    const still = reads.lanesResponse().lanes[0]!;
+    expect(still.state).toBe('parked');
+    expect(still.reason).toBe('refused: checks are failure on head abc1234, not green.');
   });
 });
 
@@ -616,6 +706,49 @@ describe('ConsoleReads.runSummaryResponse / runRecheckResponse (2026-09-07)', ()
     const cached = readPrCache(cachePath)['queue-BBZ-96'];
     expect(cached?.pr?.url).not.toBe('stale');
     expect(cached?.pr?.checks).toBe('pending');
+  });
+
+  // Item 2: the summary must answer fast on a warm cache and never repeat a `gh`/`git`
+  // call it already made moments ago -- `runSummaryResponse` used to call
+  // `ghDetailLookup` twice in a single request (once through `runStoryResponse`, once
+  // for its own fresh read) and again on every re-open within the same 60s, which is
+  // the live console's own 11-second sheet.
+  it('caches the PR detail and drift reads for 60s, never re-invoking gh within the window', async () => {
+    const { forgeHomeDir, queueStore, journalPath } = setup();
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    let ghCalls = 0;
+    let driftCalls = 0;
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore, jiraSite: null,
+      ghDetailLookup: async () => {
+        ghCalls += 1;
+        return {
+          headSha: 'deadbeef', isDraft: true, merged: false, title: 'add the merge chip',
+          checks: 'success', body: 'Wires the merge chip into the sheet.',
+        };
+      },
+      driftFn: async () => { driftCalls += 1; return { behindBase: 0, headMoved: false }; },
+      gitLog: async () => [],
+      mergeAllowed: () => true,
+    });
+
+    await reads.runSummaryResponse('queue-BBZ-96');
+    // `lanesResponse` (which `runSummaryResponse` reads the lane through) can fire its
+    // own background PR-detail refresh (item 7) alongside the summary's own read -- a
+    // separate concern from this one, so it is flushed and counted once before the
+    // real assertion: a second `runSummaryResponse` call inside the 60s window adds no
+    // further `gh`/`git` calls of its own.
+    await reads.settlePrRefreshes();
+    const ghAfterFirst = ghCalls;
+    const driftAfterFirst = driftCalls;
+    expect(ghAfterFirst).toBeGreaterThan(0);
+    expect(driftAfterFirst).toBeGreaterThan(0);
+
+    await reads.runSummaryResponse('queue-BBZ-96');
+    await reads.settlePrRefreshes();
+    expect(ghCalls).toBe(ghAfterFirst);
+    expect(driftCalls).toBe(driftAfterFirst);
   });
 });
 
