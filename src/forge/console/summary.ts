@@ -12,6 +12,7 @@ import type {
   Lane, LaneAudit, LaneReadiness, LaneStory, LaneSummary,
 } from '../../shared/console-model.js';
 import type { CouncilAttestation } from '../contracts.js';
+import { nextCategoryFor } from './laneGlance.js';
 
 const MAX_WHAT_SENTENCES = 6;
 const MIN_WHAT_SENTENCES = 3;
@@ -183,41 +184,50 @@ export function computeReadiness(input: {
   };
 }
 
-/** The one thing to do next, from the lane's state and the readiness verdict. Every
- *  branch is an instruction a person can follow from the sheet they are looking at, or
- *  a plain "nothing needed" when the run is working. Never a state word on its own. */
+/**
+ * The one thing to do next, from the lane's state and the readiness verdict. Every
+ * branch is an instruction a person can follow from the sheet they are looking at, or
+ * a plain "nothing needed" when the run is working. Never a state word on its own.
+ *
+ * Reads the same `nextCategoryFor` branch table the tile's own `you` field
+ * (`laneGlance.ts`) reads, keyed here off the sheet's fuller `LaneReadiness` rather
+ * than the tile's cheaper `lane.mergeable` -- so the sheet's longer sentence can never
+ * point a person a different direction than the tile's shorter one did.
+ */
 export function computeNext(lane: Lane, readiness: LaneReadiness | null): string {
-  if (lane.retiredAt !== null) return 'Nothing needed; this lane is archived. Unretire it to bring it back.';
-  if (lane.runaway) return 'It is over its cap and looping. Kill the attempt, then reopen with a tighter brief.';
-  if (lane.pr && !lane.pr.merged && readiness?.ok) return 'Merge it. Checks are green and the council passed.';
-  switch (lane.state) {
-    case 'running':
-    case 'handed-off':
+  const category = nextCategoryFor(lane, readiness?.ok === true);
+  switch (category) {
+    case 'retired':
+      return 'Nothing needed; this lane is archived. Unretire it to bring it back.';
+    case 'kill-runaway':
+      return 'It is over its cap and looping. Kill the attempt, then reopen with a tighter brief.';
+    case 'merge':
+      return 'Merge it. Checks are green and the council passed.';
+    case 'nothing':
       return 'Nothing needed; let it work. Watch live if you want to see each step.';
-    case 'paused':
+    case 'paused-resume':
       return 'Resume it when you are ready.';
-    case 'parked':
-      return lane.question
-        ? 'Answer the question below; the run continues as soon as you do.'
-        : 'Read the reason, then Resume it or Kill it.';
-    case 'blocked':
-      return lane.blockedBy === 'aws'
-        ? 'Reconnect AWS, then Resume it.'
-        : 'Read the reason. If the work is salvageable, Resume it; otherwise Kill it and reopen.';
-    case 'exhausted':
+    case 'answer':
+      return 'Answer the question below; the run continues as soon as you do.';
+    case 'parked-resume-kill':
+      return 'Read the reason, then Resume it or Kill it.';
+    case 'reconnect-aws':
+      return 'Reconnect AWS, then Resume it.';
+    case 'blocked-resume-kill':
+      return 'Read the reason. If the work is salvageable, Resume it; otherwise Kill it and reopen.';
+    case 'kill-exhausted':
       return 'It ran out of context. Kill it and reopen; the next attempt starts from its PR if one exists.';
-    case 'unverified':
-      return lane.pr
-        ? `Verify it, or read PR #${lane.pr.no} yourself before deciding.`
-        : 'Verify it, or Kill it if the session left nothing worth keeping.';
-    case 'done':
-      if (lane.pr && !lane.pr.merged) {
-        return readiness?.why ? `Not ready to merge yet: ${readiness.why}. Re-check once that clears.` : 'Merge it.';
-      }
+    case 'verify-pr':
+      return `Verify it, or read PR #${lane.pr!.no} yourself before deciding.`;
+    case 'verify-no-pr':
+      return 'Verify it, or Kill it if the session left nothing worth keeping.';
+    case 'not-ready':
+      return readiness?.why ? `Not ready to merge yet: ${readiness.why}. Re-check once that clears.` : 'Merge it.';
+    case 'done-cleanup':
       return lane.pr?.merged ? 'Nothing needed; it merged. Clean up retires it.' : 'Nothing to merge. Clean up retires it.';
-    case 'merged':
+    case 'merged-cleanup':
       return 'Nothing needed; it merged. Clean up retires it.';
-    case 'killed':
+    case 'killed-reopen-cleanup':
       return 'Reopen it to try again, or Clean up to retire it.';
     default:
       return 'Read the story below.';

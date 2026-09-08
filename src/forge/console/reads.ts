@@ -40,6 +40,7 @@ import {
 import { computeLaneStory, type GitCommit } from './story.js';
 import { readRetired, retiredPath } from './retire.js';
 import { plainForQueueItem, plainStatus, type QueueVerdict } from './plain.js';
+import { computeYou } from './laneGlance.js';
 import { readAttestationAtPath } from '../council/attest.js';
 import {
   computeQueuePr, computeRunPr, PR_CACHE_TTL_MS, prCachePath, readPrCache, writePrCache,
@@ -465,7 +466,11 @@ export class ConsoleReads {
       .map((lane) => this.withHumanFields(lane, chain, prCache, now))
       .map((lane) => ({ ...lane, retiredAt: retired.get(lane.id) ?? null }))
       .filter((lane) => archived || lane.retiredAt === null);
-    return { ...response, lanes };
+    // 2026-09-08: what `Linkify` needs to turn a Jira key or a PR mention into a link
+    // anywhere on the board -- `defaultRepo` is the first repo this response's own
+    // lanes name, since a PR mention with no repo of its own falls back to it.
+    const links = { jiraSite: this.jiraSite, defaultRepo: lanes.find((lane) => lane.repo)?.repo ?? null };
+    return { ...response, lanes, links };
   }
 
   /** H1.1: `title`/`sourceUrl`, off whichever source actually named this lane -- a
@@ -535,6 +540,11 @@ export class ConsoleReads {
         this.scheduleQueuePrRefresh(lane.id, repo, pr);
       }
     }
+    // 2026-09-08: `now` mirrors whatever `plain` ended up saying above (the queue
+    // item's own sentence when it had one, the run-based one otherwise); `you` reads
+    // `mergeable`, which only exists once this function has computed it.
+    patched.now = patched.plain;
+    patched.you = computeYou(patched);
     return patched;
   }
 

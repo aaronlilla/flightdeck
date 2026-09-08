@@ -14,6 +14,7 @@ import type { ClassSpec } from '../policy.js';
 import type { Hop, Lane, LaneKind, LanePr, LaneQuestion, LaneSandbox, LaneState, LanesResponse, MergeReadyReport } from '../../shared/console-model.js';
 import { textFor } from './journal-route.js';
 import { plainStatus } from './plain.js';
+import { computeDid } from './laneGlance.js';
 import { shortenShas, stripMachineIds } from '../../shared/humanize.js';
 
 /** Journal rows that carry no narrative on their own: burn accounting, per-tool
@@ -614,8 +615,15 @@ export function buildLane(input: LaneBuildInput): Lane {
     // with the cap text instead of the red runaway treatment.
     runaway: running && tokenCap !== null && tokens > tokenCap && (state === 'running' || chainLive),
     needsAaron: lane.needs_aaron ?? null,
+    // `you` is filled in by `withHumanFields` (reads.ts), once `mergeable` exists to
+    // read the merge override off. `did`/`now` need only this fold's own `runEvents`
+    // and `pr`, so they are set here, and `now` is patched to match `plain` below.
+    did: computeDid(runEvents, input.prFor(id)),
+    now: '',
+    you: null,
   };
   built.plain = plainStatus(built, { now });
+  built.now = built.plain;
   return built;
 }
 
@@ -702,6 +710,10 @@ export function computeLanes(input: LanesInput, now: number): LanesResponse {
   return {
     at: now, lanes, tokensToday: tokensToday(input.fleet.runs, now),
     tokensPerMin: Number(tokensPerMin.toFixed(4)),
+    // `reads.ts#lanesResponse` overwrites this with the real jiraSite/defaultRepo once
+    // it has read the queue and the lanes this function computed; this fold has neither
+    // to hand, so it names nothing rather than guessing.
+    links: { jiraSite: null, defaultRepo: null },
   };
 }
 

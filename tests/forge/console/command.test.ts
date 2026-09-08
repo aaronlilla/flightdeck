@@ -274,7 +274,7 @@ describe('ConsoleWrites.command / kill confirm flow', () => {
           { id: 'beta', ticket: 'BBZ-2', state: 'running' } as never,
           { id: 'gamma', ticket: 'BBZ-3', state: 'blocked' } as never,
         ],
-        tokensToday: 12.5, tokensPerMin: 0.75,
+        tokensToday: 12.5, tokensPerMin: 0.75, links: { jiraSite: null, defaultRepo: null },
       }),
     });
 
@@ -304,7 +304,7 @@ describe('ConsoleWrites.command / kill confirm flow', () => {
       rulesConfigPath: join(dir, 'rules-3.json'),
       integrationsConfigPath: join(dir, 'integrations-3.json'),
       lanesView: () => ({
-        at: Date.now(), lanes: lanes as never, tokensToday: 0, tokensPerMin: 0,
+        at: Date.now(), lanes: lanes as never, tokensToday: 0, tokensPerMin: 0, links: { jiraSite: null, defaultRepo: null },
       }),
     });
 
@@ -379,7 +379,7 @@ describe('ConsoleWrites: lane addressing by ticket key or title (deliverable 4)'
       capsOverridesPath: join(dir, `caps-${Math.random()}.json`),
       rulesConfigPath: join(dir, `rules-${Math.random()}.json`),
       integrationsConfigPath: join(dir, `integrations-${Math.random()}.json`),
-      lanesView: () => ({ at: Date.now(), lanes: lanes as never, tokensToday: 0, tokensPerMin: 0 }),
+      lanesView: () => ({ at: Date.now(), lanes: lanes as never, tokensToday: 0, tokensPerMin: 0, links: { jiraSite: null, defaultRepo: null } }),
     });
   }
 
@@ -474,7 +474,7 @@ describe('ConsoleWrites: replies in words, multi-line (deliverable 5)', () => {
       capsOverridesPath: join(dir, `caps-${Math.random()}.json`),
       rulesConfigPath: join(dir, `rules-${Math.random()}.json`),
       integrationsConfigPath: join(dir, `integrations-${Math.random()}.json`),
-      lanesView: () => ({ at: Date.now(), lanes: lanes as never, tokensToday, tokensPerMin }),
+      lanesView: () => ({ at: Date.now(), lanes: lanes as never, tokensToday, tokensPerMin, links: { jiraSite: null, defaultRepo: null } }),
     });
   }
 
@@ -506,7 +506,7 @@ describe('ConsoleWrites: replies in words, multi-line (deliverable 5)', () => {
       capsOverridesPath: join(dir, `caps-${Math.random()}.json`),
       rulesConfigPath: join(dir, `rules-${Math.random()}.json`),
       integrationsConfigPath: join(dir, `integrations-${Math.random()}.json`),
-      lanesView: () => ({ at: Date.now(), lanes: [{ id: 'alpha', ticket: 'BBZ-1', state: 'running' }] as never, tokensToday: 0, tokensPerMin: 0 }),
+      lanesView: () => ({ at: Date.now(), lanes: [{ id: 'alpha', ticket: 'BBZ-1', state: 'running' }] as never, tokensToday: 0, tokensPerMin: 0, links: { jiraSite: null, defaultRepo: null } }),
       stuck: () => [{ key: 'alpha', signal: 'context', threshold: 1, observed: 1, since: 1, hint: 'x' }],
     });
     const stuckCards = await withStuck.command("what's stuck");

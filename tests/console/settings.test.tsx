@@ -32,7 +32,7 @@ function lane(extra: Partial<Lane> = {}): Lane {
     ctxTokens: 1000, ctxCeiling: 200_000, ctxCompactAt: 180_000, tokens: 1, tokenCap: 10, tokensPerMin: 0,
     fails: 0, hop: 0, hopStatus: 'live', observedAt: Date.now(), verifiedAt: Date.now(), heart: true, since: Date.now(),
     startedAt: Date.now(), endedAt: null, question: null, pr: null, sandbox: null, blockedBy: null,
-    runaway: false, needsAaron: null,
+    runaway: false, needsAaron: null, did: null, now: '', you: null,
     ...extra,
   };
 }
