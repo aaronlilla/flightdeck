@@ -531,6 +531,13 @@ export interface QueueItem {
   /** D2.3: the council's own findings against this item's draft PR, one line each --
    *  absent or empty means the council hasn't posted a note (or none is due) yet. */
   councilNotes?: string[] | null;
+  /** 2026-09-08 (BBZ-178 escape): set alongside `state: 'done'` the moment `mergeItem`'s
+   *  own gate call reports `merged: true`. It is the only mark that the queue performed
+   *  the merge itself. The merged-elsewhere sweep in `runQueueTick` reads this fresh off
+   *  the store, never off its own possibly-stale item snapshot, before writing "merged
+   *  outside the queue" -- a queue-performed merge never gets relabeled as one. */
+  mergedBy?: 'queue';
+  mergedAt?: number;
   /** H1.2 fix: the attestation file the gate wrote for this item's own review round,
    *  carried on the item the moment it lands so `plain` can read the council's real
    *  verdict and coverage straight off disk -- no PR head sha needed to find it, since

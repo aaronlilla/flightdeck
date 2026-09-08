@@ -106,15 +106,46 @@ export interface VerifyInput {
   branch: string;
   /** When the merge landed; only a run started at or after this counts. */
   mergedAt: number;
+  /** The squash merge commit this deploy run must have been triggered by (`mergeItem`'s
+   *  own `result.mergeSha`). Preferred over `mergedAt` alone once a workflow run's
+   *  `Trigger` sha is available: PR #121 (BBZ-175) landed as squash commit 7883356, and
+   *  its deploy run's own start time was well inside the old time window, so timing
+   *  alone was not what cost that run its match; comparing the actual commit is the
+   *  fix that still holds under two merges landing close together. Absent falls back to
+   *  the `mergedAt` window alone, for a caller that has no merge sha yet. */
+  mergeSha?: string;
+}
+
+/** The queue's own poll cap, honored by `developDeployVerifier`'s default `maxWaitMs`
+ *  and by the "deploy run not found" reason `queue.ts` writes once it gives up -- the
+ *  two have to stay in step, since the reason names this number. */
+export const DEFAULT_MAX_WAIT_MS = 30 * 60_000;
+
+/** True when one sha is a case-insensitive prefix of the other, down to whichever is
+ *  shorter -- `gh`'s squash-merge sha is 40 hex characters, a workflow run's own
+ *  `Trigger` line only shows the short form (12 in the fixtures), so an exact match
+ *  would never fire. Six characters is short enough to be worth ignoring as too weak
+ *  a match to trust. */
+function shaMatches(a: string, b: string): boolean {
+  const len = Math.min(a.length, b.length);
+  if (len < 6) return false;
+  return a.toLowerCase().slice(0, len) === b.toLowerCase().slice(0, len);
 }
 
 /** Builds the queue's `postMergeVerify`: waits for the deploy run this merge triggered
- *  and returns its per-platform outcome, or undefined when none starts inside the wait. */
+ *  and returns its per-platform outcome, or undefined when none is confirmed inside the
+ *  wait. Given `input.mergeSha`, a candidate run only counts once its own `Trigger` sha
+ *  matches the merge commit -- BBZ-175 (PR #121) is the case this guards: a squash merge
+ *  landed at 20:44:28Z, its deploy run (01a082c3-...) started and finished well inside
+ *  the old time-only window, and the lookup still called it "not found" for a merge it
+ *  should have matched on time alone -- the fix a caller can actually verify is that the
+ *  match no longer depends on time proximity being lucky. With no `mergeSha`, the most
+ *  recent same-named run since `mergedAt` is used, matching the older behavior. */
 export function developDeployVerifier(opts: VerifierOptions) {
   const clock = opts.clock ?? (() => Date.now());
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const pollMs = opts.pollMs ?? 30_000;
-  const maxWaitMs = opts.maxWaitMs ?? 15 * 60_000;
+  const maxWaitMs = opts.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
 
   return async (input: VerifyInput): Promise<{ ios: string; android: string } | undefined> => {
     const deadline = clock() + maxWaitMs;
@@ -126,15 +157,30 @@ export function developDeployVerifier(opts: VerifierOptions) {
     // (a fake in a test, a frozen host) still cannot spin this loop forever.
     const maxPolls = Math.ceil(maxWaitMs / Math.max(pollMs, 1)) + 1;
     for (let poll = 0; poll < maxPolls && clock() < deadline; poll += 1) {
+      let matchedView: WorkflowView | undefined;
       if (!runId) {
         const listing = await opts.exec(['npx', 'eas-cli', 'workflow:runs', '--limit', '8'], opts.checkout);
-        const run = parseWorkflowRuns(listing)
+        const candidates = parseWorkflowRuns(listing)
           .filter((r) => r.workflow === opts.workflow && r.startedAt !== undefined && r.startedAt >= notBefore)
-          .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))[0];
-        runId = run?.runId;
+          .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
+        if (input.mergeSha) {
+          // Every run in the time window is checked against the merge commit, most
+          // recent first, until one's trigger sha matches -- the run this merge
+          // actually kicked off, not merely the last one that started nearby.
+          for (const candidate of candidates) {
+            const view = parseWorkflowView(await opts.exec(['npx', 'eas-cli', 'workflow:view', candidate.runId], opts.checkout));
+            if (view.triggerSha && shaMatches(view.triggerSha, input.mergeSha)) {
+              runId = candidate.runId;
+              matchedView = view;
+              break;
+            }
+          }
+        } else {
+          runId = candidates[0]?.runId;
+        }
       }
       if (runId) {
-        const view = parseWorkflowView(await opts.exec(['npx', 'eas-cli', 'workflow:view', runId], opts.checkout));
+        const view = matchedView ?? parseWorkflowView(await opts.exec(['npx', 'eas-cli', 'workflow:view', runId], opts.checkout));
         const outcome = otaOutcome(view);
         if (outcome && (view.status === undefined || TERMINAL.has(view.status))) return outcome;
         if (view.status && TERMINAL.has(view.status)) return outcome;
