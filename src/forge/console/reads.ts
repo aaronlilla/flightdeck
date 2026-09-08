@@ -367,7 +367,8 @@ export class ConsoleReads {
       return true;
     }
     if (path === '/thread') {
-      json(response, 200, this.threadResponse());
+      const url = new URL(request.url ?? '/', 'http://localhost');
+      json(response, 200, this.threadResponse(url.searchParams.get('verbose') === '1'));
       return true;
     }
     if (path === '/journal') {
@@ -555,7 +556,7 @@ export class ConsoleReads {
     };
   }
 
-  private threadResponse(): ThreadResponse {
+  private threadResponse(verbose = false): ThreadResponse {
     const now = Date.now();
     const persisted = readThread(threadPath(this.forgeHomeDir));
     const fleet = this.journalCache.read(this.journalPath);
@@ -577,7 +578,9 @@ export class ConsoleReads {
       }
     }
     const titleFor = (id: string): string | null => titles.get(id) ?? null;
-    return computeThread(persisted, fleet.events, now, this.inbox.open(), titleFor);
+    return computeThread(persisted, fleet.events, now, this.inbox.open(), titleFor, {
+      verbose, allAsks: this.inbox.all(),
+    });
   }
 
   private journalResponse(query: { since?: number; run?: string; limit?: number }): JournalResponse {

@@ -15,7 +15,7 @@ import type { RunMessage } from '../runinbox.js';
 import type { Message, ThreadResponse } from '../../shared/console-model.js';
 import { jidFor, textFor } from './journal-route.js';
 import { collapseWardenChips, railChipText, type TitleForFn } from './journal-narrative.js';
-import { humanizeParkReason, stripMachineIds } from '../../shared/humanize.js';
+import { commandEcho, humanizeParkReason, receiptText, stripMachineIds } from '../../shared/humanize.js';
 import { modelAlias } from './lanes.js';
 import { modelName } from './plain.js';
 
@@ -97,6 +97,37 @@ function questionMessageFor(entry: InboxEntry): Message {
   };
 }
 
+export interface ComputeThreadOptions {
+  /** `true` leaves every persisted row exactly as stored -- what `GET /thread?verbose=1`
+   *  always has. Default (unset/false): plain mode -- a persisted `operator` command
+   *  reads through `commandEcho`, a `receipt` through `receiptText`, and a `reply`/
+   *  `refusal` has every machine id stripped out of it. */
+  verbose?: boolean;
+  /** Every inbox entry, open and answered -- what a `receipt`'s own `questionFor` needs
+   *  to name the question an "answered <key>" row was about. Defaults to `openAsks`
+   *  when unset, so a caller that has not wired the full inbox still answers open
+   *  questions correctly, just not already-answered ones. */
+  allAsks?: InboxEntry[];
+}
+
+/** Deliverable 8: a persisted rail row humanized at read time, so an operator bubble or
+ *  a receipt written before this deliverable shipped reads in words on its very next
+ *  fetch -- nothing needs rewriting on disk. `question`/`plan`/`confirm`/`pr`/`event`/
+ *  `thinking` rows already carry their own words and pass through untouched. */
+function humanizeMessage(message: Message, labelFor: TitleForFn, questionFor: (key: string) => string | null): Message {
+  switch (message.type) {
+    case 'operator':
+      return { ...message, text: commandEcho(message.text, { labelFor }) };
+    case 'receipt':
+      return { ...message, text: receiptText(message.text, { labelFor, questionFor }) };
+    case 'reply':
+    case 'refusal':
+      return { ...message, text: stripMachineIds(message.text, { labelFor }) };
+    default:
+      return message;
+  }
+}
+
 /**
  * The board-wide thread: every persisted rail message, one system chip per matching
  * journal row since the earliest persisted message (or since `now` when the thread is
@@ -106,7 +137,7 @@ function questionMessageFor(entry: InboxEntry): Message {
  */
 export function computeThread(
   persisted: Message[], events: ForgeEvent[], now: number, openAsks: InboxEntry[] = [],
-  titleFor: TitleForFn = () => null,
+  titleFor: TitleForFn = () => null, options: ComputeThreadOptions = {},
 ): ThreadResponse {
   const earliest = persisted.length ? Math.min(...persisted.map((message) => message.ts)) : now;
   const windowed = events.filter((row) => row.at >= earliest);
@@ -118,7 +149,13 @@ export function computeThread(
   const questions = openAsks
     .map(questionMessageFor)
     .filter((message) => !persistedKeys.has(message.k));
-  const messages = [...persisted, ...chips, ...questions].sort((a, b) => a.ts - b.ts);
+  let persistedRows = persisted;
+  if (!options.verbose) {
+    const allAsks = options.allAsks ?? openAsks;
+    const questionFor = (key: string): string | null => allAsks.find((ask) => ask.key === key)?.question ?? null;
+    persistedRows = persisted.map((message) => humanizeMessage(message, titleFor, questionFor));
+  }
+  const messages = [...persistedRows, ...chips, ...questions].sort((a, b) => a.ts - b.ts);
   return { messages };
 }
 

@@ -108,6 +108,60 @@ describe('computeThread', () => {
   });
 });
 
+describe('computeThread: plain mode (deliverable 8)', () => {
+  it('humanizes a persisted operator command through commandEcho', () => {
+    const persisted: Message[] = [
+      { k: 'm1', type: 'operator', text: 'kill S-b9d39bae548707e0', ts: 1, source: 'operator' },
+    ];
+    const result = computeThread(persisted, [], 10_000, [], (id) => (id === 'S-b9d39bae548707e0' ? 'health-repeat' : null));
+    const operator = result.messages.find((m) => m.type === 'operator');
+    expect(operator?.text).toBe('Kill health-repeat.');
+  });
+
+  it('humanizes a persisted receipt through receiptText, naming the question off the full inbox', () => {
+    const persisted: Message[] = [
+      { k: 'm1', type: 'receipt', text: 'answered f92af4249f6a27ae: Restart', ts: 1, source: 'operator' },
+    ];
+    const allAsks: InboxEntry[] = [{
+      key: 'f92af4249f6a27ae', question: 'Restart the forge MCP connection?', options: [], kind: 'question',
+      runs: ['probe-1'], goals: [], asked: 1, at: 1, disposition: 'park', answer: 'Restart', answeredAt: 2,
+    }];
+    const result = computeThread(persisted, [], 10_000, [], () => null, { allAsks });
+    const receipt = result.messages.find((m) => m.type === 'receipt');
+    expect(receipt?.text).toBe('Answered "Restart the forge MCP connection?": Restart');
+  });
+
+  it('strips machine ids out of reply and refusal text', () => {
+    const persisted: Message[] = [
+      { k: 'm1', type: 'reply', text: 'S-b9d39bae548707e0 is stuck', ts: 1, source: 'system' },
+      { k: 'm2', type: 'refusal', text: 'no lane matches jira_BBZ-1_1788543015139', ts: 2, source: 'system' },
+    ];
+    const result = computeThread(persisted, [], 10_000);
+    const reply = result.messages.find((m) => m.type === 'reply');
+    const refusal = result.messages.find((m) => m.type === 'refusal');
+    expect(reply?.text).not.toMatch(/S-[0-9a-f]{12,}/);
+    expect(refusal?.text).not.toMatch(/jira_/);
+  });
+
+  it('keeps jid on a receipt message; the client hides it, plain mode never drops it', () => {
+    const persisted: Message[] = [
+      { k: 'm1', type: 'receipt', text: 'answered f92af4249f6a27ae', ts: 1, source: 'operator', jid: 'J-abc12345' },
+    ];
+    const result = computeThread(persisted, [], 10_000);
+    const receipt = result.messages.find((m) => m.type === 'receipt');
+    expect(receipt?.jid).toBe('J-abc12345');
+  });
+
+  it('verbose: leaves persisted rows exactly as stored', () => {
+    const persisted: Message[] = [
+      { k: 'm1', type: 'operator', text: 'kill S-b9d39bae548707e0', ts: 1, source: 'operator' },
+    ];
+    const result = computeThread(persisted, [], 10_000, [], () => null, { verbose: true });
+    const operator = result.messages.find((m) => m.type === 'operator');
+    expect(operator?.text).toBe('kill S-b9d39bae548707e0');
+  });
+});
+
 describe('computeRunThread', () => {
   it('verbose: renders a run\'s own journal rows as messages, merged with its run-inbox sends', () => {
     const { path, journal } = tempJournal();
