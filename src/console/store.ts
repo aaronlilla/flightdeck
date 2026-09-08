@@ -6,6 +6,7 @@
 import { createContext, useContext, useReducer } from 'react';
 import type { Dispatch } from 'react';
 import type {
+  BlockersResponse,
   Caps,
   Feed,
   Integration,
@@ -16,7 +17,7 @@ import type {
   QueueItem,
 } from '../shared/console-model.js';
 
-export type View = 'board' | 'settings' | 'review' | 'queue';
+export type View = 'board' | 'settings' | 'review' | 'queue' | 'blockers';
 export type Filter = 'all' | 'needs-me' | 'running' | 'finished' | string;
 export type Sort = 'cost' | 'age' | 'state';
 
@@ -53,6 +54,7 @@ export interface State {
   caps: Caps | null;
   proposals: ProposalsResponse | null;
   queue: QueueItem[];
+  blockers: BlockersResponse | null;
   queuePaused: boolean;
   queuePauseReason: string | null;
   queueMaxInFlight: number;
@@ -95,6 +97,7 @@ export type Action =
   | { type: 'caps'; caps: Caps }
   | { type: 'proposals'; proposals: ProposalsResponse }
   | { type: 'queue'; items: QueueItem[]; paused: boolean; maxInFlight: number; pauseReason?: string | null }
+  | { type: 'blockers'; blockers: BlockersResponse }
   | { type: 'queue-on'; on: boolean }
   | { type: 'toggle-probes' }
   | { type: 'archived-lanes'; lanes: Lane[] }
@@ -135,6 +138,7 @@ export function initialState(): State {
     caps: null,
     proposals: null,
     queue: [],
+    blockers: null,
     queuePaused: false,
     queuePauseReason: null,
     queueMaxInFlight: 2,
@@ -180,6 +184,8 @@ export function reducer(state: State, action: Action): State {
         ...state, queue: action.items, queuePaused: action.paused, queueMaxInFlight: action.maxInFlight,
         queuePauseReason: action.pauseReason ?? null,
       };
+    case 'blockers':
+      return { ...state, blockers: action.blockers };
     case 'queue-on':
       return { ...state, queueOn: action.on };
     case 'toggle-probes':

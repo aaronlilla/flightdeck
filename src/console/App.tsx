@@ -9,6 +9,7 @@ import type { JSX } from 'react';
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 
 import * as api from './api.js';
+import { BlockersView } from './components/BlockersView.js';
 import { CommandPalette, buildPaletteItems } from './components/CommandPalette.js';
 import { CostSheet } from './components/CostSheet.js';
 import { DisconnectedBanner } from './components/DisconnectedBanner.js';
@@ -116,10 +117,10 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       // away and blank a board whose lanes read came back fine (sweep #27). Each slice
       // dispatches on its own; a rejected one is skipped and named in a toast rather
       // than silently standing in for real data.
-      const [lanesR, threadR, journalR, integrationsR, capsR, proposalsR, queueR, consoleStateR] = await Promise.allSettled([
+      const [lanesR, threadR, journalR, integrationsR, capsR, proposalsR, queueR, consoleStateR, blockersR] = await Promise.allSettled([
         api.getLanes({ all: true }),
         api.getThread({ verbose: verboseRef.current }), api.getJournal(), api.getIntegrations(), api.getCaps(),
-        api.getProposals(), api.getQueue(), api.getState(),
+        api.getProposals(), api.getQueue(), api.getState(), api.getBlockers(),
       ]);
       if (!mounted.current) return;
       const failedSlices: string[] = [];
@@ -136,6 +137,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       const proposals = settled(proposalsR, 'proposals');
       const queue = settled(queueR, 'queue');
       const consoleState = settled(consoleStateR, 'state');
+      const blockers = settled(blockersR, 'blockers');
 
       failCount.current = failedSlices.length > 0 ? failCount.current + 1 : 0;
       const endedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
@@ -175,6 +177,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       if (proposals) dispatch({ type: 'proposals', proposals });
       if (queue) dispatch({ type: 'queue', items: queue.items, paused: queue.paused, maxInFlight: queue.maxInFlight, pauseReason: queue.pauseReason });
       if (consoleState) dispatch({ type: 'queue-on', on: consoleState.queue_on });
+      if (blockers) dispatch({ type: 'blockers', blockers });
       // The server moved onto a new build (a restart, a self cutover): this page's
       // components are the old ones, so reload rather than paint new data with them.
       if (consoleState?.build) {
@@ -585,6 +588,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   const settingsBadge = state.integrations.filter((i) => i.status === 'down').length;
   const reviewBadge = state.proposals?.rules.filter((r) => r.status === 'open').length ?? 0;
   const queueBadge = state.queue.filter((i) => i.state === 'parked' || i.state === 'failed').length;
+  const blockersBadge = state.blockers?.blockers.filter((b) => b.state === 'open' && b.youCanResolve).length ?? 0;
 
   return (
     <StoreContext.Provider value={{ state, dispatch }}>
@@ -593,6 +597,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
         <QueueOffBanner queueOn={state.queueOn} />
         <TopBar
           view={state.view} settingsBadge={settingsBadge} reviewBadge={reviewBadge} queueBadge={queueBadge}
+          blockersBadge={blockersBadge}
           caps={state.caps} tokensToday={state.caps?.tokensToday ?? 0} feed={state.feed} now={state.now}
           fetchLatencyMs={state.fetchLatencyMs}
           theme={state.theme}
@@ -607,7 +612,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
             void refresh();
           }}
         />
-        <NeedsYou items={needs} />
+        <NeedsYou items={needs} blockersCount={blockersBadge} onOpenBlockers={() => dispatch({ type: 'view', view: 'blockers' })} />
         {state.view === 'board' ? (
           <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
@@ -717,6 +722,20 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
             onResume={() => void runQueueAction(() => api.resumeQueue())}
             onMerge={(id) => void runQueueAction(() => api.mergeQueueItem(id))}
             onPromote={(id, version, message) => void runQueueAction(() => api.promoteQueueItem(id, version, message))}
+          />
+        ) : null}
+        {state.view === 'blockers' ? (
+          <BlockersView
+            blockers={state.blockers?.blockers ?? []} chains={state.blockers?.chains ?? []}
+            // Deliberately never eager-refreshes here: the step's own local state
+            // already shows "Resolved HH:MM · Started: ..." the moment this resolves
+            // (see `BlockersView.tsx#StepButtons`), and an immediate refetch would
+            // replace those props before that ever painted, collapsing a just-cleared
+            // step straight into "Resolved today" with no transient in between. The
+            // normal 5s poll (or the next `/events` heartbeat) picks up the real state
+            // once the operator has had a chance to see the outcome of their own click.
+            onResolve={(id) => api.resolveBlocker(id)}
+            onCheck={(id) => api.checkBlocker(id)}
           />
         ) : null}
 

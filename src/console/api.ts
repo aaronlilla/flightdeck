@@ -7,6 +7,8 @@
 import { redactErrorBody } from './redact.js';
 import type {
   ActionResult,
+  BlockersActionResult,
+  BlockersResponse,
   Caps,
   CommandResponse,
   ConsoleStateSummary,
@@ -166,6 +168,18 @@ export function getMergeReadyPreview(): Promise<MergeReadyReport> {
 }
 export function postMergeReady(): Promise<MergeReadyResult> {
   return post<MergeReadyResult>('/merge-ready', {});
+}
+
+export function getBlockers(): Promise<BlockersResponse> {
+  return call<BlockersResponse>('/blockers');
+}
+
+export function resolveBlocker(id: string): Promise<BlockersActionResult> {
+  return post<BlockersActionResult>(`/blockers/${encodeURIComponent(id)}/resolve`, {});
+}
+
+export function checkBlocker(id: string): Promise<BlockersActionResult> {
+  return post<BlockersActionResult>(`/blockers/${encodeURIComponent(id)}/check`, {});
 }
 
 function post<T>(path: string, body?: unknown): Promise<T> {
