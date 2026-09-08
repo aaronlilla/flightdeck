@@ -6,6 +6,7 @@
 import { createContext, useContext, useReducer } from 'react';
 import type { Dispatch } from 'react';
 import type {
+  AccountsResponse,
   BlockersResponse,
   Caps,
   Feed,
@@ -17,7 +18,7 @@ import type {
   QueueItem,
 } from '../shared/console-model.js';
 
-export type View = 'board' | 'settings' | 'review' | 'queue' | 'blockers';
+export type View = 'board' | 'settings' | 'review' | 'queue' | 'blockers' | 'accounts';
 export type Filter = 'all' | 'needs-me' | 'running' | 'finished' | string;
 export type Sort = 'cost' | 'age' | 'state';
 
@@ -55,6 +56,7 @@ export interface State {
   proposals: ProposalsResponse | null;
   queue: QueueItem[];
   blockers: BlockersResponse | null;
+  accounts: AccountsResponse | null;
   queuePaused: boolean;
   queuePauseReason: string | null;
   queueMaxInFlight: number;
@@ -101,6 +103,7 @@ export type Action =
   | { type: 'proposals'; proposals: ProposalsResponse }
   | { type: 'queue'; items: QueueItem[]; paused: boolean; maxInFlight: number; pauseReason?: string | null }
   | { type: 'blockers'; blockers: BlockersResponse }
+  | { type: 'accounts'; accounts: AccountsResponse }
   | { type: 'queue-on'; on: boolean }
   | { type: 'toggle-probes' }
   | { type: 'archived-lanes'; lanes: Lane[] }
@@ -142,6 +145,7 @@ export function initialState(): State {
     proposals: null,
     queue: [],
     blockers: null,
+    accounts: null,
     queuePaused: false,
     queuePauseReason: null,
     queueMaxInFlight: 2,
@@ -190,6 +194,8 @@ export function reducer(state: State, action: Action): State {
       };
     case 'blockers':
       return { ...state, blockers: action.blockers };
+    case 'accounts':
+      return { ...state, accounts: action.accounts };
     case 'queue-on':
       return { ...state, queueOn: action.on };
     case 'toggle-probes':

@@ -156,6 +156,24 @@ async function probeOne(
   }
 }
 
+export interface ProbeEnv {
+  enabled: boolean;
+  everySeconds: number;
+}
+
+const DEFAULT_PROBE_SECONDS = 300;
+
+/** `FORGE_ACCOUNTS_PROBE=1` turns the timer on in `forge up`, gated the way
+ *  `FORGE_CHAIN` is; `FORGE_ACCOUNTS_PROBE_S` is its period, 300 s unless set. */
+export function readProbeEnv(env: NodeJS.ProcessEnv = process.env): ProbeEnv {
+  const raw = env['FORGE_ACCOUNTS_PROBE_S'];
+  const seconds = raw ? Number(raw) : DEFAULT_PROBE_SECONDS;
+  return {
+    enabled: env['FORGE_ACCOUNTS_PROBE'] === '1',
+    everySeconds: Number.isFinite(seconds) && seconds > 0 ? seconds : DEFAULT_PROBE_SECONDS,
+  };
+}
+
 /** Probes every Claude account in turn, one query at a time, and never the Codex row. */
 export async function probeAccounts(deps: ProbeDeps): Promise<ProbeResult[]> {
   const results: ProbeResult[] = [];

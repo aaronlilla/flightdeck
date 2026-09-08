@@ -23,6 +23,7 @@ import type {
 import { fmtTokens } from '../shared/format-tokens.js';
 import { shortenShas } from '../shared/humanize.js';
 import { tokenAmount } from '../forge/console/command.js';
+import { seedAccounts } from './fixtures/accounts.js';
 import { seedCaps } from './fixtures/caps.js';
 import { seedIntegrations } from './fixtures/integrations.js';
 import { seedJournal } from './fixtures/journal.js';
@@ -778,6 +779,10 @@ export function createStubServer() {
       }
       if (urlPath === '/caps' && method === 'GET') {
         json(response, 200, db.caps);
+        return;
+      }
+      if (urlPath === '/accounts' && method === 'GET') {
+        json(response, 200, seedAccounts());
         return;
       }
       if (urlPath === '/proposals' && method === 'GET') {

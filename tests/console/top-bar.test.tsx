@@ -12,7 +12,7 @@ function feed(extra: Partial<Feed> = {}): Feed {
 function renderBar(overrides: Partial<Parameters<typeof TopBar>[0]> = {}): void {
   render(
     <TopBar
-      view="board" settingsBadge={0} reviewBadge={0} queueBadge={0} blockersBadge={0} caps={null} tokensToday={0}
+      view="board" settingsBadge={0} reviewBadge={0} queueBadge={0} blockersBadge={0} accountsBadge={0} caps={null} tokensToday={0}
       feed={feed()} now={Date.now()} fetchLatencyMs={null} theme="thD" verbose={false}
       onNav={vi.fn()} onOpenPalette={vi.fn()} onOpenCost={vi.fn()} onToggleTheme={vi.fn()} onToggleVerbose={vi.fn()}
       {...overrides}

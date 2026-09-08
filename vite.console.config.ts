@@ -49,6 +49,7 @@ export default defineConfig({
       '/journal': proxied(),
       '/integrations': proxied(),
       '/caps': proxied(),
+      '/accounts': proxied(),
       '/proposals': proxied(),
       '/command': proxied(),
       '/run': proxied(),

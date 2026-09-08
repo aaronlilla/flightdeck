@@ -14,6 +14,8 @@ export interface TopBarProps {
   reviewBadge: number;
   queueBadge: number;
   blockersBadge: number;
+  /** Claude accounts paused on a rejected window or whose newest probe failed. */
+  accountsBadge: number;
   caps: Caps | null;
   tokensToday: number;
   feed: Feed;
@@ -34,7 +36,7 @@ export interface TopBarProps {
 /** Top nav: Board / Settings [n down] / Flight review [n proposed], ⌘K, spend today, feed stamp, clock, theme, verbose. */
 export function TopBar(props: TopBarProps): JSX.Element {
   const {
-    view, settingsBadge, reviewBadge, queueBadge, blockersBadge, caps, tokensToday, feed, now, fetchLatencyMs, theme,
+    view, settingsBadge, reviewBadge, queueBadge, blockersBadge, accountsBadge, caps, tokensToday, feed, now, fetchLatencyMs, theme,
     verbose, onNav, onOpenPalette, onOpenCost, onToggleTheme, onToggleVerbose,
   } = props;
   const overDaily = caps ? tokensToday > caps.dailyTokens : false;
@@ -77,6 +79,9 @@ export function TopBar(props: TopBarProps): JSX.Element {
         </a>
         <a className={`nav ${view === 'blockers' ? 'navOn' : ''}`} onClick={() => onNav('blockers')}>
           Blockers{blockersBadge > 0 ? <span style={{ color: 'var(--block)' }}> {blockersBadge}</span> : null}
+        </a>
+        <a className={`nav ${view === 'accounts' ? 'navOn' : ''}`} onClick={() => onNav('accounts')} data-testid="nav-accounts">
+          Accounts{accountsBadge > 0 ? <span title="paused or not connected" style={{ color: 'var(--block)' }}> {accountsBadge}</span> : null}
         </a>
       </div>
       <span style={{ flex: 1 }} />
