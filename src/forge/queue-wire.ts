@@ -306,6 +306,17 @@ export function queueMergeDeps(deps: ForgeDeps, store: QueueRuntimeDeps['store']
   return {
     mergeAllowed: queueMergeAllowed(),
     gate: chainGate(deps),
+    // B: the same council `advanceItem` already calls, so a moved head at Merge time
+    // re-councils through the same real path a first gate round does.
+    council: chainCouncil(deps),
+    append: (event) => {
+      const journal = new Journal(journalPath());
+      try {
+        return journal.append(event);
+      } finally {
+        journal.close();
+      }
+    },
     clock: () => Date.now(),
     store,
     ...(chainEnv ? { postMergeVerify: queuePostMergeVerify(chainEnv) } : {}),

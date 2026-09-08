@@ -510,6 +510,14 @@ export interface QueueItem {
   /** A.1: how many times this item has been relaunched on a FIX FIRST round -- 0 or
    *  absent means the fix round hasn't been used yet, and it's capped at one. */
   fixRoundsUsed?: number;
+  /** B (2026-09-08): set by `retryItem` alongside `state: 'running'`, when the retried
+   *  item already carries a `runKey` -- marks that this pass through `advanceItem` is a
+   *  retry of an in-flight run, not the tick that first launched it. `advanceItem` reads
+   *  it only when a finished run's status comes back with no PR anywhere: instead of
+   *  parking the retry right back where it started (the old run's stale verdict), it
+   *  clears `runKey` and this field together and launches a fresh run. Cleared the moment
+   *  that relaunch happens; absent or null means an ordinary first pass. */
+  retriedAt?: number | null;
   /** A.3: when the Jira write-back at review ran for this item -- absent means it
    *  hasn't fired yet. Set once, alongside the transition into `review`. */
   handoffAt?: number;

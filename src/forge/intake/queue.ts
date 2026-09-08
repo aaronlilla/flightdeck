@@ -169,8 +169,13 @@ export function retryItem(store: QueueStore, id: string, now: number = Date.now(
   const item = store.get(id);
   if (!item || (item.state !== 'parked' && item.state !== 'failed')) return undefined;
   const state: QueueItemState = item.runKey ? 'running' : 'queued';
-  store.append({ id, at: now, state, reason: null, updatedAt: now });
-  return { ...item, state, reason: null, updatedAt: now };
+  // B: `retriedAt` only matters when a runKey already exists -- `advanceItem` reads it to
+  // tell a retry of a run that finished with no PR apart from the ordinary first read of
+  // that same status, so the retry can clear the stale runKey and launch again instead of
+  // reporting the same old verdict back to a person a second time.
+  const patch: Partial<QueueItem> = { state, reason: null, updatedAt: now, ...(item.runKey ? { retriedAt: now } : {}) };
+  store.append({ id, at: now, ...patch });
+  return { ...item, ...patch };
 }
 
 // ---------------------------------------------------------------------------------------
@@ -285,6 +290,28 @@ function writeTransition(
   return next;
 }
 
+/** B: the "finished but no PR anywhere" outcome parks an item on any ordinary first
+ *  read, but a retry (`item.retriedAt` set by `retryItem`) means an operator already
+ *  asked for this run to be looked at again, and `deps.launcher.status` is answering
+ *  with the same stale verdict as before -- seen live at 13:25, 13:28 and 13:35 on
+ *  2026-09-08 (BBZ-233, items Q-0fff83b0 and Q-2181b071), parking again within seconds
+ *  of the retry click. So a retry clears `runKey` and the marker together, journals the
+ *  relaunch, and re-enters `advanceItem` at once -- which lands on the launch hop
+ *  (`!item.runKey`) and provisions a fresh run on the same worktree and branch. An item
+ *  with no `retriedAt` still parks exactly as before. */
+async function relaunchOnRetryOrPark(
+  item: QueueItem, deps: QueueRuntimeDeps, reason: string, extra: Record<string, unknown>,
+): Promise<QueueItem> {
+  if (item.retriedAt) {
+    const relaunching = writeTransition(
+      item, { runKey: null, retriedAt: null }, deps, 'queue.relaunch-on-retry',
+      { previousRunKey: item.runKey, parkReason: reason },
+    );
+    return advanceItem(relaunching, deps);
+  }
+  return writeTransition(item, { state: 'parked', reason }, deps, 'queue.parked', extra);
+}
+
 /**
  * One item, one hop forward. Mirrors `chain.ts`'s `advancePacket`: plan if there is no
  * brief yet, provision and launch if there is no run yet, then wait for the run and gate
@@ -361,13 +388,12 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
     if (pr && status.verdict !== undefined) {
       deps.append({ event: 'queue.unverified-pr', actor: 'queue', itemId: item.id, pr: pr.number, url: pr.url, verdict: status.verdict });
     } else {
-      return writeTransition(item, { state: 'parked', reason: status.verdict ?? 'unknown' }, deps, 'queue.parked', { hop: 'gate' });
+      return relaunchOnRetryOrPark(item, deps, status.verdict ?? 'unknown', { hop: 'gate' });
     }
   }
   if (!pr) {
-    return writeTransition(
-      item, { state: 'parked', reason: 'run finished done but no PR was found in its evidence or on its branch' },
-      deps, 'queue.parked', { hop: 'gate' },
+    return relaunchOnRetryOrPark(
+      item, deps, 'run finished done but no PR was found in its evidence or on its branch', { hop: 'gate' },
     );
   }
 
@@ -611,6 +637,14 @@ export interface QueueMergeDeps {
    *  operator changing it takes effect on the next click. */
   mergeAllowed: (repo: string) => boolean;
   gate: ChainGateFn;
+  /** B (2026-09-08): re-councils a PR whose head has moved past its last attestation --
+   *  the same dependency shape `advanceItem` already calls the council with. Absent means
+   *  a merge refused for a missing attestation stays refused, the behavior every specimen
+   *  before this stream already proved. */
+  council?: QueueCouncilFn;
+  /** B: writes one row to the fleet journal for the re-council itself. Absent means no
+   *  journal row is written for it, matching every other optional write in this file. */
+  append?: (event: Record<string, unknown>) => QueueJournalWrite;
   /** Polls the develop deploy for its per-platform OTA outcome, once the merge itself
    *  landed. Absent means this environment never wires it, and the item still lands on
    *  `done`, just without an OTA line in its reason. */
@@ -637,7 +671,30 @@ export async function mergeItem(item: QueueItem, deps: QueueMergeDeps): Promise<
     return { ok: false, message: `${item.repo ?? 'this repo'} is not on the queue's merge allow-list` };
   }
 
-  const result = await deps.gate({ repo: item.repo!, pr: item.pr.no, merge: true });
+  let result = await deps.gate({ repo: item.repo!, pr: item.pr.no, merge: true });
+
+  // B (2026-09-08): PR #121 picked up a fix commit after its last council round, and the
+  // gate refused with "no attestation for owner/name#9 at head <sha> -- run forge council
+  // first" even though the fix was already good -- the attestation the gate wants is for
+  // a head that no longer exists. Rather than sending an operator back to run `forge
+  // council` by hand, re-council this head once and retry the gate if it clears.
+  if (!result.merged && deps.council && (result.reason ?? []).some((line) => line.includes('no attestation for'))) {
+    deps.append?.({ event: 'queue.recouncil', actor: 'queue', itemId: item.id, repo: item.repo, pr: item.pr.no });
+    const council = await deps.council({
+      repo: item.repo!, pr: item.pr.no, forceCodex: true,
+      ...(item.worktreePath ? { cwd: item.worktreePath } : {}),
+      ...(item.base ? { baseRef: `origin/${item.base}` } : {}),
+    });
+    const councilCleared = council.verdict === 'PASS' || council.verdict === 'PASS WITH NOTES';
+    if (councilCleared) {
+      result = await deps.gate({ repo: item.repo!, pr: item.pr.no, merge: true });
+    } else {
+      const why = result.reason?.length ? result.reason.join(' | ') : 'no reason recorded';
+      const summary = council.coverageNote ? `${council.verdict}: ${council.coverageNote}` : council.verdict;
+      return { ok: false, message: `the merge did not complete: ${why} (recouncil: ${summary})` };
+    }
+  }
+
   if (!result.merged) {
     const why = result.reason?.length ? result.reason.join(' | ') : 'no reason recorded';
     return { ok: false, message: `the merge did not complete: ${why}` };
