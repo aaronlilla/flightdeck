@@ -1,5 +1,5 @@
 import {
-  app, BrowserWindow, Menu, Tray, shell, dialog, ipcMain, nativeImage,
+  app, BrowserWindow, Menu, Tray, shell, dialog, ipcMain,
 } from 'electron';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { execFileSync, spawn as nodeSpawn } from 'node:child_process';
@@ -20,6 +20,7 @@ import { queueIsOn } from './queue-state';
 import { WINDOW_OPTIONS, STATUS_WINDOW_OPTIONS } from './window-options';
 import { statusPageHtml } from './status-page';
 import { settingsPageHtml } from './settings-page';
+import { appIcon, trayIcon } from './brand';
 
 const CONSOLE_ORIGIN = 'http://127.0.0.1:4120';
 
@@ -89,6 +90,7 @@ function logToStatus(line: string): void {
 function createStatusWindow(): BrowserWindow {
   const win = new BrowserWindow({
     ...STATUS_WINDOW_OPTIONS,
+    icon: appIcon(),
     title: 'Forge — starting…',
     webPreferences: {
       ...STATUS_WINDOW_OPTIONS.webPreferences,
@@ -112,6 +114,7 @@ function createSettingsWindow(): BrowserWindow {
   const current = readSettings(fsAdapter, settingsPath()).forgeEnv ?? {};
   const win = new BrowserWindow({
     ...STATUS_WINDOW_OPTIONS,
+    icon: appIcon(),
     title: 'Forge — environment',
     webPreferences: {
       ...STATUS_WINDOW_OPTIONS.webPreferences,
@@ -152,6 +155,7 @@ function createMainWindow(): BrowserWindow {
   const win = new BrowserWindow({
     ...WINDOW_OPTIONS,
     ...(bounds ?? {}),
+    icon: appIcon(),
     title: currentLabel,
     webPreferences: { ...WINDOW_OPTIONS.webPreferences },
   });
@@ -285,8 +289,7 @@ async function bootstrap(): Promise<void> {
 }
 
 function buildTray(): Tray {
-  const icon = nativeImage.createEmpty();
-  const trayInstance = new Tray(icon);
+  const trayInstance = new Tray(trayIcon());
   trayInstance.setToolTip('Forge');
   trayInstance.setContextMenu(Menu.buildFromTemplate([
     { label: 'Show', click: focusExisting },
@@ -359,6 +362,11 @@ async function handleQuitRequest(): Promise<void> {
   isQuitting = true;
   app.quit();
 }
+
+// Matches `appId` in electron-builder.yml, so the taskbar files the window under
+// the same identity as the installed shortcut and shows the shortcut's icon
+// when pinned.
+if (process.platform === 'win32') app.setAppUserModelId('com.forge.console');
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();

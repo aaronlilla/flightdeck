@@ -1,6 +1,8 @@
 import { defineConfig, devices } from '@playwright/test';
 
-const PORT = 4130;
+// Overridable so two checkouts can run their suites at once; with the default,
+// `reuseExistingServer` would attach the second run to the first one's stub.
+const PORT = Number(process.env['FORGE_E2E_PORT'] ?? 4130);
 
 export default defineConfig({
   testDir: './tests/e2e',
