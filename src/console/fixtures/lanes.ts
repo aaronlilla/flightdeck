@@ -48,7 +48,7 @@ function lane(partial: Partial<Lane> & Pick<Lane, 'id' | 'state'>): Lane {
   // `now` mirrors `plain` per the board-at-a-glance contract; `you` is computed off
   // the finished lane, matching the real server's own `withHumanFields`, unless a
   // fixture author overrode it explicitly.
-  built.now = built.plain;
+  if (partial.now === undefined) built.now = built.plain;
   if (partial.you === undefined) built.you = computeYou(built);
   return built;
 }
@@ -81,6 +81,7 @@ export function seedLanes(): Lane[] {
     lane({
       id: 'FLT-204', ticket: 'FLT-204', state: 'running', heart: true, runaway: true, hop: 2, hopStatus: 'live',
       stepN: 2, stepTotal: 6, stepText: 'retrying a flaky build step',
+      now: 'step 2/6 · retrying a flaky build step',
       ctxTokens: 70_000, tokens: 5_500_000, tokenCap: 1_600_000, tokensPerMin: 260_000, fails: 2,
       observedAt: now - 2_000, verifiedAt: now - 2_000, since: now - 30 * 60_000, startedAt: now - 30 * 60_000,
     }),

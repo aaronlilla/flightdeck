@@ -404,7 +404,7 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
             "Untitled run" -- never the run id, which lives only in the title attribute
             (and, in verbose mode, in the small id chip on the row below). */}
         <span className="m" title={headline.runId} style={{ fontSize: 22, fontWeight: 700 }}>
-          {lane.title ?? lane.ticket ?? 'Untitled run'}
+          <Linkify text={lane.title ?? lane.ticket ?? 'Untitled run'} repo={lane.repo} />
         </span>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px 20px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -412,7 +412,7 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
               lane.sourceUrl ? (
                 <a className="chip chipB" href={lane.sourceUrl} target="_blank" rel="noreferrer">{lane.ticket}</a>
               ) : (
-                <span className="chip">{lane.ticket}</span>
+                <span className="chip"><Linkify text={lane.ticket} repo={lane.repo} /></span>
               )
             ) : null}
             <span className="chip">{kindLabel(lane.kind)}</span>

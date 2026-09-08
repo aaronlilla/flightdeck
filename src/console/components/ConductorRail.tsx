@@ -235,7 +235,7 @@ export function MessageCard({
       return (
         <div style={{ border: '1px solid var(--hand)', borderRadius: 4, maxWidth: '94%' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 12px', borderBottom: '1px solid var(--line)' }}>
-            <span className="lbl" style={{ color: 'var(--hand)' }}>Question · from {labelFor?.(message.source) ?? message.source}</span>
+            <span className="lbl" style={{ color: 'var(--hand)' }}>Question · from <Linkify text={labelFor?.(message.source) ?? message.source} repo={repo} /></span>
             <span className={freshnessClass(fresh)}>{compactFreshnessStamp(fresh)}</span>
           </div>
           <div style={{ padding: '10px 12px', font: '13px/1.5 "IBM Plex Sans",sans-serif' }}><Linkify text={message.text} repo={repo} /></div>

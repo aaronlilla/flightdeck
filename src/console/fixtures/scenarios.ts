@@ -49,7 +49,7 @@ function lane(partial: Partial<Lane> & Pick<Lane, 'id' | 'state'>): Lane {
     needsAaron: null,
     ...partial,
   };
-  built.now = built.plain;
+  if (partial.now === undefined) built.now = built.plain;
   if (partial.you === undefined) built.you = computeYou(built);
   return built;
 }

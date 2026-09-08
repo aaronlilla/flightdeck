@@ -36,7 +36,11 @@ test('H1.3 fix: a PR the board has never read shows "checks not read yet" and no
   await page.goto('/');
   const tile = page.getByTestId('lane-unread-pr-1');
   await expect(tile).toBeVisible();
-  await expect(tile.getByRole('link', { name: 'PR #121' })).toBeVisible();
+  // 2026-09-08: the PR summary line's own link (the lane's real `pr.url`) is a
+  // second, distinct link from the "Links everywhere" one the Now sentence's own
+  // "Draft PR #121" mention now also earns -- both are correct, so this scopes to
+  // the summary line's link by its own href rather than assuming there is only one.
+  await expect(tile.locator('a[href="https://example.invalid/pr/121"]')).toBeVisible();
   await expect(tile.getByText(/checks not read yet/)).toBeVisible();
   await expect(tile.getByText(/0 files/)).toHaveCount(0);
 });
