@@ -86,7 +86,9 @@ describe('parseIntent', () => {
     expect(parseIntent("what's stuck")).toEqual({ kind: 'what-stuck' });
     expect(parseIntent('spend today')).toEqual({ kind: 'spend-today' });
     expect(parseIntent('status')).toEqual({ kind: 'status' });
-    expect(parseIntent('answer backfill')).toEqual({ kind: 'answer', text: 'backfill' });
+    expect(parseIntent('answer backfill')).toEqual({ kind: 'answer', askKey: null, text: 'backfill' });
+    expect(parseIntent('answer f92af4249f6a27ae Restart the forge MCP connection'))
+      .toEqual({ kind: 'answer', askKey: 'f92af4249f6a27ae', text: 'Restart the forge MCP connection' });
     expect(parseIntent('confirm abc123')).toEqual({ kind: 'confirm', token: 'abc123' });
     expect(parseIntent('run abc123')).toEqual({ kind: 'run-plan', token: 'abc123' });
     expect(parseIntent('dismiss abc123')).toEqual({ kind: 'dismiss', token: 'abc123' });
@@ -268,10 +270,11 @@ describe('ConsoleWrites.command / kill confirm flow', () => {
       lanesView: () => ({
         at: Date.now(),
         lanes: [
-          { id: 'alpha', state: 'running' } as never, { id: 'beta', state: 'running' } as never,
-          { id: 'gamma', state: 'blocked' } as never,
+          { id: 'alpha', ticket: 'BBZ-1', state: 'running' } as never,
+          { id: 'beta', ticket: 'BBZ-2', state: 'running' } as never,
+          { id: 'gamma', ticket: 'BBZ-3', state: 'blocked' } as never,
         ],
-        tokensToday: 12.5, tokensPerMin: 0.75,
+        tokensToday: 12.5, tokensPerMin: 0.75, links: { jiraSite: null, defaultRepo: null },
       }),
     });
 
@@ -280,17 +283,18 @@ describe('ConsoleWrites.command / kill confirm flow', () => {
     const reply = cards.find((card) => card.type === 'reply')!;
     expect(reply.text).toContain('2 running');
     expect(reply.text).toContain('1 blocked');
-    expect(reply.text).toContain('13 tokens today');
-    expect(reply.text).toContain('gamma (blocked)');
+    expect(reply.text).toContain('Spent 13 tokens today');
+    expect(reply.text).toContain('- BBZ-3 (blocked):');
     withView.stop();
   });
 
   it('lists at most five lanes needing attention, by id and state, labeling a runaway as such', async () => {
     const lanes = [
-      { id: 'a', state: 'parked' }, { id: 'b', state: 'blocked' },
-      { id: 'c', state: 'running', runaway: true },
-      { id: 'd', state: 'parked' }, { id: 'e', state: 'blocked' }, { id: 'f', state: 'parked' },
-      { id: 'ok', state: 'running' },
+      { id: 'a', ticket: 'BBZ-11', state: 'parked' }, { id: 'b', ticket: 'BBZ-12', state: 'blocked' },
+      { id: 'c', ticket: 'BBZ-13', state: 'running', runaway: true },
+      { id: 'd', ticket: 'BBZ-14', state: 'parked' }, { id: 'e', ticket: 'BBZ-15', state: 'blocked' },
+      { id: 'f', ticket: 'BBZ-16', state: 'parked' },
+      { id: 'ok', ticket: 'BBZ-17', state: 'running' },
     ];
     const withView = new ConsoleWrites({
       journalPath, registry, inbox, actuator,
@@ -300,17 +304,17 @@ describe('ConsoleWrites.command / kill confirm flow', () => {
       rulesConfigPath: join(dir, 'rules-3.json'),
       integrationsConfigPath: join(dir, 'integrations-3.json'),
       lanesView: () => ({
-        at: Date.now(), lanes: lanes as never, tokensToday: 0, tokensPerMin: 0,
+        at: Date.now(), lanes: lanes as never, tokensToday: 0, tokensPerMin: 0, links: { jiraSite: null, defaultRepo: null },
       }),
     });
 
     const cards = await withView.command('status');
 
     const reply = cards.find((card) => card.type === 'reply')!;
-    expect(reply.text).toContain('needs attention');
-    expect(reply.text).toContain('c (runaway)');
-    expect(reply.text).not.toContain('ok (');
-    const namedLanes = /needs attention: ([^.]+)\./.exec(reply.text)?.[1]?.split(', ') ?? [];
+    expect(reply.text).toContain('Needs you:');
+    expect(reply.text).toContain('- BBZ-13 (runaway):');
+    expect(reply.text).not.toContain('- BBZ-17 (');
+    const namedLanes = reply.text.split('\n').filter((line) => line.startsWith('- '));
     expect(namedLanes).toHaveLength(5);
     withView.stop();
   });
@@ -326,7 +330,10 @@ describe('ConsoleWrites.command / kill confirm flow', () => {
     const cards = await writes.command('why is alpha stuck');
 
     const reply = cards.find((card) => card.type === 'reply')!;
-    expect(reply.text.startsWith('blocked: base drift')).toBe(true);
+    // No lanesView wired here, so labelFor has nothing to name "alpha" by beyond the
+    // id itself -- item 8's manual-lane fallback: an id shaped like none of ticket,
+    // self, chain or probe reads as its own slug, the name a person typed.
+    expect(reply.text.startsWith('alpha is blocked: base drift')).toBe(true);
     expect(reply.text).not.toContain('burn.mismatch');
   });
 
@@ -350,5 +357,195 @@ describe('ConsoleWrites.command / kill confirm flow', () => {
 
     expect(cards.some((card) => card.type === 'receipt')).toBe(true);
     expect(inbox.open()).toHaveLength(0);
+  });
+
+  it('deliverable 3: answer <askKey> <text> delivers only the text, never the key alongside it', async () => {
+    const raised = inbox.raise({ run: 'alpha', question: 'Restart the forge MCP connection?' });
+
+    const cards = await writes.command(`answer ${raised.key} Restart`);
+
+    const answered = inbox.entry(raised.key);
+    expect(answered?.answer).toBe('Restart');
+    const receipt = cards.find((card) => card.type === 'receipt')!;
+    expect(receipt.text).toBe('Answered "Restart the forge MCP connection?": Restart');
+  });
+});
+
+describe('ConsoleWrites: lane addressing by ticket key or title (deliverable 4)', () => {
+  function writesWithLanes(lanes: unknown[]): ConsoleWrites {
+    return new ConsoleWrites({
+      journalPath, registry, inbox, actuator,
+      authorized: () => true,
+      ledgerPath: join(dir, `actions-${Math.random()}.jsonl`),
+      capsOverridesPath: join(dir, `caps-${Math.random()}.json`),
+      rulesConfigPath: join(dir, `rules-${Math.random()}.json`),
+      integrationsConfigPath: join(dir, `integrations-${Math.random()}.json`),
+      lanesView: () => ({ at: Date.now(), lanes: lanes as never, tokensToday: 0, tokensPerMin: 0, links: { jiraSite: null, defaultRepo: null } }),
+    });
+  }
+
+  it('kill BBZ-182 resolves to the newest lane whose ticket matches, case-insensitively', async () => {
+    registry.admit({ goal: 'queue-BBZ-182-2', cwd: dir, briefPath: join(dir, 'a.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'queue-BBZ-182-2', actor: 'runner' });
+    const withLanes = writesWithLanes([
+      { id: 'queue-BBZ-182-1', ticket: 'BBZ-182', startedAt: 1_000, state: 'blocked' },
+      { id: 'queue-BBZ-182-2', ticket: 'bbz-182', startedAt: 5_000, state: 'blocked' },
+    ]);
+
+    const cards = await withLanes.command('kill BBZ-182');
+    const confirm = cards.find((card) => card.type === 'confirm')!;
+    const token = confirm.btns!.find((btn) => btn.cmd.startsWith('confirm '))!.cmd.split(' ')[1]!;
+    await withLanes.command(`confirm ${token}`);
+    expect(actuator.killed).toEqual(['queue-BBZ-182-2']);
+    withLanes.stop();
+  });
+
+  it('resume BBZ-89 resolves and resumes only that lane, not every needs_aaron lane', async () => {
+    registry.admit({ goal: 'queue-BBZ-89', cwd: dir, briefPath: join(dir, 'a.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'queue-BBZ-89', actor: 'runner' });
+    appendOnce(journalPath, { event: 'run.paused', run: 'queue-BBZ-89', actor: 'runner' });
+    const withLanes = writesWithLanes([
+      { id: 'queue-BBZ-89', ticket: 'BBZ-89', startedAt: 1_000, state: 'paused' },
+    ]);
+
+    const cards = await withLanes.command('resume BBZ-89');
+    expect(actuator.resumed).toEqual(['queue-BBZ-89']);
+    expect(cards.some((card) => card.type === 'receipt')).toBe(true);
+    withLanes.stop();
+  });
+
+  it('cap BBZ-96 at 500k resolves by ticket before setting the cap', async () => {
+    registry.admit({ goal: 'queue-BBZ-96', cwd: dir, briefPath: join(dir, 'a.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'queue-BBZ-96', actor: 'runner' });
+    const withLanes = writesWithLanes([
+      { id: 'queue-BBZ-96', ticket: 'BBZ-96', startedAt: 1_000, state: 'running' },
+    ]);
+
+    const cards = await withLanes.command('cap BBZ-96 at 500k');
+    expect(cards.some((card) => card.type === 'receipt')).toBe(true);
+    expect(cards.some((card) => card.type === 'refusal')).toBe(false);
+    withLanes.stop();
+  });
+
+  it('why is BBZ-226 stuck resolves by ticket', async () => {
+    registry.admit({ goal: 'queue-BBZ-226', cwd: dir, briefPath: join(dir, 'a.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'queue-BBZ-226', actor: 'runner' });
+    appendOnce(journalPath, { event: 'run.blocked', run: 'queue-BBZ-226', actor: 'runner', reason: 'context ceiling' });
+    const withLanes = writesWithLanes([
+      { id: 'queue-BBZ-226', ticket: 'BBZ-226', startedAt: 1_000, state: 'blocked' },
+    ]);
+
+    const cards = await withLanes.command('why is BBZ-226 stuck');
+    const reply = cards.find((card) => card.type === 'reply')!;
+    expect(reply.text).toContain('context ceiling');
+    withLanes.stop();
+  });
+
+  it('names what it looked for when nothing matches', async () => {
+    const withLanes = writesWithLanes([{ id: 'queue-BBZ-1', ticket: 'BBZ-1', startedAt: 1_000, state: 'running' }]);
+
+    const cards = await withLanes.command('kill BBZ-9999');
+    const refusal = cards.find((card) => card.type === 'refusal')!;
+    expect(refusal.text).toBe('No lane matches "BBZ-9999".');
+    withLanes.stop();
+  });
+
+  it('falls back to a lane whose title contains the token when no ticket or id matches', async () => {
+    registry.admit({ goal: 'queue-brief-tidy', cwd: dir, briefPath: join(dir, 'a.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'queue-brief-tidy', actor: 'runner' });
+    const withLanes = writesWithLanes([
+      { id: 'queue-brief-tidy', ticket: null, title: 'tidy the queue worker', startedAt: 1_000, state: 'running' },
+    ]);
+
+    const cards = await withLanes.command('kill worker');
+    const confirm = cards.find((card) => card.type === 'confirm')!;
+    const token = confirm.btns!.find((btn) => btn.cmd.startsWith('confirm '))!.cmd.split(' ')[1]!;
+    await withLanes.command(`confirm ${token}`);
+    expect(actuator.killed).toEqual(['queue-brief-tidy']);
+    withLanes.stop();
+  });
+});
+
+describe('ConsoleWrites: replies in words, multi-line (deliverable 5)', () => {
+  function writesWithLanes(lanes: unknown[], tokensToday = 306_000_000, tokensPerMin = 2_400): ConsoleWrites {
+    return new ConsoleWrites({
+      journalPath, registry, inbox, actuator,
+      authorized: () => true,
+      ledgerPath: join(dir, `actions-${Math.random()}.jsonl`),
+      capsOverridesPath: join(dir, `caps-${Math.random()}.json`),
+      rulesConfigPath: join(dir, `rules-${Math.random()}.json`),
+      integrationsConfigPath: join(dir, `integrations-${Math.random()}.json`),
+      lanesView: () => ({ at: Date.now(), lanes: lanes as never, tokensToday, tokensPerMin, links: { jiraSite: null, defaultRepo: null } }),
+    });
+  }
+
+  it('status: two summary lines, then Needs you with one line per attention lane', async () => {
+    const withLanes = writesWithLanes([
+      { id: 'a', ticket: 'BBZ-226', state: 'blocked', reason: 'checks are failure on head 88d44ec96baea849f7c1e8c0a1b2c3d4e5f6a7b8' },
+      { id: 'b', state: 'running' },
+    ]);
+    const cards = await withLanes.command('status');
+    const reply = cards.find((card) => card.type === 'reply')!;
+    const lines = reply.text.split('\n');
+    expect(lines[0]).toBe('2 lanes: 1 blocked, 1 running.');
+    expect(lines[1]).toBe('Spent 306M tokens today, burning 2.4k tokens a minute.');
+    expect(lines[2]).toBe('Needs you:');
+    expect(lines[3]).toMatch(/^- BBZ-226 \(blocked\): checks are failure on head [0-9a-f]{7}$/);
+    withLanes.stop();
+  });
+
+  it('what\'s stuck: nothing is stuck, or one line per signal using the shared phrasing', async () => {
+    const noneStuck = writesWithLanes([]);
+    const noneCards = await noneStuck.command("what's stuck");
+    expect(noneCards.find((c) => c.type === 'reply')!.text).toBe('Nothing is stuck.');
+    noneStuck.stop();
+
+    const withStuck = new ConsoleWrites({
+      journalPath, registry, inbox, actuator,
+      authorized: () => true,
+      ledgerPath: join(dir, `actions-${Math.random()}.jsonl`),
+      capsOverridesPath: join(dir, `caps-${Math.random()}.json`),
+      rulesConfigPath: join(dir, `rules-${Math.random()}.json`),
+      integrationsConfigPath: join(dir, `integrations-${Math.random()}.json`),
+      lanesView: () => ({ at: Date.now(), lanes: [{ id: 'alpha', ticket: 'BBZ-1', state: 'running' }] as never, tokensToday: 0, tokensPerMin: 0, links: { jiraSite: null, defaultRepo: null } }),
+      stuck: () => [{ key: 'alpha', signal: 'context', threshold: 1, observed: 1, since: 1, hint: 'x' }],
+    });
+    const stuckCards = await withStuck.command("what's stuck");
+    const reply = stuckCards.find((c) => c.type === 'reply')!;
+    expect(reply.text).toBe('- BBZ-1: context ceiling reached, handed off to a fresh session');
+    withStuck.stop();
+  });
+
+  it('merge ready lanes: plan items name the PR number and the ticket', async () => {
+    registry.admit({ goal: 'queue-BBZ-99', cwd: dir, briefPath: join(dir, 'a.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'queue-BBZ-99', actor: 'runner' });
+    appendOnce(journalPath, { event: 'chain.launched', actor: 'chain', packetId: 'p1', runKey: 'queue-BBZ-99' });
+    appendOnce(journalPath, { event: 'chain.gated', actor: 'chain', packetId: 'p1', verdict: 'PASS' });
+    const withLanes = writesWithLanes([
+      { id: 'queue-BBZ-99', ticket: 'BBZ-99', state: 'done', pr: { no: 118, url: 'https://x/118', draft: false } },
+    ]);
+    const cards = await withLanes.command('merge ready lanes');
+    const plan = cards.find((card) => card.type === 'plan')!;
+    expect(plan.items!.map((item) => item.text)).toContain('Merge PR #118 (BBZ-99)');
+    withLanes.stop();
+  });
+
+  it('kill: the confirm blast names the label, in words', async () => {
+    registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'alpha', actor: 'runner' });
+    const withLanes = writesWithLanes([{ id: 'alpha', ticket: 'BBZ-50', state: 'running' }]);
+    const cards = await withLanes.command('kill alpha');
+    const confirm = cards.find((card) => card.type === 'confirm')!;
+    expect(confirm.blast).toBe('BBZ-50 stops now; its worktree and process are gone.');
+    withLanes.stop();
+  });
+
+  it('unknown: the exact suggestion sentence', async () => {
+    const cards = await writes.command('do a barrel roll');
+    const reply = cards.find((card) => card.type === 'reply')!;
+    expect(reply.text).toBe(
+      'I did not understand that. Try one of: pause, resume, kill <ticket>, merge ready lanes, '
+      + 'raise daily cap to <n>, cap <ticket> at <n>, why is <ticket> stuck, what\'s stuck, spend today, status, answer <text>.',
+    );
   });
 });

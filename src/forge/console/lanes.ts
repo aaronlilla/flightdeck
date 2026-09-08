@@ -14,12 +14,19 @@ import type { ClassSpec } from '../policy.js';
 import type { Hop, Lane, LaneKind, LanePr, LaneQuestion, LaneSandbox, LaneState, LanesResponse, MergeReadyReport } from '../../shared/console-model.js';
 import { textFor } from './journal-route.js';
 import { plainStatus } from './plain.js';
+import { computeDid } from './laneGlance.js';
+import { shortenShas, stripMachineIds, ticketInId } from '../../shared/humanize.js';
 
 /** Journal rows that carry no narrative on their own: burn accounting, per-tool
  *  chatter, warden health pings. `stepText` and the "why is X stuck" reply both skip
  *  these unless nothing else is left to show, so a run's step text or its stuck
  *  explanation never reads as three `burn.mismatch` rows in a row. */
 const NOISE_EVENTS = new Set(['burn.mismatch', 'result.usage', 'subagent.usage', 'warden.health', 'tool.end']);
+
+/** Item 10: how long a lane reading running/handed-off, with no live registry row
+ *  anywhere in its chain, gets to file one more journal row before it reads as
+ *  abandoned rather than working. */
+const ABANDONED_MS = 10 * 60 * 1000;
 
 /** `events`, minus noise rows, unless that leaves nothing. A run whose only rows are
  *  noise still needs something to render, not an empty step text. */
@@ -85,6 +92,38 @@ export function modelAlias(modelId: string | null | undefined): string {
  *  states, in a person's own words, what the lane is for. `null` for a brief with no
  *  top-level heading at all, or one that is nothing but the prefix once it is stripped --
  *  never the run id, and never the raw unstripped line. */
+/** A bare kind slug (`health-repeat`, `repeated-work`, `token-outlier`) with nothing
+ *  else in it -- what a self finding's own heading used to be before deliverable 2, and
+ *  what an already-written brief on disk still carries. Never a real title on its own. */
+const BARE_KIND_SLUG = /^[a-z]+(-[a-z]+)*$/;
+
+function truncateAtWordBoundary(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+  const cut = text.slice(0, limit);
+  const lastSpace = cut.lastIndexOf(' ');
+  return (lastSpace > 0 ? cut.slice(0, lastSpace) : cut).trim();
+}
+
+function capitalizeFirst(text: string): string {
+  return text ? text.charAt(0).toUpperCase() + text.slice(1) : text;
+}
+
+/** The brief's first non-empty line that is not itself a heading, after its own top
+ *  heading -- a self finding's summary sentence, on an already-written brief whose
+ *  heading is nothing but the finding's bare kind. Trimmed to 120 characters at a word
+ *  boundary and capitalised, so it reads as a title rather than a quoted line. */
+function firstBodyParagraph(brief: string): string | null {
+  const lines = brief.split(/\r?\n/);
+  const headingIndex = lines.findIndex((line) => /^#[ \t]+/.test(line));
+  const rest = headingIndex >= 0 ? lines.slice(headingIndex + 1) : lines;
+  for (const rawLine of rest) {
+    const line = rawLine.trim();
+    if (!line || /^#{1,6}\s/.test(line)) continue;
+    return capitalizeFirst(truncateAtWordBoundary(line, 120));
+  }
+  return null;
+}
+
 export function titleFromHeading(brief: string, ticket: string | null): string | null {
   const match = /^#[ \t]+(.+)$/m.exec(brief);
   if (!match) return null;
@@ -96,7 +135,9 @@ export function titleFromHeading(brief: string, ticket: string | null): string |
     text = text.replace(new RegExp(`^${escaped}\\s*:?\\s*`, 'i'), '');
   }
   text = text.trim();
-  return text || null;
+  if (!text) return null;
+  if (BARE_KIND_SLUG.test(text)) return firstBodyParagraph(brief);
+  return text;
 }
 
 export interface TitleInput {
@@ -139,6 +180,36 @@ export function titleFor(input: TitleInput): { title: string | null; sourceUrl: 
       return { title: input.briefHeading, sourceUrl: null };
   }
 }
+
+/** The ticket key and the title `labelFor` reads for a given id, when the caller
+ *  already has a real lane to answer from -- `null` for an id the caller does not
+ *  recognise at all, which still leaves `labelFor` its own fallbacks. */
+export interface LabelLookup {
+  ticket: string | null;
+  title: string | null;
+}
+
+/** What a person calls a lane, anywhere on the server -- the rail, the run thread, the
+ *  reply grammar (item 8: this used to have three separate implementations, one per
+ *  caller, that disagreed with each other -- the rail's own copy answered a lane's
+ *  full TITLE where the reply grammar answered its ticket key, so the same lane read
+ *  two different ways in two different corners of the console).
+ *
+ *  Order: `lookup`'s own ticket for this id, else the ticket key baked into the id's
+ *  own shape; else `lookup`'s own title, trimmed to 60 characters at a word boundary;
+ *  else, for a manual lane, the id itself (a person typed that name, so it is the one
+ *  they know); else whatever ticket key `ticketInId` can still read out of the id;
+ *  else a bare "a run". Never the raw run id on its own. */
+export function labelFor(id: string, lookup: (id: string) => LabelLookup | null = () => null): string {
+  const found = lookup(id);
+  const ticket = found?.ticket ?? ticketFor(id, undefined);
+  if (ticket) return ticket;
+  if (found?.title) return truncateAtWordBoundary(found.title, LABEL_TITLE_LIMIT);
+  if (laneKindFor(id) === 'manual') return id;
+  return ticketInId(id) ?? 'a run';
+}
+
+const LABEL_TITLE_LIMIT = 60;
 
 export interface MergeableInput {
   pr: LanePr | null;
@@ -347,20 +418,30 @@ export interface LaneStateResult {
 
 /**
  * The lane's own `LaneState`, and why -- in the precedence order the brief lays out:
- * a merged chain packet wins outright, then an explicit `needs_aaron` flag, then the
- * run's own last event being `run.blocked` or `run.killed` (nothing later has moved it
- * on), then a chain-level block, then the registered run state, then the lane record's
- * own last-known verdict for a run the journal never heard from at all.
+ * a merged chain packet wins outright, then item 10's own queue-parked truth, then an
+ * explicit `needs_aaron` flag, then the run's own last event being `run.blocked` or
+ * `run.killed` (nothing later has moved it on), then a chain-level block, then the
+ * registered run state, then the lane record's own last-known verdict for a run the
+ * journal never heard from at all.
  */
 export function laneStateFor(input: {
   packet: ChainPacketState | undefined;
   lane: LaneRecord;
   runState: RunState | undefined;
   runEvents: ForgeEvent[];
+  /** Item 10: the queue item's own state and reason, when this lane is queue-sourced
+   *  and the caller has already looked one up, and its state is `parked`. A queue item
+   *  read as parked wins outright, whatever the run's own events say -- the live-board
+   *  finding this fixes had a self lane whose queue item was parked but whose run
+   *  events still read `started`, so the tile showed RUNNING with a park reason
+   *  printed one line under it. */
+  queueParked?: { reason: string | null };
 }): LaneStateResult {
-  const { packet, lane, runState, runEvents } = input;
+  const { packet, lane, runState, runEvents, queueParked } = input;
 
   if (packet?.merged) return { state: 'merged', reason: null };
+
+  if (queueParked) return { state: 'parked', reason: queueParked.reason };
 
   if (lane.needs_aaron) return { state: 'blocked', reason: lane.needs_aaron };
 
@@ -422,6 +503,10 @@ export interface LaneBuildInput {
   eventsByRun: Map<string, ForgeEvent[]>;
   /** `indexJiraCompleteTickets(fleet.events)`, built once per `computeLanes` call. */
   jiraCompleteTickets: Set<string>;
+  /** Item 10: the queue item's own state/reason for this lane, when one exists.
+   *  Optional -- a caller with no queue store wired (most tests) reads every lane
+   *  purely off the journal, same as before. */
+  queueStateFor?: (id: string) => { state: string; reason: string | null } | undefined;
 }
 
 function questionFor(id: string, openAsks: InboxEntry[]): LaneQuestion | null {
@@ -456,7 +541,9 @@ export function buildLane(input: LaneBuildInput): Lane {
   const runEvents = input.eventsByRun.get(terminal.key) ?? [];
   const packet = packetForRun(chain, id);
 
-  const { state, reason } = laneStateFor({ packet, lane, runState, runEvents });
+  const queueState = input.queueStateFor?.(id);
+  const queueParked = queueState?.state === 'parked' ? { reason: queueState.reason } : undefined;
+  let { state, reason } = laneStateFor({ packet, lane, runState, runEvents, queueParked });
 
   const ticket = ticketFor(id, runState);
   const className = runState?.className ?? lane.className ?? null;
@@ -482,9 +569,6 @@ export function buildLane(input: LaneBuildInput): Lane {
     // scope) -- a lane the journal has no run state for at all reads 0 tokens rather
     // than a conversion this file cannot honestly make.
     : 0;
-  const running = state === 'running' || state === 'handed-off';
-  const tokensPerMin = running ? Number((input.tokensPerHourValue / 60).toFixed(4)) : 0;
-
   const fails = runEvents.filter((row) => row.event === 'run.blocked' || row.event === 'engine.error').length;
 
   // I3: `lastEventAt` off the run's own last MEANINGFUL event, not `RunState.lastEventAt`
@@ -512,6 +596,19 @@ export function buildLane(input: LaneBuildInput): Lane {
   // registry row, not just `id`'s own. Backs `heart` for a stalled handoff (running
   // needs none of this: the terminal's own state already says so) and `runaway` below.
   const chainLive = chainIsLive(links, input.registryGet);
+
+  // Item 10: a lane whose run state still reads running/handed-off, with no live
+  // registry row anywhere in its chain AND no journal row in the last ten minutes,
+  // is a process that is simply gone -- not one quietly working. The live-board
+  // finding this fixes showed a tile banded RUNNING with a park reason printed one
+  // line under it, because nothing here had ever noticed the process had vanished.
+  if ((state === 'running' || state === 'handed-off') && !chainLive && now - lastEventAt >= ABANDONED_MS) {
+    state = 'blocked';
+    reason = 'its process is gone and it never reported finishing';
+  }
+
+  const running = state === 'running' || state === 'handed-off';
+  const tokensPerMin = running ? Number((input.tokensPerHourValue / 60).toFixed(4)) : 0;
   const heart = state === 'running' || (state === 'handed-off' && chainLive);
   const since = sinceFor(state, runEvents, lastEventAt);
 
@@ -579,8 +676,15 @@ export function buildLane(input: LaneBuildInput): Lane {
     // with the cap text instead of the red runaway treatment.
     runaway: running && tokenCap !== null && tokens > tokenCap && (state === 'running' || chainLive),
     needsAaron: lane.needs_aaron ?? null,
+    // `you` is filled in by `withHumanFields` (reads.ts), once `mergeable` exists to
+    // read the merge override off. `did`/`now` need only this fold's own `runEvents`
+    // and `pr`, so they are set here, and `now` is patched to match `plain` below.
+    did: computeDid(runEvents, input.prFor(id)),
+    now: '',
+    you: null,
   };
   built.plain = plainStatus(built, { now });
+  built.now = built.plain;
   return built;
 }
 
@@ -595,6 +699,8 @@ export interface LanesInput {
   capOverrides: Record<string, number>;
   prFor: (run: string) => LanePr | null;
   tokensPerHour: (lane: LaneRecord) => number;
+  /** Item 10: the queue item's own state/reason for a lane, when one exists. */
+  queueStateFor?: (id: string) => { state: string; reason: string | null } | undefined;
 }
 
 function startOfLocalDay(now: number): number {
@@ -632,6 +738,7 @@ export function computeLanes(input: LanesInput, now: number): LanesResponse {
       openAsks: input.openAsks, stuck: input.stuck, classFor: input.classFor,
       capOverride: input.capOverrides[lane.slug], prFor: input.prFor,
       attempt, tokensPerHourValue, eventsByRun, jiraCompleteTickets,
+      queueStateFor: input.queueStateFor,
     });
     tokensPerMin += built.tokensPerMin;
     return built;
@@ -650,9 +757,27 @@ export function computeLanes(input: LanesInput, now: number): LanesResponse {
     built.attempts = built.ticket ? ticketCounts.get(built.ticket)! : 1;
   }
 
+  // Deliverable 10: `plain` and `reason` leave this function free of machine ids -- a
+  // 40-character sha in a `checks are failure on head <sha>` reason used to reach the
+  // board unshortened. `labelFor` reads the ticket/title this same response already
+  // computed for a lane, so a reason naming another lane on the board names it the way
+  // a person would, not by its raw run id.
+  const labelFor = (id: string): string | null => {
+    const found = lanes.find((candidate) => candidate.id === id);
+    return found ? (found.ticket ?? found.title) : null;
+  };
+  for (const built of lanes) {
+    built.plain = shortenShas(stripMachineIds(built.plain, { labelFor }));
+    if (built.reason) built.reason = shortenShas(stripMachineIds(built.reason, { labelFor }));
+  }
+
   return {
     at: now, lanes, tokensToday: tokensToday(input.fleet.runs, now),
     tokensPerMin: Number(tokensPerMin.toFixed(4)),
+    // `reads.ts#lanesResponse` overwrites this with the real jiraSite/defaultRepo once
+    // it has read the queue and the lanes this function computed; this fold has neither
+    // to hand, so it names nothing rather than guessing.
+    links: { jiraSite: null, defaultRepo: null },
   };
 }
 

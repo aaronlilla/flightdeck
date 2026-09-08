@@ -34,24 +34,27 @@ import { computeJournalNarrative } from './journal-narrative.js';
 import { readAttestation } from '../council/attest.js';
 import { queueMergeAllowed } from '../queue-wire.js';
 import {
-  chainLinks, computeLanes, mergeableFor, mergeReadyReportFrom, tokensToday, titleFor, titleFromHeading,
-  windowLanes, type LanesInput,
+  chainLinks, computeLanes, labelFor as laneLabelFor, mergeableFor, mergeReadyReportFrom, tokensToday, titleFor,
+  titleFromHeading, windowLanes, type LanesInput,
 } from './lanes.js';
 import { computeLaneStory, type GitCommit } from './story.js';
 import { readRetired, retiredPath } from './retire.js';
-import { plainForQueueItem, plainStatus, type QueueVerdict } from './plain.js';
+import { plainForQueueItem, plainStatus, prMergedSentence, type QueueVerdict } from './plain.js';
+import { computeYou } from './laneGlance.js';
 import { readAttestationAtPath } from '../council/attest.js';
 import {
-  computeQueuePr, computeRunPr, PR_CACHE_TTL_MS, prCachePath, readPrCache, writePrCache,
-  type AttestationReaderFn, type Cache, type GhDetailLookupFn, type GhLookupFn, type GhPrDetail, type GhPrLookup,
+  computeBranchPr, computeQueuePr, computeRunPr, PR_CACHE_TTL_MS, prCachePath, readPrCache, writePrCache,
+  type AttestationReaderFn, type Cache, type GhBranchLookupFn, type GhBranchPr, type GhDetailLookupFn, type GhLookupFn,
+  type GhPrDetail, type GhPrLookup,
 } from './pr.js';
 import { computeProposals, readRules, rulesPath } from './proposals.js';
 import { computeSandbox, newestLogFile, packetForRun, tailLogWithSeverity } from './sandbox.js';
 import { computeRunThread, computeThread, readThread, threadPath } from './thread.js';
 import { computeLaneSummary, computeReadiness, type PrFacts } from './summary.js';
 import type { MergeReadyReport } from '../../shared/console-model.js';
-import { gitDrift, type DriftFn } from './drift.js';
+import { gitDrift, type DriftFacts, type DriftFn } from './drift.js';
 import { readChainEnv } from '../chain-env.js';
+import { shortenShas, stripMachineIds } from '../../shared/humanize.js';
 
 export interface ConsoleReadsOptions {
   lanes?: Lanes;
@@ -65,6 +68,10 @@ export interface ConsoleReadsOptions {
   /** H1.3: overrides `gh pr view`'s own checks/merged/title read. A specimen never
    *  shells out. */
   ghDetailLookup?: GhDetailLookupFn;
+  /** Item 11: overrides `gh pr list --repo <repo> --head <branch> --state all`, the
+   *  by-branch PR discovery for a lane whose queue item carries no PR at all. A
+   *  specimen never shells out. */
+  ghBranchLookup?: GhBranchLookupFn;
   /** H1.3: overrides the attestation-on-disk read for a PR's own council verdict. A
    *  specimen only. */
   attestationReader?: AttestationReaderFn;
@@ -91,7 +98,7 @@ export interface ConsoleReadsOptions {
   mergeAllowed?: (repo: string) => boolean;
   /** H1.6: overrides `git log` of a lane's own worktree for `GET /run/:id/story`'s
    *  commit entries. A specimen never shells out. */
-  gitLog?: (worktreePath: string) => Promise<GitCommit[]>;
+  gitLog?: (worktreePath: string, range: GitLogRange) => Promise<GitCommit[]>;
   /** 2026-09-07: overrides the ticket sheet summary's own drift facts (`GET`/`POST
    *  /run/:id/{summary,recheck}`). A specimen never shells out. Defaults to real git
    *  against `FORGE_REPO_CHECKOUTS`. */
@@ -163,6 +170,7 @@ function defaultGhDetailLookup(): GhDetailLookupFn {
       return {
         headSha: parsed.headRefOid, isDraft: parsed.isDraft ?? false, merged: Boolean(parsed.mergedAt),
         title: parsed.title ?? '', checks: conclusionOf(parsed.statusCheckRollup), body: parsed.body ?? null,
+        mergedAt: parsed.mergedAt ? Date.parse(parsed.mergedAt) : null,
       };
     } catch {
       return undefined;
@@ -170,13 +178,58 @@ function defaultGhDetailLookup(): GhDetailLookupFn {
   };
 }
 
-/** H1.6: `git log`, subjects only, oldest first -- the ticket sheet's own commit list.
- *  A worktree that no longer exists (a lane long since cleaned up) reads as no commits
- *  rather than throwing. */
-function defaultGitLog(): (worktreePath: string) => Promise<GitCommit[]> {
-  return async (worktreePath: string): Promise<GitCommit[]> => {
+/** The base a story's own commit range is read against: `queueItem.base` when the
+ *  queue set one, else whichever of `origin/develop`, `origin/main`, `main` this
+ *  worktree actually has, else `null` (no base resolved at all). */
+export interface GitLogRange {
+  base: string | null;
+  since: number;
+}
+
+async function resolveMergeBaseRange(worktreePath: string, base: string): Promise<string[] | null> {
+  const mergeBase = await execRun({
+    argv: ['git', 'merge-base', base, 'HEAD'],
+    cwd: worktreePath, owner: 'console-story-mergebase', cls: 'script',
+  });
+  if (!mergeBase.ok) return null;
+  const sha = (mergeBase.full ?? mergeBase.tail).trim();
+  return sha ? [`${sha}..HEAD`] : null;
+}
+
+const FALLBACK_BASE_CANDIDATES = ['origin/develop', 'origin/main', 'main'];
+
+/** H1.6 / story scoping: `git log`, subjects only, oldest first, scoped to the range a
+ *  story's commit entries should actually cover -- never the whole repository (2026-09-08
+ *  finding: a self lane with no queue base listed the whole flightdeck history, 218
+ *  commits back to 2026-08-10).
+ *
+ * `range.base` (`queueItem.base`) wins when set: `git log --reverse
+ * <merge-base(base,HEAD)>..HEAD`. With no base set, this tries `origin/develop`, then
+ * `origin/main`, then `main` in turn and uses the first that resolves. When neither the
+ * given base nor any fallback resolves (no such ref, or the worktree is not a git repo
+ * at all), this falls back to `git log --since=<range.since>` -- never the unranged
+ * whole-history log the bug used to run. A worktree that no longer exists (a lane long
+ * since cleaned up) reads as no commits rather than throwing. */
+function defaultGitLog(): (worktreePath: string, range: GitLogRange) => Promise<GitCommit[]> {
+  return async (worktreePath: string, range: GitLogRange): Promise<GitCommit[]> => {
+    let scope: string[] | null = null;
+    if (range.base) {
+      scope = await resolveMergeBaseRange(worktreePath, range.base);
+    } else {
+      for (const candidate of FALLBACK_BASE_CANDIDATES) {
+        const check = await execRun({
+          argv: ['git', 'rev-parse', '--verify', candidate],
+          cwd: worktreePath, owner: 'console-story-base-check', cls: 'script',
+        });
+        if (check.ok) {
+          scope = await resolveMergeBaseRange(worktreePath, candidate);
+          if (scope) break;
+        }
+      }
+    }
+    const rangeArgs = scope ?? [`--since=${new Date(range.since).toISOString()}`];
     const result = await execRun({
-      argv: ['git', 'log', '--reverse', '--format=%H%x09%ct%x09%s'],
+      argv: ['git', 'log', '--reverse', ...rangeArgs, '--format=%H%x09%ct%x09%s'],
       cwd: worktreePath, owner: 'console-story-gitlog', cls: 'script', fullOutput: true,
     });
     if (!result.ok) return [];
@@ -185,6 +238,28 @@ function defaultGitLog(): (worktreePath: string) => Promise<GitCommit[]> {
       const [sha, ctSeconds, ...rest] = line.split('\t');
       return { sha: sha ?? '', at: Number(ctSeconds ?? 0) * 1000, subject: rest.join('\t') };
     }).filter((commit) => commit.sha);
+  };
+}
+
+/** Item 11: `gh pr list --repo <repo> --head <branch> --state all --json
+ *  number,url,isDraft,mergedAt,title,headRefOid` -- `--state all` so an already-merged
+ *  PR is found too, not only an open one. */
+function defaultGhBranchLookup(): GhBranchLookupFn {
+  return async (repo: string, branch: string): Promise<GhBranchPr | undefined> => {
+    const result = await execRun({
+      argv: [
+        'gh', 'pr', 'list', '--repo', repo, '--head', branch, '--state', 'all', '--json',
+        'number,url,isDraft,mergedAt,title,headRefOid',
+      ],
+      cwd: process.cwd(), owner: 'console-pr-branch', cls: 'script', fullOutput: true,
+    });
+    if (!result.ok) return undefined;
+    try {
+      const rows = JSON.parse(result.full ?? result.tail) as GhBranchPr[];
+      return rows[0];
+    } catch {
+      return undefined;
+    }
   };
 }
 
@@ -216,6 +291,8 @@ export class ConsoleReads {
 
   private readonly ghDetailLookup: GhDetailLookupFn;
 
+  private readonly ghBranchLookup: GhBranchLookupFn;
+
   private readonly attestationReader: AttestationReaderFn;
 
   private readonly stuckFn: () => StuckSignal[];
@@ -228,7 +305,7 @@ export class ConsoleReads {
 
   private readonly mergeAllowedFn: (repo: string) => boolean;
 
-  private readonly gitLogFn: (worktreePath: string) => Promise<GitCommit[]>;
+  private readonly gitLogFn: (worktreePath: string, range: GitLogRange) => Promise<GitCommit[]>;
 
   private readonly driftFn: DriftFn;
 
@@ -236,10 +313,48 @@ export class ConsoleReads {
    *  lane polled again before the first `gh` read lands never queues a second one. */
   private readonly prRefreshInFlight = new Set<string>();
 
+  /** Item 11: run ids a background by-branch PR discovery is already in flight for --
+   *  the same in-flight guard `prRefreshInFlight` gives the detail refresh, kept
+   *  separate since the two can legitimately run at once for different lanes. */
+  private readonly branchPrDiscoveryInFlight = new Set<string>();
+
   /** Item 7: every background PR-detail refresh `GET /lanes` has kicked off so far,
    *  for `settlePrRefreshes()` (tests only) to wait on. Production never awaits this --
    *  a poll must never block on `gh`. */
   private pendingPrRefreshes: Promise<void>[] = [];
+
+  /** Item 2: `ghDetailLookup(repo, pr)` reads, cached per (repo, pr) for `PR_CACHE_TTL_MS`
+   *  -- the same window the board's own `pr-cache.json` uses. `GET /run/:id/summary`
+   *  used to call this twice in one request (once through `runStoryResponse`, once for
+   *  its own fresh read) and again on every re-open inside the same minute; that pair of
+   *  calls, plus a `git fetch` for drift, is the live console's own 11-second sheet. An
+   *  in-memory `Map` is enough: this cache only needs to survive one process's uptime,
+   *  never a restart, unlike the on-disk `pr-cache.json` other routes share. */
+  private readonly detailCache = new Map<string, { detail: GhPrDetail | undefined; at: number }>();
+
+  /** Item 2: `driftFn(...)` reads, cached the same way and for the same window, keyed by
+   *  repo, PR number and the head sha the drift check actually ran against. */
+  private readonly driftCache = new Map<string, { drift: DriftFacts; at: number }>();
+
+  private async cachedDetail(repo: string, pr: number): Promise<GhPrDetail | undefined> {
+    const key = `${repo}#${pr}`;
+    const now = Date.now();
+    const cached = this.detailCache.get(key);
+    if (cached && now - cached.at < PR_CACHE_TTL_MS) return cached.detail;
+    const detail = await this.ghDetailLookup(repo, pr);
+    this.detailCache.set(key, { detail, at: now });
+    return detail;
+  }
+
+  private async cachedDrift(args: Parameters<DriftFn>[0]): Promise<DriftFacts> {
+    const key = `${args.repo}#${args.pr}#${args.headSha ?? ''}#${args.attestationHead ?? ''}`;
+    const now = Date.now();
+    const cached = this.driftCache.get(key);
+    if (cached && now - cached.at < PR_CACHE_TTL_MS) return cached.drift;
+    const drift = await this.driftFn(args);
+    this.driftCache.set(key, { drift, at: now });
+    return drift;
+  }
 
   constructor(options: ConsoleReadsOptions = {}) {
     this.forgeHomeDir = options.forgeHomeDir ?? forgeHome();
@@ -250,6 +365,7 @@ export class ConsoleReads {
     this.journalCache = options.journalCache ?? new JournalCache();
     this.ghLookup = options.ghLookup ?? defaultGhLookup();
     this.ghDetailLookup = options.ghDetailLookup ?? defaultGhDetailLookup();
+    this.ghBranchLookup = options.ghBranchLookup ?? defaultGhBranchLookup();
     this.attestationReader = options.attestationReader ?? defaultAttestationReader();
     this.stuckFn = options.stuck ?? (() => []);
     this.modelPolicyPath = options.modelPolicyPath ?? policyPath();
@@ -291,6 +407,28 @@ export class ConsoleReads {
     this.pendingPrRefreshes.push(task);
   }
 
+  /** Item 11: a queue-sourced lane with a known branch and no PR on record at all --
+   *  the worker's own ask already names one, but nothing ever wrote its number back
+   *  onto the queue item. Looks it up once by branch, in the background, and writes
+   *  the answer into the same `run`-keyed cache `scheduleQueuePrRefresh` and every
+   *  other PR read here share, so the tile and the sheet both see it from the next
+   *  poll. Only fires when nothing else has already found a PR for this run. */
+  private scheduleBranchPrDiscovery(run: string, repo: string, branch: string): void {
+    if (this.branchPrDiscoveryInFlight.has(run)) return;
+    this.branchPrDiscoveryInFlight.add(run);
+    const cachePath = prCachePath(this.forgeHomeDir);
+    const task = (async () => {
+      try {
+        const cache = readPrCache(cachePath);
+        const { cache: nextCache } = await computeBranchPr(run, repo, branch, cache, Date.now(), this.ghBranchLookup);
+        writePrCache(cachePath, nextCache);
+      } finally {
+        this.branchPrDiscoveryInFlight.delete(run);
+      }
+    })();
+    this.pendingPrRefreshes.push(task);
+  }
+
   /** Test seam only (item 7): waits for every background PR-detail refresh `GET /lanes`
    *  has kicked off so far. Production code never calls this. */
   async settlePrRefreshes(): Promise<void> {
@@ -322,7 +460,8 @@ export class ConsoleReads {
       return true;
     }
     if (path === '/thread') {
-      json(response, 200, this.threadResponse());
+      const url = new URL(request.url ?? '/', 'http://localhost');
+      json(response, 200, this.threadResponse(url.searchParams.get('verbose') === '1'));
       return true;
     }
     if (path === '/journal') {
@@ -349,7 +488,8 @@ export class ConsoleReads {
       const sub = runMatch[2] as 'thread' | 'pr' | 'sandbox' | 'cost' | 'journal' | 'story' | 'summary';
       const run = decodeURIComponent(id);
       if (sub === 'thread') {
-        json(response, 200, this.runThreadResponse(run));
+        const url = new URL(request.url ?? '/', 'http://localhost');
+        json(response, 200, this.runThreadResponse(run, url.searchParams.get('verbose') === '1'));
         return true;
       }
       if (sub === 'pr') {
@@ -365,7 +505,8 @@ export class ConsoleReads {
         return true;
       }
       if (sub === 'story') {
-        json(response, 200, await this.runStoryResponse(run));
+        const url = new URL(request.url ?? '/', 'http://localhost');
+        json(response, 200, await this.runStoryResponse(run, url.searchParams.get('verbose') === '1'));
         return true;
       }
       if (sub === 'summary') {
@@ -407,6 +548,12 @@ export class ConsoleReads {
       capOverrides: readCapsOverrides(capsOverridesPath(this.forgeHomeDir)).perRun ?? {},
       prFor: (run) => prCache[run]?.pr ?? null,
       tokensPerHour: (lane) => tokensPerHour(lane, fleet.runs[lane.slug]?.tokensUsed ?? 0, now),
+      // Item 10: a queue item's own state and reason outrank a stale run state --
+      // see `laneStateFor`'s own `queueParked` branch.
+      queueStateFor: (run) => {
+        const item = this.queueStore.all().find((row) => row.runKey === run);
+        return item ? { state: item.state, reason: item.reason } : undefined;
+      },
     };
     // `archived` bypasses the 24h finished-lane window the same way `all` does: an
     // operator asking to see everything ever retired must see a lane retired long ago,
@@ -417,7 +564,11 @@ export class ConsoleReads {
       .map((lane) => this.withHumanFields(lane, chain, prCache, now))
       .map((lane) => ({ ...lane, retiredAt: retired.get(lane.id) ?? null }))
       .filter((lane) => archived || lane.retiredAt === null);
-    return { ...response, lanes };
+    // 2026-09-08: what `Linkify` needs to turn a Jira key or a PR mention into a link
+    // anywhere on the board -- `defaultRepo` is the first repo this response's own
+    // lanes name, since a PR mention with no repo of its own falls back to it.
+    const links = { jiraSite: this.jiraSite, defaultRepo: lanes.find((lane) => lane.repo)?.repo ?? null };
+    return { ...response, lanes, links };
   }
 
   /** H1.1: `title`/`sourceUrl`, off whichever source actually named this lane -- a
@@ -459,12 +610,24 @@ export class ConsoleReads {
     // lane's fallback `pr` above can change what it should say (a bare `pr` now exists
     // where there was none), so it is recomputed here rather than left stale.
     if (pr !== lane.pr) patched.plain = plainStatus(patched, { now: Date.now() });
+    // Item 1: a merged PR outranks a stale queue state -- `buildLane`'s own
+    // `laneStateFor` never sees this `pr` (it is resolved above, later than the fold
+    // that set `state`), so a lane whose queue item still reads parked (or anything
+    // else) reads merged the moment its PR, recorded or discovered above, actually is
+    // one. Wins over the queue-item plain override below, since nothing about a merged
+    // PR is still waiting on whatever the queue item says.
+    const mergedNow = Boolean(pr?.merged) && patched.state !== 'merged';
+    if (mergedNow) {
+      patched.state = 'merged';
+      patched.reason = null;
+      patched.plain = prMergedSentence(pr);
+    }
     // H1.2 fix: once a queue item exists, its own state and reason win over whatever
     // the run's own verdict says -- a run can sit `unverified` while the item it drives
     // is already three states further on in `review`. `plainForQueueItem` answers
     // `null` for every queue state it has no stronger opinion about (`queued`,
     // `planning`, `running`, `failed`), and the run-based sentence above stands there.
-    if (queueItem) {
+    if (queueItem && !mergedNow) {
       const verdict = this.queueVerdictFor({ ...queueItem, ...(repo ? { repo } : {}) });
       // The checks clause reads the lane's own PR facts (the cache), which the queue
       // item never carries.
@@ -487,6 +650,37 @@ export class ConsoleReads {
         this.scheduleQueuePrRefresh(lane.id, repo, pr);
       }
     }
+    // Item 11: the run itself can already have opened a PR straight off its own
+    // branch without the queue item ever recording it -- nothing above finds one,
+    // since every path here needs a `pr.no` the queue item never got. A branch is
+    // known the moment the item is provisioned (`queueItem.branch`), or off the
+    // lane's own sandbox for a lane the queue never provisioned through; a cache
+    // entry still inside its TTL (including a cached "none found") means a lookup has
+    // already landed recently.
+    if (queueItem && repo && !pr?.no) {
+      const branch = queueItem.branch ?? lane.sandbox?.branch ?? null;
+      if (branch) {
+        const cached = prCache[lane.id];
+        if (!cached || now - cached.at >= PR_CACHE_TTL_MS) {
+          this.scheduleBranchPrDiscovery(lane.id, repo, branch);
+        }
+      }
+    }
+    // Item 9: `computeLanes` already stripped `plain`/`reason` once, but both of the
+    // overrides above -- `plainStatus` recomputed for a queue lane's freshly-resolved
+    // `pr`, and `plainForQueueItem`'s own read of the queue item's raw `reason` (which
+    // can still carry an unshortened sha straight off a park reason, "checks are
+    // failure on head <40 hex characters>") -- run after that strip, not before it.
+    // The invariant this class promises -- no `plain`, `reason` or `status` leaves
+    // `ConsoleReads` carrying a 40-character sha or a run id -- has to hold here too,
+    // at the very end, or it only holds for whichever lanes this method never touched.
+    if (patched.plain) patched.plain = shortenShas(stripMachineIds(patched.plain));
+    if (patched.reason) patched.reason = shortenShas(stripMachineIds(patched.reason));
+    // 2026-09-08: `now` mirrors whatever `plain` ended up saying above (the queue
+    // item's own sentence when it had one, the run-based one otherwise); `you` reads
+    // `mergeable`, which only exists once this function has computed it.
+    patched.now = patched.plain;
+    patched.you = computeYou(patched);
     return patched;
   }
 
@@ -509,7 +703,7 @@ export class ConsoleReads {
     };
   }
 
-  private threadResponse(): ThreadResponse {
+  private threadResponse(verbose = false): ThreadResponse {
     const now = Date.now();
     const persisted = readThread(threadPath(this.forgeHomeDir));
     const fleet = this.journalCache.read(this.journalPath);
@@ -520,9 +714,25 @@ export class ConsoleReads {
     // Built once per call: `lanesResponse` reads every lane off disk, and calling it per
     // chip (hundreds of chips, on every feed event) held the event loop for seconds at a
     // time and made a 900-byte page take six seconds to answer (2026-09-07).
-    const titles = new Map(this.lanesResponse(true, true).lanes.map((l) => [l.id, l.title] as const));
+    //
+    // Deliverable 6: every chain link (a handed-off successor run, not only the root)
+    // maps to the same root lane's title -- a chip about the successor used to read its
+    // own bare run id, since `GET /lanes` only ever carries the root's own id.
+    // Item 8: every chip and echoed command on the rail names a lane through the one
+    // shared `labelFor` (ticket key first, then title, then a manual lane's own slug),
+    // never the lane's bare `title` -- that used to leave a long-titled lane's whole
+    // title standing in for what should have read as its short ticket key.
+    const titles = new Map<string, string>();
+    for (const lane of this.lanesResponse(true, true).lanes) {
+      const label = laneLabelFor(lane.id, (id) => (id === lane.id ? { ticket: lane.ticket, title: lane.title } : null));
+      for (const link of chainLinks(fleet.runs, lane.id)) {
+        titles.set(link.key, label);
+      }
+    }
     const titleFor = (id: string): string | null => titles.get(id) ?? null;
-    return computeThread(persisted, fleet.events, now, this.inbox.open(), titleFor);
+    return computeThread(persisted, fleet.events, now, this.inbox.open(), titleFor, {
+      verbose, allAsks: this.inbox.all(),
+    });
   }
 
   private journalResponse(query: { since?: number; run?: string; limit?: number }): JournalResponse {
@@ -564,9 +774,10 @@ export class ConsoleReads {
     return computeProposals(fleet.events, now, tokensByRun, existingRules);
   }
 
-  private runThreadResponse(run: string): RunThreadResponse {
+  private runThreadResponse(run: string, verbose = false): RunThreadResponse {
     const fleet = this.journalCache.read(this.journalPath);
-    return computeRunThread(run, fleet.events, new RunInbox(run).all());
+    const result = computeRunThread(run, fleet.events, new RunInbox(run).all(), { verbose });
+    return verbose ? { ...result, verbose: true } : result;
   }
 
   private async runPrResponse(run: string): Promise<RunPrResponse> {
@@ -630,7 +841,7 @@ export class ConsoleReads {
    *  attestation the gate wrote, and the worktree's own `git log`. A run this server
    *  has never heard of still answers with an empty story rather than a 404, the same
    *  honesty `runDetail` in `server.ts` already keeps for a packet that has not landed. */
-  private async runStoryResponse(run: string): Promise<LaneStory> {
+  private async runStoryResponse(run: string, verbose = false): Promise<LaneStory> {
     const fleet = this.journalCache.read(this.journalPath);
     const chain = this.chain();
     const lane = this.lanesResponse(true, true).lanes.find((l) => l.id === run);
@@ -639,19 +850,30 @@ export class ConsoleReads {
 
     const links = chainLinks(fleet.runs, run);
     const runKeys = new Set(links.map((link) => link.key));
-    const events = fleet.events.filter((row) => (row.run && runKeys.has(row.run)) || row.packetId === packet?.packetId);
+    // Story scoping (2026-09-08 finding): a lane with no packet at all used to match
+    // `row.packetId === packet?.packetId`, which reads as `undefined === undefined` and
+    // matched every packet-less row in the whole journal -- 16,132 of 16,173 rows on the
+    // live board, every one of them a park belonging to some other run. `packet` is only
+    // ever consulted when this lane actually has one.
+    const events = fleet.events.filter((row) => (
+      (row.run && runKeys.has(row.run)) || (packet !== undefined && row.packetId === packet.packetId)
+    ));
 
     const briefPath = queueItem?.briefPath ?? packet?.briefPath ?? this.registry.get(run)?.briefPath ?? null;
     const briefText = briefPath && existsSync(briefPath) ? readFileSync(briefPath, 'utf8') : null;
 
     const worktreePath = queueItem?.worktreePath ?? packet?.provisioned?.worktreePath ?? null;
-    const gitCommits = worktreePath && existsSync(worktreePath) ? await this.gitLogFn(worktreePath) : [];
+    const range: GitLogRange = {
+      base: queueItem?.base ?? null,
+      since: queueItem?.createdAt ?? lane?.startedAt ?? Date.now(),
+    };
+    const gitCommits = worktreePath && existsSync(worktreePath) ? await this.gitLogFn(worktreePath, range) : [];
 
     let attestation;
     const repo = queueItem?.repo ?? packet?.repo ?? null;
     const prNo = queueItem?.pr?.no ?? lane?.pr?.no ?? null;
     if (repo && prNo) {
-      const detail = await this.ghDetailLookup(repo, prNo);
+      const detail = await this.cachedDetail(repo, prNo);
       if (detail) {
         const found = readAttestation(repo, prNo, detail.headSha);
         attestation = found;
@@ -663,22 +885,23 @@ export class ConsoleReads {
       : null;
 
     return computeLaneStory({
-      id: run, title: lane?.title ?? null, kind: lane?.kind ?? 'manual', ticket, events,
+      id: run, title: lane?.title ?? null, kind: lane?.kind ?? 'manual', ticket, events, verbose,
       ...(queueItem ? { queueItem } : {}), ...(attestation ? { attestation } : {}),
       gitCommits, ...(briefPath ? { briefPath } : {}), ...(briefText ? { briefText } : {}),
     });
   }
 
   /** `GET /run/:id/summary` (2026-09-07): the ticket sheet's top summary block, folded
-   *  from the same story `GET /run/:id/story` already builds plus a fresh read of the
-   *  PR's own title/body/checks, the attestation on disk for its current head, and
-   *  git's own drift facts. Never reads `lane.pr` off the 60-second PR cache: a person
-   *  clicking into the sheet wants today's truth, not whatever the last board poll
-   *  happened to cache. */
+   *  from the same story `GET /run/:id/story` already builds plus a read of the PR's own
+   *  title/body/checks, the attestation on disk for its current head, and git's own
+   *  drift facts. Item 2: every `gh`/`git` fact here is cached per (repo, PR) for
+   *  `PR_CACHE_TTL_MS` through `cachedDetail`/`cachedDrift` -- a warm sheet answers off
+   *  that cache instead of repeating the same `gh pr view` and `git fetch` this same
+   *  request's own `runStoryResponse` call already made. */
   async runSummaryResponse(run: string): Promise<LaneSummary> {
     const lane = this.lanesResponse(true, true).lanes.find((l) => l.id === run);
     if (!lane) {
-      return { what: [], status: 'no such run', audit: null, readiness: null };
+      return { what: [], status: 'no such run', next: 'Nothing to do; this run is not on the board.', audit: null, readiness: null };
     }
     const story = await this.runStoryResponse(run);
     const queueItem = this.queueStore.all().find((item) => item.runKey === run);
@@ -693,7 +916,7 @@ export class ConsoleReads {
     let headSha: string | null = null;
     let mergeable: Lane['mergeable'] | undefined;
     if (repo && prNo) {
-      const detail = await this.ghDetailLookup(repo, prNo);
+      const detail = await this.cachedDetail(repo, prNo);
       if (detail) {
         headSha = detail.headSha;
         pr = {
@@ -711,7 +934,7 @@ export class ConsoleReads {
       }
     }
     const drift = repo && prNo && base
-      ? await this.driftFn({ repo, base, pr: prNo, headSha, attestationHead: attestation?.head ?? null })
+      ? await this.cachedDrift({ repo, base, pr: prNo, headSha, attestationHead: attestation?.head ?? null })
       : { behindBase: null, headMoved: false };
 
     return computeLaneSummary({ lane, story, pr, attestation: attestation ?? null, drift, mergeable });
@@ -762,6 +985,11 @@ export class ConsoleReads {
       delete next[run];
       writePrCache(cachePath, next);
     }
+    // A recheck asks for today's truth, not the last 60s' worth of it -- drop this
+    // process's own detail/drift caches too, or `runSummaryResponse` right below would
+    // just hand back the same stale read Item 2's cache was built to skip repeating.
+    this.detailCache.clear();
+    this.driftCache.clear();
     return this.runSummaryResponse(run);
   }
 }

@@ -217,6 +217,19 @@ describe('laneStateFor', () => {
     expect(laneStateFor({ packet: undefined, lane: { ...lane, verdict: 'done' }, runEvents: [], runState: undefined }).state).toBe('done');
     expect(laneStateFor({ packet: undefined, lane, runEvents: [], runState: undefined }).state).toBe('unverified');
   });
+
+  // Item 10: a queue item read as parked outranks a run state that still reads
+  // running -- the live-board finding this fixes had a self lane banded RUNNING with
+  // a park reason printed one line under it.
+  it('parked, with the queue item\'s own reason, when the queue item reads parked, whatever the run state says', () => {
+    const result = laneStateFor({
+      packet: undefined, lane,
+      runState: { run: 'alpha', state: 'started', turns: 0, context: 0, costUsd: 0, tokensUsed: 0, lastEventAt: 0, cacheReadTokens: 0, totalReadTokens: 0, turnsSinceWrite: 0 },
+      runEvents: [],
+      queueParked: { reason: 'refused: checks are failure on head 88d44ec, not green.' },
+    });
+    expect(result).toEqual({ state: 'parked', reason: 'refused: checks are failure on head 88d44ec, not green.' });
+  });
 });
 
 describe('computeLanes', () => {
@@ -407,6 +420,55 @@ describe('handoff chain folding', () => {
     expect(built.heart).toBe(true);
   });
 
+  // Item 10: a lane whose run state still reads running, with no live registry row
+  // anywhere in its chain and no journal row for ten minutes, is abandoned rather
+  // than working -- the live-board finding this fixes showed a tile banded RUNNING
+  // with a park reason printed one line under it.
+  it('a running lane with no live registry row and no journal row for ten minutes reads as blocked, abandoned', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.close();
+    const fleet = replay(path);
+    const lastAt = fleet.events[fleet.events.length - 1]!.at;
+    const lane = laneRecord({ slug: 'alpha', column: 'c1' });
+    const now = lastAt + 11 * 60_000;
+    const built = computeLanes(baseInput({
+      laneRecords: [lane], fleet, registryGet: () => undefined,
+    }), now).lanes[0]!;
+    expect(built.state).toBe('blocked');
+    expect(built.reason).toBe('its process is gone and it never reported finishing');
+    expect(built.heart).toBe(false);
+  });
+
+  it('a fixture lane with a live registry row still reads running after ten minutes of silence', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.close();
+    const fleet = replay(path);
+    const lastAt = fleet.events[fleet.events.length - 1]!.at;
+    const lane = laneRecord({ slug: 'alpha', column: 'c1' });
+    const registryRow: RegistryRecord = { goal: 'alpha', cwd: '.', briefPath: 'b.md', pid: 123, startedAt: 0 };
+    const now = lastAt + 11 * 60_000;
+    const built = computeLanes(baseInput({
+      laneRecords: [lane], fleet, registryGet: (run) => (run === 'alpha' ? registryRow : undefined),
+    }), now).lanes[0]!;
+    expect(built.state).toBe('running');
+  });
+
+  it('a fixture lane with a fresh journal row (under ten minutes) still reads running, no registry row needed', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.close();
+    const fleet = replay(path);
+    const lastAt = fleet.events[fleet.events.length - 1]!.at;
+    const lane = laneRecord({ slug: 'alpha', column: 'c1' });
+    const now = lastAt + 5 * 60_000;
+    const built = computeLanes(baseInput({
+      laneRecords: [lane], fleet, registryGet: () => undefined,
+    }), now).lanes[0]!;
+    expect(built.state).toBe('running');
+  });
+
   it('does not flag a finished chain over its cap as runaway, even before it ages off the board', () => {
     const { path, journal } = tempJournal();
     journal.append({ event: 'run.started', run: 'alpha', actor: 'runner', model: 'claude-sonnet-5' });
@@ -489,6 +551,25 @@ describe('observedAt vs the noise-refreshed RunState.lastEventAt', () => {
   });
 });
 
+describe('computeLanes: plain and reason strip machine ids (deliverable 10)', () => {
+  it('a reason with a 40-char sha renders with 7, on both plain and reason', () => {
+    const { path, journal } = tempJournal();
+    const sha = '88d44ec96baea849f7c1e8c0a1b2c3d4e5f6a7b8'.slice(0, 40);
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.append({
+      event: 'run.blocked', run: 'alpha', actor: 'runner', reason: `checks are failure on head ${sha}`,
+    });
+    journal.close();
+    const fleet = replay(path);
+    const lane = laneRecord({ slug: 'alpha', column: 'c1' });
+
+    const [built] = computeLanes(baseInput({ laneRecords: [lane], fleet }), 1_000).lanes;
+    expect(built!.reason).toContain(sha.slice(0, 7));
+    expect(built!.reason).not.toContain(sha);
+    expect(built!.plain).not.toContain(sha);
+  });
+});
+
 describe('windowLanes', () => {
   const HOUR = 3_600_000;
   const now = 100 * HOUR;
@@ -501,13 +582,13 @@ describe('windowLanes', () => {
       ctxTokens: 0, ctxCeiling: 0, ctxCompactAt: 0, tokens: 0, tokenCap: null, tokensPerMin: 0,
       fails: 0, hop: 0, hopStatus: 'live', observedAt: now, verifiedAt: null, heart: true,
       since: now, startedAt: now, endedAt: null, question: null, pr: null, sandbox: null,
-      blockedBy: null, runaway: false, needsAaron: null,
+      blockedBy: null, runaway: false, needsAaron: null, did: null, now: '', you: null,
       ...overrides,
     };
   }
 
   function responseWith(lanes: Lane[]): LanesResponse {
-    return { at: now, lanes, tokensToday: 0, tokensPerMin: 0 };
+    return { at: now, lanes, tokensToday: 0, tokensPerMin: 0, links: { jiraSite: null, defaultRepo: null } };
   }
 
   it('drops a finished lane whose observedAt is more than 24h old', () => {
@@ -594,6 +675,35 @@ describe('titleFromHeading', () => {
     expect(titleFromHeading('# Goal: BBZ-96: add the merge chip\n', 'BBZ-96')).toBe('add the merge chip');
     expect(titleFromHeading('# Goal - fix the withdrawal fee\n', null)).toBe('fix the withdrawal fee');
     expect(titleFromHeading('# goal:   tidy the queue worker\n', null)).toBe('tidy the queue worker');
+  });
+
+  it('falls back to the brief\'s own first paragraph when the heading is a bare kind slug (deliverable 2)', () => {
+    const brief = [
+      '# Self finding: health-repeat',
+      '',
+      'the warden has reported "stale-session" 1073 times',
+      '',
+      '## Evidence',
+      '',
+      '- a line',
+    ].join('\n');
+    expect(titleFromHeading(brief, null)).toBe('The warden has reported "stale-session" 1073 times');
+  });
+
+  it('recognises every observed bare kind slug, not only health-repeat', () => {
+    expect(titleFromHeading('# Self finding: repeated-work\n\nthe same plan ran three times', null))
+      .toBe('The same plan ran three times');
+    expect(titleFromHeading('# Self finding: token-outlier\n\none run spent far more than the rest', null))
+      .toBe('One run spent far more than the rest');
+  });
+
+  it('trims a long fallback paragraph to 120 characters at a word boundary', () => {
+    const long = 'a '.repeat(80).trim();
+    const brief = `# Self finding: health-repeat\n\n${long}\n`;
+    const title = titleFromHeading(brief, null);
+    expect(title).not.toBeNull();
+    expect(title!.length).toBeLessThanOrEqual(120);
+    expect(title!.endsWith(' ')).toBe(false);
   });
 });
 
@@ -717,7 +827,7 @@ describe('mergeReadyReportFrom', () => {
       ctxTokens: 0, ctxCeiling: 0, ctxCompactAt: 0, tokens: 0, tokenCap: null, tokensPerMin: 0,
       fails: 0, hop: 0, hopStatus: 'live', observedAt: 0, verifiedAt: null, heart: false, since: 0,
       startedAt: 0, endedAt: null, question: null, sandbox: null, blockedBy: null, runaway: false,
-      needsAaron: null, mergeable: null,
+      needsAaron: null, mergeable: null, did: null, now: '', you: null,
       pr: { no: 1, url: 'x', files: 0, add: 0, del: 0, draft: true, merged: false, checks: 'success', verdict: 'PASS' },
       ...overrides,
     };

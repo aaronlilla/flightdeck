@@ -12,6 +12,7 @@
 import type { ForgeEvent } from '../journal.js';
 import type { CouncilAttestation } from '../contracts.js';
 import type { LaneKind, LaneStory, LaneStoryEntry, QueueItem } from '../../shared/console-model.js';
+import { clock, humanizeParkReason, stripMachineIds } from '../../shared/humanize.js';
 
 export interface GitCommit {
   sha: string;
@@ -34,13 +35,31 @@ export interface LaneStoryInput {
   briefPath?: string | null;
   /** The brief file's own text, already read -- this module only ever slices it. */
   briefText?: string | null;
+  /** Deliverable 9: `true` keeps every entry exactly as it always read -- a commit's
+   *  own sha, a park reason's raw text, and no collapsing of repeats. Default
+   *  (unset/false): plain mode -- a commit drops its sha, a park reason reads through
+   *  `humanizeParkReason`, every text is free of machine ids, identical consecutive
+   *  entries collapse with a repeat count, and a park/resume cycle repeated more than
+   *  twice in a row folds into one summary line. */
+  verbose?: boolean;
 }
 
 const BRIEF_EXCERPT_LIMIT = 600;
 
-function clockTime(at: number): string {
-  return new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+/** Item 5: how long an "Asked you: ..." story line runs in plain mode before it is
+ *  cut, at a word boundary, with "..." on the end. Verbose keeps the whole thing --
+ *  this only trims the plain reading, which otherwise turns a 900-character question
+ *  into the entire story line. */
+const ASKED_TEXT_LIMIT = 240;
+
+function truncateAskedText(text: string): string {
+  if (!text.startsWith('Parked: Asked you:') || text.length <= ASKED_TEXT_LIMIT) return text;
+  const cut = text.slice(0, ASKED_TEXT_LIMIT);
+  const lastSpace = cut.lastIndexOf(' ');
+  return `${(lastSpace > 40 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
 }
+
+const clockTime = clock;
 
 function findAt(events: ForgeEvent[], name: string): ForgeEvent | undefined {
   return events.find((row) => row.event === name);
@@ -91,7 +110,11 @@ export function computeLaneStory(input: LaneStoryInput): LaneStory {
   }
 
   for (const commit of input.gitCommits ?? []) {
-    entries.push({ at: commit.at, kind: 'commit', text: `Change ${commit.sha.slice(0, 7)}: ${commit.subject}` });
+    // Deliverable 9: plain mode drops the sha entirely -- it names nothing a person
+    // reads a commit by. Verbose keeps it, since that mode is for someone who already
+    // wants the raw record.
+    const text = input.verbose ? `Change ${commit.sha.slice(0, 7)}: ${commit.subject}` : `Committed: ${commit.subject}`;
+    entries.push({ at: commit.at, kind: 'commit', text });
   }
 
   if (queueItem?.pr) {
@@ -125,11 +148,16 @@ export function computeLaneStory(input: LaneStoryInput): LaneStory {
       case 'warden.parked':
       case 'governor.parked': {
         const reason = typeof row.reason === 'string' ? row.reason : null;
-        const isWarden = row.event === 'warden.parked' || (reason && /warden|script budget|stuck-session/i.test(reason));
-        entries.push({
-          at: row.at, kind: 'park',
-          text: isWarden ? `Warden parked it: ${reason ?? 'a health check tripped'}` : `Parked: ${reason ?? 'waiting on you'}`,
-        });
+        // Item 5: whether this is the warden's own park comes from the event name, or
+        // from the reason's own opening words -- never from a search anywhere in the
+        // reason body, which used to catch a run's own ask text the moment it happened
+        // to mention "warden" (a PR describing a warden.health fix, say) and mislabel
+        // the whole entry as a warden trip.
+        const isWarden = row.event === 'warden.parked' || (reason !== null && /^\s*(warden|script budget|stuck-session)/i.test(reason));
+        const text = isWarden
+          ? `Warden parked it: ${input.verbose ? (reason ?? 'a health check tripped') : stripMachineIds(reason ?? 'a health check tripped')}`
+          : `Parked: ${input.verbose ? (reason ?? 'waiting on you') : humanizeParkReason(reason ?? 'waiting on you')}`;
+        entries.push({ at: row.at, kind: 'park', text });
         break;
       }
       case 'ask.answered':
@@ -162,11 +190,86 @@ export function computeLaneStory(input: LaneStoryInput): LaneStory {
 
   entries.sort((a, b) => a.at - b.at);
 
+  const finalEntries = input.verbose ? entries : collapseRepeatedText(
+    collapseParkResumeCycles(entries.map((entry) => ({ ...entry, text: truncateAskedText(stripMachineIds(entry.text)) }))),
+  );
+
   const brief = input.briefPath && input.briefText
     ? { path: input.briefPath, excerpt: input.briefText.slice(0, BRIEF_EXCERPT_LIMIT) }
     : null;
 
   return {
-    id: input.id, title: input.title, kind: input.kind, ticket: input.ticket, brief, entries,
+    id: input.id, title: input.title, kind: input.kind, ticket: input.ticket, brief, entries: finalEntries,
   };
+}
+
+const REPEAT_SUFFIX = / \(x(\d+)\)$/;
+
+function repeatBaseText(text: string): string {
+  return text.replace(REPEAT_SUFFIX, '');
+}
+
+function repeatCountOf(text: string): number {
+  const match = REPEAT_SUFFIX.exec(text);
+  return match ? Number(match[1]) : 1;
+}
+
+/** Deliverable 9: identical consecutive entries -- the same run parking on the same
+ *  reason five ticks running, an answer repeated across a retry -- collapse to one line
+ *  with a repeat count, rather than the same sentence read five times over. */
+function collapseRepeatedText(entries: LaneStoryEntry[]): LaneStoryEntry[] {
+  const result: LaneStoryEntry[] = [];
+  for (const entry of entries) {
+    const prev = result[result.length - 1];
+    if (prev && repeatBaseText(prev.text) === entry.text) {
+      const count = repeatCountOf(prev.text) + 1;
+      result[result.length - 1] = { ...entry, text: `${entry.text} (x${count})` };
+      continue;
+    }
+    result.push(entry);
+  }
+  return result;
+}
+
+function parkReasonOf(text: string): string {
+  return text.replace(/^Parked:\s*/i, '').replace(/^Warden parked it:\s*/i, '');
+}
+
+/** Deliverable 9: a park/resume cycle repeated more than twice in a row (the warden
+ *  tripping the same stuck-session check over and over) folds into one summary line
+ *  rather than a story that is nothing but "Parked" / "Resumed" alternating dozens of
+ *  times. Only a run of `park`/`resume` entries longer than two parks collapses; a
+ *  single park-then-resume, or two, still reads as its own two lines. */
+function collapseParkResumeCycles(entries: LaneStoryEntry[]): LaneStoryEntry[] {
+  const result: LaneStoryEntry[] = [];
+  let i = 0;
+  while (i < entries.length) {
+    const entry = entries[i]!;
+    if (entry.kind === 'park' || entry.kind === 'resume') {
+      let j = i;
+      let parkCount = 0;
+      let lastParkText = entry.text;
+      while (j < entries.length && (entries[j]!.kind === 'park' || entries[j]!.kind === 'resume')) {
+        if (entries[j]!.kind === 'park') {
+          parkCount += 1;
+          lastParkText = entries[j]!.text;
+        }
+        j += 1;
+      }
+      if (parkCount > 2) {
+        const first = entries[i]!;
+        const last = entries[j - 1]!;
+        result.push({
+          at: last.at, kind: 'park',
+          text: `Parked and resumed ${parkCount} times between ${clockTime(first.at)} and ${clockTime(last.at)}; `
+            + `last reason: ${parkReasonOf(lastParkText)}`,
+        });
+        i = j;
+        continue;
+      }
+    }
+    result.push(entry);
+    i += 1;
+  }
+  return result;
 }

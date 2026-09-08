@@ -9,6 +9,7 @@ import type { JSX } from 'react';
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 
 import * as api from './api.js';
+import { BlockersView } from './components/BlockersView.js';
 import { CommandPalette, buildPaletteItems } from './components/CommandPalette.js';
 import { CostSheet } from './components/CostSheet.js';
 import { DisconnectedBanner } from './components/DisconnectedBanner.js';
@@ -30,6 +31,7 @@ import { TopBar } from './components/TopBar.js';
 import { focusableIn, trapTab } from './focus-trap.js';
 import { initialState, reducer, StoreContext } from './store.js';
 import type { Message } from '../shared/console-model.js';
+import { commandEcho } from '../shared/humanize.js';
 import { EventStream, type EventStreamOptions } from './ws.js';
 
 const POLL_MS = 5000;
@@ -55,6 +57,13 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   const mounted = useRef(true);
   const stateRef = useRef(state);
   stateRef.current = state;
+  // `refresh` is a stable `useCallback` with an empty dependency list (see below); it
+  // reads the verbose flag through this ref rather than `state.verbose` directly for
+  // the same reason `stateRef` exists, and `onToggleVerbose` sets it by hand a beat
+  // ahead of the render that would otherwise catch it up, so the very next fetch it
+  // triggers already asks for the mode the operator just clicked.
+  const verboseRef = useRef(state.verbose);
+  verboseRef.current = state.verbose;
   // The confirm card is client-only until Confirm is clicked, but `refresh()` replaces
   // `state.thread` wholesale from the server's `/thread`, which never echoes it back.
   // `/events` fires on every journal event from every lane, including the one an
@@ -108,10 +117,10 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       // away and blank a board whose lanes read came back fine (sweep #27). Each slice
       // dispatches on its own; a rejected one is skipped and named in a toast rather
       // than silently standing in for real data.
-      const [lanesR, threadR, journalR, integrationsR, capsR, proposalsR, queueR, consoleStateR] = await Promise.allSettled([
+      const [lanesR, threadR, journalR, integrationsR, capsR, proposalsR, queueR, consoleStateR, blockersR] = await Promise.allSettled([
         api.getLanes({ all: true }),
-        api.getThread(), api.getJournal(), api.getIntegrations(), api.getCaps(), api.getProposals(), api.getQueue(),
-        api.getState(),
+        api.getThread({ verbose: verboseRef.current }), api.getJournal(), api.getIntegrations(), api.getCaps(),
+        api.getProposals(), api.getQueue(), api.getState(), api.getBlockers(),
       ]);
       if (!mounted.current) return;
       const failedSlices: string[] = [];
@@ -128,11 +137,12 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       const proposals = settled(proposalsR, 'proposals');
       const queue = settled(queueR, 'queue');
       const consoleState = settled(consoleStateR, 'state');
+      const blockers = settled(blockersR, 'blockers');
 
       failCount.current = failedSlices.length > 0 ? failCount.current + 1 : 0;
       const endedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
       dispatch({ type: 'fetch-latency', ms: Math.round(endedAt - startedAt) });
-      if (lanes) dispatch({ type: 'lanes', lanes: lanes.lanes });
+      if (lanes) dispatch({ type: 'lanes', lanes: lanes.lanes, links: lanes.links });
       if (thread) {
         // Re-attach an unconfirmed confirm card the server's own `/thread` never
         // carries, rather than letting this refetch silently erase the last line of
@@ -167,6 +177,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       if (proposals) dispatch({ type: 'proposals', proposals });
       if (queue) dispatch({ type: 'queue', items: queue.items, paused: queue.paused, maxInFlight: queue.maxInFlight, pauseReason: queue.pauseReason });
       if (consoleState) dispatch({ type: 'queue-on', on: consoleState.queue_on });
+      if (blockers) dispatch({ type: 'blockers', blockers });
       // The server moved onto a new build (a restart, a self cutover): this page's
       // components are the old ones, so reload rather than paint new data with them.
       if (consoleState?.build) {
@@ -232,6 +243,18 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     localCardsRef.current = [...localCardsRef.current, card];
     dispatch({ type: 'thread-append', messages: [card] });
   }, []);
+
+  // A person's name for a lane id or ticket key -- the ticket, else the title, else
+  // null (the machine id it came from, never printed as a fallback). Every place the
+  // board would otherwise echo a run id back at the operator (a Kill/Merge confirm, a
+  // typed `kill <id>` command, a question's "from <id>" header) goes through this.
+  const labelFor = useCallback((id: string): string | null => {
+    const lane = state.lanes.find((l) => l.id === id) ?? state.archivedLanes.find((l) => l.id === id);
+    if (!lane) return null;
+    if (lane.ticket) return lane.ticket;
+    if (lane.title) return lane.title.length > 60 ? `${lane.title.slice(0, 60)}…` : lane.title;
+    return null;
+  }, [state.lanes, state.archivedLanes]);
 
   const runAction = useCallback(async (fn: () => Promise<{ ok: boolean; jid: string | null; message: string; undoable: boolean }>) => {
     try {
@@ -357,6 +380,16 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     if (pendingConfirm && trimmed === `decline ${pendingConfirm.k}`) { resolveConfirm(pendingConfirm.k, false); return; }
     if (pendingBulk && trimmed === `confirm ${pendingBulk.k}`) { resolveConfirm(pendingBulk.k, true); return; }
     if (pendingBulk && trimmed === `decline ${pendingBulk.k}`) { resolveConfirm(pendingBulk.k, false); return; }
+    // Item 7: clicking a question's option (or typing a free-text answer) still
+    // bypasses `onRailSend`'s operator bubble -- this is the one place that path
+    // still needs one, since "Answered: <option>" is the one honest thing to say
+    // the operator just did. Every other button here (reply/plan/confirm) still
+    // echoes nothing, matching the design this rail already had.
+    if (/^answer\s/i.test(trimmed)) {
+      const card: Message = { k: `op-${Date.now()}-${Math.random()}`, type: 'operator', text: commandEcho(trimmed, { labelFor }), ts: Date.now(), source: 'operator' };
+      localCardsRef.current = [...localCardsRef.current, card];
+      dispatch({ type: 'thread-append', messages: [card] });
+    }
     void (async () => {
       try {
         const response = await api.sendCommand(trimmed);
@@ -375,7 +408,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       }
       await refresh();
     })();
-  }, [pendingConfirm, pendingBulk, resolveConfirm, appendReceipt, refresh]);
+  }, [pendingConfirm, pendingBulk, resolveConfirm, appendReceipt, refresh, labelFor]);
 
   // D2.2: TicketSheet's own run-thread `MessageCard` wires `onCommand` to
   // `(text) => onCommand(lane.id, text)` -- this same exact-match switch. A
@@ -390,7 +423,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     if (cmd === 'kill' || cmd === 'merge') {
       const k = `confirm-${id}-${Date.now()}`;
       const card: Message = {
-        k, type: 'confirm', text: `${cmd === 'kill' ? 'Kill' : 'Merge'} ${id}?`, ts: Date.now(), source: 'console',
+        k, type: 'confirm', text: `${cmd === 'kill' ? 'Kill' : 'Merge'} ${labelFor(id) ?? id}?`, ts: Date.now(), source: 'console',
         blast: cmd === 'kill' ? 'discards the working diff and stops the sandbox.' : 'merges the PR and closes the ticket.',
       };
       // Kept alongside the card's own thread entry so `refresh()` can put it back
@@ -435,7 +468,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
         void api.getLanes({ archived: true }).then((r) => dispatch({ type: 'archived-lanes', lanes: r.lanes })).catch(() => undefined);
       });
     } else processCommand(cmd);
-  }, [state.lanes, appendReceipt, refresh, runAction, processCommand]);
+  }, [state.lanes, appendReceipt, refresh, runAction, processCommand, labelFor]);
 
   // Typed composer text (and the rail's quick-command chips, which the prototype
   // also routes through `send()`) echoes an operator bubble before processing.
@@ -448,11 +481,13 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     // It needs the same `localCardsRef` protection `appendReceipt` gives a receipt, or
     // the very next `refresh()` (the 5s poll, or the `/events` frame this command's own
     // side effect can trigger) drops it the moment `state.thread` is replaced wholesale.
-    const card: Message = { k: `op-${Date.now()}-${Math.random()}`, type: 'operator', text: trimmed, ts: Date.now(), source: 'operator' };
+    const card: Message = {
+      k: `op-${Date.now()}-${Math.random()}`, type: 'operator', text: commandEcho(trimmed, { labelFor }), ts: Date.now(), source: 'operator',
+    };
     localCardsRef.current = [...localCardsRef.current, card];
     dispatch({ type: 'thread-append', messages: [card] });
     processCommand(trimmed);
-  }, [processCommand]);
+  }, [processCommand, labelFor]);
 
   // Reply/plan/confirm/question buttons in the rail: the prototype wires these
   // straight to a method call, never to `send()`, so no fake operator bubble.
@@ -553,6 +588,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   const settingsBadge = state.integrations.filter((i) => i.status === 'down').length;
   const reviewBadge = state.proposals?.rules.filter((r) => r.status === 'open').length ?? 0;
   const queueBadge = state.queue.filter((i) => i.state === 'parked' || i.state === 'failed').length;
+  const blockersBadge = state.blockers?.blockers.filter((b) => b.state === 'open' && b.youCanResolve).length ?? 0;
 
   return (
     <StoreContext.Provider value={{ state, dispatch }}>
@@ -561,15 +597,22 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
         <QueueOffBanner queueOn={state.queueOn} />
         <TopBar
           view={state.view} settingsBadge={settingsBadge} reviewBadge={reviewBadge} queueBadge={queueBadge}
+          blockersBadge={blockersBadge}
           caps={state.caps} tokensToday={state.caps?.tokensToday ?? 0} feed={state.feed} now={state.now}
           fetchLatencyMs={state.fetchLatencyMs}
           theme={state.theme}
+          verbose={state.verbose}
           onNav={(view) => dispatch({ type: 'view', view })}
           onOpenPalette={() => dispatch({ type: 'palette-open', open: true })}
           onOpenCost={() => dispatch({ type: 'sheet', sheet: { type: 'fleet-cost' } })}
           onToggleTheme={() => dispatch({ type: 'theme', theme: state.theme === 'thD' ? 'thL' : 'thD' })}
+          onToggleVerbose={() => {
+            verboseRef.current = !state.verbose;
+            dispatch({ type: 'verbose', verbose: !state.verbose });
+            void refresh();
+          }}
         />
-        <NeedsYou items={needs} />
+        <NeedsYou items={needs} blockersCount={blockersBadge} onOpenBlockers={() => dispatch({ type: 'view', view: 'blockers' })} />
         {state.view === 'board' ? (
           <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
@@ -598,12 +641,13 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
               />
             </div>
             <ConductorRail
-              thread={state.thread} feed={state.feed} now={state.now} composer={state.composer}
+              thread={state.thread} feed={state.feed} now={state.now} composer={state.composer} verbose={state.verbose}
               onComposerChange={(text) => dispatch({ type: 'composer', text })}
               onSend={onRailSend}
               onCommand={onRailCommand}
               onUndo={onUndo}
               onOpenJournal={onOpenJournal}
+              labelFor={labelFor}
             />
           </div>
         ) : null}
@@ -680,18 +724,45 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
             onPromote={(id, version, message) => void runQueueAction(() => api.promoteQueueItem(id, version, message))}
           />
         ) : null}
+        {state.view === 'blockers' ? (
+          <BlockersView
+            blockers={state.blockers?.blockers ?? []} chains={state.blockers?.chains ?? []}
+            // Deliberately never eager-refreshes here: the step's own local state
+            // already shows "Resolved HH:MM · Started: ..." the moment this resolves
+            // (see `BlockersView.tsx#StepButtons`), and an immediate refetch would
+            // replace those props before that ever painted, collapsing a just-cleared
+            // step straight into "Resolved today" with no transient in between. The
+            // normal 5s poll (or the next `/events` heartbeat) picks up the real state
+            // once the operator has had a chance to see the outcome of their own click.
+            onResolve={(id) => api.resolveBlocker(id)}
+            onCheck={(id) => api.checkBlocker(id)}
+          />
+        ) : null}
 
         {state.sheet ? (
           <div
-            style={{ position: 'fixed', inset: 0, zIndex: 20, background: 'color-mix(in srgb,var(--bg) 62%,transparent)', display: 'flex', justifyContent: 'center', alignItems: 'flex-start', padding: '34px 20px', overflow: 'auto' }}
+            // A standard modal: a full-screen scrim over everything, padding all round,
+            // the dialog centred and capped to the viewport, and only the dialog's own
+            // body scrolls. The scrim itself never scrolls, so the app behind it never moves.
+            data-testid="sheet-scrim"
+            style={{ position: 'fixed', inset: 0, zIndex: 30, background: 'color-mix(in srgb,var(--bg) 62%,transparent)', display: 'flex', justifyContent: 'center', alignItems: 'center', padding: 24, overflow: 'hidden' }}
             onClick={() => dispatch({ type: 'sheet', sheet: null })}
           >
-            <div ref={sheetContainerRef} tabIndex={-1} style={{ outline: 'none' }} onClick={(e) => e.stopPropagation()}>
+            <div
+              ref={sheetContainerRef} tabIndex={-1}
+              style={{ outline: 'none', maxHeight: '100%', maxWidth: '100%', display: 'flex', minHeight: 0 }}
+              onClick={(e) => e.stopPropagation()}
+            >
               {state.sheet.type === 'ticket' && sheetLane ? (
                 <TicketSheet
-                  lane={sheetLane} feedLive={state.feed.live} now={state.now}
+                  lane={sheetLane} feedLive={state.feed.live} now={state.now} verbose={state.verbose}
                   focus={state.sheet.focus}
                   onClose={() => dispatch({ type: 'sheet', sheet: null })}
+                  onToggleVerbose={() => {
+                    verboseRef.current = !state.verbose;
+                    dispatch({ type: 'verbose', verbose: !state.verbose });
+                    void refresh();
+                  }}
                   onCommand={onCommand}
                   onOpenCost={(id) => dispatch({ type: 'sheet', sheet: { type: 'cost', id } })}
                   onOpenSandbox={(id) => dispatch({ type: 'sheet', sheet: { type: 'sandbox', id } })}
@@ -699,6 +770,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
                   onAmendLane={(id, textMsg) => runAction(() => api.amendRun(id, textMsg))}
                   onOpenJournal={onOpenJournal}
                   onUndo={onUndo}
+                  labelFor={labelFor}
                 />
               ) : null}
               {state.sheet.type === 'cost' && sheetLane ? (

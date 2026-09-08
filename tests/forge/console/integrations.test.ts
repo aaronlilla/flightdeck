@@ -54,13 +54,13 @@ function lane(overrides: Partial<Lane>): Lane {
     ctxTokens: 0, ctxCeiling: 200_000, ctxCompactAt: 180_000, tokens: 0, tokenCap: 10, tokensPerMin: 0,
     fails: 0, hop: 0, hopStatus: 'blocked', observedAt: Date.now(), verifiedAt: null, heart: false, since: Date.now(),
     startedAt: Date.now(), endedAt: null, question: null, pr: null, sandbox: null, blockedBy: 'aws',
-    runaway: false, needsAaron: null,
+    runaway: false, needsAaron: null, did: null, now: '', you: null,
     ...overrides,
   };
 }
 
 function lanesView(lanes: Lane[]): () => LanesResponse {
-  return () => ({ at: Date.now(), lanes, tokensToday: 0, tokensPerMin: 0 });
+  return () => ({ at: Date.now(), lanes, tokensToday: 0, tokensPerMin: 0, links: { jiraSite: null, defaultRepo: null } });
 }
 
 describe('IntegrationsRegistry.list', () => {
@@ -320,5 +320,13 @@ describe('stdioMcpProbe', () => {
     const probe = stdioMcpProbe('missing-tool', fakeSpawn(1, ''));
     const result = await probe();
     expect(result).toEqual({ status: 'down', latencyMs: null, desc: 'stdio · command not on PATH' });
+  });
+});
+
+describe('jiraMyselfUrl', () => {
+  it('accepts the site with or without its scheme and never doubles it', async () => {
+    const { jiraMyselfUrl } = await import('../../../src/forge/console/integrations.js');
+    expect(jiraMyselfUrl('https://boltbetz-bankroll-dev.atlassian.net')).toBe('https://boltbetz-bankroll-dev.atlassian.net/rest/api/3/myself');
+    expect(jiraMyselfUrl('boltbetz-bankroll-dev.atlassian.net/')).toBe('https://boltbetz-bankroll-dev.atlassian.net/rest/api/3/myself');
   });
 });

@@ -12,6 +12,8 @@ import type {
   Lane, LaneAudit, LaneReadiness, LaneStory, LaneSummary,
 } from '../../shared/console-model.js';
 import type { CouncilAttestation } from '../contracts.js';
+import { nextCategoryFor } from './laneGlance.js';
+import { stripMachineIds } from '../../shared/humanize.js';
 
 const MAX_WHAT_SENTENCES = 6;
 const MIN_WHAT_SENTENCES = 3;
@@ -22,12 +24,14 @@ function ensureSentence(text: string): string {
   return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
 }
 
-/** Strips the story panel's own "Change abc1234: " / "Planned: " / "Queued from Jira
- *  as X at H:MM" labels back to plain prose, so a `what` sentence reads like something
- *  a person wrote about the change, not a quote from the story panel. */
+/** Strips the story panel's own "Change abc1234: " / "Committed: " / "Planned: " /
+ *  "Queued from Jira as X at H:MM" labels back to plain prose, so a `what` sentence
+ *  reads like something a person wrote about the change, not a quote from the story
+ *  panel. */
 function stripStoryPrefix(text: string): string {
   return text
     .replace(/^Change [0-9a-f]{7,40}:\s*/i, '')
+    .replace(/^Committed:\s*/i, '')
     .replace(/^Planned:\s*/i, '');
 }
 
@@ -102,7 +106,11 @@ export function computeWhat(input: Pick<LaneSummaryInput, 'story' | 'pr' | 'drif
   const seen = new Set<string>();
   const push = (text: string | null | undefined): void => {
     if (!text) return;
-    const sentence = ensureSentence(stripStoryPrefix(text));
+    // Item 3: "what happened" line 1 read `S-b9d39bae548707e0: dedupe warden.health on
+    // an open unregistered trip.` on the live board -- a PR title carried the run id
+    // straight through. Every sentence here goes through the same `stripMachineIds`
+    // every other panel on the sheet already runs its own text through.
+    const sentence = stripMachineIds(ensureSentence(stripStoryPrefix(text)));
     if (!sentence || seen.has(sentence)) return;
     seen.add(sentence);
     sentences.push(sentence);
@@ -113,6 +121,17 @@ export function computeWhat(input: Pick<LaneSummaryInput, 'story' | 'pr' | 'drif
   for (const subject of drift.commits ?? []) {
     if (sentences.length >= MAX_WHAT_SENTENCES) break;
     push(subject);
+  }
+  // Item 9: with no PR at all, `drift.commits` never gets populated -- it only ever
+  // reads a PR's own commit range -- so "what happened" had nothing but the plan
+  // line. The story panel's own `commit` entries are the run's own commits too (they
+  // are range-scoped the same way, per the 2026-09-08 story-scoping fix), so they
+  // stand in here, newest first and six at most, ahead of the plan/ticket fallback.
+  if (!pr) {
+    const commits = (story?.entries ?? []).filter((entry) => entry.kind === 'commit');
+    for (let i = commits.length - 1; i >= 0 && sentences.length < MAX_WHAT_SENTENCES; i -= 1) {
+      push(commits[i]!.text);
+    }
   }
   if (sentences.length < MIN_WHAT_SENTENCES) {
     for (const entry of story?.entries ?? []) {
@@ -158,6 +177,15 @@ export function computeReadiness(input: {
   const {
     pr, attestation, mergeable, drift,
   } = input;
+  // Item 1: a merged PR is done -- checks and the audit no longer decide anything, and
+  // saying "checks are failure; not audited yet; already merged" (all three true, only
+  // one of them the reason) was never the readable clause the merged-lane sentence
+  // needs. `already merged` is the whole story.
+  if (pr?.merged) {
+    return {
+      ok: false, why: 'already merged', checks: pr.checks ?? null, behindBase: null, headMoved: false,
+    };
+  }
   const reasons: string[] = [];
   if (!pr) {
     reasons.push('no PR is open yet');
@@ -169,7 +197,10 @@ export function computeReadiness(input: {
   } else if (!CLEARED_VERDICTS.has(attestation.verdict)) {
     reasons.push(`council verdict is ${attestation.verdict}`);
   }
-  if (mergeable && mergeable.ok === false) reasons.push(mergeable.why);
+  // Item 9: with no PR at all, `mergeable.why` is always some form of "no PR yet" --
+  // the exact thing the `!pr` clause above already said. Skip it there, or "Not
+  // ready" says the same fact twice ("no PR is open yet; not audited yet; no PR yet").
+  if (pr && mergeable && mergeable.ok === false) reasons.push(mergeable.why);
   if (drift.headMoved) reasons.push('the PR head moved since the audit');
   if (drift.behindBase) {
     reasons.push(`the base branch gained ${drift.behindBase} commit${drift.behindBase === 1 ? '' : 's'} since`);
@@ -183,15 +214,67 @@ export function computeReadiness(input: {
   };
 }
 
+/**
+ * The one thing to do next, from the lane's state and the readiness verdict. Every
+ * branch is an instruction a person can follow from the sheet they are looking at, or
+ * a plain "nothing needed" when the run is working. Never a state word on its own.
+ *
+ * Reads the same `nextCategoryFor` branch table the tile's own `you` field
+ * (`laneGlance.ts`) reads, keyed here off the sheet's fuller `LaneReadiness` rather
+ * than the tile's cheaper `lane.mergeable` -- so the sheet's longer sentence can never
+ * point a person a different direction than the tile's shorter one did.
+ */
+export function computeNext(lane: Lane, readiness: LaneReadiness | null): string {
+  const category = nextCategoryFor(lane, readiness?.ok === true);
+  switch (category) {
+    case 'retired':
+      return 'Nothing needed; this lane is archived. Unretire it to bring it back.';
+    case 'kill-runaway':
+      return 'It is over its cap and looping. Kill the attempt, then reopen with a tighter brief.';
+    case 'merge':
+      return 'Merge it. Checks are green and the council passed.';
+    case 'nothing':
+      return 'Nothing needed; let it work. Watch live if you want to see each step.';
+    case 'paused-resume':
+      return 'Resume it when you are ready.';
+    case 'answer':
+      return 'Answer the question below; the run continues as soon as you do.';
+    case 'parked-resume-kill':
+      return 'Read the reason, then Resume it or Kill it.';
+    case 'reconnect-aws':
+      return 'Reconnect AWS, then Resume it.';
+    case 'blocked-resume-kill':
+      return 'Read the reason. If the work is salvageable, Resume it; otherwise Kill it and reopen.';
+    case 'kill-exhausted':
+      return 'It ran out of context. Kill it and reopen; the next attempt starts from its PR if one exists.';
+    case 'verify-pr':
+      return `Verify it, or read PR #${lane.pr!.no} yourself before deciding.`;
+    case 'verify-no-pr':
+      return 'Verify it, or Kill it if the session left nothing worth keeping.';
+    case 'not-ready':
+      return readiness?.why ? `Not ready to merge yet: ${readiness.why}. Re-check once that clears.` : 'Merge it.';
+    case 'done-cleanup':
+      return lane.pr?.merged ? 'Nothing needed; it merged. Clean up retires it.' : 'Nothing to merge. Clean up retires it.';
+    case 'merged-cleanup':
+      return 'Nothing needed; it merged. Clean up retires it.';
+    case 'killed-reopen-cleanup':
+      return 'Reopen it to try again, or Clean up to retire it.';
+    default:
+      return 'Read the story below.';
+  }
+}
+
 export function computeLaneSummary(input: LaneSummaryInput): LaneSummary {
+  const readiness = computeReadiness({
+    pr: input.pr, attestation: input.attestation,
+    mergeable: input.mergeable !== undefined ? input.mergeable : input.lane.mergeable,
+    drift: input.drift,
+  });
   return {
     what: computeWhat(input),
     status: input.lane.plain,
+    next: computeNext(input.lane, readiness),
     audit: computeAudit(input.attestation, input.drift),
-    readiness: computeReadiness({
-      pr: input.pr, attestation: input.attestation,
-      mergeable: input.mergeable !== undefined ? input.mergeable : input.lane.mergeable,
-      drift: input.drift,
-    }),
+    readiness,
   };
 }

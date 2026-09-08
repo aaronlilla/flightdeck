@@ -36,7 +36,11 @@ test('H1.3 fix: a PR the board has never read shows "checks not read yet" and no
   await page.goto('/');
   const tile = page.getByTestId('lane-unread-pr-1');
   await expect(tile).toBeVisible();
-  await expect(tile.getByRole('link', { name: 'PR #121' })).toBeVisible();
+  // 2026-09-08: the PR summary line's own link (the lane's real `pr.url`) is a
+  // second, distinct link from the "Links everywhere" one the Now sentence's own
+  // "Draft PR #121" mention now also earns -- both are correct, so this scopes to
+  // the summary line's link by its own href rather than assuming there is only one.
+  await expect(tile.locator('a[href="https://example.invalid/pr/121"]')).toBeVisible();
   await expect(tile.getByText(/checks not read yet/)).toBeVisible();
   await expect(tile.getByText(/0 files/)).toHaveCount(0);
 });
@@ -82,13 +86,17 @@ test('H2.3: Merge ready previews and merges the one ready PR', async ({ page }) 
   await expect(page.getByText(/merged \d+ lanes/)).toBeVisible();
 });
 
-test('H2.4: the ticket sheet shows the kind, a source link, and the Story section', async ({ page }) => {
+// Updated for item 3: the ticket chip is the source link now (never a separate
+// "source ↗" chip beside it).
+test('H2.4: the ticket sheet shows the kind, a linked ticket chip, and the Story section', async ({ page }) => {
   await page.goto('/');
   await page.getByTestId('lane-merged-1').click();
   const sheet = page.getByTestId('ticket-sheet');
   await expect(sheet).toBeVisible();
   await expect(sheet.getByText('ticket')).toBeVisible();
-  await expect(sheet.getByText('source ↗')).toBeVisible();
+  const ticketLink = sheet.getByText('FLT-702', { exact: true }).and(page.locator('a'));
+  await expect(ticketLink).toBeVisible();
+  await expect(ticketLink).toHaveAttribute('href', 'https://example.invalid/browse/FLT-702');
   await expect(sheet.getByText('Story')).toBeVisible();
 });
 

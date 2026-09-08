@@ -12,7 +12,7 @@ function lane(id: string, stepText: string): Lane {
     state: 'running', reason: null, stepN: 1, stepTotal: 3, stepText, ctxTokens: 0, ctxCeiling: 200_000,
     ctxCompactAt: 180_000, tokens: 0, tokenCap: null, tokensPerMin: 0, fails: 0, hop: 1, hopStatus: 'live',
     observedAt: Date.now(), verifiedAt: Date.now(), heart: true, since: Date.now(), startedAt: Date.now(),
-    endedAt: null, question: null, pr: null, sandbox: null, blockedBy: null, runaway: false, needsAaron: null,
+    endedAt: null, question: null, pr: null, sandbox: null, blockedBy: null, runaway: false, needsAaron: null, did: null, now: '', you: null,
   };
 }
 
@@ -47,6 +47,14 @@ describe('buildPaletteItems', () => {
   it('lists views in Title Case, matching on the display label', () => {
     const items = buildPaletteItems('review', [], [], vi.fn(), vi.fn(), vi.fn());
     expect(items.map((i) => i.title)).toEqual(['Flight review']);
+  });
+
+  // 2026-09-08: a lane with no ticket and no title must never fall back to its own
+  // run id as visible text -- the one string the board is built to hide.
+  it('never shows the run id for a lane with no ticket and no title', () => {
+    const untitled = { ...lane('S-b9d39bae548707e0', 'working'), ticket: null, title: null };
+    const items = buildPaletteItems('', [untitled], [], vi.fn(), vi.fn(), vi.fn());
+    expect(items[0]?.title).toBe('Untitled run');
   });
 
   it('lists all four views Title Case with no query', () => {

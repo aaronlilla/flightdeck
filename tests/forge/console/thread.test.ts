@@ -8,6 +8,7 @@ import { Journal, replay } from '../../../src/forge/journal.js';
 import { computeRunThread, computeThread } from '../../../src/forge/console/thread.js';
 import type { InboxEntry } from '../../../src/forge/inbox.js';
 import type { Message } from '../../../src/shared/console-model.js';
+import { clock } from '../../../src/shared/humanize.js';
 
 function tempJournal(): { path: string; journal: Journal } {
   const dir = mkdtempSync(join(tmpdir(), 'console-thread-'));
@@ -108,8 +109,91 @@ describe('computeThread', () => {
   });
 });
 
+describe('computeThread: plain mode (deliverable 8)', () => {
+  it('humanizes a persisted operator command through commandEcho', () => {
+    const persisted: Message[] = [
+      { k: 'm1', type: 'operator', text: 'kill S-b9d39bae548707e0', ts: 1, source: 'operator' },
+    ];
+    const result = computeThread(persisted, [], 10_000, [], (id) => (id === 'S-b9d39bae548707e0' ? 'health-repeat' : null));
+    const operator = result.messages.find((m) => m.type === 'operator');
+    expect(operator?.text).toBe('Kill health-repeat.');
+  });
+
+  it('humanizes a persisted receipt through receiptText, naming the question off the full inbox', () => {
+    const persisted: Message[] = [
+      { k: 'm1', type: 'receipt', text: 'answered f92af4249f6a27ae: Restart', ts: 1, source: 'operator' },
+    ];
+    const allAsks: InboxEntry[] = [{
+      key: 'f92af4249f6a27ae', question: 'Restart the forge MCP connection?', options: [], kind: 'question',
+      runs: ['probe-1'], goals: [], asked: 1, at: 1, disposition: 'park', answer: 'Restart', answeredAt: 2,
+    }];
+    const result = computeThread(persisted, [], 10_000, [], () => null, { allAsks });
+    const receipt = result.messages.find((m) => m.type === 'receipt');
+    expect(receipt?.text).toBe('Answered "Restart the forge MCP connection?": Restart');
+  });
+
+  it('strips machine ids out of reply and refusal text', () => {
+    const persisted: Message[] = [
+      { k: 'm1', type: 'reply', text: 'S-b9d39bae548707e0 is stuck', ts: 1, source: 'system' },
+      { k: 'm2', type: 'refusal', text: 'no lane matches jira_BBZ-1_1788543015139', ts: 2, source: 'system' },
+    ];
+    const result = computeThread(persisted, [], 10_000);
+    const reply = result.messages.find((m) => m.type === 'reply');
+    const refusal = result.messages.find((m) => m.type === 'refusal');
+    expect(reply?.text).not.toMatch(/S-[0-9a-f]{12,}/);
+    expect(refusal?.text).not.toMatch(/jira_/);
+  });
+
+  it('keeps jid on a receipt message; the client hides it, plain mode never drops it', () => {
+    const persisted: Message[] = [
+      { k: 'm1', type: 'receipt', text: 'answered f92af4249f6a27ae', ts: 1, source: 'operator', jid: 'J-abc12345' },
+    ];
+    const result = computeThread(persisted, [], 10_000);
+    const receipt = result.messages.find((m) => m.type === 'receipt');
+    expect(receipt?.jid).toBe('J-abc12345');
+  });
+
+  it('verbose: leaves persisted rows exactly as stored', () => {
+    const persisted: Message[] = [
+      { k: 'm1', type: 'operator', text: 'kill S-b9d39bae548707e0', ts: 1, source: 'operator' },
+    ];
+    const result = computeThread(persisted, [], 10_000, [], () => null, { verbose: true });
+    const operator = result.messages.find((m) => m.type === 'operator');
+    expect(operator?.text).toBe('kill S-b9d39bae548707e0');
+  });
+
+  // Item 7: a confirm card's text and blast line, and a question card's opts, all
+  // carry machine ids the same way a reply or refusal can -- every text-bearing field
+  // on every card needs the same strip, not only the fields the earlier fix covered.
+  it('strips machine ids out of a persisted confirm card\'s text and blast line', () => {
+    const persisted: Message[] = [
+      {
+        k: 'm1', type: 'confirm', text: 'confirm? queue-BBZ-182 is killed immediately', ts: 1, source: 'system',
+        blast: 'its worktree and process are gone for jira_BBZ-182_1788543015139',
+      },
+    ];
+    const result = computeThread(persisted, [], 10_000);
+    const confirm = result.messages.find((m) => m.type === 'confirm');
+    expect(confirm?.text).not.toMatch(/queue-BBZ-182|jira_/);
+    expect(confirm?.text).toContain('BBZ-182');
+    expect(confirm?.blast).not.toMatch(/jira_/);
+    expect(confirm?.blast).toContain('BBZ-182');
+  });
+
+  it('strips machine ids out of a live open question card', () => {
+    const entry: InboxEntry = {
+      key: 'ask-1', question: 'PR #39 (S-b9d39bae548707e0) is open, draft, and mergeable', options: ['Yes'],
+      kind: 'question', runs: ['S-b9d39bae548707e0'], goals: [], asked: 1, at: 2_000, disposition: 'park',
+    };
+    const result = computeThread([], [], 10_000, [entry]);
+    const question = result.messages.find((m) => m.type === 'question');
+    expect(question?.text).not.toMatch(/S-[0-9a-f]{12,}/);
+    expect(question?.text).toBe('PR #39 is open, draft, and mergeable');
+  });
+});
+
 describe('computeRunThread', () => {
-  it('renders a run\'s own journal rows as messages, merged with its run-inbox sends', () => {
+  it('verbose: renders a run\'s own journal rows as messages, merged with its run-inbox sends', () => {
     const { path, journal } = tempJournal();
     journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
     journal.close();
@@ -117,7 +201,7 @@ describe('computeRunThread', () => {
 
     const result = computeRunThread('alpha', fleet.events, [
       { id: 'm1', at: 5, seq: 0, from: 'console', text: 'do the thing' },
-    ]);
+    ], { verbose: true });
     expect(result.messages.map((m) => m.text)).toContain('alpha started');
     expect(result.messages.map((m) => m.text)).toContain('do the thing');
   });
@@ -167,5 +251,247 @@ describe('computeRunThread', () => {
     const receipt = result.messages.find((m) => m.type === 'receipt');
     expect(receipt).toBeDefined();
     expect(receipt!.jid).toBe(`J-${row.id.slice(0, 8)}`);
+  });
+});
+
+describe('computeRunThread: plain mode (deliverable 7)', () => {
+  it('run.started reads as a sentence naming the model, when the row carries one', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner', model: 'claude-sonnet-5-20260101' });
+    journal.close();
+    const fleet = replay(path);
+
+    const result = computeRunThread('alpha', fleet.events, []);
+    expect(result.messages.map((m) => m.text)).toContain(
+      `Started on Sonnet at ${clock(fleet.events[0]!.at)}`,
+    );
+  });
+
+  it('run.started omits the model clause when the row carries none', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.close();
+    const fleet = replay(path);
+
+    const result = computeRunThread('alpha', fleet.events, []);
+    expect(result.messages.map((m) => m.text)).toContain(
+      `Started at ${clock(fleet.events[0]!.at)}`,
+    );
+  });
+
+  it('folds a burst of tool calls into one activity message, counted by category', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    for (let i = 0; i < 3; i += 1) {
+      journal.append({ event: 'tool.start', run: 'alpha', actor: 'runner', tool: 'Bash' });
+      journal.append({ event: 'tool.end', run: 'alpha', actor: 'runner' });
+    }
+    journal.append({ event: 'tool.start', run: 'alpha', actor: 'runner', tool: 'Read' });
+    journal.append({ event: 'tool.end', run: 'alpha', actor: 'runner' });
+    journal.append({ event: 'run.finished', run: 'alpha', actor: 'runner', verdict: 'done' });
+    journal.close();
+    const fleet = replay(path);
+
+    const result = computeRunThread('alpha', fleet.events, []);
+    const activity = result.messages.find((m) => m.type === 'activity');
+    expect(activity).toBeDefined();
+    expect(activity!.text).toContain('3 commands');
+    expect(activity!.text).toContain('1 file read');
+    expect(activity!.text).toMatch(/^Worked \d{1,2}:\d{2}.*\s+to\s+\d{1,2}:\d{2}/i);
+  });
+
+  it('a burst with exactly one counted call reads as a single sentence, not a range', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.append({ event: 'tool.start', run: 'alpha', actor: 'runner', tool: 'Bash' });
+    journal.append({ event: 'tool.end', run: 'alpha', actor: 'runner' });
+    journal.append({ event: 'run.finished', run: 'alpha', actor: 'runner', verdict: 'done' });
+    journal.close();
+    const fleet = replay(path);
+
+    const result = computeRunThread('alpha', fleet.events, []);
+    const activity = result.messages.find((m) => m.type === 'activity');
+    expect(activity!.text).toMatch(/^Ran 1 command at \d{1,2}:\d{2}/i);
+  });
+
+  it('collapses two consecutive replies that share their first 80 characters, marking the newest', () => {
+    const { path, journal } = tempJournal();
+    const longOutcome = 'the run got stuck on the same step and reported the exact same outcome text twice over';
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.append({ event: 'forge.report', run: 'alpha', actor: 'worker', outcome: longOutcome });
+    journal.append({ event: 'run.relaunched', run: 'alpha', actor: 'runner', attempt: 2 });
+    journal.append({ event: 'forge.report', run: 'alpha', actor: 'worker', outcome: longOutcome });
+    journal.close();
+    const fleet = replay(path);
+
+    const result = computeRunThread('alpha', fleet.events, []);
+    const replies = result.messages.filter((m) => m.type === 'reply');
+    expect(replies).toHaveLength(1);
+    expect(replies[0]!.text).toContain('(repeated after a relaunch)');
+  });
+
+  it('maps forge.ask, ask.answered, park/resume/relaunch/kill/finish/handoff to plain sentences', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.append({ event: 'forge.ask', run: 'alpha', actor: 'worker', question: 'dev or staging?' });
+    journal.append({ event: 'ask.answered', run: 'alpha', actor: 'operator', answer: 'dev' });
+    journal.append({ event: 'run.parked', run: 'alpha', actor: 'runner', reason: 'waiting on you' });
+    journal.append({ event: 'run.resumed', run: 'alpha', actor: 'operator' });
+    journal.append({ event: 'run.relaunched', run: 'alpha', actor: 'runner', attempt: 2 });
+    journal.append({ event: 'run.killed', run: 'alpha', actor: 'operator', reason: 'over budget' });
+    journal.append({ event: 'run.finished', run: 'alpha', actor: 'runner', verdict: 'killed' });
+    journal.append({ event: 'run.handoff', run: 'alpha', actor: 'runner', successor: 'alpha-2' });
+    journal.close();
+    const fleet = replay(path);
+
+    const result = computeRunThread('alpha', fleet.events, []);
+    const texts = result.messages.map((m) => m.text);
+    expect(texts).toContain('Asked you: dev or staging?');
+    expect(texts).toContain('You answered: dev');
+    expect(texts).toContain('Parked: waiting on you');
+    expect(texts).toContain('Resumed');
+    expect(texts).toContain('Relaunched (attempt 2)');
+    expect(texts).toContain('Killed: over budget');
+    expect(texts).toContain('Finished: killed');
+    expect(texts).toContain('Context ceiling reached; handed off to a fresh session');
+  });
+
+  it('drops a permission.denied row that carries no reason, keeps one that does', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.append({ event: 'permission.denied', run: 'alpha', actor: 'runner', tool: 'Bash' });
+    journal.append({ event: 'permission.denied', run: 'alpha', actor: 'runner', tool: 'Bash', reason: 'not allowed' });
+    journal.close();
+    const fleet = replay(path);
+
+    const result = computeRunThread('alpha', fleet.events, []);
+    const denials = result.messages.filter((m) => m.text.includes('Asked to use'));
+    expect(denials).toHaveLength(1);
+    expect(denials[0]!.text).toBe('Asked to use Bash; parked instead');
+  });
+
+  it('never lets a machine id reach a plain message, over a wide sweep of event kinds', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.append({ event: 'run.parked', run: 'alpha', actor: 'runner', reason: 'parking on a1b2c3d4e5f6a7b8: continue?' });
+    journal.append({ event: 'warden.parked', run: 'alpha', actor: 'warden', reason: 'stale-session for jira_BBZ-99_1788543015139' });
+    journal.append({
+      event: 'run.killed', run: 'alpha', actor: 'operator',
+      reason: 'blocked behind queue-BBZ-1 at 88d44ec96baea849f7c1e8c0a1b2c3d4e5f6a7b8',
+    });
+    journal.close();
+    const fleet = replay(path);
+
+    const result = computeRunThread('alpha', fleet.events, []);
+    const idPattern = /S-[0-9a-f]{12,}|jira_|queue-|\b[0-9a-f]{40}\b|\b[0-9a-f]{16,39}\b/i;
+    for (const message of result.messages) {
+      expect(message.text).not.toMatch(idPattern);
+    }
+  });
+
+  // Item 6: the run thread's own run.parked line reused to show the raw ask key
+  // straight off `row.reason`; it must run through the same fix as the story panel.
+  it('a run.parked "parking on <key>:" row reads as "Parked: Asked you: ..." with no ask key visible', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.append({
+      event: 'run.parked', run: 'alpha', actor: 'runner',
+      reason: 'parking on a1b2c3d4e5f6a7b8: PR #39 (S-b9d39bae548707e0) is open',
+    });
+    journal.close();
+    const fleet = replay(path);
+
+    const result = computeRunThread('alpha', fleet.events, []);
+    const texts = result.messages.map((m) => m.text);
+    expect(texts).toContain('Parked: Asked you: PR #39 is open');
+  });
+
+  // Item 4: the live thread read `Parked: Asked you: PR #39 (this run) is open...`
+  // immediately followed by `Asked you: PR #39 (this run) is open...` -- the
+  // `run.parked` row and the `forge.ask` row saying the exact same thing. Within 5s of
+  // each other, they collapse to the one `Asked you:` line.
+  it('collapses a run.parked-as-ask row and a matching forge.ask within 5s into one Asked you: line', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner', at: 0 });
+    journal.append({
+      event: 'run.parked', run: 'alpha', actor: 'runner', at: 1_000,
+      reason: 'parking on a1b2c3d4e5f6a7b8: PR #39 is open, draft, and mergeable',
+    });
+    journal.append({
+      event: 'forge.ask', run: 'alpha', actor: 'worker', at: 3_000,
+      question: 'PR #39 is open, draft, and mergeable',
+    });
+    journal.close();
+    const fleet = replay(path);
+
+    const result = computeRunThread('alpha', fleet.events, []);
+    const texts = result.messages.map((m) => m.text);
+    const asks = texts.filter((t) => t.includes('PR #39 is open, draft, and mergeable'));
+    expect(asks).toEqual(['Asked you: PR #39 is open, draft, and mergeable']);
+  });
+
+  // Item 4: a `permission.denied` whose reason starts with `parking on` says nothing
+  // the ask line above it did not already say -- it is dropped, not rendered as its
+  // own "Asked to use X; parked instead" row.
+  it('drops a permission.denied row whose reason starts with "parking on"', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.append({
+      event: 'permission.denied', run: 'alpha', actor: 'runner', tool: 'ToolSearch',
+      reason: 'parking on a1b2c3d4e5f6a7b8: continue?',
+    });
+    journal.close();
+    const fleet = replay(path);
+
+    const result = computeRunThread('alpha', fleet.events, []);
+    const denials = result.messages.filter((m) => m.text.includes('Asked to use'));
+    expect(denials).toHaveLength(0);
+  });
+
+  // Item 9: consecutive identical event lines (a relaunch storm, a repeated denial)
+  // collapse into one line with a count, the way `collapseWardenChips` already does
+  // for the rail -- never a wall of copies of the same sentence.
+  it('collapses consecutive identical event lines with a count', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    for (let i = 0; i < 5; i += 1) {
+      journal.append({ event: 'run.relaunched', run: 'alpha', actor: 'runner' });
+    }
+    for (let i = 0; i < 2; i += 1) {
+      journal.append({ event: 'permission.denied', run: 'alpha', actor: 'runner', tool: 'ToolSearch', reason: 'not allowed' });
+    }
+    journal.close();
+    const fleet = replay(path);
+
+    const result = computeRunThread('alpha', fleet.events, []);
+    const texts = result.messages.map((m) => m.text);
+    expect(texts).toContain('Relaunched (x5)');
+    expect(texts).toContain('Asked to use ToolSearch; parked instead (x2)');
+    expect(texts.filter((t) => t.startsWith('Relaunched'))).toHaveLength(1);
+  });
+
+  it('a note row reads "Note: <message>" when message is a string, and is dropped otherwise', () => {
+    const { path, journal } = tempJournal();
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.append({ event: 'note', run: 'alpha', actor: 'system', message: 'reconciled: resumed by session id' });
+    journal.append({ event: 'note', run: 'alpha', actor: 'system' });
+    journal.close();
+    const fleet = replay(path);
+
+    const result = computeRunThread('alpha', fleet.events, []);
+    const texts = result.messages.map((m) => m.text);
+    expect(texts).toContain('Note: reconciled: resumed by session id');
+    expect(texts.filter((t) => t.startsWith('Note:') || t.startsWith('note'))).toHaveLength(1);
+  });
+});
+
+describe('computeRunThread inbox messages', () => {
+  it('strips machine ids from a queued inbox message in plain mode and keeps them in verbose', async () => {
+    const { computeRunThread } = await import('../../../src/forge/console/thread.js');
+    const inbox = [{ id: 'm1', at: 5, from: 'console', text: 'Question: PR #39 (S-b9d39bae548707e0) is open. Answer: not now' }] as never;
+    const plain = computeRunThread('S-b9d39bae548707e0', [], inbox);
+    expect(plain.messages[0]!.text).toBe('Question: PR #39 is open. Answer: not now');
+    const verbose = computeRunThread('S-b9d39bae548707e0', [], inbox, { verbose: true });
+    expect(verbose.messages[0]!.text).toContain('S-b9d39bae548707e0');
   });
 });

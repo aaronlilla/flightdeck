@@ -8,6 +8,7 @@
  * clock time) or a full clause a person can act on.
  */
 import type { Lane, QueueItem } from '../../shared/console-model.js';
+import { clock } from '../../shared/humanize.js';
 
 export interface PlainContext {
   now: number;
@@ -17,13 +18,13 @@ const MODEL_NAMES: Record<string, string> = {
   'sonnet-5': 'Sonnet', 'opus-5': 'Opus', 'haiku-4.5': 'Haiku',
 };
 
-function modelName(model: string): string {
+/** The model alias's own display name (`sonnet-5` -> `Sonnet`), shared with the plain
+ *  run thread's own "Started on <Model name>" line. */
+export function modelName(model: string): string {
   return MODEL_NAMES[model] ?? model;
 }
 
-function clockTime(at: number): string {
-  return new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-}
+const clockTime = clock;
 
 function dayLabel(at: number, now: number): string {
   const days = Math.floor((now - at) / (24 * 60 * 60_000));
@@ -34,6 +35,15 @@ function dayLabel(at: number, now: number): string {
 
 function truncate(text: string, limit: number): string {
   return text.length > limit ? text.slice(0, limit) : text;
+}
+
+/** Item 1: the one sentence a merged PR gets, whatever state it outranked to get
+ *  there -- `Merged: PR #39 landed at HH:MM.`, or without the clock clause when the
+ *  PR's own `mergedAt` was never read. */
+export function prMergedSentence(pr: Lane['pr']): string {
+  if (!pr) return 'Merged.';
+  const time = pr.mergedAt ? ` at ${clockTime(pr.mergedAt)}` : '';
+  return `Merged: PR #${pr.no} landed${time}.`;
 }
 
 function reviewSentence(lane: Lane): string | null {

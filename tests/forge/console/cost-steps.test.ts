@@ -46,7 +46,24 @@ describe('computeCostSteps', () => {
     // never a dollar figure this fleet's flat subscription never actually spends.
     const total = steps.reduce((sum, s) => sum + s.tokens, 0);
     expect(total).toBe(fleet.runs['alpha']!.tokensUsed);
-    expect(steps[0]!.stepText).toBe('alpha finished a turn');
+    expect(steps[0]!.stepText).toBe('Finished a turn');
+  });
+
+  it('deliverable 11: stepText for a reasoner call and a tool call reads in plain words, no run id', () => {
+    const { path, journal } = tempJournal();
+    journal.append({
+      event: 'reasoner.call', run: 'alpha', actor: 'worker',
+      usage: { input: 100, cacheRead: 0, cacheCreation: 0, output: 50 },
+    });
+    journal.append({
+      event: 'tool.start', run: 'alpha', actor: 'worker', tool: 'Bash',
+      usage: { input: 10, cacheRead: 0, cacheCreation: 0, output: 5 },
+    });
+    journal.close();
+    const fleet = replay(path);
+    const steps = computeCostSteps('alpha', fleet.events);
+    expect(steps[0]!.stepText).toBe('Reasoner call');
+    expect(steps[1]!.stepText).toBe('Ran Bash');
   });
 
   it('counts tokens for a model this policy has no price for -- unpriced is not unused', () => {

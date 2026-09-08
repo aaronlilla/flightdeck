@@ -16,6 +16,7 @@ import { Lanes } from '../../../src/forge/supervisor.js';
 import { Registry } from '../../../src/forge/registry.js';
 import { Inbox } from '../../../src/forge/inbox.js';
 import { ConsoleReads } from '../../../src/forge/console/reads.js';
+import { clock } from '../../../src/shared/humanize.js';
 
 function tempDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix));
@@ -137,7 +138,7 @@ describe('ConsoleReads.lanesResponse: title and sourceUrl', () => {
 
     const server = reads as unknown as { runStoryResponse(run: string): Promise<{ entries: Array<{ text: string }> }> };
     const story = await server.runStoryResponse('queue-BBZ-96');
-    expect(story.entries.map((e) => e.text)).toContain('Queued from Jira as BBZ-96 at ' + new Date(500).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }));
+    expect(story.entries.map((e) => e.text)).toContain(`Queued from Jira as BBZ-96 at ${clock(500)}`);
     expect(story.entries.map((e) => e.text)).toContain('Draft PR #119 opened');
     expect(story.entries.map((e) => e.text)).toContain('Branch feature/bbz-96 off develop');
   });
@@ -244,8 +245,137 @@ describe('ConsoleReads.lanesResponse: title and sourceUrl', () => {
     const server = reads as unknown as { threadResponse(): { messages: Array<{ text: string }> } };
     const thread = server.threadResponse();
     const chip = thread.messages.find((m) => m.text.includes('context ceiling'));
-    expect(chip?.text).toBe('reconcile stale wallet holds: context ceiling reached, handed off to a fresh session.');
+    // Deliverable 6: `labelFor` now prefers the ticket key over the title, so a lane
+    // that carries one -- BBZ-99, here -- shows it on the rail chip.
+    expect(chip?.text).toBe('BBZ-99: context ceiling reached, handed off to a fresh session.');
     expect(chip?.text).not.toMatch(/queue-|STUCK/i);
+  });
+
+  it('deliverable 6: a successor run\'s chip carries the root lane\'s own title, not its own bare id', () => {
+    const forgeHomeDir = tempDir('console-reads-');
+    const briefsDir = join(forgeHomeDir, 'briefs');
+    mkdirSync(briefsDir, { recursive: true });
+    const briefPath = join(briefsDir, 'hotfix-fee.md');
+    writeFileSync(briefPath, '# fix the withdrawal fee\n', 'utf8');
+
+    const queueStore = new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl'));
+    queueStore.append({
+      id: 'Q-1', at: 1, source: 'hotfix', input: 'fix the withdrawal fee', ticket: null, repo: 'o/n',
+      briefPath, branch: 'hotfix/fee', worktreePath: 'w', base: 'main',
+      state: 'running', reason: null, runKey: 'hotfix-fee', pr: null, journalIds: [],
+      createdAt: 1, updatedAt: 1,
+    });
+
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'hotfix-fee', actor: 'runner' });
+    journal.append({ event: 'run.handoff', run: 'hotfix-fee', actor: 'runner', successor: 'hotfix-fee-2' });
+    journal.append({ event: 'run.started', run: 'hotfix-fee-2', actor: 'runner' });
+    journal.append({ event: 'run.killed', run: 'hotfix-fee-2', actor: 'operator', reason: 'over budget' });
+    journal.close();
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put('hotfix-fee', { column: 'hotfix-fee' });
+
+    const threadDir = join(forgeHomeDir, 'console');
+    mkdirSync(threadDir, { recursive: true });
+    writeFileSync(
+      join(threadDir, 'thread.jsonl'),
+      `${JSON.stringify({ k: 'm1', type: 'operator', text: 'hi', ts: 0, source: 'operator' })}\n`,
+      'utf8',
+    );
+
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore,
+      jiraSite: null,
+    });
+
+    const server = reads as unknown as { threadResponse(): { messages: Array<{ text: string }> } };
+    const thread = server.threadResponse();
+    const chip = thread.messages.find((m) => m.text.includes('killed'));
+    expect(chip?.text).toContain('fix the withdrawal fee');
+    expect(chip?.text).not.toMatch(/hotfix-fee-2/i);
+  });
+
+  // Item 8: an operator bubble that resumes a ticket-carrying lane echoed the lane's
+  // full TITLE (a "Resume Close the fee-skip hole for card withdrawals with both fee
+  // fields omitted (BBZ-182)." bubble on the live board) because the seam handed to
+  // computeThread mapped every id straight to lane.title, skipping the ticket key
+  // entirely. It must echo the short ticket key instead.
+  it('item 8: an echoed command names a ticket-carrying lane by its ticket, not its long title', () => {
+    const forgeHomeDir = tempDir('console-reads-');
+    const briefsDir = join(forgeHomeDir, 'briefs');
+    mkdirSync(briefsDir, { recursive: true });
+    const briefPath = join(briefsDir, 'bbz-182.md');
+    writeFileSync(briefPath, '# Close the fee-skip hole for card withdrawals with both fee fields omitted\n', 'utf8');
+
+    const queueStore = new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl'));
+    queueStore.append({
+      id: 'Q-1', at: 1, source: 'ticket', input: 'BBZ-182', ticket: 'BBZ-182', repo: 'o/n',
+      briefPath, branch: 'feature/bbz-182', worktreePath: 'w', base: 'develop',
+      state: 'running', reason: null, runKey: 'queue-BBZ-182', pr: null, journalIds: [],
+      createdAt: 1, updatedAt: 1,
+    });
+
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'queue-BBZ-182', actor: 'runner' });
+    journal.close();
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put('queue-BBZ-182', { column: 'BBZ-182' });
+
+    const threadDir = join(forgeHomeDir, 'console');
+    mkdirSync(threadDir, { recursive: true });
+    writeFileSync(
+      join(threadDir, 'thread.jsonl'),
+      `${JSON.stringify({ k: 'm1', type: 'operator', text: 'resume queue-BBZ-182', ts: 1, source: 'operator' })}\n`,
+      'utf8',
+    );
+
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore, jiraSite: null,
+    });
+
+    const server = reads as unknown as { threadResponse(): { messages: Array<{ text: string }> } };
+    const thread = server.threadResponse();
+    const operator = thread.messages.find((m) => m.text.startsWith('Resume'));
+    expect(operator?.text).toBe('Resume BBZ-182.');
+  });
+
+  // Item 9: a queue item's own park `reason` can carry an unshortened 40-character
+  // sha ("checks are failure on head <sha>, not green"); `plainForQueueItem` reads
+  // that raw reason AFTER `computeLanes` already stripped and shortened `plain` once,
+  // so the sha reached the board whole even though the tile's own sha read short.
+  it('item 9: a queue-parked lane\'s plain sentence never carries a 40-character sha', () => {
+    const forgeHomeDir = tempDir('console-reads-');
+    const queueStore = new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl'));
+    const sha = 'f284c653033e12549fdaa68212840987a328a824';
+    queueStore.append({
+      id: 'Q-1', at: 1, source: 'ticket', input: 'BBZ-1', ticket: 'BBZ-1', repo: 'o/n',
+      briefPath: null, branch: 'feature/bbz-1', worktreePath: 'w', base: 'develop',
+      state: 'parked', reason: `refused: checks are failure on head ${sha}, not green.`,
+      runKey: 'queue-BBZ-1', pr: null, journalIds: [], createdAt: 1, updatedAt: 1,
+    });
+
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'queue-BBZ-1', actor: 'runner' });
+    journal.close();
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put('queue-BBZ-1', { column: 'BBZ-1' });
+
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore, jiraSite: null,
+    });
+
+    const [lane] = reads.lanesResponse().lanes;
+    expect(lane!.plain).not.toContain(sha);
+    expect(lane!.plain).toContain(sha.slice(0, 7));
   });
 
   it('item 7: GET /lanes reads a queue lane\'s checks/verdict/merged in the background, off repo+PR alone, with no chain packet at all', async () => {
@@ -303,10 +433,62 @@ describe('ConsoleReads.lanesResponse: title and sourceUrl', () => {
     const second = reads.lanesResponse().lanes[0]!;
     expect(second.pr).toEqual({
       no: 119, url: 'https://github.com/o/n/pull/119', files: 6, add: 360, del: 5, draft: true,
-      checks: 'success', merged: false, title: 'add the merge chip', verdict: 'PASS WITH NOTES',
+      checks: 'success', merged: false, title: 'add the merge chip', verdict: 'PASS WITH NOTES', mergedAt: null,
     });
     expect(second.mergeable).toEqual({ ok: true });
     expect(ghCalls).toBe(1);
+  });
+
+  // Item 11: the run itself opened a PR straight off its own branch, but nothing
+  // ever wrote its number back onto the queue item -- the exact live-board finding
+  // (PR #39 for `feature/s-b9d39bae548707e0`, self lane still reading "no PR yet").
+  it('item 11: a queue item with no PR on record discovers one by branch, and surfaces it exactly like a recorded PR', async () => {
+    const forgeHomeDir = tempDir('console-reads-');
+    const queueStore = new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl'));
+    queueStore.append({
+      id: 'Q-1', at: 1, source: 'ticket', input: 'S-b9d39bae548707e0', ticket: null, repo: 'o/n',
+      briefPath: null, branch: 'feature/s-b9d39bae548707e0', worktreePath: 'w', base: 'main',
+      state: 'running', reason: null, runKey: 'S-b9d39bae548707e0', pr: null, journalIds: [],
+      createdAt: 1, updatedAt: 1,
+    });
+
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'S-b9d39bae548707e0', actor: 'runner' });
+    journal.close();
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put('S-b9d39bae548707e0', { column: 'self' });
+
+    let branchCalls = 0;
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore, jiraSite: null,
+      ghBranchLookup: async (repo, branch) => {
+        branchCalls += 1;
+        expect(repo).toBe('o/n');
+        expect(branch).toBe('feature/s-b9d39bae548707e0');
+        return {
+          number: 39, url: 'https://github.com/o/n/pull/39', isDraft: true, mergedAt: null,
+          title: 'dedupe warden.health on an open unregistered trip', headRefOid: 'f284c65',
+        };
+      },
+    });
+
+    // First call: nothing has looked this PR up by branch yet, so the lane still
+    // reads no PR -- and a background discovery is kicked off rather than blocking.
+    const first = reads.lanesResponse().lanes[0]!;
+    expect(first.pr).toBeNull();
+
+    const server = reads as unknown as { settlePrRefreshes(): Promise<void> };
+    await server.settlePrRefreshes();
+
+    const second = reads.lanesResponse().lanes[0]!;
+    expect(second.pr).toEqual({
+      no: 39, url: 'https://github.com/o/n/pull/39', draft: true, merged: false,
+      title: 'dedupe warden.health on an open unregistered trip', mergedAt: null,
+    });
+    expect(branchCalls).toBe(1);
   });
 
   it('item 7: GET /run/:id/pr answers for a queue lane with no chain packet, off the queue item\'s own repo and PR', async () => {
@@ -341,8 +523,98 @@ describe('ConsoleReads.lanesResponse: title and sourceUrl', () => {
     const result = await server.runPrResponse('queue-BBZ-96');
     expect(result.pr).toEqual({
       no: 119, url: 'https://github.com/o/n/pull/119', files: 6, add: 360, del: 5, draft: true,
-      checks: 'success', merged: false, title: 'add the merge chip', verdict: 'PASS WITH NOTES',
+      checks: 'success', merged: false, title: 'add the merge chip', verdict: 'PASS WITH NOTES', mergedAt: null,
     });
+  });
+
+  // Item 1: PR #39 merged at 01:57 while its queue item still read parked (refused,
+  // checks failing on an old head) -- the live tile kept saying PARKED with a stale
+  // reason instead of the one fact that actually settled it: the PR landed.
+  it('item 1: a merged PR outranks a parked queue item -- the lane reads merged, not parked', async () => {
+    const forgeHomeDir = tempDir('console-reads-');
+    const queueStore = new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl'));
+    queueStore.append({
+      id: 'Q-1', at: 1, source: 'hotfix', input: 'S-b9d39bae548707e0', ticket: null, repo: 'aaronlilla/flightdeck',
+      briefPath: null, branch: 'feature/s-b9d39bae548707e0', worktreePath: 'w', base: 'develop',
+      state: 'parked', reason: 'refused: checks are failure on head f284c65, not green.',
+      runKey: 'S-b9d39bae548707e0',
+      pr: { no: 39, url: 'https://github.com/aaronlilla/flightdeck/pull/39', draft: false },
+      journalIds: [], createdAt: 1, updatedAt: 1,
+    });
+
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'S-b9d39bae548707e0', actor: 'runner' });
+    journal.append({ event: 'run.parked', run: 'S-b9d39bae548707e0', actor: 'warden', reason: 'refused: checks are failure on head f284c65, not green.' });
+    journal.close();
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put('S-b9d39bae548707e0', { column: 'self' });
+
+    const mergedAt = Date.UTC(2026, 8, 8, 1, 57);
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore, jiraSite: null,
+      mergeAllowed: () => true,
+      ghDetailLookup: async () => ({
+        headSha: 'f284c65', isDraft: false, merged: true, title: 'dedupe warden.health on an open unregistered trip',
+        checks: 'failure', mergedAt,
+      }),
+    });
+
+    // Before the background PR-detail read lands, the queue item's own parked state
+    // still stands -- only once the merged fact arrives does it outrank it.
+    const first = reads.lanesResponse().lanes[0]!;
+    expect(first.state).toBe('parked');
+    const server = reads as unknown as { settlePrRefreshes(): Promise<void> };
+    await server.settlePrRefreshes();
+
+    const merged = reads.lanesResponse().lanes[0]!;
+    expect(merged.state).toBe('merged');
+    expect(merged.reason).toBeNull();
+    expect(merged.plain).toBe(`Merged: PR #39 landed at ${clock(mergedAt)}.`);
+    expect(merged.you).toBe('Nothing needed; it merged. Clean up retires it.');
+    expect(merged.mergeable).toEqual({ ok: false, why: 'already merged' });
+  });
+
+  // The other half of item 1's own specimen pair: a parked queue item whose PR is
+  // still open reads parked exactly as before -- only a merged PR outranks it.
+  it('item 1: a parked queue item with an open (unmerged) PR still reads parked', async () => {
+    const forgeHomeDir = tempDir('console-reads-');
+    const queueStore = new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl'));
+    queueStore.append({
+      id: 'Q-1', at: 1, source: 'hotfix', input: 'S-open', ticket: null, repo: 'aaronlilla/flightdeck',
+      briefPath: null, branch: 'feature/s-open', worktreePath: 'w', base: 'develop',
+      state: 'parked', reason: 'refused: checks are failure on head abc1234, not green.',
+      runKey: 'S-open', pr: { no: 40, url: 'https://github.com/aaronlilla/flightdeck/pull/40', draft: false },
+      journalIds: [], createdAt: 1, updatedAt: 1,
+    });
+
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'S-open', actor: 'runner' });
+    journal.append({ event: 'run.parked', run: 'S-open', actor: 'warden', reason: 'refused: checks are failure on head abc1234, not green.' });
+    journal.close();
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put('S-open', { column: 'self' });
+
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore, jiraSite: null,
+      mergeAllowed: () => true,
+      ghDetailLookup: async () => ({
+        headSha: 'abc1234', isDraft: false, merged: false, title: 'still open', checks: 'failure', mergedAt: null,
+      }),
+    });
+
+    reads.lanesResponse();
+    const server = reads as unknown as { settlePrRefreshes(): Promise<void> };
+    await server.settlePrRefreshes();
+
+    const still = reads.lanesResponse().lanes[0]!;
+    expect(still.state).toBe('parked');
+    expect(still.reason).toBe('refused: checks are failure on head abc1234, not green.');
   });
 });
 
@@ -435,6 +707,49 @@ describe('ConsoleReads.runSummaryResponse / runRecheckResponse (2026-09-07)', ()
     expect(cached?.pr?.url).not.toBe('stale');
     expect(cached?.pr?.checks).toBe('pending');
   });
+
+  // Item 2: the summary must answer fast on a warm cache and never repeat a `gh`/`git`
+  // call it already made moments ago -- `runSummaryResponse` used to call
+  // `ghDetailLookup` twice in a single request (once through `runStoryResponse`, once
+  // for its own fresh read) and again on every re-open within the same 60s, which is
+  // the live console's own 11-second sheet.
+  it('caches the PR detail and drift reads for 60s, never re-invoking gh within the window', async () => {
+    const { forgeHomeDir, queueStore, journalPath } = setup();
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    let ghCalls = 0;
+    let driftCalls = 0;
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore, jiraSite: null,
+      ghDetailLookup: async () => {
+        ghCalls += 1;
+        return {
+          headSha: 'deadbeef', isDraft: true, merged: false, title: 'add the merge chip',
+          checks: 'success', body: 'Wires the merge chip into the sheet.',
+        };
+      },
+      driftFn: async () => { driftCalls += 1; return { behindBase: 0, headMoved: false }; },
+      gitLog: async () => [],
+      mergeAllowed: () => true,
+    });
+
+    await reads.runSummaryResponse('queue-BBZ-96');
+    // `lanesResponse` (which `runSummaryResponse` reads the lane through) can fire its
+    // own background PR-detail refresh (item 7) alongside the summary's own read -- a
+    // separate concern from this one, so it is flushed and counted once before the
+    // real assertion: a second `runSummaryResponse` call inside the 60s window adds no
+    // further `gh`/`git` calls of its own.
+    await reads.settlePrRefreshes();
+    const ghAfterFirst = ghCalls;
+    const driftAfterFirst = driftCalls;
+    expect(ghAfterFirst).toBeGreaterThan(0);
+    expect(driftAfterFirst).toBeGreaterThan(0);
+
+    await reads.runSummaryResponse('queue-BBZ-96');
+    await reads.settlePrRefreshes();
+    expect(ghCalls).toBe(ghAfterFirst);
+    expect(driftCalls).toBe(driftAfterFirst);
+  });
 });
 
 describe('ConsoleReads.lanesResponse: archived bypasses the 24h finished-lane window', () => {
@@ -470,5 +785,95 @@ describe('ConsoleReads.lanesResponse: archived bypasses the 24h finished-lane wi
 
     const archived = reads.lanesResponse(false, true);
     expect(archived.lanes.map((l) => l.id)).toContain('beta');
+  });
+});
+
+describe('ConsoleReads.runStoryResponse: story scoping (deliverable 1)', () => {
+  it('never matches a packet-less lane against other packet-less rows in the journal', async () => {
+    const forgeHomeDir = tempDir('console-reads-story-scope-');
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'S-self1', actor: 'runner' });
+    for (let i = 0; i < 50; i += 1) {
+      journal.append({ event: 'run.parked', run: `S-other${i}`, actor: 'runner', reason: `park ${i}` });
+    }
+    journal.close();
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put('S-self1', { column: 'S-self1' });
+
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore: new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl')),
+      jiraSite: null, gitLog: async () => [],
+    });
+
+    const server = reads as unknown as { runStoryResponse(run: string): Promise<{ entries: Array<{ text: string; kind: string }> }> };
+    const story = await server.runStoryResponse('S-self1');
+    const parkEntries = story.entries.filter((e) => e.kind === 'park' || e.text.includes('park'));
+    expect(parkEntries).toHaveLength(0);
+  });
+
+  it('passes the git log function the queue item\'s own base and created time as a range', async () => {
+    const forgeHomeDir = tempDir('console-reads-story-range-');
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'queue-BBZ-1', actor: 'runner' });
+    journal.close();
+
+    const queueStore = new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl'));
+    queueStore.append({
+      id: 'Q-1', at: 1, source: 'ticket', input: 'BBZ-1', ticket: 'BBZ-1', repo: 'o/n',
+      briefPath: null, branch: 'feature/bbz-1', worktreePath: forgeHomeDir, base: 'develop',
+      state: 'running', reason: null, runKey: 'queue-BBZ-1', pr: null, journalIds: [],
+      createdAt: 4_000, updatedAt: 4_000,
+    });
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put('queue-BBZ-1', { column: 'BBZ-1' });
+
+    let seenRange: { base: string | null; since: number } | undefined;
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore, jiraSite: null,
+      gitLog: async (_worktreePath: string, range?: { base: string | null; since: number }) => {
+        seenRange = range;
+        return [];
+      },
+    });
+
+    const server = reads as unknown as { runStoryResponse(run: string): Promise<unknown> };
+    await server.runStoryResponse('queue-BBZ-1');
+    expect(seenRange).toEqual({ base: 'develop', since: 4_000 });
+  });
+});
+
+describe('ConsoleReads: run thread verbose wiring (deliverable 7)', () => {
+  it('plain by default, verbose only when the caller\'s own private call asks for it', () => {
+    const forgeHomeDir = tempDir('console-reads-verbose-');
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.close();
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put('alpha', { column: 'alpha' });
+
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore: new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl')),
+      jiraSite: null,
+    });
+
+    const server = reads as unknown as {
+      runThreadResponse(run: string, verbose?: boolean): { messages: Array<{ text: string }>; verbose?: boolean };
+    };
+    const plain = server.runThreadResponse('alpha');
+    expect(plain.verbose).toBeUndefined();
+    expect(plain.messages.some((m) => m.text === 'alpha started')).toBe(false);
+
+    const verbose = server.runThreadResponse('alpha', true);
+    expect(verbose.verbose).toBe(true);
+    expect(verbose.messages.some((m) => m.text === 'alpha started')).toBe(true);
   });
 });

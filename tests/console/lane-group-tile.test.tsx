@@ -1,23 +1,34 @@
 // @vitest-environment jsdom
-import { render, screen } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { render as rtlRender, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
 import { LaneGroupTile } from '../../src/console/components/LaneGroupTile.js';
 import { groupLanesByTicket } from '../../src/console/laneVM.js';
+import { StoreContext, initialState } from '../../src/console/store.js';
 import type { Lane } from '../../src/shared/console-model.js';
 
+function render(node: ReactElement): ReturnType<typeof rtlRender> {
+  const state = { ...initialState(), links: { jiraSite: null, defaultRepo: null } };
+  return rtlRender(<StoreContext.Provider value={{ state, dispatch: vi.fn() }}>{node}</StoreContext.Provider>);
+}
+
 function lane(extra: Partial<Lane> = {}): Lane {
-  return {
+  const built: Lane = {
     title: null, kind: 'manual', sourceUrl: null, plain: '', mergeable: null, attempts: 1, retiredAt: null,
     id: 'FLT-1', ticket: 'FLT-1', model: 'sonnet-5', modelId: 'claude-sonnet-5', className: 'implement',
     repo: 'flightdeck-api', attempt: 1, state: 'running', reason: null, stepN: 1, stepTotal: 6, stepText: 'working',
     ctxTokens: 40_000, ctxCeiling: 200_000, ctxCompactAt: 180_000, tokens: 200_000, tokenCap: 2_000_000, tokensPerMin: 0,
     fails: 0, hop: 0, hopStatus: 'live', observedAt: Date.now(), verifiedAt: Date.now(), heart: true, since: Date.now(),
     startedAt: Date.now(), endedAt: null, question: null, pr: null, sandbox: null, blockedBy: null, runaway: false,
-    needsAaron: null,
+    needsAaron: null, did: null, now: '', you: null,
     ...extra,
   };
+  // The disclosure's own earlier-attempt line reads `lane.now` -- mirror `plain` here
+  // (as the real server always does) so a fixture that only sets `plain` still shows.
+  if (extra.now === undefined) built.now = built.plain;
+  return built;
 }
 
 describe('LaneGroupTile', () => {

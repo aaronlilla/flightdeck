@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ConductorRail, QUICK_COMMANDS } from '../../src/console/components/ConductorRail.js';
+import { StoreContext, initialState } from '../../src/console/store.js';
 import type { Feed, Message } from '../../src/shared/console-model.js';
 
 const feedUp: Feed = { live: true, lostAt: null, reason: null, retryInS: null, lastHeartbeatAt: Date.now() };
@@ -13,16 +14,21 @@ function renderRail(thread: Message[], feed: Feed = feedUp, overrides: Partial<{
   onSend: (text: string) => void;
   onCommand: (text: string) => void;
   onOpenJournal: (jid: string) => void;
+  verbose: boolean;
+  labelFor: (id: string) => string | null;
 }> = {}) {
   const onSend = overrides.onSend ?? vi.fn();
   const onCommand = overrides.onCommand ?? vi.fn();
   const onOpenJournal = overrides.onOpenJournal ?? vi.fn();
+  const state = { ...initialState(), links: { jiraSite: null, defaultRepo: null } };
   render(
-    <ConductorRail
-      thread={thread} feed={feed} now={Date.now()} composer=""
-      onComposerChange={vi.fn()} onSend={onSend} onCommand={onCommand}
-      onUndo={vi.fn()} onOpenJournal={onOpenJournal}
-    />,
+    <StoreContext.Provider value={{ state, dispatch: vi.fn() }}>
+      <ConductorRail
+        thread={thread} feed={feed} now={Date.now()} composer="" verbose={overrides.verbose ?? false}
+        onComposerChange={vi.fn()} onSend={onSend} onCommand={onCommand}
+        onUndo={vi.fn()} onOpenJournal={onOpenJournal} labelFor={overrides.labelFor}
+      />
+    </StoreContext.Provider>,
   );
   return { onSend, onCommand, onOpenJournal };
 }
@@ -129,13 +135,84 @@ describe('ConductorRail', () => {
   });
 
   describe('receipt', () => {
-    it('opens the journal sheet for the receipt jid on click, and shows a hover tooltip', async () => {
-      const { onOpenJournal } = renderRail([{ k: 'r1', type: 'receipt', text: 'paused FLT-187', ts: Date.now(), source: 'console', jid: 'J-40217', undoable: true }]);
+    it('opens the journal sheet for the receipt jid on click, and shows a hover tooltip, in verbose mode', async () => {
+      const { onOpenJournal } = renderRail(
+        [{ k: 'r1', type: 'receipt', text: 'paused FLT-187', ts: Date.now(), source: 'console', jid: 'J-40217', undoable: true }],
+        feedUp, { verbose: true },
+      );
       const jidLink = screen.getByText('J-40217');
       await userEvent.click(jidLink);
       expect(onOpenJournal).toHaveBeenCalledWith('J-40217');
       await userEvent.hover(jidLink);
       expect(screen.getByText(/reversible, undo 24h/)).toBeInTheDocument();
+    });
+
+    // Item 7: in plain mode the J-xxxx text is hidden -- the receipt's own sentence
+    // is the visible text -- but the undo link and the click-to-journal target stay.
+    it('hides the jid text in plain mode, keeping the undo link and the click target', async () => {
+      const { onOpenJournal } = renderRail(
+        [{ k: 'r1', type: 'receipt', text: 'paused FLT-187', ts: Date.now(), source: 'console', jid: 'J-40217', undoable: true }],
+        feedUp, { verbose: false },
+      );
+      expect(screen.queryByText('J-40217')).not.toBeInTheDocument();
+      expect(screen.getByText('paused FLT-187')).toBeInTheDocument();
+      expect(screen.getByText('undo')).toBeInTheDocument();
+      await userEvent.click(screen.getByTestId('receipt-jid'));
+      expect(onOpenJournal).toHaveBeenCalledWith('J-40217');
+    });
+
+    // Item 13: hiding the jid text left a stray, empty <a> link sitting above every
+    // receipt in plain mode. Plain mode renders no anchor for the jid at all -- the
+    // click target lives on the receipt's own text instead.
+    it('renders no anchor tag for the jid in plain mode, only in verbose', () => {
+      renderRail(
+        [{ k: 'r1', type: 'receipt', text: 'paused FLT-187', ts: Date.now(), source: 'console', jid: 'J-40217', undoable: true }],
+        feedUp, { verbose: false },
+      );
+      const receiptRow = screen.getByTestId('receipt-jid');
+      expect(receiptRow.tagName).not.toBe('A');
+      expect(document.querySelectorAll('a[data-testid="receipt-jid"]')).toHaveLength(0);
+    });
+
+    it('renders the jid as an anchor tag in verbose mode', () => {
+      renderRail(
+        [{ k: 'r1', type: 'receipt', text: 'paused FLT-187', ts: Date.now(), source: 'console', jid: 'J-40217', undoable: true }],
+        feedUp, { verbose: true },
+      );
+      expect(screen.getByTestId('receipt-jid').tagName).toBe('A');
+    });
+  });
+
+  describe('reply label (item 14)', () => {
+    it('labels a reply "Conductor" when its source is conductor, console or system', () => {
+      for (const source of ['conductor', 'console', 'system']) {
+        const { unmount } = render(
+          <ConductorRail
+            thread={[{ k: `r-${source}`, type: 'reply', text: 'root cause found', ts: Date.now(), source }]}
+            feed={feedUp} now={Date.now()} composer="" onComposerChange={vi.fn()} onSend={vi.fn()} onCommand={vi.fn()}
+            onUndo={vi.fn()} onOpenJournal={vi.fn()}
+          />,
+        );
+        expect(screen.getByTestId('reply-label')).toHaveTextContent('Conductor');
+        unmount();
+      }
+    });
+
+    it('labels a reply by its own run, via labelFor, when it came from a worker rather than the conductor', () => {
+      renderRail(
+        [{ k: 'r1', type: 'reply', text: 'Root cause: the health branch never added its trip id.', ts: Date.now(), source: 'S-b9d39bae548707e0' }],
+        feedUp,
+        { labelFor: (id) => (id === 'S-b9d39bae548707e0' ? 'BBZ-182' : null) },
+      );
+      expect(screen.getByTestId('reply-label')).toHaveTextContent('BBZ-182');
+    });
+
+    it('falls back to "Worker" when labelFor knows nothing about the reply\'s own source', () => {
+      renderRail(
+        [{ k: 'r1', type: 'reply', text: 'still working', ts: Date.now(), source: 'S-b9d39bae548707e0' }],
+        feedUp,
+      );
+      expect(screen.getByTestId('reply-label')).toHaveTextContent('Worker');
     });
   });
 
@@ -240,6 +317,54 @@ describe('ConductorRail', () => {
       expect(screen.getByText('sandbox ready')).toBeInTheDocument();
       expect(screen.getByText('warden ×2')).toBeInTheDocument();
       expect(screen.getByText('gate opened')).toBeInTheDocument();
+    });
+  });
+
+  // Item 7: message cards read as words, not machine chips.
+  describe('activity digest', () => {
+    it('renders a quiet mono line with no chip border', () => {
+      renderRail([{ k: 'a1', type: 'activity', text: 'Worked 16:57 to 17:04: 140 commands, 45 file reads, 11 edits', ts: Date.now(), source: 'FLT-1' }]);
+      const line = screen.getByText(/^Worked 16:57 to 17:04/);
+      expect(line).toHaveStyle({ color: 'var(--ink3)' });
+      expect(line.className).not.toMatch(/chip/);
+    });
+  });
+
+  describe('event chip wrapping', () => {
+    it('wraps a long event sentence instead of clipping it at the rail edge', () => {
+      const long = 'a lane wide off the reservation deregistered its own worktree and never told the queue';
+      renderRail([{ k: 'e1', type: 'event', text: long, ts: Date.now(), source: 'system' }]);
+      const chip = screen.getByText(long);
+      expect(chip).toHaveStyle({ whiteSpace: 'normal', textTransform: 'none' });
+    });
+  });
+
+  describe('reply and refusal text', () => {
+    it('keeps a multi-line reply\'s own line breaks', () => {
+      renderRail([{ k: 'r1', type: 'reply', text: 'line one\nline two', ts: Date.now(), source: 'conductor' }]);
+      expect(screen.getByTestId('wrapped-text')).toHaveStyle({ whiteSpace: 'pre-wrap' });
+      expect(screen.getByTestId('wrapped-text').textContent).toBe('line one\nline two');
+    });
+
+    it('renders a refusal\'s multi-line text with the same pre-wrap treatment, and a leading "- " line as a list item', () => {
+      renderRail([{ k: 'f1', type: 'refusal', text: 'refused: the migration is not reversible\n- checked twice', ts: Date.now(), source: 'FLT-1' }]);
+      expect(screen.getByTestId('wrapped-text')).toHaveStyle({ whiteSpace: 'pre-wrap' });
+      expect(screen.getByText('• checked twice')).toBeInTheDocument();
+    });
+  });
+
+  describe('question header', () => {
+    it('reads "Question from <label>" using the board\'s own labelFor', () => {
+      renderRail(
+        [{ k: 'q1', type: 'question', text: 'NOT NULL or nullable?', ts: Date.now(), source: 'FLT-1', askKey: 'a', opts: ['x'] }],
+        feedUp, { labelFor: (id) => (id === 'FLT-1' ? 'BBZ-118' : null) },
+      );
+      expect(screen.getByText('Question · from BBZ-118')).toBeInTheDocument();
+    });
+
+    it('falls back to the raw source when labelFor knows nothing about it', () => {
+      renderRail([{ k: 'q1', type: 'question', text: 'NOT NULL or nullable?', ts: Date.now(), source: 'FLT-1', askKey: 'a', opts: ['x'] }]);
+      expect(screen.getByText('Question · from FLT-1')).toBeInTheDocument();
     });
   });
 });

@@ -14,11 +14,14 @@ import type { Duplex } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
 import { CONSOLE_ROUTES, HEARTBEAT_MS } from '../shared/console-model.js';
+import { computeNext } from '../forge/console/summary.js';
+import { orderChains } from '../forge/console/blockers.js';
 import type {
-  ActionResult, Caps, Integration, JournalEntry, Lane, LaneSummary, Message, QueueAddRequest, QueueAddResponse,
-  QueueItem, QueueSource, ReauditResponse, Rule,
+  ActionResult, Blocker, Caps, Integration, JournalEntry, Lane, LaneSummary, Message, QueueAddRequest,
+  QueueAddResponse, QueueItem, QueueSource, ReauditResponse, Rule,
 } from '../shared/console-model.js';
 import { fmtTokens } from '../shared/format-tokens.js';
+import { shortenShas } from '../shared/humanize.js';
 import { tokenAmount } from '../forge/console/command.js';
 import { seedCaps } from './fixtures/caps.js';
 import { seedIntegrations } from './fixtures/integrations.js';
@@ -79,6 +82,45 @@ interface Db {
    *  stub's stand-in for a council round actually running and landing a fresh
    *  attestation. */
   staleAuditLane: string | null;
+  /** Iteration 4: the Blockers view's own fixture data. Empty by default -- most
+   *  scenarios have nothing to show there, and the `blockers-chain` fixture is what
+   *  seeds a real three-step chain for its own Playwright coverage. */
+  blockers: Blocker[];
+}
+
+/** The billing -> checks -> question chain the Blockers view spec (`tests/e2e/blockers.spec.ts`)
+ *  drives step by step: resolving billing enables checks, resolving checks enables the
+ *  question, and the whole chain collapses under "Resolved today" once the question is
+ *  answered too. */
+function seedBlockersChain(): Blocker[] {
+  const now = Date.now() - 20 * 60_000;
+  const lane = { laneId: 'S-stale-session', label: 'the stale-session fix' };
+  return [
+    {
+      id: 'billing:aaronlilla/flightdeck', kind: 'billing', title: 'GitHub Actions billing is off for aaronlilla/flightdeck',
+      detail: 'The verify jobs on PR #39 were refused in 3s: "recent account payments have failed or your '
+        + 'spending limit needs to be increased".',
+      youCanResolve: true, howToResolve: 'Turn billing back on at github.com/settings/billing, then click Resolved.',
+      links: [{ label: 'GitHub billing settings', url: 'https://github.com/settings/billing' }],
+      blocks: [lane], blockedBy: [], state: 'open', since: now, checkedAt: null, resolvedAt: null,
+      thenWhat: 'Re-runs the checks on PR #39, then resumes the stale-session fix.', lastCheck: null,
+    },
+    {
+      id: 'checks:aaronlilla/flightdeck#39', kind: 'checks', title: 'Checks failing on PR #39 (aaronlilla/flightdeck)',
+      detail: 'PR #39 on aaronlilla/flightdeck has failing checks.', youCanResolve: true,
+      howToResolve: 'Fix and push, or click Resolved to re-run checks.',
+      links: [{ label: 'PR #39', url: 'https://github.com/aaronlilla/flightdeck/pull/39' }],
+      blocks: [lane], blockedBy: ['billing:aaronlilla/flightdeck'], state: 'open', since: now, checkedAt: null,
+      resolvedAt: null, thenWhat: 'Resumes the stale-session fix.', lastCheck: null,
+    },
+    {
+      id: 'question:q1', kind: 'question', title: 'PR #39 is open. Can you fix billing?',
+      detail: 'PR #39 is open. Can you fix billing?', youCanResolve: true,
+      howToResolve: 'Answer it from the rail or here.', links: [],
+      blocks: [lane], blockedBy: ['checks:aaronlilla/flightdeck#39'], state: 'open', since: now, checkedAt: null,
+      resolvedAt: null, thenWhat: 'Resumes the run once answered.', lastCheck: null,
+    },
+  ];
 }
 
 function seedDb(): Db {
@@ -96,6 +138,7 @@ function seedDb(): Db {
     qn: 0,
     queueOn: true,
     staleAuditLane: null,
+    blockers: [],
   };
 }
 
@@ -149,6 +192,8 @@ const FIXTURES: Record<string, () => Db> = {
   // its head has moved past the sha the attestation actually reviewed -- for the ticket
   // sheet summary block's own Playwright coverage.
   'summary-stale': () => ({ ...seedDb(), staleAuditLane: 'FLT-193' }),
+  // Iteration 4: the Blockers view's own three-step chain (billing -> checks -> question).
+  'blockers-chain': () => ({ ...seedDb(), blockers: seedBlockersChain() }),
 };
 
 function resetToFixture(name: string): void {
@@ -221,15 +266,80 @@ function stubJournalNarrative(lane: Lane): { t: number; text: string; color: str
   return entries;
 }
 
+function hhmm(t: number): string {
+  const d = new Date(t);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/** A run-id-shaped string for this lane, for the verbose fixture rows -- not the
+ *  lane's own real id, since a jira_-style id already carries a ticket key that
+ *  would make the machine-id regex match `plain` fixtures for the wrong reason. */
+function syntheticRunId(lane: Lane): string {
+  return `S-${createHash('sha1').update(lane.id).digest('hex').slice(0, 16)}`;
+}
+
+/**
+ * Item 9: `/run/:id/thread` parity with the real contract -- plain by default (tool
+ * calls folded into one `activity` digest, a `reply` with the lane's own plain
+ * sentence, an `Asked you:` event for a parked lane's question, no machine id
+ * anywhere in the text), raw rows with ids intact under `?verbose=1`.
+ */
+function runThreadPlain(lane: Lane): Message[] {
+  // The lane's own persisted messages (`db.thread`, filtered to this lane) stay --
+  // a pending question with its answer options is a real, interactive card, never
+  // something a digest is allowed to swallow -- the synthetic activity/reply/asked
+  // rows lead the thread, ahead of whatever real cards this lane already carries.
+  const persisted = db.thread.filter((m) => m.lane === lane.id);
+  const messages: Message[] = [
+    {
+      k: `${lane.id}-activity`, type: 'activity',
+      text: `Worked ${hhmm(lane.startedAt)} to ${hhmm(lane.observedAt)}: 140 commands, 45 file reads, 11 edits.`,
+      ts: lane.observedAt, source: lane.id,
+    },
+    { k: `${lane.id}-reply`, type: 'reply', text: shortenShas(lane.plain || lane.stepText), ts: lane.observedAt, source: 'conductor' },
+  ];
+  if (lane.question && !persisted.some((m) => m.type === 'question')) {
+    messages.push({
+      k: `${lane.id}-asked`, type: 'event', text: `Asked you: ${lane.question.text}`,
+      ts: lane.question.askedAt, source: lane.id,
+    });
+  }
+  return [...messages, ...persisted];
+}
+
+function runThreadVerbose(lane: Lane): Message[] {
+  const rid = syntheticRunId(lane);
+  const persisted = db.thread.filter((m) => m.lane === lane.id);
+  const messages: Message[] = [
+    { k: `${rid}-started`, type: 'event', text: `${rid} STARTED`, ts: lane.startedAt, source: lane.id },
+    { k: `${rid}-bash1`, type: 'event', text: `${rid} RUNNING BASH`, ts: lane.startedAt + 60_000, source: lane.id },
+    { k: `${rid}-bash2`, type: 'event', text: `${rid} RUNNING BASH`, ts: lane.startedAt + 120_000, source: lane.id },
+    {
+      k: `${rid}-receipt`, type: 'receipt', text: `${rid} finished a tool call`, ts: lane.observedAt, source: 'console',
+      jid: `J-${rid.slice(2, 10)}`, undoable: false,
+    },
+  ];
+  if (lane.question && !persisted.some((m) => m.type === 'question')) {
+    messages.push({
+      k: `${rid}-ask`, type: 'question', text: lane.question.text, ts: lane.question.askedAt, source: lane.id,
+      askKey: lane.question.key, opts: lane.question.opts,
+    });
+  }
+  return [...messages, ...persisted];
+}
+
 /** H2.4: the ticket sheet's Story section (`GET /run/:id/story`) -- built off this
  *  fixture lane's own fields, the same stand-in approach `stubJournalNarrative`
  *  already takes for the journal panel. */
-function stubStory(lane: Lane | undefined, id: string): import('../shared/console-model.js').LaneStory {
+function stubStory(lane: Lane | undefined, id: string, verbose = false): import('../shared/console-model.js').LaneStory {
   if (!lane) {
     return { id, title: null, kind: 'manual', ticket: null, brief: null, entries: [] };
   }
+  // Item 9: plain mode never names the run id -- a lane with no ticket reads "this
+  // run" the same way `stripMachineIds` would; verbose mode names it in full.
+  const startedOn = lane.ticket ?? (verbose ? lane.id : 'this run');
   const entries: import('../shared/console-model.js').LaneStoryEntry[] = [
-    { at: lane.startedAt, kind: 'ticket', text: `started on ${lane.ticket ?? lane.id}`, url: lane.sourceUrl },
+    { at: lane.startedAt, kind: 'ticket', text: `started on ${startedOn}`, url: lane.sourceUrl },
   ];
   if (lane.sandbox) entries.push({ at: lane.startedAt + 60_000, kind: 'branch', text: `branch ${lane.sandbox.branch ?? lane.id.toLowerCase()} pushed`, url: null });
   if (lane.pr) entries.push({ at: lane.since - 30_000, kind: 'pr', text: `opened PR #${lane.pr.no}`, url: lane.pr.url });
@@ -251,15 +361,15 @@ function stubStory(lane: Lane | undefined, id: string): import('../shared/consol
  *  already takes. A lane the fixture has flagged in `db.staleAuditLane` reports a stale
  *  audit and un-ready drift; every other lane with a PR reports a clean one. */
 function stubSummary(lane: Lane | undefined, id: string): LaneSummary {
-  if (!lane) return { what: [], status: 'no such run', audit: null, readiness: null };
+  if (!lane) return { what: [], status: 'no such run', next: 'Nothing to do; this run is not on the board.', audit: null, readiness: null };
   const what: string[] = [];
   if (lane.title) what.push(`${lane.title}.`);
   what.push(`${lane.stepText}.`.replace(/\.\.$/, '.'));
   const pr = lane.pr;
   if (!pr) {
+    const readiness = { ok: false, why: 'no PR is open yet', checks: null, behindBase: null, headMoved: false };
     return {
-      what, status: lane.plain || `${lane.stepText}.`, audit: null,
-      readiness: { ok: false, why: 'no PR is open yet', checks: null, behindBase: null, headMoved: false },
+      what, status: shortenShas(lane.plain || `${lane.stepText}.`), next: computeNext(lane, readiness), audit: null, readiness,
     };
   }
   const stale = db.staleAuditLane === lane.id;
@@ -283,11 +393,13 @@ function stubSummary(lane: Lane | undefined, id: string): LaneSummary {
       : pr.checks === 'failure'
         ? 'checks are failure'
         : null;
+  const readiness = { ok, why: ok ? null : why, checks: pr.checks ?? 'success', behindBase, headMoved: stale };
   return {
     what,
-    status: lane.plain || `${lane.stepText}.`,
+    status: shortenShas(lane.plain || `${lane.stepText}.`),
+    next: computeNext(lane, readiness),
     audit,
-    readiness: { ok, why: ok ? null : why, checks: pr.checks ?? 'success', behindBase, headMoved: stale },
+    readiness,
   };
 }
 
@@ -381,6 +493,38 @@ function addQueueItem(body: QueueAddRequest): QueueAddResponse {
     return { ok: true, items };
   }
   return { ok: false, items: [], error: `unknown source ${String(body.source)}` };
+}
+
+/** `POST /blockers/:id/resolve` and `.../check`'s fixture behaviour: a step earlier in
+ *  its own chain still open refuses the claim, an already-resolved blocker is a no-op
+ *  echo, and a genuine resolve marks it done and restarts the lane once nothing else in
+ *  its chain still blocks it -- the same "one at a time, in order" rule the real
+ *  `BlockersRoutes` enforces (`src/forge/console/blockers-route.ts`). */
+function resolveBlockerFixture(id: string, claim: boolean): { ok: boolean; state: string; lastCheck: string | null; started: string[] } {
+  const blocker = db.blockers.find((b) => b.id === id);
+  if (!blocker) return { ok: false, state: 'open', lastCheck: 'no such blocker', started: [] };
+  if (blocker.state === 'resolved') return { ok: true, state: 'resolved', lastCheck: blocker.lastCheck, started: [] };
+  const waitingOn = blocker.blockedBy.find((depId) => db.blockers.find((b) => b.id === depId)?.state !== 'resolved');
+  if (waitingOn) {
+    return { ok: false, state: 'open', lastCheck: `still waiting on ${waitingOn}`, started: [] };
+  }
+  if (claim && !blocker.youCanResolve) {
+    return { ok: false, state: 'open', lastCheck: 'nothing to click here', started: [] };
+  }
+  if (!claim) {
+    blocker.lastCheck = 'still open';
+    blocker.checkedAt = Date.now();
+    return { ok: false, state: 'open', lastCheck: blocker.lastCheck, started: [] };
+  }
+  blocker.state = 'resolved';
+  blocker.resolvedAt = Date.now();
+  blocker.checkedAt = blocker.resolvedAt;
+  blocker.lastCheck = 'confirmed';
+  const stillBlocked = new Set(
+    db.blockers.filter((b) => b.state !== 'resolved').flatMap((b) => b.blocks.map((x) => x.laneId)),
+  );
+  const started = blocker.blocks.map((b) => b.laneId).filter((laneId) => !stillBlocked.has(laneId));
+  return { ok: true, state: 'resolved', lastCheck: blocker.lastCheck, started };
 }
 
 function serveStatic(request: IncomingMessage, response: ServerResponse, urlPath: string): void {
@@ -598,9 +742,10 @@ export function createStubServer() {
       if (urlPath === '/lanes' && method === 'GET') {
         // H2.2: `archived=1` answers only the retired lanes -- a separate slot from the
         // live board, never mixed into the default/`all=1` response.
+        const links = { jiraSite: 'https://acme.atlassian.net', defaultRepo: db.lanes.find((l) => l.repo)?.repo ?? null };
         if (query.get('archived') === '1') {
           const archived = db.lanes.filter((l) => l.retiredAt !== null);
-          json(response, 200, { at: Date.now(), lanes: archived, tokensToday: 0, tokensPerMin: 0 });
+          json(response, 200, { at: Date.now(), lanes: archived, tokensToday: 0, tokensPerMin: 0, links });
           return;
         }
         // Matches the real server (ConsoleReads#lanesResponse): the default/`all=1`
@@ -608,7 +753,7 @@ export function createStubServer() {
         const live = db.lanes.filter((l) => l.retiredAt === null);
         const tokensToday = live.reduce((sum, l) => sum + l.tokens, 0);
         const tokensPerMin = live.reduce((sum, l) => sum + (l.state === 'running' ? l.tokensPerMin : 0), 0);
-        json(response, 200, { at: Date.now(), lanes: live, tokensToday, tokensPerMin });
+        json(response, 200, { at: Date.now(), lanes: live, tokensToday, tokensPerMin, links });
         return;
       }
       if (urlPath === '/thread' && method === 'GET') {
@@ -698,7 +843,7 @@ export function createStubServer() {
       if (runStoryMatch && method === 'GET') {
         const id = decodeURIComponent(runStoryMatch[1] as string);
         const l = findLane(id);
-        json(response, 200, stubStory(l, id));
+        json(response, 200, stubStory(l, id, query.get('verbose') === '1'));
         return;
       }
 
@@ -714,10 +859,19 @@ export function createStubServer() {
         return;
       }
 
+      if (urlPath === '/blockers' && method === 'GET') {
+        const open = db.blockers.filter((b) => b.state !== 'resolved');
+        json(response, 200, { blockers: db.blockers, chains: orderChains(open) });
+        return;
+      }
+
       const runThreadMatch = /^\/run\/([^/]+)\/thread$/.exec(urlPath);
       if (runThreadMatch && method === 'GET') {
         const id = decodeURIComponent(runThreadMatch[1] as string);
-        json(response, 200, { messages: db.thread.filter((m) => m.lane === id) });
+        const verbose = query.get('verbose') === '1';
+        const lane = findLane(id);
+        const messages = lane ? (verbose ? runThreadVerbose(lane) : runThreadPlain(lane)) : [];
+        json(response, 200, verbose ? { messages, verbose: true } : { messages });
         return;
       }
       const runPrMatch = /^\/run\/([^/]+)\/pr$/.exec(urlPath);
@@ -937,6 +1091,14 @@ export function createStubServer() {
       if (urlPath === '/queue' && method === 'POST') {
         const body = await readJson<QueueAddRequest>(request);
         json(response, 200, addQueueItem(body));
+        return;
+      }
+
+      const blockerItemMatch = /^\/blockers\/([^/]+)\/(resolve|check)$/.exec(urlPath);
+      if (blockerItemMatch && method === 'POST') {
+        const id = decodeURIComponent(blockerItemMatch[1] as string);
+        const claim = blockerItemMatch[2] === 'resolve';
+        json(response, 200, resolveBlockerFixture(id, claim));
         return;
       }
       if (urlPath === '/queue/pause' && method === 'POST') {

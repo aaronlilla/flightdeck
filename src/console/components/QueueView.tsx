@@ -2,6 +2,7 @@ import type { JSX } from 'react';
 import { useRef, useState } from 'react';
 
 import { actionable } from '../keyboard-actionable.js';
+import { Linkify } from './Linkify.js';
 import type { QueueItem, QueueItemState, QueueSource } from '../../shared/console-model.js';
 
 export interface QueueViewProps {
@@ -73,11 +74,11 @@ function QueueCard({ item, onRemove, onRetry, onMerge, onPromote }: {
       </div>
       <div className="lbl" style={{ color: taxon.color }}>{taxon.label}</div>
       <div className="m" style={{ fontSize: 11.5, color: 'var(--ink2)', minHeight: 32, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-        {item.reason ?? item.repo ?? item.input}
+        <Linkify text={item.reason ?? item.repo ?? item.input} repo={item.repo} />
       </div>
       {item.state === 'review' && item.councilNotes && item.councilNotes.length > 0 ? (
         <div className="m" style={{ fontSize: 9.5, color: 'var(--ink3)' }}>
-          council notes: {item.councilNotes.join('; ')}
+          council notes: <Linkify text={item.councilNotes.join('; ')} repo={item.repo} />
         </div>
       ) : null}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 7, borderTop: '1px solid var(--line)', paddingTop: 7 }}>

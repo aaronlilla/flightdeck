@@ -13,7 +13,7 @@ function lane(state: LaneState, extra: Partial<Lane> = {}): Lane {
     repo: 'flightdeck-api', attempt: 1, state, reason: null, stepN: 1, stepTotal: 6, stepText: '',
     ctxTokens: 1000, ctxCeiling: 200_000, ctxCompactAt: 180_000, tokens: 1, tokenCap: 10, tokensPerMin: 0,
     fails: 0, hop: 0, hopStatus: 'live', observedAt: 0, verifiedAt: 0, heart: false, since: 0, startedAt: 0,
-    endedAt: null, question: null, pr: null, sandbox: null, blockedBy: null, runaway: false, needsAaron: null,
+    endedAt: null, question: null, pr: null, sandbox: null, blockedBy: null, runaway: false, needsAaron: null, did: null, now: '', you: null,
     ...extra,
   };
 }
@@ -122,8 +122,15 @@ describe('tileCapText / costClass', () => {
 // `title` attribute, never as a second visible line. The tile, the ticket sheet
 // band and the needs-you plates all read it off this one function.
 describe('laneHeadline', () => {
-  it('heads with the run id when there is no ticket', () => {
-    expect(laneHeadline(lane('running', { ticket: null, id: 'jira_AB-12_1788460932645' }))).toEqual({ main: 'jira_AB-12_1788460932645', runId: 'jira_AB-12_1788460932645' });
+  // 2026-09-08: the run id was still the fallback here -- the one machine string
+  // every other part of the board was built to hide. A lane with no ticket falls
+  // through to its own `title`, then to "Untitled run", never the id.
+  it('falls back to the title when there is no ticket', () => {
+    expect(laneHeadline(lane('running', { ticket: null, title: 'wire the webhook retry', id: 'jira_AB-12_1788460932645' }))).toEqual({ main: 'wire the webhook retry', runId: 'jira_AB-12_1788460932645' });
+  });
+
+  it('falls back to "Untitled run" when there is neither a ticket nor a title', () => {
+    expect(laneHeadline(lane('running', { ticket: null, title: null, id: 'jira_AB-12_1788460932645' }))).toEqual({ main: 'Untitled run', runId: 'jira_AB-12_1788460932645' });
   });
 
   it('heads with the ticket and still carries the full run id for the title attribute', () => {
@@ -172,6 +179,14 @@ describe('plainLine', () => {
 
   it('falls back to the step display when the server has not filled plain in yet', () => {
     expect(plainLine(lane('running', { plain: '', stepN: 2, stepTotal: 9, stepText: 'retry loop' }))).toBe('step 2/9 · retry loop');
+  });
+
+  // 2026-09-08: an older server that has not shortened its own shas yet still
+  // renders cleanly -- the client shortens any 40-char sha it sees, not just
+  // ones a fresh server already trimmed.
+  it('shortens a 40-character sha the server sent uncut', () => {
+    const sha = 'a'.repeat(40);
+    expect(plainLine(lane('running', { plain: `last did: fixed ${sha} on main.` }))).toBe(`last did: fixed ${sha.slice(0, 7)} on main.`);
   });
 });
 

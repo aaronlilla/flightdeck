@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ChainPacketState } from '../../../src/forge/chain.js';
-import { computeQueuePr, computeRunPr, PR_CACHE_TTL_MS } from '../../../src/forge/console/pr.js';
-import type { AttestationReaderFn, GhDetailLookupFn } from '../../../src/forge/console/pr.js';
+import { computeBranchPr, computeQueuePr, computeRunPr, PR_CACHE_TTL_MS } from '../../../src/forge/console/pr.js';
+import type { AttestationReaderFn, GhBranchLookupFn, GhDetailLookupFn } from '../../../src/forge/console/pr.js';
 
 function chainWith(row: ChainPacketState): Map<string, ChainPacketState> {
   return new Map([[row.packetId, row]]);
@@ -76,7 +76,7 @@ describe('computeRunPr', () => {
     const result = await computeRunPr('alpha', chain, {}, 1_000, lookup, detailLookup, attestationReader);
     expect(result.pr).toEqual({
       no: 12, url: 'https://example/pull/12', files: 2, add: 3, del: 1, draft: true,
-      checks: 'success', merged: false, title: 'add the merge chip', verdict: 'PASS WITH NOTES',
+      checks: 'success', merged: false, title: 'add the merge chip', verdict: 'PASS WITH NOTES', mergedAt: null,
     });
   });
 
@@ -110,7 +110,7 @@ describe('computeQueuePr', () => {
     };
     const result = await computeQueuePr('queue-BBZ-96', 'o/n', basic, {}, 1_000, detailLookup, attestationReader);
     expect(result.pr).toEqual({
-      ...basic, checks: 'success', merged: false, title: 'add the merge chip', verdict: 'PASS WITH NOTES',
+      ...basic, checks: 'success', merged: false, title: 'add the merge chip', verdict: 'PASS WITH NOTES', mergedAt: null,
     });
     expect(result.cache['queue-BBZ-96']).toEqual({ pr: result.pr, at: 1_000 });
   });
@@ -119,5 +119,48 @@ describe('computeQueuePr', () => {
     const detailLookup: GhDetailLookupFn = async () => undefined;
     const result = await computeQueuePr('queue-BBZ-96', 'o/n', basic, {}, 1_000, detailLookup);
     expect(result.pr).toEqual(basic);
+  });
+});
+
+describe('computeBranchPr', () => {
+  it('item 11: finds a PR by branch with --state all, and caches it under the run', async () => {
+    const branchLookup: GhBranchLookupFn = async (repo, branch) => {
+      expect(repo).toBe('o/n');
+      expect(branch).toBe('feature/s-b9d39bae548707e0');
+      return {
+        number: 39, url: 'https://github.com/o/n/pull/39', isDraft: true, mergedAt: null,
+        title: 'dedupe warden.health on an open unregistered trip', headRefOid: 'f284c65',
+      };
+    };
+    const result = await computeBranchPr('S-b9d39bae548707e0', 'o/n', 'feature/s-b9d39bae548707e0', {}, 1_000, branchLookup);
+    expect(result.pr).toEqual({
+      no: 39, url: 'https://github.com/o/n/pull/39', draft: true, merged: false,
+      title: 'dedupe warden.health on an open unregistered trip', mergedAt: null,
+    });
+    expect(result.cache['S-b9d39bae548707e0']).toEqual({ pr: result.pr, at: 1_000 });
+  });
+
+  it('item 11: finds an already-merged PR too, off mergedAt', async () => {
+    const branchLookup: GhBranchLookupFn = async () => ({
+      number: 40, url: 'u', isDraft: false, mergedAt: '2026-09-08T00:00:00Z', title: 't', headRefOid: 'abc',
+    });
+    const result = await computeBranchPr('alpha', 'o/n', 'feature/x', {}, 1_000, branchLookup);
+    expect(result.pr?.merged).toBe(true);
+  });
+
+  it('item 11: caches a null when no PR is found by branch, and never re-looks-up inside the TTL', async () => {
+    let calls = 0;
+    const branchLookup: GhBranchLookupFn = async () => { calls += 1; return undefined; };
+    const first = await computeBranchPr('alpha', 'o/n', 'feature/x', {}, 1_000, branchLookup);
+    expect(first.pr).toBeNull();
+    const second = await computeBranchPr('alpha', 'o/n', 'feature/x', first.cache, 1_000 + PR_CACHE_TTL_MS - 1, branchLookup);
+    expect(second.pr).toBeNull();
+    expect(calls).toBe(1);
+  });
+
+  it('item 11: never shells out -- the lookup is fully injected', async () => {
+    let called = false;
+    await computeBranchPr('alpha', 'o/n', 'feature/x', {}, 1_000, async () => { called = true; return undefined; });
+    expect(called).toBe(true);
   });
 });

@@ -6,6 +6,7 @@
 import { createContext, useContext, useReducer } from 'react';
 import type { Dispatch } from 'react';
 import type {
+  BlockersResponse,
   Caps,
   Feed,
   Integration,
@@ -16,7 +17,7 @@ import type {
   QueueItem,
 } from '../shared/console-model.js';
 
-export type View = 'board' | 'settings' | 'review' | 'queue';
+export type View = 'board' | 'settings' | 'review' | 'queue' | 'blockers';
 export type Filter = 'all' | 'needs-me' | 'running' | 'finished' | string;
 export type Sort = 'cost' | 'age' | 'state';
 
@@ -53,6 +54,7 @@ export interface State {
   caps: Caps | null;
   proposals: ProposalsResponse | null;
   queue: QueueItem[];
+  blockers: BlockersResponse | null;
   queuePaused: boolean;
   queuePauseReason: string | null;
   queueMaxInFlight: number;
@@ -66,6 +68,9 @@ export interface State {
   archivedLanes: Lane[];
   loaded: boolean;
   now: number;
+  /** 2026-09-08: what `Linkify` needs to turn a Jira key or a PR mention into a link --
+   *  off the same `GET /lanes` response the board fetches. */
+  links: { jiraSite: string | null; defaultRepo: string | null };
   /** Duration of the last `/lanes` fetch, for the feed stamp's latency fallback. */
   fetchLatencyMs: number | null;
 
@@ -80,10 +85,14 @@ export interface State {
   theme: 'thD' | 'thL';
   composer: string;
   laneComposer: Record<string, string>;
+  /** 2026-09-08: plain by default -- every route answers human sentences, machine
+   *  ids stripped. Verbose asks every read for `?verbose=1` instead: raw rows, ids
+   *  intact. Remembered in `localStorage` the same way `theme` is. */
+  verbose: boolean;
 }
 
 export type Action =
-  | { type: 'lanes'; lanes: Lane[]; tokensToday?: number }
+  | { type: 'lanes'; lanes: Lane[]; tokensToday?: number; links?: State['links'] }
   | { type: 'thread'; thread: Message[] }
   | { type: 'thread-append'; messages: Message[] }
   | { type: 'journal'; journal: JournalEntry[] }
@@ -91,6 +100,7 @@ export type Action =
   | { type: 'caps'; caps: Caps }
   | { type: 'proposals'; proposals: ProposalsResponse }
   | { type: 'queue'; items: QueueItem[]; paused: boolean; maxInFlight: number; pauseReason?: string | null }
+  | { type: 'blockers'; blockers: BlockersResponse }
   | { type: 'queue-on'; on: boolean }
   | { type: 'toggle-probes' }
   | { type: 'archived-lanes'; lanes: Lane[] }
@@ -110,7 +120,16 @@ export type Action =
   | { type: 'toast'; toast: ToastSpec | null }
   | { type: 'theme'; theme: 'thD' | 'thL' }
   | { type: 'composer'; text: string }
-  | { type: 'lane-composer'; run: string; text: string };
+  | { type: 'lane-composer'; run: string; text: string }
+  | { type: 'verbose'; verbose: boolean };
+
+function readStoredVerbose(): boolean {
+  try {
+    return typeof localStorage !== 'undefined' && localStorage.getItem('flightdeck.verbose') === '1';
+  } catch {
+    return false;
+  }
+}
 
 export function initialState(): State {
   return {
@@ -122,6 +141,7 @@ export function initialState(): State {
     caps: null,
     proposals: null,
     queue: [],
+    blockers: null,
     queuePaused: false,
     queuePauseReason: null,
     queueMaxInFlight: 2,
@@ -130,6 +150,7 @@ export function initialState(): State {
     archivedLanes: [],
     loaded: false,
     now: Date.now(),
+    links: { jiraSite: null, defaultRepo: null },
     fetchLatencyMs: null,
     view: 'board',
     filter: 'all',
@@ -142,13 +163,14 @@ export function initialState(): State {
     theme: (typeof localStorage !== 'undefined' && localStorage.getItem('fd.theme') === 'thL') ? 'thL' : 'thD',
     composer: '',
     laneComposer: {},
+    verbose: readStoredVerbose(),
   };
 }
 
 export function reducer(state: State, action: Action): State {
   switch (action.type) {
     case 'lanes':
-      return { ...state, lanes: action.lanes, loaded: true };
+      return { ...state, lanes: action.lanes, loaded: true, links: action.links ?? state.links };
     case 'thread':
       return { ...state, thread: action.thread };
     case 'thread-append':
@@ -166,6 +188,8 @@ export function reducer(state: State, action: Action): State {
         ...state, queue: action.items, queuePaused: action.paused, queueMaxInFlight: action.maxInFlight,
         queuePauseReason: action.pauseReason ?? null,
       };
+    case 'blockers':
+      return { ...state, blockers: action.blockers };
     case 'queue-on':
       return { ...state, queueOn: action.on };
     case 'toggle-probes':
@@ -218,6 +242,14 @@ export function reducer(state: State, action: Action): State {
       return { ...state, composer: action.text };
     case 'lane-composer':
       return { ...state, laneComposer: { ...state.laneComposer, [action.run]: action.text } };
+    case 'verbose':
+      try {
+        if (typeof localStorage !== 'undefined') localStorage.setItem('flightdeck.verbose', action.verbose ? '1' : '0');
+      } catch {
+        // localStorage unavailable (private mode, disabled site data): the toggle
+        // still works for this session, it just won't be remembered.
+      }
+      return { ...state, verbose: action.verbose };
     default:
       return state;
   }

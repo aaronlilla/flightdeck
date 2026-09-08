@@ -151,7 +151,7 @@ describe('App', () => {
     await userEvent.click(screen.getByTestId('lane-FLT-201'));
     await waitFor(() => expect(screen.getByTestId('ticket-sheet')).toBeInTheDocument());
     const sheet = screen.getByTestId('ticket-sheet');
-    const input = within(sheet).getByPlaceholderText('message FLT-201…');
+    const input = within(sheet).getByPlaceholderText(/Tell this run something/);
     await userEvent.type(input, 'status of the migration?');
     await userEvent.click(within(sheet).getByText('Send ⏎'));
     await waitFor(() => expect(screen.getByTestId('ticket-sheet').textContent).toMatch(/status of the migration\?/));
@@ -174,6 +174,16 @@ describe('App', () => {
     const sheet = screen.getByTestId('ticket-sheet');
     await userEvent.click(within(sheet).getByText('nullable + backfill', { exact: true }));
     await waitFor(() => expect(screen.getByTestId('lane-BBZ-118')).toHaveAttribute('data-state', 'running'));
+  });
+
+  // Item 7: clicking a question's option echoes an operator bubble in the rail
+  // reading "Answered: ..." -- the one place answering still needs one.
+  it('echoes an "Answered: ..." operator bubble in the rail when a question option is clicked', async () => {
+    render(<App eventStreamOptions={{ WebSocketImpl: FakeSocket as unknown as typeof WebSocket }} />);
+    await waitFor(() => expect(screen.getByTestId('lane-BBZ-118')).toBeInTheDocument());
+    const rail = screen.getByTestId('rail-thread');
+    await userEvent.click(within(rail).getByText('nullable + backfill', { exact: true }));
+    await waitFor(() => expect(within(rail).getByText(/^Answered: .*nullable \+ backfill/)).toBeInTheDocument());
   });
 
   it('shows the disconnected banner once the feed drops', async () => {

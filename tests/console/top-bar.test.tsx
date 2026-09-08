@@ -12,13 +12,34 @@ function feed(extra: Partial<Feed> = {}): Feed {
 function renderBar(overrides: Partial<Parameters<typeof TopBar>[0]> = {}): void {
   render(
     <TopBar
-      view="board" settingsBadge={0} reviewBadge={0} queueBadge={0} caps={null} tokensToday={0}
-      feed={feed()} now={Date.now()} fetchLatencyMs={null} theme="thD"
-      onNav={vi.fn()} onOpenPalette={vi.fn()} onOpenCost={vi.fn()} onToggleTheme={vi.fn()}
+      view="board" settingsBadge={0} reviewBadge={0} queueBadge={0} blockersBadge={0} caps={null} tokensToday={0}
+      feed={feed()} now={Date.now()} fetchLatencyMs={null} theme="thD" verbose={false}
+      onNav={vi.fn()} onOpenPalette={vi.fn()} onOpenCost={vi.fn()} onToggleTheme={vi.fn()} onToggleVerbose={vi.fn()}
       {...overrides}
     />,
   );
 }
+
+// 2026-09-08: the board is plain by default; this chip is the one switch that
+// asks every route for the raw, id-carrying rows instead.
+describe('TopBar verbose chip', () => {
+  it('reads "plain" while off', () => {
+    renderBar({ verbose: false });
+    expect(screen.getByText('plain')).toBeInTheDocument();
+  });
+
+  it('reads "verbose" while on', () => {
+    renderBar({ verbose: true });
+    expect(screen.getByText('verbose')).toBeInTheDocument();
+  });
+
+  it('toggles on click', async () => {
+    const onToggleVerbose = vi.fn();
+    renderBar({ verbose: false, onToggleVerbose });
+    screen.getByText('plain').click();
+    expect(onToggleVerbose).toHaveBeenCalledTimes(1);
+  });
+});
 
 // Row: theme chip labels the mode a click switches TO, not the mode showing now
 // (script_wrapped.txt 303: `themeD?'day mode':'night ops'`).

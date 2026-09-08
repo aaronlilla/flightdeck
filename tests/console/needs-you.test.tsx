@@ -1,9 +1,16 @@
 // @vitest-environment jsdom
-import { render, screen } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { render as rtlRender, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { buildNeeds, NeedsYou } from '../../src/console/components/NeedsYou.js';
+import { StoreContext, initialState } from '../../src/console/store.js';
 import type { Integration, Lane } from '../../src/shared/console-model.js';
+
+function render(node: ReactElement): ReturnType<typeof rtlRender> {
+  const state = { ...initialState(), links: { jiraSite: null, defaultRepo: null } };
+  return rtlRender(<StoreContext.Provider value={{ state, dispatch: vi.fn() }}>{node}</StoreContext.Provider>);
+}
 
 function lane(extra: Partial<Lane> = {}): Lane {
   return {
@@ -13,7 +20,7 @@ function lane(extra: Partial<Lane> = {}): Lane {
     ctxTokens: 40_000, ctxCeiling: 200_000, ctxCompactAt: 180_000, tokens: 1, tokenCap: 10, tokensPerMin: 0,
     fails: 0, hop: 0, hopStatus: 'live', observedAt: Date.now(), verifiedAt: Date.now(), heart: true, since: Date.now(),
     startedAt: Date.now(), endedAt: null, question: { key: 'ask', text: 'NOT NULL or nullable?', opts: [], askedAt: Date.now() },
-    pr: null, sandbox: null, blockedBy: null, runaway: false, needsAaron: null,
+    pr: null, sandbox: null, blockedBy: null, runaway: false, needsAaron: null, did: null, now: '', you: null,
     ...extra,
   };
 }
@@ -22,9 +29,11 @@ function lane(extra: Partial<Lane> = {}): Lane {
 // same headline rule, and the full run id shows up only in the title attribute --
 // never as a second visible line.
 describe('buildNeeds headline', () => {
-  it('titles a parked plate with the run id when there is no ticket', () => {
+  // 2026-09-08: the run id was still the fallback here -- fixed to fall through
+  // to "Untitled run" the same way `laneHeadline` does everywhere else.
+  it('titles a parked plate "Untitled run" when there is no ticket and no title', () => {
     const items = buildNeeds([lane({ ticket: null })], [], vi.fn());
-    expect(items[0]?.title).toBe('jira_AB-12_1788460932645');
+    expect(items[0]?.title).toBe('Untitled run');
     expect(items[0]?.titleId).toBe('jira_AB-12_1788460932645');
   });
 

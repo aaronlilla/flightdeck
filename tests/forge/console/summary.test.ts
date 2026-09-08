@@ -4,7 +4,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  computeAudit, computeLaneSummary, computeReadiness, computeWhat, type DriftFacts, type PrFacts,
+  computeAudit, computeLaneSummary, computeNext, computeReadiness, computeWhat, type DriftFacts, type PrFacts,
 } from '../../../src/forge/console/summary.js';
 import { verified } from '../../../src/forge/contracts.js';
 import type { CouncilAttestation } from '../../../src/forge/contracts.js';
@@ -76,6 +76,37 @@ describe('computeWhat', () => {
 
   it('never pads: a lane with nothing on record gets an empty list, not invented sentences', () => {
     expect(computeWhat({ story: null, pr: null, drift: noDrift() })).toEqual([]);
+  });
+
+  // Item 3: "What happened" line 1 read `S-b9d39bae548707e0: dedupe warden.health on
+  // an open unregistered trip.` on the live board -- the PR title carried the run id.
+  // Every `what` line goes through the same `stripMachineIds` the rest of the sheet
+  // already does.
+  it('strips run ids and shortens shas out of every sentence, PR title included', () => {
+    const pr: PrFacts = {
+      title: 'S-b9d39bae548707e0: dedupe warden.health on an open unregistered trip',
+      body: null, checks: null, merged: null,
+    };
+    const drift: DriftFacts = { ...noDrift(), commits: [`fixed in ${'a'.repeat(40)}`] };
+    const what = computeWhat({ story: null, pr, drift });
+    for (const line of what) {
+      expect(line).not.toMatch(/S-[0-9a-f]{12,}/);
+      expect(line).not.toMatch(/\b[0-9a-f]{40}\b/);
+    }
+  });
+
+  // Item 9: with no PR open, drift.commits is never populated (it only ever reads a
+  // PR's own commit range), so "what happened" fell back straight to the title alone.
+  // The story panel's own `commit` entries are the run's own commits too; they stand
+  // in here, newest first.
+  it('falls back to the story\'s own commit entries, newest first, when there is no PR at all', () => {
+    const s = story([
+      { at: 1, kind: 'commit', text: 'Committed: first fix' },
+      { at: 2, kind: 'commit', text: 'Committed: second fix' },
+      { at: 3, kind: 'commit', text: 'Committed: third fix' },
+    ]);
+    const what = computeWhat({ story: s, pr: null, drift: noDrift() });
+    expect(what).toEqual(['third fix.', 'second fix.', 'first fix.']);
   });
 
   it('reduces the PR body to prose: drops a markdown heading, a fenced block, and list markers, keeping the first two sentences of the first paragraph', () => {
@@ -158,6 +189,16 @@ describe('computeReadiness', () => {
     expect(readiness.why).toContain('no PR is open yet');
   });
 
+  // Item 9: with no PR at all, mergeableFor's own why (also "no PR yet") repeated the
+  // exact same fact computeReadiness had already said in its own words -- the live
+  // board read "Not ready: no PR is open yet; not audited yet; no PR yet."
+  it('never says "no PR" twice when mergeable also carries a no-PR refusal', () => {
+    const readiness = computeReadiness({
+      pr: null, attestation: null, mergeable: { ok: false, why: 'no PR yet' }, drift: noDrift(),
+    });
+    expect(readiness.why).toBe('no PR is open yet; not audited yet');
+  });
+
   it('is not ready when checks are red', () => {
     const readiness = computeReadiness({ pr: { ...okPr, checks: 'failure' }, attestation: attestation(), mergeable: okMergeable, drift: noDrift() });
     expect(readiness.ok).toBe(false);
@@ -203,6 +244,15 @@ describe('computeReadiness', () => {
     expect(readiness.why).toContain('gained 5 commits since');
     expect(readiness.behindBase).toBe(5);
   });
+
+  // Item 1: a merged PR is never "not ready" over checks or an audit that no longer
+  // matter -- it is done, and the only true thing left to say is that it already merged.
+  it('is "already merged" alone once the PR has merged, with no checks or audit clauses', () => {
+    const readiness = computeReadiness({
+      pr: { ...okPr, checks: 'failure', merged: true }, attestation: null, mergeable: { ok: false, why: 'already merged' }, drift: noDrift(),
+    });
+    expect(readiness).toEqual({ ok: false, why: 'already merged', checks: 'failure', behindBase: null, headMoved: false });
+  });
 });
 
 describe('computeLaneSummary', () => {
@@ -219,5 +269,55 @@ describe('computeLaneSummary', () => {
     expect(summary.what.length).toBeGreaterThan(0);
     expect(summary.audit?.verdict).toBe('PASS WITH NOTES');
     expect(summary.readiness?.ok).toBe(true);
+  });
+});
+
+describe('computeNext', () => {
+  const base = { retiredAt: null, runaway: false, pr: null, question: null, blockedBy: null } as unknown as Lane;
+  const notReady = { ok: false, why: 'no PR is open yet', checks: null, behindBase: null, headMoved: false };
+  const ready = { ok: true, why: null, checks: 'success' as const, behindBase: 0, headMoved: false };
+
+  it('tells the operator to answer a parked question', () => {
+    const lane = { ...base, state: 'parked', question: { key: 'k', text: 'Continue?', opts: [], askedAt: 1 } } as Lane;
+    expect(computeNext(lane, notReady)).toMatch(/^Answer the question below/);
+  });
+
+  it('says nothing is needed while a run works', () => {
+    expect(computeNext({ ...base, state: 'running' } as Lane, notReady)).toMatch(/^Nothing needed; let it work/);
+  });
+
+  it('says merge when the readiness verdict is ok, whatever the run state', () => {
+    const pr = { no: 118, url: 'u', title: 't', checks: 'success', merged: false, files: 1, add: 1, del: 0 } as unknown as Lane['pr'];
+    expect(computeNext({ ...base, state: 'unverified', pr } as Lane, ready)).toMatch(/^Merge it\./);
+  });
+
+  it('carries the readiness reason for a done lane that is not ready', () => {
+    const pr = { no: 80, url: 'u', title: 't', checks: 'failure', merged: false, files: 1, add: 1, del: 0 } as unknown as Lane['pr'];
+    const why = { ...notReady, why: 'checks are failure' };
+    expect(computeNext({ ...base, state: 'done', pr } as Lane, why)).toBe('Not ready to merge yet: checks are failure. Re-check once that clears.');
+  });
+
+  // Item 10: an abandoned-process block reads the same instruction a parked lane
+  // does, never the generic "salvageable? Resume; otherwise Kill and reopen" line
+  // meant for a real block a person still has to judge.
+  it('gives the parked-style instruction for an abandoned-process block', () => {
+    const lane = { ...base, state: 'blocked', reason: 'its process is gone and it never reported finishing' } as Lane;
+    expect(computeNext(lane, notReady)).toBe('Read the reason, then Resume it or Kill it.');
+  });
+
+  it('never answers a bare state word', () => {
+    for (const state of ['running', 'handed-off', 'paused', 'parked', 'blocked', 'exhausted', 'unverified', 'done', 'merged', 'killed'] as const) {
+      const next = computeNext({ ...base, state } as Lane, notReady);
+      expect(next.length).toBeGreaterThan(20);
+      expect(next).not.toBe(state);
+    }
+  });
+
+  it('is on every summary', () => {
+    const summary = computeLaneSummary({
+      lane: { plain: 'p', mergeable: { ok: false, why: 'no PR yet' }, state: 'killed', retiredAt: null, runaway: false, pr: null, question: null } as unknown as Lane,
+      story: null, pr: null, attestation: null, drift: noDrift(),
+    });
+    expect(summary.next).toMatch(/^Reopen it/);
   });
 });

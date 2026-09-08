@@ -1,11 +1,18 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { fireEvent, render as rtlRender, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { Settings, type SettingsProps } from '../../src/console/components/Settings.js';
+import { StoreContext, initialState } from '../../src/console/store.js';
 import type {
   Feed, Integration, JournalEntry, Lane, Rule,
 } from '../../src/shared/console-model.js';
+
+function render(node: ReactElement): ReturnType<typeof rtlRender> {
+  const state = { ...initialState(), links: { jiraSite: null, defaultRepo: null } };
+  return rtlRender(<StoreContext.Provider value={{ state, dispatch: vi.fn() }}>{node}</StoreContext.Provider>);
+}
 
 function integration(extra: Partial<Integration> = {}): Integration {
   return {
@@ -32,7 +39,7 @@ function lane(extra: Partial<Lane> = {}): Lane {
     ctxTokens: 1000, ctxCeiling: 200_000, ctxCompactAt: 180_000, tokens: 1, tokenCap: 10, tokensPerMin: 0,
     fails: 0, hop: 0, hopStatus: 'live', observedAt: Date.now(), verifiedAt: Date.now(), heart: true, since: Date.now(),
     startedAt: Date.now(), endedAt: null, question: null, pr: null, sandbox: null, blockedBy: null,
-    runaway: false, needsAaron: null,
+    runaway: false, needsAaron: null, did: null, now: '', you: null,
     ...extra,
   };
 }

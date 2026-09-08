@@ -46,6 +46,10 @@ export interface LanePr {
   verdict?: string | null;
   merged?: boolean | null;
   title?: string | null;
+  /** Item 1: epoch ms off the PR's own `mergedAt`, when `gh` has reported one -- `null`/
+   *  unset means the board does not know when it merged (or that it has not), never a
+   *  guessed time. */
+  mergedAt?: number | null;
 }
 
 /** One lane's record in order, as a person would tell it: what it is, what was done,
@@ -122,6 +126,10 @@ export interface LaneReadiness {
 export interface LaneSummary {
   what: string[];
   status: string;
+  /** The one thing to do next, in the operator's own terms: "Answer the question
+   *  below.", "Merge it.", "Nothing needed; let it work.", "Read the reason, then Resume
+   *  or Kill." Never empty, never a state word on its own. */
+  next: string;
   audit: LaneAudit | null;
   readiness: LaneReadiness | null;
 }
@@ -226,6 +234,18 @@ export interface Lane {
   /** Set once an operator retired the lane off the default board (`POST /run/:id/retire`
    *  or the bulk retire); it stays readable under the Archived filter. */
   retiredAt: number | null;
+  /** 2026-09-08: the board-at-a-glance fields, computed in `laneGlance.ts`.
+   *  `did` is one sentence, up to 110 characters, on what the agent did: the newest
+   *  `forge.report`'s own `done` field, else the PR, else a tool digest off the run's
+   *  journal rows, else `null`. `now` is what it is doing right now, the same sentence
+   *  `plain` carries (`plain` sticks around as an alias for one release; `now` is what
+   *  the tile actually reads). `you` is what the operator needs to do, or `null` when
+   *  nothing is needed, computed by `computeYou` off the same branch table
+   *  `computeNext` in `summary.ts` builds its longer sentence from, so the two never
+   *  disagree about what to do next. */
+  did: string | null;
+  now: string;
+  you: string | null;
 }
 
 /** Where a lane came from: a queued Jira ticket, a typed hotfix, a pasted brief, a
@@ -247,10 +267,20 @@ export interface LanesResponse {
   /** Total tokens burned since local midnight, and the burn of everything running now. */
   tokensToday: number;
   tokensPerMin: number;
+  /** 2026-09-08: what `Linkify` needs to turn a Jira key or a PR mention into a link
+   *  anywhere on the board. `jiraSite` is `FORGE_JIRA_SITE`, or `null` when it is
+   *  unset. `defaultRepo` is the first repo this response's own lanes carry, or `null`
+   *  with no lane on the board naming one yet; it is what a PR mention with no repo of
+   *  its own falls back to. */
+  links: { jiraSite: string | null; defaultRepo: string | null };
 }
 
+/** `activity`: a plain-mode digest of a run's own tool calls ("Worked 16:57 to 17:04:
+ *  140 commands, 45 file reads, 11 edits"), drawn as a quiet line rather than a chip.
+ *  Only `/run/:id/thread` without `?verbose=1` produces one. */
 export type MessageType =
   | 'event'
+  | 'activity'
   | 'operator'
   | 'reply'
   | 'question'
@@ -532,8 +562,17 @@ export interface RunSandboxResponse {
   log: SandboxLogLine[];
 }
 
+/**
+ * Plain by default: a run's own thread reads as what it did, what it said and what was
+ * asked of it, with tool calls folded into `activity` digests and every machine id
+ * turned into words. `?verbose=1` answers the raw rows instead, one message per journal
+ * row exactly as `textFor` names it. The same switch applies to `GET /thread` and
+ * `GET /run/:id/story`.
+ */
 export interface RunThreadResponse {
   messages: Message[];
+  /** True when the caller asked for `?verbose=1` and got the raw rows. */
+  verbose?: boolean;
 }
 
 /** One row of the cost sheet's "by step" table: what one turn actually used, straight
@@ -606,6 +645,7 @@ export interface ConsoleStateSummary {
  *   GET  /run/:id/story                  LaneStory
  *   GET  /run/:id/summary                LaneSummary
  *   GET  /queue                          QueueResponse
+ *   GET  /blockers                       BlockersResponse
  *   WS   /events                         frames; `{type:'heartbeat', at}` every HEARTBEAT_MS
  *
  * Writes
@@ -635,6 +675,8 @@ export interface ConsoleStateSummary {
  *   POST /run/:id/retire     {}           ActionResult   undoable (unretire); refused on an unfinished lane
  *   POST /run/:id/unretire   {}           ActionResult
  *   POST /retire-finished    {}           ActionResult & { retired: string[] }
+ *   POST /blockers/:id/resolve  {}        BlockersActionResult   claims a fix, confirms it, restarts what clears
+ *   POST /blockers/:id/check    {}        BlockersActionResult   re-runs the confirmation only
  *
  * A write whose mechanism does not exist yet answers 501 `{error, reason}`; the rail
  * renders that as a refusal card and never pretends the action ran.
@@ -644,4 +686,60 @@ export const CONSOLE_ROUTES = [
   // 2026-09-07: the human-readable layer. `/merge-ready` lists what a bulk merge would
   // do; `/retire-finished` retires every finished, killed or probe lane with no open PR.
   '/merge-ready', '/retire-finished',
+  // Iteration 4: one blocker per stuck fact in the world, ordered into chains.
+  '/blockers',
 ] as const;
+
+/**
+ * Iteration 4: the Blockers view.
+ *
+ * A blocker is one fact in the world that stops one or more lanes, that a person can act
+ * on, and that the server can confirm has changed -- never typed in by hand. `blockedBy`
+ * chains one blocker behind another (a `checks` blocker behind the `billing` blocker that
+ * caused it); `chains` orders every chain root-first for the view to render as a numbered
+ * list.
+ */
+export type BlockerKind = 'question' | 'integration' | 'checks' | 'billing' | 'owner' | 'process';
+export type BlockerState = 'open' | 'checking' | 'resolved';
+
+export interface Blocker {
+  /** Stable: `question:<askKey>`, `integration:<id>`, `checks:<repo>#<pr>`,
+   *  `billing:<owner-or-repo>`, `owner:<repo>#<pr>`, `process:<laneId>`. */
+  id: string;
+  kind: BlockerKind;
+  /** One line, words, no ids. */
+  title: string;
+  /** One or two sentences with the evidence. */
+  detail: string;
+  youCanResolve: boolean;
+  howToResolve: string;
+  links: { label: string; url: string }[];
+  /** Lanes waiting on this; `label` is a ticket key or a title. */
+  blocks: { laneId: string; label: string }[];
+  /** Blocker ids that must clear before this one is reachable. */
+  blockedBy: string[];
+  state: BlockerState;
+  since: number;
+  checkedAt: number | null;
+  resolvedAt: number | null;
+  /** What happens automatically once this clears, in words. */
+  thenWhat: string;
+  /** The last confirmation attempt's outcome, in words, when one ran. */
+  lastCheck: string | null;
+}
+
+export interface BlockersResponse {
+  blockers: Blocker[];
+  /** Ordered ids, root first, one array per chain. */
+  chains: string[][];
+}
+
+/** `POST /blockers/:id/resolve` and `POST /blockers/:id/check`: `started` names every
+ *  lane the confirmation actually resumed (empty when none did, or when the confirmation
+ *  did not pass). */
+export interface BlockersActionResult {
+  ok: boolean;
+  state: BlockerState;
+  lastCheck: string | null;
+  started: string[];
+}

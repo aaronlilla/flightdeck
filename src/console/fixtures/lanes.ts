@@ -4,13 +4,15 @@
  * a ticket-key style that looks like a real project's prefix).
  */
 import type { Lane } from '../../shared/console-model.js';
+import { computeYou } from '../../forge/console/laneGlance.js';
 
 const T0 = Date.parse('2026-01-06T14:07:52Z');
 
 function lane(partial: Partial<Lane> & Pick<Lane, 'id' | 'state'>): Lane {
-  return {
+  const built: Lane = {
     ticket: null,
     title: null, kind: 'manual', sourceUrl: null, plain: '', mergeable: null, attempts: 1, retiredAt: null,
+    did: null, now: '', you: null,
     model: 'sonnet-5',
     modelId: 'claude-sonnet-5',
     className: 'implement',
@@ -43,6 +45,12 @@ function lane(partial: Partial<Lane> & Pick<Lane, 'id' | 'state'>): Lane {
     needsAaron: null,
     ...partial,
   };
+  // `now` mirrors `plain` per the board-at-a-glance contract; `you` is computed off
+  // the finished lane, matching the real server's own `withHumanFields`, unless a
+  // fixture author overrode it explicitly.
+  if (partial.now === undefined) built.now = built.plain;
+  if (partial.you === undefined) built.you = computeYou(built);
+  return built;
 }
 
 export function seedLanes(): Lane[] {
@@ -51,6 +59,7 @@ export function seedLanes(): Lane[] {
     lane({
       id: 'FLT-201', ticket: 'FLT-201', state: 'running', heart: true, hop: 2, hopStatus: 'live',
       stepN: 3, stepTotal: 6, stepText: 'writing the withdrawal-fee integration test',
+      did: 'Ran 128 commands, 45 file reads, 11 edits.',
       ctxTokens: 86_000, tokens: 864_000, tokenCap: 4_000_000, tokensPerMin: 18_000,
       observedAt: now - 3_000, verifiedAt: now - 3_000, since: now - 42 * 60_000, startedAt: now - 42 * 60_000,
       sandbox: {
@@ -72,6 +81,7 @@ export function seedLanes(): Lane[] {
     lane({
       id: 'FLT-204', ticket: 'FLT-204', state: 'running', heart: true, runaway: true, hop: 2, hopStatus: 'live',
       stepN: 2, stepTotal: 6, stepText: 'retrying a flaky build step',
+      now: 'step 2/6 · retrying a flaky build step',
       ctxTokens: 70_000, tokens: 5_500_000, tokenCap: 1_600_000, tokensPerMin: 260_000, fails: 2,
       observedAt: now - 2_000, verifiedAt: now - 2_000, since: now - 30 * 60_000, startedAt: now - 30 * 60_000,
     }),
@@ -90,6 +100,7 @@ export function seedLanes(): Lane[] {
     lane({
       id: 'FLT-190', ticket: 'FLT-190', state: 'merged', heart: false, hop: 5, hopStatus: 'done',
       stepN: 6, stepTotal: 6, stepText: 'merged',
+      did: 'Opened PR #214: fix the payout rounding, 6 files +140 -22',
       ctxTokens: 95_000, tokens: 1_680_000, tokenCap: 4_000_000,
       observedAt: now - 40 * 60_000, verifiedAt: null, since: now - 40 * 60_000, startedAt: now - 2 * 3_600_000,
       pr: { no: 214, url: 'https://example.invalid/pr/214', files: 6, add: 140, del: 22, draft: false },

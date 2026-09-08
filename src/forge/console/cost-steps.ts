@@ -7,7 +7,8 @@
  */
 import type { ForgeEvent } from '../journal.js';
 import type { CostStep } from '../../shared/console-model.js';
-import { jidFor, textFor } from './journal-route.js';
+import { jidFor } from './journal-route.js';
+import { plainEventText } from './thread.js';
 
 export function computeCostSteps(run: string, events: ForgeEvent[]): CostStep[] {
   const steps: CostStep[] = [];
@@ -16,7 +17,7 @@ export function computeCostSteps(run: string, events: ForgeEvent[]): CostStep[] 
     const tokens = row.usage.input + row.usage.cacheRead + row.usage.cacheCreation + row.usage.output;
     steps.push({
       t: row.at,
-      stepText: textFor(row),
+      stepText: plainEventText(row),
       inputTokens: row.usage.input,
       outputTokens: row.usage.output,
       tokens,

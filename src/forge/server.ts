@@ -22,9 +22,15 @@ import type { Duplex } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
 import { ConsoleReads } from './console/reads.js';
-import { HEARTBEAT_MS } from '../shared/console-model.js';
-import { ConsoleWrites } from './console/command.js';
+import { HEARTBEAT_MS, type BlockerKind } from '../shared/console-model.js';
+import { appendThread, ConsoleWrites, plainReceiptCard } from './console/command.js';
 import { QueueRoutes } from './console/queue-route.js';
+import { BlockersRoutes, type Confirmer, type Restarter } from './console/blockers-route.js';
+import type { DetectionInputs } from './console/blockers.js';
+import { gatherBlockers } from './console/blockers-gather.js';
+import { buildConfirmers } from './console/blockers-confirm.js';
+import { buildRestarters } from './console/blockers-restart.js';
+import { resumeRun } from './console/run-actions.js';
 import { runtimeVersion } from './launcher.js';
 import { readQueuePaused, writeQueuePaused } from './console/queue-pause.js';
 import type { Actuator, Reasoner } from './contracts.js';
@@ -205,6 +211,19 @@ export interface ForgeServerOptions {
   queueMergeDeps?: QueueMergeDeps;
   /** A.7: the Promote click's dependencies (`queue-wire.ts#queuePromoteDeps`). */
   queuePromoteDeps?: QueuePromoteDeps;
+  /** Overrides `GET /blockers`'s own live-fact reader. Defaults to `gatherBlockers`
+   *  (`blockers-gather.ts`) wired against this server's own inbox, integrations, lane
+   *  view, registry and queue store. A specimen only. */
+  blockersGather?: () => Promise<DetectionInputs>;
+  /** Overrides the Blockers view's own confirmers. Defaults to `buildConfirmers`
+   *  (`blockers-confirm.ts`). A specimen only. */
+  blockersConfirmers?: Partial<Record<BlockerKind, Confirmer>>;
+  /** Overrides the Blockers view's own restarters. Defaults to `buildRestarters`
+   *  (`blockers-restart.ts`). A specimen only. */
+  blockersRestarters?: Partial<Record<BlockerKind, Restarter>>;
+  /** Overrides where the Blockers view's own durable ledger lives. Defaults to
+   *  `blockersLedgerPath()`, which follows `FORGE_HOME`. A specimen only. */
+  blockersLedgerPath?: string;
 }
 
 export class ForgeServer {
@@ -265,6 +284,8 @@ export class ForgeServer {
 
   private readonly queueRoutes: QueueRoutes;
 
+  private readonly blockersRoutes: BlockersRoutes;
+
   private readonly queueStoreForMerge: QueueStore;
 
   private readonly queueMergeDepsOpt: QueueMergeDeps | undefined;
@@ -319,6 +340,28 @@ export class ForgeServer {
       maxInFlight: options.queueMaxInFlight ?? 2,
       ...(options.queueMergeDeps ? { mergeDeps: options.queueMergeDeps } : {}),
       ...(options.queuePromoteDeps ? { promoteDeps: options.queuePromoteDeps } : {}),
+    });
+    this.blockersRoutes = new BlockersRoutes({
+      journalPath: this.journalPath,
+      authorized: (request, response) => this.authorized(request, response),
+      ...(options.blockersLedgerPath ? { ledgerPath: options.blockersLedgerPath } : {}),
+      gather: options.blockersGather ?? gatherBlockers({
+        inbox: this.inbox, integrations: this.consoleWrites.integrationsRegistry(),
+        lanesView: () => this.consoleReads.lanesResponse(true, false), registry: this.registry,
+        queueStore: this.queueStoreForMerge,
+      }),
+      confirmers: options.blockersConfirmers ?? buildConfirmers({
+        inbox: this.inbox, integrations: this.consoleWrites.integrationsRegistry(),
+        registry: this.registry, queueStore: this.queueStoreForMerge,
+      }),
+      restarters: options.blockersRestarters ?? buildRestarters({
+        queueStore: this.queueStoreForMerge, lanesView: () => this.consoleReads.lanesResponse(true, false),
+        resumeRun: async (laneId) => {
+          const outcome = await resumeRun(laneId, this.consoleWrites.runActionsDeps());
+          return { ok: outcome.status === 200 };
+        },
+        appendReceipt: (text) => appendThread(plainReceiptCard(text)),
+      }),
     });
   }
 
@@ -609,6 +652,7 @@ export class ForgeServer {
     }
     if (await this.consoleWrites.handle(path, request, response)) return;
     if (await this.queueRoutes.handle(path, request, response)) return;
+    if (await this.blockersRoutes.handle(path, request, response)) return;
     if (request.method === 'GET') {
       return this.serveStatic(path, response);
     }

@@ -13,8 +13,10 @@ import type { ChainPacketState } from '../chain.js';
 import type { ForgeEvent } from '../journal.js';
 import type { JournalNarrativeEntry, Lane } from '../../shared/console-model.js';
 import { fmtTokens } from '../../shared/format-tokens.js';
+import { clock, stripMachineIds } from '../../shared/humanize.js';
 import { textFor } from './journal-route.js';
-import { laneKindFor, ticketFor } from './lanes.js';
+import { labelFor } from './lanes.js';
+import { modelName } from './plain.js';
 
 function firstEventAt(events: ForgeEvent[], name: string, matches: (row: ForgeEvent) => boolean): number | undefined {
   for (const row of events) {
@@ -51,37 +53,39 @@ export function computeJournalNarrative(
 ): JournalNarrativeEntry[] {
   const entries: JournalNarrativeEntry[] = [];
   const startedAt = byRun(events, lane.id, 'run.started') ?? lane.startedAt;
-  entries.push({ t: startedAt, text: `polled ${lane.id} from queue`, color: 'var(--ink2)' });
+  entries.push({ t: startedAt, text: 'Polled from the queue', color: 'var(--ink2)' });
 
   const packetId = packet?.packetId;
   const provisionedAt = packetId ? byPacket(events, packetId, 'chain.provisioned') : undefined;
   const blockedAt = packetId && packet?.blocked?.hop === 'provision' ? byPacket(events, packetId, 'chain.blocked') : undefined;
   if (provisionedAt !== undefined) {
-    entries.push({ t: provisionedAt, text: `sandbox ${lane.sandbox?.id ?? lane.id} provisioned`, color: 'var(--ink2)' });
+    entries.push({ t: provisionedAt, text: 'Sandbox provisioned', color: 'var(--ink2)' });
   } else if (blockedAt !== undefined) {
-    entries.push({ t: blockedAt, text: `provision failed · ${packet?.blocked?.reason ?? 'blocked'}`, color: 'var(--block)' });
+    entries.push({
+      t: blockedAt, text: `Provision failed: ${stripMachineIds(packet?.blocked?.reason ?? 'blocked')}`, color: 'var(--block)',
+    });
   }
 
   if (provisionedAt !== undefined && packetId) {
     const launchedAt = byPacket(events, packetId, 'chain.launched');
     if (launchedAt !== undefined) {
       const branch = packet?.provisioned?.branch ?? lane.id;
-      entries.push({ t: launchedAt, text: `branch ${branch} pushed · ${lane.model}`, color: 'var(--ink2)' });
+      entries.push({ t: launchedAt, text: `Branch ${branch} pushed on ${modelName(lane.model)}`, color: 'var(--ink2)' });
     }
   }
 
   const gatedAt = packetId ? byPacket(events, packetId, 'chain.gated') : undefined;
-  if (gatedAt !== undefined) entries.push({ t: gatedAt, text: 'gate opened · council judge ×3', color: 'var(--ink2)' });
+  if (gatedAt !== undefined) entries.push({ t: gatedAt, text: 'Gate opened; the council reviews it three times', color: 'var(--ink2)' });
 
   if (lane.state === 'parked') {
-    entries.push({ t: lastByRun(events, lane.id, 'run.parked') ?? lane.since, text: 'parked — needs human', color: 'var(--park)' });
+    entries.push({ t: lastByRun(events, lane.id, 'run.parked') ?? lane.since, text: 'Parked; needs you', color: 'var(--park)' });
   } else if (lane.state === 'merged') {
     const mergedAt = packetId ? lastEventAt(events, 'chain.merged', (row) => row.packetId === packetId) : undefined;
-    entries.push({ t: mergedAt ?? lane.since, text: 'merged → main · jira updated', color: 'var(--merge)' });
+    entries.push({ t: mergedAt ?? lane.since, text: 'Merged to main; Jira updated', color: 'var(--merge)' });
   } else if (lane.state === 'killed') {
-    entries.push({ t: lastByRun(events, lane.id, 'run.killed') ?? lane.endedAt ?? lane.since, text: 'killed · diff discarded', color: 'var(--block)' });
+    entries.push({ t: lastByRun(events, lane.id, 'run.killed') ?? lane.endedAt ?? lane.since, text: 'Killed; the diff was discarded', color: 'var(--block)' });
   } else if (lane.runaway) {
-    entries.push({ t: now, text: `build failing ×${lane.fails} · ${fmtTokens(lane.tokens)} tokens`, color: 'var(--block)' });
+    entries.push({ t: now, text: `Build failing ×${lane.fails}; spent ${fmtTokens(lane.tokens)} tokens`, color: 'var(--block)' });
   }
 
   return entries;
@@ -107,18 +111,6 @@ export interface WardenChip {
  *  the lane's own ticket key or its kind, never its raw run id. */
 export type TitleForFn = (id: string) => string | null;
 
-/** A rail chip's label for a lane: its title when the caller supplies one, else its
- *  ticket key, else "Live probe" for a probe, else a bare "a lane" -- never the raw
- *  run id or a pid, which is the machine text this fix replaces. */
-function labelFor(id: string, titleFor: TitleForFn): string {
-  const title = titleFor(id);
-  if (title) return title;
-  const ticket = ticketFor(id, undefined);
-  if (ticket) return ticket;
-  if (laneKindFor(id) === 'probe') return 'Live probe';
-  return 'a lane';
-}
-
 const SIGNAL_PHRASES: Record<string, string> = {
   context: 'context ceiling reached, handed off to a fresh session',
   idle: 'went quiet for too long',
@@ -129,7 +121,9 @@ const SIGNAL_PHRASES: Record<string, string> = {
   'registry-abandoned': 'its process record was abandoned',
 };
 
-function signalPhrase(signal: string): string {
+/** Deliverable 5: the what's-stuck reply reuses this exact wording per signal rather
+ *  than inventing a second copy of it. */
+export function signalPhrase(signal: string): string {
   return SIGNAL_PHRASES[signal] ?? 'tripped a health check';
 }
 
@@ -139,7 +133,7 @@ function signalPhrase(signal: string): string {
  *  (used for the audit-trail Journal panel, which this never replaces). */
 export function railChipText(row: ForgeEvent, titleFor: TitleForFn): string | null {
   const id = typeof row.run === 'string' ? row.run : '';
-  const label = id ? labelFor(id, titleFor) : null;
+  const label = id ? labelFor(id, (candidateId) => ({ ticket: null, title: titleFor(candidateId) })) : null;
   switch (row.event) {
     case 'run.parked':
       return label ? `${label} parked, waiting on you.` : 'Parked, waiting on you.';
@@ -166,9 +160,7 @@ export function railChipText(row: ForgeEvent, titleFor: TitleForFn): string | nu
   }
 }
 
-function clockTime(at: number): string {
-  return new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-}
+const clockTime = clock;
 
 /**
  * H1.9: the conductor rail's own chip storm (`PID:51340 STUCK (STALE-SESSION)` x 20,

@@ -1,9 +1,11 @@
 import type { JSX } from 'react';
-import { useState } from 'react';
+import { useContext, useState } from 'react';
 
 import { computeFreshness, compactFreshnessStamp, freshnessClass, hm } from '../freshness.js';
 import { actionable } from '../keyboard-actionable.js';
 import { collapseWardenEvents } from '../laneVM.js';
+import { StoreContext } from '../store.js';
+import { Linkify } from './Linkify.js';
 import type { Feed, Message } from '../../shared/console-model.js';
 
 /** Chip label paired with the command it actually sends. The prototype's own
@@ -16,39 +18,114 @@ export const QUICK_COMMANDS: [label: string, command: string][] = [
   ['spend today', 'spend today'],
   ['merge ready lanes', 'merge ready lanes'],
 ];
+
+/** Item 14: a reply reads "Conductor" only when it actually came from one of
+ *  these -- everything else (a worker's own run) names the run it came from. */
+const CONDUCTOR_REPLY_SOURCES = new Set(['conductor', 'console', 'system']);
+
+/** A line starting with `- ` in a reply or a refusal renders as a list item,
+ *  and the rest of the text keeps the server's own line breaks (`whiteSpace:
+ *  'pre-wrap'`) instead of collapsing a multi-line reply onto one line. */
+function WrappedText({ text, repo }: { text: string; repo?: string | null }): JSX.Element {
+  const lines = text.split('\n');
+  const isList = lines.length > 1 && lines.some((line) => line.trimStart().startsWith('- '));
+  if (!isList) return <div data-testid="wrapped-text" style={{ whiteSpace: 'pre-wrap' }}><Linkify text={text} repo={repo} /></div>;
+  return (
+    <div data-testid="wrapped-text" style={{ whiteSpace: 'pre-wrap' }}>
+      {lines.map((line, i) => (
+        line.trimStart().startsWith('- ')
+          ? <div key={i} style={{ paddingLeft: 14, textIndent: -14 }}>• <Linkify text={line.trimStart().slice(2)} repo={repo} /></div>
+          : <div key={i}><Linkify text={line} repo={repo} /></div>
+      ))}
+    </div>
+  );
+}
+
+/** 2026-09-08: the rail has no lane of its own to read a repo off (a message may
+ *  belong to any lane, or none) -- this resolves `message.lane`/`message.source`
+ *  against the store's own lanes, and falls back to `links.defaultRepo`. */
+function useMessageRepo(message: Message): string | null {
+  // A card can render outside the store (a unit test, a sheet mounted on its own);
+  // then there is no lane list to search and no default repo, and the text stays plain.
+  const ctx = useContext(StoreContext);
+  if (!ctx) return null;
+  const { state } = ctx;
+  const key = message.lane ?? message.source;
+  const found = state.lanes.find((l) => l.id === key || l.ticket === key);
+  return found?.repo ?? state.links.defaultRepo;
+}
+
 /** Exported so a lane-scoped thread (the ticket sheet) can render each message
  *  with the exact same per-type card the Conductor rail uses, rather than a
  *  second, drifting copy of this switch. */
 export function MessageCard({
-  message, feedLive, now, onCommand, onUndo, onOpenJournal,
-}: { message: Message; feedLive: boolean; now: number; onCommand: (text: string) => void; onUndo: (jid: string) => void; onOpenJournal: (jid: string) => void }): JSX.Element {
+  message, feedLive, now, verbose = false, labelFor, replyLabel, onCommand, onUndo, onOpenJournal,
+}: {
+  message: Message; feedLive: boolean; now: number;
+  /** 2026-09-08: plain by default. A `receipt`'s own jid text renders only in
+   *  verbose mode; every other type is unaffected by this flag. */
+  verbose?: boolean;
+  /** A person's name for a lane id, used by a `question` card's own header
+   *  ("Question from <label>"). Falls back to the raw source id when unset or
+   *  when it knows nothing about that particular id. */
+  labelFor?: (id: string) => string | null;
+  /** Item 6: overrides a `reply` card's own label outright, skipping `labelFor`
+   *  entirely -- the ticket sheet passes `'Worker'`, since every reply inside a run's
+   *  own thread is that run's own report and `labelFor` there resolves to the lane's
+   *  whole title (the live sheet's own bug: a report labelled in capitals with the
+   *  lane's title). The board-wide rail leaves this unset and keeps `labelFor(source)`,
+   *  since a rail mixes replies from many different runs. */
+  replyLabel?: string;
+  onCommand: (text: string) => void; onUndo: (jid: string) => void; onOpenJournal: (jid: string) => void;
+}): JSX.Element {
   const [free, setFree] = useState('');
   const [showTip, setShowTip] = useState(false);
   // Every message carries a stamp: verifiedAt falls back to the message's own
   // ts (an "observed" reading) rather than suppressing the stamp when a seeded
   // fixture omits verifiedAt.
   const fresh = computeFreshness(message.verifiedAt ?? null, message.ts, feedLive, now);
+  const repo = useMessageRepo(message);
 
   switch (message.type) {
+    // Item 7: a plain-mode digest of a run's own tool calls reads as a quiet
+    // mono line with no chip border, not another all-caps chip.
+    case 'activity':
+      return (
+        <div className="m" style={{ alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: 7, fontSize: '10.5px', color: 'var(--ink3)' }}>
+          <span><Linkify text={message.text} repo={repo} /></span>
+          <span className={freshnessClass(fresh)}>{compactFreshnessStamp(fresh)}</span>
+        </div>
+      );
     case 'event':
       return (
         <div style={{ alignSelf: 'center', display: 'flex', alignItems: 'center', gap: 7 }}>
-          <span className="chip" style={{ borderColor: 'var(--ink2)', color: 'var(--ink2)' }}>{message.text}</span>
+          <span
+            className="chip"
+            style={{ borderColor: 'var(--ink2)', color: 'var(--ink2)', whiteSpace: 'normal', textTransform: 'none', letterSpacing: 'normal' }}
+          >
+            <Linkify text={message.text} repo={repo} />
+          </span>
           <span className={freshnessClass(fresh)}>{compactFreshnessStamp(fresh)}</span>
         </div>
       );
     case 'operator':
       return (
         <div style={{ alignSelf: 'flex-end', maxWidth: '82%', background: 'var(--ink)', color: 'var(--bg)', padding: '9px 13px', borderRadius: '10px 10px 3px 10px', font: '13px/1.45 "IBM Plex Sans",sans-serif' }}>
-          {message.text}
+          <Linkify text={message.text} repo={repo} />
         </div>
       );
-    case 'reply':
+    case 'reply': {
+      // Item 14: every reply used to say "Conductor", including a worker's own
+      // root-cause report inside its run thread -- a reply is labeled that only
+      // when it actually came from the conductor/console/system; anything else
+      // names the run it came from (or "Worker" when nothing can name it).
+      const replySource = replyLabel
+        ?? (CONDUCTOR_REPLY_SOURCES.has(message.source) ? 'Conductor' : (labelFor?.(message.source) ?? 'Worker'));
       return (
         <div style={{ maxWidth: '92%' }}>
-          <div className="lbl" style={{ color: 'var(--ink3)', marginBottom: 3 }}>Conductor</div>
+          <div className="lbl" data-testid="reply-label" style={{ color: 'var(--ink3)', marginBottom: 3 }}>{replySource}</div>
           <div style={{ borderLeft: '2px solid var(--line2)', paddingLeft: 10, font: '13px/1.5 "IBM Plex Sans",sans-serif' }}>
-            {message.text}
+            <WrappedText text={message.text} repo={repo} />
           </div>
           {message.btns && message.btns.length > 0 ? (
             <div style={{ display: 'flex', gap: 6, margin: '8px 0 0 12px', flexWrap: 'wrap' }}>
@@ -61,11 +138,14 @@ export function MessageCard({
           ) : null}
         </div>
       );
+    }
     case 'refusal':
       return (
         <div style={{ maxWidth: '88%', border: '1px dashed var(--block)', borderLeft: '3px solid var(--block)', borderRadius: 4, padding: '9px 12px' }}>
           <div className="lbl" style={{ color: 'var(--block)', marginBottom: 3 }}>Refused</div>
-          <div style={{ font: '13px/1.5 "IBM Plex Sans",sans-serif', color: 'var(--ink2)' }}>{message.text}</div>
+          <div style={{ font: '13px/1.5 "IBM Plex Sans",sans-serif', color: 'var(--ink2)' }}>
+            <WrappedText text={message.text} repo={repo} />
+          </div>
         </div>
       );
     case 'thinking':
@@ -77,29 +157,46 @@ export function MessageCard({
           <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--ink3)', animation: 'fddot 1.2s infinite .4s' }} />
         </div>
       );
-    case 'receipt':
+    case 'receipt': {
+      const tip = showTip ? (
+        <span className="tip" style={{ position: 'absolute', top: '100%', left: 0, zIndex: 1, whiteSpace: 'nowrap' }}>
+          {hm(message.ts)} · {message.source} · {message.text}{message.undoable && !message.undone ? ' · reversible, undo 24h' : ''}
+        </span>
+      ) : null;
       return (
         <div className="m" style={{ fontSize: '10.5px', color: 'var(--ink2)', display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap', textDecoration: message.undone ? 'line-through' : 'none' }}>
-          {message.jid ? (
+          {verbose && message.jid ? (
             <a
+              data-testid="receipt-jid"
               style={{ fontWeight: 700, color: 'var(--ink)', cursor: 'pointer', position: 'relative' }}
               {...actionable(() => onOpenJournal(message.jid as string))}
               onMouseEnter={() => setShowTip(true)}
               onMouseLeave={() => setShowTip(false)}
             >
               {message.jid}
-              {showTip ? (
-                <span className="tip" style={{ position: 'absolute', top: '100%', left: 0, zIndex: 1, whiteSpace: 'nowrap' }}>
-                  {hm(message.ts)} · {message.source} · {message.text}{message.undoable && !message.undone ? ' · reversible, undo 24h' : ''}
-                </span>
-              ) : null}
+              {tip}
             </a>
           ) : null}
-          <span>{message.text}</span>
+          {/* Item 13: plain mode showed the jid link with no text at all -- a link
+              rendered with nothing visible in it, reading as a stray dash sitting
+              above every receipt. Plain mode renders no anchor here at all; the
+              receipt's own sentence carries the click target and the hover
+              tooltip instead, and the undo link (below) is unaffected either way. */}
+          <span
+            data-testid={!verbose && message.jid ? 'receipt-jid' : undefined}
+            style={message.jid ? { position: 'relative', cursor: 'pointer' } : undefined}
+            {...(!verbose && message.jid ? actionable(() => onOpenJournal(message.jid as string)) : {})}
+            onMouseEnter={() => { if (!verbose && message.jid) setShowTip(true); }}
+            onMouseLeave={() => { if (!verbose) setShowTip(false); }}
+          >
+            <Linkify text={message.text} repo={repo} />
+            {!verbose ? tip : null}
+          </span>
           {message.undoable && !message.undone && message.jid ? <a style={{ fontWeight: 600 }} {...actionable(() => onUndo(message.jid as string))}>undo</a> : null}
           <span className={freshnessClass(fresh)}>{compactFreshnessStamp(fresh)}</span>
         </div>
       );
+    }
     case 'plan':
       return (
         <div className="plate" style={{ maxWidth: '94%' }}>
@@ -111,7 +208,7 @@ export function MessageCard({
             {message.items?.map((a, i) => (
               <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'baseline', padding: '6px 12px' }}>
                 <span className="m" style={{ fontSize: 11, fontWeight: 700, color: 'var(--ink3)' }}>{i + 1}</span>
-                <span style={{ flex: 1, font: '12.5px/1.4 "IBM Plex Sans",sans-serif' }}>{a.text}</span>
+                <span style={{ flex: 1, font: '12.5px/1.4 "IBM Plex Sans",sans-serif' }}><Linkify text={a.text} repo={repo} /></span>
                 <span
                   className="chip"
                   style={{
@@ -151,7 +248,7 @@ export function MessageCard({
             <span>{message.resolved ?? 'awaiting you'}</span>
           </div>
           <div style={{ padding: '11px 12px', font: '13px/1.5 "IBM Plex Sans",sans-serif' }}>
-            {message.text} <strong>{message.blast}</strong>
+            <Linkify text={message.text} repo={repo} /> <strong>{message.blast}</strong>
           </div>
           {!message.resolved ? (
             <div style={{ display: 'flex', gap: 10, padding: '0 12px 12px' }}>
@@ -175,10 +272,10 @@ export function MessageCard({
       return (
         <div style={{ border: '1px solid var(--hand)', borderRadius: 4, maxWidth: '94%' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 12px', borderBottom: '1px solid var(--line)' }}>
-            <span className="lbl" style={{ color: 'var(--hand)' }}>Question · from {message.source}</span>
+            <span className="lbl" style={{ color: 'var(--hand)' }}>Question · from <Linkify text={labelFor?.(message.source) ?? message.source} repo={repo} /></span>
             <span className={freshnessClass(fresh)}>{compactFreshnessStamp(fresh)}</span>
           </div>
-          <div style={{ padding: '10px 12px', font: '13px/1.5 "IBM Plex Sans",sans-serif' }}>{message.text}</div>
+          <div style={{ padding: '10px 12px', font: '13px/1.5 "IBM Plex Sans",sans-serif' }}><Linkify text={message.text} repo={repo} /></div>
           {message.answer === undefined ? (
             <>
               <div style={{ display: 'flex', gap: 6, padding: '0 12px 10px', flexWrap: 'wrap' }}>
@@ -214,7 +311,7 @@ export function MessageCard({
         </div>
       );
     default:
-      return <div>{message.text}</div>;
+      return <div><Linkify text={message.text} repo={repo} /></div>;
   }
 }
 
@@ -233,11 +330,14 @@ export interface ConductorRailProps {
   onCommand: (text: string) => void;
   onUndo: (jid: string) => void;
   onOpenJournal: (jid: string) => void;
+  /** 2026-09-08: plain by default -- see `MessageCard`'s own doc. */
+  verbose?: boolean;
+  labelFor?: (id: string) => string | null;
 }
 
 /** Right rail, single thread; composer disabled with a reason banner when the feed is down. */
 export function ConductorRail(props: ConductorRailProps): JSX.Element {
-  const { thread, feed, now, composer, onComposerChange, onSend, onCommand, onUndo, onOpenJournal } = props;
+  const { thread, feed, now, composer, verbose = false, labelFor, onComposerChange, onSend, onCommand, onUndo, onOpenJournal } = props;
   const isPending = (m: Message): boolean => (
     (m.type === 'question' && m.answer === undefined)
     || (m.type === 'confirm' && m.resolved === undefined)
@@ -267,7 +367,7 @@ export function ConductorRail(props: ConductorRailProps): JSX.Element {
       <div className="scroll" data-testid="rail-thread" style={{ flex: 1, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12, opacity: feed.live ? 1 : 0.6 }}>
         {collapseWardenEvents(thread).map((m) => (
           <div key={m.k} id={`rail-msg-${m.k}`}>
-            <MessageCard message={m} feedLive={feed.live} now={now} onCommand={onCommand} onUndo={onUndo} onOpenJournal={onOpenJournal} />
+            <MessageCard message={m} feedLive={feed.live} now={now} verbose={verbose} labelFor={labelFor} onCommand={onCommand} onUndo={onUndo} onOpenJournal={onOpenJournal} />
           </div>
         ))}
       </div>

@@ -62,7 +62,14 @@ export function LanesGrid(props: LanesGridProps): JSX.Element {
   return (
     <div
       className="scroll"
-      style={{ flex: 1, padding: '12px 16px 16px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(215px,1fr))', gap: 10, alignContent: 'start' }}
+      style={{
+        flex: 1, padding: '12px 16px 16px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(215px,1fr))',
+        // 2026-09-08: `1fr` rows plus a tile that stretched to `height: 100%` is what
+        // made the taller cards overlap on the live board -- `auto` rows sized to each
+        // tile's own (now fixed-slot) content, with `alignItems: 'start'` so no tile
+        // stretches to fill a row it does not need.
+        gridAutoRows: 'auto', alignItems: 'start', gap: 10, alignContent: 'start',
+      }}
     >
       {groups.map((group) => (
         <LaneGroupTile key={group.key} group={group} feedLive={feedLive} now={now} onOpen={onOpen} onOpenCost={onOpenCost} onCommand={onCommand} onTip={onTip} />

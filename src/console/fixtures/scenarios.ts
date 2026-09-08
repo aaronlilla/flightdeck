@@ -8,13 +8,15 @@
  * follow the same generic `FLT-`/`BBZ-` convention `lanes.ts` already uses.
  */
 import type { Integration, Lane, Message, QueueItem, Rule } from '../../shared/console-model.js';
+import { computeYou } from '../../forge/console/laneGlance.js';
 
 const T0 = Date.parse('2026-01-06T14:07:52Z');
 
 function lane(partial: Partial<Lane> & Pick<Lane, 'id' | 'state'>): Lane {
-  return {
+  const built: Lane = {
     ticket: null,
     title: null, kind: 'manual', sourceUrl: null, plain: '', mergeable: null, attempts: 1, retiredAt: null,
+    did: null, now: '', you: null,
     model: 'sonnet-5',
     modelId: 'claude-sonnet-5',
     className: 'implement',
@@ -47,6 +49,9 @@ function lane(partial: Partial<Lane> & Pick<Lane, 'id' | 'state'>): Lane {
     needsAaron: null,
     ...partial,
   };
+  if (partial.now === undefined) built.now = built.plain;
+  if (partial.you === undefined) built.you = computeYou(built);
+  return built;
 }
 
 /** Cut-line #1: an empty fleet -- no lanes, no rules, no journal, no queue. Every
@@ -310,10 +315,12 @@ export function humanBoardLanes(): Lane[] {
   }));
 
   out.push(lane({
+    // 2026-09-08: a 40-char sha, uncut, and a 90-char title -- the tile geometry
+    // e2e specs need a fixture that actually overflows a tile to bite on.
     id: 'long-title-1', ticket: 'FLT-705', kind: 'ticket', state: 'running',
     title: 'the withdrawal fee rounds down instead of to the nearest cent on every payout over five hundred dollars, which the finance team flagged after last week\'s reconciliation',
     sourceUrl: 'https://example.invalid/browse/FLT-705',
-    plain: 'Working since 09:10 on a Sonnet session, 6 turns in, last did: read the fee calculator.',
+    plain: 'Working since 09:10 on a Sonnet session, 6 turns in, last did: fixed 7e57ca8958472653575ea6d29c7003526c3ec723 in the fee calculator.',
   }));
 
   out.push(lane({
