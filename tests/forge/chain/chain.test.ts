@@ -11,6 +11,8 @@ import {
   chainStatusLines, chainStatusRows, completeBriefWithVerification, foldChainState, runChainTick, runKeyForBrief,
   type ChainDeps, type ChainPacketState, type ChainPlannedPacket, type ChainRunStatus,
 } from '../../../src/forge/chain.js';
+import { checkHandoff } from '../../../src/forge/contracts.js';
+import { findHaipingHandoff } from '../../../src/forge/council/handoffScan.js';
 
 interface Fixture {
   events: Record<string, unknown>[];
@@ -367,6 +369,21 @@ describe('completeBriefWithVerification', () => {
     expect(completed).toContain('## How this run ends');
     expect(completed).toContain('Never ask whether');
     expect(completed).toContain('Do not write to');
+
+    // Q-56a42646 / PR #121: a worker with no access to flightdeck's own source invented
+    // fields (screen, whatChanged...) because the block only named the schema. The
+    // appended text now shows the real shape, filled with placeholders, plus the two
+    // rules a worker needs to fill it in correctly.
+    expect(completed).toContain('```json');
+    const example = /```json\n([\s\S]*?)\n```/.exec(completed)?.[1];
+    expect(example).toBeDefined();
+    expect(checkHandoff('haiping', JSON.parse(example!)).complete).toBe(true);
+    expect(completed).toContain('rebuild');
+    expect(completed).toContain('android/');
+    expect(completed).toContain('notVisuallyVerified');
+    expect(completed).toContain('no agent looks at a screen');
+
+    expect(findHaipingHandoff(completed)).toBeDefined();
   });
 
   it('leaves a brief that already carries a Verification block unchanged', () => {
