@@ -44,7 +44,7 @@ function foldWindow(rows: ForgeEvent[]): AccountWindow {
   return window;
 }
 
-interface CodexTotals { callsToday: number; durationTodayMs: number; lastError: string | null; lastCallAt: number | null }
+interface CodexTotals { callsToday: number; durationTodayMs: number; lastError: string | null; lastCallAt: number | null; lastOkAt: number | null }
 
 /**
  * The ledger `codex_call.py` appends to, one JSON object per line, folded for today.
@@ -53,7 +53,7 @@ interface CodexTotals { callsToday: number; durationTodayMs: number; lastError: 
  */
 export function foldCodexToday(lines: string[], now: number): CodexTotals {
   const since = startOfLocalDay(now);
-  const totals: CodexTotals = { callsToday: 0, durationTodayMs: 0, lastError: null, lastCallAt: null };
+  const totals: CodexTotals = { callsToday: 0, durationTodayMs: 0, lastError: null, lastCallAt: null, lastOkAt: null };
   for (const line of lines) {
     if (!line.trim()) continue;
     let row: { at?: string; ok?: boolean; error?: string | null; duration_s?: number; duration_ms?: number };
@@ -68,6 +68,7 @@ export function foldCodexToday(lines: string[], now: number): CodexTotals {
       totals.lastCallAt = at;
       totals.lastError = row.ok === false ? (row.error ?? 'failed') : null;
     }
+    if (row.ok !== false && (totals.lastOkAt === null || at > totals.lastOkAt)) totals.lastOkAt = at;
     if (at < since) continue;
     totals.callsToday += 1;
     totals.durationTodayMs += typeof row.duration_ms === 'number' ? row.duration_ms
@@ -102,8 +103,11 @@ export function buildAccountsBoard(input: AccountsBoardInput): Omit<AccountsResp
       connected = 'yes';
     }
     if (account.provider === 'codex') {
-      connected = codexTotals.lastCallAt === null ? 'unknown' : codexTotals.lastError === null ? 'yes' : 'no';
-      connectedReason = codexTotals.lastError;
+      // The ledger cannot tell a login failure from any other failed call, so a Codex
+      // row is connected once any call has ever answered and unknown before that; it
+      // is never `no`. The last error is shown on the card in its own words.
+      connected = codexTotals.lastOkAt === null ? 'unknown' : 'yes';
+      connectedReason = null;
     }
 
     const fiveHour = foldWindow(mine.filter((row) => row['window'] === 'five_hour'));

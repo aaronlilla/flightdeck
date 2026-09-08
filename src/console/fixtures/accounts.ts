@@ -38,7 +38,7 @@ export function seedAccounts(now: number = Date.now()): AccountsResponse {
         fiveHour: { utilization: null, resetsAt: null, status: 'unknown', observedAt: null },
         sevenDay: { utilization: null, resetsAt: null, status: 'unknown', observedAt: null },
         tokensToday: 0, liveRuns: 0, lastEvent: null, paused: null, isLaunchAccount: false,
-        codex: { callsToday: 7, durationTodayMs: 41 * 60_000, lastError: null, lastCallAt: now - 20 * 60_000 },
+        codex: { callsToday: 7, durationTodayMs: 41 * 60_000, lastError: null, lastCallAt: now - 20 * 60_000, lastOkAt: now - 20 * 60_000 },
       },
     ],
     registryPath: `${home}/.forge/accounts.json`,

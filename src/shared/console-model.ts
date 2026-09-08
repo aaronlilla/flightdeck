@@ -431,7 +431,7 @@ export interface AccountRow {
    *  per-run choice; until then it is `fleetConfigDir()`'s account. */
   isLaunchAccount: boolean;
   /** Codex has no window API. Its row folds the harness tool's own ledger instead. */
-  codex: { callsToday: number; durationTodayMs: number; lastError: string | null; lastCallAt: number | null } | null;
+  codex: { callsToday: number; durationTodayMs: number; lastError: string | null; lastCallAt: number | null; lastOkAt: number | null } | null;
 }
 
 export interface AccountsResponse {

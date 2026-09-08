@@ -386,7 +386,10 @@ describe('buildAccountsBoard', () => {
     expect(b).toMatchObject({ connected: 'no', connectedReason: 'not logged in', liveRuns: 0, tokensToday: 0, isLaunchAccount: false });
     expect(b?.fiveHour).toMatchObject({ utilization: null, status: 'unknown' });
     const codex = board.accounts.find((a) => a.id === 'codex');
-    expect(codex).toMatchObject({ provider: 'codex', codex: { callsToday: 2, durationTodayMs: 105_000, lastError: 'codex failed (exit 1)' } });
+    expect(codex).toMatchObject({
+      provider: 'codex', connected: 'yes', connectedReason: null,
+      codex: { callsToday: 2, durationTodayMs: 105_000, lastError: 'codex failed (exit 1)', lastOkAt: now - 60_000 },
+    });
     expect(board.unattributedTokensToday).toBe(7);
   });
 
