@@ -16,12 +16,40 @@ export const QUICK_COMMANDS: [label: string, command: string][] = [
   ['spend today', 'spend today'],
   ['merge ready lanes', 'merge ready lanes'],
 ];
+/** A line starting with `- ` in a reply or a refusal renders as a list item,
+ *  and the rest of the text keeps the server's own line breaks (`whiteSpace:
+ *  'pre-wrap'`) instead of collapsing a multi-line reply onto one line. */
+function WrappedText({ text }: { text: string }): JSX.Element {
+  const lines = text.split('\n');
+  const isList = lines.length > 1 && lines.some((line) => line.trimStart().startsWith('- '));
+  if (!isList) return <div data-testid="wrapped-text" style={{ whiteSpace: 'pre-wrap' }}>{text}</div>;
+  return (
+    <div data-testid="wrapped-text" style={{ whiteSpace: 'pre-wrap' }}>
+      {lines.map((line, i) => (
+        line.trimStart().startsWith('- ')
+          ? <div key={i} style={{ paddingLeft: 14, textIndent: -14 }}>• {line.trimStart().slice(2)}</div>
+          : <div key={i}>{line}</div>
+      ))}
+    </div>
+  );
+}
+
 /** Exported so a lane-scoped thread (the ticket sheet) can render each message
  *  with the exact same per-type card the Conductor rail uses, rather than a
  *  second, drifting copy of this switch. */
 export function MessageCard({
-  message, feedLive, now, onCommand, onUndo, onOpenJournal,
-}: { message: Message; feedLive: boolean; now: number; onCommand: (text: string) => void; onUndo: (jid: string) => void; onOpenJournal: (jid: string) => void }): JSX.Element {
+  message, feedLive, now, verbose = false, labelFor, onCommand, onUndo, onOpenJournal,
+}: {
+  message: Message; feedLive: boolean; now: number;
+  /** 2026-09-08: plain by default. A `receipt`'s own jid text renders only in
+   *  verbose mode; every other type is unaffected by this flag. */
+  verbose?: boolean;
+  /** A person's name for a lane id, used by a `question` card's own header
+   *  ("Question from <label>"). Falls back to the raw source id when unset or
+   *  when it knows nothing about that particular id. */
+  labelFor?: (id: string) => string | null;
+  onCommand: (text: string) => void; onUndo: (jid: string) => void; onOpenJournal: (jid: string) => void;
+}): JSX.Element {
   const [free, setFree] = useState('');
   const [showTip, setShowTip] = useState(false);
   // Every message carries a stamp: verifiedAt falls back to the message's own
@@ -30,10 +58,24 @@ export function MessageCard({
   const fresh = computeFreshness(message.verifiedAt ?? null, message.ts, feedLive, now);
 
   switch (message.type) {
+    // Item 7: a plain-mode digest of a run's own tool calls reads as a quiet
+    // mono line with no chip border, not another all-caps chip.
+    case 'activity':
+      return (
+        <div className="m" style={{ alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: 7, fontSize: '10.5px', color: 'var(--ink3)' }}>
+          <span>{message.text}</span>
+          <span className={freshnessClass(fresh)}>{compactFreshnessStamp(fresh)}</span>
+        </div>
+      );
     case 'event':
       return (
         <div style={{ alignSelf: 'center', display: 'flex', alignItems: 'center', gap: 7 }}>
-          <span className="chip" style={{ borderColor: 'var(--ink2)', color: 'var(--ink2)' }}>{message.text}</span>
+          <span
+            className="chip"
+            style={{ borderColor: 'var(--ink2)', color: 'var(--ink2)', whiteSpace: 'normal', textTransform: 'none', letterSpacing: 'normal' }}
+          >
+            {message.text}
+          </span>
           <span className={freshnessClass(fresh)}>{compactFreshnessStamp(fresh)}</span>
         </div>
       );
@@ -48,7 +90,7 @@ export function MessageCard({
         <div style={{ maxWidth: '92%' }}>
           <div className="lbl" style={{ color: 'var(--ink3)', marginBottom: 3 }}>Conductor</div>
           <div style={{ borderLeft: '2px solid var(--line2)', paddingLeft: 10, font: '13px/1.5 "IBM Plex Sans",sans-serif' }}>
-            {message.text}
+            <WrappedText text={message.text} />
           </div>
           {message.btns && message.btns.length > 0 ? (
             <div style={{ display: 'flex', gap: 6, margin: '8px 0 0 12px', flexWrap: 'wrap' }}>
@@ -65,7 +107,9 @@ export function MessageCard({
       return (
         <div style={{ maxWidth: '88%', border: '1px dashed var(--block)', borderLeft: '3px solid var(--block)', borderRadius: 4, padding: '9px 12px' }}>
           <div className="lbl" style={{ color: 'var(--block)', marginBottom: 3 }}>Refused</div>
-          <div style={{ font: '13px/1.5 "IBM Plex Sans",sans-serif', color: 'var(--ink2)' }}>{message.text}</div>
+          <div style={{ font: '13px/1.5 "IBM Plex Sans",sans-serif', color: 'var(--ink2)' }}>
+            <WrappedText text={message.text} />
+          </div>
         </div>
       );
     case 'thinking':
@@ -82,12 +126,15 @@ export function MessageCard({
         <div className="m" style={{ fontSize: '10.5px', color: 'var(--ink2)', display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap', textDecoration: message.undone ? 'line-through' : 'none' }}>
           {message.jid ? (
             <a
+              data-testid="receipt-jid"
               style={{ fontWeight: 700, color: 'var(--ink)', cursor: 'pointer', position: 'relative' }}
               {...actionable(() => onOpenJournal(message.jid as string))}
               onMouseEnter={() => setShowTip(true)}
               onMouseLeave={() => setShowTip(false)}
             >
-              {message.jid}
+              {/* Item 7: plain mode hides the J-xxxx text -- the undo link and this
+                  click target/tooltip stay -- verbose mode shows it as before. */}
+              {verbose ? message.jid : '•'}
               {showTip ? (
                 <span className="tip" style={{ position: 'absolute', top: '100%', left: 0, zIndex: 1, whiteSpace: 'nowrap' }}>
                   {hm(message.ts)} · {message.source} · {message.text}{message.undoable && !message.undone ? ' · reversible, undo 24h' : ''}
@@ -175,7 +222,7 @@ export function MessageCard({
       return (
         <div style={{ border: '1px solid var(--hand)', borderRadius: 4, maxWidth: '94%' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 12px', borderBottom: '1px solid var(--line)' }}>
-            <span className="lbl" style={{ color: 'var(--hand)' }}>Question · from {message.source}</span>
+            <span className="lbl" style={{ color: 'var(--hand)' }}>Question · from {labelFor?.(message.source) ?? message.source}</span>
             <span className={freshnessClass(fresh)}>{compactFreshnessStamp(fresh)}</span>
           </div>
           <div style={{ padding: '10px 12px', font: '13px/1.5 "IBM Plex Sans",sans-serif' }}>{message.text}</div>
@@ -233,11 +280,14 @@ export interface ConductorRailProps {
   onCommand: (text: string) => void;
   onUndo: (jid: string) => void;
   onOpenJournal: (jid: string) => void;
+  /** 2026-09-08: plain by default -- see `MessageCard`'s own doc. */
+  verbose?: boolean;
+  labelFor?: (id: string) => string | null;
 }
 
 /** Right rail, single thread; composer disabled with a reason banner when the feed is down. */
 export function ConductorRail(props: ConductorRailProps): JSX.Element {
-  const { thread, feed, now, composer, onComposerChange, onSend, onCommand, onUndo, onOpenJournal } = props;
+  const { thread, feed, now, composer, verbose = false, labelFor, onComposerChange, onSend, onCommand, onUndo, onOpenJournal } = props;
   const isPending = (m: Message): boolean => (
     (m.type === 'question' && m.answer === undefined)
     || (m.type === 'confirm' && m.resolved === undefined)
@@ -267,7 +317,7 @@ export function ConductorRail(props: ConductorRailProps): JSX.Element {
       <div className="scroll" data-testid="rail-thread" style={{ flex: 1, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12, opacity: feed.live ? 1 : 0.6 }}>
         {collapseWardenEvents(thread).map((m) => (
           <div key={m.k} id={`rail-msg-${m.k}`}>
-            <MessageCard message={m} feedLive={feed.live} now={now} onCommand={onCommand} onUndo={onUndo} onOpenJournal={onOpenJournal} />
+            <MessageCard message={m} feedLive={feed.live} now={now} verbose={verbose} labelFor={labelFor} onCommand={onCommand} onUndo={onUndo} onOpenJournal={onOpenJournal} />
           </div>
         ))}
       </div>
