@@ -534,7 +534,7 @@ describe('ConsoleReads.lanesResponse: title and sourceUrl', () => {
     const forgeHomeDir = tempDir('console-reads-');
     const queueStore = new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl'));
     queueStore.append({
-      id: 'Q-1', at: 1, source: 'self', input: 'S-b9d39bae548707e0', ticket: null, repo: 'aaronlilla/flightdeck',
+      id: 'Q-1', at: 1, source: 'hotfix', input: 'S-b9d39bae548707e0', ticket: null, repo: 'aaronlilla/flightdeck',
       briefPath: null, branch: 'feature/s-b9d39bae548707e0', worktreePath: 'w', base: 'develop',
       state: 'parked', reason: 'refused: checks are failure on head f284c65, not green.',
       runKey: 'S-b9d39bae548707e0',
@@ -583,7 +583,7 @@ describe('ConsoleReads.lanesResponse: title and sourceUrl', () => {
     const forgeHomeDir = tempDir('console-reads-');
     const queueStore = new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl'));
     queueStore.append({
-      id: 'Q-1', at: 1, source: 'self', input: 'S-open', ticket: null, repo: 'aaronlilla/flightdeck',
+      id: 'Q-1', at: 1, source: 'hotfix', input: 'S-open', ticket: null, repo: 'aaronlilla/flightdeck',
       briefPath: null, branch: 'feature/s-open', worktreePath: 'w', base: 'develop',
       state: 'parked', reason: 'refused: checks are failure on head abc1234, not green.',
       runKey: 'S-open', pr: { no: 40, url: 'https://github.com/aaronlilla/flightdeck/pull/40', draft: false },
