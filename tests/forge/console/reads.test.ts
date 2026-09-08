@@ -8,7 +8,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
 import { Journal } from '../../../src/forge/journal.js';
 import { QueueStore } from '../../../src/forge/intake/queueStore.js';
@@ -494,6 +494,65 @@ describe('ConsoleReads.lanesResponse: title and sourceUrl', () => {
     expect(branchCalls).toBe(1);
   });
 
+  // 2026-09-08 live finding: a Jira/chain lane with no queue item at all
+  // (jira_BBZ-226_1788543015139) had a chain row naming its repo and provisioned
+  // branch, and a real open PR (107, draft) sitting on that branch -- the chain gate
+  // finds a PR this way at gate time (`chain.ts`'s own `deps.gh.findPrByHead`), but
+  // nothing ever folds that PR number back onto the chain row (`chain.gated` only
+  // ever carries verdict/attestationPath). So the board kept reading "no PR is open
+  // yet" for a lane that had one. Same background-discovery mechanism item 11 already
+  // gives a queue-sourced lane, fired for a chain-kind lane instead.
+  it('a chain-only lane with no queue item discovers its PR by branch, off the chain row', async () => {
+    const forgeHomeDir = tempDir('console-reads-');
+    const runKey = 'jira_BBZ-226_1788543015139';
+    const queueStore = new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl'));
+
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'intake.planned', packetId: 'p1', repo: 'BOLTBETZ-LLC/v2-React-Native' });
+    journal.append({ event: 'chain.launched', packetId: 'p1', runKey });
+    journal.append({ event: 'chain.provisioned', packetId: 'p1', worktreePath: 'w', branch: 'feature/bbz-226' });
+    journal.append({ event: 'run.finished', run: runKey, verdict: 'done' });
+    journal.close();
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put(runKey, { column: 'BBZ-226' });
+
+    let branchCalls = 0;
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore, jiraSite: null,
+      ghBranchLookup: async (repo, branch) => {
+        branchCalls += 1;
+        expect(repo).toBe('BOLTBETZ-LLC/v2-React-Native');
+        expect(branch).toBe('feature/bbz-226');
+        return {
+          number: 107, url: 'https://github.com/BOLTBETZ-LLC/v2-React-Native/pull/107', isDraft: true,
+          mergedAt: null, title: 'BBZ-226 fix', headRefOid: 'f284c65',
+        };
+      },
+    });
+
+    // Before the background discovery lands, the lane still reads no PR.
+    const first = reads.lanesResponse().lanes[0]!;
+    expect(first.pr).toBeNull();
+
+    const server = reads as unknown as { settlePrRefreshes(): Promise<void> };
+    await server.settlePrRefreshes();
+
+    const second = reads.lanesResponse().lanes[0]!;
+    expect(second.pr).toEqual({
+      no: 107, url: 'https://github.com/BOLTBETZ-LLC/v2-React-Native/pull/107', draft: true,
+      merged: false, title: 'BBZ-226 fix', mergedAt: null,
+    });
+    expect(branchCalls).toBe(1);
+
+    // The second poll within the cache window must not fire another `gh` call.
+    reads.lanesResponse();
+    await server.settlePrRefreshes();
+    expect(branchCalls).toBe(1);
+  });
+
   it('item 7: GET /run/:id/pr answers for a queue lane with no chain packet, off the queue item\'s own repo and PR', async () => {
     const forgeHomeDir = tempDir('console-reads-');
     const queueStore = new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl'));
@@ -878,5 +937,53 @@ describe('ConsoleReads: run thread verbose wiring (deliverable 7)', () => {
     const verbose = server.runThreadResponse('alpha', true);
     expect(verbose.verbose).toBe(true);
     expect(verbose.messages.some((m) => m.text === 'alpha started')).toBe(true);
+  });
+});
+
+describe('ConsoleReads.lanesResponse: live', () => {
+  function running(forgeHomeDir: string): { journalPath: string; lanes: Lanes; registry: Registry } {
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'alpha', actor: 'runner' });
+    journal.close();
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put('alpha', { column: 'alpha' });
+    const registry = new Registry(join(forgeHomeDir, 'registry'));
+    registry.admit({ goal: 'alpha', cwd: '.', briefPath: 'b.md', pid: 4242 });
+    return { journalPath, lanes, registry };
+  }
+
+  it('reads alive true with the registry pid when the process probe says it is there', () => {
+    const forgeHomeDir = tempDir('console-reads-live-');
+    const { journalPath, lanes, registry } = running(forgeHomeDir);
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry,
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore: new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl')),
+      jiraSite: null, isAlive: () => true,
+    });
+    const [lane] = reads.lanesResponse().lanes;
+    expect(lane!.state).toBe('running');
+    expect(lane!.live).toEqual({ alive: true, pid: 4242, lastEventAt: lane!.live.lastEventAt, checkedAt: lane!.live.checkedAt });
+    expect(lane!.live.lastEventAt).not.toBeNull();
+  });
+
+  it('reads alive false while state stays running, once the same pid stops answering the probe and the journal has gone quiet', () => {
+    const forgeHomeDir = tempDir('console-reads-live-');
+    const { journalPath, lanes, registry } = running(forgeHomeDir);
+    // The fixture's run.started was stamped just now; a dead pid only reads as not alive
+    // once that last event is older than the recent-event window.
+    vi.useFakeTimers({ now: Date.now() + 10 * 60_000, toFake: ['Date'] });
+    onTestFinished(() => { vi.useRealTimers(); });
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry,
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore: new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl')),
+      jiraSite: null, isAlive: () => false,
+    });
+    const [lane] = reads.lanesResponse().lanes;
+    // The board's own stalled-claim case: `state` is still what the journal last said
+    // (the warden's own call), but `live.alive` reports the truth about the process.
+    expect(lane!.state).toBe('running');
+    expect(lane!.live.alive).toBe(false);
+    expect(lane!.live.pid).toBe(4242);
   });
 });

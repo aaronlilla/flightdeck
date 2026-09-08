@@ -18,7 +18,7 @@ function lane(extra: Partial<Lane> = {}): Lane {
     fails: 0, hop: 2, hopStatus: 'live', observedAt: Date.now(), verifiedAt: Date.now(), heart: true, since: Date.now(),
     startedAt: Date.now(), endedAt: null, question: null, pr: null,
     sandbox: { id: 'fd-2201', path: null, branch: 'feature/flt-201', pid: 1, sessionId: null, region: 'local', instanceType: 'win32/x64' },
-    blockedBy: null, runaway: false, needsAaron: null, did: null, now: '', you: null,
+    blockedBy: null, runaway: false, needsAaron: null, live: { alive: false, pid: null, lastEventAt: null, checkedAt: 0 }, did: null, now: '', you: null,
     ...extra,
   };
 }

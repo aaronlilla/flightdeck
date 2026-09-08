@@ -11,7 +11,7 @@ import { computeFreshness, freshnessClass, freshnessStamp } from '../freshness.j
 import type { Lane } from '../../shared/console-model.js';
 import { fmtTokens } from '../../shared/format-tokens.js';
 import { shortenShas, stripMachineIds } from '../../shared/humanize.js';
-import type { TipSpec } from '../store.js';
+import type { State, TipSpec } from '../store.js';
 import { Linkify } from './Linkify.js';
 
 const HOVER_DELAY_MS = 250;
@@ -32,6 +32,10 @@ export interface LaneTileProps {
   lane: Lane;
   feedLive: boolean;
   now: number;
+  /** Every action currently in flight, keyed `${cmd}:${id}` -- the tile has no
+   *  `api.*` call of its own, so this is how its CTA (and an earlier attempt's own
+   *  CTA) knows to render busy rather than clickable. */
+  pending?: State['pending'];
   onOpen: (id: string) => void;
   onOpenCost: (id: string) => void;
   onCommand: (id: string, cmd: string) => void;
@@ -56,11 +60,12 @@ export interface LaneTileProps {
  * the grid (`LanesGrid.tsx`) reads `gridAutoRows: auto` rather than stretching a `1fr`
  * row over a tile whose own height varies.
  */
-export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, onTip, attempts, earlier }: LaneTileProps): JSX.Element {
+export function LaneTile({ lane, feedLive, now, pending = {}, onOpen, onOpenCost, onCommand, onTip, attempts, earlier }: LaneTileProps): JSX.Element {
   const st = stateOf(lane.state);
   const [attemptsOpen, setAttemptsOpen] = useState(false);
   const headline = tileHeadlineParts(lane);
   const cta = laneCta(lane);
+  const ctaBusy = pending[`${cta.cmd}:${lane.id}`];
   const why = mergeableWhy(lane);
   const pct = ctxPercent(lane);
   const fresh = computeFreshness(lane.verifiedAt, lane.observedAt, feedLive, now, lane.heart);
@@ -102,6 +107,15 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
   const titleFontSize = headline.key ? 12 : 13;
   const titleFontWeight = headline.key ? 400 : 700;
 
+  // The live marker: whether a lane's own worker is there right now, checked fresh by
+  // the server every 2s -- distinct from `state`, which only ever says what the run
+  // last reported about itself. A `running` claim with no live process behind it is a
+  // stalled claim, not a working one, and reads red with no pulse; an alive worker
+  // pulses and ticks its own last-event age down every second off `now` (the tile's
+  // own clock prop, never a timer of its own).
+  const liveSecondsAgo = lane.live.lastEventAt !== null ? Math.max(0, Math.round((now - lane.live.lastEventAt) / 1000)) : null;
+  const stalled = lane.state === 'running' && !lane.live.alive;
+
   return (
     <div
       className="lane"
@@ -116,6 +130,21 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
           <span className="m" style={{ fontSize: 13, fontWeight: 700 }}><Linkify text={headline.key} repo={lane.repo ?? undefined} /></span>
         ) : <span />}
         <span className="lbl" style={{ color: st.color, cursor: 'help', flex: 'none' }}>{st.glyph} {st.label}</span>
+      </div>
+      {/* Reserved whether or not there is anything to show, same as every other
+         variable slot on this tile -- a lane with no live marker is no shorter than
+         one with one. */}
+      <div style={{ height: 12, display: 'flex', alignItems: 'center', gap: 4 }}>
+        {lane.live.alive ? (
+          <>
+            <span className="live-pulse" aria-hidden="true" />
+            <span className="m" style={{ fontSize: 9, color: 'var(--run)' }}>
+              live{liveSecondsAgo !== null ? ` · last event ${liveSecondsAgo}s ago` : ''}
+            </span>
+          </>
+        ) : stalled ? (
+          <span className="m" style={{ fontSize: 9, fontWeight: 700, color: 'var(--block)' }}>STALLED · no process</span>
+        ) : null}
       </div>
       <div
         className="m"
@@ -231,15 +260,17 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, background: 'var(--well)', borderRadius: 3, padding: '8px 10px' }}>
           {earlier.map((l) => {
             const earlierCta = laneCta(l);
+            const earlierBusy = pending[`${earlierCta.cmd}:${l.id}`];
             return (
               <div key={l.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
                 <span className="m" style={{ fontSize: '10.5px', color: 'var(--ink2)' }}>{l.now}</span>
                 <span
-                  className={earlierCta.cls}
-                  style={{ padding: '5px 8px', fontSize: 9, flex: 'none' }}
-                  {...actionable((e) => { e?.stopPropagation?.(); onCommand(l.id, earlierCta.cmd); })}
+                  className={earlierCta.cls} aria-busy={earlierBusy ? 'true' : undefined} data-busy={earlierBusy ? '1' : undefined}
+                  style={{ padding: '5px 8px', fontSize: 9, flex: 'none', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                  {...actionable(earlierBusy ? () => undefined : (e) => { e?.stopPropagation?.(); onCommand(l.id, earlierCta.cmd); })}
                 >
-                  {earlierCta.label}
+                  {earlierBusy ? <span className="fdSpinner" aria-hidden="true" /> : null}
+                  {earlierBusy ? earlierBusy.label : earlierCta.label}
                 </span>
               </div>
             );
@@ -250,15 +281,19 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
         <span className={freshnessClass(fresh)} style={{ alignSelf: 'flex-start' }}>{freshnessStamp(fresh)}</span>
         <div style={{ display: 'flex', gap: 6 }}>
           <span
-            className={cta.cls}
+            className={cta.cls} aria-busy={ctaBusy ? 'true' : undefined} data-busy={ctaBusy ? '1' : undefined}
             // `.btnS` (2026-09-08: `Watch live`/`Gate log` etc.) carries a real 1px
             // border the other CTA classes render as a box-shadow ring instead --
             // a fixed height plus border-box keeps every CTA the same footer height
             // regardless of which button class a lane's own state picks.
-            style={{ padding: '7px 9px', fontSize: '9.5px', flex: 1, height: 32, boxSizing: 'border-box' }}
-            {...actionable((e) => { e?.stopPropagation?.(); onCommand(lane.id, cta.cmd); })}
+            style={{
+              padding: '7px 9px', fontSize: '9.5px', flex: 1, height: 32, boxSizing: 'border-box',
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+            }}
+            {...actionable(ctaBusy ? () => undefined : (e) => { e?.stopPropagation?.(); onCommand(lane.id, cta.cmd); })}
           >
-            {cta.label}
+            {ctaBusy ? <span className="fdSpinner" aria-hidden="true" /> : null}
+            {ctaBusy ? ctaBusy.label : cta.label}
           </span>
         </div>
         {/* One reserved line whether or not there is a reason, so a tile with one is no taller than its neighbours. */}

@@ -48,7 +48,7 @@ import { routerEnabled } from './policy.js';
 import { retireEligible, retireFinished, retirePreview, retiredPath, retireRun, unretireRun } from './console/retire.js';
 import { mergeReadyReportFrom } from './console/lanes.js';
 import { chainStatusRows, foldChainState } from './chain.js';
-import { Registry } from './registry.js';
+import { processAlive, Registry } from './registry.js';
 import { route as routeMessage } from './router.js';
 import { RunInbox, deliverAnswer } from './runinbox.js';
 import { Breaker, clearKillSwitch, Fleet, type LaneRecord, type Lanes } from './supervisor.js';
@@ -224,6 +224,13 @@ export interface ForgeServerOptions {
   /** Overrides where the Blockers view's own durable ledger lives. Defaults to
    *  `blockersLedgerPath()`, which follows `FORGE_HOME`. A specimen only. */
   blockersLedgerPath?: string;
+  /** Overrides the liveness ticker's own process probe (`processAlive` by default). A
+   *  specimen only -- production always asks the real process table. */
+  isAlive?: (pid: number) => boolean;
+  /** How often the liveness ticker re-checks a lane it last saw alive, in ms. Defaults
+   *  to 2000 (the "very live" board's own cadence). A specimen sets this low with fake
+   *  timers rather than waiting on the real interval. */
+  liveTickMs?: number;
 }
 
 export class ForgeServer {
@@ -260,6 +267,18 @@ export class ForgeServer {
   private http: Server | undefined;
 
   private heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+
+  private liveTimer: ReturnType<typeof setInterval> | undefined;
+
+  private readonly isAliveFn: (pid: number) => boolean;
+
+  private readonly liveTickMs: number;
+
+  /** Every run this ticker has last seen alive or dead, so a re-check only fires the
+   *  cheap pid probe for a lane it already believed was live, and a flip publishes
+   *  exactly once instead of every tick. Undefined (never checked yet) is neither: the
+   *  first tick over a row establishes its baseline silently. */
+  private readonly liveKnown = new Map<string, boolean>();
 
   private sockets = new Set<Duplex>();
 
@@ -304,6 +323,8 @@ export class ForgeServer {
     this.token = options.token ?? ensureServerToken();
     this.killSwitchFile = options.killSwitchFile ?? defaultKillSwitchPath();
     this.registry = options.registry ?? new Registry(registryDir());
+    this.isAliveFn = options.isAlive ?? processAlive;
+    this.liveTickMs = options.liveTickMs ?? 2_000;
     this.consoleDistDir = options.consoleDistDir ?? defaultConsoleDistDir();
     this.packetsDirPath = options.packetsDir ?? defaultPacketsDir();
     this.forgeHomeDir = options.forgeHomeDir ?? forgeHome();
@@ -391,14 +412,43 @@ export class ForgeServer {
     // to know the feed itself is alive, distinct from any one lane going quiet.
     this.heartbeatTimer = setInterval(() => this.publish({ type: 'heartbeat', at: Date.now() }), HEARTBEAT_MS);
     this.heartbeatTimer.unref?.();
+    // The "very live" board's own cadence (Aaron: "the second there's nothing working
+    // it should stop"): every registry row this ticker last saw alive gets a fresh,
+    // cheap pid check -- no journal replay -- and a flip publishes `lane.live` so the
+    // console refreshes inside 2s instead of waiting on the 5s poll.
+    this.liveTimer = setInterval(() => this.tickLiveness(), this.liveTickMs);
+    this.liveTimer.unref?.();
     this.consoleWrites.start();
     return this.port;
+  }
+
+  /** The liveness ticker's own body, pulled out so a test can fire one tick directly
+   *  under fake timers rather than waiting on the real interval. Production never
+   *  calls this itself. */
+  private tickLiveness(): void {
+    for (const row of this.registry.all()) {
+      const was = this.liveKnown.get(row.goal);
+      const alive = this.isAliveFn(row.pid);
+      this.liveKnown.set(row.goal, alive);
+      if (was === undefined) continue; // first sighting: establish the baseline, no flip to report
+      if (was !== alive) this.publish({ event: 'lane.live', run: row.goal, alive, at: Date.now() });
+    }
+  }
+
+  /** Test seam only: fires one liveness tick synchronously. Production relies on the
+   *  real `setInterval` from `listen()`. */
+  tickLivenessForTest(): void {
+    this.tickLiveness();
   }
 
   async close(): Promise<void> {
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = undefined;
+    }
+    if (this.liveTimer) {
+      clearInterval(this.liveTimer);
+      this.liveTimer = undefined;
     }
     this.consoleWrites.stop();
     for (const socket of this.sockets) socket.destroy();

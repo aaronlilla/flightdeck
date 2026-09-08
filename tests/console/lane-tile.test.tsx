@@ -28,7 +28,7 @@ function lane(extra: Partial<Lane> = {}): Lane {
     ctxTokens: 40_000, ctxCeiling: 200_000, ctxCompactAt: 180_000, tokens: 200_000, tokenCap: 2_000_000, tokensPerMin: 0,
     fails: 0, hop: 0, hopStatus: 'live', observedAt: Date.now(), verifiedAt: Date.now(), heart: true, since: Date.now(),
     startedAt: Date.now(), endedAt: null, question: null, pr: null, sandbox: null, blockedBy: null, runaway: false,
-    needsAaron: null, did: null, now: '', you: null,
+    needsAaron: null, live: { alive: false, pid: null, lastEventAt: null, checkedAt: 0 }, did: null, now: '', you: null,
     ...extra,
   };
 }
@@ -199,5 +199,35 @@ describe('LaneTile', () => {
   it('renders no attempt chip when the tile carries none', () => {
     render(<LaneTile lane={lane()} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
     expect(screen.queryByText(/attempt \d+ of \d+/)).toBeNull();
+  });
+
+  describe('live marker', () => {
+    it('renders a pulsing live dot and the last-event age for a lane whose worker answers', () => {
+      const now = Date.now();
+      const { container } = render(
+        <LaneTile lane={lane({ live: { alive: true, pid: 123, lastEventAt: now - 4_000, checkedAt: now } })} feedLive now={now} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />,
+      );
+      expect(container.querySelector('.live-pulse')).not.toBeNull();
+      expect(screen.getByText(/last event 4s ago/)).toBeInTheDocument();
+      expect(screen.queryByText(/STALLED/)).toBeNull();
+    });
+
+    it('renders a red STALLED marker with no pulse for a running lane whose worker is gone', () => {
+      const now = Date.now();
+      const { container } = render(
+        <LaneTile lane={lane({ state: 'running', live: { alive: false, pid: 123, lastEventAt: now - 400_000, checkedAt: now } })} feedLive now={now} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />,
+      );
+      expect(screen.getByText(/STALLED/)).toBeInTheDocument();
+      expect(container.querySelector('.live-pulse')).toBeNull();
+    });
+
+    it('renders neither marker for a lane that has finished, alive or not', () => {
+      const now = Date.now();
+      render(
+        <LaneTile lane={lane({ state: 'done', live: { alive: false, pid: null, lastEventAt: null, checkedAt: now } })} feedLive now={now} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />,
+      );
+      expect(screen.queryByText(/^live/)).toBeNull();
+      expect(screen.queryByText(/STALLED/)).toBeNull();
+    });
   });
 });

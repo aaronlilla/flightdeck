@@ -9,6 +9,7 @@ import type { JSX } from 'react';
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 
 import * as api from './api.js';
+import { errorText, showToast } from './actions.js';
 import { BlockersView } from './components/BlockersView.js';
 import { CommandPalette, buildPaletteItems } from './components/CommandPalette.js';
 import { CostSheet } from './components/CostSheet.js';
@@ -218,6 +219,10 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
             dispatch({ type: 'heartbeat', at: (event as { at?: number }).at ?? Date.now() });
             dispatch({ type: 'feed-live' });
           }
+          // Every frame refreshes, `lane.live` (the server's 2s liveness ticker
+          // flipping a worker alive or dead) included -- no special case needed, the
+          // same `refresh()` that a heartbeat or a journal event triggers picks up the
+          // new `live` field on the very next `/lanes` read.
           void refresh();
         },
         onStatusChange: (status) => {
@@ -256,38 +261,56 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     return null;
   }, [state.lanes, state.archivedLanes]);
 
-  const runAction = useCallback(async (fn: () => Promise<{ ok: boolean; jid: string | null; message: string; undoable: boolean }>) => {
+  // The shared action-feedback contract (actions.ts's useAction) applied to a
+  // fire-through-App callback rather than a component-local hook: `key` marks the
+  // action busy in the store (so a lane tile or the top bar watching that key
+  // renders it), and every outcome -- success or failure -- ends in a toast, never
+  // just the rail's receipt card, which is invisible outside the board view.
+  const runAction = useCallback(async (
+    key: string, busyLabel: string,
+    fn: () => Promise<{ ok: boolean; jid: string | null; message: string; undoable: boolean }>,
+  ) => {
+    if (key in stateRef.current.pending) return;
+    dispatch({ type: 'pending-set', key, label: busyLabel });
     try {
       const result = await fn();
       appendReceipt(result.jid, result.message, result.undoable);
+      showToast(dispatch, result.message || 'done', result.ok);
     } catch (caught) {
-      const message = caught instanceof api.ApiError ? caught.message : 'the action did not go through';
+      const message = caught instanceof api.ApiError ? errorText(caught) : 'the action did not go through';
       appendReceipt(null, message, false);
+      showToast(dispatch, message, false);
+    } finally {
+      dispatch({ type: 'pending-clear', key });
     }
     await refresh();
   }, [appendReceipt, refresh]);
 
   // The rail's own receipt is invisible from the Queue tab, so an add/remove/retry/
   // merge/promote there landed with no feedback at all short of switching tabs to check
-  // the rail. A toast (the component already existed, unused) shows the same text on
-  // the Queue tab itself, and clears itself after a few seconds the way a toast should.
-  const queueToast = useCallback((text: string, ok: boolean) => {
-    dispatch({ type: 'toast', toast: { glyph: ok ? '✓' : '✕', title: text, sub: '', big: '', color: ok ? undefined : 'var(--block)' } });
-    setTimeout(() => dispatch({ type: 'toast', toast: null }), 4000);
-  }, []);
+  // the rail. Kept as a thin alias over the shared toast helper for call sites (Settings,
+  // the Queue add form) that need a toast with no busy key or receipt attached.
+  const queueToast = useCallback((text: string, ok: boolean) => showToast(dispatch, text, ok), []);
 
-  const runQueueAction = useCallback(async (fn: () => Promise<{ ok: boolean; jid: string | null; message: string; undoable: boolean }>) => {
+  const runQueueAction = useCallback(async (
+    key: string, busyLabel: string,
+    fn: () => Promise<{ ok: boolean; jid: string | null; message: string; undoable: boolean }>,
+  ) => {
+    if (key in stateRef.current.pending) return;
+    dispatch({ type: 'pending-set', key, label: busyLabel });
     try {
       const result = await fn();
       appendReceipt(result.jid, result.message, result.undoable);
-      queueToast(result.message, result.ok);
+      showToast(dispatch, result.message, result.ok);
     } catch (caught) {
-      const message = caught instanceof api.ApiError ? caught.message : 'the action did not go through';
+      const message = caught instanceof api.ApiError ? errorText(caught) : 'the action did not go through';
       appendReceipt(null, message, false);
-      queueToast(message, false);
+      showToast(dispatch, message, false);
+    } finally {
+      dispatch({ type: 'pending-clear', key });
     }
     await refresh();
-  }, [appendReceipt, refresh, queueToast]);
+  }, [appendReceipt, refresh]);
 
   const resolveConfirm = useCallback((k: string, confirmed: boolean) => {
     dispatch({
@@ -296,18 +319,18 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     });
     if (confirmed && pendingConfirm && pendingConfirm.k === k) {
       const fn = pendingConfirm.cmd === 'kill' ? () => api.killRun(pendingConfirm.id, 'operator confirmed') : () => api.mergeRun(pendingConfirm.id);
-      void runAction(fn);
+      void runAction(`${pendingConfirm.cmd}:${pendingConfirm.id}`, pendingConfirm.cmd === 'kill' ? 'Killing…' : 'Merging…', fn);
     }
     if (confirmed && pendingBulk && pendingBulk.k === k) {
       if (pendingBulk.kind === 'retire-finished') {
-        void runAction(async (): Promise<{ ok: boolean; jid: string | null; message: string; undoable: boolean }> => {
+        void runAction('retire-finished', 'Retiring finished lanes…', async (): Promise<{ ok: boolean; jid: string | null; message: string; undoable: boolean }> => {
           const r = await api.postRetireFinished();
           return { ok: r.ok, jid: null, message: `retired ${r.retired.length} lanes`, undoable: false };
         }).then(() => {
           void api.getLanes({ archived: true }).then((res) => dispatch({ type: 'archived-lanes', lanes: res.lanes })).catch(() => undefined);
         });
       } else {
-        void runAction(async (): Promise<{ ok: boolean; jid: string | null; message: string; undoable: boolean }> => {
+        void runAction('merge-ready', 'Merging ready lanes…', async (): Promise<{ ok: boolean; jid: string | null; message: string; undoable: boolean }> => {
           const r = await api.postMergeReady();
           const merged = r.outcomes.filter((row) => row.ok);
           const failed = r.outcomes.filter((row) => !row.ok);
@@ -333,7 +356,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
         setPendingBulk({ k, kind: 'retire-finished', card });
         dispatch({ type: 'thread-append', messages: [card] });
       } catch (caught) {
-        appendReceipt(null, caught instanceof api.ApiError ? caught.message : 'clean up did not go through', false);
+        appendReceipt(null, caught instanceof api.ApiError ? errorText(caught) : 'clean up did not go through', false);
       }
     })();
   }, [appendReceipt]);
@@ -356,7 +379,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
         setPendingBulk({ k, kind: 'merge-ready', card });
         dispatch({ type: 'thread-append', messages: [card] });
       } catch (caught) {
-        appendReceipt(null, caught instanceof api.ApiError ? caught.message : 'merge ready did not go through', false);
+        appendReceipt(null, caught instanceof api.ApiError ? errorText(caught) : 'merge ready did not go through', false);
       }
     })();
   }, [appendReceipt]);
@@ -404,7 +427,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
           if (target) resolvedOverridesRef.current.set(target.k, { resolved: resolvedValue, at: Date.now() });
         }
       } catch (caught) {
-        appendReceipt(null, caught instanceof api.ApiError ? caught.message : 'the command did not go through', false);
+        appendReceipt(null, caught instanceof api.ApiError ? errorText(caught) : 'the command did not go through', false);
       }
       await refresh();
     })();
@@ -446,25 +469,17 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     }
     if (cmd === 'reconnect-aws') {
       if (lane?.blockedBy) {
-        void (async () => {
-          try {
-            const r = await api.reconnectIntegration(lane.blockedBy as string);
-            appendReceipt(r.jid, r.message, false);
-          } catch (caught) {
-            appendReceipt(null, caught instanceof api.ApiError ? caught.message : 'reconnect did not go through', false);
-          }
-          await refresh();
-        })();
+        void runAction(`reconnect:${lane.blockedBy}`, 'Reconnecting…', () => api.reconnectIntegration(lane.blockedBy as string).then((r) => ({ ...r, undoable: false })));
       }
       return;
     }
-    if (cmd === 'pause') void runAction(() => api.pauseRun(id));
-    else if (cmd === 'resume') void runAction(() => api.resumeRun(id));
-    else if (cmd === 'compact') void runAction(() => api.compactRun(id));
-    else if (cmd === 'verify') void runAction(() => api.verifyRun(id));
-    else if (cmd === 'reopen') void runAction(() => api.reopenRun(id));
+    if (cmd === 'pause') void runAction(`pause:${id}`, 'Pausing…', () => api.pauseRun(id));
+    else if (cmd === 'resume') void runAction(`resume:${id}`, 'Resuming…', () => api.resumeRun(id));
+    else if (cmd === 'compact') void runAction(`compact:${id}`, 'Compacting…', () => api.compactRun(id));
+    else if (cmd === 'verify') void runAction(`verify:${id}`, 'Verifying…', () => api.verifyRun(id));
+    else if (cmd === 'reopen') void runAction(`reopen:${id}`, 'Reopening…', () => api.reopenRun(id));
     else if (cmd === 'unretire') {
-      void runAction(() => api.unretireRun(id)).then(() => {
+      void runAction(`unretire:${id}`, 'Unretiring…', () => api.unretireRun(id)).then(() => {
         void api.getLanes({ archived: true }).then((r) => dispatch({ type: 'archived-lanes', lanes: r.lanes })).catch(() => undefined);
       });
     } else processCommand(cmd);
@@ -493,7 +508,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   // straight to a method call, never to `send()`, so no fake operator bubble.
   const onRailCommand = useCallback((text: string) => { processCommand(text); }, [processCommand]);
 
-  const onUndo = useCallback((jid: string) => { void runAction(() => api.undoJournal(jid)); }, [runAction]);
+  const onUndo = useCallback((jid: string) => { void runAction(`undo:${jid}`, 'Undoing…', () => api.undoJournal(jid)); }, [runAction]);
 
   const onOpenJournal = useCallback((jid: string) => {
     dispatch({ type: 'sheet', sheet: { type: 'journal', run: jid } });
@@ -518,28 +533,12 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
 
   const needs = buildNeeds(state.lanes, state.integrations, (kind, id) => {
     if (kind === 'lane') dispatch({ type: 'sheet', sheet: { type: 'ticket', id } });
-    else void (async () => {
-      try {
-        const r = await api.reconnectIntegration(id);
-        appendReceipt(r.jid, r.message, false);
-      } catch (caught) {
-        appendReceipt(null, caught instanceof api.ApiError ? caught.message : 'reconnect did not go through', false);
-      }
-      await refresh();
-    })();
+    else void runAction(`reconnect:${id}`, 'Reconnecting…', () => api.reconnectIntegration(id).then((r) => ({ ...r, undoable: false })));
   }, () => dispatch({ type: 'view', view: 'settings' }), state.now, (key) => {
-    void (async () => {
-      try {
-        // `receiptCard` reads success off `jid` being non-null (`type: jid ? 'receipt' :
-        // 'refusal'`), so a genuine success with no jid would render as a red Refused
-        // card -- pass the server's own jid through rather than a hardcoded null.
-        const dismissed = await api.dismissAsk(key);
-        appendReceipt(dismissed.jid, 'stale ask dismissed.', false);
-      } catch (caught) {
-        appendReceipt(null, caught instanceof api.ApiError ? caught.message : 'dismiss did not go through', false);
-      }
-      await refresh();
-    })();
+    // `receiptCard` reads success off `jid` being non-null (`type: jid ? 'receipt' :
+    // 'refusal'`), so a genuine success with no jid would render as a red Refused
+    // card -- pass the server's own jid through rather than a hardcoded null.
+    void runAction(`dismiss-ask:${key}`, 'Dismissing…', () => api.dismissAsk(key).then((r) => ({ ...r, message: 'stale ask dismissed.', undoable: false })));
   });
 
   useEffect(() => {
@@ -586,6 +585,9 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
 
   const repos = [...new Set(state.lanes.map((l) => l.repo).filter((r): r is string => Boolean(r)))];
   const settingsBadge = state.integrations.filter((i) => i.status === 'down').length;
+  // How many lanes on the board have a worker answering right now -- the header's own
+  // pulsing "N live" chip, hidden the instant this hits 0.
+  const liveCount = state.lanes.filter((l) => l.live.alive).length;
   const reviewBadge = state.proposals?.rules.filter((r) => r.status === 'open').length ?? 0;
   const queueBadge = state.queue.filter((i) => i.state === 'parked' || i.state === 'failed').length;
   const blockersBadge = state.blockers?.blockers.filter((b) => b.state === 'open' && b.youCanResolve).length ?? 0;
@@ -602,6 +604,8 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
           fetchLatencyMs={state.fetchLatencyMs}
           theme={state.theme}
           verbose={state.verbose}
+          pending={state.pending}
+          liveCount={liveCount}
           onNav={(view) => dispatch({ type: 'view', view })}
           onOpenPalette={() => dispatch({ type: 'palette-open', open: true })}
           onOpenCost={() => dispatch({ type: 'sheet', sheet: { type: 'fleet-cost' } })}
@@ -634,6 +638,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
               <LanesGrid
                 lanes={state.filter === 'archived' ? state.archivedLanes : state.lanes}
                 filter={state.filter} sort={state.sort} feedLive={state.feed.live} now={state.now} showProbes={state.showProbes}
+                pending={state.pending}
                 onOpen={(id) => dispatch({ type: 'sheet', sheet: { type: 'ticket', id } })}
                 onOpenCost={(id) => dispatch({ type: 'sheet', sheet: { type: 'cost', id } })}
                 onCommand={onCommand}
@@ -656,33 +661,52 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
             integrations={state.integrations} caps={state.caps} journalCount={state.journal.length}
             journal={state.journal} rules={state.proposals?.rules ?? []} lanes={state.lanes} feed={state.feed} now={state.now}
             onCheck={(id) => void (async () => {
+              const key = `check:${id}`;
+              if (key in stateRef.current.pending) return;
+              dispatch({ type: 'pending-set', key, label: 'Checking…' });
               try {
                 const r = await api.checkIntegration(id);
                 dispatch({ type: 'integrations', integrations: r.items });
+                showToast(dispatch, 'checked', true);
               } catch (caught) {
                 // The rail (where a receipt/refusal card would render) is only mounted
                 // on the board view, so a Settings-screen action needs the toast --
                 // visible on every view -- not just a receipt nobody here can see.
-                queueToast(caught instanceof api.ApiError ? caught.message : 'check did not go through', false);
+                queueToast(caught instanceof api.ApiError ? errorText(caught) : 'check did not go through', false);
+              } finally {
+                dispatch({ type: 'pending-clear', key });
               }
             })()}
             onReconnect={(id) => void (async () => {
+              const key = `reconnect:${id}`;
+              if (key in stateRef.current.pending) return;
+              dispatch({ type: 'pending-set', key, label: 'Reconnecting…' });
               try {
                 const r = await api.reconnectIntegration(id);
                 appendReceipt(r.jid, r.message, false);
                 queueToast(r.message, true);
               } catch (caught) {
-                queueToast(caught instanceof api.ApiError ? caught.message : 'reconnect did not go through', false);
+                queueToast(caught instanceof api.ApiError ? errorText(caught) : 'reconnect did not go through', false);
+              } finally {
+                dispatch({ type: 'pending-clear', key });
               }
               await refresh();
             })()}
             onCheckAll={() => void refresh()}
             onSaveCaps={async (dailyTokens, runTokens) => {
+              const key = 'save-caps';
+              if (key in stateRef.current.pending) return;
+              dispatch({ type: 'pending-set', key, label: 'Saving caps…' });
               try {
                 const caps = await api.setCaps({ dailyTokens, runTokens });
                 dispatch({ type: 'caps', caps });
+                showToast(dispatch, 'caps saved', true);
               } catch (caught) {
-                appendReceipt(null, caught instanceof api.ApiError ? caught.message : 'caps did not save', false);
+                const message = caught instanceof api.ApiError ? errorText(caught) : 'caps did not save';
+                appendReceipt(null, message, false);
+                showToast(dispatch, message, false);
+              } finally {
+                dispatch({ type: 'pending-clear', key });
               }
             }}
             onOpenJournal={() => dispatch({ type: 'sheet', sheet: { type: 'journal' } })}
@@ -691,9 +715,9 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
         {state.view === 'review' ? (
           <FlightReview
             proposals={state.proposals} now={state.now}
-            onApply={(id) => void runAction(() => api.applyProposal(id)).then(() => refresh())}
-            onDismiss={(id) => void runAction(() => api.dismissProposal(id))}
-            onRestore={(id) => void runAction(() => api.restoreProposal(id))}
+            onApply={(id) => void runAction(`apply:${id}`, 'Applying…', () => api.applyProposal(id)).then(() => refresh())}
+            onDismiss={(id) => void runAction(`dismiss:${id}`, 'Dismissing…', () => api.dismissProposal(id))}
+            onRestore={(id) => void runAction(`restore:${id}`, 'Restoring…', () => api.restoreProposal(id))}
             onUndo={onUndo}
           />
         ) : null}
@@ -701,6 +725,9 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
           <QueueView
             items={state.queue} paused={state.queuePaused} pauseReason={state.queuePauseReason} maxInFlight={state.queueMaxInFlight}
             onAdd={(source, input) => void (async () => {
+              const key = 'queue-add';
+              if (key in stateRef.current.pending) return;
+              dispatch({ type: 'pending-set', key, label: 'Adding to queue…' });
               try {
                 const result = await api.addToQueue({ source, input });
                 if (result.ok) {
@@ -710,18 +737,20 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
                   queueToast(result.error ?? 'the add did not go through', false);
                 }
               } catch (caught) {
-                const message = caught instanceof api.ApiError ? caught.message : 'the add did not go through';
+                const message = caught instanceof api.ApiError ? errorText(caught) : 'the add did not go through';
                 appendReceipt(null, message, false);
                 queueToast(message, false);
+              } finally {
+                dispatch({ type: 'pending-clear', key });
               }
               await refresh();
             })()}
-            onRemove={(id) => void runQueueAction(() => api.removeQueueItem(id))}
-            onRetry={(id) => void runQueueAction(() => api.retryQueueItem(id))}
-            onPause={() => void runQueueAction(() => api.pauseQueue())}
-            onResume={() => void runQueueAction(() => api.resumeQueue())}
-            onMerge={(id) => void runQueueAction(() => api.mergeQueueItem(id))}
-            onPromote={(id, version, message) => void runQueueAction(() => api.promoteQueueItem(id, version, message))}
+            onRemove={(id) => void runQueueAction(`queue-remove:${id}`, 'Removing…', () => api.removeQueueItem(id))}
+            onRetry={(id) => void runQueueAction(`queue-retry:${id}`, 'Retrying…', () => api.retryQueueItem(id))}
+            onPause={() => void runQueueAction('queue-pause', 'Pausing the queue…', () => api.pauseQueue())}
+            onResume={() => void runQueueAction('queue-resume', 'Resuming the queue…', () => api.resumeQueue())}
+            onMerge={(id) => void runQueueAction(`queue-merge:${id}`, 'Merging…', () => api.mergeQueueItem(id))}
+            onPromote={(id, version, message) => void runQueueAction(`queue-promote:${id}`, 'Promoting…', () => api.promoteQueueItem(id, version, message))}
           />
         ) : null}
         {state.view === 'blockers' ? (
@@ -734,8 +763,37 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
             // step straight into "Resolved today" with no transient in between. The
             // normal 5s poll (or the next `/events` heartbeat) picks up the real state
             // once the operator has had a chance to see the outcome of their own click.
-            onResolve={(id) => api.resolveBlocker(id)}
-            onCheck={(id) => api.checkBlocker(id)}
+            // `StepButtons` (BlockersView.tsx) has its own local "Checking…" /
+            // "Resolved" / "Not yet" states, but the promise it awaits had no
+            // `.catch` -- a thrown error (rather than an `{ ok: false }` answer) left
+            // the button stuck on "Checking…" forever with nothing else showing.
+            // A store-tracked busy key plus a `.catch` that still resolves in the
+            // shape `StepButtons` expects, and a red toast alongside it, so a genuine
+            // failure never reads as a hang.
+            onResolve={(id) => {
+              const key = `blocker-resolve:${id}`;
+              dispatch({ type: 'pending-set', key, label: 'Resolving…' });
+              return api.resolveBlocker(id)
+                .then((r) => { showToast(dispatch, r.ok ? 'resolved' : (r.lastCheck ?? 'not confirmed'), r.ok); return r; })
+                .catch((caught) => {
+                  const message = caught instanceof api.ApiError ? errorText(caught) : 'resolve did not go through';
+                  showToast(dispatch, message, false);
+                  return { ok: false, started: [], lastCheck: message, state: 'open' as const };
+                })
+                .finally(() => dispatch({ type: 'pending-clear', key }));
+            }}
+            onCheck={(id) => {
+              const key = `blocker-check:${id}`;
+              dispatch({ type: 'pending-set', key, label: 'Checking…' });
+              return api.checkBlocker(id)
+                .then((r) => { showToast(dispatch, r.ok ? 'resolved' : (r.lastCheck ?? 'not confirmed'), r.ok); return r; })
+                .catch((caught) => {
+                  const message = caught instanceof api.ApiError ? errorText(caught) : 'check did not go through';
+                  showToast(dispatch, message, false);
+                  return { ok: false, started: [], lastCheck: message, state: 'open' as const };
+                })
+                .finally(() => dispatch({ type: 'pending-clear', key }));
+            }}
           />
         ) : null}
 
@@ -766,8 +824,8 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
                   onCommand={onCommand}
                   onOpenCost={(id) => dispatch({ type: 'sheet', sheet: { type: 'cost', id } })}
                   onOpenSandbox={(id) => dispatch({ type: 'sheet', sheet: { type: 'sandbox', id } })}
-                  onSendLane={(id, textMsg) => runAction(() => api.sendToRun(id, textMsg))}
-                  onAmendLane={(id, textMsg) => runAction(() => api.amendRun(id, textMsg))}
+                  onSendLane={(id, textMsg) => runAction(`send:${id}`, 'Sending…', () => api.sendToRun(id, textMsg))}
+                  onAmendLane={(id, textMsg) => runAction(`amend:${id}`, 'Amending…', () => api.amendRun(id, textMsg))}
                   onOpenJournal={onOpenJournal}
                   onUndo={onUndo}
                   labelFor={labelFor}

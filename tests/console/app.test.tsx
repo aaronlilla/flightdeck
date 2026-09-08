@@ -207,7 +207,12 @@ describe('App', () => {
     // to complete its own round trip and overwrite `state.thread`.
     await new Promise((resolve) => { setTimeout(resolve, 500); });
     expect(screen.getByText('Refused')).toBeInTheDocument();
-    expect(screen.getByText('compaction has no successor worker built yet')).toBeInTheDocument();
+    // `redactErrorBody` now folds a `reason` alongside `error` into the receipt/toast
+    // text, so a 501 that carries both (as this fixture does) reads as one full
+    // sentence rather than dropping the reason on the floor. Scoped to the rail's own
+    // thread: the same text now also shows in the failure toast, a second copy on the
+    // same screen entirely by design.
+    expect(within(screen.getByTestId('rail-thread')).getByText('compaction has no successor worker built yet')).toBeInTheDocument();
     expect(tile).toHaveAttribute('data-state', 'exhausted');
   });
 });

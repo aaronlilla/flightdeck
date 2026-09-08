@@ -43,6 +43,9 @@ function lane(partial: Partial<Lane> & Pick<Lane, 'id' | 'state'>): Lane {
     blockedBy: null,
     runaway: false,
     needsAaron: null,
+    // Not alive/not checked by default -- a seed lane only reads live once a
+    // scenario says so explicitly, the same way `heart`/`verifiedAt` work above.
+    live: { alive: false, pid: null, lastEventAt: null, checkedAt: T0 },
     ...partial,
   };
   // `now` mirrors `plain` per the board-at-a-glance contract; `you` is computed off
@@ -66,6 +69,10 @@ export function seedLanes(): Lane[] {
         id: 'fd-2201', path: null, branch: 'feature/flt-201', pid: 44821, sessionId: 'sess-9f21',
         region: 'local', instanceType: 'win32/x64',
       },
+      // The board's one confirmed-live worker: a real pid the fixture's own stub
+      // liveness probe reports alive, and a recent journal event to tick the
+      // "last event Ns ago" readout down from.
+      live: { alive: true, pid: 44821, lastEventAt: now - 3_000, checkedAt: now },
     }),
     lane({
       id: 'BBZ-118', ticket: 'BBZ-118', state: 'parked', heart: false, hop: 2, hopStatus: 'blocked',
@@ -84,6 +91,9 @@ export function seedLanes(): Lane[] {
       now: 'step 2/6 · retrying a flaky build step',
       ctxTokens: 70_000, tokens: 5_500_000, tokenCap: 1_600_000, tokensPerMin: 260_000, fails: 2,
       observedAt: now - 2_000, verifiedAt: now - 2_000, since: now - 30 * 60_000, startedAt: now - 30 * 60_000,
+      // The board's stalled claim: still reading `running`, but its own worker pid
+      // is gone. Proves the board tells the two apart instead of trusting the state.
+      live: { alive: false, pid: 51_002, lastEventAt: now - 6 * 60_000, checkedAt: now },
     }),
     lane({
       id: 'FLT-199', ticket: 'FLT-199', state: 'handed-off', heart: true, hop: 3, hopStatus: 'live',

@@ -13,7 +13,7 @@ function renderBar(overrides: Partial<Parameters<typeof TopBar>[0]> = {}): void 
   render(
     <TopBar
       view="board" settingsBadge={0} reviewBadge={0} queueBadge={0} blockersBadge={0} caps={null} tokensToday={0}
-      feed={feed()} now={Date.now()} fetchLatencyMs={null} theme="thD" verbose={false}
+      feed={feed()} now={Date.now()} fetchLatencyMs={null} theme="thD" verbose={false} pending={{}} liveCount={0}
       onNav={vi.fn()} onOpenPalette={vi.fn()} onOpenCost={vi.fn()} onToggleTheme={vi.fn()} onToggleVerbose={vi.fn()}
       {...overrides}
     />,
@@ -82,5 +82,45 @@ describe('TopBar nav badges', () => {
   it('labels the Queue badge "needs attention" so it explains itself against the header count', () => {
     renderBar({ queueBadge: 8 });
     expect(screen.getByText('8')).toHaveAttribute('title', 'needs attention');
+  });
+});
+
+describe('TopBar working indicator', () => {
+  it('renders nothing when nothing is pending', () => {
+    renderBar({ pending: {} });
+    expect(screen.queryByTestId('topbar-working')).not.toBeInTheDocument();
+  });
+
+  it('shows the pending label and elapsed seconds when something is running', () => {
+    const now = Date.now();
+    renderBar({ pending: { 'recheck:x': { label: 'Re-checking…', since: now - 4_000 } }, now });
+    expect(screen.getByTestId('topbar-working')).toHaveTextContent('Re-checking…');
+    expect(screen.getByTestId('topbar-working')).toHaveTextContent('4s');
+  });
+
+  it('shows the oldest of several pending actions', () => {
+    const now = Date.now();
+    renderBar({
+      pending: {
+        'recheck:x': { label: 'Re-checking…', since: now - 2_000 },
+        'reaudit:y': { label: 'Re-audit running for AB-1', since: now - 10_000 },
+      },
+      now,
+    });
+    expect(screen.getByTestId('topbar-working')).toHaveTextContent('Re-audit running for AB-1');
+  });
+});
+
+describe('TopBar live count', () => {
+  it('shows the pulsing "N live" chip when at least one lane is alive', () => {
+    renderBar({ liveCount: 3 });
+    const chip = screen.getByTestId('topbar-live-count');
+    expect(chip).toHaveTextContent('3 live');
+    expect(chip.querySelector('.live-pulse')).not.toBeNull();
+  });
+
+  it('renders nothing when nothing on the board is alive', () => {
+    renderBar({ liveCount: 0 });
+    expect(screen.queryByTestId('topbar-live-count')).not.toBeInTheDocument();
   });
 });

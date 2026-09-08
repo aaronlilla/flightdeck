@@ -1,7 +1,7 @@
 import type { JSX } from 'react';
 
 import type { Lane } from '../../shared/console-model.js';
-import type { Filter, Sort, TipSpec } from '../store.js';
+import type { Filter, Sort, State, TipSpec } from '../store.js';
 import { LaneGroupTile } from './LaneGroupTile.js';
 import { groupLanesByTicket } from '../laneVM.js';
 
@@ -49,6 +49,9 @@ export interface LanesGridProps {
   feedLive: boolean;
   now: number;
   showProbes: boolean;
+  /** Every action currently in flight, keyed `${cmd}:${id}` -- lets a tile's own CTA
+   *  render busy without giving `LaneTile` any `api.*` call of its own. */
+  pending?: State['pending'];
   onOpen: (id: string) => void;
   onOpenCost: (id: string) => void;
   onCommand: (id: string, cmd: string) => void;
@@ -56,7 +59,7 @@ export interface LanesGridProps {
 }
 
 export function LanesGrid(props: LanesGridProps): JSX.Element {
-  const { lanes, filter, sort, feedLive, now, showProbes, onOpen, onOpenCost, onCommand, onTip } = props;
+  const { lanes, filter, sort, feedLive, now, showProbes, pending = {}, onOpen, onOpenCost, onCommand, onTip } = props;
   const shown = visibleLanes(lanes, filter, sort, now, showProbes);
   const groups = groupLanesByTicket(shown);
   return (
@@ -72,7 +75,7 @@ export function LanesGrid(props: LanesGridProps): JSX.Element {
       }}
     >
       {groups.map((group) => (
-        <LaneGroupTile key={group.key} group={group} feedLive={feedLive} now={now} onOpen={onOpen} onOpenCost={onOpenCost} onCommand={onCommand} onTip={onTip} />
+        <LaneGroupTile key={group.key} group={group} feedLive={feedLive} now={now} pending={pending} onOpen={onOpen} onOpenCost={onOpenCost} onCommand={onCommand} onTip={onTip} />
       ))}
       {groups.length === 0 ? (
         <div className="m" style={{ fontSize: 12, color: 'var(--ink3)', padding: 40, gridColumn: '1/-1', textAlign: 'center' }}>

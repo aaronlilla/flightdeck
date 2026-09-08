@@ -26,6 +26,12 @@ contextBridge.exposeInMainWorld('statusBridge', {
     ipcRenderer.on('queue-state', (_event, queueOn: boolean) => handler(queueOn));
   },
   pickFolder: () => ipcRenderer.send('pick-folder'),
+  // A bring-up attempt (first launch or a watchdog revive) did not get the
+  // console to answer -- show the Retry button.
+  onReviveFailed: (handler: () => void) => {
+    ipcRenderer.on('revive-failed', () => handler());
+  },
+  retryConsole: () => ipcRenderer.send('retry-console'),
 });
 
 contextBridge.exposeInMainWorld('settingsBridge', {

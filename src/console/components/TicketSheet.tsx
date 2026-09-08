@@ -2,10 +2,14 @@ import type { JSX, RefObject } from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import * as api from '../api.js';
+import { errorText, showToast, useAction } from '../actions.js';
 import { HOP_NAMES } from '../../shared/console-model.js';
 import { actionable } from '../keyboard-actionable.js';
 import { costClass, ctxPercent, kindLabel, laneCta, laneHeadline, stateOf } from '../laneVM.js';
 import { computeFreshness, freshnessClass, freshnessStamp, hm } from '../freshness.js';
+import { useStore } from '../store.js';
+import type { Action } from '../store.js';
+import type { Dispatch } from 'react';
 import { MessageCard } from './ConductorRail.js';
 import { Linkify } from './Linkify.js';
 import type { JournalNarrativeEntry, Lane, LaneStory, LaneSummary, Message } from '../../shared/console-model.js';
@@ -58,6 +62,60 @@ interface HopStyle {
   labelColor: string;
   badge: string;
   anim: string;
+}
+
+/** Callback registry, keyed by lane id, so a reaudit poll started from one mounted
+ *  sheet keeps updating that sheet's own `summary` state live -- and, if the sheet
+ *  is closed and reopened on the same lane mid-poll, the newly mounted sheet picks
+ *  the live updates back up. The poll itself (module-level, in `pollReaudit` below)
+ *  survives a sheet close either way: this registry only affects what redraws
+ *  cosmetically while something is mounted to redraw, never whether the poll runs. */
+const reauditSummarySubscribers = new Map<string, (summary: LaneSummary) => void>();
+
+/** One timeout handle per lane currently being re-audited, so navigating away and
+ *  back to the same lane's sheet never starts a second, competing poll loop. */
+const reauditTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+/** Polls `getRunSummary` every 3s until the audit's own head no longer trails the
+ *  PR's current one (`readiness.headMoved` false once a fresh attestation lands).
+ *  Runs at module scope, independent of any mounted `TicketSheet` -- started by
+ *  `startReaudit` and outliving a sheet close, so the top bar keeps showing
+ *  progress and the operator gets the final toast even if they closed the sheet. */
+function pollReaudit(id: string, dispatch: Dispatch<Action>, displayName: string): void {
+  const key = `reaudit:${id}`;
+  api.getRunSummary(id).then((next) => {
+    reauditSummarySubscribers.get(id)?.(next);
+    if (next.audit && next.readiness && !next.readiness.headMoved) {
+      reauditTimers.delete(id);
+      dispatch({ type: 'pending-clear', key });
+      showToast(dispatch, `Re-audit finished for ${displayName}: ${next.audit.verdict}`, true);
+      return;
+    }
+    reauditTimers.set(id, setTimeout(() => pollReaudit(id, dispatch, displayName), 3_000));
+  }).catch((caught: unknown) => {
+    reauditTimers.delete(id);
+    dispatch({ type: 'pending-clear', key });
+    showToast(dispatch, errorText(caught), false);
+  });
+}
+
+/** Kicks off a reaudit: marks `reaudit:<id>` busy in the store immediately (so the
+ *  button and the top bar both pick it up on the very next render), then starts the
+ *  poll above once the server confirms the round actually started. */
+function startReaudit(id: string, dispatch: Dispatch<Action>, displayName: string): void {
+  const key = `reaudit:${id}`;
+  dispatch({ type: 'pending-set', key, label: `Re-audit running for ${displayName}` });
+  api.reauditRun(id).then((result) => {
+    if (!result.started) {
+      dispatch({ type: 'pending-clear', key });
+      showToast(dispatch, 're-audit did not start', false);
+      return;
+    }
+    reauditTimers.set(id, setTimeout(() => pollReaudit(id, dispatch, displayName), 3_000));
+  }).catch((caught: unknown) => {
+    dispatch({ type: 'pending-clear', key });
+    showToast(dispatch, errorText(caught), false);
+  });
 }
 
 /** One entry per hop state, matching the prototype's own `HS` table (`hops()`,
@@ -160,11 +218,12 @@ function StoryPanel({ story, repo }: { story: LaneStory | null; repo?: string | 
  *  either fact somewhere else on the sheet. Renders nothing (rather than a loading
  *  placeholder) until the first fetch lands, matching `StoryPanel`'s own convention. */
 function SummaryPanel({
-  summary, loadFailed, onRecheck, onReaudit, reauditRunning, auditRef, highlightAudit, repo,
+  summary, loadFailed, onRecheck, recheckBusy, onReaudit, reauditRunning, auditRef, highlightAudit, repo,
 }: {
   summary: LaneSummary | null;
   loadFailed?: boolean;
   onRecheck: () => void;
+  recheckBusy: boolean;
   onReaudit: () => void;
   reauditRunning: boolean;
   auditRef?: RefObject<HTMLDivElement | null>;
@@ -236,12 +295,20 @@ function SummaryPanel({
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <span className="m" data-testid="ticket-sheet-next" style={{ fontSize: '11.5px', fontWeight: 700, color: 'var(--ink)' }}><Linkify text={summary.next} repo={repo} /></span>
           <span style={{ flex: 1 }} />
-          <span className="btnS" style={{ padding: '6px 10px', fontSize: '9.5px' }} {...actionable(onRecheck)}>Re-check</span>
           <span
-            className="btnS"
-            style={{ padding: '6px 10px', fontSize: '9.5px', opacity: reauditRunning ? 0.5 : 1, cursor: reauditRunning ? 'default' : 'pointer' }}
+            className="btnS" aria-busy={recheckBusy ? 'true' : undefined} data-busy={recheckBusy ? '1' : undefined}
+            style={{ padding: '6px 10px', fontSize: '9.5px', opacity: recheckBusy ? 0.7 : 1, cursor: recheckBusy ? 'default' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+            {...actionable(recheckBusy ? () => undefined : onRecheck)}
+          >
+            {recheckBusy ? <span className="fdSpinner" aria-hidden="true" /> : null}
+            {recheckBusy ? 'Re-checking…' : 'Re-check'}
+          </span>
+          <span
+            className="btnS" aria-busy={reauditRunning ? 'true' : undefined} data-busy={reauditRunning ? '1' : undefined}
+            style={{ padding: '6px 10px', fontSize: '9.5px', opacity: reauditRunning ? 0.7 : 1, cursor: reauditRunning ? 'default' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}
             {...actionable(reauditRunning ? () => undefined : onReaudit)}
           >
+            {reauditRunning ? <span className="fdSpinner" aria-hidden="true" /> : null}
             {reauditRunning ? 'Re-auditing…' : 'Re-audit'}
           </span>
         </div>
@@ -273,13 +340,21 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
   const [story, setStory] = useState<LaneStory | null>(null);
   const [summary, setSummary] = useState<LaneSummary | null>(null);
   const [summaryLoadFailed, setSummaryLoadFailed] = useState(false);
-  const [reauditRunning, setReauditRunning] = useState(false);
   const [draft, setDraft] = useState('');
   const [highlightAudit, setHighlightAudit] = useState(false);
   const [idCopied, setIdCopied] = useState(false);
   const reauditPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const auditRef = useRef<HTMLDivElement | null>(null);
   const threadRef = useRef<HTMLDivElement | null>(null);
+  const { state: storeState, dispatch: storeDispatch } = useStore();
+  // A dedicated store key per lane rather than local state: the reaudit poll keeps
+  // running (and the top bar keeps showing it) even after this sheet is closed and
+  // its own component instance unmounts.
+  const reauditKey = `reaudit:${lane.id}`;
+  const reauditRunning = reauditKey in storeState.pending;
+  // A person's name for the top bar's "Re-audit running for ..." line -- the ticket
+  // key, else the title, never the raw generated lane id.
+  const displayName = lane.ticket ?? lane.title ?? 'this run';
 
   // Sweep #8: "View council" must land on the council content it promised, not just
   // the sheet in general. Fires once summary data actually exists to scroll to.
@@ -299,41 +374,32 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
     setSummaryLoadFailed(false);
     api.getRunSummary(lane.id).then((r) => { if (active) setSummary(r); })
       .catch(() => { if (active) setSummaryLoadFailed(true); });
-    setReauditRunning(false);
-    return () => {
-      active = false;
-      if (reauditPollRef.current) clearTimeout(reauditPollRef.current);
-    };
+    return () => { active = false; };
     // The rail and the sheet both refetch on the same switch (item 1): opening the
     // sheet with verbose already on asks for raw rows from the start, and flipping
     // it while the sheet is open refetches the thread and the story in place.
   }, [lane.id, verbose]);
 
-  const handleRecheck = useCallback(() => {
-    api.recheckRun(lane.id).then(setSummary).catch(() => undefined);
+  // Keeps this sheet's own `summary` live while a reaudit it (or an earlier, now
+  // closed, instance of this same sheet) started is still polling -- see
+  // `reauditSummarySubscribers` above. Registered for the lifetime of the sheet
+  // rather than only while `reauditRunning` is true, so a poll that starts a beat
+  // after mount is never missed.
+  useEffect(() => {
+    reauditSummarySubscribers.set(lane.id, setSummary);
+    return () => { reauditSummarySubscribers.delete(lane.id); };
   }, [lane.id]);
 
-  // Polls the summary until the audit's own head no longer trails the PR's current one
-  // (`readiness.headMoved` false once a fresh attestation lands), so the button stays
-  // disabled for exactly as long as the round actually takes rather than a guessed delay.
-  const pollAfterReaudit = useCallback((id: string) => {
-    api.getRunSummary(id).then((next) => {
-      setSummary(next);
-      if (next.audit && next.readiness && !next.readiness.headMoved) {
-        setReauditRunning(false);
-        return;
-      }
-      reauditPollRef.current = setTimeout(() => pollAfterReaudit(id), 3_000);
-    }).catch(() => setReauditRunning(false));
-  }, []);
+  const recheckAction = useAction(
+    `recheck:${lane.id}`,
+    () => api.recheckRun(lane.id).then((r) => { setSummary(r); return r; }),
+    { busy: 'Re-checking…', done: 'Re-checked.' },
+  );
+  const handleRecheck = recheckAction.run;
 
   const handleReaudit = useCallback(() => {
-    setReauditRunning(true);
-    api.reauditRun(lane.id).then((result) => {
-      if (!result.started) { setReauditRunning(false); return; }
-      reauditPollRef.current = setTimeout(() => pollAfterReaudit(lane.id), 3_000);
-    }).catch(() => setReauditRunning(false));
-  }, [lane.id, pollAfterReaudit]);
+    startReaudit(lane.id, storeDispatch, displayName);
+  }, [lane.id, storeDispatch, displayName]);
 
   // A send lands on the run's own thread server-side, but the thread above was fetched
   // once on open and never polls -- without this, the message the operator just typed
@@ -477,7 +543,8 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
         </div>
       ) : null}
       <SummaryPanel
-        summary={summary} loadFailed={summaryLoadFailed} onRecheck={handleRecheck} onReaudit={handleReaudit} reauditRunning={reauditRunning}
+        summary={summary} loadFailed={summaryLoadFailed} onRecheck={handleRecheck} recheckBusy={recheckAction.busy}
+        onReaudit={handleReaudit} reauditRunning={reauditRunning}
         auditRef={auditRef} highlightAudit={highlightAudit} repo={lane.repo}
       />
       <div style={{ padding: '20px 22px', borderBottom: '1px solid var(--line)' }}>

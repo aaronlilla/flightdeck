@@ -4,7 +4,7 @@ import { useLayoutEffect, useRef } from 'react';
 import { hm } from '../freshness.js';
 import type { Caps, Feed } from '../../shared/console-model.js';
 import { fmtTokens } from '../../shared/format-tokens.js';
-import type { View } from '../store.js';
+import type { State, View } from '../store.js';
 
 import lockup from '../../../brand/flightdeck-lockup-h96.png';
 
@@ -24,6 +24,13 @@ export interface TopBarProps {
   /** 2026-09-08: plain by default -- every route answers human sentences with the
    *  machine ids stripped. This chip is the one switch back to the raw rows. */
   verbose: boolean;
+  /** Every action currently in flight, keyed the same way `useAction` keys it.
+   *  Empty when nothing is running -- the "Working: ..." line renders nothing then. */
+  pending: State['pending'];
+  /** How many lanes on the board have a worker answering right now
+   *  (`Lane.live.alive`). The pulsing "N live" chip hides entirely at 0, the same
+   *  instant the last worker's process actually stops. */
+  liveCount: number;
   onNav: (view: View) => void;
   onOpenPalette: () => void;
   onOpenCost: () => void;
@@ -35,8 +42,13 @@ export interface TopBarProps {
 export function TopBar(props: TopBarProps): JSX.Element {
   const {
     view, settingsBadge, reviewBadge, queueBadge, blockersBadge, caps, tokensToday, feed, now, fetchLatencyMs, theme,
-    verbose, onNav, onOpenPalette, onOpenCost, onToggleTheme, onToggleVerbose,
+    verbose, pending, liveCount, onNav, onOpenPalette, onOpenCost, onToggleTheme, onToggleVerbose,
   } = props;
+  // More than one action can be in flight at once (a run action plus a background
+  // reaudit poll, say) -- the oldest one is shown, on the theory that whatever has
+  // been running longest is the one worth knowing about.
+  const oldestPending = Object.values(pending).sort((a, b) => a.since - b.since)[0] ?? null;
+  const workingSeconds = oldestPending ? Math.max(0, Math.round((now - oldestPending.since) / 1000)) : 0;
   const overDaily = caps ? tokensToday > caps.dailyTokens : false;
   // Latency prefers the age of the last heartbeat round trip; before one arrives (or once
   // the feed is driven by polling alone) it falls back to the last `/lanes` fetch duration.
@@ -80,6 +92,21 @@ export function TopBar(props: TopBarProps): JSX.Element {
         </a>
       </div>
       <span style={{ flex: 1 }} />
+      {liveCount > 0 ? (
+        <span
+          data-testid="topbar-live-count" className="m"
+          style={{ fontSize: '10.5px', color: 'var(--run)', display: 'flex', alignItems: 'center', gap: 6 }}
+        >
+          <span className="live-pulse" aria-hidden="true" />
+          {liveCount} live
+        </span>
+      ) : null}
+      {oldestPending ? (
+        <span data-testid="topbar-working" className="m" style={{ fontSize: '10.5px', color: 'var(--ink2)', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span className="fdSpinner" aria-hidden="true" />
+          Working: {oldestPending.label} · {workingSeconds}s
+        </span>
+      ) : null}
       <span className="m" style={{ fontSize: '10.5px', color: 'var(--ink3)', border: '1px solid var(--line2)', borderRadius: 3, padding: '4px 10px', cursor: 'pointer' }} onClick={onOpenPalette}>
         ⌘K jump
       </span>

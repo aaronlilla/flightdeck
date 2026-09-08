@@ -151,6 +151,24 @@ export interface LaneQuestion {
   askedAt: number;
 }
 
+/**
+ * Whether a lane's own worker is actually there right now, as distinct from `state`
+ * (a claim folded from the journal, owned by the warden). `alive` is true only when the
+ * registry's own pid for this run both exists and answers a live-process probe this
+ * instant -- a `running` lane whose worker already died reads `state: 'running'`,
+ * `live.alive: false`, and the board renders that as a stalled claim rather than as
+ * live work. `lastEventAt` is the newest journal event across this run and any run
+ * sharing its handoff-attempt base (`queue-BBZ-182` and `queue-BBZ-182-2` are the same
+ * lane's two attempts); `checkedAt` is when the server actually ran this check, so a
+ * client can age it the same way it ages every other observed value.
+ */
+export interface LaneLive {
+  alive: boolean;
+  pid: number | null;
+  lastEventAt: number | null;
+  checkedAt: number;
+}
+
 export interface LaneSandbox {
   id: string;
   path: string | null;
@@ -246,6 +264,9 @@ export interface Lane {
   did: string | null;
   now: string;
   you: string | null;
+  /** Whether this lane's own worker is alive right now, checked fresh every 2s
+   *  (`ForgeServer`'s liveness ticker) as well as on every `GET /lanes` read. */
+  live: LaneLive;
 }
 
 /** Where a lane came from: a queued Jira ticket, a typed hotfix, a pasted brief, a
