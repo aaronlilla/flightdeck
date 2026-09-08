@@ -43,11 +43,18 @@ export interface SelfEnqueueDeps {
   append(event: Record<string, unknown>): { id: string };
 }
 
+function capitalizeFirst(text: string): string {
+  return text ? text.charAt(0).toUpperCase() + text.slice(1) : text;
+}
+
+/** Deliverable 2: the heading is the finding's own summary sentence, capitalised --
+ *  what a person needs to recognise the lane -- with the finding's kind on its own line
+ *  below rather than buried in the heading itself. */
 function briefText(finding: SelfFinding): string {
   return [
-    `# Self finding: ${finding.kind}`,
+    `# ${capitalizeFirst(finding.summary.trim())}`,
     '',
-    finding.summary,
+    `Kind: ${finding.kind}`,
     '',
     '## Evidence',
     '',

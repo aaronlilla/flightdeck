@@ -595,6 +595,35 @@ describe('titleFromHeading', () => {
     expect(titleFromHeading('# Goal - fix the withdrawal fee\n', null)).toBe('fix the withdrawal fee');
     expect(titleFromHeading('# goal:   tidy the queue worker\n', null)).toBe('tidy the queue worker');
   });
+
+  it('falls back to the brief\'s own first paragraph when the heading is a bare kind slug (deliverable 2)', () => {
+    const brief = [
+      '# Self finding: health-repeat',
+      '',
+      'the warden has reported "stale-session" 1073 times',
+      '',
+      '## Evidence',
+      '',
+      '- a line',
+    ].join('\n');
+    expect(titleFromHeading(brief, null)).toBe('The warden has reported "stale-session" 1073 times');
+  });
+
+  it('recognises every observed bare kind slug, not only health-repeat', () => {
+    expect(titleFromHeading('# Self finding: repeated-work\n\nthe same plan ran three times', null))
+      .toBe('The same plan ran three times');
+    expect(titleFromHeading('# Self finding: token-outlier\n\none run spent far more than the rest', null))
+      .toBe('One run spent far more than the rest');
+  });
+
+  it('trims a long fallback paragraph to 120 characters at a word boundary', () => {
+    const long = 'a '.repeat(80).trim();
+    const brief = `# Self finding: health-repeat\n\n${long}\n`;
+    const title = titleFromHeading(brief, null);
+    expect(title).not.toBeNull();
+    expect(title!.length).toBeLessThanOrEqual(120);
+    expect(title!.endsWith(' ')).toBe(false);
+  });
 });
 
 describe('titleFor', () => {

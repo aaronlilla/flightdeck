@@ -52,9 +52,19 @@ describe('enqueueFindings', () => {
   it('writes a brief that carries the evidence and a failing-test-first DoD', () => {
     const items = enqueueFindings([finding('f1', 'fix the thing')], deps);
     const text = readFileSync(items[0]!.briefPath!, 'utf8');
-    expect(text).toContain('fix the thing');
+    expect(text.toLowerCase()).toContain('fix the thing');
     expect(text).toContain('evidence for f1');
     expect(text.toLowerCase()).toContain('failing test');
+  });
+
+  it('deliverable 2: the heading is the finding\'s own summary, capitalised, with the kind on its own line', () => {
+    const items = enqueueFindings([finding('f1', 'the warden has reported "stale-session" 1073 times')], deps);
+    const text = readFileSync(items[0]!.briefPath!, 'utf8');
+    const lines = text.split('\n');
+    expect(lines[0]).toBe('# The warden has reported "stale-session" 1073 times');
+    expect(lines).toContain('Kind: gotcha-fix-lane');
+    expect(text).toContain('## Evidence');
+    expect(text).toContain('## Definition of done');
   });
 
   it('journals self.finding and self.enqueued for a new finding', () => {

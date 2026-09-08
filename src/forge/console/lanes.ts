@@ -85,6 +85,38 @@ export function modelAlias(modelId: string | null | undefined): string {
  *  states, in a person's own words, what the lane is for. `null` for a brief with no
  *  top-level heading at all, or one that is nothing but the prefix once it is stripped --
  *  never the run id, and never the raw unstripped line. */
+/** A bare kind slug (`health-repeat`, `repeated-work`, `token-outlier`) with nothing
+ *  else in it -- what a self finding's own heading used to be before deliverable 2, and
+ *  what an already-written brief on disk still carries. Never a real title on its own. */
+const BARE_KIND_SLUG = /^[a-z]+(-[a-z]+)*$/;
+
+function truncateAtWordBoundary(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+  const cut = text.slice(0, limit);
+  const lastSpace = cut.lastIndexOf(' ');
+  return (lastSpace > 0 ? cut.slice(0, lastSpace) : cut).trim();
+}
+
+function capitalizeFirst(text: string): string {
+  return text ? text.charAt(0).toUpperCase() + text.slice(1) : text;
+}
+
+/** The brief's first non-empty line that is not itself a heading, after its own top
+ *  heading -- a self finding's summary sentence, on an already-written brief whose
+ *  heading is nothing but the finding's bare kind. Trimmed to 120 characters at a word
+ *  boundary and capitalised, so it reads as a title rather than a quoted line. */
+function firstBodyParagraph(brief: string): string | null {
+  const lines = brief.split(/\r?\n/);
+  const headingIndex = lines.findIndex((line) => /^#[ \t]+/.test(line));
+  const rest = headingIndex >= 0 ? lines.slice(headingIndex + 1) : lines;
+  for (const rawLine of rest) {
+    const line = rawLine.trim();
+    if (!line || /^#{1,6}\s/.test(line)) continue;
+    return capitalizeFirst(truncateAtWordBoundary(line, 120));
+  }
+  return null;
+}
+
 export function titleFromHeading(brief: string, ticket: string | null): string | null {
   const match = /^#[ \t]+(.+)$/m.exec(brief);
   if (!match) return null;
@@ -96,7 +128,9 @@ export function titleFromHeading(brief: string, ticket: string | null): string |
     text = text.replace(new RegExp(`^${escaped}\\s*:?\\s*`, 'i'), '');
   }
   text = text.trim();
-  return text || null;
+  if (!text) return null;
+  if (BARE_KIND_SLUG.test(text)) return firstBodyParagraph(brief);
+  return text;
 }
 
 export interface TitleInput {
