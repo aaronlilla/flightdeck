@@ -19,9 +19,10 @@ import { watchedProcesses } from '../fleetwatch.js';
 import type { FleetProcess } from '../liveness.js';
 import { fleetConfigDir } from '../paths.js';
 import { appendOnce } from '../journal.js';
+import { claudeMcpList, type McpRow } from './mcp-runner.js';
 import { consoleDir, recordAction, type ActionsLedger } from './actions-ledger.js';
 import type {
-  Integration, IntegrationsResponse, IntegrationStatus, LanesResponse, ReconnectResponse,
+  Integration, IntegrationsResponse, IntegrationStatus, LanesResponse, McpConnState, ReconnectResponse,
 } from '../../shared/console-model.js';
 
 export function integrationsConfigPath(): string {
@@ -43,6 +44,9 @@ export interface ProbeResult {
    *  name or a Jira site, never a name written into source. Undefined for a probe with
    *  no scope of its own; a down integration with none isn't missing anything. */
   scope?: string;
+  /** The real MCP connection state this probe found, for an `mcp`-kind row only.
+   *  Undefined for every `conn`-kind probe, which has no such state to report. */
+  mcpState?: McpConnState;
 }
 
 /** The `{ok, detail}` shape a boolean-probe body returns to `timed`, which turns it into
@@ -51,6 +55,7 @@ interface ProbeOutcome {
   ok: boolean;
   detail?: string;
   scope?: string;
+  mcpState?: McpConnState;
 }
 
 export type Probe = () => Promise<ProbeResult>;
@@ -77,6 +82,7 @@ async function timed(fn: () => Promise<ProbeOutcome>, spawnFn?: RunRequest['spaw
       status: outcome.ok ? 'ok' : 'off', latencyMs: outcome.ok ? Date.now() - started : null,
       ...(outcome.detail !== undefined ? { detail: outcome.detail } : {}),
       ...(outcome.scope !== undefined ? { scope: outcome.scope } : {}),
+      ...(outcome.mcpState !== undefined ? { mcpState: outcome.mcpState } : {}),
     };
   } catch (error) {
     return { status: 'off', latencyMs: null, detail: error instanceof Error ? error.message : 'probe threw' };
@@ -220,41 +226,73 @@ export function stdioMcpProbe(command: string, spawnFn?: RunRequest['spawnFn']):
   };
 }
 
-function mcpProbes(spawnFn?: RunRequest['spawnFn']): Record<string, { decl: IntegrationDecl; probe: Probe }> {
-  const claudeJson = join(process.env['USERPROFILE'] ?? process.env['HOME'] ?? '.', '.claude.json');
+/** The set of MCP server names/targets to declare rows for, read once from the fleet's
+ *  own config dir's `.claude.json` (never the interactive account's, never
+ *  `.credentials.json`) -- the server *list* only. The live status for each declared
+ *  row comes from `claudeMcpList` (a real `claude mcp list`/`get` call) inside the
+ *  probe below, not from this enumeration. */
+function mcpServerSpecs(): Record<string, { url?: string; command?: string }> {
+  const configDir = fleetConfigDir(existsSync);
+  const claudeJson = join(configDir, '.claude.json');
   if (!existsSync(claudeJson)) return {};
-  let servers: Record<string, { url?: string; command?: string }> = {};
   try {
     const parsed = JSON.parse(readFileSync(claudeJson, 'utf8')) as {
       mcpServers?: Record<string, { url?: string; command?: string }>;
     };
-    servers = parsed.mcpServers ?? {};
+    return parsed.mcpServers ?? {};
   } catch {
     return {};
   }
+}
+
+/** Maps a `claudeMcpList` row's real connection state onto the console's existing
+ *  (pre-widen) `IntegrationStatus` union: `connected` reads `ok`, everything else --
+ *  needing login, pending approval, a real failure, or genuinely unknown -- reads
+ *  `off` with the CLI's own status text carried in `detail`, matching how this probe
+ *  already treated any non-`ok` MCP result before this change. W2 widens
+ *  `IntegrationStatus` itself so these states stop being collapsed into `off`. */
+function mcpConnStateDetail(name: string, row: McpRow | undefined): { ok: boolean; detail?: string } {
+  if (!row) return { ok: false, detail: `${name} is not in claude mcp list's own server table` };
+  if (row.state === 'connected') return { ok: true };
+  const label = row.state === 'needs-login' ? 'needs authentication'
+    : row.state === 'pending-approval' ? 'pending approval'
+    : row.state === 'failed' ? (row.lastError ?? 'failed')
+    : 'connection state unknown';
+  return { ok: false, detail: label };
+}
+
+function mcpProbes(spawnFn?: RunRequest['spawnFn']): Record<string, { decl: IntegrationDecl; probe: Probe }> {
+  const servers = mcpServerSpecs();
   const out: Record<string, { decl: IntegrationDecl; probe: Probe }> = {};
   for (const [name, spec] of Object.entries(servers)) {
     const id = `mcp-${name}`;
-    if (spec.url) {
-      out[id] = {
-        decl: { id, kind: 'mcp', name, desc: `MCP server ${name}`, reconnectLabel: null },
-        probe: () => timed(async () => {
-          try {
-            const response = await fetch(spec.url!);
-            return { ok: response.ok, detail: response.ok ? undefined : `${spec.url} returned ${response.status}` };
-          } catch (error) {
-            return { ok: false, detail: error instanceof Error ? error.message : `could not reach ${spec.url}` };
+    const desc = spec.url ? `MCP server ${name}` : `stdio · ${spec.command ?? name}`;
+    out[id] = {
+      decl: { id, kind: 'mcp', name, desc, reconnectLabel: null },
+      probe: () => timed(async () => {
+        const result = await claudeMcpList({ spawnFn });
+        if (!result.ok) {
+          // `claude` unresolvable and the fallback file read also failed/missing: fall
+          // back further to the old PATH/URL checks so a row still reports something
+          // real rather than a blanket "down" the moment the CLI itself is unavailable.
+          if (spec.command) {
+            const found = await commandOnPath(spec.command, spawnFn);
+            return { ok: found, detail: found ? undefined : 'stdio · command not on PATH' };
           }
-        }),
-      };
-      continue;
-    }
-    if (spec.command) {
-      out[id] = {
-        decl: { id, kind: 'mcp', name, desc: `stdio · ${spec.command}`, reconnectLabel: null },
-        probe: stdioMcpProbe(spec.command, spawnFn),
-      };
-    }
+          if (spec.url) {
+            try {
+              const response = await fetch(spec.url);
+              return { ok: response.ok, detail: response.ok ? undefined : `${spec.url} returned ${response.status}` };
+            } catch (error) {
+              return { ok: false, detail: error instanceof Error ? error.message : `could not reach ${spec.url}` };
+            }
+          }
+          return { ok: false, detail: 'claude mcp list unavailable and no fallback server list' };
+        }
+        const row = result.rows.find((r) => r.name === name);
+        return mcpConnStateDetail(name, row);
+      }),
+    };
   }
   return out;
 }
