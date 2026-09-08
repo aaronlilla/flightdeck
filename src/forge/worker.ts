@@ -185,6 +185,12 @@ export interface WorkerConfig {
    *  in-memory and per-process -- a pause never crosses a `forge run` process boundary,
    *  which is this wiring's own named limitation. */
   windowGate?: WindowGate;
+  /** 2026-09-08: set by `cli.ts`'s `--goal` -- a session that ends with no `forge_done`
+   *  is this loop's ordinary shape (the `/goal` command's own Haiku evaluator, not this
+   *  worker, decided the session was done), so the no-`## Verification`-block path
+   *  earns `done` instead of `unverified` when this is set. Exhausted, parked and
+   *  stopped are unaffected -- only the "nothing to verify" shape changes meaning. */
+  goalLoop?: boolean;
 }
 
 export interface WorkerResult {
@@ -645,6 +651,14 @@ export class Worker {
     const commands = verificationCommands(this.config.brief);
     if (!commands) {
       clearParkRecord(runName);
+      if (this.config.goalLoop) {
+        const lastText = session.turns[session.turns.length - 1]?.text;
+        journal.append({
+          event: 'run.finished', run: runName, actor: 'runner', verdict: 'done', goalLoop: true,
+          ...(lastText ? { lastText: lastText.slice(0, 160) } : {}),
+        });
+        return 'done';
+      }
       journal.append({ event: 'run.finished', run: runName, actor: 'runner', verdict: 'unverified' });
       return 'unverified';
     }

@@ -314,6 +314,26 @@ describe('forge run', () => {
     expect(result.lines.join(' ')).toMatch(/CLAUDE_CONFIG_DIR=/);
   }, 20_000);
 
+  it('2026-09-08: --goal accepts the /goal condition as a bare argument and still dry-runs', async () => {
+    const goalFile = join(home, 'a-goal.md');
+    writeFileSync(goalFile, '# not read as the prompt under --goal\n', 'utf8');
+
+    const result = await forge(['run', goalFile, '/goal Work the thing to completion.', '--goal', '--dry-run']);
+
+    expect(result.code).toBe(0);
+    expect(result.lines[0]).toMatch(/pinned to forge /);
+  }, 20_000);
+
+  it('2026-09-08: --goal with no condition argument refuses before checkLaunch', async () => {
+    const goalFile = join(home, 'a-goal.md');
+    writeFileSync(goalFile, '# irrelevant\n', 'utf8');
+
+    const result = await forge(['run', goalFile, '--goal']);
+
+    expect(result.code).toBe(2);
+    expect(result.lines.join(' ')).toMatch(/--goal needs the \/goal condition/);
+  }, 20_000);
+
   it('says which config directory it chose and why', async () => {
     const brief = join(home, 'ok.md');
     writeFileSync(brief, '# Goal\n\nDo the thing.\n', 'utf8');

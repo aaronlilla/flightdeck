@@ -14,7 +14,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { chainCouncil, chainGate, chainGh, chainRebase, chainLauncher } from './chain-wire.js';
+import { chainCouncil, chainGate, chainGh, chainRebase, chainLauncher, chainLaunchGoal } from './chain-wire.js';
 import { checkoutFor, repoKindFor as repoKindForEnv, type ChainEnv } from './chain-env.js';
 import type { CliResult, ForgeDeps } from './cli.js';
 import { countAddDel, REAL_GH } from './council/gh.js';
@@ -358,6 +358,7 @@ export function buildQueueRuntimeDeps(
   return {
     planner: queuePlanner(),
     launcher: chainLauncher(chainEnv, fleetConfigDir),
+    launchGoal: chainLaunchGoal(fleetConfigDir),
     gh: chainGh(),
     rebaseOnBase: chainRebase(),
     council: chainCouncil(deps),

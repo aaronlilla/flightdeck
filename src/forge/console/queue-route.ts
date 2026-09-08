@@ -11,18 +11,20 @@
  */
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { resolve } from 'node:path';
 
 import {
-  addBacklogItems, addBriefItem, addHotfixItem, addQueryItems, addTicketItem, mergeItem, promoteItem, removeItem,
-  retryItem, type QueueMergeDeps, type QueuePromoteDeps, type QueueTicketSearch,
+  addBacklogItems, addBriefItem, addGoalItem, addHotfixItem, addQueryItems, addTicketItem, mergeItem, promoteItem,
+  removeItem, retryItem, type QueueMergeDeps, type QueuePromoteDeps, type QueueTicketSearch,
 } from '../intake/queue.js';
+import { resolveGoalBlock } from '../intake/goalFile.js';
 import { buildBacklogJql as defaultBuildBacklogJql } from '../queue-wire.js';
 import type { QueueStore } from '../intake/queueStore.js';
 import type {
   ActionResult, QueueAddRequest, QueueAddResponse, QueueResponse, QueueSource,
 } from '../../shared/console-model.js';
 
-const QUEUE_SOURCES: readonly QueueSource[] = ['ticket', 'brief', 'query', 'backlog', 'hotfix'];
+const QUEUE_SOURCES: readonly QueueSource[] = ['ticket', 'brief', 'query', 'backlog', 'hotfix', 'goal'];
 
 const ITEM_ROUTE = /^\/queue\/([^/]+)\/(remove|retry|merge|promote)$/;
 
@@ -156,6 +158,15 @@ export class QueueRoutes {
           return { ok: true, items: [addBriefItem(this.opts.store, briefTextFrom(body.input))] };
         case 'hotfix':
           return { ok: true, items: [addHotfixItem(this.opts.store, body.input)] };
+        case 'goal': {
+          const goalPath = resolve(process.cwd(), body.input.trim());
+          try {
+            const resolved = resolveGoalBlock(goalPath);
+            return { ok: true, items: [addGoalItem(this.opts.store, goalPath, resolved.block)] };
+          } catch (error) {
+            return { ok: false, items: [], error: error instanceof Error ? error.message : String(error) };
+          }
+        }
         case 'query':
           return { ok: true, items: await addQueryItems(this.opts.store, body.input, this.opts.search) };
         case 'backlog': {

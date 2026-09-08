@@ -38,7 +38,7 @@ const STATE_TAXONOMY: Record<QueueItemState, StateTaxon> = {
 };
 
 const SOURCE_LABEL: Record<QueueSource, string> = {
-  ticket: 'ticket', brief: 'brief', query: 'query', backlog: 'backlog', hotfix: 'hotfix',
+  ticket: 'ticket', brief: 'brief', query: 'query', backlog: 'backlog', hotfix: 'hotfix', goal: 'goal',
 };
 
 function QueueCard({ item, onToast }: { item: QueueItem; onToast: (outcome: ActionOutcome) => void }): JSX.Element {
@@ -151,6 +151,7 @@ const SOURCE_PLACEHOLDER: Record<QueueSource, string> = {
   query: 'sprint = 42 or "epic link" = BB-1',
   backlog: 'project = BB and status = Backlog',
   hotfix: 'what\'s broken in production right now',
+  goal: 'path to a goal brief or exported task file',
 };
 
 /** A.5: two quick-fill chips that build the query source's own JQL, rather than
@@ -193,7 +194,7 @@ function AddWork({ onToast }: { onToast: (outcome: ActionOutcome) => void }): JS
   return (
     <div className="plate" style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
       <div style={{ display: 'flex', gap: 8 }}>
-        {(['ticket', 'brief', 'query', 'backlog', 'hotfix'] as const).map((s) => (
+        {(['ticket', 'brief', 'query', 'backlog', 'hotfix', 'goal'] as const).map((s) => (
           <span key={s} className={`chip chipB ${source === s ? 'chipOn' : ''}`} {...actionable(() => setSource(s))}>
             {SOURCE_LABEL[s]}
           </span>
@@ -211,6 +212,11 @@ function AddWork({ onToast }: { onToast: (outcome: ActionOutcome) => void }): JS
       {source === 'hotfix' ? (
         <div className="m" style={{ fontSize: 10.5, color: 'var(--ink3)' }}>
           A hotfix ships to dev on Merge and to production only on a separate Promote click.
+        </div>
+      ) : null}
+      {source === 'goal' ? (
+        <div className="m" style={{ fontSize: 10.5, color: 'var(--ink3)' }}>
+          The sibling .block.txt or the goal-spec block becomes the /goal condition.
         </div>
       ) : null}
       <div style={{ background: 'var(--well)', boxShadow: 'inset 0 2px 5px rgba(0,0,0,.6)', borderRadius: 3, padding: '8px 10px', display: 'flex', gap: 8 }}>
