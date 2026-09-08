@@ -29,7 +29,7 @@ function laneStub(id: string, state: LanesResponse['lanes'][number]['state']): L
     id, ticket: null, model: 'sonnet-5', modelId: null, className: null,
     repo: null, attempt: 1, state, reason: null, stepN: 0, stepTotal: 0,
     stepText: '', ctxTokens: 0, ctxCeiling: 0, ctxCompactAt: 0, tokens: 0, tokenCap: null,
-    tokensPerMin: 0, fails: 0, hop: 'plan', hopStatus: 'live', observedAt: 5, verifiedAt: null,
+    tokensPerMin: 0, fails: 0, hop: 0, hopStatus: 'live', observedAt: 5, verifiedAt: null,
     heart: false, since: 5, startedAt: 5, endedAt: null, question: null,
     pr: null, sandbox: null, blockedBy: null, runaway: false, needsAaron: null, title: null,
     kind: 'manual', sourceUrl: null, plain: '', mergeable: null, attempts: 1, retiredAt: null,

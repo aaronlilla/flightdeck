@@ -41,7 +41,7 @@ describe('question confirmer', () => {
     const [entry] = inbox.open();
     const registry = new Registry(join(dir, 'registry'));
     const integrations = new IntegrationsRegistry({
-      journalPath: join(dir, 'fleet.jsonl'), ledger: { get: () => [] } as never, probes: {},
+      journalPath: join(dir, 'fleet.jsonl'), ledger: { get: () => [] } as never, configPath: join(dir, 'integrations.json'), probes: {},
     });
     const confirmers = buildConfirmers({ inbox, integrations, registry });
 
@@ -60,7 +60,7 @@ describe('integration confirmer', () => {
     const registry = new Registry(join(dir, 'registry'));
     let up = false;
     const integrations = new IntegrationsRegistry({
-      journalPath: join(dir, 'fleet.jsonl'), ledger: { get: () => [] } as never,
+      journalPath: join(dir, 'fleet.jsonl'), ledger: { get: () => [] } as never, configPath: join(dir, 'integrations.json'),
       probes: { github: async () => (up ? { status: 'ok', latencyMs: 5 } : { status: 'down', latencyMs: null, detail: 'still down' }) },
     });
     const confirmers = buildConfirmers({ inbox, integrations, registry });
@@ -79,7 +79,7 @@ describe('checks confirmer', () => {
     const inbox = new Inbox(join(dir, 'inbox'));
     const registry = new Registry(join(dir, 'registry'));
     const integrations = new IntegrationsRegistry({
-      journalPath: join(dir, 'fleet.jsonl'), ledger: { get: () => [] } as never, probes: {},
+      journalPath: join(dir, 'fleet.jsonl'), ledger: { get: () => [] } as never, configPath: join(dir, 'integrations.json'), probes: {},
     });
     let checks: Array<{ name: string; state: string }> = [{ name: 'build', state: 'PENDING' }];
     const confirmers = buildConfirmers({
@@ -100,7 +100,7 @@ describe('billing confirmer', () => {
     const inbox = new Inbox(join(dir, 'inbox'));
     const registry = new Registry(join(dir, 'registry'));
     const integrations = new IntegrationsRegistry({
-      journalPath: join(dir, 'fleet.jsonl'), ledger: { get: () => [] } as never, probes: {},
+      journalPath: join(dir, 'fleet.jsonl'), ledger: { get: () => [] } as never, configPath: join(dir, 'integrations.json'), probes: {},
     });
     const queueStore = new QueueStore(join(dir, 'queue.jsonl'));
     queueStore.append({
@@ -136,7 +136,7 @@ describe('owner confirmer', () => {
     const inbox = new Inbox(join(dir, 'inbox'));
     const registry = new Registry(join(dir, 'registry'));
     const integrations = new IntegrationsRegistry({
-      journalPath: join(dir, 'fleet.jsonl'), ledger: { get: () => [] } as never, probes: {},
+      journalPath: join(dir, 'fleet.jsonl'), ledger: { get: () => [] } as never, configPath: join(dir, 'integrations.json'), probes: {},
     });
     let merged: string | null = null;
     const confirmers = buildConfirmers({
@@ -157,7 +157,7 @@ describe('process confirmer', () => {
     const inbox = new Inbox(join(dir, 'inbox'));
     const registry = new Registry(join(dir, 'registry'));
     const integrations = new IntegrationsRegistry({
-      journalPath: join(dir, 'fleet.jsonl'), ledger: { get: () => [] } as never, probes: {},
+      journalPath: join(dir, 'fleet.jsonl'), ledger: { get: () => [] } as never, configPath: join(dir, 'integrations.json'), probes: {},
     });
     const confirmers = buildConfirmers({ inbox, integrations, registry });
     const blocker = blockerStub({

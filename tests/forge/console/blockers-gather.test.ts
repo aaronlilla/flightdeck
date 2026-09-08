@@ -36,7 +36,7 @@ describe('gatherBlockers', () => {
     inbox.raise({ run: 'r1', question: 'which env?', options: ['dev', 'prod'] });
     const registry = new Registry(join(dir, 'registry'));
     const integrations = new IntegrationsRegistry({
-      journalPath: join(dir, 'fleet.jsonl'), ledger: { get: () => [] } as never, probes: {},
+      journalPath: join(dir, 'fleet.jsonl'), ledger: { get: () => [] } as never, configPath: join(dir, 'integrations.json'), probes: {},
     });
 
     const gather = gatherBlockers({
@@ -52,7 +52,7 @@ describe('gatherBlockers', () => {
     const inbox = new Inbox(join(dir, 'inbox'));
     const registry = new Registry(join(dir, 'registry'));
     const integrations = new IntegrationsRegistry({
-      journalPath: join(dir, 'fleet.jsonl'), ledger: { get: () => [] } as never,
+      journalPath: join(dir, 'fleet.jsonl'), ledger: { get: () => [] } as never, configPath: join(dir, 'integrations.json'),
       probes: { github: async () => ({ status: 'down', latencyMs: null, detail: 'not authed' }) },
     });
     // `list()` answers from stored state and refreshes in the background (integrations.ts's
@@ -70,7 +70,7 @@ describe('gatherBlockers', () => {
     const inbox = new Inbox(join(dir, 'inbox'));
     const registry = new Registry(join(dir, 'registry'));
     const integrations = new IntegrationsRegistry({
-      journalPath: join(dir, 'fleet.jsonl'), ledger: { get: () => [] } as never, probes: {},
+      journalPath: join(dir, 'fleet.jsonl'), ledger: { get: () => [] } as never, configPath: join(dir, 'integrations.json'), probes: {},
     });
     const view: LanesResponse = {
       at: Date.now(), tokensToday: 0, tokensPerMin: 0,
@@ -78,7 +78,7 @@ describe('gatherBlockers', () => {
         id: 'run-1', ticket: null, model: 'sonnet-5', modelId: null, className: null,
         repo: 'o/n', attempt: 1, state: 'blocked', reason: null, stepN: 0, stepTotal: 0,
         stepText: '', ctxTokens: 0, ctxCeiling: 0, ctxCompactAt: 0, tokens: 0, tokenCap: null,
-        tokensPerMin: 0, fails: 0, hop: 'plan', hopStatus: 'live', observedAt: 5, verifiedAt: null,
+        tokensPerMin: 0, fails: 0, hop: 0, hopStatus: 'live', observedAt: 5, verifiedAt: null,
         heart: false, since: 5, startedAt: 5, endedAt: null, question: null,
         pr: { no: 12, url: 'https://github.com/o/n/pull/12', draft: false, checks: 'failure' },
         sandbox: null, blockedBy: null, runaway: false, needsAaron: null, title: 'a fix',
@@ -99,7 +99,7 @@ describe('gatherBlockers', () => {
     const registry = new Registry(join(dir, 'registry'));
     registry.admit({ goal: 'run-live', cwd: dir, briefPath: join(dir, 'b.md'), pid: process.pid });
     const integrations = new IntegrationsRegistry({
-      journalPath: join(dir, 'fleet.jsonl'), ledger: { get: () => [] } as never, probes: {},
+      journalPath: join(dir, 'fleet.jsonl'), ledger: { get: () => [] } as never, configPath: join(dir, 'integrations.json'), probes: {},
     });
     const view: LanesResponse = {
       at: Date.now(), tokensToday: 0, tokensPerMin: 0,
@@ -118,7 +118,7 @@ describe('gatherBlockers', () => {
     const inbox = new Inbox(join(dir, 'inbox'));
     const registry = new Registry(join(dir, 'registry'));
     const integrations = new IntegrationsRegistry({
-      journalPath: join(dir, 'fleet.jsonl'), ledger: { get: () => [] } as never, probes: {},
+      journalPath: join(dir, 'fleet.jsonl'), ledger: { get: () => [] } as never, configPath: join(dir, 'integrations.json'), probes: {},
     });
     const queueStore = new QueueStore(join(dir, 'queue.jsonl'));
     queueStore.append({
@@ -159,7 +159,7 @@ describe('gatherBlockers', () => {
     const inbox = new Inbox(join(dir, 'inbox'));
     const registry = new Registry(join(dir, 'registry'));
     const integrations = new IntegrationsRegistry({
-      journalPath: join(dir, 'fleet.jsonl'), ledger: { get: () => [] } as never, probes: {},
+      journalPath: join(dir, 'fleet.jsonl'), ledger: { get: () => [] } as never, configPath: join(dir, 'integrations.json'), probes: {},
     });
     const queueStore = new QueueStore(join(dir, 'queue.jsonl'));
     queueStore.append({
@@ -190,7 +190,7 @@ function laneStub(id: string): LanesResponse['lanes'][number] {
     id, ticket: null, model: 'sonnet-5', modelId: null, className: null,
     repo: null, attempt: 1, state: 'running', reason: null, stepN: 0, stepTotal: 0,
     stepText: '', ctxTokens: 0, ctxCeiling: 0, ctxCompactAt: 0, tokens: 0, tokenCap: null,
-    tokensPerMin: 0, fails: 0, hop: 'plan', hopStatus: 'live', observedAt: 5, verifiedAt: null,
+    tokensPerMin: 0, fails: 0, hop: 0, hopStatus: 'live', observedAt: 5, verifiedAt: null,
     heart: false, since: 5, startedAt: 5, endedAt: null, question: null,
     pr: null, sandbox: null, blockedBy: null, runaway: false, needsAaron: null, title: null,
     kind: 'manual', sourceUrl: null, plain: '', mergeable: null, attempts: 1, retiredAt: null,

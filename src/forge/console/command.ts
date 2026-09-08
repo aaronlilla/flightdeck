@@ -98,10 +98,18 @@ function threadPath(): string {
   return join(consoleDir(), 'thread.jsonl');
 }
 
-function appendThread(message: Message): void {
+/** Exported so `blockers-restart.ts` writes its own rail receipts to the same
+ *  `thread.jsonl` this class's own cards land in, rather than a second file. */
+export function appendThread(message: Message): void {
   const path = threadPath();
   mkdirSync(dirname(path), { recursive: true });
   appendFileSync(path, `${JSON.stringify(message)}\n`, 'utf8');
+}
+
+/** Exported for `server.ts`'s own Blockers wiring: a plain-text rail receipt, the same
+ *  shape every other console write's own confirmation card uses. */
+export function plainReceiptCard(text: string): Message {
+  return { k: randomUUID(), type: 'receipt', text, ts: Date.now(), source: 'blockers', resolved: 'ran' };
 }
 
 function receiptCard(source: string, result: ActionResult): Message {
@@ -303,6 +311,13 @@ export class ConsoleWrites {
     // under.
   }
 
+  /** The one `IntegrationsRegistry` instance this class owns, for `server.ts` to hand to
+   *  `blockers-gather.ts`/`blockers-confirm.ts` rather than constructing a second registry
+   *  over the same config file. */
+  integrationsRegistry(): IntegrationsRegistry {
+    return this.integrations;
+  }
+
   /** Starts the 10-second rule-enforcement tick. Called once by `server.ts#listen()`;
    *  a second call is a no-op. */
   start(): void {
@@ -328,7 +343,9 @@ export class ConsoleWrites {
     return this.deps.capsOverridesPath ?? capsOverridesPath(forgeHome());
   }
 
-  private runActionsDeps(): RunActionsDeps {
+  /** Public so `server.ts` can hand the same deps to `blockers-restart.ts`'s
+   *  `resumeRun` wiring, rather than this class rebuilding its own copy. */
+  runActionsDeps(): RunActionsDeps {
     return {
       ledger: this.ledger, registry: this.deps.registry, actuator: this.deps.actuator,
       journalPath: this.deps.journalPath,
