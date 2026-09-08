@@ -17,7 +17,9 @@ import type { Journal } from './journal.js';
 export function reportFleetHealth(journal: Journal, stuck: ExtendedStuckSignal[]): number {
   const trips = stuck.filter((trip) => trip.signal === 'fleet-unknown');
   for (const trip of trips) {
-    journal.append({ event: 'warden.health', actor: 'warden', signal: trip.signal, hint: trip.hint });
+    journal.append({
+      event: 'warden.health', actor: 'warden', key: trip.key, signal: trip.signal, hint: trip.hint,
+    });
   }
   return trips.length;
 }
