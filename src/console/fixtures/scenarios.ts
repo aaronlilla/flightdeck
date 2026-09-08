@@ -8,13 +8,15 @@
  * follow the same generic `FLT-`/`BBZ-` convention `lanes.ts` already uses.
  */
 import type { Integration, Lane, Message, QueueItem, Rule } from '../../shared/console-model.js';
+import { computeYou } from '../../forge/console/laneGlance.js';
 
 const T0 = Date.parse('2026-01-06T14:07:52Z');
 
 function lane(partial: Partial<Lane> & Pick<Lane, 'id' | 'state'>): Lane {
-  return {
+  const built: Lane = {
     ticket: null,
     title: null, kind: 'manual', sourceUrl: null, plain: '', mergeable: null, attempts: 1, retiredAt: null,
+    did: null, now: '', you: null,
     model: 'sonnet-5',
     modelId: 'claude-sonnet-5',
     className: 'implement',
@@ -47,6 +49,9 @@ function lane(partial: Partial<Lane> & Pick<Lane, 'id' | 'state'>): Lane {
     needsAaron: null,
     ...partial,
   };
+  if (partial.now === undefined) built.now = built.plain;
+  if (partial.you === undefined) built.you = computeYou(built);
+  return built;
 }
 
 /** Cut-line #1: an empty fleet -- no lanes, no rules, no journal, no queue. Every

@@ -230,6 +230,18 @@ export interface Lane {
   /** Set once an operator retired the lane off the default board (`POST /run/:id/retire`
    *  or the bulk retire); it stays readable under the Archived filter. */
   retiredAt: number | null;
+  /** 2026-09-08: the board-at-a-glance fields, computed in `laneGlance.ts`.
+   *  `did` is one sentence, up to 110 characters, on what the agent did: the newest
+   *  `forge.report`'s own `done` field, else the PR, else a tool digest off the run's
+   *  journal rows, else `null`. `now` is what it is doing right now, the same sentence
+   *  `plain` carries (`plain` sticks around as an alias for one release; `now` is what
+   *  the tile actually reads). `you` is what the operator needs to do, or `null` when
+   *  nothing is needed, computed by `computeYou` off the same branch table
+   *  `computeNext` in `summary.ts` builds its longer sentence from, so the two never
+   *  disagree about what to do next. */
+  did: string | null;
+  now: string;
+  you: string | null;
 }
 
 /** Where a lane came from: a queued Jira ticket, a typed hotfix, a pasted brief, a
@@ -251,6 +263,12 @@ export interface LanesResponse {
   /** Total tokens burned since local midnight, and the burn of everything running now. */
   tokensToday: number;
   tokensPerMin: number;
+  /** 2026-09-08: what `Linkify` needs to turn a Jira key or a PR mention into a link
+   *  anywhere on the board. `jiraSite` is `FORGE_JIRA_SITE`, or `null` when it is
+   *  unset. `defaultRepo` is the first repo this response's own lanes carry, or `null`
+   *  with no lane on the board naming one yet; it is what a PR mention with no repo of
+   *  its own falls back to. */
+  links: { jiraSite: string | null; defaultRepo: string | null };
 }
 
 /** `activity`: a plain-mode digest of a run's own tool calls ("Worked 16:57 to 17:04:

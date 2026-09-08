@@ -1,9 +1,16 @@
 // @vitest-environment jsdom
-import { render, screen } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { render as rtlRender, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { buildNeeds, NeedsYou } from '../../src/console/components/NeedsYou.js';
+import { StoreContext, initialState } from '../../src/console/store.js';
 import type { Integration, Lane } from '../../src/shared/console-model.js';
+
+function render(node: ReactElement): ReturnType<typeof rtlRender> {
+  const state = { ...initialState(), links: { jiraSite: null, defaultRepo: null } };
+  return rtlRender(<StoreContext.Provider value={{ state, dispatch: vi.fn() }}>{node}</StoreContext.Provider>);
+}
 
 function lane(extra: Partial<Lane> = {}): Lane {
   return {
@@ -13,7 +20,7 @@ function lane(extra: Partial<Lane> = {}): Lane {
     ctxTokens: 40_000, ctxCeiling: 200_000, ctxCompactAt: 180_000, tokens: 1, tokenCap: 10, tokensPerMin: 0,
     fails: 0, hop: 0, hopStatus: 'live', observedAt: Date.now(), verifiedAt: Date.now(), heart: true, since: Date.now(),
     startedAt: Date.now(), endedAt: null, question: { key: 'ask', text: 'NOT NULL or nullable?', opts: [], askedAt: Date.now() },
-    pr: null, sandbox: null, blockedBy: null, runaway: false, needsAaron: null,
+    pr: null, sandbox: null, blockedBy: null, runaway: false, needsAaron: null, did: null, now: '', you: null,
     ...extra,
   };
 }

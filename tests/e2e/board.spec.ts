@@ -7,15 +7,16 @@ test('the board renders all 15 lanes', async ({ page }) => {
   await expect(page.locator('[data-testid^="lane-"]')).toHaveCount(15);
 });
 
-// Final fidelity sweep #1: a lane with a ticket heads the tile with the ticket
-// alone, one line, exactly as the prototype's `{{l.id}}` -- the long run id
-// never renders as a second visible line, only as the headline's title attribute.
-test('a lane with a ticket heads the tile with the ticket alone, run id only in the title', async ({ page }) => {
+// Final fidelity sweep #1, updated 2026-09-08 for the board-at-a-glance rework: a
+// lane with a ticket heads the tile with the ticket alone in row 1 -- the long run
+// id never renders as visible text anywhere on the tile, only on the tile's own
+// `data-run-id`.
+test('a lane with a ticket heads the tile with the ticket alone, run id only in data-run-id', async ({ page }) => {
   await page.goto('/');
   const tile = page.getByTestId('lane-jira_AB-12_1788460932645');
-  const headline = tile.getByText('AB-12', { exact: true });
+  const headline = tile.getByText('AB-12', { exact: true }).first();
   await expect(headline).toBeVisible();
-  await expect(headline).toHaveAttribute('title', 'jira_AB-12_1788460932645');
+  await expect(tile).toHaveAttribute('data-run-id', 'jira_AB-12_1788460932645');
   await expect(tile.getByText('jira_AB-12_1788460932645', { exact: true })).toHaveCount(0);
 });
 

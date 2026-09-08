@@ -1,9 +1,11 @@
 import type { JSX } from 'react';
-import { useState } from 'react';
+import { useContext, useState } from 'react';
 
 import { computeFreshness, compactFreshnessStamp, freshnessClass, hm } from '../freshness.js';
 import { actionable } from '../keyboard-actionable.js';
 import { collapseWardenEvents } from '../laneVM.js';
+import { StoreContext } from '../store.js';
+import { Linkify } from './Linkify.js';
 import type { Feed, Message } from '../../shared/console-model.js';
 
 /** Chip label paired with the command it actually sends. The prototype's own
@@ -24,19 +26,33 @@ const CONDUCTOR_REPLY_SOURCES = new Set(['conductor', 'console', 'system']);
 /** A line starting with `- ` in a reply or a refusal renders as a list item,
  *  and the rest of the text keeps the server's own line breaks (`whiteSpace:
  *  'pre-wrap'`) instead of collapsing a multi-line reply onto one line. */
-function WrappedText({ text }: { text: string }): JSX.Element {
+function WrappedText({ text, repo }: { text: string; repo?: string | null }): JSX.Element {
   const lines = text.split('\n');
   const isList = lines.length > 1 && lines.some((line) => line.trimStart().startsWith('- '));
-  if (!isList) return <div data-testid="wrapped-text" style={{ whiteSpace: 'pre-wrap' }}>{text}</div>;
+  if (!isList) return <div data-testid="wrapped-text" style={{ whiteSpace: 'pre-wrap' }}><Linkify text={text} repo={repo} /></div>;
   return (
     <div data-testid="wrapped-text" style={{ whiteSpace: 'pre-wrap' }}>
       {lines.map((line, i) => (
         line.trimStart().startsWith('- ')
-          ? <div key={i} style={{ paddingLeft: 14, textIndent: -14 }}>• {line.trimStart().slice(2)}</div>
-          : <div key={i}>{line}</div>
+          ? <div key={i} style={{ paddingLeft: 14, textIndent: -14 }}>• <Linkify text={line.trimStart().slice(2)} repo={repo} /></div>
+          : <div key={i}><Linkify text={line} repo={repo} /></div>
       ))}
     </div>
   );
+}
+
+/** 2026-09-08: the rail has no lane of its own to read a repo off (a message may
+ *  belong to any lane, or none) -- this resolves `message.lane`/`message.source`
+ *  against the store's own lanes, and falls back to `links.defaultRepo`. */
+function useMessageRepo(message: Message): string | null {
+  // A card can render outside the store (a unit test, a sheet mounted on its own);
+  // then there is no lane list to search and no default repo, and the text stays plain.
+  const ctx = useContext(StoreContext);
+  if (!ctx) return null;
+  const { state } = ctx;
+  const key = message.lane ?? message.source;
+  const found = state.lanes.find((l) => l.id === key || l.ticket === key);
+  return found?.repo ?? state.links.defaultRepo;
 }
 
 /** Exported so a lane-scoped thread (the ticket sheet) can render each message
@@ -61,6 +77,7 @@ export function MessageCard({
   // ts (an "observed" reading) rather than suppressing the stamp when a seeded
   // fixture omits verifiedAt.
   const fresh = computeFreshness(message.verifiedAt ?? null, message.ts, feedLive, now);
+  const repo = useMessageRepo(message);
 
   switch (message.type) {
     // Item 7: a plain-mode digest of a run's own tool calls reads as a quiet
@@ -68,7 +85,7 @@ export function MessageCard({
     case 'activity':
       return (
         <div className="m" style={{ alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: 7, fontSize: '10.5px', color: 'var(--ink3)' }}>
-          <span>{message.text}</span>
+          <span><Linkify text={message.text} repo={repo} /></span>
           <span className={freshnessClass(fresh)}>{compactFreshnessStamp(fresh)}</span>
         </div>
       );
@@ -79,7 +96,7 @@ export function MessageCard({
             className="chip"
             style={{ borderColor: 'var(--ink2)', color: 'var(--ink2)', whiteSpace: 'normal', textTransform: 'none', letterSpacing: 'normal' }}
           >
-            {message.text}
+            <Linkify text={message.text} repo={repo} />
           </span>
           <span className={freshnessClass(fresh)}>{compactFreshnessStamp(fresh)}</span>
         </div>
@@ -87,7 +104,7 @@ export function MessageCard({
     case 'operator':
       return (
         <div style={{ alignSelf: 'flex-end', maxWidth: '82%', background: 'var(--ink)', color: 'var(--bg)', padding: '9px 13px', borderRadius: '10px 10px 3px 10px', font: '13px/1.45 "IBM Plex Sans",sans-serif' }}>
-          {message.text}
+          <Linkify text={message.text} repo={repo} />
         </div>
       );
     case 'reply': {
@@ -100,7 +117,7 @@ export function MessageCard({
         <div style={{ maxWidth: '92%' }}>
           <div className="lbl" data-testid="reply-label" style={{ color: 'var(--ink3)', marginBottom: 3 }}>{replySource}</div>
           <div style={{ borderLeft: '2px solid var(--line2)', paddingLeft: 10, font: '13px/1.5 "IBM Plex Sans",sans-serif' }}>
-            <WrappedText text={message.text} />
+            <WrappedText text={message.text} repo={repo} />
           </div>
           {message.btns && message.btns.length > 0 ? (
             <div style={{ display: 'flex', gap: 6, margin: '8px 0 0 12px', flexWrap: 'wrap' }}>
@@ -119,7 +136,7 @@ export function MessageCard({
         <div style={{ maxWidth: '88%', border: '1px dashed var(--block)', borderLeft: '3px solid var(--block)', borderRadius: 4, padding: '9px 12px' }}>
           <div className="lbl" style={{ color: 'var(--block)', marginBottom: 3 }}>Refused</div>
           <div style={{ font: '13px/1.5 "IBM Plex Sans",sans-serif', color: 'var(--ink2)' }}>
-            <WrappedText text={message.text} />
+            <WrappedText text={message.text} repo={repo} />
           </div>
         </div>
       );
@@ -164,7 +181,7 @@ export function MessageCard({
             onMouseEnter={() => { if (!verbose && message.jid) setShowTip(true); }}
             onMouseLeave={() => { if (!verbose) setShowTip(false); }}
           >
-            {message.text}
+            <Linkify text={message.text} repo={repo} />
             {!verbose ? tip : null}
           </span>
           {message.undoable && !message.undone && message.jid ? <a style={{ fontWeight: 600 }} {...actionable(() => onUndo(message.jid as string))}>undo</a> : null}
@@ -183,7 +200,7 @@ export function MessageCard({
             {message.items?.map((a, i) => (
               <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'baseline', padding: '6px 12px' }}>
                 <span className="m" style={{ fontSize: 11, fontWeight: 700, color: 'var(--ink3)' }}>{i + 1}</span>
-                <span style={{ flex: 1, font: '12.5px/1.4 "IBM Plex Sans",sans-serif' }}>{a.text}</span>
+                <span style={{ flex: 1, font: '12.5px/1.4 "IBM Plex Sans",sans-serif' }}><Linkify text={a.text} repo={repo} /></span>
                 <span
                   className="chip"
                   style={{
@@ -223,7 +240,7 @@ export function MessageCard({
             <span>{message.resolved ?? 'awaiting you'}</span>
           </div>
           <div style={{ padding: '11px 12px', font: '13px/1.5 "IBM Plex Sans",sans-serif' }}>
-            {message.text} <strong>{message.blast}</strong>
+            <Linkify text={message.text} repo={repo} /> <strong>{message.blast}</strong>
           </div>
           {!message.resolved ? (
             <div style={{ display: 'flex', gap: 10, padding: '0 12px 12px' }}>
@@ -247,10 +264,10 @@ export function MessageCard({
       return (
         <div style={{ border: '1px solid var(--hand)', borderRadius: 4, maxWidth: '94%' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 12px', borderBottom: '1px solid var(--line)' }}>
-            <span className="lbl" style={{ color: 'var(--hand)' }}>Question · from {labelFor?.(message.source) ?? message.source}</span>
+            <span className="lbl" style={{ color: 'var(--hand)' }}>Question · from <Linkify text={labelFor?.(message.source) ?? message.source} repo={repo} /></span>
             <span className={freshnessClass(fresh)}>{compactFreshnessStamp(fresh)}</span>
           </div>
-          <div style={{ padding: '10px 12px', font: '13px/1.5 "IBM Plex Sans",sans-serif' }}>{message.text}</div>
+          <div style={{ padding: '10px 12px', font: '13px/1.5 "IBM Plex Sans",sans-serif' }}><Linkify text={message.text} repo={repo} /></div>
           {message.answer === undefined ? (
             <>
               <div style={{ display: 'flex', gap: 6, padding: '0 12px 10px', flexWrap: 'wrap' }}>
@@ -286,7 +303,7 @@ export function MessageCard({
         </div>
       );
     default:
-      return <div>{message.text}</div>;
+      return <div><Linkify text={message.text} repo={repo} /></div>;
   }
 }
 

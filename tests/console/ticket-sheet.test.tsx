@@ -1,10 +1,20 @@
 // @vitest-environment jsdom
-import { render, screen, waitFor } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { render as rtlRender, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
 import { TicketSheet } from '../../src/console/components/TicketSheet.js';
+import { StoreContext, initialState } from '../../src/console/store.js';
 import type { Lane, Message } from '../../src/shared/console-model.js';
+
+// `TicketSheet` renders `Linkify` (in the summary, the story and the thread) which
+// reads `links` off the store -- every render in this file goes through a provider
+// carrying the default (no jiraSite, no defaultRepo).
+function render(node: ReactElement): ReturnType<typeof rtlRender> {
+  const state = { ...initialState(), links: { jiraSite: null, defaultRepo: null } };
+  return rtlRender(<StoreContext.Provider value={{ state, dispatch: vi.fn() }}>{node}</StoreContext.Provider>);
+}
 
 vi.mock('../../src/console/api.js', () => ({
   getRunThread: vi.fn(),
@@ -25,7 +35,7 @@ function lane(extra: Partial<Lane> = {}): Lane {
     ctxTokens: 40_000, ctxCeiling: 200_000, ctxCompactAt: 180_000, tokens: 1, tokenCap: 10, tokensPerMin: 0,
     fails: 0, hop: 0, hopStatus: 'live', observedAt: Date.now(), verifiedAt: Date.now(), heart: true, since: Date.now(),
     startedAt: Date.now(), endedAt: null, question: null, pr: null, sandbox: null, blockedBy: null, runaway: false,
-    needsAaron: null,
+    needsAaron: null, did: null, now: '', you: null,
     ...extra,
   };
 }

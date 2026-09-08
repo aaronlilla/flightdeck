@@ -1,10 +1,24 @@
 // @vitest-environment jsdom
-import { render, screen } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { render as rtlRender, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
 import { LaneTile } from '../../src/console/components/LaneTile.js';
+import { StoreContext, initialState } from '../../src/console/store.js';
 import type { Lane } from '../../src/shared/console-model.js';
+
+// `LaneTile` renders `Linkify`, which reads `links` off the store -- every render in
+// this file goes through a provider carrying the default (no jiraSite, no
+// defaultRepo), so a bare ticket key or PR mention stays plain text unless a test
+// says otherwise.
+function wrap(node: ReactElement): ReactElement {
+  const state = { ...initialState(), links: { jiraSite: null, defaultRepo: null } };
+  return <StoreContext.Provider value={{ state, dispatch: vi.fn() }}>{node}</StoreContext.Provider>;
+}
+function render(node: ReactElement): ReturnType<typeof rtlRender> {
+  return rtlRender(wrap(node));
+}
 
 function lane(extra: Partial<Lane> = {}): Lane {
   return {
@@ -14,7 +28,7 @@ function lane(extra: Partial<Lane> = {}): Lane {
     ctxTokens: 40_000, ctxCeiling: 200_000, ctxCompactAt: 180_000, tokens: 200_000, tokenCap: 2_000_000, tokensPerMin: 0,
     fails: 0, hop: 0, hopStatus: 'live', observedAt: Date.now(), verifiedAt: Date.now(), heart: true, since: Date.now(),
     startedAt: Date.now(), endedAt: null, question: null, pr: null, sandbox: null, blockedBy: null, runaway: false,
-    needsAaron: null,
+    needsAaron: null, did: null, now: '', you: null,
     ...extra,
   };
 }
@@ -41,15 +55,21 @@ describe('LaneTile', () => {
     expect(screen.getByText(/observed/)).toBeInTheDocument();
   });
 
-  it('renders the parked band and the Answer CTA for a parked lane', () => {
-    render(<LaneTile lane={lane({ state: 'parked' })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
-    expect(screen.getByText('◆ human needed')).toBeInTheDocument();
+  // 2026-09-08 rework: the pinned "◆ human needed" band above the headline is gone --
+  // "nothing else above the title" (the brief's own tile order), and the YOU block
+  // (below the chip row) is the card's most prominent element instead.
+  it('renders the parked state label and the Answer CTA for a parked lane, with a YOU block', () => {
+    render(<LaneTile lane={lane({ state: 'parked', you: 'Read the reason, then Resume or Kill.' })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
+    expect(screen.getByText(/parked/)).toBeInTheDocument();
+    expect(screen.getByText('YOU')).toBeInTheDocument();
+    expect(screen.getByText('Read the reason, then Resume or Kill.')).toBeInTheDocument();
     expect(screen.getByText('Answer →')).toBeInTheDocument();
   });
 
-  // POLISH-1 #1: `step N/M · ` prefixes the step text once the lane has a step total.
-  it('prefixes the step text with step N/M when the lane has a step total', () => {
-    render(<LaneTile lane={lane({ stepN: 2, stepTotal: 9, stepText: 'retry loop' })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
+  // 2026-09-08 rework: the tile no longer derives its own sentence off stepN/stepTotal
+  // -- `now` (the server's own sentence) is what the Now line reads, verbatim.
+  it('renders the Now line off the server-computed sentence, not a raw step reading', () => {
+    render(<LaneTile lane={lane({ stepN: 2, stepTotal: 9, stepText: 'retry loop', now: 'step 2/9 · retry loop' })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
     expect(screen.getByText('step 2/9 · retry loop')).toBeInTheDocument();
   });
 
@@ -58,9 +78,9 @@ describe('LaneTile', () => {
   it('shows no cap text on a normal tile, and the exceeded form once cost crosses cap', () => {
     const { rerender } = render(<LaneTile lane={lane({ tokens: 864_000, tokenCap: 4_000_000 })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
     expect(screen.queryByText(/cap /)).not.toBeInTheDocument();
-    rerender(<LaneTile lane={lane({ tokens: 5_500_000, tokenCap: 1_600_000, runaway: false })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
+    rerender(wrap(<LaneTile lane={lane({ tokens: 5_500_000, tokenCap: 1_600_000, runaway: false })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />));
     expect(screen.getByText('cap 1.6M tokens · ×3')).toBeInTheDocument();
-    rerender(<LaneTile lane={lane({ tokens: 5_500_000, tokenCap: 1_600_000, runaway: true })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
+    rerender(wrap(<LaneTile lane={lane({ tokens: 5_500_000, tokenCap: 1_600_000, runaway: true })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />));
     expect(screen.getByText('cap 1.6M tokens · ×3')).toBeInTheDocument();
   });
 
@@ -82,16 +102,18 @@ describe('LaneTile', () => {
   // Final fidelity sweep #1: the tile's headline is always one line, exactly as the
   // prototype's `{{l.id}}` is -- a ticket heads it when the lane has one, otherwise
   // the run id does, and the full run id lives only in the element's title attribute.
-  it('shows the run id as the headline, and its own title, when there is no ticket', () => {
+  // 2026-09-08 rework: the run id never renders as visible text at all any more (not
+  // even as a `title=` fallback) -- it lives only on the tile's own `data-run-id`.
+  it('carries the run id only on data-run-id when there is no ticket and no title', () => {
     render(<LaneTile lane={lane({ ticket: null, id: 'jira_AB-12_1788460932645' })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
-    const headline = screen.getByText('jira_AB-12_1788460932645');
-    expect(headline).toHaveAttribute('title', 'jira_AB-12_1788460932645');
+    expect(screen.getByTestId('lane-jira_AB-12_1788460932645')).toHaveAttribute('data-run-id', 'jira_AB-12_1788460932645');
+    expect(screen.queryByText('jira_AB-12_1788460932645')).not.toBeInTheDocument();
   });
 
-  it('heads with the ticket alone and carries the full run id only in the title attribute', () => {
+  it('heads with the ticket alone and carries the full run id only in data-run-id', () => {
     render(<LaneTile lane={lane({ ticket: 'AB-12', id: 'jira_AB-12_1788460932645' })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
-    const headline = screen.getByText('AB-12');
-    expect(headline).toHaveAttribute('title', 'jira_AB-12_1788460932645');
+    expect(screen.getAllByText('AB-12').length).toBeGreaterThan(0);
+    expect(screen.getByTestId('lane-jira_AB-12_1788460932645')).toHaveAttribute('data-run-id', 'jira_AB-12_1788460932645');
     expect(screen.queryByText('jira_AB-12_1788460932645')).not.toBeInTheDocument();
   });
 
@@ -132,8 +154,8 @@ describe('LaneTile', () => {
     expect(screen.getByText('hotfix')).toBeInTheDocument();
   });
 
-  it('shows the server plain sentence in place of the raw step text', () => {
-    render(<LaneTile lane={lane({ plain: 'Working since 12:44 on a Sonnet session, 43 turns in, last did: ran tests.' })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
+  it('shows the server-computed now sentence in place of the raw step text', () => {
+    render(<LaneTile lane={lane({ now: 'Working since 12:44 on a Sonnet session, 43 turns in, last did: ran tests.' })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
     expect(screen.getByText('Working since 12:44 on a Sonnet session, 43 turns in, last did: ran tests.')).toBeInTheDocument();
   });
 
@@ -155,13 +177,16 @@ describe('LaneTile', () => {
 
   // 2026-09-08: a 40-char sha in the sentence must never run off the tile, and the
   // full sentence stays readable in `title` even once the visible text clamps.
-  it('clamps a long plain sentence to three lines and carries the full text in title', () => {
-    const sha = 'b'.repeat(40);
-    const long = `Working on a very long sentence that mentions commit ${sha} and keeps going past what three lines can show, on and on and on.`;
-    render(<LaneTile lane={lane({ plain: long })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
-    const shortened = long.replace(sha, sha.slice(0, 7));
-    const el = screen.getByTitle(shortened);
-    expect(el).toHaveStyle({ WebkitLineClamp: '3' });
+  // 2026-09-08 rework: the Now line is one line, ellipsis-clamped, with the full text
+  // in `title=` -- the sheet's own longer sentence, not the tile's, is what used to
+  // clamp to three lines. Shortening a 40-char sha is now the server's own job
+  // (`laneGlance.ts`/`plain.ts` both go through `shortenShas`), so the fixture passes
+  // an already-shortened sentence, the same shape `now` carries off the real server.
+  it('renders a long now sentence on one ellipsis-clamped line, with the full text in title', () => {
+    const long = 'Working on a very long sentence that mentions commit b3f9a21 and keeps going past what one line can show, on and on and on.';
+    render(<LaneTile lane={lane({ now: long })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
+    const el = screen.getByTitle(long);
+    expect(el).toHaveStyle({ textOverflow: 'ellipsis', whiteSpace: 'nowrap' });
   });
 
   // 2026-09-08: retried tickets fold into one tile; the attempt chip now renders

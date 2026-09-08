@@ -54,13 +54,13 @@ function lane(overrides: Partial<Lane>): Lane {
     ctxTokens: 0, ctxCeiling: 200_000, ctxCompactAt: 180_000, tokens: 0, tokenCap: 10, tokensPerMin: 0,
     fails: 0, hop: 0, hopStatus: 'blocked', observedAt: Date.now(), verifiedAt: null, heart: false, since: Date.now(),
     startedAt: Date.now(), endedAt: null, question: null, pr: null, sandbox: null, blockedBy: 'aws',
-    runaway: false, needsAaron: null,
+    runaway: false, needsAaron: null, did: null, now: '', you: null,
     ...overrides,
   };
 }
 
 function lanesView(lanes: Lane[]): () => LanesResponse {
-  return () => ({ at: Date.now(), lanes, tokensToday: 0, tokensPerMin: 0 });
+  return () => ({ at: Date.now(), lanes, tokensToday: 0, tokensPerMin: 0, links: { jiraSite: null, defaultRepo: null } });
 }
 
 describe('IntegrationsRegistry.list', () => {

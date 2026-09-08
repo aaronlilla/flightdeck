@@ -582,13 +582,13 @@ describe('windowLanes', () => {
       ctxTokens: 0, ctxCeiling: 0, ctxCompactAt: 0, tokens: 0, tokenCap: null, tokensPerMin: 0,
       fails: 0, hop: 0, hopStatus: 'live', observedAt: now, verifiedAt: null, heart: true,
       since: now, startedAt: now, endedAt: null, question: null, pr: null, sandbox: null,
-      blockedBy: null, runaway: false, needsAaron: null,
+      blockedBy: null, runaway: false, needsAaron: null, did: null, now: '', you: null,
       ...overrides,
     };
   }
 
   function responseWith(lanes: Lane[]): LanesResponse {
-    return { at: now, lanes, tokensToday: 0, tokensPerMin: 0 };
+    return { at: now, lanes, tokensToday: 0, tokensPerMin: 0, links: { jiraSite: null, defaultRepo: null } };
   }
 
   it('drops a finished lane whose observedAt is more than 24h old', () => {
@@ -827,7 +827,7 @@ describe('mergeReadyReportFrom', () => {
       ctxTokens: 0, ctxCeiling: 0, ctxCompactAt: 0, tokens: 0, tokenCap: null, tokensPerMin: 0,
       fails: 0, hop: 0, hopStatus: 'live', observedAt: 0, verifiedAt: null, heart: false, since: 0,
       startedAt: 0, endedAt: null, question: null, sandbox: null, blockedBy: null, runaway: false,
-      needsAaron: null, mergeable: null,
+      needsAaron: null, mergeable: null, did: null, now: '', you: null,
       pr: { no: 1, url: 'x', files: 0, add: 0, del: 0, draft: true, merged: false, checks: 'success', verdict: 'PASS' },
       ...overrides,
     };
