@@ -18,7 +18,7 @@ function integration(extra: Partial<Integration> = {}): Integration {
   return {
     id: 'mcp-x', kind: 'mcp', name: 'mcp-x', desc: 'a tool server', latencyMs: null,
     status: 'ok', checkedAt: Date.now(), since: null, cause: null, effect: null, fix: null, fixLabel: null,
-    scope: null, lastHealthyAt: null, retryCount: 0, dependents: [], step: null, links: {},
+    scope: null, lastHealthyAt: null, retryCount: 0, dependents: [], step: null, canConnect: false, links: {},
     ...extra,
   };
 }
@@ -53,7 +53,7 @@ function renderSettings(overrides: Partial<SettingsProps> & { integrations: Inte
     <Settings
       caps={null} journalCount={0} journal={[]} rules={[]} lanes={[]}
       feed={NO_FEED} now={Date.now()}
-      onCheck={noop} onReconnect={noop} onCheckAll={noop} onSaveCaps={noop} onOpenJournal={noop}
+      onCheckAll={noop} onOpenJournal={noop}
       {...overrides}
     />,
   );
@@ -74,8 +74,31 @@ describe('Settings MCP rows', () => {
   });
 
   it('offers Fix -> on a down MCP row instead of the connection-style reconnect label', () => {
-    renderSettings({ integrations: [integration({ status: 'down', fixLabel: 'Reconnect via SSO' })] });
+    renderSettings({ integrations: [integration({ status: 'down', fixLabel: 'Reconnect via SSO', canConnect: true })] });
     expect(screen.getByText('Fix →')).toBeInTheDocument();
+  });
+
+  // W3: the row used to carry a connect button whatever was behind it, and answered
+  // `not wired: no reconnect command declared` after the click. A button that can only
+  // refuse is worse than none, because a refusal reads as a failure.
+  it('shows no connect control on a down row with nothing wired behind it', () => {
+    renderSettings({ integrations: [integration({ status: 'down', fixLabel: 'Reconnect via SSO', canConnect: false })] });
+    expect(screen.queryByText('Fix →')).not.toBeInTheDocument();
+    expect(screen.queryByText('Reconnect via SSO')).not.toBeInTheDocument();
+    expect(screen.queryByText('Reconnect')).not.toBeInTheDocument();
+    // The check still runs: re-probing a row is always available.
+    expect(screen.getByTestId('integration-check-mcp-x')).toBeInTheDocument();
+  });
+
+  it('shows no connect control on a degraded row with nothing wired behind it', () => {
+    renderSettings({ integrations: [integration({ status: 'degraded', canConnect: false })] });
+    expect(screen.queryByText('Reconnect')).not.toBeInTheDocument();
+    expect(screen.getByText('Check')).toBeInTheDocument();
+  });
+
+  it('offers Reconnect on a degraded row that has one', () => {
+    renderSettings({ integrations: [integration({ status: 'degraded', canConnect: true })] });
+    expect(screen.getByText('Reconnect')).toBeInTheDocument();
   });
 
   it('still shows -- for a conn row with no latency (unaffected by the MCP rule)', () => {

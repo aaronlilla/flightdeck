@@ -1,9 +1,20 @@
 // @vitest-environment jsdom
-import { render, screen } from '@testing-library/react';
+import { screen } from '@testing-library/react';
+import { render } from './helpers/with-store.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import { Filters } from '../../src/console/components/Filters.js';
 import type { Lane, LaneState } from '../../src/shared/console-model.js';
+import * as api from '../../src/console/api.js';
+
+vi.mock('../../src/console/api.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/console/api.js')>();
+  return {
+    ...actual,
+    postRetireFinished: vi.fn(async () => ({ ok: true, message: 'retired', jid: null, retired: [] })),
+    postMergeReady: vi.fn(async () => ({ ok: true, message: 'merged', jid: null, outcomes: [] })),
+  };
+});
 
 function lane(state: LaneState, extra: Partial<Lane> = {}): Lane {
   return {
@@ -22,12 +33,12 @@ function lane(state: LaneState, extra: Partial<Lane> = {}): Lane {
 // the repo chips (script_wrapped.txt 266).
 describe('Filters chips', () => {
   it('never renders a "today" chip', () => {
-    render(<Filters filter="all" sort="cost" repos={[]} lanes={[lane('running')]} archivedLanes={[]} showProbes={false} now={Date.now()} onFilter={vi.fn()} onSort={vi.fn()} onToggleProbes={vi.fn()} onCleanUp={vi.fn()} onMergeReady={vi.fn()} />);
+    render(<Filters filter="all" sort="cost" repos={[]} lanes={[lane('running')]} archivedLanes={[]} showProbes={false} now={Date.now()} onFilter={vi.fn()} onSort={vi.fn()} onToggleProbes={vi.fn()} />);
     expect(screen.queryByText('today')).not.toBeInTheDocument();
   });
 
   it('formats the needs-me chip as "needs me · N lanes"', () => {
-    render(<Filters filter="all" sort="cost" repos={[]} lanes={[lane('parked')]} archivedLanes={[]} showProbes={false} now={Date.now()} onFilter={vi.fn()} onSort={vi.fn()} onToggleProbes={vi.fn()} onCleanUp={vi.fn()} onMergeReady={vi.fn()} />);
+    render(<Filters filter="all" sort="cost" repos={[]} lanes={[lane('parked')]} archivedLanes={[]} showProbes={false} now={Date.now()} onFilter={vi.fn()} onSort={vi.fn()} onToggleProbes={vi.fn()} />);
     expect(screen.getByText('needs me · 1 lanes')).toBeInTheDocument();
   });
 
@@ -40,7 +51,7 @@ describe('Filters chips', () => {
         filter="all" sort="cost" repos={['flightdeck-docs', 'flightdeck-rn']}
         lanes={[lane('running', { repo: 'flightdeck-docs' }), lane('running', { repo: 'flightdeck-rn' })]}
         archivedLanes={[]} showProbes={false}
-        now={Date.now()} onFilter={vi.fn()} onSort={vi.fn()} onToggleProbes={vi.fn()} onCleanUp={vi.fn()} onMergeReady={vi.fn()}
+        now={Date.now()} onFilter={vi.fn()} onSort={vi.fn()} onToggleProbes={vi.fn()}
       />,
     );
     const chips = screen.getAllByText(/^flightdeck-/).map((el) => el.textContent);
@@ -49,13 +60,13 @@ describe('Filters chips', () => {
   });
 
   it('renders no repo chip at all when the board has no repository on any lane', () => {
-    render(<Filters filter="all" sort="cost" repos={[]} lanes={[lane('running', { repo: null })]} archivedLanes={[]} showProbes={false} now={Date.now()} onFilter={vi.fn()} onSort={vi.fn()} onToggleProbes={vi.fn()} onCleanUp={vi.fn()} onMergeReady={vi.fn()} />);
+    render(<Filters filter="all" sort="cost" repos={[]} lanes={[lane('running', { repo: null })]} archivedLanes={[]} showProbes={false} now={Date.now()} onFilter={vi.fn()} onSort={vi.fn()} onToggleProbes={vi.fn()} />);
     expect(screen.queryByText(/^flightdeck-/)).not.toBeInTheDocument();
   });
 
   // H2.2
   it('renders an Archived chip with the archived count, and a Probes toggle chip', () => {
-    render(<Filters filter="all" sort="cost" repos={[]} lanes={[lane('running')]} archivedLanes={[lane('killed', { id: 'FLT-2', retiredAt: 1 })]} showProbes={false} now={Date.now()} onFilter={vi.fn()} onSort={vi.fn()} onToggleProbes={vi.fn()} onCleanUp={vi.fn()} onMergeReady={vi.fn()} />);
+    render(<Filters filter="all" sort="cost" repos={[]} lanes={[lane('running')]} archivedLanes={[lane('killed', { id: 'FLT-2', retiredAt: 1 })]} showProbes={false} now={Date.now()} onFilter={vi.fn()} onSort={vi.fn()} onToggleProbes={vi.fn()} />);
     expect(screen.getByText('Archived 1')).toBeInTheDocument();
     expect(screen.getByText('Probes')).toBeInTheDocument();
   });
@@ -70,7 +81,7 @@ describe('Filters chips', () => {
           lane('killed', { id: 'FLT-2-a1', ticket: 'FLT-2', attempt: 1, retiredAt: 1 }),
           lane('killed', { id: 'FLT-2-a2', ticket: 'FLT-2', attempt: 2, retiredAt: 2 }),
         ]}
-        showProbes={false} now={Date.now()} onFilter={vi.fn()} onSort={vi.fn()} onToggleProbes={vi.fn()} onCleanUp={vi.fn()} onMergeReady={vi.fn()}
+        showProbes={false} now={Date.now()} onFilter={vi.fn()} onSort={vi.fn()} onToggleProbes={vi.fn()}
       />,
     );
     expect(screen.getByText('Archived 1')).toBeInTheDocument();
@@ -78,21 +89,25 @@ describe('Filters chips', () => {
 
   it('the all count excludes probes until the Probes chip is on', () => {
     const lanes = [lane('running'), lane('running', { id: 'FLT-2', ticket: null, kind: 'probe' })];
-    const { rerender } = render(<Filters filter="all" sort="cost" repos={[]} lanes={lanes} archivedLanes={[]} showProbes={false} now={Date.now()} onFilter={vi.fn()} onSort={vi.fn()} onToggleProbes={vi.fn()} onCleanUp={vi.fn()} onMergeReady={vi.fn()} />);
+    const { rerender } = render(<Filters filter="all" sort="cost" repos={[]} lanes={lanes} archivedLanes={[]} showProbes={false} now={Date.now()} onFilter={vi.fn()} onSort={vi.fn()} onToggleProbes={vi.fn()} />);
     expect(screen.getByText('all 1')).toBeInTheDocument();
-    rerender(<Filters filter="all" sort="cost" repos={[]} lanes={lanes} archivedLanes={[]} showProbes now={Date.now()} onFilter={vi.fn()} onSort={vi.fn()} onToggleProbes={vi.fn()} onCleanUp={vi.fn()} onMergeReady={vi.fn()} />);
+    rerender(<Filters filter="all" sort="cost" repos={[]} lanes={lanes} archivedLanes={[]} showProbes now={Date.now()} onFilter={vi.fn()} onSort={vi.fn()} onToggleProbes={vi.fn()} />);
     expect(screen.getByText('all 2')).toBeInTheDocument();
   });
 
-  // H2.3
+  // H2.3. Clean up (postRetireFinished) and Merge ready (postMergeReady) are
+  // irreversible catalog actions now, not callback props: each renders its own
+  // `ActionButton` bound to its own spec, so a click calls its own `api.ts` export
+  // on the first pass with no confirm token, and the two stay wired to two distinct
+  // calls rather than one shared handler.
   it('renders the two bulk action buttons and wires them to their own handlers', async () => {
     const { default: userEvent } = await import('@testing-library/user-event');
-    const onCleanUp = vi.fn();
-    const onMergeReady = vi.fn();
-    render(<Filters filter="all" sort="cost" repos={[]} lanes={[lane('running')]} archivedLanes={[]} showProbes={false} now={Date.now()} onFilter={vi.fn()} onSort={vi.fn()} onToggleProbes={vi.fn()} onCleanUp={onCleanUp} onMergeReady={onMergeReady} />);
+    render(<Filters filter="all" sort="cost" repos={[]} lanes={[lane('running')]} archivedLanes={[]} showProbes={false} now={Date.now()} onFilter={vi.fn()} onSort={vi.fn()} onToggleProbes={vi.fn()} />);
     await userEvent.click(screen.getByText('Clean up'));
     await userEvent.click(screen.getByText('Merge ready'));
-    expect(onCleanUp).toHaveBeenCalledTimes(1);
-    expect(onMergeReady).toHaveBeenCalledTimes(1);
+    expect(api.postRetireFinished).toHaveBeenCalledTimes(1);
+    expect(api.postRetireFinished).toHaveBeenCalledWith(undefined);
+    expect(api.postMergeReady).toHaveBeenCalledTimes(1);
+    expect(api.postMergeReady).toHaveBeenCalledWith(undefined);
   });
 });

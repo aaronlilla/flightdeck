@@ -43,7 +43,7 @@ export function LaneGroupTile({ group, feedLive, now, pending = {}, onOpen, onOp
          the one place a live marker renders; an absolute badge here sat on top of the
          header's status label (2026-09-08). */}
       <LaneTile
-        lane={newest} feedLive={feedLive} now={now} pending={pending} onOpen={onOpen} onOpenCost={onOpenCost} onCommand={onCommand} onTip={onTip}
+        lane={newest} feedLive={feedLive} now={now} onOpen={onOpen} onOpenCost={onOpenCost} onCommand={onCommand} onTip={onTip}
         liveCount={liveCount}
         attempts={earlier.length > 0 ? { position, total: group.lanes.length } : undefined}
         earlier={earlier.length > 0 ? earlier : undefined}

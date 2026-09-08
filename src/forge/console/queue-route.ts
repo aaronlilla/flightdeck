@@ -45,7 +45,17 @@ export interface QueueRoutesOptions {
    *  (`queue-wire.ts#buildBacklogJql`, `FORGE_BACKLOG_PROJECT`), so this route works
    *  unwired; a test injects its own to stay a pure specimen. */
   buildBacklogJql?: (filter: string) => string;
+  /** The server-side confirm every irreversible queue click (remove, merge, promote)
+   *  runs behind: `ConsoleWrites.confirmGate`, so a typed `confirm <token>` in the
+   *  rail resolves the same pending entry the click created. Absent (a bare specimen),
+   *  the action runs at once. */
+  confirmGate?: ConfirmGate;
 }
+
+export type ConfirmGate = (
+  body: Record<string, unknown> | null | undefined, source: string, blast: string,
+  act: () => Promise<{ status: number; body: unknown }>,
+) => Promise<{ status: number; body: unknown }>;
 
 function respond(response: ServerResponse, status: number, body: unknown): void {
   const text = JSON.stringify(body);
@@ -193,9 +203,18 @@ export class QueueRoutes {
     if (match) {
       const id = decodeURIComponent(match[1]!);
       const action = match[2]!;
+      const gate: ConfirmGate = this.opts.confirmGate ?? ((_body, _source, _blast, act) => act());
+
       if (action === 'remove') {
-        const result = this.remove(id);
-        respond(response, result.ok ? 200 : 404, result);
+        // Removing a queued item is irreversible, so the route answers 202 with a
+        // token and runs nothing until it comes back. `remove` itself is the method
+        // the Conductor's own tool calls, so both paths do exactly one thing.
+        const body = await readBody<Record<string, unknown>>(request);
+        const outcome = await gate(body, 'console', `removes ${id} from the queue: it will not run.`, async () => {
+          const result = this.remove(id);
+          return { status: result.ok ? 200 : 404, body: result };
+        });
+        respond(response, outcome.status, outcome.body);
         return true;
       }
 
@@ -217,9 +236,14 @@ export class QueueRoutes {
           respond(response, 501, { ok: false, jid: null, message: 'no merge wiring is configured for this environment', undoable: false });
           return true;
         }
-        const outcome = await mergeItem(item, this.opts.mergeDeps);
-        const result: ActionResult = { ok: outcome.ok, jid: null, message: outcome.message, undoable: false };
-        respond(response, outcome.ok ? 200 : 409, result);
+        const mergeDeps = this.opts.mergeDeps;
+        const body = await readBody<Record<string, unknown>>(request);
+        const gated = await gate(body, 'console', `merges ${id}: merges its pull request and closes the ticket.`, async () => {
+          const outcome = await mergeItem(item, mergeDeps);
+          const result: ActionResult = { ok: outcome.ok, jid: null, message: outcome.message, undoable: false };
+          return { status: outcome.ok ? 200 : 409, body: result };
+        });
+        respond(response, gated.status, gated.body);
         return true;
       }
 
@@ -229,7 +253,7 @@ export class QueueRoutes {
         respond(response, 404, { ok: false, jid: null, message: `no queue item ${id}`, undoable: false });
         return true;
       }
-      const body = await readBody<{ version: string; message: string }>(request);
+      const body = await readBody<{ version: string; message: string; confirm?: string }>(request);
       if (!this.opts.promoteDeps) {
         respond(response, 501, { ok: false, jid: null, message: 'no production publish wiring is configured for this environment', undoable: false });
         return true;
@@ -238,12 +262,17 @@ export class QueueRoutes {
         respond(response, 400, { ok: false, jid: null, message: 'a promote needs a version and a message', undoable: false });
         return true;
       }
-      const outcome = await promoteItem(item, body, this.opts.promoteDeps);
-      if (outcome.ok) {
-        this.opts.store.append({ id, at: Date.now(), promotedAt: Date.now(), promotedVersion: body.version, updatedAt: Date.now() });
-      }
-      const result: ActionResult = { ok: outcome.ok, jid: null, message: outcome.message, undoable: false };
-      respond(response, outcome.code, result);
+      const promoteDeps = this.opts.promoteDeps;
+      const gated = await gate(body as Record<string, unknown>, 'console',
+        `publishes ${body.version} to production for ${id}: every installed app takes the update.`, async () => {
+          const outcome = await promoteItem(item, { version: body.version, message: body.message }, promoteDeps);
+          if (outcome.ok) {
+            this.opts.store.append({ id, at: Date.now(), promotedAt: Date.now(), promotedVersion: body.version, updatedAt: Date.now() });
+          }
+          const result: ActionResult = { ok: outcome.ok, jid: null, message: outcome.message, undoable: false };
+          return { status: outcome.code, body: result };
+        });
+      respond(response, gated.status, gated.body);
       return true;
     }
 

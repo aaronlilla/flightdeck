@@ -1,4 +1,5 @@
 import type { JSX } from 'react';
+import { LaneCta } from './LaneCta.js';
 import { useEffect, useState } from 'react';
 
 import * as api from '../api.js';
@@ -11,12 +12,11 @@ import { fmtTokens } from '../../shared/format-tokens.js';
 export interface CostSheetProps {
   lane: Lane;
   onClose: () => void;
-  onKill: (id: string) => void;
 }
 
 /** Cost sheet: total readout, tokens, cap state, burn, by-step breakdown, Kill attempt
  *  when over cap. */
-export function CostSheet({ lane, onClose, onKill }: CostSheetProps): JSX.Element {
+export function CostSheet({ lane, onClose }: CostSheetProps): JSX.Element {
   const [steps, setSteps] = useState<CostStep[]>([]);
   const [capEnforcementFailedJid, setCapEnforcementFailedJid] = useState<string | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
@@ -54,7 +54,7 @@ export function CostSheet({ lane, onClose, onKill }: CostSheetProps): JSX.Elemen
             {capText(lane)}{capEnforcementFailedJid ? ` · cap event failed (${capEnforcementFailedJid})` : ''} · burn {burnText}
           </div>
           <span style={{ flex: 1 }} />
-          {over ? <span className="btnR" {...actionable(() => onKill(lane.id))}>Kill attempt</span> : null}
+          {over ? <LaneCta lane={lane} cmd="kill" label="Kill attempt" cls="btnR" onCommand={() => undefined} /> : null}
         </div>
         {loadFailed ? (
           <div className="m" style={{ fontSize: 11, color: 'var(--block)' }}>could not load the step breakdown.</div>

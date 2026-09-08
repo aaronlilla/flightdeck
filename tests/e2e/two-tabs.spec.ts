@@ -44,6 +44,9 @@ test('a caps change made in one tab is reflected in a second tab', async ({ brow
   const dailyInput = tabA.locator('input').first();
   await dailyInput.fill('9000000');
   await tabA.getByText('Save caps →').click();
+  // setCaps is irreversible now: the first click only opens the server-issued
+  // confirm card, and the save itself waits for that token to come back.
+  await tabA.getByText('Confirm', { exact: true }).click();
 
   // Settings seeds its draft input from the caps prop on mount only (it never
   // resyncs on a later poll while already mounted), so tabB has to pick up

@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
-import { render, screen } from '@testing-library/react';
+import { screen } from '@testing-library/react';
+import { render } from './helpers/with-store.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import { TopBar } from '../../src/console/components/TopBar.js';

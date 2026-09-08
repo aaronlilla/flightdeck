@@ -1,4 +1,8 @@
 import type { JSX } from 'react';
+import { ACTIONS, useAction } from '../actions.js';
+import { actionable } from '../keyboard-actionable.js';
+import type { ActionOutcome } from '../store.js';
+import { ActionButton, ActionOutcomeView } from './ActionButton.js';
 import { useState } from 'react';
 
 import type {
@@ -25,10 +29,9 @@ export interface SettingsProps {
   lanes: Lane[];
   feed: Feed;
   now: number;
-  onCheck: (id: string) => void;
-  onReconnect: (id: string) => void;
   onCheckAll: () => void;
-  onSaveCaps: (dailyTokens: number, runTokens: number) => Promise<void> | void;
+  /** The rail is not on this view, so a row's outcome is also shown as a toast. */
+  onToast?: (text: string, ok: boolean) => void;
   onOpenJournal: () => void;
 }
 
@@ -47,11 +50,25 @@ const STATUS_COLOR: Record<Integration['status'], string> = {
   ok: 'var(--run)', down: 'var(--block)', degraded: 'var(--park)', off: 'var(--ink3)', busy: 'var(--hand)', checking: 'var(--ink3)',
 };
 
-function ctaFor(i: Integration): string {
-  if (i.status === 'down') return i.kind === 'mcp' ? 'Fix →' : (i.fixLabel ?? 'Reconnect →');
-  if (i.status === 'degraded') return 'Restart';
-  if (i.status === 'off') return 'Connect';
-  return 'manage';
+/**
+ * What a row's own buttons are, by state. Check is always available: it re-runs the
+ * probe. Reconnect is offered only while the row is down or degraded, and only under
+ * its own name: a row whose connect flow is not wired says so in its answer rather
+ * than wearing a "Connect" label over a call that cannot connect anything.
+ */
+function ctasFor(i: Integration): { check: string; reconnect: string | null } {
+  // W3: a row with no connect action behind it shows no connect button. The old
+  // labels were aliases -- every one of them ran the same reconnect call, and a row
+  // with nothing wired answered `not wired` after the click. A label nobody can act
+  // on is worse than no label, so `canConnect` decides whether it renders at all.
+  if (!i.canConnect) return { check: i.status === 'down' || i.status === 'degraded' ? 'Check' : 'manage', reconnect: null };
+  if (i.status === 'down') return { check: 'Check', reconnect: i.kind === 'mcp' ? 'Fix →' : (i.fixLabel ?? 'Reconnect →') };
+  if (i.status === 'degraded') return { check: 'Check', reconnect: 'Reconnect' };
+  if (i.status === 'off') return { check: 'Check', reconnect: null };
+  // Healthy (and mid-probe) rows keep the pre-catalog label: the check control still
+  // re-runs the probe, but a row with nothing wrong reads as "manage" rather than
+  // "Check", matching the original ctaFor this replaced.
+  return { check: 'manage', reconnect: null };
 }
 
 /** An MCP server runs over stdio, so a healthy row with no measured latency says so
@@ -81,22 +98,48 @@ function rowBackground(status: Integration['status']): string {
   return `color-mix(in srgb, ${STATUS_COLOR[status]} 8%, transparent)`;
 }
 
-function Row({ i, now, onCheck, onReconnect }: {
-  i: Integration; now: number; onCheck: (id: string) => void; onReconnect: (id: string) => void;
-}): JSX.Element {
+/**
+ * One integration row. The two buttons are catalog actions, so the row itself says
+ * `connecting` while a call is in flight and the server's own sentence after: the
+ * fresh status from a check, `is back up` or `is still down` from a reconnect, or the
+ * verbatim refusal (`not wired: no reconnect command declared for <id>`) when the row
+ * has no connect flow yet. Nothing here is a label over a different call.
+ */
+function Row({ i, now, onToast }: { i: Integration; now: number; onToast?: (text: string, ok: boolean) => void }): JSX.Element {
   const fresh = rowFreshness(i, now);
+  const ctas = ctasFor(i);
+  const check = useAction(ACTIONS.checkIntegration, i.id);
+  const reconnect = useAction(ACTIONS.reconnectIntegration, i.id);
+  const connecting = check.pending || reconnect.pending;
+  const outcome = reconnect.result?.kind === 'done' && (!check.result || reconnect.result.at >= check.result.at) ? reconnect.result : check.result;
+  const rowState: 'connecting' | 'connected' | 'failed' | null = connecting
+    ? 'connecting'
+    : outcome?.kind === 'done' ? (outcome.ok ? 'connected' : 'failed') : null;
+  const toast = (result: ActionOutcome): void => { if (result.kind === 'done') onToast?.(result.text, result.ok); };
   return (
-    <div className="row" style={{ background: rowBackground(i.status) }}>
-      <span className="led" style={{ background: STATUS_COLOR[i.status] }} />
+    <div className="row" style={{ background: rowBackground(i.status) }} data-testid={`integration-row-${i.id}`} data-row-state={rowState ?? 'idle'}>
+      <span className="led" style={{ background: connecting ? 'var(--hand)' : STATUS_COLOR[i.status] }} />
       <b>{i.name}</b>
       <span style={{ color: 'var(--ink2)' }}>{i.desc}</span>
       <span style={{ color: 'var(--ink2)' }}>{latencyDisplay(i)}</span>
-      <span className={fresh.cls}>{fresh.text}</span>
-      <span
-        className="btnS" style={{ padding: '5px 10px', fontSize: '9.5px', justifySelf: 'end', textAlign: 'right' }}
-        onClick={() => (i.status === 'down' ? onReconnect(i.id) : onCheck(i.id))}
-      >
-        {ctaFor(i)}
+      <span className={fresh.cls} data-testid={`integration-state-${i.id}`}>
+        {rowState === 'connecting' ? 'connecting…' : rowState === 'connected' ? `connected · ${outcome?.kind === 'done' ? outcome.text : ''}` : rowState === 'failed' ? `failed · ${outcome?.kind === 'done' ? outcome.text : ''}` : fresh.text}
+      </span>
+      <span style={{ display: 'inline-flex', gap: 6, justifySelf: 'end' }}>
+        <ActionButton
+          spec={ACTIONS.checkIntegration} args={[i.id]} className="btnS" style={{ padding: '5px 10px', fontSize: '9.5px' }}
+          busy="connecting…" outcome="none" onOutcome={toast} testId={`integration-check-${i.id}`}
+        >
+          {ctas.check}
+        </ActionButton>
+        {ctas.reconnect ? (
+          <ActionButton
+            spec={ACTIONS.reconnectIntegration} args={[i.id]} className="btnR" style={{ padding: '5px 10px', fontSize: '9.5px' }}
+            busy="connecting…" outcome="none" onOutcome={toast} testId={`integration-reconnect-${i.id}`}
+          >
+            {ctas.reconnect}
+          </ActionButton>
+        ) : null}
       </span>
     </div>
   );
@@ -182,8 +225,9 @@ const SHORTCUTS: { keys: string; action: string }[] = [
 export function Settings(props: SettingsProps): JSX.Element {
   const {
     integrations, caps, journalCount, journal, rules, lanes, feed, now,
-    onCheck, onReconnect, onCheckAll, onSaveCaps, onOpenJournal,
+    onCheckAll, onToast, onOpenJournal,
   } = props;
+  const saveCaps = useAction(ACTIONS.setCaps, 'settings');
   const [section, setSection] = useState<Section>('integrations');
   const [dailyDraft, setDailyDraft] = useState(caps && Number.isFinite(caps.dailyTokens) ? String(caps.dailyTokens) : '');
   const [runDraft, setRunDraft] = useState(caps && Number.isFinite(caps.runTokens) ? String(caps.runTokens) : '');
@@ -201,7 +245,8 @@ export function Settings(props: SettingsProps): JSX.Element {
     if (!Number.isFinite(daily) || !Number.isFinite(run)) { setErr('caps must be numbers'); return; }
     if (caps && (daily > caps.hardTokens || run > caps.hardTokens)) { setErr(`refused above the org hard limit of ${capText(caps.hardTokens)}`); return; }
     setErr('');
-    await onSaveCaps(daily, run);
+    const outcome = await saveCaps.run({ dailyTokens: daily, runTokens: run });
+    if (outcome.kind === 'done') onToast?.(outcome.text, outcome.ok);
   }
 
   return (
@@ -253,7 +298,12 @@ export function Settings(props: SettingsProps): JSX.Element {
                     <div className="m" style={{ fontSize: '10.5px', color: 'var(--ink3)', marginTop: 8 }}>{downFooter(d)}</div>
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'stretch', width: 230 }}>
-                    <span className="btnR" style={{ padding: 12, fontSize: 12 }} onClick={() => onReconnect(d.id)}>{d.fixLabel ?? 'Reconnect via SSO'} →</span>
+                    <ActionButton
+                      spec={ACTIONS.reconnectIntegration} args={[d.id]} actionRef={`plate-${d.id}`} className="btnR" style={{ padding: 12, fontSize: 12, textAlign: 'center' }}
+                      busy="connecting…" onOutcome={(result) => { if (result.kind === 'done') onToast?.(result.text, result.ok); }}
+                    >
+                      {d.fixLabel ?? 'Reconnect via SSO'} →
+                    </ActionButton>
                     <span className="m" style={{ fontSize: '9.5px', color: 'var(--ink3)', textAlign: 'center' }}>≈ 20s · no restart</span>
                   </div>
                 </div>
@@ -265,7 +315,7 @@ export function Settings(props: SettingsProps): JSX.Element {
                 <span className="m" style={{ fontSize: 10, color: 'var(--ink2)' }}>checked every 30s · <a onClick={onCheckAll}>check now</a></span>
               </div>
               <div className="m" style={{ fontSize: '11.5px' }}>
-                {conns.map((i) => <Row key={i.id} i={i} now={now} onCheck={onCheck} onReconnect={onReconnect} />)}
+                {conns.map((i) => <Row key={i.id} i={i} now={now} onToast={onToast} />)}
               </div>
             </div>
             <div className="plate" style={{ padding: 0 }}>
@@ -273,7 +323,7 @@ export function Settings(props: SettingsProps): JSX.Element {
                 <span className="lbl">MCP servers</span>
               </div>
               <div className="m" style={{ fontSize: '11.5px' }}>
-                {mcps.map((i) => <Row key={i.id} i={i} now={now} onCheck={onCheck} onReconnect={onReconnect} />)}
+                {mcps.map((i) => <Row key={i.id} i={i} now={now} onToast={onToast} />)}
               </div>
             </div>
           </>
@@ -374,7 +424,20 @@ export function Settings(props: SettingsProps): JSX.Element {
             <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: 'var(--ink2)' }}>org hard limit</span><b>{capText(caps?.hardTokens)} · FD-7</b></div>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: 'var(--ink2)' }}>cap enforcement</span><span style={{ fontWeight: 700, color: enforcement.color }}>{enforcement.text}</span></div>
           </div>
-          <span className="btnP" style={{ width: '100%', marginTop: 6 }} onClick={() => void save()}>Save caps →</span>
+          <span
+            className="btnP" style={{ width: '100%', marginTop: 6, opacity: saveCaps.pending ? 0.55 : 1, boxSizing: 'border-box' }}
+            aria-busy={saveCaps.pending} aria-disabled={saveCaps.pending} data-testid="action-setCaps-settings" data-pending={saveCaps.pending ? 'true' : 'false'}
+            {...actionable(() => { if (!saveCaps.pending) void save(); })}
+          >
+            {saveCaps.pending ? 'Saving…' : 'Save caps →'}
+          </span>
+          <div style={{ marginTop: 6 }}>
+            <ActionOutcomeView
+              result={saveCaps.result} pending={saveCaps.pending} specId="setCaps" actionRef="settings"
+              onConfirm={() => { void saveCaps.confirm().then((outcome) => { if (outcome?.kind === 'done') onToast?.(outcome.text, outcome.ok); }); }}
+              onDismiss={saveCaps.dismiss} onClear={saveCaps.clear}
+            />
+          </div>
           <div className="m" style={{ fontSize: 10, color: 'var(--block)', marginTop: 6, minHeight: 14 }}>{err}</div>
         </div>
         <div>

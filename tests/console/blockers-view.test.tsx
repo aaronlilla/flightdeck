@@ -3,12 +3,19 @@
  * `BlockersView`: chain ordering, later steps dimmed and disabled until the step above
  * clears, the checking/not-yet renderings, and the empty state.
  */
-import { render, screen } from '@testing-library/react';
+import { screen } from '@testing-library/react';
+import { render } from './helpers/with-store.js';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
 import { BlockersView } from '../../src/console/components/BlockersView.js';
+import * as api from '../../src/console/api.js';
 import type { Blocker, BlockersActionResult } from '../../src/shared/console-model.js';
+
+vi.mock('../../src/console/api.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/console/api.js')>();
+  return { ...actual, resolveBlocker: vi.fn(), checkBlocker: vi.fn() };
+});
 
 function billingChain(): { blockers: Blocker[]; chains: string[][] } {
   const lane = { laneId: 'S-run1', label: 'the stale-session fix' };
@@ -34,43 +41,50 @@ function billingChain(): { blockers: Blocker[]; chains: string[][] } {
 
 describe('BlockersView', () => {
   it('shows the empty state when nothing is blocked', () => {
-    render(<BlockersView blockers={[]} chains={[]} onResolve={vi.fn()} onCheck={vi.fn()} />);
+    render(<BlockersView blockers={[]} chains={[]} />);
     expect(screen.getByText('Nothing is blocked on you.')).toBeInTheDocument();
   });
 
   it('numbers a chain root-first and dims/disables the step after the first open one', () => {
     const { blockers, chains } = billingChain();
-    render(<BlockersView blockers={blockers} chains={chains} onResolve={vi.fn()} onCheck={vi.fn()} />);
+    render(<BlockersView blockers={blockers} chains={chains} />);
     expect(screen.getByText(/GitHub Actions billing is off/)).toBeInTheDocument();
     expect(screen.getByText(/Checks failing on PR #39/)).toBeInTheDocument();
-    // Step 2's own Resolved button is disabled while step 1 is still open.
+    // Step 2's own Resolved control is disabled while step 1 is still open. It renders
+    // as a keyboard-actionable span (ActionButton), not a native <button disabled>, so
+    // the disabled contract is `aria-disabled="true"` rather than jest-dom's toBeDisabled
+    // (which only recognizes the native attribute on form tags).
     const buttons = screen.getAllByRole('button', { name: /Resolved, check it/ });
     expect(buttons).toHaveLength(2);
-    expect(buttons[0]).not.toBeDisabled();
-    expect(buttons[1]).toBeDisabled();
+    expect(buttons[0]).toHaveAttribute('aria-disabled', 'false');
+    expect(buttons[1]).toHaveAttribute('aria-disabled', 'true');
   });
 
   it('shows Checking… then Resolved once a click confirms', async () => {
     const { blockers, chains } = billingChain();
     let resolveConfirm: (result: BlockersActionResult) => void = () => undefined;
-    const onResolve = vi.fn(() => new Promise<BlockersActionResult>((resolve) => { resolveConfirm = resolve; }));
-    render(<BlockersView blockers={blockers} chains={chains} onResolve={onResolve} onCheck={vi.fn()} />);
+    vi.mocked(api.resolveBlocker).mockImplementation(
+      () => new Promise<BlockersActionResult>((resolve) => { resolveConfirm = resolve; }),
+    );
+    render(<BlockersView blockers={blockers} chains={chains} />);
     const [firstButton] = screen.getAllByRole('button', { name: /Resolved, check it/ });
     await userEvent.click(firstButton!);
     expect(screen.getByText('Checking…')).toBeInTheDocument();
+    expect(api.resolveBlocker).toHaveBeenCalledWith('billing:aaronlilla/flightdeck');
     resolveConfirm({ ok: true, state: 'resolved', lastCheck: 'confirmed', started: ['S-run1'] });
     await screen.findByText(/Started: the stale-session fix/);
   });
 
   it('shows Not yet with the reason when the confirmation fails', async () => {
     const { blockers, chains } = billingChain();
-    const onResolve = vi.fn(async (): Promise<BlockersActionResult> => (
+    vi.mocked(api.resolveBlocker).mockImplementation(async (): Promise<BlockersActionResult> => (
       { ok: false, state: 'open', lastCheck: 'still refused', started: [] }
     ));
-    render(<BlockersView blockers={blockers} chains={chains} onResolve={onResolve} onCheck={vi.fn()} />);
+    render(<BlockersView blockers={blockers} chains={chains} />);
     const [firstButton] = screen.getAllByRole('button', { name: /Resolved, check it/ });
     await userEvent.click(firstButton!);
     await screen.findByText('Not yet: still refused');
+    expect(api.resolveBlocker).toHaveBeenCalledWith('billing:aaronlilla/flightdeck');
   });
 
   it('collapses a fully resolved chain into a one-line entry under Resolved today', () => {
@@ -79,7 +93,7 @@ describe('BlockersView', () => {
       detail: '', youCanResolve: true, howToResolve: '', links: [], blocks: [], blockedBy: [],
       state: 'resolved', since: Date.now(), checkedAt: Date.now(), resolvedAt: Date.now(), thenWhat: '', lastCheck: 'confirmed',
     };
-    render(<BlockersView blockers={[resolved]} chains={[]} onResolve={vi.fn()} onCheck={vi.fn()} />);
+    render(<BlockersView blockers={[resolved]} chains={[]} />);
     expect(screen.getByText('Resolved today')).toBeInTheDocument();
     expect(screen.getByText(/GitHub Actions billing is off/)).toBeInTheDocument();
   });
@@ -95,7 +109,7 @@ describe('BlockersView links (iteration 6, no Linkify.tsx in this worktree)', ()
       links: [{ label: 'PR #39', url: 'https://github.com/o/n/pull/39' }], blocks: [lane], blockedBy: [],
       state: 'open', since: now, checkedAt: null, resolvedAt: null, thenWhat: 'Resumes the stale-session fix.', lastCheck: null,
     };
-    render(<BlockersView blockers={[checks]} chains={[[checks.id]]} onResolve={vi.fn()} onCheck={vi.fn()} />);
+    render(<BlockersView blockers={[checks]} chains={[[checks.id]]} />);
     const links = screen.getAllByRole('link', { name: 'PR #39' });
     expect(links.length).toBeGreaterThan(0);
     for (const link of links) {
@@ -113,7 +127,7 @@ describe('BlockersView links (iteration 6, no Linkify.tsx in this worktree)', ()
     };
     render(
       <BlockersView
-        blockers={[question]} chains={[[question.id]]} onResolve={vi.fn()} onCheck={vi.fn()}
+        blockers={[question]} chains={[[question.id]]}
         jiraSite="https://acme.atlassian.net"
       />,
     );
@@ -131,7 +145,7 @@ describe('BlockersView links (iteration 6, no Linkify.tsx in this worktree)', ()
       blocks: [{ laneId: 'S-run1', label: 'PR #39' }], blockedBy: [], state: 'open', since: Date.now(),
       checkedAt: null, resolvedAt: null, thenWhat: 't', lastCheck: null,
     };
-    render(<BlockersView blockers={[checks]} chains={[[checks.id]]} onResolve={vi.fn()} onCheck={vi.fn()} />);
+    render(<BlockersView blockers={[checks]} chains={[[checks.id]]} />);
     const links = screen.getAllByRole('link', { name: 'PR #39' });
     expect(links.length).toBeGreaterThan(1);
   });

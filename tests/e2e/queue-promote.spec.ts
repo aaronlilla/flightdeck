@@ -16,13 +16,24 @@ test('Promote collects a version and message, then the card shows promoted <vers
   await page.getByText('Queue', { exact: false }).click();
   const card = page.locator('.lane', { hasText: 'DONE' }).first();
   await card.getByText('Promote', { exact: true }).click();
-  // Clicking Confirm promote with nothing typed must not post an empty body.
-  await card.getByText('Confirm promote', { exact: true }).click();
-  await expect(card.getByText('Confirm promote', { exact: true })).toBeVisible();
+
+  const promoteButton = card.locator('[data-testid^="action-promoteQueueItem-"]');
+  // Nothing typed yet -- the button itself reads disabled, so a click can't post an
+  // empty body the way the old two-dialog Promote used to.
+  await expect(promoteButton).toHaveAttribute('aria-disabled', 'true');
+  await promoteButton.click({ force: true });
+  await expect(card.getByPlaceholder(/version/i)).toHaveValue('');
 
   await card.getByPlaceholder(/version/i).fill('1.4.2');
   await card.getByPlaceholder(/release message/i).fill('hotfix release');
-  await card.getByText('Confirm promote', { exact: true }).click();
+  await expect(promoteButton).toHaveAttribute('aria-disabled', 'false');
+  await promoteButton.click();
+
+  // Promote is irreversible: the server answers with a confirm card first, and
+  // nothing runs until that token goes back.
+  const confirmYes = card.locator('[data-testid^="action-confirm-yes-promoteQueueItem-"]');
+  await expect(confirmYes).toBeVisible();
+  await confirmYes.click();
 
   await expect(page.getByTestId('toast')).toContainText('1.4.2');
   await expect(card.getByText('promoted 1.4.2')).toBeVisible();

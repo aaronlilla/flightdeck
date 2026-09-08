@@ -1,4 +1,5 @@
 import type { JSX, MouseEvent } from 'react';
+import { LaneCta } from './LaneCta.js';
 import { useEffect, useRef, useState } from 'react';
 
 import { actionable } from '../keyboard-actionable.js';
@@ -11,7 +12,7 @@ import { computeFreshness, freshnessClass, freshnessStamp } from '../freshness.j
 import type { Lane } from '../../shared/console-model.js';
 import { fmtTokens } from '../../shared/format-tokens.js';
 import { shortenShas, stripMachineIds } from '../../shared/humanize.js';
-import type { State, TipSpec } from '../store.js';
+import type { TipSpec } from '../store.js';
 import { Linkify } from './Linkify.js';
 
 const HOVER_DELAY_MS = 250;
@@ -32,10 +33,6 @@ export interface LaneTileProps {
   lane: Lane;
   feedLive: boolean;
   now: number;
-  /** Every action currently in flight, keyed `${cmd}:${id}` -- the tile has no
-   *  `api.*` call of its own, so this is how its CTA (and an earlier attempt's own
-   *  CTA) knows to render busy rather than clickable. */
-  pending?: State['pending'];
   onOpen: (id: string) => void;
   onOpenCost: (id: string) => void;
   onCommand: (id: string, cmd: string) => void;
@@ -62,12 +59,11 @@ export interface LaneTileProps {
  * the grid (`LanesGrid.tsx`) reads `gridAutoRows: auto` rather than stretching a `1fr`
  * row over a tile whose own height varies.
  */
-export function LaneTile({ lane, feedLive, now, pending = {}, onOpen, onOpenCost, onCommand, onTip, attempts, earlier, liveCount }: LaneTileProps): JSX.Element {
+export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, onTip, attempts, earlier, liveCount }: LaneTileProps): JSX.Element {
   const st = stateOf(lane.state);
   const [attemptsOpen, setAttemptsOpen] = useState(false);
   const headline = tileHeadlineParts(lane);
   const cta = laneCta(lane);
-  const ctaBusy = pending[`${cta.cmd}:${lane.id}`];
   const why = mergeableWhy(lane);
   const pct = ctxPercent(lane);
   const fresh = computeFreshness(lane.verifiedAt, lane.observedAt, feedLive, now, lane.heart);
@@ -247,18 +243,13 @@ export function LaneTile({ lane, feedLive, now, pending = {}, onOpen, onOpenCost
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, background: 'var(--well)', borderRadius: 3, padding: '8px 10px' }}>
           {earlier.map((l) => {
             const earlierCta = laneCta(l);
-            const earlierBusy = pending[`${earlierCta.cmd}:${l.id}`];
             return (
               <div key={l.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
                 <span className="m" style={{ fontSize: '10.5px', color: 'var(--ink2)' }}>{l.now}</span>
-                <span
-                  className={earlierCta.cls} aria-busy={earlierBusy ? 'true' : undefined} data-busy={earlierBusy ? '1' : undefined}
-                  style={{ padding: '5px 8px', fontSize: 9, flex: 'none', display: 'inline-flex', alignItems: 'center', gap: 4 }}
-                  {...actionable(earlierBusy ? () => undefined : (e) => { e?.stopPropagation?.(); onCommand(l.id, earlierCta.cmd); })}
-                >
-                  {earlierBusy ? <span className="fdSpinner" aria-hidden="true" /> : null}
-                  {earlierBusy ? earlierBusy.label : earlierCta.label}
-                </span>
+                <LaneCta
+                  lane={l} cmd={earlierCta.cmd} label={earlierCta.label} cls={earlierCta.cls}
+                  style={{ padding: '5px 8px', fontSize: 9, flex: 'none' }} onCommand={onCommand} stopPropagation
+                />
               </div>
             );
           })}
@@ -282,22 +273,16 @@ export function LaneTile({ lane, feedLive, now, pending = {}, onOpen, onOpenCost
             <span className="m" style={{ fontSize: 10, fontWeight: 700, color: 'var(--block)', whiteSpace: 'nowrap' }}>STALLED · no process</span>
           ) : null}
         </div>
-        <div style={{ display: 'flex', gap: 6 }}>
-          <span
-            className={cta.cls} aria-busy={ctaBusy ? 'true' : undefined} data-busy={ctaBusy ? '1' : undefined}
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+          <LaneCta
+            lane={lane} cmd={cta.cmd} label={cta.label} cls={cta.cls}
             // `.btnS` (2026-09-08: `Watch live`/`Gate log` etc.) carries a real 1px
             // border the other CTA classes render as a box-shadow ring instead --
             // a fixed height plus border-box keeps every CTA the same footer height
             // regardless of which button class a lane's own state picks.
-            style={{
-              padding: '7px 9px', fontSize: '9.5px', flex: 1, height: 32, boxSizing: 'border-box',
-              display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-            }}
-            {...actionable(ctaBusy ? () => undefined : (e) => { e?.stopPropagation?.(); onCommand(lane.id, cta.cmd); })}
-          >
-            {ctaBusy ? <span className="fdSpinner" aria-hidden="true" /> : null}
-            {ctaBusy ? ctaBusy.label : cta.label}
-          </span>
+            style={{ padding: '7px 9px', fontSize: '9.5px', flex: 1, height: 32, boxSizing: 'border-box' }}
+            onCommand={onCommand} stopPropagation
+          />
         </div>
         {/* One reserved line whether or not there is a reason, so a tile with one is no taller than its neighbours. */}
         <span className="m" title={why ?? undefined} style={{ fontSize: '9.5px', lineHeight: '14px', height: 14, color: 'var(--ink3)', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', display: 'block' }}>{why ?? ''}</span>

@@ -23,6 +23,10 @@ import { fileURLToPath } from 'node:url';
 
 import { ConsoleReads } from './console/reads.js';
 import { HEARTBEAT_MS, type BlockerKind } from '../shared/console-model.js';
+import { sliceEvent, sliceEventsFor } from '../shared/console-events.js';
+
+/** How often the fleet journal's size is compared against the last look. */
+const JOURNAL_WATCH_MS = 1000;
 import { appendThread, ConsoleWrites, plainReceiptCard } from './console/command.js';
 import { QueueRoutes } from './console/queue-route.js';
 import { BlockersRoutes, type Confirmer, type Restarter } from './console/blockers-route.js';
@@ -251,6 +255,9 @@ export class ForgeServer {
 
   private heartbeatTimer: ReturnType<typeof setInterval> | undefined;
 
+  private journalWatchTimer: ReturnType<typeof setInterval> | undefined;
+
+  private journalSizeSeen = -1;
   private liveTimer: ReturnType<typeof setInterval> | undefined;
 
   private readonly isAliveFn: (pid: number) => boolean;
@@ -348,6 +355,7 @@ export class ForgeServer {
       readPaused: () => readQueuePaused(),
       writePaused: (paused) => writeQueuePaused(paused),
       maxInFlight: options.queueMaxInFlight ?? 2,
+      confirmGate: (body, source, blast, act) => this.consoleWrites.confirmGate(body, source, blast, act),
       ...(options.queueMergeDeps ? { mergeDeps: options.queueMergeDeps } : {}),
       ...(options.queuePromoteDeps ? { promoteDeps: options.queuePromoteDeps } : {}),
     });
@@ -410,6 +418,19 @@ export class ForgeServer {
     // to know the feed itself is alive, distinct from any one lane going quiet.
     this.heartbeatTimer = setInterval(() => this.publish({ type: 'heartbeat', at: Date.now() }), HEARTBEAT_MS);
     this.heartbeatTimer.unref?.();
+    // A run starting, ending or parking is written to the fleet journal by whichever
+    // process runs it (a chain ticker, a queue worker, the warden), never through a
+    // route here. The journal's size is the one signal that covers them all: when it
+    // grows, the lanes and journal slices are stale and every listener hears so.
+    this.journalSizeSeen = this.journalSize();
+    this.journalWatchTimer = setInterval(() => {
+      const size = this.journalSize();
+      if (size === this.journalSizeSeen) return;
+      this.journalSizeSeen = size;
+      this.publish(sliceEvent('lanes', 'the fleet journal grew'));
+      this.publish(sliceEvent('journal', 'the fleet journal grew'));
+    }, JOURNAL_WATCH_MS);
+    this.journalWatchTimer.unref?.();
     // The "very live" board's own cadence (Aaron: "the second there's nothing working
     // it should stop"): every registry row this ticker last saw alive gets a fresh,
     // cheap pid check -- no journal replay -- and a flip publishes `lane.live` so the
@@ -443,6 +464,10 @@ export class ForgeServer {
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = undefined;
+    }
+    if (this.journalWatchTimer) {
+      clearInterval(this.journalWatchTimer);
+      this.journalWatchTimer = undefined;
     }
     if (this.liveTimer) {
       clearInterval(this.liveTimer);
@@ -601,6 +626,14 @@ export class ForgeServer {
     };
   }
 
+  private journalSize(): number {
+    try {
+      return statSync(this.journalPath).size;
+    } catch {
+      return 0;
+    }
+  }
+
   /** Send an event to every listener. A socket that has gone is dropped, never thrown on. */
   publish(event: Record<string, unknown>): void {
     const frame = textFrame(JSON.stringify(event));
@@ -616,6 +649,15 @@ export class ForgeServer {
 
   private async route(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const path = (request.url ?? '/').split('?')[0] ?? '/';
+    // The live spine: once a console write has been answered, every listener hears
+    // which slices it touched and refetches those alone. One hook on the response
+    // rather than a line in every handler, so a route added later cannot forget it;
+    // `tests/forge/server-events.test.ts` walks every write and checks for the frame.
+    response.once('finish', () => {
+      const events = sliceEventsFor(request.method, path, response.statusCode);
+      if (!events) return;
+      for (const event of events) this.publish(event);
+    });
 
     // The console's read routes (`/lanes`, `/thread`, `/journal`, `/caps`,
     // `/proposals`, `/run/:id/{thread,pr,sandbox}`): all of them require the token like
@@ -810,13 +852,20 @@ export class ForgeServer {
     this.readJson<{ reason?: string }>(request, response, (parsed) => {
       void (async () => {
         const reason = parsed?.reason || 'stopped from the console';
-        const { stopped, stale } = await new Fleet(
-          this.lanes, this.registry, this.journalPath, this.killSwitchFile,
-        ).stopAll(reason);
-        for (const outcome of stopped) {
-          this.publish({ event: 'run.parked', run: outcome.slug, actor: 'console', reached: outcome.reached });
-        }
-        json(response, 200, { stopped: stopped.map((outcome) => outcome.slug), stale });
+        const outcome = await this.consoleWrites.confirmGate(parsed as Record<string, unknown> | null, 'console',
+          'stops every running lane with a handoff request and engages the kill switch.',
+          async () => {
+            const { stopped, stale } = await new Fleet(
+              this.lanes, this.registry, this.journalPath, this.killSwitchFile,
+            ).stopAll(reason);
+            for (const row of stopped) {
+              this.publish({ event: 'run.parked', run: row.slug, actor: 'console', reached: row.reached });
+            }
+            const names = stopped.map((row) => row.slug);
+            const message = `stopped ${names.length} lane${names.length === 1 ? '' : 's'}`;
+            return { status: 200, body: { ok: true, jid: null, message, undoable: false, stopped: names, stale } };
+          });
+        json(response, outcome.status, outcome.body);
       })();
     });
   }
@@ -881,28 +930,9 @@ export class ForgeServer {
    */
   private clearLane(request: IncomingMessage, response: ServerResponse): void {
     if (!this.authorized(request, response)) return;
-    this.readJson<{ lane?: string; all?: boolean; inboxKey?: string }>(request, response, (parsed) => {
+    this.readJson<{ lane?: string; all?: boolean; inboxKey?: string; confirm?: string }>(request, response, (parsed) => {
       if (parsed?.inboxKey) {
-        // F3: retire one stale ask from the console's own Clear button. The client's say-
-        // so is not proof -- staleness is checked again here, against the registry as it
-        // is right now, before anything is moved.
-        const entry = this.inbox.entry(parsed.inboxKey);
-        if (!entry) {
-          json(response, 404, { error: `nothing asked ${parsed.inboxKey}` });
-          return;
-        }
-        if (!isAskStale(entry, (run) => Boolean(this.registry.get(run)))) {
-          json(response, 400, { error: `${parsed.inboxKey} still has a live run; it is not stale` });
-          return;
-        }
-        this.inbox.retire(parsed.inboxKey);
-        const retired = appendOnce(this.journalPath, {
-          event: 'inbox.retired', actor: 'console', key: parsed.inboxKey, runs: entry.runs,
-        });
-        // The console reads success off a non-null `jid` (`receiptCard`'s
-        // `type: jid ? 'receipt' : 'refusal'`) -- with none here, a genuine dismiss
-        // rendered as a red Refused card.
-        json(response, 200, { ok: true, jid: retired.id });
+        void this.clearAsk(parsed, response);
         return;
       }
       if (parsed?.all === true) {
@@ -920,6 +950,32 @@ export class ForgeServer {
   }
 
   /**
+   * `POST /clear { inboxKey }` (F3): retires one stale ask from the console's own
+   * Dismiss button. The client's say-so is not proof: staleness is checked again here,
+   * against the registry as it is right now, before anything is moved. Dismissing loses
+   * the question for good, so it runs behind the confirm gate.
+   */
+  private async clearAsk(parsed: { inboxKey?: string; confirm?: string }, response: ServerResponse): Promise<void> {
+    const key = parsed.inboxKey as string;
+    const outcome = await this.consoleWrites.confirmGate(parsed as Record<string, unknown>, 'console',
+      `dismisses the question ${key}: the ask leaves the inbox and nothing answers it.`,
+      async () => {
+        const entry = this.inbox.entry(key);
+        if (!entry) return { status: 404, body: { error: `nothing asked ${key}` } };
+        if (!isAskStale(entry, (run) => Boolean(this.registry.get(run)))) {
+          return { status: 400, body: { error: `${key} still has a live run; it is not stale` } };
+        }
+        this.inbox.retire(key);
+        const retired = appendOnce(this.journalPath, {
+          event: 'inbox.retired', actor: 'console', key, runs: entry.runs,
+        });
+        // The console reads success off a non-null `jid`, so the row's own id goes back.
+        return { status: 200, body: { ok: true, jid: retired.id, message: `dismissed ${key}`, undoable: false } };
+      });
+    json(response, outcome.status, outcome.body);
+  }
+
+  /**
    * `POST /run/:id/retire` and `POST /run/:id/unretire` (H1.7): moves one lane off, or
    * back onto, the board's default view. Retiring an ineligible lane (still running, an
    * open unmerged PR, a live process behind it) is refused outright rather than quietly
@@ -928,8 +984,22 @@ export class ForgeServer {
    */
   private retireOne(request: IncomingMessage, response: ServerResponse, id: string, retiring: boolean): void {
     if (!this.authorized(request, response)) return;
-    const outcome = retireLane(id, retiring, this.retireLaneDeps());
-    json(response, outcome.status, outcome.body);
+    // Unretiring puts a lane back and is undone by retiring it again, so it runs
+    // straight through; retiring takes the lane off the default board and goes behind
+    // the same server-issued confirm as every other irreversible route.
+    if (!retiring) {
+      const outcome = retireLane(id, false, this.retireLaneDeps());
+      json(response, outcome.status, outcome.body);
+      return;
+    }
+    this.readJson<{ confirm?: string }>(request, response, (parsed) => {
+      void (async () => {
+        const outcome = await this.consoleWrites.confirmGate(parsed as Record<string, unknown> | null, 'console',
+          `retires ${id}: the lane leaves the board's default view.`,
+          async () => retireLane(id, true, this.retireLaneDeps()));
+        json(response, outcome.status, outcome.body);
+      })();
+    });
   }
 
   /** The one retire implementation (`retire.ts#retireLane`) this route, the rail's
@@ -948,12 +1018,23 @@ export class ForgeServer {
    */
   private retireFinishedRoute(request: IncomingMessage, response: ServerResponse): void {
     if (!this.authorized(request, response)) return;
-    const lanes = this.consoleReads.lanesResponse(true, true).lanes;
-    const retired = retireFinished(retiredPath(this.forgeHomeDir), lanes, Date.now());
-    for (const id of retired) {
-      appendOnce(this.journalPath, { event: 'lane.retired', run: id, actor: 'console', retired: true });
-    }
-    json(response, 200, { ok: true, jid: null, message: `retired ${retired.length} lane(s)`, undoable: false, retired });
+    this.readJson<{ confirm?: string }>(request, response, (parsed) => {
+      void (async () => {
+        const preview = retirePreview(retiredPath(this.forgeHomeDir), this.consoleReads.lanesResponse(true, true).lanes);
+        const titles = preview.map((item) => item.title ?? item.id).join(', ') || 'nothing';
+        const outcome = await this.consoleWrites.confirmGate(parsed as Record<string, unknown> | null, 'console',
+          `retires ${preview.length} finished lane${preview.length === 1 ? '' : 's'}: ${titles}`,
+          async () => {
+            const lanes = this.consoleReads.lanesResponse(true, true).lanes;
+            const retired = retireFinished(retiredPath(this.forgeHomeDir), lanes, Date.now());
+            for (const id of retired) {
+              appendOnce(this.journalPath, { event: 'lane.retired', run: id, actor: 'console', retired: true });
+            }
+            return { status: 200, body: { ok: true, jid: null, message: `retired ${retired.length} lane(s)`, undoable: false, retired } };
+          });
+        json(response, outcome.status, outcome.body);
+      })();
+    });
   }
 
   /** `GET /retire-finished` (H1.7): a read-only preview of what a bulk retire would
@@ -985,7 +1066,21 @@ export class ForgeServer {
    */
   private mergeReadyPost(request: IncomingMessage, response: ServerResponse): void {
     if (!this.authorized(request, response)) return;
-    void (async () => {
+    this.readJson<{ confirm?: string }>(request, response, (parsed) => {
+      void (async () => {
+        const { ready } = mergeReadyReportFrom(this.consoleReads.lanesResponse(true).lanes);
+        const names = ready.map((lane) => lane.title ?? lane.id).join(', ') || 'nothing';
+        const outcome = await this.consoleWrites.confirmGate(parsed as Record<string, unknown> | null, 'console',
+          `merges ${ready.length} ready lane${ready.length === 1 ? '' : 's'}: ${names}`,
+          async () => this.mergeReadyRun());
+        json(response, outcome.status, outcome.body);
+      })();
+    });
+  }
+
+  /** The merge itself, once confirmed: one outcome row per lane a merge was attempted on. */
+  private async mergeReadyRun(): Promise<{ status: number; body: unknown }> {
+    {
       const { ready } = mergeReadyReportFrom(this.consoleReads.lanesResponse(true).lanes);
       const outcomes: Array<{ id: string; ok: boolean; message: string }> = [];
       for (const lane of ready) {
@@ -1004,8 +1099,11 @@ export class ForgeServer {
         });
         outcomes.push({ id: lane.id, ok: outcome.ok, message: outcome.message });
       }
-      json(response, 200, { ok: outcomes.every((row) => row.ok), outcomes });
-    })();
+      const merged = outcomes.filter((row) => row.ok).length;
+      const failed = outcomes.length - merged;
+      const message = `merged ${merged} lane${merged === 1 ? '' : 's'}${failed > 0 ? `, ${failed} could not merge` : ''}`;
+      return { status: 200, body: { ok: outcomes.every((row) => row.ok), jid: null, message, undoable: false, outcomes } };
+    }
   }
 
   /**

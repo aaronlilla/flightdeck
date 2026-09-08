@@ -2,14 +2,16 @@ import type { JSX } from 'react';
 /**
  * The console's root component: one store, fed from `/lanes`, `/thread`,
  * `/journal`, `/integrations`, `/caps`, `/proposals` on load and every 5s
- * after (the fallback), refreshed early on any `/events` frame. A heartbeat
- * frame marks the feed live and stamps `feed.lastHeartbeatAt`; two failed
- * fetches in a row, or the socket closing, flips `feed.live` false.
+ * after (the fallback). A `{ type: 'slice' }` frame on `/events` refetches that
+ * one slice; any other named event refetches everything. A heartbeat frame marks
+ * the feed live, stamps `feed.lastHeartbeatAt` and re-reads `/state` alone (the
+ * build check); two failed fetches in a row, or the socket closing, flips
+ * `feed.live` false.
  */
-import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useReducer, useRef } from 'react';
 
+import { ACTIONS, ActionsContext, EFFECT_SLICES, actionKey, errorText, showToast, type ActionSpec, type ActionsHost } from './actions.js';
 import * as api from './api.js';
-import { errorText, showToast } from './actions.js';
 import { BlockersView } from './components/BlockersView.js';
 import { CommandPalette, buildPaletteItems } from './components/CommandPalette.js';
 import { CostSheet } from './components/CostSheet.js';
@@ -30,7 +32,8 @@ import { TicketSheet } from './components/TicketSheet.js';
 import { Toast } from './components/Toast.js';
 import { TopBar } from './components/TopBar.js';
 import { focusableIn, trapTab } from './focus-trap.js';
-import { initialState, reducer, StoreContext } from './store.js';
+import { initialState, reducer, StoreContext, type ActionLink } from './store.js';
+import { isSliceEvent, type SliceName } from '../shared/console-events.js';
 import type { Message } from '../shared/console-model.js';
 import { commandEcho } from '../shared/humanize.js';
 import { EventStream, type EventStreamOptions } from './ws.js';
@@ -47,12 +50,6 @@ function receiptCard(jid: string | null, text: string, undoable: boolean): Messa
 
 export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   const [state, dispatch] = useReducer(reducer, undefined, initialState);
-  const [pendingConfirm, setPendingConfirm] = useState<{ k: string; id: string; cmd: 'kill' | 'merge'; card: Message } | null>(null);
-  // H2.3: the two bulk actions in the filter bar share this same confirm-card
-  // mechanism, keyed by kind rather than by lane id.
-  const [pendingBulk, setPendingBulk] = useState<{ k: string; kind: 'retire-finished' | 'merge-ready'; card: Message } | null>(null);
-  const pendingBulkRef = useRef(pendingBulk);
-  pendingBulkRef.current = pendingBulk;
   const failCount = useRef(0);
   const servedBuildRef = useRef<string | null>(null);
   const mounted = useRef(true);
@@ -65,34 +62,13 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   // triggers already asks for the mode the operator just clicked.
   const verboseRef = useRef(state.verbose);
   verboseRef.current = state.verbose;
-  // The confirm card is client-only until Confirm is clicked, but `refresh()` replaces
-  // `state.thread` wholesale from the server's `/thread`, which never echoes it back.
-  // `/events` fires on every journal event from every lane, including the one an
-  // operator is mid-confirm on killing, so a refresh can land in the gap between the
-  // card appearing and the click -- silently, with no error. Kept in a ref (rather than
-  // read from `pendingConfirm` directly) because `refresh` is a stable `useCallback`
-  // with no dependency on it.
-  const pendingConfirmRef = useRef(pendingConfirm);
-  pendingConfirmRef.current = pendingConfirm;
-  // D2.1: `runAction` appends a receipt/refusal card (via `appendReceipt`) and then
-  // immediately awaits `refresh()`. `refresh()` replaces `state.thread` wholesale from
-  // `/thread`, which has no row for a client-only card the way it has none for the
-  // confirm card above -- so without this, a 501's refusal card renders for one tick
-  // and vanishes the instant that same `refresh()` call lands. Kept as a short-lived
-  // list (same mechanism as `pendingConfirmRef`) rather than merged in forever: a card
-  // ages out once the server's own thread has had a reasonable window to carry it, so
-  // this never grows into a second, unbounded copy of the thread.
-  const localCardsRef = useRef<Message[]>([]);
-  const LOCAL_CARD_TTL_MS = 30_000;
   // A server round-trip confirm/plan card (from `POST /command`) is persisted to
   // `thread.jsonl` unresolved and never mutated there once its own button is clicked,
-  // so `refresh()`'s wholesale replace of `state.thread` would otherwise keep
-  // reviving it as "awaiting you"/"awaiting go" with live buttons forever. Clicking
-  // Confirm/Run plan/Not now records the outcome here, keyed by the card's own `k`
-  // (found by matching the exact btn command just sent), and `refresh()` re-applies
-  // it onto the freshly fetched thread until it ages out, the same TTL idea as
-  // `localCardsRef`, applied to a field rather than a whole card.
+  // so a `/thread` replace would otherwise keep reviving it as "awaiting you" with live
+  // buttons forever. Clicking Confirm/Run plan/Not now records the outcome here, keyed
+  // by the card's own `k`, and every thread fetch re-applies it until it ages out.
   const resolvedOverridesRef = useRef<Map<string, { resolved: 'confirmed' | 'declined'; at: number }>>(new Map());
+  const LOCAL_CARD_TTL_MS = 30_000;
   // Load-verify finding: the 5s poll and every `/events` frame both call `refresh`, with
   // nothing stopping either from starting a second one while the first is still waiting
   // on a slow `/lanes` (the response that a few thousand lanes over a few hundred
@@ -100,6 +76,79 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   // only compounds the load that caused it -- the fix is to skip a refresh outright
   // while one is already in flight, never to queue it.
   const refreshing = useRef(false);
+
+  // The store re-attaches this page's own local cards on every `thread` replace (see
+  // `localCards` in store.ts); the resolved-override patch above is the one thread
+  // adjustment that still lives here.
+  const applyResolved = useCallback((messages: Message[]): Message[] => {
+    const cutoff = Date.now() - LOCAL_CARD_TTL_MS;
+    for (const [k, override] of [...resolvedOverridesRef.current]) {
+      if (override.at < cutoff) resolvedOverridesRef.current.delete(k);
+    }
+    if (resolvedOverridesRef.current.size === 0) return messages;
+    return messages.map((m) => {
+      const override = resolvedOverridesRef.current.get(m.k);
+      return override && m.resolved === undefined ? { ...m, resolved: override.resolved } : m;
+    });
+  }, []);
+
+  /** One slice, refetched on its own: what a `{ type: 'slice' }` frame asks for, and
+   *  what an action's own effect refetches the moment it answers. */
+  const refreshSlice = useCallback(async (slice: SliceName) => {
+    try {
+      switch (slice) {
+        case 'lanes': {
+          const lanes = await api.getLanes({ all: true });
+          if (mounted.current) dispatch({ type: 'lanes', lanes: lanes.lanes, links: lanes.links });
+          break;
+        }
+        case 'conductor': {
+          const thread = await api.getThread({ verbose: verboseRef.current });
+          if (mounted.current) dispatch({ type: 'thread', thread: applyResolved(thread.messages) });
+          break;
+        }
+        case 'journal': {
+          const journal = await api.getJournal();
+          if (mounted.current) dispatch({ type: 'journal', journal: journal.rows });
+          break;
+        }
+        case 'integrations': {
+          const integrations = await api.getIntegrations();
+          if (mounted.current) dispatch({ type: 'integrations', integrations: integrations.items });
+          break;
+        }
+        case 'caps': {
+          const caps = await api.getCaps();
+          if (mounted.current) dispatch({ type: 'caps', caps });
+          break;
+        }
+        case 'proposals': {
+          const proposals = await api.getProposals();
+          if (mounted.current) dispatch({ type: 'proposals', proposals });
+          break;
+        }
+        case 'queue': {
+          const queue = await api.getQueue();
+          if (mounted.current) dispatch({ type: 'queue', items: queue.items, paused: queue.paused, maxInFlight: queue.maxInFlight, pauseReason: queue.pauseReason });
+          break;
+        }
+        case 'blockers': {
+          const blockers = await api.getBlockers();
+          if (mounted.current) dispatch({ type: 'blockers', blockers });
+          break;
+        }
+        case 'accounts':
+          // No accounts slice is read by this console yet; the frame is accepted so a
+          // server publishing it is not an error here.
+          break;
+        default:
+          break;
+      }
+    } catch {
+      // A single slice failing to refetch is not a lost feed: the 5s poll reports
+      // that on its own terms. Nothing here is swallowed into a green.
+    }
+  }, [applyResolved]);
 
   const refresh = useCallback(async () => {
     if (refreshing.current) return;
@@ -144,39 +193,9 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       const endedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
       dispatch({ type: 'fetch-latency', ms: Math.round(endedAt - startedAt) });
       if (lanes) dispatch({ type: 'lanes', lanes: lanes.lanes, links: lanes.links });
-      if (thread) {
-        // Re-attach an unconfirmed confirm card the server's own `/thread` never
-        // carries, rather than letting this refetch silently erase the last line of
-        // defence before an irreversible action.
-        const pending = pendingConfirmRef.current;
-        const pendingBulkCard = pendingBulkRef.current;
-        let incomingThread = pending && !thread.messages.some((m) => m.k === pending.k)
-          ? [...thread.messages, pending.card]
-          : thread.messages;
-        if (pendingBulkCard && !incomingThread.some((m) => m.k === pendingBulkCard.k)) {
-          incomingThread = [...incomingThread, pendingBulkCard.card];
-        }
-        const cutoff = Date.now() - LOCAL_CARD_TTL_MS;
-        localCardsRef.current = localCardsRef.current.filter((card) => card.ts >= cutoff);
-        for (const card of localCardsRef.current) {
-          if (incomingThread.some((m) => m.k === card.k)) continue;
-          // The server persists the operator's own card too (`ConsoleWrites.command`),
-          // under its own key: once that copy arrives, the local bubble for the same
-          // words sent moments before is the same message and must not show twice.
-          if (card.type === 'operator' && incomingThread.some((m) => m.type === 'operator' && m.text === card.text && Math.abs(m.ts - card.ts) < LOCAL_CARD_TTL_MS)) continue;
-          incomingThread = [...incomingThread, card];
-        }
-        for (const [k, override] of [...resolvedOverridesRef.current]) {
-          if (override.at < cutoff) resolvedOverridesRef.current.delete(k);
-        }
-        if (resolvedOverridesRef.current.size > 0) {
-          incomingThread = incomingThread.map((m) => {
-            const override = resolvedOverridesRef.current.get(m.k);
-            return override && m.resolved === undefined ? { ...m, resolved: override.resolved } : m;
-          });
-        }
-        dispatch({ type: 'thread', thread: incomingThread });
-      }
+      // Local cards, their TTL and the operator-bubble dedupe live in the reducer's
+      // own `thread` case now, so every replace gets them rather than this one call site.
+      if (thread) dispatch({ type: 'thread', thread: applyResolved(thread.messages) });
       if (journal) dispatch({ type: 'journal', journal: journal.rows });
       if (integrations) dispatch({ type: 'integrations', integrations: integrations.items });
       if (caps) dispatch({ type: 'caps', caps });
@@ -221,14 +240,24 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     const stream = new EventStream(
       {
         onEvent: (event) => {
+          if (isSliceEvent(event)) {
+            void refreshSlice(event.slice);
+            return;
+          }
           if ((event as { type?: string }).type === 'heartbeat') {
             dispatch({ type: 'heartbeat', at: (event as { at?: number }).at ?? Date.now() });
             dispatch({ type: 'feed-live' });
+            // The build check rides the heartbeat: `/state` alone, never every slice.
+            void api.getState().then((consoleState) => {
+              if (!mounted.current || !consoleState.build) return;
+              if (servedBuildRef.current && servedBuildRef.current !== consoleState.build) {
+                window.location.reload();
+                return;
+              }
+              servedBuildRef.current = consoleState.build;
+            }).catch(() => undefined);
+            return;
           }
-          // Every frame refreshes, `lane.live` (the server's 2s liveness ticker
-          // flipping a worker alive or dead) included -- no special case needed, the
-          // same `refresh()` that a heartbeat or a journal event triggers picks up the
-          // new `live` field on the very next `/lanes` read.
           void refresh();
         },
         onStatusChange: (status) => {
@@ -247,13 +276,24 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       clearInterval(clock);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refresh]);
+  }, [refresh, refreshSlice]);
 
   const appendReceipt = useCallback((jid: string | null, text: string, undoable: boolean) => {
-    const card = receiptCard(jid, text, undoable);
-    localCardsRef.current = [...localCardsRef.current, card];
-    dispatch({ type: 'thread-append', messages: [card] });
+    dispatch({ type: 'thread-append', messages: [receiptCard(jid, text, undoable)], local: true });
   }, []);
+
+  /** What every `useAction` in the tree needs from the page: the slice refetch, how
+   *  to follow a link to an effect, and how to release a declined server confirm. */
+  const actionsHost: ActionsHost = {
+    refreshSlices: (slices) => { for (const slice of slices) void refreshSlice(slice); },
+    follow: (link: ActionLink) => {
+      if (link.kind === 'lane') dispatch({ type: 'sheet', sheet: { type: 'ticket', id: link.id } });
+      else if (link.kind === 'view') dispatch({ type: 'view', view: link.view });
+      else if (link.kind === 'journal') dispatch({ type: 'sheet', sheet: { type: 'journal', run: link.jid } });
+      else if (typeof window !== 'undefined') window.open(link.href, '_blank', 'noopener');
+    },
+    release: (token) => { void api.sendCommand(`dismiss ${token}`).catch(() => undefined); },
+  };
 
   // A person's name for a lane id or ticket key -- the ticket, else the title, else
   // null (the machine id it came from, never printed as a fallback). Every place the
@@ -267,128 +307,10 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     return null;
   }, [state.lanes, state.archivedLanes]);
 
-  // The shared action-feedback contract (actions.ts's useAction) applied to a
-  // fire-through-App callback rather than a component-local hook: `key` marks the
-  // action busy in the store (so a lane tile or the top bar watching that key
-  // renders it), and every outcome -- success or failure -- ends in a toast, never
-  // just the rail's receipt card, which is invisible outside the board view.
-  const runAction = useCallback(async (
-    key: string, busyLabel: string,
-    fn: () => Promise<{ ok: boolean; jid: string | null; message: string; undoable: boolean }>,
-  ) => {
-    if (key in stateRef.current.pending) return;
-    dispatch({ type: 'pending-set', key, label: busyLabel });
-    try {
-      const result = await fn();
-      appendReceipt(result.jid, result.message, result.undoable);
-      showToast(dispatch, result.message || 'done', result.ok);
-    } catch (caught) {
-      const message = caught instanceof api.ApiError ? errorText(caught) : 'the action did not go through';
-      appendReceipt(null, message, false);
-      showToast(dispatch, message, false);
-    } finally {
-      dispatch({ type: 'pending-clear', key });
-    }
-    await refresh();
-  }, [appendReceipt, refresh]);
-
-  // The rail's own receipt is invisible from the Queue tab, so an add/remove/retry/
-  // merge/promote there landed with no feedback at all short of switching tabs to check
-  // the rail. Kept as a thin alias over the shared toast helper for call sites (Settings,
-  // the Queue add form) that need a toast with no busy key or receipt attached.
+  // A toast shows the same text an action's own control shows, on views where the
+  // rail is not mounted (queue, settings). The control's inline result is the primary
+  // feedback; this is the glance-level copy.
   const queueToast = useCallback((text: string, ok: boolean) => showToast(dispatch, text, ok), []);
-
-  const runQueueAction = useCallback(async (
-    key: string, busyLabel: string,
-    fn: () => Promise<{ ok: boolean; jid: string | null; message: string; undoable: boolean }>,
-  ) => {
-    if (key in stateRef.current.pending) return;
-    dispatch({ type: 'pending-set', key, label: busyLabel });
-    try {
-      const result = await fn();
-      appendReceipt(result.jid, result.message, result.undoable);
-      showToast(dispatch, result.message, result.ok);
-    } catch (caught) {
-      const message = caught instanceof api.ApiError ? errorText(caught) : 'the action did not go through';
-      appendReceipt(null, message, false);
-      showToast(dispatch, message, false);
-    } finally {
-      dispatch({ type: 'pending-clear', key });
-    }
-    await refresh();
-  }, [appendReceipt, refresh]);
-
-  const resolveConfirm = useCallback((k: string, confirmed: boolean) => {
-    dispatch({
-      type: 'thread',
-      thread: state.thread.map((m) => (m.k === k ? { ...m, resolved: confirmed ? 'confirmed' : 'declined' } : m)),
-    });
-    if (confirmed && pendingConfirm && pendingConfirm.k === k) {
-      const fn = pendingConfirm.cmd === 'kill' ? () => api.killRun(pendingConfirm.id, 'operator confirmed') : () => api.mergeRun(pendingConfirm.id);
-      void runAction(`${pendingConfirm.cmd}:${pendingConfirm.id}`, pendingConfirm.cmd === 'kill' ? 'Killing…' : 'Merging…', fn);
-    }
-    if (confirmed && pendingBulk && pendingBulk.k === k) {
-      if (pendingBulk.kind === 'retire-finished') {
-        void runAction('retire-finished', 'Retiring finished lanes…', async (): Promise<{ ok: boolean; jid: string | null; message: string; undoable: boolean }> => {
-          const r = await api.postRetireFinished();
-          return { ok: r.ok, jid: null, message: `retired ${r.retired.length} lanes`, undoable: false };
-        }).then(() => {
-          void api.getLanes({ archived: true }).then((res) => dispatch({ type: 'archived-lanes', lanes: res.lanes })).catch(() => undefined);
-        });
-      } else {
-        void runAction('merge-ready', 'Merging ready lanes…', async (): Promise<{ ok: boolean; jid: string | null; message: string; undoable: boolean }> => {
-          const r = await api.postMergeReady();
-          const merged = r.outcomes.filter((row) => row.ok);
-          const failed = r.outcomes.filter((row) => !row.ok);
-          const tail = failed.length > 0 ? `, ${failed.length} could not merge` : '';
-          return { ok: r.ok, jid: null, message: `merged ${merged.length} lanes${tail}`, undoable: false };
-        });
-      }
-    }
-    setPendingConfirm(null);
-    setPendingBulk(null);
-  }, [state.thread, pendingConfirm, pendingBulk, runAction]);
-
-  const onCleanUp = useCallback(() => {
-    void (async () => {
-      try {
-        const preview = await api.getRetireFinishedPreview();
-        if (preview.items.length === 0) { appendReceipt(null, 'nothing to retire.', false); return; }
-        const k = `confirm-cleanup-${Date.now()}`;
-        const titles = preview.items.map((i) => i.title ?? i.id).join(', ');
-        const card: Message = {
-          k, type: 'confirm', text: `Retire ${preview.items.length} finished lanes:`, ts: Date.now(), source: 'console', blast: titles,
-        };
-        setPendingBulk({ k, kind: 'retire-finished', card });
-        dispatch({ type: 'thread-append', messages: [card] });
-      } catch (caught) {
-        appendReceipt(null, caught instanceof api.ApiError ? errorText(caught) : 'clean up did not go through', false);
-      }
-    })();
-  }, [appendReceipt]);
-
-  const onMergeReady = useCallback(() => {
-    void (async () => {
-      try {
-        const preview = await api.getMergeReadyPreview();
-        if (preview.ready.length === 0 && preview.notReady.length === 0) { appendReceipt(null, 'nothing is ready to merge.', false); return; }
-        const k = `confirm-merge-ready-${Date.now()}`;
-        const readyPart = preview.ready.map((r) => (r.pr ? `${r.title ?? r.id} (PR #${r.pr.no})` : (r.title ?? r.id))).join(', ');
-        const notReadyPart = preview.notReady.map((r) => `${r.title ?? r.id}: ${r.why}`).join('; ');
-        const blast = [
-          preview.ready.length > 0 ? `ready: ${readyPart}` : null,
-          preview.notReady.length > 0 ? `not ready: ${notReadyPart}` : null,
-        ].filter(Boolean).join(' · ');
-        const card: Message = {
-          k, type: 'confirm', text: `Merge ${preview.ready.length} ready lanes:`, ts: Date.now(), source: 'console', blast,
-        };
-        setPendingBulk({ k, kind: 'merge-ready', card });
-        dispatch({ type: 'thread-append', messages: [card] });
-      } catch (caught) {
-        appendReceipt(null, caught instanceof api.ApiError ? errorText(caught) : 'merge ready did not go through', false);
-      }
-    })();
-  }, [appendReceipt]);
 
   // The prototype's own `handle(text)` -- confirm/decline resolution, else a
   // POST /command round trip -- runs identically whether the text was typed into
@@ -398,17 +320,8 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   const processCommand = useCallback((text: string) => {
     const trimmed = text.trim();
     if (!trimmed) return;
-    // A lane-tile Kill/Merge and the two filter-bar bulk actions each keep their own
-    // pending confirm as local state (see `pendingConfirm`/`pendingBulk` above) and
-    // never round-trip to the server for the confirm/decline itself, so only a
-    // command that names exactly that pending card's own `k` is handled here. Any
-    // other `confirm <token>` / `dismiss <token>` / `run <token>` (a card the server
-    // issued from a typed command) falls through to `api.sendCommand` below, which is
-    // where its token actually lives.
-    if (pendingConfirm && trimmed === `confirm ${pendingConfirm.k}`) { resolveConfirm(pendingConfirm.k, true); return; }
-    if (pendingConfirm && trimmed === `decline ${pendingConfirm.k}`) { resolveConfirm(pendingConfirm.k, false); return; }
-    if (pendingBulk && trimmed === `confirm ${pendingBulk.k}`) { resolveConfirm(pendingBulk.k, true); return; }
-    if (pendingBulk && trimmed === `decline ${pendingBulk.k}`) { resolveConfirm(pendingBulk.k, false); return; }
+    // Every confirm, dismiss and run token lives in the server's own pending map, so
+    // every one of them round-trips through `/command`; nothing is resolved locally.
     // Item 7: clicking a question's option (or typing a free-text answer) still
     // bypasses `onRailSend`'s operator bubble -- this is the one place that path
     // still needs one, since "Answered: <option>" is the one honest thing to say
@@ -416,34 +329,33 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     // echoes nothing, matching the design this rail already had.
     if (/^answer\s/i.test(trimmed)) {
       const card: Message = { k: `op-${Date.now()}-${Math.random()}`, type: 'operator', text: commandEcho(trimmed, { labelFor }), ts: Date.now(), source: 'operator' };
-      localCardsRef.current = [...localCardsRef.current, card];
-      dispatch({ type: 'thread-append', messages: [card] });
+      dispatch({ type: 'thread-append', messages: [card], local: true });
     }
-    // W4 (2026-09-08): a model call takes seconds, and a rail that shows nothing for
-    // five seconds reads as broken. A local working row goes up the moment the message
-    // leaves, tool receipts stream in over the live feed underneath it, and it comes
-    // down when the reply lands. If the class timeout passes first, the row says so.
+    // A model call takes seconds, and a rail that shows nothing for five seconds reads
+    // as broken. A local working row goes up the moment the message leaves, tool
+    // receipts stream in over the live feed underneath it, and it comes down when the
+    // reply lands. If the class timeout passes first, the row says so. The composer's
+    // own control reads `key` for pending and the reply for its inline result.
+    const key = 'sendCommand:rail';
     const tokenAction = trimmed.match(/^(confirm|run|dismiss)\s+\S+$/i);
     const working: Message | null = tokenAction ? null : {
       k: `working-${Date.now()}-${Math.random()}`, type: 'thinking', text: 'Conductor is working…', ts: Date.now(), source: 'conductor',
     };
     let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
     if (working) {
-      localCardsRef.current = [...localCardsRef.current, working];
-      dispatch({ type: 'thread-append', messages: [working] });
+      dispatch({ type: 'thread-append', messages: [working], local: true });
       const seconds = Math.round(stateRef.current.conductorTimeoutMs / 1000);
       timeoutTimer = setTimeout(() => {
         const text = `the Conductor did not answer in ${seconds}s; the grammar answered instead…`;
-        localCardsRef.current = localCardsRef.current.map((card) => (card.k === working.k ? { ...card, text } : card));
-        dispatch({ type: 'thread', thread: stateRef.current.thread.map((card) => (card.k === working.k ? { ...card, text } : card)) });
+        dispatch({ type: 'local-card-text', k: working.k, text });
       }, stateRef.current.conductorTimeoutMs);
     }
     const dropWorking = () => {
       if (!working) return;
       if (timeoutTimer) clearTimeout(timeoutTimer);
-      localCardsRef.current = localCardsRef.current.filter((card) => card.k !== working.k);
-      dispatch({ type: 'thread', thread: stateRef.current.thread.filter((card) => card.k !== working.k) });
+      dispatch({ type: 'local-card-drop', k: working.k });
     };
+    dispatch({ type: 'action-pending', key });
     void (async () => {
       try {
         const response = await api.sendCommand(trimmed);
@@ -452,6 +364,8 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
         // this rail already showed its own bubble, so only the answer is appended.
         const answer = response.cards.filter((card) => card.type !== 'operator');
         if (answer.length > 0) dispatch({ type: 'thread-append', messages: answer });
+        const refused = answer.some((card) => card.type === 'refusal');
+        dispatch({ type: 'action-result', key, result: { kind: 'done', ok: !refused, text: answer[0]?.text ?? 'no reply', jid: null, at: Date.now(), link: null } });
         // The card this command actioned lives only in `thread.jsonl`, unresolved:
         // see `resolvedOverridesRef` above for why `refresh()` needs this recorded
         // rather than patched once here.
@@ -462,11 +376,13 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
         }
       } catch (caught) {
         dropWorking();
-        appendReceipt(null, caught instanceof api.ApiError ? errorText(caught) : 'the command did not go through', false);
+        const message = caught instanceof api.ApiError ? errorText(caught) : 'the command did not go through';
+        appendReceipt(null, message, false);
+        dispatch({ type: 'action-result', key, result: { kind: 'done', ok: false, text: message, jid: null, at: Date.now(), link: null } });
       }
-      await refresh();
+      for (const slice of EFFECT_SLICES[ACTIONS.sendCommand.effect]) void refreshSlice(slice);
     })();
-  }, [pendingConfirm, pendingBulk, resolveConfirm, appendReceipt, refresh, labelFor]);
+  }, [appendReceipt, refreshSlice, labelFor]);
 
   // D2.2: TicketSheet's own run-thread `MessageCard` wires `onCommand` to
   // `(text) => onCommand(lane.id, text)` -- this same exact-match switch. A
@@ -478,22 +394,6 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   // up on the exact same command path either way.
   const onCommand = useCallback((id: string, cmd: string) => {
     const lane = state.lanes.find((l) => l.id === id);
-    if (cmd === 'kill' || cmd === 'merge') {
-      const k = `confirm-${id}-${Date.now()}`;
-      const card: Message = {
-        k, type: 'confirm', text: `${cmd === 'kill' ? 'Kill' : 'Merge'} ${labelFor(id) ?? id}?`, ts: Date.now(), source: 'console',
-        blast: cmd === 'kill' ? 'discards the working diff and stops the sandbox.' : 'merges the PR and closes the ticket.',
-      };
-      // Kept alongside the card's own thread entry so `refresh()` can put it back
-      // verbatim if a `/thread` refetch lands before the operator confirms.
-      setPendingConfirm({ k, id, cmd, card });
-      // The confirm card lives in the rail; a sheet's modal overlay sits above it and
-      // would make Confirm/Not now unreachable, so the sheet closes the moment an
-      // irreversible action starts.
-      dispatch({ type: 'sheet', sheet: null });
-      dispatch({ type: 'thread-append', messages: [card] });
-      return;
-    }
     if (cmd === 'watch' || cmd === 'council' || cmd === 'gate-log' || cmd === 'answer') {
       dispatch({ type: 'sheet', sheet: { type: 'ticket', id, ...(cmd === 'council' ? { focus: 'audit' } : {}) } });
       return;
@@ -502,23 +402,12 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       if (lane?.pr?.url && typeof window !== 'undefined') window.open(lane.pr.url, '_blank', 'noopener');
       return;
     }
-    if (cmd === 'reconnect-aws') {
-      if (lane?.blockedBy) {
-        void runAction(`reconnect:${lane.blockedBy}`, 'Reconnecting…', () => api.reconnectIntegration(lane.blockedBy as string).then((r) => ({ ...r, undoable: false })));
-      }
-      return;
-    }
-    if (cmd === 'pause') void runAction(`pause:${id}`, 'Pausing…', () => api.pauseRun(id));
-    else if (cmd === 'resume') void runAction(`resume:${id}`, 'Resuming…', () => api.resumeRun(id));
-    else if (cmd === 'compact') void runAction(`compact:${id}`, 'Compacting…', () => api.compactRun(id));
-    else if (cmd === 'verify') void runAction(`verify:${id}`, 'Verifying…', () => api.verifyRun(id));
-    else if (cmd === 'reopen') void runAction(`reopen:${id}`, 'Reopening…', () => api.reopenRun(id));
-    else if (cmd === 'unretire') {
-      void runAction(`unretire:${id}`, 'Unretiring…', () => api.unretireRun(id)).then(() => {
-        void api.getLanes({ archived: true }).then((r) => dispatch({ type: 'archived-lanes', lanes: r.lanes })).catch(() => undefined);
-      });
-    } else processCommand(cmd);
-  }, [state.lanes, appendReceipt, refresh, runAction, processCommand, labelFor]);
+    // A lane mutation (kill, merge, pause, resume, compact, verify, reopen, unretire,
+    // reconnect) renders as `LaneCta`, which runs the catalog action where it was
+    // clicked; a command reaching here that is none of the openers above is free text
+    // from a card button and goes to the grammar.
+    processCommand(cmd);
+  }, [state.lanes, processCommand]);
 
   // Typed composer text (and the rail's quick-command chips, which the prototype
   // also routes through `send()`) echoes an operator bubble before processing.
@@ -534,8 +423,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     const card: Message = {
       k: `op-${Date.now()}-${Math.random()}`, type: 'operator', text: commandEcho(trimmed, { labelFor }), ts: Date.now(), source: 'operator',
     };
-    localCardsRef.current = [...localCardsRef.current, card];
-    dispatch({ type: 'thread-append', messages: [card] });
+    dispatch({ type: 'thread-append', messages: [card], local: true });
     processCommand(trimmed);
   }, [processCommand, labelFor]);
 
@@ -543,7 +431,35 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   // straight to a method call, never to `send()`, so no fake operator bubble.
   const onRailCommand = useCallback((text: string) => { processCommand(text); }, [processCommand]);
 
-  const onUndo = useCallback((jid: string) => { void runAction(`undo:${jid}`, 'Undoing…', () => api.undoJournal(jid)); }, [runAction]);
+  // Undo from a rail card or the journal sheet: the catalog entry, run without a
+  // control of its own, so the receipt still lands in the rail and the slices refetch.
+  /**
+   * One catalog action run from here rather than from a control of its own, for the
+   * two places where the button lives inside a child that takes a callback: the
+   * journal's Undo and the ticket sheet's Amend. Same four promises as `useAction`,
+   * minus the inline result, which the child renders itself.
+   */
+  const runCatalogAction = useCallback(<A extends unknown[], R>(
+    spec: ActionSpec<A, R>, args: A, ref?: string,
+  ): Promise<void> => {
+    const key = actionKey(spec.id, ref);
+    dispatch({ type: 'action-pending', key });
+    return spec.call(args).then((result) => {
+      const ok = spec.ok ? spec.ok(result) : true;
+      const text = spec.text(result, args);
+      const jid = spec.jid?.(result) ?? null;
+      dispatch({ type: 'action-result', key, result: { kind: 'done', ok, text, jid, at: Date.now(), link: spec.link?.(args, result) ?? null } });
+      appendReceipt(jid, text, false);
+    }, (caught: unknown) => {
+      const message = errorText(caught);
+      dispatch({ type: 'action-result', key, result: { kind: 'done', ok: false, text: message, jid: null, at: Date.now(), link: null } });
+      appendReceipt(null, message, false);
+    }).then(() => { for (const slice of EFFECT_SLICES[spec.effect]) void refreshSlice(slice); });
+  }, [appendReceipt, refreshSlice]);
+
+  const onUndo = useCallback((jid: string) => {
+    void runCatalogAction(ACTIONS.undoJournal, [jid], jid);
+  }, [runCatalogAction]);
 
   const onOpenJournal = useCallback((jid: string) => {
     dispatch({ type: 'sheet', sheet: { type: 'journal', run: jid } });
@@ -568,13 +484,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
 
   const needs = buildNeeds(state.lanes, state.integrations, (kind, id) => {
     if (kind === 'lane') dispatch({ type: 'sheet', sheet: { type: 'ticket', id } });
-    else void runAction(`reconnect:${id}`, 'Reconnecting…', () => api.reconnectIntegration(id).then((r) => ({ ...r, undoable: false })));
-  }, () => dispatch({ type: 'view', view: 'settings' }), state.now, (key) => {
-    // `receiptCard` reads success off `jid` being non-null (`type: jid ? 'receipt' :
-    // 'refusal'`), so a genuine success with no jid would render as a red Refused
-    // card -- pass the server's own jid through rather than a hardcoded null.
-    void runAction(`dismiss-ask:${key}`, 'Dismissing…', () => api.dismissAsk(key).then((r) => ({ ...r, message: 'stale ask dismissed.', undoable: false })));
-  });
+  }, () => dispatch({ type: 'view', view: 'settings' }), state.now);
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent): void {
@@ -619,28 +529,29 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   );
 
   const repos = [...new Set(state.lanes.map((l) => l.repo).filter((r): r is string => Boolean(r)))];
-  const settingsBadge = state.integrations.filter((i) => i.status === 'down').length;
-  // How many lanes on the board have a worker answering right now -- the header's own
-  // pulsing "N live" chip, hidden the instant this hits 0.
+  // The top bar's own live count, off the liveness ticker's `lane.live` rather than
+  // the lane state, so a row whose process died reads as not live at once.
   const liveCount = state.lanes.filter((l) => l.live.alive).length;
+  const settingsBadge = state.integrations.filter((i) => i.status === 'down').length;
   const reviewBadge = state.proposals?.rules.filter((r) => r.status === 'open').length ?? 0;
   const queueBadge = state.queue.filter((i) => i.state === 'parked' || i.state === 'failed').length;
   const blockersBadge = state.blockers?.blockers.filter((b) => b.state === 'open' && b.youCanResolve).length ?? 0;
 
   return (
     <StoreContext.Provider value={{ state, dispatch }}>
+      <ActionsContext.Provider value={actionsHost}>
       <div className={`${state.theme} app`} tabIndex={-1}>
         <DisconnectedBanner feed={state.feed} onRetry={() => void refresh()} />
         <QueueOffBanner queueOn={state.queueOn} />
         <TopBar
+          pending={state.pending}
+          liveCount={liveCount}
           view={state.view} settingsBadge={settingsBadge} reviewBadge={reviewBadge} queueBadge={queueBadge}
           blockersBadge={blockersBadge}
           caps={state.caps} tokensToday={state.caps?.tokensToday ?? 0} feed={state.feed} now={state.now}
           fetchLatencyMs={state.fetchLatencyMs}
           theme={state.theme}
           verbose={state.verbose}
-          pending={state.pending}
-          liveCount={liveCount}
           onNav={(view) => dispatch({ type: 'view', view })}
           onOpenPalette={() => dispatch({ type: 'palette-open', open: true })}
           onOpenCost={() => dispatch({ type: 'sheet', sheet: { type: 'fleet-cost' } })}
@@ -667,13 +578,10 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
                 }}
                 onSort={(sort) => dispatch({ type: 'sort', sort })}
                 onToggleProbes={() => dispatch({ type: 'toggle-probes' })}
-                onCleanUp={onCleanUp}
-                onMergeReady={onMergeReady}
               />
               <LanesGrid
                 lanes={state.filter === 'archived' ? state.archivedLanes : state.lanes}
                 filter={state.filter} sort={state.sort} feedLive={state.feed.live} now={state.now} showProbes={state.showProbes}
-                pending={state.pending}
                 onOpen={(id) => dispatch({ type: 'sheet', sheet: { type: 'ticket', id } })}
                 onOpenCost={(id) => dispatch({ type: 'sheet', sheet: { type: 'cost', id } })}
                 onCommand={onCommand}
@@ -695,97 +603,18 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
           <Settings
             integrations={state.integrations} caps={state.caps} journalCount={state.journal.length}
             journal={state.journal} rules={state.proposals?.rules ?? []} lanes={state.lanes} feed={state.feed} now={state.now}
-            onCheck={(id) => void (async () => {
-              const key = `check:${id}`;
-              if (key in stateRef.current.pending) return;
-              dispatch({ type: 'pending-set', key, label: 'Checking…' });
-              try {
-                const r = await api.checkIntegration(id);
-                dispatch({ type: 'integrations', integrations: r.items });
-                showToast(dispatch, 'checked', true);
-              } catch (caught) {
-                // The rail (where a receipt/refusal card would render) is only mounted
-                // on the board view, so a Settings-screen action needs the toast --
-                // visible on every view -- not just a receipt nobody here can see.
-                queueToast(caught instanceof api.ApiError ? errorText(caught) : 'check did not go through', false);
-              } finally {
-                dispatch({ type: 'pending-clear', key });
-              }
-            })()}
-            onReconnect={(id) => void (async () => {
-              const key = `reconnect:${id}`;
-              if (key in stateRef.current.pending) return;
-              dispatch({ type: 'pending-set', key, label: 'Reconnecting…' });
-              try {
-                const r = await api.reconnectIntegration(id);
-                appendReceipt(r.jid, r.message, false);
-                queueToast(r.message, true);
-              } catch (caught) {
-                queueToast(caught instanceof api.ApiError ? errorText(caught) : 'reconnect did not go through', false);
-              } finally {
-                dispatch({ type: 'pending-clear', key });
-              }
-              await refresh();
-            })()}
-            onCheckAll={() => void refresh()}
-            onSaveCaps={async (dailyTokens, runTokens) => {
-              const key = 'save-caps';
-              if (key in stateRef.current.pending) return;
-              dispatch({ type: 'pending-set', key, label: 'Saving caps…' });
-              try {
-                const caps = await api.setCaps({ dailyTokens, runTokens });
-                dispatch({ type: 'caps', caps });
-                showToast(dispatch, 'caps saved', true);
-              } catch (caught) {
-                const message = caught instanceof api.ApiError ? errorText(caught) : 'caps did not save';
-                appendReceipt(null, message, false);
-                showToast(dispatch, message, false);
-              } finally {
-                dispatch({ type: 'pending-clear', key });
-              }
-            }}
+            onCheckAll={() => void refreshSlice('integrations')}
+            onToast={queueToast}
             onOpenJournal={() => dispatch({ type: 'sheet', sheet: { type: 'journal' } })}
           />
         ) : null}
         {state.view === 'review' ? (
-          <FlightReview
-            proposals={state.proposals} now={state.now}
-            onApply={(id) => void runAction(`apply:${id}`, 'Applying…', () => api.applyProposal(id)).then(() => refresh())}
-            onDismiss={(id) => void runAction(`dismiss:${id}`, 'Dismissing…', () => api.dismissProposal(id))}
-            onRestore={(id) => void runAction(`restore:${id}`, 'Restoring…', () => api.restoreProposal(id))}
-            onUndo={onUndo}
-          />
+          <FlightReview proposals={state.proposals} now={state.now} onUndo={onUndo} />
         ) : null}
         {state.view === 'queue' ? (
           <QueueView
             items={state.queue} paused={state.queuePaused} pauseReason={state.queuePauseReason} maxInFlight={state.queueMaxInFlight}
-            onAdd={(source, input) => void (async () => {
-              const key = 'queue-add';
-              if (key in stateRef.current.pending) return;
-              dispatch({ type: 'pending-set', key, label: 'Adding to queue…' });
-              try {
-                const result = await api.addToQueue({ source, input });
-                if (result.ok) {
-                  queueToast(`added ${result.items.length} item${result.items.length === 1 ? '' : 's'} to the queue`, true);
-                } else {
-                  appendReceipt(null, result.error ?? 'the add did not go through', false);
-                  queueToast(result.error ?? 'the add did not go through', false);
-                }
-              } catch (caught) {
-                const message = caught instanceof api.ApiError ? errorText(caught) : 'the add did not go through';
-                appendReceipt(null, message, false);
-                queueToast(message, false);
-              } finally {
-                dispatch({ type: 'pending-clear', key });
-              }
-              await refresh();
-            })()}
-            onRemove={(id) => void runQueueAction(`queue-remove:${id}`, 'Removing…', () => api.removeQueueItem(id))}
-            onRetry={(id) => void runQueueAction(`queue-retry:${id}`, 'Retrying…', () => api.retryQueueItem(id))}
-            onPause={() => void runQueueAction('queue-pause', 'Pausing the queue…', () => api.pauseQueue())}
-            onResume={() => void runQueueAction('queue-resume', 'Resuming the queue…', () => api.resumeQueue())}
-            onMerge={(id) => void runQueueAction(`queue-merge:${id}`, 'Merging…', () => api.mergeQueueItem(id))}
-            onPromote={(id, version, message) => void runQueueAction(`queue-promote:${id}`, 'Promoting…', () => api.promoteQueueItem(id, version, message))}
+            onToast={queueToast}
           />
         ) : null}
         {state.view === 'blockers' ? (
@@ -798,37 +627,6 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
             // step straight into "Resolved today" with no transient in between. The
             // normal 5s poll (or the next `/events` heartbeat) picks up the real state
             // once the operator has had a chance to see the outcome of their own click.
-            // `StepButtons` (BlockersView.tsx) has its own local "Checking…" /
-            // "Resolved" / "Not yet" states, but the promise it awaits had no
-            // `.catch` -- a thrown error (rather than an `{ ok: false }` answer) left
-            // the button stuck on "Checking…" forever with nothing else showing.
-            // A store-tracked busy key plus a `.catch` that still resolves in the
-            // shape `StepButtons` expects, and a red toast alongside it, so a genuine
-            // failure never reads as a hang.
-            onResolve={(id) => {
-              const key = `blocker-resolve:${id}`;
-              dispatch({ type: 'pending-set', key, label: 'Resolving…' });
-              return api.resolveBlocker(id)
-                .then((r) => { showToast(dispatch, r.ok ? 'resolved' : (r.lastCheck ?? 'not confirmed'), r.ok); return r; })
-                .catch((caught) => {
-                  const message = caught instanceof api.ApiError ? errorText(caught) : 'resolve did not go through';
-                  showToast(dispatch, message, false);
-                  return { ok: false, started: [], lastCheck: message, state: 'open' as const };
-                })
-                .finally(() => dispatch({ type: 'pending-clear', key }));
-            }}
-            onCheck={(id) => {
-              const key = `blocker-check:${id}`;
-              dispatch({ type: 'pending-set', key, label: 'Checking…' });
-              return api.checkBlocker(id)
-                .then((r) => { showToast(dispatch, r.ok ? 'resolved' : (r.lastCheck ?? 'not confirmed'), r.ok); return r; })
-                .catch((caught) => {
-                  const message = caught instanceof api.ApiError ? errorText(caught) : 'check did not go through';
-                  showToast(dispatch, message, false);
-                  return { ok: false, started: [], lastCheck: message, state: 'open' as const };
-                })
-                .finally(() => dispatch({ type: 'pending-clear', key }));
-            }}
           />
         ) : null}
 
@@ -859,23 +657,23 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
                   onCommand={onCommand}
                   onOpenCost={(id) => dispatch({ type: 'sheet', sheet: { type: 'cost', id } })}
                   onOpenSandbox={(id) => dispatch({ type: 'sheet', sheet: { type: 'sandbox', id } })}
-                  // W3 (2026-09-08): the composer talks to the Conductor with the lane as
-                  // context, never straight into an inbox nobody may read. The sheet
-                  // renders the cards itself; `refresh()` picks up the rail's copy.
+                  // The composer talks to the Conductor with the lane as context,
+                  // never straight into an inbox nobody may read. The sheet renders
+                  // the cards itself; `refresh()` picks up the rail's copy.
                   conductorTimeoutMs={state.conductorTimeoutMs}
                   onSendLane={async (id, textMsg) => {
                     const response = await api.sendCommand(textMsg, id);
                     void refresh();
                     return response;
                   }}
-                  onAmendLane={(id, textMsg) => runAction(`amend:${id}`, 'Amending…', () => api.amendRun(id, textMsg))}
+                  onAmendLane={(id, textMsg) => runCatalogAction(ACTIONS.amendRun, [id, textMsg], id)}
                   onOpenJournal={onOpenJournal}
                   onUndo={onUndo}
                   labelFor={labelFor}
                 />
               ) : null}
               {state.sheet.type === 'cost' && sheetLane ? (
-                <CostSheet lane={sheetLane} onClose={() => dispatch({ type: 'sheet', sheet: null })} onKill={(id) => onCommand(id, 'kill')} />
+                <CostSheet lane={sheetLane} onClose={() => dispatch({ type: 'sheet', sheet: null })} />
               ) : null}
               {state.sheet.type === 'fleet-cost' ? (
                 <FleetCostSheet
@@ -889,7 +687,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
               ) : null}
               {state.sheet.type === 'sandbox' && sheetLane ? (
                 <SandboxSheet
-                  lane={sheetLane} onClose={() => dispatch({ type: 'sheet', sheet: null })} onKill={(id) => onCommand(id, 'kill')}
+                  lane={sheetLane} onClose={() => dispatch({ type: 'sheet', sheet: null })}
                   onCopiedPath={(path) => queueToast(`copied ${path} to clipboard`, true)}
                 />
               ) : null}
@@ -907,6 +705,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
         <Toast toast={state.toast} />
         <HoverCard tip={state.tip} />
       </div>
+      </ActionsContext.Provider>
     </StoreContext.Provider>
   );
 }

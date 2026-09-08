@@ -1,4 +1,7 @@
 import type { JSX } from 'react';
+import { ACTIONS, useAction } from '../actions.js';
+import type { ActionOutcome } from '../store.js';
+import { ActionButton, ActionOutcomeView } from './ActionButton.js';
 import { useRef, useState } from 'react';
 
 import { actionable } from '../keyboard-actionable.js';
@@ -14,15 +17,8 @@ export interface QueueViewProps {
    *  chip it always has. */
   pauseReason?: string | null;
   maxInFlight: number;
-  onAdd: (source: QueueSource, input: string) => void;
-  onRemove: (id: string) => void;
-  onRetry: (id: string) => void;
-  onPause: () => void;
-  onResume: () => void;
-  /** A.7: Merge and Promote are optional -- a caller that hasn't wired them yet still
-   *  gets a working board, just without those two buttons on a review/done card. */
-  onMerge?: (id: string) => void;
-  onPromote?: (id: string, version: string, message: string) => void;
+  /** The rail is not on this view, so every outcome here is also shown as a toast. */
+  onToast?: (text: string, ok: boolean) => void;
 }
 
 interface StateTaxon {
@@ -45,19 +41,13 @@ const SOURCE_LABEL: Record<QueueSource, string> = {
   ticket: 'ticket', brief: 'brief', query: 'query', backlog: 'backlog', hotfix: 'hotfix',
 };
 
-function QueueCard({ item, onRemove, onRetry, onMerge, onPromote }: {
-  item: QueueItem; onRemove: (id: string) => void; onRetry: (id: string) => void;
-  onMerge?: (id: string) => void; onPromote?: (id: string, version: string, message: string) => void;
-}): JSX.Element {
+function QueueCard({ item, onToast }: { item: QueueItem; onToast: (outcome: ActionOutcome) => void }): JSX.Element {
   const taxon = STATE_TAXONOMY[item.state];
   const [promoteOpen, setPromoteOpen] = useState(false);
   const [promoteVersion, setPromoteVersion] = useState('');
   const [promoteMessage, setPromoteMessage] = useState('');
-  // Sweep #5: the board's own Merge asks first (App.tsx's pendingConfirm); a queue
-  // card's Merge fired straight away. Kept as inline state here rather than routed
-  // through the rail's confirm card, since a queue card's own outcome is meant to
-  // show on the Queue tab itself (sweep #3), not require a look at the rail.
-  const [mergeConfirmOpen, setMergeConfirmOpen] = useState(false);
+  // Merge and Promote are irreversible: the catalog action shows the server's own
+  // confirm card on the card itself, and nothing merges until that token goes back.
   return (
     <div className="lane" style={{ borderColor: taxon.color }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
@@ -90,32 +80,19 @@ function QueueCard({ item, onRemove, onRetry, onMerge, onPromote }: {
             <div className="m" style={{ fontSize: 9.5, color: 'var(--ink3)', textAlign: 'center' }}>
               {item.pr.files} file{item.pr.files === 1 ? '' : 's'}, +{item.pr.add}/-{item.pr.del}
             </div>
-            {onMerge && mergeConfirmOpen ? (
-              <div style={{ display: 'flex', gap: 6 }}>
-                <span
-                  className="btnR" style={{ padding: '7px 9px', fontSize: 9.5, flex: 1, textAlign: 'center' }}
-                  {...actionable(() => { setMergeConfirmOpen(false); onMerge(item.id); })}
-                >
-                  Confirm merge
-                </span>
-                <span
-                  className="btnS" style={{ padding: '7px 9px', fontSize: 9.5, flex: 1, textAlign: 'center' }}
-                  {...actionable(() => setMergeConfirmOpen(false))}
-                >
-                  Cancel
-                </span>
-              </div>
-            ) : onMerge ? (
-              <span className="btnA" style={{ padding: '7px 9px', fontSize: 9.5, width: '100%', textAlign: 'center' }} {...actionable(() => setMergeConfirmOpen(true))}>
-                Merge
-              </span>
-            ) : null}
+            <ActionButton
+              spec={ACTIONS.mergeQueueItem} args={[item.id]} className="btnA"
+              style={{ padding: '7px 9px', fontSize: 9.5, width: '100%', textAlign: 'center', boxSizing: 'border-box' }}
+              busy="Merging…" onOutcome={onToast}
+            >
+              Merge
+            </ActionButton>
           </>
         ) : item.state === 'done' && item.source === 'hotfix' && item.promotedAt ? (
           <div className="m" style={{ fontSize: 9.5, color: 'var(--ink3)', textAlign: 'center' }}>
             promoted {item.promotedVersion}
           </div>
-        ) : item.state === 'done' && item.source === 'hotfix' && onPromote ? (
+        ) : item.state === 'done' && item.source === 'hotfix' ? (
           promoteOpen ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
               <input
@@ -126,16 +103,14 @@ function QueueCard({ item, onRemove, onRetry, onMerge, onPromote }: {
                 className="inp m" style={{ fontSize: 10.5 }} placeholder="one-line release message"
                 value={promoteMessage} onChange={(e) => setPromoteMessage(e.target.value)}
               />
-              <span
-                className="btnA"
-                style={{ padding: '7px 9px', fontSize: 9.5, width: '100%', textAlign: 'center', opacity: promoteVersion.trim() && promoteMessage.trim() ? 1 : 0.5 }}
-                {...actionable(() => {
-                  if (!promoteVersion.trim() || !promoteMessage.trim()) return;
-                  onPromote(item.id, promoteVersion.trim(), promoteMessage.trim());
-                })}
+              <ActionButton
+                spec={ACTIONS.promoteQueueItem} args={[item.id, promoteVersion.trim(), promoteMessage.trim()]} actionRef={item.id}
+                className="btnA" disabled={!promoteVersion.trim() || !promoteMessage.trim()}
+                style={{ padding: '7px 9px', fontSize: 9.5, width: '100%', textAlign: 'center', boxSizing: 'border-box' }}
+                busy="Promoting…" onOutcome={onToast}
               >
-                Confirm promote
-              </span>
+                Promote {promoteVersion.trim() || '…'}
+              </ActionButton>
             </div>
           ) : (
             <span className="btnA" style={{ padding: '7px 9px', fontSize: 9.5, width: '100%', textAlign: 'center' }} {...actionable(() => setPromoteOpen(true))}>
@@ -143,13 +118,27 @@ function QueueCard({ item, onRemove, onRetry, onMerge, onPromote }: {
             </span>
           )
         ) : (
-          <span
-            className={taxon.cta.cls}
-            style={{ padding: '7px 9px', fontSize: 9.5, width: '100%', textAlign: 'center' }}
-            {...actionable(() => (taxon.cta.action === 'retry' ? onRetry(item.id) : taxon.cta.action === 'remove' ? onRemove(item.id) : undefined))}
-          >
-            {taxon.cta.label}
-          </span>
+          taxon.cta.action === 'retry' ? (
+            <ActionButton
+              spec={ACTIONS.retryQueueItem} args={[item.id]} className={taxon.cta.cls}
+              style={{ padding: '7px 9px', fontSize: 9.5, width: '100%', textAlign: 'center', boxSizing: 'border-box' }}
+              busy="Retrying…" onOutcome={onToast}
+            >
+              {taxon.cta.label}
+            </ActionButton>
+          ) : taxon.cta.action === 'remove' ? (
+            <ActionButton
+              spec={ACTIONS.removeQueueItem} args={[item.id]} className={taxon.cta.cls}
+              style={{ padding: '7px 9px', fontSize: 9.5, width: '100%', textAlign: 'center', boxSizing: 'border-box' }}
+              busy="Removing…" onOutcome={onToast}
+            >
+              {taxon.cta.label}
+            </ActionButton>
+          ) : (
+            <span className={taxon.cta.cls} style={{ padding: '7px 9px', fontSize: 9.5, width: '100%', textAlign: 'center' }}>
+              {taxon.cta.label}
+            </span>
+          )
         )}
       </div>
     </div>
@@ -177,15 +166,19 @@ const QUERY_TEMPLATES: { label: string; jql: string }[] = [
 const TEMPLATE_PLACEHOLDER = 'KEY';
 const PLACEHOLDER_WORD = new RegExp(`\\b${TEMPLATE_PLACEHOLDER}\\b`);
 
-function AddWork({ onAdd }: { onAdd: (source: QueueSource, input: string) => void }): JSX.Element {
+function AddWork({ onToast }: { onToast: (outcome: ActionOutcome) => void }): JSX.Element {
   const [source, setSource] = useState<QueueSource>('ticket');
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLInputElement | null>(null);
   const holdsPlaceholder = source === 'query' && PLACEHOLDER_WORD.test(input);
+  const add = useAction(ACTIONS.addToQueue, 'add-work');
   const submit = (): void => {
-    if (!input.trim() || holdsPlaceholder) return;
-    onAdd(source, input);
-    setInput('');
+    if (!input.trim() || holdsPlaceholder || add.pending) return;
+    const body = { source, input };
+    void add.run(body).then((outcome) => {
+      onToast(outcome);
+      if (outcome.kind === 'done' && outcome.ok) setInput('');
+    });
   };
   const fillTemplate = (jql: string): void => {
     setInput(jql);
@@ -236,13 +229,19 @@ function AddWork({ onAdd }: { onAdd: (source: QueueSource, input: string) => voi
         )}
         <span
           className="btnP"
-          style={{ padding: '5px 10px', fontSize: 9.5, alignSelf: 'flex-end', opacity: holdsPlaceholder ? 0.5 : 1 }}
+          style={{ padding: '5px 10px', fontSize: 9.5, alignSelf: 'flex-end', opacity: holdsPlaceholder || add.pending ? 0.5 : 1 }}
           title={holdsPlaceholder ? 'type over the KEY placeholder first' : undefined}
+          aria-disabled={holdsPlaceholder || add.pending} aria-busy={add.pending}
+          data-testid="action-addToQueue-add-work" data-pending={add.pending ? 'true' : 'false'}
           {...actionable(submit)}
         >
-          Add ⏎
+          {add.pending ? 'Adding…' : 'Add ⏎'}
         </span>
       </div>
+      <ActionOutcomeView
+        result={add.result} pending={add.pending} specId="addToQueue" actionRef="add-work"
+        onConfirm={() => undefined} onDismiss={add.dismiss} onClear={add.clear}
+      />
     </div>
   );
 }
@@ -251,7 +250,10 @@ function AddWork({ onAdd }: { onAdd: (source: QueueSource, input: string) => voi
  *  `.lane` shape, grouped by nothing but state color -- the same flat grid `LanesGrid`
  *  already uses for the run board. */
 export function QueueView(props: QueueViewProps): JSX.Element {
-  const { items, paused, pauseReason, maxInFlight, onAdd, onRemove, onRetry, onPause, onResume, onMerge, onPromote } = props;
+  const { items, paused, pauseReason, maxInFlight, onToast } = props;
+  const toast = (outcome: ActionOutcome): void => {
+    if (outcome.kind === 'done') onToast?.(outcome.text, outcome.ok);
+  };
   const inFlight = items.filter((i) => i.state === 'planning' || i.state === 'running').length;
   // Sweep #18: the nav badge counts parked+failed while this header counted every
   // item, so "Queue 8" next to "Queue · 28 items" read as two disagreeing numbers
@@ -272,15 +274,15 @@ export function QueueView(props: QueueViewProps): JSX.Element {
               <span className="chip" style={{ color: 'var(--park)', borderColor: 'var(--park)' }}>
                 {pauseReason ? `paused — ${pauseReason}` : 'paused'}
               </span>
-              <span className="btnP" style={{ padding: '6px 10px', fontSize: 9.5 }} {...actionable(onResume)}>Resume queue</span>
+              <ActionButton spec={ACTIONS.resumeQueue} args={[]} actionRef="queue" className="btnP" style={{ padding: '6px 10px', fontSize: 9.5 }} busy="Resuming…" onOutcome={toast}>Resume queue</ActionButton>
             </>
           ) : (
-            <span className="btnS" style={{ padding: '6px 10px', fontSize: 9.5 }} {...actionable(onPause)}>Pause queue</span>
+            <ActionButton spec={ACTIONS.pauseQueue} args={[]} actionRef="queue" className="btnS" style={{ padding: '6px 10px', fontSize: 9.5 }} busy="Pausing…" onOutcome={toast}>Pause queue</ActionButton>
           )}
         </div>
       </div>
 
-      <AddWork onAdd={onAdd} />
+      <AddWork onToast={toast} />
 
       {items.length === 0 ? (
         <div className="m" style={{ fontSize: 12, color: 'var(--ink3)', padding: 40, textAlign: 'center' }}>
@@ -289,7 +291,7 @@ export function QueueView(props: QueueViewProps): JSX.Element {
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(215px,1fr))', gap: 10 }}>
           {items.map((item) => (
-            <QueueCard key={item.id} item={item} onRemove={onRemove} onRetry={onRetry} onMerge={onMerge} onPromote={onPromote} />
+            <QueueCard key={item.id} item={item} onToast={toast} />
           ))}
         </div>
       )}

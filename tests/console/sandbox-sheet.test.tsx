@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
-import { render, screen, waitFor } from '@testing-library/react';
+import { screen, waitFor } from '@testing-library/react';
+import { render } from './helpers/with-store.js';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -28,7 +29,7 @@ function renderSheet(
   onCopiedPath = vi.fn(),
 ) {
   vi.mocked(api.getRunSandbox).mockResolvedValue({ sandbox: lane(laneExtra).sandbox, log });
-  return { onCopiedPath, ...render(<SandboxSheet lane={lane(laneExtra)} onClose={vi.fn()} onKill={vi.fn()} onCopiedPath={onCopiedPath} />) };
+  return { onCopiedPath, ...render(<SandboxSheet lane={lane(laneExtra)} onClose={vi.fn()} onCopiedPath={onCopiedPath} />) };
 }
 
 describe('SandboxSheet', () => {

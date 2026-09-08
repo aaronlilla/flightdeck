@@ -1,4 +1,6 @@
 import type { JSX } from 'react';
+import { ACTIONS } from '../actions.js';
+import { ActionButton } from './ActionButton.js';
 import { useLayoutEffect, useRef } from 'react';
 
 import { hm } from '../freshness.js';
@@ -122,6 +124,7 @@ export function TopBar(props: TopBarProps): JSX.Element {
         {feed.live ? `■ live feed · ${latencyMs}ms` : `○ feed lost ${hm(feed.lostAt ?? now)}`}
       </span>
       <span className="m" style={{ fontSize: 11, color: 'var(--ink2)', minWidth: 62 }}>{hm(now)}</span>
+      <ActionButton spec={ACTIONS.stopAll} args={[]} actionRef="topbar" className="btnR" style={{ padding: '5px 10px', fontSize: '9.5px' }} busy="Stopping…">Stop all</ActionButton>
       <span className="chip chipB" title="show raw ids and every row" onClick={onToggleVerbose}>{verbose ? 'verbose' : 'plain'}</span>
       <span className="chip chipB" onClick={onToggleTheme}>{theme === 'thD' ? 'day mode' : 'night ops'}</span>
     </div>

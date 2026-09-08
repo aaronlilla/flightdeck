@@ -3,18 +3,30 @@ import type { ReactElement } from 'react';
 import { render as rtlRender, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
+import { useReducer } from 'react';
 
 import { LaneTile } from '../../src/console/components/LaneTile.js';
-import { StoreContext, initialState } from '../../src/console/store.js';
+import { StoreContext, initialState, reducer } from '../../src/console/store.js';
 import type { Lane } from '../../src/shared/console-model.js';
+import * as api from '../../src/console/api.js';
+
+vi.mock('../../src/console/api.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/console/api.js')>();
+  return { ...actual, killRun: vi.fn(async () => ({ ok: true, message: 'killed', jid: null })) };
+});
 
 // `LaneTile` renders `Linkify`, which reads `links` off the store -- every render in
 // this file goes through a provider carrying the default (no jiraSite, no
 // defaultRepo), so a bare ticket key or PR mention stays plain text unless a test
-// says otherwise.
+// says otherwise. A real reducer-backed store (not a stubbed dispatch) so `useAction`
+// (kill on a runaway tile, below) actually runs: it dispatches `action-pending` /
+// `action-result` and reads them back on the next render.
+function StoreWrapper({ node }: { node: ReactElement }): ReactElement {
+  const [state, dispatch] = useReducer(reducer, undefined, initialState);
+  return <StoreContext.Provider value={{ state, dispatch }}>{node}</StoreContext.Provider>;
+}
 function wrap(node: ReactElement): ReactElement {
-  const state = { ...initialState(), links: { jiraSite: null, defaultRepo: null } };
-  return <StoreContext.Provider value={{ state, dispatch: vi.fn() }}>{node}</StoreContext.Provider>;
+  return <StoreWrapper node={node} />;
 }
 function render(node: ReactElement): ReturnType<typeof rtlRender> {
   return rtlRender(wrap(node));
@@ -43,10 +55,12 @@ describe('LaneTile', () => {
 
   it('shows Kill attempt and calls onCommand with kill for a runaway lane, without opening the sheet', async () => {
     const onOpen = vi.fn();
-    const onCommand = vi.fn();
-    render(<LaneTile lane={lane({ runaway: true })} feedLive now={Date.now()} onOpen={onOpen} onOpenCost={vi.fn()} onCommand={onCommand} onTip={vi.fn()} />);
+    render(<LaneTile lane={lane({ runaway: true })} feedLive now={Date.now()} onOpen={onOpen} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
     await userEvent.click(screen.getByText('Kill attempt'));
-    expect(onCommand).toHaveBeenCalledWith('FLT-1', 'kill');
+    // Kill is irreversible, so it runs through the catalog action (`ActionButton` /
+    // `useAction`), not the old `onCommand` callback prop: the click calls
+    // `api.killRun` directly, on the first pass with no confirm token yet.
+    expect(api.killRun).toHaveBeenCalledWith('FLT-1', 'killed from the console', undefined);
     expect(onOpen).not.toHaveBeenCalled();
   });
 

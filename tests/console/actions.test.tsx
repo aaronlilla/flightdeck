@@ -1,94 +1,76 @@
 // @vitest-environment jsdom
-import { act, render, screen, waitFor } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
-
-import { useAction } from '../../src/console/actions.js';
-import { ApiError } from '../../src/console/api.js';
-import { initialState, reducer, StoreContext } from '../../src/console/store.js';
-import { Toast } from '../../src/console/components/Toast.js';
+/**
+ * The two pieces of `actions.ts` that are not the catalog: the sentence a rejection
+ * turns into, and the toast that carries it on views with no rail.
+ *
+ * The catalog itself is checked elsewhere. `actions-catalog.test.ts` proves every
+ * mutating export of `api.ts` has an entry; `action-contract.test.tsx` drives all of
+ * them through pending, the inline answer, the rail receipt, the effect link and the
+ * server-issued confirm. Busy state and the guard against a second click while one is
+ * in flight live there, once per entry rather than once here.
+ */
+import type { JSX } from 'react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { useReducer } from 'react';
+import { describe, expect, it } from 'vitest';
 
-/** A minimal harness: a real reducer (not a mocked dispatch), so `useAction`'s
- *  `pending-set`/`pending-clear`/`toast` dispatches actually change what renders --
- *  the same shape App.tsx gives every component in production. */
-function Inner({ fn, busy, done }: { fn: () => Promise<unknown>; busy: string; done?: string | ((r: unknown) => string) }) {
-  const action = useAction('test-key', fn, { busy, done });
-  return (
-    <span data-testid="btn" aria-busy={action.busy ? 'true' : undefined} data-busy={action.busy ? '1' : undefined} onClick={action.run}>
-      {action.busy ? busy : 'go'}
-    </span>
-  );
-}
+import { errorText, showToast } from '../../src/console/actions.js';
+import { ApiError } from '../../src/console/api.js';
+import { Toast } from '../../src/console/components/Toast.js';
+import { initialState, reducer, StoreContext } from '../../src/console/store.js';
 
-function Harness({ fn, busy, done }: { fn: () => Promise<unknown>; busy: string; done?: string | ((r: unknown) => string) }) {
+describe('errorText', () => {
+  // A 501 that names both what refused and why used to reach the operator as the
+  // first half alone, which reads as a bug in the console rather than an unbuilt path.
+  it('keeps both halves of a folded "error: reason" sentence', () => {
+    const text = errorText(new ApiError(501, 'not wired: no repo/PR on record for run x to re-audit'));
+    expect(text).toContain('not wired');
+    expect(text).toContain('no repo/PR on record');
+  });
+
+  it('parses a raw {error, reason} JSON body and keeps both', () => {
+    const text = errorText(new ApiError(501, JSON.stringify({ error: 'not wired', reason: 'no repo/PR on record for run x to re-audit' })));
+    expect(text).toContain('not wired');
+    expect(text).toContain('no repo/PR on record');
+  });
+
+  it('keeps a JSON body that carries only an error', () => {
+    expect(errorText(new ApiError(422, JSON.stringify({ error: 'the cap is above the hard limit' }))))
+      .toBe('the cap is above the hard limit');
+  });
+
+  it('falls back to the status when the server said nothing at all', () => {
+    expect(errorText(new ApiError(500, ''))).toBe('the server answered 500');
+  });
+
+  it('carries a plain Error through, and stringifies anything else', () => {
+    expect(errorText(new Error('the socket closed'))).toBe('the socket closed');
+    expect(errorText('just a string')).toBe('just a string');
+  });
+});
+
+function ToastHarness({ text, ok }: { text: string; ok: boolean }): JSX.Element {
   const [state, dispatch] = useReducer(reducer, undefined, initialState);
   return (
     <StoreContext.Provider value={{ state, dispatch }}>
-      <Inner fn={fn} busy={busy} done={done} />
+      <span data-testid="fire" onClick={() => showToast(dispatch, text, ok)}>go</span>
       <Toast toast={state.toast} />
     </StoreContext.Provider>
   );
 }
 
-describe('useAction', () => {
-  it('renders busy while the promise is in flight and clears after it resolves', async () => {
-    let resolve!: () => void;
-    const fn = vi.fn(() => new Promise<unknown>((r) => { resolve = () => r({ ok: true }); }));
-    render(<Harness fn={fn} busy="Doing…" />);
-    await userEvent.click(screen.getByTestId('btn'));
-    expect(screen.getByTestId('btn')).toHaveAttribute('data-busy', '1');
-    expect(screen.getByTestId('btn')).toHaveAttribute('aria-busy', 'true');
-    await act(async () => { resolve(); });
-    await waitFor(() => expect(screen.getByTestId('btn')).not.toHaveAttribute('data-busy'));
+describe('showToast', () => {
+  it('shows the text, marked as a success', async () => {
+    render(<ToastHarness text="queue paused" ok />);
+    screen.getByTestId('fire').click();
+    await waitFor(() => expect(screen.getByTestId('toast')).toHaveTextContent('queue paused'));
   });
 
-  it('a rejected ApiError carrying {error, reason} shows both in the toast', async () => {
-    const fn = vi.fn(() => Promise.reject(new ApiError(501, 'not wired: no repo/PR on record for run x to re-audit')));
-    render(<Harness fn={fn} busy="Re-auditing…" />);
-    await userEvent.click(screen.getByTestId('btn'));
-    await waitFor(() => expect(screen.getByTestId('toast')).toHaveTextContent('not wired'));
-    expect(screen.getByTestId('toast')).toHaveTextContent('no repo/PR on record');
-  });
-
-  it('a rejected ApiError carrying raw JSON is parsed for both fields', async () => {
-    const fn = vi.fn(() => Promise.reject(new ApiError(501, JSON.stringify({ error: 'not wired', reason: 'no repo/PR on record for run x to re-audit' }))));
-    render(<Harness fn={fn} busy="Re-auditing…" />);
-    await userEvent.click(screen.getByTestId('btn'));
-    await waitFor(() => expect(screen.getByTestId('toast')).toHaveTextContent('not wired'));
-    expect(screen.getByTestId('toast')).toHaveTextContent('no repo/PR on record');
-  });
-
-  it('success shows opts.done, else result.message, else "done"', async () => {
-    const fn = vi.fn(() => Promise.resolve({ ok: true }));
-    render(<Harness fn={fn} busy="Doing…" done="All set" />);
-    await userEvent.click(screen.getByTestId('btn'));
-    await waitFor(() => expect(screen.getByTestId('toast')).toHaveTextContent('All set'));
-  });
-
-  it('success falls back to result.message when opts.done is omitted', async () => {
-    const fn = vi.fn(() => Promise.resolve({ ok: true, message: 'sent to run-1' }));
-    render(<Harness fn={fn} busy="Doing…" />);
-    await userEvent.click(screen.getByTestId('btn'));
-    await waitFor(() => expect(screen.getByTestId('toast')).toHaveTextContent('sent to run-1'));
-  });
-
-  it('success falls back to "done" when neither opts.done nor result.message exist', async () => {
-    const fn = vi.fn(() => Promise.resolve(42));
-    render(<Harness fn={fn} busy="Doing…" />);
-    await userEvent.click(screen.getByTestId('btn'));
-    await waitFor(() => expect(screen.getByTestId('toast')).toHaveTextContent('done'));
-  });
-
-  it('calling run() again while busy does not fire fn a second time', async () => {
-    let resolve!: () => void;
-    const fn = vi.fn(() => new Promise<unknown>((r) => { resolve = () => r({ ok: true }); }));
-    render(<Harness fn={fn} busy="Doing…" />);
-    const btn = screen.getByTestId('btn');
-    await userEvent.click(btn);
-    await userEvent.click(btn);
-    await userEvent.click(btn);
-    expect(fn).toHaveBeenCalledTimes(1);
-    await act(async () => { resolve(); });
+  it('shows a failure in the blocked colour so it does not read as done', async () => {
+    render(<ToastHarness text="the branch is gone" ok={false} />);
+    screen.getByTestId('fire').click();
+    const toast = await waitFor(() => screen.getByTestId('toast'));
+    expect(toast).toHaveTextContent('the branch is gone');
+    expect(toast.innerHTML).toContain('var(--block)');
   });
 });

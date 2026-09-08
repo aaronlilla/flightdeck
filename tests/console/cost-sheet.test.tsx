@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
-import { render, screen, waitFor } from '@testing-library/react';
+import { screen, waitFor } from '@testing-library/react';
+import { render } from './helpers/with-store.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import { CostSheet } from '../../src/console/components/CostSheet.js';
@@ -23,7 +24,7 @@ function lane(extra: Partial<Lane> = {}): Lane {
 
 function renderSheet(laneExtra: Partial<Lane> = {}, steps: CostStep[] = [], capEnforcementFailedJid: string | null = null) {
   vi.mocked(api.getRunCost).mockResolvedValue({ steps, capEnforcementFailedJid });
-  return render(<CostSheet lane={lane(laneExtra)} onClose={vi.fn()} onKill={vi.fn()} />);
+  return render(<CostSheet lane={lane(laneExtra)} onClose={vi.fn()} />);
 }
 
 describe('CostSheet', () => {

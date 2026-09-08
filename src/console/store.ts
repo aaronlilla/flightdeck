@@ -37,6 +37,9 @@ export interface TipSpec {
   color?: string;
 }
 
+/** How long a card this page appended itself outlives a `/thread` replace. */
+export const LOCAL_CARD_TTL_MS = 30_000;
+
 export interface ToastSpec {
   glyph: string;
   title: string;
@@ -45,8 +48,37 @@ export interface ToastSpec {
   color?: string;
 }
 
+/** Where a control's own action stands: in flight, or finished with a result. Keyed
+ *  in `State.actions` by the action id and the thing it was about, so the control that
+ *  was clicked, and only that control, renders its pending state and its result. */
+export interface ActionState {
+  pending: boolean;
+  startedAt: number;
+  result: ActionOutcome | null;
+}
+
+/** What a control shows after its action answered: the server's own message or the
+ *  verbatim error, a journal id when the server minted one, a link to the effect, or
+ *  a server-side confirm still waiting on the operator. */
+export type ActionOutcome =
+  | { kind: 'done'; ok: boolean; text: string; jid: string | null; at: number; link: ActionLink | null }
+  | { kind: 'confirm'; token: string; blast: string; at: number };
+
+export type ActionLink =
+  | { kind: 'lane'; id: string; label: string }
+  | { kind: 'view'; view: View; label: string }
+  | { kind: 'url'; href: string; label: string }
+  | { kind: 'journal'; jid: string; label: string };
+
 export interface State {
   lanes: Lane[];
+  /** Per-control action state, see `ActionState`. */
+  actions: Record<string, ActionState>;
+  /** Cards this page appended itself (receipts, refusals, operator bubbles) that the
+   *  server's own `/thread` never echoes back. A `thread` replace re-attaches any
+   *  younger than `LOCAL_CARD_TTL_MS`, so a receipt survives the refetch that lands
+   *  right behind the action that produced it. */
+  localCards: Message[];
   feed: Feed;
   thread: Message[];
   journal: JournalEntry[];
@@ -102,7 +134,18 @@ export interface State {
 export type Action =
   | { type: 'lanes'; lanes: Lane[]; tokensToday?: number; links?: State['links'] }
   | { type: 'thread'; thread: Message[] }
-  | { type: 'thread-append'; messages: Message[] }
+  | { type: 'thread-append'; messages: Message[]; local?: boolean }
+  /** Drops a card the page put up itself, from the thread and from the local list
+   *  both. Filtering the thread alone puts it straight back: the `thread` case
+   *  re-attaches every local card the server's copy does not carry, which is the
+   *  whole point of that list and the reason a working row would not come down. */
+  | { type: 'local-card-drop'; k: string }
+  /** Rewrites one local card in place, keeping its key so nothing re-attaches a
+   *  stale copy of it on the next refetch. */
+  | { type: 'local-card-text'; k: string; text: string }
+  | { type: 'action-pending'; key: string }
+  | { type: 'action-result'; key: string; result: ActionOutcome }
+  | { type: 'action-clear'; key: string }
   | { type: 'journal'; journal: JournalEntry[] }
   | { type: 'integrations'; integrations: Integration[] }
   | { type: 'caps'; caps: Caps }
@@ -160,6 +203,8 @@ export function initialState(): State {
     conductorTimeoutMs: 120_000,
     showProbes: false,
     archivedLanes: [],
+    actions: {},
+    localCards: [],
     loaded: false,
     now: Date.now(),
     links: { jiraSite: null, defaultRepo: null },
@@ -184,10 +229,49 @@ export function reducer(state: State, action: Action): State {
   switch (action.type) {
     case 'lanes':
       return { ...state, lanes: action.lanes, loaded: true, links: action.links ?? state.links };
-    case 'thread':
-      return { ...state, thread: action.thread };
+    case 'thread': {
+      const cutoff = Date.now() - LOCAL_CARD_TTL_MS;
+      const localCards = state.localCards.filter((card) => card.ts >= cutoff);
+      let thread = action.thread;
+      for (const card of localCards) {
+        if (thread.some((m) => m.k === card.k)) continue;
+        // The server persists the operator's own card too (`ConsoleWrites.command`),
+        // under its own key: once that copy arrives, the local bubble for the same
+        // words sent moments before is the same message and must not show twice.
+        if (card.type === 'operator' && thread.some((m) => m.type === 'operator' && m.text === card.text && Math.abs(m.ts - card.ts) < LOCAL_CARD_TTL_MS)) continue;
+        thread = [...thread, card];
+      }
+      return { ...state, thread, localCards };
+    }
+    case 'local-card-drop':
+      return {
+        ...state,
+        thread: state.thread.filter((m) => m.k !== action.k),
+        localCards: state.localCards.filter((m) => m.k !== action.k),
+      };
+    case 'local-card-text':
+      return {
+        ...state,
+        thread: state.thread.map((m) => (m.k === action.k ? { ...m, text: action.text } : m)),
+        localCards: state.localCards.map((m) => (m.k === action.k ? { ...m, text: action.text } : m)),
+      };
     case 'thread-append':
-      return { ...state, thread: [...state.thread, ...action.messages] };
+      return {
+        ...state,
+        thread: [...state.thread, ...action.messages],
+        localCards: action.local ? [...state.localCards, ...action.messages] : state.localCards,
+      };
+    case 'action-pending':
+      return { ...state, actions: { ...state.actions, [action.key]: { pending: true, startedAt: Date.now(), result: null } } };
+    case 'action-result':
+      return {
+        ...state,
+        actions: { ...state.actions, [action.key]: { pending: false, startedAt: state.actions[action.key]?.startedAt ?? Date.now(), result: action.result } },
+      };
+    case 'action-clear': {
+      const { [action.key]: _dropped, ...rest } = state.actions;
+      return { ...state, actions: rest };
+    }
     case 'journal':
       return { ...state, journal: action.journal };
     case 'integrations':

@@ -299,6 +299,37 @@ function respond(response: ServerResponse, status: number, body: unknown): void 
 interface PendingConfirm {
   blast: string;
   run: () => Promise<Message[]>;
+  /** Set by a route-registered pending once it has run: the HTTP outcome the route
+   *  answers with when the confirm arrives as `{ confirm: token }` in a body. */
+  outcome?: RouteOutcome;
+}
+
+/** What a route handler answers with: the status and the JSON body. */
+export interface RouteOutcome {
+  status: number;
+  body: unknown;
+}
+
+/** The body an irreversible route answers with (status 202) until the operator
+ *  confirms. `card` is the same confirm card the typed grammar produces, so the rail
+ *  and an inline control render one shape. */
+export interface ConfirmPendingBody {
+  ok: false;
+  pending: true;
+  token: string;
+  blast: string;
+  card: Message;
+}
+
+/** The one card a route-registered pending produces when it runs: a receipt for a
+ *  200 carrying an `ActionResult`, a refusal with the server's sentence otherwise. */
+function outcomeCard(source: string, outcome: RouteOutcome): Message {
+  const body = (outcome.body ?? {}) as Partial<ActionResult> & { error?: string; reason?: string };
+  if (outcome.status === 200 && typeof body.message === 'string') {
+    return receiptCard(source, { ok: body.ok ?? true, jid: body.jid ?? null, message: body.message, undoable: body.undoable ?? false });
+  }
+  if (outcome.status === 200) return receiptCard(source, { ok: true, jid: null, message: 'done', undoable: false });
+  return refusalCard(source, actionFailureText(outcome.body, `answered ${outcome.status}`));
 }
 
 interface PendingPlan {
@@ -522,6 +553,41 @@ export class ConsoleWrites {
   /** Whether `confirm <token>` would still find something to run. */
   hasPending(token: string): boolean {
     return this.pendingConfirms.has(token);
+  }
+
+  /**
+   * The confirm gate every irreversible route runs behind. Without a `confirm` token
+   * in the body it registers the action in the same pending map the grammar's own
+   * `kill <lane>` uses and answers 202 with the token and the card; with a token it
+   * runs that pending action, writes its card to the rail's thread and answers with the
+   * action's own outcome. A typed `confirm <token>` in the rail reaches the same
+   * pending entry, so the two paths never disagree about what is waiting.
+   */
+  async confirmGate(
+    body: Record<string, unknown> | null | undefined, source: string, blast: string,
+    act: () => Promise<RouteOutcome>,
+  ): Promise<RouteOutcome> {
+    const token = body?.['confirm'];
+    if (typeof token === 'string') {
+      const pending = this.pendingConfirms.get(token);
+      if (!pending) return { status: 409, body: { error: `nothing pending for ${token}` } };
+      this.pendingConfirms.delete(token);
+      const cards = await pending.run();
+      for (const card of cards) appendThread(card);
+      return pending.outcome ?? { status: 200, body: { ok: true, jid: null, message: cards[0]?.text ?? 'done', undoable: false } };
+    }
+    const pending: PendingConfirm = {
+      blast,
+      run: async () => {
+        const outcome = await act();
+        pending.outcome = outcome;
+        return [outcomeCard(source, outcome)];
+      },
+    };
+    const fresh = randomUUID();
+    this.pendingConfirms.set(fresh, pending);
+    const reply: ConfirmPendingBody = { ok: false, pending: true, token: fresh, blast, card: confirmCard(source, blast, fresh) };
+    return { status: 202, body: reply };
   }
 
   /** One grammar intent, run and answered as cards, with nothing written to the thread:
@@ -812,9 +878,11 @@ export class ConsoleWrites {
       const body = await readBody<Record<string, unknown>>(request);
       const deps = this.runActionsDeps();
       let outcome: { status: number; body: unknown };
+      const label = labelFor(this.deps.lanesViewAll?.() ?? this.deps.lanesView?.(), run);
       switch (action) {
         case 'kill':
-          outcome = await killRun(run, String(body?.['reason'] ?? 'killed from the console'), deps);
+          outcome = await this.confirmGate(body, 'console', `kills ${label}: discards the working diff and stops the sandbox.`,
+            () => killRun(run, String(body?.['reason'] ?? 'killed from the console'), deps));
           break;
         case 'pause':
           outcome = await pauseRun(run, String(body?.['reason'] ?? 'paused from the console'), deps);
@@ -823,7 +891,8 @@ export class ConsoleWrites {
           outcome = await resumeRun(run, deps);
           break;
         case 'merge':
-          outcome = await mergeRun(run, deps);
+          outcome = await this.confirmGate(body, 'console', `merges ${label}: merges the PR and closes the ticket.`,
+            () => mergeRun(run, deps));
           break;
         case 'reopen':
           outcome = await reopenRun(run, deps);
@@ -851,8 +920,14 @@ export class ConsoleWrites {
 
     if (path === '/caps' && method === 'POST') {
       if (!this.deps.authorized(request, response)) return true;
-      const body = await readBody<{ dailyTokens?: number; runTokens?: number }>(request);
-      const outcome = await writeCaps(body, this.capsWriteDeps());
+      const body = await readBody<{ dailyTokens?: number; runTokens?: number; confirm?: string }>(request);
+      const wanted = [
+        body?.dailyTokens !== undefined ? `daily ${fmtTokens(body.dailyTokens)}` : null,
+        body?.runTokens !== undefined ? `per run ${fmtTokens(body.runTokens)}` : null,
+      ].filter(Boolean).join(', ') || 'no change';
+      const outcome = await this.confirmGate(body as Record<string, unknown> | null, 'console',
+        `sets the token caps to ${wanted}: every running lane is governed by the new numbers at once.`,
+        () => writeCaps({ ...(body?.dailyTokens !== undefined ? { dailyTokens: body.dailyTokens } : {}), ...(body?.runTokens !== undefined ? { runTokens: body.runTokens } : {}) }, this.capsWriteDeps()));
       respond(response, outcome.status, outcome.body);
       return true;
     }

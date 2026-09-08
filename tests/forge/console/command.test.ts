@@ -152,9 +152,28 @@ describe('ConsoleWrites.handle', () => {
     const handled = await writes.handle('/run/alpha/kill', fakeRequest('POST', { reason: 'stop' }), response);
 
     expect(handled).toBe(true);
-    const outcome = await result;
+    // Kill is irreversible: the first call registers a server-side confirm and answers
+    // 202 with the token; nothing is killed until that token comes back.
+    const pending = await result;
+    expect(pending.status).toBe(202);
+    expect(actuator.killed).toEqual([]);
+    const token = (pending.body as { token: string }).token;
+    expect(writes.hasPending(token)).toBe(true);
+
+    const second = fakeResponse();
+    await writes.handle('/run/alpha/kill', fakeRequest('POST', { reason: 'stop', confirm: token }), second.response);
+    const outcome = await second.result;
     expect(outcome.status).toBe(200);
     expect(actuator.killed).toEqual(['alpha']);
+    expect(writes.hasPending(token)).toBe(false);
+  });
+
+  it('a stale confirm token is refused with 409 and kills nothing', async () => {
+    registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+    const { response, result } = fakeResponse();
+    await writes.handle('/run/alpha/kill', fakeRequest('POST', { reason: 'stop', confirm: 'never-issued' }), response);
+    expect((await result).status).toBe(409);
+    expect(actuator.killed).toEqual([]);
   });
 
   it('refuses a run cap above the hard limit with 422', async () => {

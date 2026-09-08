@@ -397,6 +397,10 @@ export interface Integration {
   dependents: string[];
   /** Reconnect progress 0..3 while a reconnect runs. */
   step: number | null;
+  /** Whether this row has a connect action behind it at all. A row with none shows no
+   *  connect control: a button that can only answer "not wired" is worse than no
+   *  button, because the operator cannot tell a refusal from a failure. */
+  canConnect: boolean;
   links: { tools?: string; logs?: string; manage?: string };
 }
 

@@ -1,4 +1,6 @@
 import type { JSX } from 'react';
+import { ACTIONS } from '../actions.js';
+import { ActionButton } from './ActionButton.js';
 
 import type { Lane } from '../../shared/console-model.js';
 import { groupLanesByTicket } from '../laneVM.js';
@@ -19,8 +21,6 @@ export interface FiltersProps {
   onFilter: (filter: Filter) => void;
   onSort: (sort: Sort) => void;
   onToggleProbes: () => void;
-  onCleanUp: () => void;
-  onMergeReady: () => void;
 }
 
 const BASE_FILTERS: { key: Filter; label: string }[] = [
@@ -41,7 +41,7 @@ function groupCount(lanes: Lane[], filter: Filter, sort: Sort, now: number, show
 }
 
 export function Filters({
-  filter, sort, repos, lanes, archivedLanes, showProbes, now, onFilter, onSort, onToggleProbes, onCleanUp, onMergeReady,
+  filter, sort, repos, lanes, archivedLanes, showProbes, now, onFilter, onSort, onToggleProbes,
 }: FiltersProps): JSX.Element {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 16px 0', flexWrap: 'wrap' }}>
@@ -69,8 +69,8 @@ export function Filters({
         Probes
       </span>
       <span style={{ flex: 1 }} />
-      <span className="btnS" style={{ padding: '6px 10px', fontSize: '9.5px' }} onClick={onCleanUp}>Clean up</span>
-      <span className="btnP" style={{ padding: '6px 10px', fontSize: '9.5px' }} onClick={onMergeReady}>Merge ready</span>
+      <ActionButton spec={ACTIONS.postRetireFinished} args={[]} actionRef="filters" className="btnS" style={{ padding: '6px 10px', fontSize: '9.5px' }} busy="Cleaning up…">Clean up</ActionButton>
+      <ActionButton spec={ACTIONS.postMergeReady} args={[]} actionRef="filters" className="btnP" style={{ padding: '6px 10px', fontSize: '9.5px' }} busy="Merging…">Merge ready</ActionButton>
       <span className="m" style={{ fontSize: '10.5px', color: 'var(--ink2)', whiteSpace: 'nowrap' }}>
         sort:
         {SORTS.map((s) => (

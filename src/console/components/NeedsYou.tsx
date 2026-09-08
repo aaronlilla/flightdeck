@@ -1,4 +1,6 @@
 import type { JSX } from 'react';
+import { ACTIONS } from '../actions.js';
+import { ActionButton } from './ActionButton.js';
 
 import { ago, hm } from '../freshness.js';
 import { laneHeadline } from '../laneVM.js';
@@ -21,6 +23,9 @@ export interface NeedItem {
   cta: string;
   ctaCls: 'btnP' | 'btnA' | 'btnR' | 'btnS';
   onClick: () => void;
+  /** A catalog action behind the CTA. When set, the CTA renders with the full
+   *  contract and `onClick` is not used. */
+  action?: { spec: 'reconnectIntegration' | 'dismissAsk'; arg: string };
   /** The plate's trailing "label ▸" link, when it has one (the integration plate's
    *  "why + fix ▸", opening Settings). */
   more: { label: string; onClick: () => void } | null;
@@ -58,6 +63,7 @@ export function buildNeeds(
       sub: `${integration.dependents.length} lanes blocked${since}`,
       line: integration.cause ?? '', cta: integration.fixLabel ?? 'Reconnect →',
       ctaCls: 'btnR', onClick: () => onFix('integration', integration.id),
+      action: { spec: 'reconnectIntegration', arg: integration.id },
       more: integration.cause ? { label: 'why + fix', onClick: onOpenSettings } : null,
     });
   }
@@ -69,6 +75,7 @@ export function buildNeeds(
         id: `stale-${lane.id}`, color: 'var(--ink3)', title: `stale ask from ${headline.main}, ${ago(now - lane.question.askedAt)}`, repo: lane.repo,
         titleId: headline.runId, sub: '', line: 'nothing readable was asked; this will never resolve on its own',
         cta: 'Dismiss', ctaCls: 'btnS', onClick: () => onDismissAsk(key), more: null,
+        action: { spec: 'dismissAsk', arg: key },
       });
       // A dismissed ask clears `lane.question` but leaves the lane `parked` -- nothing
       // resumes it on a dismiss. Without the `lane.question` guard below, that lane
@@ -133,7 +140,23 @@ export function NeedsYou({ items, blockersCount = 0, onOpenBlockers }: NeedsYouP
               {n.more ? <> · <a style={{ color: 'var(--ink3)' }} onClick={n.more.onClick}>{n.more.label} ▸</a></> : null}
             </div>
           </div>
-          <span className={n.ctaCls} style={{ padding: '7px 11px', fontSize: '9.5px', flex: 'none', whiteSpace: 'nowrap' }} onClick={n.onClick}>{n.cta}</span>
+          {n.action?.spec === 'reconnectIntegration' ? (
+            <ActionButton
+              spec={ACTIONS.reconnectIntegration} args={[n.action.arg]} actionRef={`needs-${n.action.arg}`} className={n.ctaCls}
+              style={{ padding: '7px 11px', fontSize: '9.5px', flex: 'none', whiteSpace: 'nowrap' }} busy="Reconnecting…"
+            >
+              {n.cta}
+            </ActionButton>
+          ) : n.action?.spec === 'dismissAsk' ? (
+            <ActionButton
+              spec={ACTIONS.dismissAsk} args={[n.action.arg]} actionRef={`needs-${n.action.arg}`} className={n.ctaCls}
+              style={{ padding: '7px 11px', fontSize: '9.5px', flex: 'none', whiteSpace: 'nowrap' }} busy="Dismissing…"
+            >
+              {n.cta}
+            </ActionButton>
+          ) : (
+            <span className={n.ctaCls} style={{ padding: '7px 11px', fontSize: '9.5px', flex: 'none', whiteSpace: 'nowrap' }} onClick={n.onClick}>{n.cta}</span>
+          )}
         </div>
       ))}
       {blockersCount > 0 ? (

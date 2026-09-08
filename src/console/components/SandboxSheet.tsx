@@ -1,4 +1,5 @@
 import type { JSX } from 'react';
+import { LaneCta } from './LaneCta.js';
 import { useEffect, useState } from 'react';
 
 import * as api from '../api.js';
@@ -9,7 +10,6 @@ import type { Lane, LaneSandbox, SandboxLogLine, SandboxLogSeverity } from '../.
 export interface SandboxSheetProps {
   lane: Lane;
   onClose: () => void;
-  onKill: (id: string) => void;
   /** Sweep #9: "Open shell" had no onClick at all. There is no real terminal this
    *  sheet can open into, so it copies the sandbox's own worktree path to the
    *  clipboard instead -- the fastest real thing a click here can do -- and reports
@@ -26,7 +26,7 @@ const SEVERITY_COLOR: Record<SandboxLogSeverity, string> = {
 };
 
 /** Sandbox sheet: region/instance/model/state, log tail, Open shell, Kill sandbox. */
-export function SandboxSheet({ lane, onClose, onKill, onCopiedPath }: SandboxSheetProps): JSX.Element {
+export function SandboxSheet({ lane, onClose, onCopiedPath }: SandboxSheetProps): JSX.Element {
   const [sandbox, setSandbox] = useState<LaneSandbox | null>(lane.sandbox);
   const [log, setLog] = useState<SandboxLogLine[]>([]);
   const [loadFailed, setLoadFailed] = useState(false);
@@ -63,7 +63,7 @@ export function SandboxSheet({ lane, onClose, onKill, onCopiedPath }: SandboxShe
           >
             Open shell
           </span>
-          <span className="btnR" {...actionable(() => onKill(lane.id))}>Kill sandbox</span>
+          <LaneCta lane={lane} cmd="kill" label="Kill sandbox" cls="btnR" onCommand={() => undefined} />
         </div>
         <div style={{ background: 'var(--well)', borderRadius: 3, padding: '12px 14px', boxShadow: 'inset 0 2px 5px rgba(0,0,0,.6)' }}>
           <div className="m" style={{ fontSize: '10.5px', lineHeight: 1.9, color: '#9aa08c' }}>

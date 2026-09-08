@@ -15,6 +15,9 @@ test('dismissing a stale ask drops it from Needs You and posts a plain success, 
   const strip = page.getByText('Needs you').locator('../..');
   await expect(strip.getByText('Dismiss', { exact: true })).toBeVisible();
   await strip.getByText('Dismiss', { exact: true }).click();
+  // dismissAsk is irreversible now: the click opens the server-issued confirm
+  // card in place, and nothing runs until that token comes back.
+  await strip.getByText('Confirm', { exact: true }).click();
   await expect(strip.getByText('Dismiss', { exact: true })).toHaveCount(0);
   await expect(strip.getByText(/^asks: —$|^asks: -$/)).toHaveCount(0);
   await expect(page.getByText('Refused')).toHaveCount(0);

@@ -48,7 +48,11 @@ test('H1.3 fix: a PR the board has never read shows "checks not read yet" and no
 test('Needs-you fix: a stale ask shows as "stale ask from ..." with Dismiss, and Dismiss clears it', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByText(/stale ask from .*FLT-707/)).toBeVisible();
+  // dismissAsk is an irreversible catalog action now: the click gets a server-issued
+  // confirm card in place of the button before anything actually clears.
   await page.getByText('Dismiss').first().click();
+  await expect(page.getByText('Confirm', { exact: true })).toBeVisible();
+  await page.getByText('Confirm', { exact: true }).click();
   await expect(page.getByText(/stale ask from .*FLT-707/)).toHaveCount(0);
 });
 
@@ -70,9 +74,11 @@ test('H2.2: the Archived filter starts empty until something is retired', async 
 test('H2.3: Clean up previews and retires the finished lanes, which then show under Archived', async ({ page }) => {
   await page.goto('/');
   await page.getByText('Clean up', { exact: true }).click();
-  await expect(page.getByText(/Retire \d+ finished lanes/)).toBeVisible();
+  // Irreversible catalog action: the server answers with a confirm card carrying its
+  // own blast-radius sentence, rendered where the click happened, before anything runs.
+  await expect(page.getByText(/retires \d+ finished lane/)).toBeVisible();
   await page.getByText('Confirm', { exact: true }).click();
-  await expect(page.getByText(/retired \d+ lanes/)).toBeVisible();
+  await expect(page.getByText(/retired \d+ lane/).first()).toBeVisible();
   await page.getByText(/^Archived \d+$/).click();
   await expect(page.getByTestId('lane-merged-1')).toBeVisible();
   await expect(page.getByText('Unretire').first()).toBeVisible();
@@ -81,9 +87,9 @@ test('H2.3: Clean up previews and retires the finished lanes, which then show un
 test('H2.3: Merge ready previews and merges the one ready PR', async ({ page }) => {
   await page.goto('/');
   await page.getByText('Merge ready', { exact: true }).click();
-  await expect(page.getByText(/Merge \d+ ready lanes/)).toBeVisible();
+  await expect(page.getByText(/merges \d+ ready lane/)).toBeVisible();
   await page.getByText('Confirm', { exact: true }).click();
-  await expect(page.getByText(/merged \d+ lanes/)).toBeVisible();
+  await expect(page.getByText(/merged \d+ lane/).first()).toBeVisible();
 });
 
 // Updated for item 3: the ticket chip is the source link now (never a separate
@@ -103,8 +109,9 @@ test('H2.4: the ticket sheet shows the kind, a linked ticket chip, and the Story
 test('archived-lane fix: clicking a retired lane under Archived opens its ticket sheet, not a blank one', async ({ page }) => {
   await page.goto('/');
   await page.getByText('Clean up', { exact: true }).click();
+  await expect(page.getByText(/retires \d+ finished lane/)).toBeVisible();
   await page.getByText('Confirm', { exact: true }).click();
-  await expect(page.getByText(/retired \d+ lanes/)).toBeVisible();
+  await expect(page.getByText(/retired \d+ lane/).first()).toBeVisible();
   await page.getByText(/^Archived \d+$/).click();
   await page.getByTestId('lane-merged-1').click();
   const sheet = page.getByTestId('ticket-sheet');

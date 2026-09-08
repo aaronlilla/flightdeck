@@ -1,16 +1,17 @@
 import type { JSX, ReactNode } from 'react';
+import { ACTIONS } from '../actions.js';
+import type { ActionOutcome } from '../store.js';
+import { ActionButton } from './ActionButton.js';
 import { useState } from 'react';
 
 import { hm } from '../freshness.js';
-import type { Blocker, BlockersActionResult } from '../../shared/console-model.js';
+import type { Blocker } from '../../shared/console-model.js';
 
 export interface BlockersViewProps {
   blockers: Blocker[];
   /** Ordered ids, root first, one array per open chain. A resolved blocker never
    *  appears in here -- it renders under "Resolved today" instead. */
   chains: string[][];
-  onResolve: (id: string) => Promise<BlockersActionResult>;
-  onCheck: (id: string) => Promise<BlockersActionResult>;
   /** Where a bare ticket key (`ABC-1234`) in a blocker's own text goes when nothing in that
    *  blocker's `links` already names it. Absent means a ticket key with no matching
    *  link renders as plain text rather than a guessed URL. */
@@ -49,16 +50,23 @@ interface StepResult {
   started?: string[];
 }
 
-function StepButtons({ blocker, enabled, onResolve, onCheck }: {
-  blocker: Blocker; enabled: boolean;
-  onResolve: (id: string) => Promise<BlockersActionResult>;
-  onCheck: (id: string) => Promise<BlockersActionResult>;
-}): JSX.Element {
-  const [result, setResult] = useState<StepResult | null>(null);
+/** The lanes a resolved step restarted, read back off the action's own sentence
+ *  (`resolved, restarted a, b`), the one place that text is produced. */
+function startedFrom(text: string): string[] {
+  const match = /restarted (.+)$/.exec(text);
+  return match ? match[1]!.split(', ') : [];
+}
 
-  if (result?.kind === 'checking') {
-    return <span className="lbl" style={{ color: 'var(--ink2)' }}>Checking…</span>;
-  }
+function StepButtons({ blocker, enabled }: { blocker: Blocker; enabled: boolean }): JSX.Element {
+  const [result, setResult] = useState<StepResult | null>(null);
+  // The two catalog actions carry the contract (busy, inline answer, rail receipt);
+  // what is kept here is the step's own "Resolved HH:MM · Started: ..." line once
+  // the server has confirmed, which reads better than a chip on a settled step.
+  const onOutcome = (outcome: ActionOutcome): void => {
+    if (outcome.kind !== 'done') return;
+    setResult(outcome.ok ? { kind: 'resolved', started: startedFrom(outcome.text) } : { kind: 'not-yet', detail: outcome.text });
+  };
+
   if (result?.kind === 'resolved') {
     const labelFor = new Map(blocker.blocks.map((b) => [b.laneId, b.label]));
     const startedLabels = (result.started ?? []).map((laneId) => labelFor.get(laneId) ?? laneId);
@@ -75,42 +83,28 @@ function StepButtons({ blocker, enabled, onResolve, onCheck }: {
   return (
     <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
       {blocker.youCanResolve ? (
-        <button
-          type="button" className="btnP" disabled={!enabled}
-          style={{ padding: '7px 11px', fontSize: '9.5px' }}
-          onClick={() => {
-            setResult({ kind: 'checking' });
-            void onResolve(blocker.id).then((r) => {
-              setResult(r.ok ? { kind: 'resolved', started: r.started } : { kind: 'not-yet', detail: r.lastCheck ?? 'not confirmed' });
-            });
-          }}
+        <ActionButton
+          spec={ACTIONS.resolveBlocker} args={[blocker.id]} className="btnP" disabled={!enabled}
+          style={{ padding: '7px 11px', fontSize: '9.5px' }} busy="Checking…" outcome="none" onOutcome={onOutcome}
         >
           Resolved, check it
-        </button>
+        </ActionButton>
       ) : null}
-      <button
-        type="button" className="btnS" disabled={!enabled}
-        style={{ padding: '7px 11px', fontSize: '9.5px' }}
-        onClick={() => {
-          setResult({ kind: 'checking' });
-          void onCheck(blocker.id).then((r) => {
-            setResult(r.ok ? { kind: 'resolved', started: r.started } : { kind: 'not-yet', detail: r.lastCheck ?? 'not confirmed' });
-          });
-        }}
+      <ActionButton
+        spec={ACTIONS.checkBlocker} args={[blocker.id]} className="btnS" disabled={!enabled}
+        style={{ padding: '7px 11px', fontSize: '9.5px' }} busy="Checking…" outcome="none" onOutcome={onOutcome}
       >
         Check again
-      </button>
+      </ActionButton>
       {result?.kind === 'not-yet' ? (
-        <span className="m" style={{ color: 'var(--block)', fontSize: 11 }}>Not yet: {result.detail}</span>
+        <span className="m" data-testid={`blocker-not-yet-${blocker.id}`} style={{ color: 'var(--block)', fontSize: 11 }}>Not yet: {(result.detail ?? 'not confirmed').replace(/^not yet: /, '')}</span>
       ) : null}
     </div>
   );
 }
 
-function ChainStep({ blocker, stepN, enabled, onResolve, onCheck, jiraSite }: {
+function ChainStep({ blocker, stepN, enabled, jiraSite }: {
   blocker: Blocker; stepN: number; enabled: boolean;
-  onResolve: (id: string) => Promise<BlockersActionResult>;
-  onCheck: (id: string) => Promise<BlockersActionResult>;
   jiraSite: string | undefined;
 }): JSX.Element {
   return (
@@ -147,7 +141,7 @@ function ChainStep({ blocker, stepN, enabled, onResolve, onCheck, jiraSite }: {
         </div>
       ) : null}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginTop: 2 }}>
-        <StepButtons blocker={blocker} enabled={enabled} onResolve={onResolve} onCheck={onCheck} />
+        <StepButtons blocker={blocker} enabled={enabled} />
         <span className="m" style={{ fontSize: 10, color: 'var(--ink3)' }}>since {hm(blocker.since)}</span>
       </div>
     </div>
@@ -158,7 +152,7 @@ function ChainStep({ blocker, stepN, enabled, onResolve, onCheck, jiraSite }: {
  *  through its own steps in order -- only the first still-open step in a chain is
  *  actionable, the rest read dimmed until it clears. Resolved chains collapse under
  *  "Resolved today". */
-export function BlockersView({ blockers, chains, onResolve, onCheck, jiraSite }: BlockersViewProps): JSX.Element {
+export function BlockersView({ blockers, chains, jiraSite }: BlockersViewProps): JSX.Element {
   const byId = new Map(blockers.map((b) => [b.id, b]));
   const openChains = chains.filter((chain) => chain.some((id) => byId.get(id)?.state === 'open'));
   const resolvedToday = blockers.filter((b) => b.state === 'resolved');
@@ -185,17 +179,17 @@ export function BlockersView({ blockers, chains, onResolve, onCheck, jiraSite }:
             return (
               <ChainStep
                 key={id} blocker={blocker} stepN={i + 1} enabled={i === firstOpenIndex}
-                onResolve={onResolve} onCheck={onCheck} jiraSite={jiraSite}
+                jiraSite={jiraSite}
               />
             );
           })}
         </div>
       ))}
       {resolvedToday.length ? (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
+        <div data-testid="blockers-resolved-today" style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
           <span className="lbl" style={{ color: 'var(--ink2)' }}>Resolved today</span>
           {resolvedToday.map((b) => (
-            <div key={b.id} className="m" style={{ fontSize: 11, color: 'var(--ink3)', display: 'flex', gap: 8 }}>
+            <div key={b.id} data-testid={`blocker-resolved-${b.id}`} className="m" style={{ fontSize: 11, color: 'var(--ink3)', display: 'flex', gap: 8 }}>
               <span style={{ color: 'var(--run)' }}>✓</span>
               <span>{b.title}</span>
               <span style={{ color: 'var(--ink3)' }}>{b.resolvedAt ? hm(b.resolvedAt) : ''}</span>
