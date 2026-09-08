@@ -412,7 +412,8 @@ export class ConsoleReads {
         return true;
       }
       if (sub === 'story') {
-        json(response, 200, await this.runStoryResponse(run));
+        const url = new URL(request.url ?? '/', 'http://localhost');
+        json(response, 200, await this.runStoryResponse(run, url.searchParams.get('verbose') === '1'));
         return true;
       }
       if (sub === 'summary') {
@@ -689,7 +690,7 @@ export class ConsoleReads {
    *  attestation the gate wrote, and the worktree's own `git log`. A run this server
    *  has never heard of still answers with an empty story rather than a 404, the same
    *  honesty `runDetail` in `server.ts` already keeps for a packet that has not landed. */
-  private async runStoryResponse(run: string): Promise<LaneStory> {
+  private async runStoryResponse(run: string, verbose = false): Promise<LaneStory> {
     const fleet = this.journalCache.read(this.journalPath);
     const chain = this.chain();
     const lane = this.lanesResponse(true, true).lanes.find((l) => l.id === run);
@@ -733,7 +734,7 @@ export class ConsoleReads {
       : null;
 
     return computeLaneStory({
-      id: run, title: lane?.title ?? null, kind: lane?.kind ?? 'manual', ticket, events,
+      id: run, title: lane?.title ?? null, kind: lane?.kind ?? 'manual', ticket, events, verbose,
       ...(queueItem ? { queueItem } : {}), ...(attestation ? { attestation } : {}),
       gitCommits, ...(briefPath ? { briefPath } : {}), ...(briefText ? { briefText } : {}),
     });

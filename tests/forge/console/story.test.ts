@@ -40,9 +40,9 @@ describe('computeLaneStory', () => {
     expect(story.entries.map((e) => e.text)).toContain('Branch feature/bbz-96 off develop');
   });
 
-  it('lists each commit as its own entry, off the real git log', () => {
+  it('lists each commit as its own entry, off the real git log (verbose keeps the sha)', () => {
     const story = computeLaneStory({
-      id: 'alpha', title: null, kind: 'manual', ticket: null,
+      id: 'alpha', title: null, kind: 'manual', ticket: null, verbose: true,
       events: [ev({ event: 'run.started', run: 'alpha', at: 1_000 })],
       gitCommits: [{ sha: '3982779abc', subject: 'wire the merge chip', at: 2_000 }],
     });
@@ -141,5 +141,87 @@ describe('computeLaneStory', () => {
     });
     expect(story.brief?.path).toBe('b.md');
     expect(story.brief?.excerpt.length).toBe(600);
+  });
+});
+
+describe('computeLaneStory: plain mode (deliverable 9)', () => {
+  it('a commit entry drops the sha in plain mode, keeps it in verbose', () => {
+    const input = {
+      id: 'alpha', title: null, kind: 'manual' as const, ticket: null,
+      events: [ev({ event: 'run.started', run: 'alpha', at: 1_000 })],
+      gitCommits: [{ sha: '3982779abcdef', subject: 'wire the merge chip', at: 2_000 }],
+    };
+    const plain = computeLaneStory(input);
+    expect(plain.entries.map((e) => e.text)).toContain('Committed: wire the merge chip');
+
+    const verbose = computeLaneStory({ ...input, verbose: true });
+    expect(verbose.entries.map((e) => e.text)).toContain('Change 3982779: wire the merge chip');
+  });
+
+  it('a park reason goes through humanizeParkReason, verbose keeps the raw reason', () => {
+    const input = {
+      id: 'alpha', title: null, kind: 'manual' as const, ticket: null,
+      events: [
+        ev({ event: 'run.started', run: 'alpha', at: 1_000 }),
+        ev({ event: 'run.parked', run: 'alpha', at: 2_000, reason: 'parking on a1b2c3d4e5f6a7b8: continue?' }),
+      ],
+    };
+    const plain = computeLaneStory(input);
+    expect(plain.entries.map((e) => e.text)).toContain('Parked: Asked you: continue?');
+
+    const verbose = computeLaneStory({ ...input, verbose: true });
+    expect(verbose.entries.map((e) => e.text).some((t) => t.includes('a1b2c3d4e5f6a7b8'))).toBe(true);
+  });
+
+  it('never leaves a machine id in any plain-mode entry text', () => {
+    const story = computeLaneStory({
+      id: 'alpha', title: null, kind: 'chain', ticket: null,
+      events: [
+        ev({ event: 'run.started', run: 'alpha', at: 1_000 }),
+        ev({
+          event: 'run.killed', run: 'alpha', at: 2_000,
+          reason: 'blocked behind queue-BBZ-1 at 88d44ec96baea849f7c1e8c0a1b2c3d4e5f6a7b8',
+        }),
+      ],
+    });
+    for (const entry of story.entries) {
+      expect(entry.text).not.toMatch(/queue-|\b[0-9a-f]{40}\b/i);
+    }
+  });
+
+  it('collapses identical consecutive entries into one with a repeat count', () => {
+    const story = computeLaneStory({
+      id: 'alpha', title: null, kind: 'chain', ticket: null,
+      events: [
+        ev({ event: 'run.started', run: 'alpha', at: 1_000 }),
+        ev({ event: 'run.parked', run: 'alpha', at: 2_000, reason: 'waiting on you' }),
+        ev({ event: 'run.resumed', run: 'alpha', at: 3_000 }),
+        ev({ event: 'ask.answered', run: 'alpha', at: 4_000, answer: 'same note' }),
+        ev({ event: 'ask.answered', run: 'alpha', at: 5_000, answer: 'same note' }),
+        ev({ event: 'ask.answered', run: 'alpha', at: 6_000, answer: 'same note' }),
+      ],
+    });
+    const answerEntries = story.entries.filter((e) => e.text.startsWith('Answered by you'));
+    expect(answerEntries).toHaveLength(1);
+    expect(answerEntries[0]!.text).toBe('Answered by you: same note (x3)');
+  });
+
+  it('collapses a park/resume cycle repeated more than twice into one summary line', () => {
+    const events: ForgeEvent[] = [ev({ event: 'run.started', run: 'alpha', at: 1_000 })];
+    let at = 2_000;
+    for (let i = 0; i < 4; i += 1) {
+      events.push(ev({ event: 'run.parked', run: 'alpha', at, reason: `check ${i}` }));
+      at += 500;
+      events.push(ev({ event: 'run.resumed', run: 'alpha', at }));
+      at += 500;
+    }
+    const story = computeLaneStory({
+      id: 'alpha', title: null, kind: 'chain', ticket: null, events,
+    });
+    const cycleLine = story.entries.find((e) => e.text.startsWith('Parked and resumed'));
+    expect(cycleLine).toBeDefined();
+    expect(cycleLine!.text).toContain('4 times');
+    expect(cycleLine!.text).toContain('last reason: check 3');
+    expect(story.entries.filter((e) => e.kind === 'resume')).toHaveLength(0);
   });
 });
