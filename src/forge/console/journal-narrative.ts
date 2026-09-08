@@ -13,9 +13,9 @@ import type { ChainPacketState } from '../chain.js';
 import type { ForgeEvent } from '../journal.js';
 import type { JournalNarrativeEntry, Lane } from '../../shared/console-model.js';
 import { fmtTokens } from '../../shared/format-tokens.js';
-import { stripMachineIds } from '../../shared/humanize.js';
+import { clock, stripMachineIds } from '../../shared/humanize.js';
 import { textFor } from './journal-route.js';
-import { laneKindFor, ticketFor } from './lanes.js';
+import { labelFor } from './lanes.js';
 import { modelName } from './plain.js';
 
 function firstEventAt(events: ForgeEvent[], name: string, matches: (row: ForgeEvent) => boolean): number | undefined {
@@ -111,20 +111,6 @@ export interface WardenChip {
  *  the lane's own ticket key or its kind, never its raw run id. */
 export type TitleForFn = (id: string) => string | null;
 
-const LABEL_TITLE_LIMIT = 60;
-
-/** A rail chip's label for a lane: its ticket key first, then its title (trimmed to
- *  60 characters), else "Live probe" for a probe, else a bare "a run" -- never the raw
- *  run id or a pid, which is the machine text this fix replaces. */
-function labelFor(id: string, titleFor: TitleForFn): string {
-  const ticket = ticketFor(id, undefined);
-  if (ticket) return ticket;
-  const title = titleFor(id);
-  if (title) return title.length > LABEL_TITLE_LIMIT ? title.slice(0, LABEL_TITLE_LIMIT) : title;
-  if (laneKindFor(id) === 'probe') return 'Live probe';
-  return 'a run';
-}
-
 const SIGNAL_PHRASES: Record<string, string> = {
   context: 'context ceiling reached, handed off to a fresh session',
   idle: 'went quiet for too long',
@@ -147,7 +133,7 @@ export function signalPhrase(signal: string): string {
  *  (used for the audit-trail Journal panel, which this never replaces). */
 export function railChipText(row: ForgeEvent, titleFor: TitleForFn): string | null {
   const id = typeof row.run === 'string' ? row.run : '';
-  const label = id ? labelFor(id, titleFor) : null;
+  const label = id ? labelFor(id, (candidateId) => ({ ticket: null, title: titleFor(candidateId) })) : null;
   switch (row.event) {
     case 'run.parked':
       return label ? `${label} parked, waiting on you.` : 'Parked, waiting on you.';
@@ -174,9 +160,7 @@ export function railChipText(row: ForgeEvent, titleFor: TitleForFn): string | nu
   }
 }
 
-function clockTime(at: number): string {
-  return new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-}
+const clockTime = clock;
 
 /**
  * H1.9: the conductor rail's own chip storm (`PID:51340 STUCK (STALE-SESSION)` x 20,

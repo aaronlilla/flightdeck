@@ -12,7 +12,7 @@
 import type { ForgeEvent } from '../journal.js';
 import type { CouncilAttestation } from '../contracts.js';
 import type { LaneKind, LaneStory, LaneStoryEntry, QueueItem } from '../../shared/console-model.js';
-import { humanizeParkReason, stripMachineIds } from '../../shared/humanize.js';
+import { clock, humanizeParkReason, stripMachineIds } from '../../shared/humanize.js';
 
 export interface GitCommit {
   sha: string;
@@ -46,9 +46,20 @@ export interface LaneStoryInput {
 
 const BRIEF_EXCERPT_LIMIT = 600;
 
-function clockTime(at: number): string {
-  return new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+/** Item 5: how long an "Asked you: ..." story line runs in plain mode before it is
+ *  cut, at a word boundary, with "..." on the end. Verbose keeps the whole thing --
+ *  this only trims the plain reading, which otherwise turns a 900-character question
+ *  into the entire story line. */
+const ASKED_TEXT_LIMIT = 240;
+
+function truncateAskedText(text: string): string {
+  if (!text.startsWith('Parked: Asked you:') || text.length <= ASKED_TEXT_LIMIT) return text;
+  const cut = text.slice(0, ASKED_TEXT_LIMIT);
+  const lastSpace = cut.lastIndexOf(' ');
+  return `${(lastSpace > 40 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
 }
+
+const clockTime = clock;
 
 function findAt(events: ForgeEvent[], name: string): ForgeEvent | undefined {
   return events.find((row) => row.event === name);
@@ -137,7 +148,12 @@ export function computeLaneStory(input: LaneStoryInput): LaneStory {
       case 'warden.parked':
       case 'governor.parked': {
         const reason = typeof row.reason === 'string' ? row.reason : null;
-        const isWarden = row.event === 'warden.parked' || (reason && /warden|script budget|stuck-session/i.test(reason));
+        // Item 5: whether this is the warden's own park comes from the event name, or
+        // from the reason's own opening words -- never from a search anywhere in the
+        // reason body, which used to catch a run's own ask text the moment it happened
+        // to mention "warden" (a PR describing a warden.health fix, say) and mislabel
+        // the whole entry as a warden trip.
+        const isWarden = row.event === 'warden.parked' || (reason !== null && /^\s*(warden|script budget|stuck-session)/i.test(reason));
         const text = isWarden
           ? `Warden parked it: ${input.verbose ? (reason ?? 'a health check tripped') : stripMachineIds(reason ?? 'a health check tripped')}`
           : `Parked: ${input.verbose ? (reason ?? 'waiting on you') : humanizeParkReason(reason ?? 'waiting on you')}`;
@@ -175,7 +191,7 @@ export function computeLaneStory(input: LaneStoryInput): LaneStory {
   entries.sort((a, b) => a.at - b.at);
 
   const finalEntries = input.verbose ? entries : collapseRepeatedText(
-    collapseParkResumeCycles(entries.map((entry) => ({ ...entry, text: stripMachineIds(entry.text) }))),
+    collapseParkResumeCycles(entries.map((entry) => ({ ...entry, text: truncateAskedText(stripMachineIds(entry.text)) }))),
   );
 
   const brief = input.briefPath && input.briefText

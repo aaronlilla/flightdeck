@@ -64,7 +64,7 @@ export function LanesGrid(props: LanesGridProps): JSX.Element {
       className="scroll"
       style={{
         flex: 1, padding: '12px 16px 16px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(215px,1fr))',
-        gridAutoRows: '1fr', alignItems: 'stretch', gap: 10, alignContent: 'start',
+        gridAutoRows: 'auto', alignItems: 'stretch', gap: 10, alignContent: 'start',
       }}
     >
       {groups.map((group) => (

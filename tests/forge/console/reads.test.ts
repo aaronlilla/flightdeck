@@ -16,6 +16,7 @@ import { Lanes } from '../../../src/forge/supervisor.js';
 import { Registry } from '../../../src/forge/registry.js';
 import { Inbox } from '../../../src/forge/inbox.js';
 import { ConsoleReads } from '../../../src/forge/console/reads.js';
+import { clock } from '../../../src/shared/humanize.js';
 
 function tempDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix));
@@ -137,7 +138,7 @@ describe('ConsoleReads.lanesResponse: title and sourceUrl', () => {
 
     const server = reads as unknown as { runStoryResponse(run: string): Promise<{ entries: Array<{ text: string }> }> };
     const story = await server.runStoryResponse('queue-BBZ-96');
-    expect(story.entries.map((e) => e.text)).toContain('Queued from Jira as BBZ-96 at ' + new Date(500).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }));
+    expect(story.entries.map((e) => e.text)).toContain(`Queued from Jira as BBZ-96 at ${clock(500)}`);
     expect(story.entries.map((e) => e.text)).toContain('Draft PR #119 opened');
     expect(story.entries.map((e) => e.text)).toContain('Branch feature/bbz-96 off develop');
   });
@@ -297,6 +298,86 @@ describe('ConsoleReads.lanesResponse: title and sourceUrl', () => {
     expect(chip?.text).not.toMatch(/hotfix-fee-2/i);
   });
 
+  // Item 8: an operator bubble that resumes a ticket-carrying lane echoed the lane's
+  // full TITLE (a "Resume Close the fee-skip hole for card withdrawals with both fee
+  // fields omitted (BBZ-182)." bubble on the live board) because the seam handed to
+  // computeThread mapped every id straight to lane.title, skipping the ticket key
+  // entirely. It must echo the short ticket key instead.
+  it('item 8: an echoed command names a ticket-carrying lane by its ticket, not its long title', () => {
+    const forgeHomeDir = tempDir('console-reads-');
+    const briefsDir = join(forgeHomeDir, 'briefs');
+    mkdirSync(briefsDir, { recursive: true });
+    const briefPath = join(briefsDir, 'bbz-182.md');
+    writeFileSync(briefPath, '# Close the fee-skip hole for card withdrawals with both fee fields omitted\n', 'utf8');
+
+    const queueStore = new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl'));
+    queueStore.append({
+      id: 'Q-1', at: 1, source: 'ticket', input: 'BBZ-182', ticket: 'BBZ-182', repo: 'o/n',
+      briefPath, branch: 'feature/bbz-182', worktreePath: 'w', base: 'develop',
+      state: 'running', reason: null, runKey: 'queue-BBZ-182', pr: null, journalIds: [],
+      createdAt: 1, updatedAt: 1,
+    });
+
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'queue-BBZ-182', actor: 'runner' });
+    journal.close();
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put('queue-BBZ-182', { column: 'BBZ-182' });
+
+    const threadDir = join(forgeHomeDir, 'console');
+    mkdirSync(threadDir, { recursive: true });
+    writeFileSync(
+      join(threadDir, 'thread.jsonl'),
+      `${JSON.stringify({ k: 'm1', type: 'operator', text: 'resume queue-BBZ-182', ts: 1, source: 'operator' })}\n`,
+      'utf8',
+    );
+
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore, jiraSite: null,
+    });
+
+    const server = reads as unknown as { threadResponse(): { messages: Array<{ text: string }> } };
+    const thread = server.threadResponse();
+    const operator = thread.messages.find((m) => m.text.startsWith('Resume'));
+    expect(operator?.text).toBe('Resume BBZ-182.');
+  });
+
+  // Item 9: a queue item's own park `reason` can carry an unshortened 40-character
+  // sha ("checks are failure on head <sha>, not green"); `plainForQueueItem` reads
+  // that raw reason AFTER `computeLanes` already stripped and shortened `plain` once,
+  // so the sha reached the board whole even though the tile's own sha read short.
+  it('item 9: a queue-parked lane\'s plain sentence never carries a 40-character sha', () => {
+    const forgeHomeDir = tempDir('console-reads-');
+    const queueStore = new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl'));
+    const sha = 'f284c653033e12549fdaa68212840987a328a824';
+    queueStore.append({
+      id: 'Q-1', at: 1, source: 'ticket', input: 'BBZ-1', ticket: 'BBZ-1', repo: 'o/n',
+      briefPath: null, branch: 'feature/bbz-1', worktreePath: 'w', base: 'develop',
+      state: 'parked', reason: `refused: checks are failure on head ${sha}, not green.`,
+      runKey: 'queue-BBZ-1', pr: null, journalIds: [], createdAt: 1, updatedAt: 1,
+    });
+
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'queue-BBZ-1', actor: 'runner' });
+    journal.close();
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put('queue-BBZ-1', { column: 'BBZ-1' });
+
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore, jiraSite: null,
+    });
+
+    const [lane] = reads.lanesResponse().lanes;
+    expect(lane!.plain).not.toContain(sha);
+    expect(lane!.plain).toContain(sha.slice(0, 7));
+  });
+
   it('item 7: GET /lanes reads a queue lane\'s checks/verdict/merged in the background, off repo+PR alone, with no chain packet at all', async () => {
     const forgeHomeDir = tempDir('console-reads-');
     const { writeAttestation } = await import('../../../src/forge/council/attest.js');
@@ -356,6 +437,58 @@ describe('ConsoleReads.lanesResponse: title and sourceUrl', () => {
     });
     expect(second.mergeable).toEqual({ ok: true });
     expect(ghCalls).toBe(1);
+  });
+
+  // Item 11: the run itself opened a PR straight off its own branch, but nothing
+  // ever wrote its number back onto the queue item -- the exact live-board finding
+  // (PR #39 for `feature/s-b9d39bae548707e0`, self lane still reading "no PR yet").
+  it('item 11: a queue item with no PR on record discovers one by branch, and surfaces it exactly like a recorded PR', async () => {
+    const forgeHomeDir = tempDir('console-reads-');
+    const queueStore = new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl'));
+    queueStore.append({
+      id: 'Q-1', at: 1, source: 'ticket', input: 'S-b9d39bae548707e0', ticket: null, repo: 'o/n',
+      briefPath: null, branch: 'feature/s-b9d39bae548707e0', worktreePath: 'w', base: 'main',
+      state: 'running', reason: null, runKey: 'S-b9d39bae548707e0', pr: null, journalIds: [],
+      createdAt: 1, updatedAt: 1,
+    });
+
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'S-b9d39bae548707e0', actor: 'runner' });
+    journal.close();
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put('S-b9d39bae548707e0', { column: 'self' });
+
+    let branchCalls = 0;
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore, jiraSite: null,
+      ghBranchLookup: async (repo, branch) => {
+        branchCalls += 1;
+        expect(repo).toBe('o/n');
+        expect(branch).toBe('feature/s-b9d39bae548707e0');
+        return {
+          number: 39, url: 'https://github.com/o/n/pull/39', isDraft: true, mergedAt: null,
+          title: 'dedupe warden.health on an open unregistered trip', headRefOid: 'f284c65',
+        };
+      },
+    });
+
+    // First call: nothing has looked this PR up by branch yet, so the lane still
+    // reads no PR -- and a background discovery is kicked off rather than blocking.
+    const first = reads.lanesResponse().lanes[0]!;
+    expect(first.pr).toBeNull();
+
+    const server = reads as unknown as { settlePrRefreshes(): Promise<void> };
+    await server.settlePrRefreshes();
+
+    const second = reads.lanesResponse().lanes[0]!;
+    expect(second.pr).toEqual({
+      no: 39, url: 'https://github.com/o/n/pull/39', draft: true, merged: false,
+      title: 'dedupe warden.health on an open unregistered trip',
+    });
+    expect(branchCalls).toBe(1);
   });
 
   it('item 7: GET /run/:id/pr answers for a queue lane with no chain packet, off the queue item\'s own repo and PR', async () => {

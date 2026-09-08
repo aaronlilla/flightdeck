@@ -34,16 +34,17 @@ import { computeJournalNarrative } from './journal-narrative.js';
 import { readAttestation } from '../council/attest.js';
 import { queueMergeAllowed } from '../queue-wire.js';
 import {
-  chainLinks, computeLanes, mergeableFor, mergeReadyReportFrom, tokensToday, titleFor, titleFromHeading,
-  windowLanes, type LanesInput,
+  chainLinks, computeLanes, labelFor as laneLabelFor, mergeableFor, mergeReadyReportFrom, tokensToday, titleFor,
+  titleFromHeading, windowLanes, type LanesInput,
 } from './lanes.js';
 import { computeLaneStory, type GitCommit } from './story.js';
 import { readRetired, retiredPath } from './retire.js';
 import { plainForQueueItem, plainStatus, type QueueVerdict } from './plain.js';
 import { readAttestationAtPath } from '../council/attest.js';
 import {
-  computeQueuePr, computeRunPr, PR_CACHE_TTL_MS, prCachePath, readPrCache, writePrCache,
-  type AttestationReaderFn, type Cache, type GhDetailLookupFn, type GhLookupFn, type GhPrDetail, type GhPrLookup,
+  computeBranchPr, computeQueuePr, computeRunPr, PR_CACHE_TTL_MS, prCachePath, readPrCache, writePrCache,
+  type AttestationReaderFn, type Cache, type GhBranchLookupFn, type GhBranchPr, type GhDetailLookupFn, type GhLookupFn,
+  type GhPrDetail, type GhPrLookup,
 } from './pr.js';
 import { computeProposals, readRules, rulesPath } from './proposals.js';
 import { computeSandbox, newestLogFile, packetForRun, tailLogWithSeverity } from './sandbox.js';
@@ -52,6 +53,7 @@ import { computeLaneSummary, computeReadiness, type PrFacts } from './summary.js
 import type { MergeReadyReport } from '../../shared/console-model.js';
 import { gitDrift, type DriftFn } from './drift.js';
 import { readChainEnv } from '../chain-env.js';
+import { shortenShas, stripMachineIds } from '../../shared/humanize.js';
 
 export interface ConsoleReadsOptions {
   lanes?: Lanes;
@@ -65,6 +67,10 @@ export interface ConsoleReadsOptions {
   /** H1.3: overrides `gh pr view`'s own checks/merged/title read. A specimen never
    *  shells out. */
   ghDetailLookup?: GhDetailLookupFn;
+  /** Item 11: overrides `gh pr list --repo <repo> --head <branch> --state all`, the
+   *  by-branch PR discovery for a lane whose queue item carries no PR at all. A
+   *  specimen never shells out. */
+  ghBranchLookup?: GhBranchLookupFn;
   /** H1.3: overrides the attestation-on-disk read for a PR's own council verdict. A
    *  specimen only. */
   attestationReader?: AttestationReaderFn;
@@ -233,6 +239,28 @@ function defaultGitLog(): (worktreePath: string, range: GitLogRange) => Promise<
   };
 }
 
+/** Item 11: `gh pr list --repo <repo> --head <branch> --state all --json
+ *  number,url,isDraft,mergedAt,title,headRefOid` -- `--state all` so an already-merged
+ *  PR is found too, not only an open one. */
+function defaultGhBranchLookup(): GhBranchLookupFn {
+  return async (repo: string, branch: string): Promise<GhBranchPr | undefined> => {
+    const result = await execRun({
+      argv: [
+        'gh', 'pr', 'list', '--repo', repo, '--head', branch, '--state', 'all', '--json',
+        'number,url,isDraft,mergedAt,title,headRefOid',
+      ],
+      cwd: process.cwd(), owner: 'console-pr-branch', cls: 'script', fullOutput: true,
+    });
+    if (!result.ok) return undefined;
+    try {
+      const rows = JSON.parse(result.full ?? result.tail) as GhBranchPr[];
+      return rows[0];
+    } catch {
+      return undefined;
+    }
+  };
+}
+
 function defaultAttestationReader(): AttestationReaderFn {
   return (repo, pr, head) => {
     const attestation = readAttestation(repo, pr, head);
@@ -261,6 +289,8 @@ export class ConsoleReads {
 
   private readonly ghDetailLookup: GhDetailLookupFn;
 
+  private readonly ghBranchLookup: GhBranchLookupFn;
+
   private readonly attestationReader: AttestationReaderFn;
 
   private readonly stuckFn: () => StuckSignal[];
@@ -281,6 +311,11 @@ export class ConsoleReads {
    *  lane polled again before the first `gh` read lands never queues a second one. */
   private readonly prRefreshInFlight = new Set<string>();
 
+  /** Item 11: run ids a background by-branch PR discovery is already in flight for --
+   *  the same in-flight guard `prRefreshInFlight` gives the detail refresh, kept
+   *  separate since the two can legitimately run at once for different lanes. */
+  private readonly branchPrDiscoveryInFlight = new Set<string>();
+
   /** Item 7: every background PR-detail refresh `GET /lanes` has kicked off so far,
    *  for `settlePrRefreshes()` (tests only) to wait on. Production never awaits this --
    *  a poll must never block on `gh`. */
@@ -295,6 +330,7 @@ export class ConsoleReads {
     this.journalCache = options.journalCache ?? new JournalCache();
     this.ghLookup = options.ghLookup ?? defaultGhLookup();
     this.ghDetailLookup = options.ghDetailLookup ?? defaultGhDetailLookup();
+    this.ghBranchLookup = options.ghBranchLookup ?? defaultGhBranchLookup();
     this.attestationReader = options.attestationReader ?? defaultAttestationReader();
     this.stuckFn = options.stuck ?? (() => []);
     this.modelPolicyPath = options.modelPolicyPath ?? policyPath();
@@ -331,6 +367,28 @@ export class ConsoleReads {
         writePrCache(cachePath, nextCache);
       } finally {
         this.prRefreshInFlight.delete(run);
+      }
+    })();
+    this.pendingPrRefreshes.push(task);
+  }
+
+  /** Item 11: a queue-sourced lane with a known branch and no PR on record at all --
+   *  the worker's own ask already names one, but nothing ever wrote its number back
+   *  onto the queue item. Looks it up once by branch, in the background, and writes
+   *  the answer into the same `run`-keyed cache `scheduleQueuePrRefresh` and every
+   *  other PR read here share, so the tile and the sheet both see it from the next
+   *  poll. Only fires when nothing else has already found a PR for this run. */
+  private scheduleBranchPrDiscovery(run: string, repo: string, branch: string): void {
+    if (this.branchPrDiscoveryInFlight.has(run)) return;
+    this.branchPrDiscoveryInFlight.add(run);
+    const cachePath = prCachePath(this.forgeHomeDir);
+    const task = (async () => {
+      try {
+        const cache = readPrCache(cachePath);
+        const { cache: nextCache } = await computeBranchPr(run, repo, branch, cache, Date.now(), this.ghBranchLookup);
+        writePrCache(cachePath, nextCache);
+      } finally {
+        this.branchPrDiscoveryInFlight.delete(run);
       }
     })();
     this.pendingPrRefreshes.push(task);
@@ -455,6 +513,12 @@ export class ConsoleReads {
       capOverrides: readCapsOverrides(capsOverridesPath(this.forgeHomeDir)).perRun ?? {},
       prFor: (run) => prCache[run]?.pr ?? null,
       tokensPerHour: (lane) => tokensPerHour(lane, fleet.runs[lane.slug]?.tokensUsed ?? 0, now),
+      // Item 10: a queue item's own state and reason outrank a stale run state --
+      // see `laneStateFor`'s own `queueParked` branch.
+      queueStateFor: (run) => {
+        const item = this.queueStore.all().find((row) => row.runKey === run);
+        return item ? { state: item.state, reason: item.reason } : undefined;
+      },
     };
     // `archived` bypasses the 24h finished-lane window the same way `all` does: an
     // operator asking to see everything ever retired must see a lane retired long ago,
@@ -535,6 +599,32 @@ export class ConsoleReads {
         this.scheduleQueuePrRefresh(lane.id, repo, pr);
       }
     }
+    // Item 11: the run itself can already have opened a PR straight off its own
+    // branch without the queue item ever recording it -- nothing above finds one,
+    // since every path here needs a `pr.no` the queue item never got. A branch is
+    // known the moment the item is provisioned (`queueItem.branch`), or off the
+    // lane's own sandbox for a lane the queue never provisioned through; a cache
+    // entry still inside its TTL (including a cached "none found") means a lookup has
+    // already landed recently.
+    if (queueItem && repo && !pr?.no) {
+      const branch = queueItem.branch ?? lane.sandbox?.branch ?? null;
+      if (branch) {
+        const cached = prCache[lane.id];
+        if (!cached || now - cached.at >= PR_CACHE_TTL_MS) {
+          this.scheduleBranchPrDiscovery(lane.id, repo, branch);
+        }
+      }
+    }
+    // Item 9: `computeLanes` already stripped `plain`/`reason` once, but both of the
+    // overrides above -- `plainStatus` recomputed for a queue lane's freshly-resolved
+    // `pr`, and `plainForQueueItem`'s own read of the queue item's raw `reason` (which
+    // can still carry an unshortened sha straight off a park reason, "checks are
+    // failure on head <40 hex characters>") -- run after that strip, not before it.
+    // The invariant this class promises -- no `plain`, `reason` or `status` leaves
+    // `ConsoleReads` carrying a 40-character sha or a run id -- has to hold here too,
+    // at the very end, or it only holds for whichever lanes this method never touched.
+    if (patched.plain) patched.plain = shortenShas(stripMachineIds(patched.plain));
+    if (patched.reason) patched.reason = shortenShas(stripMachineIds(patched.reason));
     return patched;
   }
 
@@ -572,10 +662,15 @@ export class ConsoleReads {
     // Deliverable 6: every chain link (a handed-off successor run, not only the root)
     // maps to the same root lane's title -- a chip about the successor used to read its
     // own bare run id, since `GET /lanes` only ever carries the root's own id.
-    const titles = new Map<string, string | null>();
+    // Item 8: every chip and echoed command on the rail names a lane through the one
+    // shared `labelFor` (ticket key first, then title, then a manual lane's own slug),
+    // never the lane's bare `title` -- that used to leave a long-titled lane's whole
+    // title standing in for what should have read as its short ticket key.
+    const titles = new Map<string, string>();
     for (const lane of this.lanesResponse(true, true).lanes) {
+      const label = laneLabelFor(lane.id, (id) => (id === lane.id ? { ticket: lane.ticket, title: lane.title } : null));
       for (const link of chainLinks(fleet.runs, lane.id)) {
-        titles.set(link.key, lane.title);
+        titles.set(link.key, label);
       }
     }
     const titleFor = (id: string): string | null => titles.get(id) ?? null;

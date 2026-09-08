@@ -22,12 +22,14 @@ function ensureSentence(text: string): string {
   return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
 }
 
-/** Strips the story panel's own "Change abc1234: " / "Planned: " / "Queued from Jira
- *  as X at H:MM" labels back to plain prose, so a `what` sentence reads like something
- *  a person wrote about the change, not a quote from the story panel. */
+/** Strips the story panel's own "Change abc1234: " / "Committed: " / "Planned: " /
+ *  "Queued from Jira as X at H:MM" labels back to plain prose, so a `what` sentence
+ *  reads like something a person wrote about the change, not a quote from the story
+ *  panel. */
 function stripStoryPrefix(text: string): string {
   return text
     .replace(/^Change [0-9a-f]{7,40}:\s*/i, '')
+    .replace(/^Committed:\s*/i, '')
     .replace(/^Planned:\s*/i, '');
 }
 
@@ -114,6 +116,17 @@ export function computeWhat(input: Pick<LaneSummaryInput, 'story' | 'pr' | 'drif
     if (sentences.length >= MAX_WHAT_SENTENCES) break;
     push(subject);
   }
+  // Item 9: with no PR at all, `drift.commits` never gets populated -- it only ever
+  // reads a PR's own commit range -- so "what happened" had nothing but the plan
+  // line. The story panel's own `commit` entries are the run's own commits too (they
+  // are range-scoped the same way, per the 2026-09-08 story-scoping fix), so they
+  // stand in here, newest first and six at most, ahead of the plan/ticket fallback.
+  if (!pr) {
+    const commits = (story?.entries ?? []).filter((entry) => entry.kind === 'commit');
+    for (let i = commits.length - 1; i >= 0 && sentences.length < MAX_WHAT_SENTENCES; i -= 1) {
+      push(commits[i]!.text);
+    }
+  }
   if (sentences.length < MIN_WHAT_SENTENCES) {
     for (const entry of story?.entries ?? []) {
       if (sentences.length >= MAX_WHAT_SENTENCES) break;
@@ -169,7 +182,10 @@ export function computeReadiness(input: {
   } else if (!CLEARED_VERDICTS.has(attestation.verdict)) {
     reasons.push(`council verdict is ${attestation.verdict}`);
   }
-  if (mergeable && mergeable.ok === false) reasons.push(mergeable.why);
+  // Item 9: with no PR at all, `mergeable.why` is always some form of "no PR yet" --
+  // the exact thing the `!pr` clause above already said. Skip it there, or "Not
+  // ready" says the same fact twice ("no PR is open yet; not audited yet; no PR yet").
+  if (pr && mergeable && mergeable.ok === false) reasons.push(mergeable.why);
   if (drift.headMoved) reasons.push('the PR head moved since the audit');
   if (drift.behindBase) {
     reasons.push(`the base branch gained ${drift.behindBase} commit${drift.behindBase === 1 ? '' : 's'} since`);
@@ -201,6 +217,13 @@ export function computeNext(lane: Lane, readiness: LaneReadiness | null): string
         ? 'Answer the question below; the run continues as soon as you do.'
         : 'Read the reason, then Resume it or Kill it.';
     case 'blocked':
+      // Item 10: a lane read as blocked because its process is simply gone (no
+      // registry row anywhere in its chain, no journal row in ten minutes) gets the
+      // same instruction a parked lane does -- there is nothing here to salvage or
+      // reconnect, only a reason to read before deciding.
+      if (lane.reason === 'its process is gone and it never reported finishing') {
+        return 'Read the reason, then Resume it or Kill it.';
+      }
       return lane.blockedBy === 'aws'
         ? 'Reconnect AWS, then Resume it.'
         : 'Read the reason. If the work is salvageable, Resume it; otherwise Kill it and reopen.';

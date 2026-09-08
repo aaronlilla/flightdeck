@@ -70,7 +70,7 @@ export function LaneTile({ lane, feedLive, now, onOpen, onOpenCost, onCommand, o
       className="lane"
       data-testid={`lane-${lane.id}`}
       data-state={lane.state}
-      style={{ borderColor: lane.state === 'parked' ? 'var(--park)' : undefined, opacity, height: '100%' }}
+      style={{ borderColor: lane.state === 'parked' ? 'var(--park)' : undefined, opacity, height: '100%', boxSizing: 'border-box' }}
       {...actionable(() => onOpen(lane.id))}
     >
       {lane.state === 'parked' ? (

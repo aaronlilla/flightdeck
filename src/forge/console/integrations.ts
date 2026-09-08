@@ -93,6 +93,16 @@ function ghProbe(spawnFn?: RunRequest['spawnFn']): Probe {
   }, spawnFn);
 }
 
+/** The `/rest/api/3/myself` url for a `FORGE_JIRA_SITE` value, whether it was written as a
+ *  bare host (`acme.atlassian.net`) or with its scheme (`https://acme.atlassian.net`), the
+ *  shape every other reader of that variable (`jiraUrl` in `lanes.ts`) already expects.
+ *  Prefixing `https://` a second time built `https://https://...`, which made `fetch` throw
+ *  and the row read `off` on a machine whose credentials were all set. */
+export function jiraMyselfUrl(site: string): string {
+  const host = site.trim().replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+  return `https://${host}/rest/api/3/myself`;
+}
+
 function jiraProbe(spawnFn?: RunRequest['spawnFn']): Probe {
   return () => timed(async () => {
     const site = process.env['FORGE_JIRA_SITE'];
@@ -100,7 +110,7 @@ function jiraProbe(spawnFn?: RunRequest['spawnFn']): Probe {
     const token = process.env['FORGE_JIRA_TOKEN'];
     if (!site || !email || !token) return { ok: false, detail: 'FORGE_JIRA_SITE / FORGE_JIRA_EMAIL / FORGE_JIRA_TOKEN are not all set' };
     const auth = Buffer.from(`${email}:${token}`).toString('base64');
-    const response = await fetch(`https://${site}/rest/api/3/myself`, {
+    const response = await fetch(jiraMyselfUrl(site), {
       headers: { authorization: `Basic ${auth}` },
     });
     return { ok: response.ok, detail: response.ok ? undefined : `myself endpoint returned ${response.status}`, scope: site };

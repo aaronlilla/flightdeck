@@ -750,6 +750,11 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
                   lane={sheetLane} feedLive={state.feed.live} now={state.now} verbose={state.verbose}
                   focus={state.sheet.focus}
                   onClose={() => dispatch({ type: 'sheet', sheet: null })}
+                  onToggleVerbose={() => {
+                    verboseRef.current = !state.verbose;
+                    dispatch({ type: 'verbose', verbose: !state.verbose });
+                    void refresh();
+                  }}
                   onCommand={onCommand}
                   onOpenCost={(id) => dispatch({ type: 'sheet', sheet: { type: 'cost', id } })}
                   onOpenSandbox={(id) => dispatch({ type: 'sheet', sheet: { type: 'sandbox', id } })}

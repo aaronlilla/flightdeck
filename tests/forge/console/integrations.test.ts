@@ -322,3 +322,11 @@ describe('stdioMcpProbe', () => {
     expect(result).toEqual({ status: 'down', latencyMs: null, desc: 'stdio · command not on PATH' });
   });
 });
+
+describe('jiraMyselfUrl', () => {
+  it('accepts the site with or without its scheme and never doubles it', async () => {
+    const { jiraMyselfUrl } = await import('../../../src/forge/console/integrations.js');
+    expect(jiraMyselfUrl('https://boltbetz-bankroll-dev.atlassian.net')).toBe('https://boltbetz-bankroll-dev.atlassian.net/rest/api/3/myself');
+    expect(jiraMyselfUrl('boltbetz-bankroll-dev.atlassian.net/')).toBe('https://boltbetz-bankroll-dev.atlassian.net/rest/api/3/myself');
+  });
+});

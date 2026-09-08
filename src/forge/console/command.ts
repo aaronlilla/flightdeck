@@ -37,7 +37,7 @@ import {
 import { capsOverridesPath, effectiveHardTokens, readCapsOverrides } from './caps-read.js';
 import { restoreCaps, writeCaps, type CapsWriteDeps } from './caps-write.js';
 import { IntegrationsRegistry, type IntegrationsDeps } from './integrations.js';
-import { laneStateNowFor, meaningfulEvents, tokensToday } from './lanes.js';
+import { labelFor as laneLabelFor, laneStateNowFor, meaningfulEvents, tokensToday } from './lanes.js';
 import { signalPhrase } from './journal-narrative.js';
 import { plainEventText } from './thread.js';
 import {
@@ -46,21 +46,18 @@ import {
 } from './rules.js';
 import type { ActionResult, LanesResponse, Message, PlanItem } from '../../shared/console-model.js';
 import { fmtTokens } from '../../shared/format-tokens.js';
-import { stripMachineIds, ticketInId } from '../../shared/humanize.js';
+import { stripMachineIds } from '../../shared/humanize.js';
 
-const LABEL_TITLE_LIMIT = 60;
 const REASON_LIMIT = 140;
 
-/** Deliverable 5: what a person calls a lane, off the same lanes view every reply
- *  reads from -- its ticket key first, then its title (trimmed to 60 characters), else
- *  whatever ticket key is embedded in its own id, else a bare "a run". A caller with no
- *  `lanesView` wired at all has nothing to look a lane up in, so this reads the same
- *  fallback a lane it cannot find gets: never the raw run id. */
+/** Item 8: what a person calls a lane, off the same lanes view every reply reads
+ *  from -- delegates to `lanes.ts`'s own `labelFor`, the one implementation the whole
+ *  server now shares, rather than a second copy that can drift from it. */
 function labelFor(view: LanesResponse | undefined, id: string): string {
-  const lane = view?.lanes.find((candidate) => candidate.id === id);
-  if (lane?.ticket) return lane.ticket;
-  if (lane?.title) return lane.title.length > LABEL_TITLE_LIMIT ? lane.title.slice(0, LABEL_TITLE_LIMIT) : lane.title;
-  return ticketInId(id) ?? 'a run';
+  return laneLabelFor(id, (candidateId) => {
+    const lane = view?.lanes.find((l) => l.id === candidateId);
+    return lane ? { ticket: lane.ticket, title: lane.title } : null;
+  });
 }
 
 function truncate(text: string, limit: number): string {

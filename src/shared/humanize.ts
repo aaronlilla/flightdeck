@@ -9,16 +9,22 @@
  * which every route answers under `?verbose=1` and which never goes through this file.
  */
 
-/** A run id shaped like a self item, a chain run or a queue run. */
+/** A run id shaped like a self item, a chain run or a queue run. Skips a match that
+ *  is part of a longer path or branch segment (`feature/S-...`, `something-S-...`):
+ *  a `/` or `-` right before it means the id is stuck to another word, not standing
+ *  on its own. */
 const RUN_ID_PATTERNS: RegExp[] = [
-  /\bS-[0-9a-f]{12,}\b(?:-\d+)?/g,
-  /\bjira_([A-Z]{2,6}-\d+)_\d{10,}(?:-\d+)?\b/g,
-  /\bqueue-([A-Z]{2,6}-\d+)(?:-\d+)?\b/g,
-  /\bqueue-brief-\d{10,}(?:-\d+)?\b/g,
+  /(?<![/-])\bS-[0-9a-f]{12,}\b(?:-\d+)?/g,
+  /(?<![/-])\bjira_([A-Z]{2,6}-\d+)_\d{10,}(?:-\d+)?\b/g,
+  /(?<![/-])\bqueue-([A-Z]{2,6}-\d+)(?:-\d+)?\b/g,
+  /(?<![/-])\bqueue-brief-\d{10,}(?:-\d+)?\b/g,
 ];
 
-/** A bare hex key at least 16 long that is not a git sha (asks, packets, tokens). */
-const HEX_KEY = /\b[0-9a-f]{16,39}\b/g;
+/** A bare hex key at least 16 long that is not a git sha (asks, packets, tokens).
+ *  Skips one preceded by `/` or `-`, since that shape is a branch or a path
+ *  (`feature/s-b9d39bae548707e0`) and the hex is part of that name, not a
+ *  standalone key. */
+const HEX_KEY = /(?<![/-])\b[0-9a-f]{16,39}\b/g;
 const LONG_SHA = /\b[0-9a-f]{40}\b/g;
 const JOURNAL_ID = /\bJ-[0-9a-f]{6,}\b/g;
 const TICKET_KEY = /(?<![A-Za-z])[A-Z]{2,6}-\d+(?!\d)/;
@@ -39,6 +45,27 @@ export interface StripOptions {
   labelFor?: (id: string) => string | null;
 }
 
+/** Runs every match of `pattern` in `text` through `labelFor`, and drops a bare
+ *  "run "/"lane " immediately before a match rather than leaving it stuck to the
+ *  label that replaces the id ("run S-9c5…" must read "this run", never "run this
+ *  run"). Walked by hand instead of `String.replace` because dropping that leading
+ *  word means rewriting text before the match starts, which a replacer callback
+ *  cannot do on its own. */
+function replaceRunIds(text: string, pattern: RegExp, labelFor: (id: string) => string): string {
+  let out = '';
+  let lastIndex = 0;
+  pattern.lastIndex = 0;
+  let match: RegExpExecArray | null = pattern.exec(text);
+  while (match) {
+    const before = text.slice(lastIndex, match.index);
+    const leadingWord = /\b(?:run|lane)\s*$/i.exec(before);
+    out += (leadingWord ? before.slice(0, leadingWord.index) : before) + labelFor(match[0]);
+    lastIndex = match.index + match[0].length;
+    match = pattern.exec(text);
+  }
+  return out + text.slice(lastIndex);
+}
+
 /**
  * Replaces every run id in `text` with its label (the ticket key inside it when nothing
  * better is known), drops bare hex keys and journal ids, and shortens shas. Never blanks
@@ -47,7 +74,7 @@ export interface StripOptions {
 export function stripMachineIds(text: string, options: StripOptions = {}): string {
   let out = text;
   for (const pattern of RUN_ID_PATTERNS) {
-    out = out.replace(pattern, (id) => options.labelFor?.(id) ?? ticketInId(id) ?? 'this run');
+    out = replaceRunIds(out, pattern, (id) => options.labelFor?.(id) ?? ticketInId(id) ?? 'this run');
   }
   out = shortenShas(out);
   out = out.replace(JOURNAL_ID, '');
@@ -57,11 +84,21 @@ export function stripMachineIds(text: string, options: StripOptions = {}): strin
   return out || 'this run';
 }
 
-/** "parking on 19a6c631cb7783d8: Probe: continue?" -> "Asked you: Probe: continue?" */
+/** "parking on 19a6c631cb7783d8: Probe: continue?" -> "Asked you: Probe: continue?"
+ *  The asked text itself still carries whatever the run wrote into it, so it goes
+ *  through `stripMachineIds` too, the same as any other reason. */
 export function humanizeParkReason(reason: string): string {
   const asked = /^parking on [0-9a-f]{8,}:\s*(.+)$/is.exec(reason.trim());
-  if (asked) return `Asked you: ${asked[1]!.trim()}`;
+  if (asked) return `Asked you: ${stripMachineIds(asked[1]!.trim())}`;
   return stripMachineIds(reason);
+}
+
+/** 24-hour `HH:MM`, zero-padded -- the same shape the browser's own `hm()` in
+ *  `src/console/freshness.ts` prints, so a clock time never reads differently
+ *  depending on which half of the console rendered it. */
+export function clock(at: number): string {
+  const date = new Date(at);
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
 }
 
 export interface EchoContext {

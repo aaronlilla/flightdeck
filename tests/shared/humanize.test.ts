@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  commandEcho, humanizeParkReason, receiptText, shortenShas, stripMachineIds, ticketInId,
+  clock, commandEcho, humanizeParkReason, receiptText, shortenShas, stripMachineIds, ticketInId,
 } from '../../src/shared/humanize.js';
 
 describe('stripMachineIds', () => {
@@ -28,6 +28,15 @@ describe('stripMachineIds', () => {
     expect(stripMachineIds('f92af4249f6a27ae')).toBe('this run');
   });
 
+  it('leaves a hex id alone when it is part of a branch or path name', () => {
+    expect(stripMachineIds('Branch feature/s-b9d39bae548707e0 off main'))
+      .toBe('Branch feature/s-b9d39bae548707e0 off main');
+  });
+
+  it('drops a bare "run"/"lane" word left stranded right before the replacement', () => {
+    expect(stripMachineIds('run S-9c51e8dd3c73415c has a registry row')).toBe('this run has a registry row');
+  });
+
   it('leaves plain sentences and ticket keys alone', () => {
     expect(stripMachineIds('Draft PR #118 is open with checks green; waiting for your Merge.'))
       .toBe('Draft PR #118 is open with checks green; waiting for your Merge.');
@@ -49,7 +58,21 @@ describe('humanizeParkReason', () => {
   });
   it('strips ids from any other reason', () => {
     expect(humanizeParkReason('run S-9c51e8dd3c73415c has a registry row from a process that is no longer alive'))
-      .toBe('run this run has a registry row from a process that is no longer alive');
+      .toBe('this run has a registry row from a process that is no longer alive');
+  });
+
+  it('strips ids out of the asked text itself, not just the "parking on <key>:" prefix', () => {
+    expect(humanizeParkReason('parking on 19a6c631cb7783d8: PR #39 (S-b9d39bae548707e0) is open'))
+      .toBe('Asked you: PR #39 (this run) is open');
+  });
+});
+
+describe('clock', () => {
+  it('reads 24-hour HH:MM, zero-padded, the same shape the browser\'s hm() prints', () => {
+    const at = new Date(2026, 8, 8, 9, 5).getTime();
+    expect(clock(at)).toBe('09:05');
+    const pm = new Date(2026, 8, 8, 16, 57).getTime();
+    expect(clock(pm)).toBe('16:57');
   });
 });
 

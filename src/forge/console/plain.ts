@@ -8,6 +8,7 @@
  * clock time) or a full clause a person can act on.
  */
 import type { Lane, QueueItem } from '../../shared/console-model.js';
+import { clock } from '../../shared/humanize.js';
 
 export interface PlainContext {
   now: number;
@@ -23,9 +24,7 @@ export function modelName(model: string): string {
   return MODEL_NAMES[model] ?? model;
 }
 
-function clockTime(at: number): string {
-  return new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-}
+const clockTime = clock;
 
 function dayLabel(at: number, now: number): string {
   const days = Math.floor((now - at) / (24 * 60 * 60_000));

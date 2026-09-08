@@ -16,6 +16,11 @@ export const QUICK_COMMANDS: [label: string, command: string][] = [
   ['spend today', 'spend today'],
   ['merge ready lanes', 'merge ready lanes'],
 ];
+
+/** Item 14: a reply reads "Conductor" only when it actually came from one of
+ *  these -- everything else (a worker's own run) names the run it came from. */
+const CONDUCTOR_REPLY_SOURCES = new Set(['conductor', 'console', 'system']);
+
 /** A line starting with `- ` in a reply or a refusal renders as a list item,
  *  and the rest of the text keeps the server's own line breaks (`whiteSpace:
  *  'pre-wrap'`) instead of collapsing a multi-line reply onto one line. */
@@ -85,10 +90,15 @@ export function MessageCard({
           {message.text}
         </div>
       );
-    case 'reply':
+    case 'reply': {
+      // Item 14: every reply used to say "Conductor", including a worker's own
+      // root-cause report inside its run thread -- a reply is labeled that only
+      // when it actually came from the conductor/console/system; anything else
+      // names the run it came from (or "Worker" when nothing can name it).
+      const replySource = CONDUCTOR_REPLY_SOURCES.has(message.source) ? 'Conductor' : (labelFor?.(message.source) ?? 'Worker');
       return (
         <div style={{ maxWidth: '92%' }}>
-          <div className="lbl" style={{ color: 'var(--ink3)', marginBottom: 3 }}>Conductor</div>
+          <div className="lbl" data-testid="reply-label" style={{ color: 'var(--ink3)', marginBottom: 3 }}>{replySource}</div>
           <div style={{ borderLeft: '2px solid var(--line2)', paddingLeft: 10, font: '13px/1.5 "IBM Plex Sans",sans-serif' }}>
             <WrappedText text={message.text} />
           </div>
@@ -103,6 +113,7 @@ export function MessageCard({
           ) : null}
         </div>
       );
+    }
     case 'refusal':
       return (
         <div style={{ maxWidth: '88%', border: '1px dashed var(--block)', borderLeft: '3px solid var(--block)', borderRadius: 4, padding: '9px 12px' }}>
@@ -121,10 +132,15 @@ export function MessageCard({
           <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--ink3)', animation: 'fddot 1.2s infinite .4s' }} />
         </div>
       );
-    case 'receipt':
+    case 'receipt': {
+      const tip = showTip ? (
+        <span className="tip" style={{ position: 'absolute', top: '100%', left: 0, zIndex: 1, whiteSpace: 'nowrap' }}>
+          {hm(message.ts)} · {message.source} · {message.text}{message.undoable && !message.undone ? ' · reversible, undo 24h' : ''}
+        </span>
+      ) : null;
       return (
         <div className="m" style={{ fontSize: '10.5px', color: 'var(--ink2)', display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap', textDecoration: message.undone ? 'line-through' : 'none' }}>
-          {message.jid ? (
+          {verbose && message.jid ? (
             <a
               data-testid="receipt-jid"
               style={{ fontWeight: 700, color: 'var(--ink)', cursor: 'pointer', position: 'relative' }}
@@ -132,21 +148,30 @@ export function MessageCard({
               onMouseEnter={() => setShowTip(true)}
               onMouseLeave={() => setShowTip(false)}
             >
-              {/* Item 7: plain mode hides the J-xxxx text -- the undo link and this
-                  click target/tooltip stay -- verbose mode shows it as before. */}
-              {verbose ? message.jid : '•'}
-              {showTip ? (
-                <span className="tip" style={{ position: 'absolute', top: '100%', left: 0, zIndex: 1, whiteSpace: 'nowrap' }}>
-                  {hm(message.ts)} · {message.source} · {message.text}{message.undoable && !message.undone ? ' · reversible, undo 24h' : ''}
-                </span>
-              ) : null}
+              {message.jid}
+              {tip}
             </a>
           ) : null}
-          <span>{message.text}</span>
+          {/* Item 13: plain mode showed the jid link with no text at all -- a link
+              rendered with nothing visible in it, reading as a stray dash sitting
+              above every receipt. Plain mode renders no anchor here at all; the
+              receipt's own sentence carries the click target and the hover
+              tooltip instead, and the undo link (below) is unaffected either way. */}
+          <span
+            data-testid={!verbose && message.jid ? 'receipt-jid' : undefined}
+            style={message.jid ? { position: 'relative', cursor: 'pointer' } : undefined}
+            {...(!verbose && message.jid ? actionable(() => onOpenJournal(message.jid as string)) : {})}
+            onMouseEnter={() => { if (!verbose && message.jid) setShowTip(true); }}
+            onMouseLeave={() => { if (!verbose) setShowTip(false); }}
+          >
+            {message.text}
+            {!verbose ? tip : null}
+          </span>
           {message.undoable && !message.undone && message.jid ? <a style={{ fontWeight: 600 }} {...actionable(() => onUndo(message.jid as string))}>undo</a> : null}
           <span className={freshnessClass(fresh)}>{compactFreshnessStamp(fresh)}</span>
         </div>
       );
+    }
     case 'plan':
       return (
         <div className="plate" style={{ maxWidth: '94%' }}>

@@ -78,6 +78,20 @@ describe('computeWhat', () => {
     expect(computeWhat({ story: null, pr: null, drift: noDrift() })).toEqual([]);
   });
 
+  // Item 9: with no PR open, drift.commits is never populated (it only ever reads a
+  // PR's own commit range), so "what happened" fell back straight to the title alone.
+  // The story panel's own `commit` entries are the run's own commits too; they stand
+  // in here, newest first.
+  it('falls back to the story\'s own commit entries, newest first, when there is no PR at all', () => {
+    const s = story([
+      { at: 1, kind: 'commit', text: 'Committed: first fix' },
+      { at: 2, kind: 'commit', text: 'Committed: second fix' },
+      { at: 3, kind: 'commit', text: 'Committed: third fix' },
+    ]);
+    const what = computeWhat({ story: s, pr: null, drift: noDrift() });
+    expect(what).toEqual(['third fix.', 'second fix.', 'first fix.']);
+  });
+
   it('reduces the PR body to prose: drops a markdown heading, a fenced block, and list markers, keeping the first two sentences of the first paragraph', () => {
     const pr: PrFacts = {
       title: 'add the merge chip',
@@ -156,6 +170,16 @@ describe('computeReadiness', () => {
     const readiness = computeReadiness({ pr: null, attestation: null, mergeable: null, drift: noDrift() });
     expect(readiness.ok).toBe(false);
     expect(readiness.why).toContain('no PR is open yet');
+  });
+
+  // Item 9: with no PR at all, mergeableFor's own why (also "no PR yet") repeated the
+  // exact same fact computeReadiness had already said in its own words -- the live
+  // board read "Not ready: no PR is open yet; not audited yet; no PR yet."
+  it('never says "no PR" twice when mergeable also carries a no-PR refusal', () => {
+    const readiness = computeReadiness({
+      pr: null, attestation: null, mergeable: { ok: false, why: 'no PR yet' }, drift: noDrift(),
+    });
+    expect(readiness.why).toBe('no PR is open yet; not audited yet');
   });
 
   it('is not ready when checks are red', () => {
@@ -245,6 +269,14 @@ describe('computeNext', () => {
     const pr = { no: 80, url: 'u', title: 't', checks: 'failure', merged: false, files: 1, add: 1, del: 0 } as unknown as Lane['pr'];
     const why = { ...notReady, why: 'checks are failure' };
     expect(computeNext({ ...base, state: 'done', pr } as Lane, why)).toBe('Not ready to merge yet: checks are failure. Re-check once that clears.');
+  });
+
+  // Item 10: an abandoned-process block reads the same instruction a parked lane
+  // does, never the generic "salvageable? Resume; otherwise Kill and reopen" line
+  // meant for a real block a person still has to judge.
+  it('gives the parked-style instruction for an abandoned-process block', () => {
+    const lane = { ...base, state: 'blocked', reason: 'its process is gone and it never reported finishing' } as Lane;
+    expect(computeNext(lane, notReady)).toBe('Read the reason, then Resume it or Kill it.');
   });
 
   it('never answers a bare state word', () => {

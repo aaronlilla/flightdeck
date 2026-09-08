@@ -154,3 +154,44 @@ export async function computeQueuePr(
   const pr: LanePr = { ...basic, checks: detail.checks, merged: detail.merged, title: detail.title, verdict };
   return { pr, cache: { ...cache, [run]: { pr, at: now } } };
 }
+
+/** Item 11: `gh pr list --repo <repo> --head <branch> --state all --json
+ *  number,url,isDraft,mergedAt,title,headRefOid` -- finds a PR (open, draft or
+ *  already merged) for a branch, when nothing has recorded its number yet. Callers
+ *  on Windows run this through a shell, same as `GhPrLookup`. */
+export interface GhBranchPr {
+  number: number;
+  url: string;
+  isDraft: boolean;
+  mergedAt: string | null;
+  title: string;
+  headRefOid: string;
+}
+
+export type GhBranchLookupFn = (repo: string, branch: string) => Promise<GhBranchPr | undefined>;
+
+/**
+ * Item 11: a queue item's own `pr` field can stay unset even after the run it
+ * drives has already opened one straight off its own branch -- the worker's own ask
+ * says so ("PR #39 ... is open, draft, and mergeable"), but nothing ever wrote the
+ * number back onto the item, so the tile and the sheet kept reading "no PR yet".
+ *
+ * Looks the PR up once by branch (`--state all`, so an already-merged PR is found
+ * too, not only an open one) and caches the answer under the same `run`-keyed cache
+ * every other PR read here shares, so a lane's PR reads the same everywhere from the
+ * very next poll. `no PR found by branch` caches a `null` for the same TTL, exactly
+ * like `computeRunPr` already does -- a lane with genuinely no PR is not re-looked-up
+ * on every single poll.
+ */
+export async function computeBranchPr(
+  run: string, repo: string, branch: string, cache: Cache, now: number, branchLookup: GhBranchLookupFn,
+): Promise<{ pr: LanePr | null; cache: Cache }> {
+  const cached = cache[run];
+  if (cached && now - cached.at < PR_CACHE_TTL_MS) return { pr: cached.pr, cache };
+
+  const found = await branchLookup(repo, branch);
+  if (!found) return { pr: null, cache: { ...cache, [run]: { pr: null, at: now } } };
+
+  const pr: LanePr = { no: found.number, url: found.url, draft: found.isDraft, merged: Boolean(found.mergedAt), title: found.title };
+  return { pr, cache: { ...cache, [run]: { pr, at: now } } };
+}
