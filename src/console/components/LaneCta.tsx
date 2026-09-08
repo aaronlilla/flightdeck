@@ -54,7 +54,12 @@ export function LaneCta({ lane, cmd, label, cls, style, onCommand, stopPropagati
   return (
     <ActionButton
       spec={bound.spec} args={bound.args} actionRef={bound.actionRef} className={cls} style={style}
-      stopPropagation={stopPropagation} outcome={outcome} testId={`lane-cta-${cmd}-${lane.id}`}
+      // `action-` namespace, not `lane-`: the board's own lane-count testids are
+      // `lane-<id>` (`LaneTile.tsx`), and a CTA testid starting with `lane-` collided
+      // with that prefix -- any `getAllByTestId(/^lane-/)` scan (the filter-count
+      // consistency check, and any future one) double-counted every lane whose CTA
+      // was a catalog action.
+      stopPropagation={stopPropagation} outcome={outcome} testId={`action-cta-${cmd}-${lane.id}`}
     >
       {label}
     </ActionButton>
