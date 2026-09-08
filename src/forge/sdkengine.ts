@@ -18,6 +18,9 @@
  */
 import { Engine, buildForgeMcpServer, type EngineConfig, type ForgeToolHandlers, type PreToolVerdict, type QueryFn } from '../adapter/engine.js';
 import { FORGE_TOOL_NAMES } from './contracts.js';
+import type { Reasoner } from './contracts.js';
+import { completeAskOptions } from './console/ask-options.js';
+import { reasonerFor } from './reasoner-claude.js';
 import { driftBlocker, readMergeable, resolveMergeable, type DriftClock, type Mergeable } from './drift.js';
 import { classifyCommand } from './command-class.js';
 import { toolTarget } from './tool-target.js';
@@ -597,6 +600,12 @@ export interface ForgeHandlerDeps {
    *  parked on. `forge_ask` sets this itself (F3), the same way `AskUserQuestion` does. */
   parked: Map<string, string>;
   gotchas: Gotchas;
+  /** W1: fills out an ask with fewer than four options before it reaches the inbox.
+   *  Defaults to a `claude`/`triage`-class reasoner sharing this run's own journal. */
+  reasoner?: Reasoner;
+  /** The run's own brief title, handed to the reasoner as context when it drafts
+   *  options. Undefined when the caller has none to give. */
+  briefTitle?: string;
 }
 
 /**
@@ -619,11 +628,22 @@ export function buildForgeToolHandlers(deps: ForgeHandlerDeps): ForgeToolHandler
     onHandoff: (input) => {
       deps.journal.append({ event: 'forge.handoff', run: deps.run, actor: 'worker', packet: input.packet });
     },
-    onAsk: (input) => {
+    onAsk: async (input) => {
+      const reasoner = deps.reasoner ?? reasonerFor('claude', { journal: deps.journal });
+      const completed = await completeAskOptions(
+        {
+          run: deps.run, goal: deps.goal, question: input.question,
+          options: input.options, recommended: input.recommended,
+          briefTitle: deps.briefTitle,
+        },
+        { reasoner, journal: deps.journal },
+      );
       const entry = deps.inbox.raise({
         run: deps.run, goal: deps.goal, actionTarget: 'forge_ask',
-        question: input.question, options: input.options, kind: input.kind,
+        question: input.question, options: completed.options, kind: input.kind,
       });
+      entry.recommended = completed.recommended;
+      entry.optionSource = completed.source;
       parkRun(deps, deps.run, entry);
       deps.journal.append({
         event: 'forge.ask', run: deps.run, actor: 'worker', question: input.question,

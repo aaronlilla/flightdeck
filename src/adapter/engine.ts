@@ -476,6 +476,7 @@ export interface ForgeToolHandlers {
   onAsk: (input: {
     question: string;
     options?: string[];
+    recommended?: number;
     kind?: 'question' | 'blocker';
   }) => void | Promise<void>;
   onGotcha: (input: {
@@ -498,6 +499,25 @@ export interface ForgeToolHandlers {
 const ACK = { content: [{ type: 'text' as const, text: 'recorded' }] };
 
 /**
+ * The one definition of what a `forge_ask` call must carry, defined here (not in
+ * `contracts.ts`) so the schema's own module never has to import back into `contracts.ts`
+ * on top of the existing `contracts.ts` -> `engine.ts` edge for `buildForgeMcpServer`.
+ * `contracts.ts` imports this export and re-exports it, rather than the reverse, because a
+ * second `engine.ts` -> `contracts.ts` edge on top of that existing cycle is exactly what
+ * broke `registeredToolNames()` at load time under vitest's SSR transform (W1's own
+ * circular-import bug): a live binding referenced before the exporting module finished
+ * initializing throws `ReferenceError: Cannot access '...' before initialization`.
+ */
+export const ForgeAskInputSchema = z.object({
+  question: z.string().min(
+    1, 'forge_ask requires a non-empty question: a worker must name what it needs answered',
+  ),
+  options: z.array(z.string()).optional(),
+  recommended: z.number().int().optional(),
+  kind: z.enum(['question', 'blocker']).optional(),
+});
+
+/**
  * The forge tool server: `forge_done`, `forge_handoff`, `forge_ask`, `forge_gotcha`,
  * `forge_report`, the only channel a worker has back to the supervisor.
  *
@@ -516,11 +536,7 @@ export function buildForgeMcpServer(handlers: ForgeToolHandlers): McpSdkServerCo
         { packet: z.string() },
         async (args) => { await handlers.onHandoff(args); return ACK; }),
       tool('forge_ask', 'Ask a question that parks this run for a person to answer.',
-        {
-          question: z.string(),
-          options: z.array(z.string()).optional(),
-          kind: z.enum(['question', 'blocker']).optional(),
-        },
+        ForgeAskInputSchema.shape,
         async (args) => { await handlers.onAsk(args); return ACK; }),
       tool('forge_gotcha', 'File a trap the moment it is hit, and keep working.',
         {

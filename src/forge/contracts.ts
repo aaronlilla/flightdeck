@@ -20,7 +20,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
-import { buildForgeMcpServer, type ForgeToolHandlers } from '../adapter/engine.js';
+import { buildForgeMcpServer, ForgeAskInputSchema, type ForgeToolHandlers } from '../adapter/engine.js';
 import type { GotchaInput } from './gotcha.js';
 import { CLASS_BUDGETS, DEFAULT_CLASS } from './exec.js';
 import type { FleetProcess, LivenessSignal, StuckSignal } from './liveness.js';
@@ -292,6 +292,11 @@ export const FORGE_EVENT_NAMES = [
   // H1.8: one lane's own outcome from the bulk `POST /merge-ready` -- always an
   // operator's own click, never a worker acting on its own.
   'merge-ready.merged',
+  // W1 (ask-cards-and-type-scale): a `forge_ask` that arrived with fewer than four
+  // options got them filled in before it reached the inbox -- `source: 'worker'` when
+  // the worker's own options already met the bar or the reasoner call failed and the
+  // ask fell back to them, `source: 'drafted'` when a reasoner call supplied the rest.
+  'forge.ask.options',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];
@@ -574,6 +579,34 @@ export const ForgeStateSnapshotSchema = z.object({
 // Tools: FORGE_TOOLS sourced from the adapter's own registration
 // ---------------------------------------------------------------------------------------
 
+export const ForgeDoneInputSchema = z.object({ evidence: z.string().min(1) });
+export const ForgeHandoffInputSchema = z.object({ packet: z.string().min(1) });
+/**
+ * Re-exported from `src/adapter/engine.ts`, which owns the definition (W1). Living there,
+ * not here, keeps `contracts.ts` importing `engine.ts` on the one edge it already had for
+ * `buildForgeMcpServer`, instead of adding a second edge running the other way -- the
+ * second edge is what deadlocked `registeredToolNames()` under vitest's module loader the
+ * first time this schema was shared between the two files.
+ */
+export { ForgeAskInputSchema };
+export const ForgeGotchaInputSchema = z.object({
+  run: z.string().min(1),
+  what: z.string().min(1),
+  where: z.string().min(1),
+  error: z.string().min(1),
+  prevention: z.string().min(1),
+  ticket: z.string().optional(),
+});
+export const ForgeReportInputSchema = z.object({
+  outcome: z.string().min(1),
+  done: z.string().min(1),
+  leftOff: z.string().min(1),
+  issues: z.string().optional(),
+  blockers: z.string().optional(),
+  unverified: z.string().optional(),
+  cost: z.string().optional(),
+});
+
 const NOOP_FORGE_HANDLERS: ForgeToolHandlers = {
   onDone: () => {},
   onHandoff: () => {},
@@ -615,31 +648,6 @@ export const FORGE_TOOL_NAMES: string[] = registeredToolNames();
 
 /** The SDK-visible names: `mcp__forge__forge_done` and siblings. */
 export const FORGE_TOOLS: string[] = FORGE_TOOL_NAMES.map((name) => `mcp__forge__${name}`);
-
-export const ForgeDoneInputSchema = z.object({ evidence: z.string().min(1) });
-export const ForgeHandoffInputSchema = z.object({ packet: z.string().min(1) });
-export const ForgeAskInputSchema = z.object({
-  question: z.string().min(1),
-  options: z.array(z.string()).optional(),
-  kind: z.enum(['question', 'blocker']).optional(),
-});
-export const ForgeGotchaInputSchema = z.object({
-  run: z.string().min(1),
-  what: z.string().min(1),
-  where: z.string().min(1),
-  error: z.string().min(1),
-  prevention: z.string().min(1),
-  ticket: z.string().optional(),
-});
-export const ForgeReportInputSchema = z.object({
-  outcome: z.string().min(1),
-  done: z.string().min(1),
-  leftOff: z.string().min(1),
-  issues: z.string().optional(),
-  blockers: z.string().optional(),
-  unverified: z.string().optional(),
-  cost: z.string().optional(),
-});
 
 /** Re-exported so a caller needs one import for every tool-input shape, this one included. */
 export type { GotchaInput };

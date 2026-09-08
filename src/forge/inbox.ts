@@ -39,6 +39,14 @@ export interface InboxEntry {
   key: string;
   question: string;
   options: string[];
+  /** W1: the zero-based index into `options` the drafting pass singled out as the
+   *  best answer, or `null` when nothing was ever recommended (no draft attempted,
+   *  or the reasoner never returned a usable one). Never the fallback free-text row. */
+  recommended?: number | null;
+  /** W1: `'worker'` when `options` came from the worker (or the draft attempt
+   *  failed and it fell back to them); `'drafted'` when a reasoner filled the rest
+   *  in. Absent on an entry raised before W1 shipped. */
+  optionSource?: 'worker' | 'drafted';
   kind: 'question' | 'blocker';
   /** Every run that hit this wall, in the order they hit it. */
   runs: string[];

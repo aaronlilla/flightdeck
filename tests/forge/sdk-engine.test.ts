@@ -1184,7 +1184,7 @@ describe('B.3.8: `committed` reflects an actual git commit, not just the phrase 
 });
 
 describe('F3: forge_ask parks', () => {
-  it('parks the run and journals run.parked with the key, exactly as AskUserQuestion does', () => {
+  it('parks the run and journals run.parked with the key, exactly as AskUserQuestion does', async () => {
     const parked = new Map<string, string>();
     const inbox = new Inbox(join(home, 'inbox-f3'));
     const journal = new Journal(journalPath);
@@ -1193,7 +1193,10 @@ describe('F3: forge_ask parks', () => {
       run: 'f3-run', goal: 'f3-run', inbox, journal, parked, gotchas,
     });
 
-    handlers.onAsk({ question: 'dev or prod?', options: ['dev', 'prod'], kind: 'question' });
+    // W1: onAsk fills out an under-specified ask (via a reasoner call) before it parks,
+    // so it is async now; the four options here already clear the bar and take no
+    // reasoner round trip, but the call still has to be awaited before checking `parked`.
+    await handlers.onAsk({ question: 'dev or prod?', options: ['dev', 'prod', 'staging', 'canary'], kind: 'question' });
 
     const key = parked.get('f3-run');
     expect(key).toBeTruthy();
@@ -1216,7 +1219,7 @@ describe('F3: forge_ask parks', () => {
     });
   });
 
-  it('the falsifier: only asserting the AskUserQuestion path never proves forge_ask parks anything', () => {
+  it('the falsifier: only asserting the AskUserQuestion path never proves forge_ask parks anything', async () => {
     // Baseline forge_ask (before F3) raised the inbox entry and journaled forge.ask but
     // never touched `parked` at all: a specimen that only exercises AskUserQuestion, as the
     // B.3.1 suite above does, would stay green through that regression. This one calls
@@ -1229,7 +1232,9 @@ describe('F3: forge_ask parks', () => {
       run: 'f3-falsifier-run', goal: 'f3-falsifier-run', inbox, journal, parked, gotchas,
     });
 
-    handlers.onAsk({ question: 'staging or prod?' });
+    // W1: no options at all means onAsk falls back to a drafted set via the default
+    // reasoner, still awaited before the park is asserted.
+    await handlers.onAsk({ question: 'staging or prod?' });
 
     expect(parked.has('f3-falsifier-run')).toBe(true);
   });

@@ -17,7 +17,7 @@ import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { buildWorkerOptions, contextOf, toEngineConfig } from '../../src/forge/sdkengine.js';
-import { buildOptions } from '../../src/adapter/engine.js';
+import { buildForgeMcpServer, buildOptions } from '../../src/adapter/engine.js';
 
 let home: string;
 
@@ -96,6 +96,31 @@ describe('the options a worker runs under', () => {
 
   it('does not set resume when there is nothing to resume', () => {
     expect(buildWorkerOptions(REQUEST).resume).toBeUndefined();
+  });
+
+  it('W1: refuses an empty forge_ask question at the registered tool, naming the rule, and never calls onAsk', async () => {
+    // Hits the actual registered tool's own input validation (the same path a real
+    // `tools/call` request runs through), not just `ForgeAskInputSchema.safeParse` in
+    // isolation -- a schema that only exists in `contracts.ts` and never reaches the
+    // tool `engine.ts` registers would pass a schema-only test while still letting an
+    // empty question through here.
+    let onAskCalled = false;
+    const server = buildForgeMcpServer({
+      onDone: () => {},
+      onHandoff: () => {},
+      onGotcha: () => {},
+      onReport: () => {},
+      onAsk: () => { onAskCalled = true; },
+    });
+    const instance = server.instance as unknown as {
+      _registeredTools: Record<string, unknown>;
+      validateToolInput: (tool: unknown, args: unknown, toolName: string) => Promise<unknown>;
+    };
+    const forgeAsk = instance._registeredTools['forge_ask'];
+
+    await expect(instance.validateToolInput(forgeAsk, { question: '' }, 'forge_ask'))
+      .rejects.toThrow(/forge_ask requires a non-empty question/);
+    expect(onAskCalled).toBe(false);
   });
 });
 
