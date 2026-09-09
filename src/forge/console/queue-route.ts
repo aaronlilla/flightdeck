@@ -169,8 +169,24 @@ export class QueueRoutes {
           }
           return { ok: true, items: [addTicketItem(this.opts.store, key)] };
         }
-        case 'brief':
-          return { ok: true, items: [addBriefItem(this.opts.store, briefTextFrom(body.input))] };
+        case 'brief': {
+          const selfRepo = (process.env['FORGE_SELF_REPO'] ?? '').trim();
+          let roadmapText = '';
+          if (selfRepo) {
+            try {
+              roadmapText = readFileSync(resolve(process.cwd(), 'doctrine/ROADMAP.md'), 'utf8');
+            } catch {
+              roadmapText = '';
+            }
+          }
+          return {
+            ok: true,
+            items: [addBriefItem(
+              this.opts.store, briefTextFrom(body.input), undefined,
+              selfRepo ? { selfRepo, roadmapText } : undefined,
+            )],
+          };
+        }
         case 'hotfix':
           return { ok: true, items: [addHotfixItem(this.opts.store, body.input)] };
         case 'goal': {
