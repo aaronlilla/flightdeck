@@ -62,14 +62,19 @@ describe('the board caps a row at four cards', () => {
     expect(BOARD_GRID_COLUMNS).toContain('25%');
   });
 
-  it('lays the run board out on that constant', () => {
+  // 2026-09-09 (design 2/3, `doctrine/design/FD Board.dc.html`): the Board grid is
+  // fixed at two columns of eight cards, not the auto-fill four-across layout this
+  // constant still governs for the queue. `LanesGrid` reads its own `BOARD_COLUMNS`
+  // now instead of the shared constant -- this asserts that fixed layout directly
+  // rather than against `BOARD_GRID_COLUMNS`, which no longer applies here.
+  it("lays the run board out on the design's fixed two-column grid", () => {
     const { container } = render(
       <LanesGrid
         lanes={[lane('A'), lane('B')]} filter="all" sort="state" feedLive now={Date.now()}
         showProbes={false} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()}
       />,
     );
-    expect(gridOf(container).style.gridTemplateColumns).toBe(BOARD_GRID_COLUMNS);
+    expect(gridOf(container).style.gridTemplateColumns).toBe('repeat(2, 1fr)');
   });
 
   it('lays the queue out on the same constant', () => {

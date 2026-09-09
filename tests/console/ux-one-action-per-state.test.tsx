@@ -80,7 +80,7 @@ const PLAN_LABEL: Record<LaneState, string | undefined> = {
 
 describe('UX rule 3: one primary action per Lane state, named as the plan names it (RED on main)', () => {
   (['running', 'parked', 'blocked', 'done', 'killed', 'unverified'] as const).forEach((state) => {
-    it.fails(`${state}: the single primary action carries the plan's own contract and name (${PLAN_LABEL[state]})`, () => {
+    it(`${state}: the single primary action carries the plan's own contract and name (${PLAN_LABEL[state]})`, () => {
       render(
         <LaneTile
           lane={lane({ state, mergeable: state === 'done' ? { ok: true } : null, pr: state === 'done' ? { no: 1, url: 'https://x/1', merged: false, files: 1, add: 1, del: 0, draft: false } : null })}
