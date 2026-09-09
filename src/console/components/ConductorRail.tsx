@@ -295,6 +295,9 @@ export function MessageCard({
                   </span>
                 ))}
               </div>
+              <div style={{ margin: '0 12px 6px', fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>
+                Pick one, or type a longer answer below and press Send.
+              </div>
               <div style={{ margin: '0 12px 12px', background: 'var(--well)', boxShadow: 'inset 0 2px 5px rgba(0,0,0,.6)', borderRadius: 3, padding: '7px 10px', display: 'flex' }}>
                 <input
                   className="inp m" style={{ fontSize: 'var(--fs-ui)' }} placeholder="or type an answer, ⏎"
@@ -343,6 +346,9 @@ export interface ConductorRailProps {
   /** 2026-09-08: plain by default -- see `MessageCard`'s own doc. */
   verbose?: boolean;
   labelFor?: (id: string) => string | null;
+  /** `FD Rail.dc.html`'s header reads "N agents · live" -- absent (no live lane
+   *  count wired yet) hides that text rather than showing a fabricated 0. */
+  agentCount?: number;
 }
 
 /** Right rail, single thread; composer disabled with a reason banner when the feed is down. */
@@ -398,7 +404,7 @@ function useChatScroll(messageCount: number, newestKey: string | undefined): {
 }
 
 export function ConductorRail(props: ConductorRailProps): JSX.Element {
-  const { thread, feed, now, composer, verbose = false, labelFor, onComposerChange, onSend, onCommand, onUndo, onOpenJournal } = props;
+  const { thread, feed, now, composer, verbose = false, labelFor, onComposerChange, onSend, onCommand, onUndo, onOpenJournal, agentCount } = props;
   // The composer's own action state (`App.tsx#processCommand` keys it `sendCommand:rail`):
   // a working row within one render of Send, and the send control held while the
   // grammar answers. The reply cards are the inline result and land in the thread.
@@ -417,19 +423,34 @@ export function ConductorRail(props: ConductorRailProps): JSX.Element {
   // itself in place rather than moving.
   const oldestPendingKey = pendingMessages[0]?.k;
   return (
-    <div style={{ width: 'clamp(360px, 30vw, 480px)', flex: 'none', borderLeft: '2px solid var(--line2)', display: 'flex', flexDirection: 'column', background: 'var(--panel)', minHeight: 0 }}>
+    <div style={{ width: '400px', flex: 'none', borderLeft: '2px solid var(--line2)', display: 'flex', flexDirection: 'column', background: 'var(--panel)', minHeight: 0 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid var(--line)' }}>
-        <span className="lbl">Conductor</span>
-        <span
-          className="m"
-          style={{ fontSize: 'var(--fs-meta)', fontWeight: 700, color: 'var(--block)', cursor: pending > 0 ? 'pointer' : 'default' }}
-          {...actionable(() => {
-            if (!oldestPendingKey) return;
-            document.getElementById(`rail-msg-${oldestPendingKey}`)?.scrollIntoView({ block: 'center' });
-          })}
-        >
-          {pending > 0 ? `${pending} waiting ↓` : ''}
-        </span>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+          <span className="lbl">Conductor</span>
+          {agentCount !== undefined ? (
+            <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>{agentCount} agents · live</span>
+          ) : null}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span
+            className="m"
+            style={{ fontSize: 'var(--fs-meta)', fontWeight: 700, color: 'var(--block)', cursor: pending > 0 ? 'pointer' : 'default' }}
+            {...actionable(() => {
+              if (!oldestPendingKey) return;
+              document.getElementById(`rail-msg-${oldestPendingKey}`)?.scrollIntoView({ block: 'center' });
+            })}
+          >
+            {pending > 0 ? `${pending} waiting ↓` : ''}
+          </span>
+          <button
+            type="button"
+            className="btnS"
+            style={{ font: '600 var(--fs-meta)/1.35 "IBM Plex Mono",monospace', letterSpacing: '.06em', textTransform: 'uppercase', padding: '5px 12px', background: 'transparent', color: 'var(--block)', border: '1px solid var(--block)', borderRadius: 0, cursor: 'pointer' }}
+            {...actionable(() => onSend('pause everything'))}
+          >
+            Stop
+          </button>
+        </div>
       </div>
       <div style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex', flexDirection: 'column' }}>
       <div ref={scroll.ref} onScroll={scroll.onScroll} className="scroll" data-testid="rail-thread" style={{ flex: 1, minHeight: 0, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12, opacity: feed.live ? 1 : 0.6 }}>

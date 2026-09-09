@@ -16,6 +16,7 @@ function renderRail(thread: Message[], feed: Feed = feedUp, overrides: Partial<{
   onOpenJournal: (jid: string) => void;
   verbose: boolean;
   labelFor: (id: string) => string | null;
+  agentCount: number;
 }> = {}) {
   const onSend = overrides.onSend ?? vi.fn();
   const onCommand = overrides.onCommand ?? vi.fn();
@@ -27,6 +28,7 @@ function renderRail(thread: Message[], feed: Feed = feedUp, overrides: Partial<{
         thread={thread} feed={feed} now={Date.now()} composer="" verbose={overrides.verbose ?? false}
         onComposerChange={vi.fn()} onSend={onSend} onCommand={onCommand}
         onUndo={vi.fn()} onOpenJournal={onOpenJournal} labelFor={overrides.labelFor}
+        agentCount={overrides.agentCount}
       />
     </StoreContext.Provider>,
   );
@@ -34,6 +36,29 @@ function renderRail(thread: Message[], feed: Feed = feedUp, overrides: Partial<{
 }
 
 describe('ConductorRail', () => {
+  describe('frame (FD Rail.dc.html)', () => {
+    it('is a fixed 400px rail', () => {
+      renderRail([]);
+      const thread = screen.getByTestId('rail-thread');
+      // Walk up to the rail's own outer aside-equivalent (the flex column that
+      // owns the header, the thread and the composer box).
+      let el: HTMLElement | null = thread.parentElement;
+      while (el && el.style.width === '') el = el.parentElement;
+      expect(el?.style.width).toBe('400px');
+    });
+
+    it('shows the live agent count in the header next to the Conductor label', () => {
+      renderRail([], feedUp, { agentCount: 8 });
+      expect(screen.getByText('8 agents · live')).toBeInTheDocument();
+    });
+
+    it('sends "pause everything" through onSend when Stop is clicked', async () => {
+      const { onSend } = renderRail([]);
+      await userEvent.click(screen.getByRole('button', { name: 'Stop' }));
+      expect(onSend).toHaveBeenCalledWith('pause everything');
+    });
+  });
+
   it('renders a confirm card and routes Confirm through onCommand, never echoing an operator bubble', async () => {
     const { onCommand, onSend } = renderRail([{ k: 'c1', type: 'confirm', text: 'Kill FLT-1?', ts: Date.now(), source: 'console', blast: 'discards the diff.' }]);
     expect(screen.getByText('Confirm — irreversible')).toBeInTheDocument();
@@ -97,6 +122,14 @@ describe('ConductorRail', () => {
     await userEvent.click(screen.getByText('NOT NULL'));
     expect(onCommand).toHaveBeenCalledWith('answer ask-1 NOT NULL');
     expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("shows the free-text hint under a question's own options (FD Rail.dc.html)", () => {
+    renderRail([{
+      k: 'q1', type: 'question', text: 'NOT NULL or nullable?', ts: Date.now(), source: 'FLT-1',
+      askKey: 'ask-1', opts: ['NOT NULL', 'nullable'],
+    }]);
+    expect(screen.getByText('Pick one, or type a longer answer below and press Send.')).toBeInTheDocument();
   });
 
   it('stacks long options one per row and lets their text wrap instead of running off the rail (2026-09-08)', () => {

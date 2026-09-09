@@ -596,6 +596,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
               onUndo={onUndo}
               onOpenJournal={onOpenJournal}
               labelFor={labelFor}
+              agentCount={state.lanes.length}
             />
           </div>
         ) : null}
