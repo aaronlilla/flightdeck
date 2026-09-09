@@ -57,7 +57,7 @@
 </section>
 <section class="dv-turn" id="t1">
 <div class="dv-thd"><a class="dv-tid" href="#t1">1</a><span class="dv-tname">Flightdeck operator console · Industry system · 1440×900 · each artboard flips between dark and light</span></div>
-<p class="dv-note"><b>Assumptions.</b> Sample data is the ACME (Sample Bankroll) board from the repo's fixtures; teammates Marcus (AWS) and Priya (Jira), vendor GitHub billing. Colour is held to the Industry steel accent plus one rust tone that means exactly one thing: a person has to act. Everything else is neutral ink. Ticket keys and headings are Barlow Condensed; sentences are Barlow, never below 12px. The Conductor rail is on every page; the Blockers tab is first in the nav because it is the first thing read.</p>
+<p class="dv-note"><b>Assumptions.</b> Sample data is the ACM (Acme Rewards) board from the repo's fixtures; teammates Marcus (AWS) and Priya (Jira), vendor GitHub billing. Colour is held to the Industry steel accent plus one rust tone that means exactly one thing: a person has to act. Everything else is neutral ink. Ticket keys and headings are Barlow Condensed; sentences are Barlow, never below 12px. The Conductor rail is on every page; the Blockers tab is first in the nav because it is the first thing read.</p>
 <div class="dv-opts">
 
 <div class="dv-opt" id="1a"><div class="dv-olabel"><a class="dv-oid" href="#1a">1a</a>Board<button class="dv-th" onClick="{{ flip }}">Flip theme</button></div>
@@ -421,9 +421,9 @@ class Component extends DCLogic {
         { at: 'next', text: 'Finish the limiter, open a draft PR, council review.', dot: 'transparent', color: 'var(--ink3)' },
       ],
       sources: [
-        { name: 'Jira', status: 'Connected', note: 'sample-bankroll-dev · checked 12 seconds ago', dot: 'var(--acc)', statusColor: 'var(--ink)', btn: 'Check now', ...S, border: 'var(--line)', bg: 'transparent' },
+        { name: 'Jira', status: 'Connected', note: 'acme-rewards-dev · checked 12 seconds ago', dot: 'var(--acc)', statusColor: 'var(--ink)', btn: 'Check now', ...S, border: 'var(--line)', bg: 'transparent' },
         { name: 'Sentry', status: 'Not connected — the token expired at 10:16', note: 'Stops 2 agents. Paste a new token and they resume on their own.', dot: 'var(--warn)', statusColor: 'var(--warn)', btn: 'Paste a new token', ...W, border: 'var(--warn)', bg: 'var(--warnTint)' },
-        { name: 'CloudWatch', status: 'Connected', note: 'sample-prod profile · checked 12 seconds ago · read access missing on one log group', dot: 'var(--acc)', statusColor: 'var(--ink)', btn: 'Check now', ...S, border: 'var(--line)', bg: 'transparent' },
+        { name: 'CloudWatch', status: 'Connected', note: 'acme-prod profile · checked 12 seconds ago · read access missing on one log group', dot: 'var(--acc)', statusColor: 'var(--ink)', btn: 'Check now', ...S, border: 'var(--line)', bg: 'transparent' },
       ],
       accounts: [
         { name: 'Anthropic', plan: 'Team plan · primary', headroom: '62% of the 5-hour window left', resets: 'window resets 13:40', pct: '62%', used: 'used by all 8 agents' },

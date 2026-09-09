@@ -13,9 +13,9 @@ input{outline:none}
 /* doctrine/design/Flightdeck Console.dc.html [data-theme] blocks, R-16 part 1. --panel2,
    --well, --hi, --aInk and the status colors (--run.../--exh) are outside that spec, so
    they keep today's values -- the design is silent on them. */
-.thD{--bg:#1d1f20;--panel:#26282b;--panel2:#1e2217;--well:#050603;--ink:#e9e9ea;--ink2:#b7b7ba;--ink3:#8a8a8d;--line:rgba(233,233,234,.16);--line2:rgba(233,233,234,.34);--mark:rgba(233,233,234,.55);--acc:#94bce3;--accInk:#1d1f20;--accTint:rgba(148,188,227,.12);--warn:oklch(.8 .12 45);--warnInk:#1d1f20;--warnTint:oklch(.8 .12 45/.1);--hi:rgba(255,255,255,.07);--aInk:#0c0e09;
+.thD{--bg:#1d1f20;--panel:#26282b;--panel2:#1e2217;--well:#050603;--ink:#e9e9ea;--ink2:#b7b7ba;--ink3:#8a8a8d;--line:rgba(233,233,234,.16);--line2:rgba(233,233,234,.34);--mark:rgba(233,233,234,.55);--mk:var(--mark);--acc:#94bce3;--accInk:#1d1f20;--accTint:rgba(148,188,227,.12);--warn:oklch(.8 .12 45);--warnInk:#1d1f20;--warnTint:oklch(.8 .12 45/.1);--hi:rgba(255,255,255,.07);--aInk:#0c0e09;
 --run:oklch(.82 .16 145);--hand:oklch(.82 .1 215);--pause:oklch(.68 .11 78);--park:oklch(.8 .15 78);--merge:oklch(.85 .06 195);--block:oklch(.66 .21 27);--exh:oklch(.72 .13 55)}
-.thL{--bg:#f2f2f3;--panel:#e9e9ea;--panel2:#d8d8cb;--well:#101208;--ink:#1d1f20;--ink2:#5d5d60;--ink3:#7a7a7d;--line:rgba(29,31,32,.16);--line2:rgba(29,31,32,.34);--mark:rgba(29,31,32,.55);--acc:#5980a6;--accInk:#f2f2f3;--accTint:#eef6ff;--warn:oklch(.52 .13 45);--warnInk:#f2f2f3;--warnTint:oklch(.52 .13 45/.08);--hi:rgba(255,255,255,.6);--aInk:#f4f5ec;
+.thL{--bg:#f2f2f3;--panel:#e9e9ea;--panel2:#d8d8cb;--well:#101208;--ink:#1d1f20;--ink2:#5d5d60;--ink3:#7a7a7d;--line:rgba(29,31,32,.16);--line2:rgba(29,31,32,.34);--mark:rgba(29,31,32,.55);--mk:var(--mark);--acc:#5980a6;--accInk:#f2f2f3;--accTint:#eef6ff;--warn:oklch(.52 .13 45);--warnInk:#f2f2f3;--warnTint:oklch(.52 .13 45/.08);--hi:rgba(255,255,255,.6);--aInk:#f4f5ec;
 --run:oklch(.46 .13 145);--hand:oklch(.46 .09 215);--pause:oklch(.5 .1 78);--park:oklch(.62 .13 78);--merge:oklch(.44 .06 195);--block:oklch(.5 .2 27);--exh:oklch(.52 .11 55)}
 .app{background:var(--bg);color:var(--ink);font-family:Barlow,system-ui,sans-serif;height:100vh;display:flex;flex-direction:column;overflow:hidden}
 h1,h2,h3,h4,h5,h6{font-family:'Barlow Condensed',system-ui,sans-serif;font-weight:600}

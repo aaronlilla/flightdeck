@@ -4,7 +4,7 @@
  * separate from the components so a test can assert "exactly one CTA per
  * state" without rendering anything.
  */
-import { hm } from './freshness.js';
+import { ago, hm } from './freshness.js';
 import type { Freshness } from './freshness.js';
 import type { Lane, LaneKind, LanePr, LaneState, Message } from '../shared/console-model.js';
 import { fmtTokens } from '../shared/format-tokens.js';
@@ -96,6 +96,45 @@ export function mergeableWhy(lane: Lane): string | null {
   if (lane.state !== 'done') return null;
   if (!lane.mergeable || lane.mergeable.ok) return null;
   return lane.mergeable.why;
+}
+
+export interface BoardStateWord {
+  word: 'Working' | 'Needs you' | 'Ready to merge' | 'Blocked';
+  color: string;
+}
+
+/**
+ * The Board card's state word (design 2/3, `doctrine/design/FD Board.dc.html`). The
+ * design's own table has five words (Working, Needs you, Ready to merge, Blocked,
+ * Idle) for a ten-value `LaneState`, so this maps the rest onto whichever of the four
+ * real-lane words fits closest. ("Idle" is the empty-slot placeholder `LanesGrid`
+ * renders itself, never a real lane.) Mergeability outranks state here the same way
+ * `laneCta` already treats it: a lane with a PR ready to land reads "Ready to merge"
+ * no matter what its own run state says.
+ */
+export function boardStateWord(lane: Lane): BoardStateWord {
+  if (lane.mergeable?.ok && lane.pr && !lane.pr.merged) return { word: 'Ready to merge', color: 'var(--acc)' };
+  if (lane.state === 'parked' && lane.question) return { word: 'Needs you', color: 'var(--warn)' };
+  if (lane.state === 'running' && lane.runaway) return { word: 'Needs you', color: 'var(--warn)' };
+  if (lane.state === 'blocked') return { word: 'Blocked', color: 'var(--block)' };
+  if (lane.state === 'killed') return { word: 'Blocked', color: 'var(--block)' };
+  if (lane.state === 'exhausted') return { word: 'Needs you', color: 'var(--warn)' };
+  if (lane.state === 'unverified') return { word: 'Needs you', color: 'var(--warn)' };
+  if (lane.state === 'done') {
+    return lane.mergeable && lane.mergeable.ok === false
+      ? { word: 'Blocked', color: 'var(--block)' }
+      : { word: 'Ready to merge', color: 'var(--acc)' };
+  }
+  return { word: 'Working', color: 'var(--run)' };
+}
+
+/** The card's time-in-state line: how long since the lane's own `since` last moved,
+ *  read against the state word above rather than the raw `LaneState`, so a parked lane
+ *  with no question still reads as ordinary work in progress instead of a wait. */
+export function timeInStateText(lane: Lane, now: number, word: BoardStateWord['word']): string {
+  const elapsed = ago(Math.max(0, now - lane.since));
+  const verb = word === 'Needs you' ? 'waiting' : word === 'Ready to merge' ? 'waiting to merge' : word === 'Blocked' ? 'blocked' : 'working';
+  return `${elapsed} ${verb}`;
 }
 
 export interface LaneHeadline {

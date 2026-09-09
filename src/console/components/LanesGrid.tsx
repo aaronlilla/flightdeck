@@ -1,12 +1,18 @@
 import type { JSX } from 'react';
 
 import type { Lane } from '../../shared/console-model.js';
-import type { Filter, Sort, State, TipSpec } from '../store.js';
+import type { Filter, Sort, TipSpec } from '../store.js';
 import { LaneGroupTile } from './LaneGroupTile.js';
-import { BOARD_GRID_COLUMNS, CARD_GAP_PX } from '../grid.js';
+import { CARD_GAP_PX } from '../grid.js';
 import { groupLanesByTicket } from '../laneVM.js';
 
 const FINISHED_STATES = new Set(['done', 'merged', 'killed']);
+
+/** The Board's own two-column, eight-card grid (design 2/3, `doctrine/design/FD
+ *  Board.dc.html`) -- fixed at two columns, unlike the queue's `BOARD_GRID_COLUMNS`,
+ *  which still auto-fills up to four. */
+const BOARD_COLUMNS = 2;
+const BOARD_SLOTS = 8;
 
 function localMidnight(now: number): number {
   const d = new Date(now);
@@ -50,24 +56,38 @@ export interface LanesGridProps {
   feedLive: boolean;
   now: number;
   showProbes: boolean;
-  /** Every action currently in flight, keyed `${cmd}:${id}` -- lets a tile's own CTA
-   *  render busy without giving `LaneTile` any `api.*` call of its own. */
-  pending?: State['pending'];
   onOpen: (id: string) => void;
   onOpenCost: (id: string) => void;
   onCommand: (id: string, cmd: string) => void;
   onTip: (tip: TipSpec | null) => void;
 }
 
+/** An empty Board slot (design 2/3): a dashed-border placeholder card that names what
+ *  it is waiting for, filled in whenever fewer than `BOARD_SLOTS` lanes are running. */
+function IdleSlot({ index }: { index: number }): JSX.Element {
+  return (
+    <div
+      data-testid={`idle-slot-${index}`}
+      style={{
+        border: '1px dashed var(--ink3)', borderRadius: 8, padding: 16, minHeight: 120,
+        display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center',
+      }}
+    >
+      <span className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>Waiting for a Ready ticket</span>
+    </div>
+  );
+}
+
 export function LanesGrid(props: LanesGridProps): JSX.Element {
-  const { lanes, filter, sort, feedLive, now, showProbes, pending = {}, onOpen, onOpenCost, onCommand, onTip } = props;
+  const { lanes, filter, sort, feedLive, now, showProbes, onOpen, onOpenCost, onCommand, onTip } = props;
   const shown = visibleLanes(lanes, filter, sort, now, showProbes);
   const groups = groupLanesByTicket(shown);
+  const idleCount = Math.max(0, BOARD_SLOTS - groups.length);
   return (
     <div
       className="scroll"
       style={{
-        flex: 1, padding: '12px 16px 16px', display: 'grid', gridTemplateColumns: BOARD_GRID_COLUMNS,
+        flex: 1, padding: '12px 16px 16px', display: 'grid', gridTemplateColumns: `repeat(${BOARD_COLUMNS}, 1fr)`,
         // 2026-09-08: `1fr` rows plus a tile that stretched to `height: 100%` is what
         // made the taller cards overlap on the live board -- `auto` rows sized to each
         // tile's own (now fixed-slot) content, with `alignItems: 'start'` so no tile
@@ -76,13 +96,9 @@ export function LanesGrid(props: LanesGridProps): JSX.Element {
       }}
     >
       {groups.map((group) => (
-        <LaneGroupTile key={group.key} group={group} feedLive={feedLive} now={now} pending={pending} onOpen={onOpen} onOpenCost={onOpenCost} onCommand={onCommand} onTip={onTip} />
+        <LaneGroupTile key={group.key} group={group} feedLive={feedLive} now={now} onOpen={onOpen} onOpenCost={onOpenCost} onCommand={onCommand} onTip={onTip} />
       ))}
-      {groups.length === 0 ? (
-        <div className="m" style={{ fontSize: 'var(--fs-body)', color: 'var(--ink3)', padding: 40, gridColumn: '1/-1', textAlign: 'center' }}>
-          no lanes match this filter
-        </div>
-      ) : null}
+      {Array.from({ length: idleCount }, (_, i) => <IdleSlot key={`idle-${i}`} index={i} />)}
     </div>
   );
 }
