@@ -410,9 +410,42 @@ describe('tool input schemas', () => {
     expect(ForgeHandoffInputSchema.safeParse({}).success).toBe(false);
   });
 
-  it('forge_ask: accepts a bare question, rejects a non-string question', () => {
+  it('forge_ask: accepts a bare question, rejects a non-string question or an empty one', () => {
     expect(ForgeAskInputSchema.safeParse({ question: 'dev or staging?' }).success).toBe(true);
     expect(ForgeAskInputSchema.safeParse({ question: 5 }).success).toBe(false);
+    expect(ForgeAskInputSchema.safeParse({ question: '' }).success).toBe(false);
+  });
+
+  it('forge_ask: accepts an in-range recommended index, rejects a negative one', () => {
+    expect(ForgeAskInputSchema.safeParse({ question: 'q', recommended: 0 }).success).toBe(true);
+    expect(ForgeAskInputSchema.safeParse({ question: 'q', recommended: -1 }).success).toBe(false);
+    expect(ForgeAskInputSchema.safeParse({ question: 'q', recommended: 1.5 }).success).toBe(false);
+  });
+
+  it('forge_ask: the registered tool itself refuses an empty question, not just the standalone schema', () => {
+    // Fixing ForgeAskInputSchema by itself would not prove anything about what the
+    // worker-facing tool accepts, so this reads the schema off the live registered tool
+    // in the MCP server engine.ts builds. The MCP SDK re-wraps the raw shape into its own
+    // zod-mini object on registration, so the registered schema is never `===
+    // ForgeAskInputSchema` as a whole object -- but every field validator inside it is the
+    // exact same instance as the one on ForgeAskInputSchema, because both come from the
+    // one shared FORGE_ASK_SHAPE constant. That per-field identity is the real proof the two
+    // cannot drift apart; a copied field would be a different (if equal-looking) instance.
+    const server = buildForgeMcpServer({
+      onDone: () => {}, onHandoff: () => {}, onAsk: () => {}, onGotcha: () => {}, onReport: () => {},
+    });
+    const instance = server.instance as unknown as {
+      _registeredTools: Record<string, { inputSchema: { def: { shape: Record<string, unknown> }; safeParse: (v: unknown) => { success: boolean } } }>;
+    };
+    const registeredTool = instance._registeredTools['forge_ask'];
+    if (!registeredTool) throw new Error('forge_ask was not registered');
+    const registeredShape = registeredTool.inputSchema.def.shape;
+    expect(registeredShape.question).toBe(ForgeAskInputSchema.shape.question);
+    expect(registeredShape.options).toBe(ForgeAskInputSchema.shape.options);
+    expect(registeredShape.recommended).toBe(ForgeAskInputSchema.shape.recommended);
+    expect(registeredShape.kind).toBe(ForgeAskInputSchema.shape.kind);
+    const parsed = registeredTool.inputSchema.safeParse({ question: '' });
+    expect(parsed.success).toBe(false);
   });
 
   it('forge_gotcha: accepts the four required fields, rejects one missing prevention', () => {

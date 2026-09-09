@@ -25,6 +25,28 @@ import { z } from 'zod';
 import type { EngineEvent, EngineListener } from './events.ts';
 import { PushStream } from './stream.ts';
 
+/**
+ * The one shape `forge_ask` accepts, on both sides of the process boundary.
+ *
+ * `contracts.ts` builds `ForgeAskInputSchema` straight out of this constant rather than
+ * re-typing it, and `buildForgeMcpServer` below registers that same schema object with the
+ * MCP server. A change here reaches both the worker-facing tool and every caller that reads
+ * `ForgeAskInputSchema` with nothing to keep in sync by hand.
+ *
+ * Declared here, in the adapter layer the rest of forge depends on, rather than in
+ * `contracts.ts`, because `contracts.ts` already imports `buildForgeMcpServer` from this
+ * file; the schema living in the other direction would be a cycle.
+ */
+export const FORGE_ASK_SHAPE = {
+  question: z.string().min(1),
+  options: z.array(z.string()).optional(),
+  /** Index into the combined `options` list (worker-supplied plus any drafted) the
+   *  worker itself thinks best, if it has an opinion. Optional: most calls leave this
+   *  for `completeAskOptions` to fill in. */
+  recommended: z.number().int().min(0).optional(),
+  kind: z.enum(['question', 'blocker']).optional(),
+};
+
 export interface EngineConfig {
   cwd: string;
   /** Model to open the session on. */
@@ -490,6 +512,7 @@ export interface ForgeToolHandlers {
   onAsk: (input: {
     question: string;
     options?: string[];
+    recommended?: number;
     kind?: 'question' | 'blocker';
   }) => void | Promise<void>;
   onGotcha: (input: {
@@ -530,11 +553,7 @@ export function buildForgeMcpServer(handlers: ForgeToolHandlers): McpSdkServerCo
         { packet: z.string() },
         async (args) => { await handlers.onHandoff(args); return ACK; }),
       tool('forge_ask', 'Ask a question that parks this run for a person to answer.',
-        {
-          question: z.string(),
-          options: z.array(z.string()).optional(),
-          kind: z.enum(['question', 'blocker']).optional(),
-        },
+        FORGE_ASK_SHAPE,
         async (args) => { await handlers.onAsk(args); return ACK; }),
       tool('forge_gotcha', 'File a trap the moment it is hit, and keep working.',
         {

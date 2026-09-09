@@ -17,7 +17,7 @@
  * exactly how a session reached 543,000 tokens with nothing noticing.
  */
 import { Engine, buildForgeMcpServer, type EngineConfig, type ForgeToolHandlers, type PreToolVerdict, type QueryFn } from '../adapter/engine.js';
-import { FORGE_TOOL_NAMES, redact, type Incarnation } from './contracts.js';
+import { FORGE_TOOL_NAMES, redact, type Incarnation, type Reasoner } from './contracts.js';
 import {
   classifyDriftRead, credentialBlocker, readMergeableDetailed,
   resolveMergeableRead, type DriftClock, type Mergeable, type MergeableRead,
@@ -29,6 +29,7 @@ import { Gotchas } from './gotcha.js';
 import { redactFields } from './redact.js';
 import { askKey, Inbox, type InboxEntry } from './inbox.js';
 import { Journal } from './journal.js';
+import { completeAskOptions } from './console/ask-options.js';
 import { fleetConfigDir } from './paths.js';
 import { readParkRecord } from './parkrecord.js';
 import {
@@ -606,6 +607,15 @@ export interface ForgeHandlerDeps {
    *  parked on. `forge_ask` sets this itself (F3), the same way `AskUserQuestion` does. */
   parked: Map<string, string>;
   gotchas: Gotchas;
+  /** When set, `onAsk` pads an under-four-option ask through `completeAskOptions` before
+   *  raising it. Optional, since every existing specimen builds deps with no reasoner and
+   *  expects the old synchronous behavior: raise with the worker's own options, no
+   *  recommendation, no reasoner call. */
+  reasoner?: Reasoner;
+  /** Context for the drafted options, passed to `completeAskOptions` when a reasoner is
+   *  wired. Both fields are optional and ignored when there is no reasoner. */
+  briefTitle?: string;
+  recentJournalRows?: string[];
 }
 
 /**
@@ -619,6 +629,11 @@ export interface ForgeHandlerDeps {
  * F3, it raised the inbox entry and journaled `forge.ask` but never called `parkRun`, so a
  * run that asked through the tool rather than the SDK's own permission prompt parked
  * nothing: the next tool call went straight through.
+ *
+ * `onAsk` stays synchronous when `deps.reasoner` is unset (W1): the two F3 specimens call
+ * it with no `await` and check `parked` on the next line, so that path cannot cross an
+ * `await` before `parkRun` runs. With a reasoner wired, it awaits `completeAskOptions` to
+ * pad an under-four-option ask before raising it.
  */
 export function buildForgeToolHandlers(deps: ForgeHandlerDeps): ForgeToolHandlers {
   return {
@@ -629,6 +644,29 @@ export function buildForgeToolHandlers(deps: ForgeHandlerDeps): ForgeToolHandler
       deps.journal.append({ event: 'forge.handoff', run: deps.run, actor: 'worker', packet: input.packet });
     },
     onAsk: (input) => {
+      const { reasoner } = deps;
+      if (reasoner) {
+        return (async () => {
+          const completed = await completeAskOptions(
+            { question: input.question, options: input.options },
+            {
+              reasoner, journal: deps.journal, run: deps.run,
+              ...(deps.briefTitle !== undefined ? { briefTitle: deps.briefTitle } : {}),
+              ...(deps.recentJournalRows !== undefined ? { recentJournalRows: deps.recentJournalRows } : {}),
+            },
+          );
+          const entry = deps.inbox.raise({
+            run: deps.run, goal: deps.goal, actionTarget: 'forge_ask',
+            question: input.question, options: completed.options,
+            recommended: completed.recommended, optionSource: completed.optionSource,
+            kind: input.kind,
+          });
+          parkRun(deps, deps.run, entry);
+          deps.journal.append({
+            event: 'forge.ask', run: deps.run, actor: 'worker', question: input.question,
+          });
+        })();
+      }
       const entry = deps.inbox.raise({
         run: deps.run, goal: deps.goal, actionTarget: 'forge_ask',
         question: input.question, options: input.options, kind: input.kind,
@@ -745,6 +783,16 @@ export interface SdkEngineDeps {
    * only report that none was recorded rather than resume the run on it.
    */
   onSessionStarted?: (run: string, sessionId: string, model: string) => void;
+  /** Forwarded straight into `buildForgeToolHandlers` (see `ForgeHandlerDeps` above), so
+   *  a real `forge run` process pads a short `forge_ask` the same way the specimens that
+   *  call `buildForgeToolHandlers` directly already do. Unset until a caller (`forge
+   *  run`) builds one; every existing specimen still builds an engine with none, and
+   *  keeps the old synchronous behavior. */
+  reasoner?: Reasoner;
+  /** Context handed to `completeAskOptions` alongside the reasoner above; see
+   *  `ForgeHandlerDeps.briefTitle`/`recentJournalRows`. */
+  briefTitle?: string;
+  recentJournalRows?: string[];
 }
 
 async function ghDriftCheck(cwd: string): Promise<MergeableRead> {
@@ -860,6 +908,10 @@ export class SdkEngine implements EngineLike {
 
     const handlers = buildForgeToolHandlers({
       run: request.run, goal, inbox, journal, parked: this.parked, gotchas,
+      ...(this.deps.reasoner ? { reasoner: this.deps.reasoner } : {}),
+      ...(this.deps.briefTitle !== undefined ? { briefTitle: this.deps.briefTitle } : {}),
+      ...(this.deps.recentJournalRows !== undefined
+        ? { recentJournalRows: this.deps.recentJournalRows } : {}),
     });
 
     // Each assistant message's usage already carries the whole context of that turn --

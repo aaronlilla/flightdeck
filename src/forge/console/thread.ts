@@ -118,6 +118,8 @@ export function questionMessageFor(entry: InboxEntry): Message {
     source: entry.runs[0] ?? 'system',
     askKey: entry.key,
     opts: entry.options,
+    recommended: entry.recommended,
+    optionSource: entry.optionSource,
     verifiedAt: entry.at,
   };
 }

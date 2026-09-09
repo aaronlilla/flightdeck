@@ -75,7 +75,10 @@ export function plainStatus(lane: Lane, context: PlainContext): string {
       return `Paused at ${clockTime(lane.since)}. Resume to continue.`;
     case 'parked': {
       if (lane.question) {
-        return `Waiting for your answer: ${truncate(lane.question.text, 90)}`;
+        if (lane.question.text.trim() === '') {
+          return 'Asked with no question; dismiss or resume';
+        }
+        return `Asking: ${truncate(lane.question.text, 90)}`;
       }
       if (lane.reason && /warden|script budget|stuck-session/i.test(lane.reason)) {
         return `Parked by the warden at ${clockTime(lane.since)}: ${lane.reason}. Resume to continue.`;
