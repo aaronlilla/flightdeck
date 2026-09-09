@@ -1318,12 +1318,21 @@ export interface HaipingHandoff {
   notVisuallyVerified: string[];
 }
 
+/** A worker who copies `haipingHandoffExample()` and never overwrites a value still
+ *  has a schema-valid, non-empty string on their hands -- that's what let PRs #79 and
+ *  #83 through with the placeholders untouched. */
+const REPLACE_PREFIX = 'REPLACE:';
+const notAPlaceholder = (value: string) => !value.startsWith(REPLACE_PREFIX);
+
 export const HaipingHandoffSchema = z.object({
   ticket: z.string().min(1),
   pr: z.string().min(1),
   deployKind: z.enum(['ota', 'rebuild']),
-  perPlatform: z.object({ android: z.string().min(1), ios: z.string().min(1) }),
-  steps: z.array(z.string().min(1)).min(1),
+  perPlatform: z.object({
+    android: z.string().min(1).refine(notAPlaceholder, { message: 'still a REPLACE: placeholder' }),
+    ios: z.string().min(1).refine(notAPlaceholder, { message: 'still a REPLACE: placeholder' }),
+  }),
+  steps: z.array(z.string().min(1).refine(notAPlaceholder, { message: 'still a REPLACE: placeholder' })).min(1),
   notVisuallyVerified: z.array(z.string()),
 });
 
@@ -1332,9 +1341,14 @@ export const HaipingHandoffSchema = z.object({
  * `HaipingHandoffSchema` above, so naming it in the brief left one worker inventing its
  * own fields. This builds the fenced example straight from a `HaipingHandoff` object
  * literal -- typechecked against the same interface the schema validates -- rather than
- * a second hand-written copy of the shape that could drift from it. Every value is an
- * obvious placeholder a worker overwrites, and it still parses as complete on its own:
- * `checkHandoff('haiping', JSON.parse(haipingHandoffExample()))` is `{ complete: true }`.
+ * a second hand-written copy of the shape that could drift from it.
+ *
+ * PRs #79/#83, 2026-09-08: every value here is an obvious placeholder, but a worker who
+ * pasted this verbatim still cleared the gate, because the schema only checked for a
+ * non-empty string. `HaipingHandoffSchema` now rejects any `perPlatform`/`steps` value
+ * still carrying the `REPLACE:` prefix, so `checkHandoff('haiping',
+ * JSON.parse(haipingHandoffExample()))` is `{ complete: false }` until a worker
+ * overwrites every one of them.
  */
 export function haipingHandoffExample(): string {
   const example: HaipingHandoff = {
