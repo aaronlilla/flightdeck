@@ -386,6 +386,19 @@ export type McpConnState =
   | 'unknown'
   | 'connecting';
 
+/** Runtime-enumerable form of `McpConnState`, for coverage tests and any renderer that
+ *  needs to iterate every state rather than just type-check against it. Keep in sync
+ *  with the union above by construction: this is the source a coverage test checks
+ *  against, not a second, driftable list. */
+export const MCP_CONN_STATES: McpConnState[] = [
+  'connected',
+  'needs-login',
+  'pending-approval',
+  'failed',
+  'unknown',
+  'connecting',
+];
+
 export interface Integration {
   id: string;
   kind: 'conn' | 'mcp';

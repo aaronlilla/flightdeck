@@ -30,6 +30,7 @@ const JOURNAL_WATCH_MS = 1000;
 import { appendThread, ConsoleWrites, plainReceiptCard } from './console/command.js';
 import { QueueRoutes } from './console/queue-route.js';
 import { BlockersRoutes, type Confirmer, type Restarter } from './console/blockers-route.js';
+import { IntegrationsConnectRoutes } from './console/integrations-route.js';
 import type { DetectionInputs } from './console/blockers.js';
 import { gatherBlockers } from './console/blockers-gather.js';
 import { buildConfirmers } from './console/blockers-confirm.js';
@@ -297,6 +298,11 @@ export class ForgeServer {
 
   private readonly blockersRoutes: BlockersRoutes;
 
+  /** `POST /integrations/:id/connect` and `GET /integrations/:id/connect/:attempt`
+   *  (`src/forge/console/integrations-route.ts`) -- M owns `integrations.ts` outright;
+   *  these two routes never touch `command.ts`. */
+  private readonly integrationsConnectRoutes: IntegrationsConnectRoutes;
+
   /** The Conductor's rounds behind `GET /rounds` / `POST /rounds/apply` and its ticker. */
   readonly rounds: RoundsRoutes;
 
@@ -392,6 +398,11 @@ export class ForgeServer {
       appendThread: (message) => appendThread(message),
       askConductor: (text) => this.conductor.handle(text),
       ...(options.modelPolicyPath ? { policyPath: options.modelPolicyPath } : {}),
+    });
+    this.integrationsConnectRoutes = new IntegrationsConnectRoutes({
+      authorized: (request, response) => this.authorized(request, response),
+      registry: this.consoleWrites.integrationsRegistry(),
+      publish: (event) => this.publish(event),
     });
     this.blockersRoutes = new BlockersRoutes({
       journalPath: this.journalPath,
@@ -777,6 +788,8 @@ export class ForgeServer {
       return json(response, 405, { error: 'merge-ready is GET or POST only' });
     }
     if (await this.consoleWrites.handle(path, request, response)) return;
+
+    if (await this.integrationsConnectRoutes.handle(path, request, response)) return;
     if (await this.queueRoutes.handle(path, request, response)) return;
     if (await this.blockersRoutes.handle(path, request, response)) return;
     if (await this.rounds.handle(path, request, response)) return;

@@ -342,8 +342,15 @@ function defaultProbes(spawnFn?: RunRequest['spawnFn']): Record<string, Probe> {
   };
 }
 
+/** The AWS SSO login argv, shared by the existing `reconnect()` path (`DEFAULT_RECONNECTS.aws`
+ *  below) and W3's `POST /integrations/aws/connect` route, so the two never drift apart into
+ *  two separate implementations of the same login. */
+export function awsSsoLoginArgv(): string[] {
+  return ['aws', 'sso', 'login', '--profile', process.env['FORGE_AWS_PROFILE'] ?? ''];
+}
+
 const DEFAULT_RECONNECTS: Record<string, string[]> = {
-  aws: ['aws', 'sso', 'login', '--profile', process.env['FORGE_AWS_PROFILE'] ?? ''],
+  aws: awsSsoLoginArgv(),
   github: ['gh', 'auth', 'login', '--web'],
 };
 
@@ -591,6 +598,37 @@ export class IntegrationsRegistry {
       };
       writeStored(this.configPath, stored);
     }
+    return this.list(false);
+  }
+
+  /** W3's connect route calls this as an MCP login attempt moves from `connecting` to a
+   *  terminal state. Merges the patch into the stored row (keeping `latencyMs`/`desc`/
+   *  `scope`/etc. as they were), stamps `checkedAt`, and re-reads the list -- the same
+   *  shape `check()` above already writes, minus running a probe first. Never accepts a
+   *  `link`/URL field: the login link the connect route captures lives only in that
+   *  route's own in-memory attempt record and never reaches this method, so it can never
+   *  reach the stored row, a journal entry, or a published event through this path. */
+  async applyConnectResult(
+    id: string, patch: { mcpState?: McpConnState; lastError?: string; status?: IntegrationStatus },
+  ): Promise<IntegrationsResponse> {
+    const stored = readStored(this.configPath);
+    const existing = stored.rows[id];
+    const nowUp = patch.status === 'ok';
+    stored.rows[id] = {
+      id,
+      latencyMs: existing?.latencyMs ?? null,
+      status: patch.status ?? existing?.status ?? 'checking',
+      checkedAt: Date.now(),
+      since: existing?.since ?? Date.now(),
+      lastHealthyAt: nowUp ? Date.now() : (existing?.lastHealthyAt ?? null),
+      retryCount: nowUp ? 0 : (existing?.retryCount ?? 0) + (patch.status ? 1 : 0),
+      ...(existing?.desc !== undefined ? { desc: existing.desc } : {}),
+      ...(existing?.detail !== undefined ? { detail: existing.detail } : {}),
+      ...(existing?.scope !== undefined ? { scope: existing.scope } : {}),
+      ...(patch.mcpState !== undefined ? { mcpState: patch.mcpState } : (existing?.mcpState !== undefined ? { mcpState: existing.mcpState } : {})),
+      ...(patch.lastError !== undefined ? { lastError: patch.lastError } : {}),
+    };
+    writeStored(this.configPath, stored);
     return this.list(false);
   }
 

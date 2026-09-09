@@ -10,9 +10,21 @@ import { existsSync, readFileSync as nodeReadFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { run as execRun, type RunRequest } from '../exec.js';
-import { fleetConfigDir } from '../paths.js';
+import { fleetConfigDir, workspaceRoot } from '../paths.js';
 import { commandOnPath } from './integrations.js';
 import type { McpConnState } from '../../shared/console-model.js';
+
+/** Where the fleet's workers actually run from -- the root every worker's `claude` CLI
+ *  is launched from, which is not necessarily wherever `forge up` itself happens to be
+ *  running from (that's `workspaceRoot()`). `FORGE_WORKER_CWD` names it explicitly for a
+ *  machine whose fleet workers run from a fixed root; per this repository's own
+ *  machine-agnostic rule (`paths.ts`'s file comment: "no path is hardcoded here"), no
+ *  literal path lives in source, so an unset override falls back to `workspaceRoot()`.
+ *  `opts.cwd` is only there so a test can prove this function's return value is what
+ *  reaches the spawn call, not a value passed through opts. */
+function fleetWorkerCwd(): string {
+  return process.env['FORGE_WORKER_CWD'] ?? workspaceRoot();
+}
 
 export type { McpConnState };
 
@@ -119,7 +131,7 @@ async function fallbackFromClaudeJson(configDir: string, opts: ClaudeMcpListOpti
  *  probe in this module: a hung `claude mcp list` resolves `unknown`, not hung. */
 export async function claudeMcpList(opts: ClaudeMcpListOptions = {}): Promise<ClaudeMcpListResult> {
   const configDir = opts.configDir ?? fleetConfigDir(opts.exists);
-  const cwd = opts.cwd ?? 'C:/dev';
+  const cwd = fleetWorkerCwd();
 
   const available = await commandOnPath('claude', opts.spawnFn);
   if (!available) return fallbackFromClaudeJson(configDir, opts);
@@ -151,7 +163,7 @@ export async function claudeMcpList(opts: ClaudeMcpListOptions = {}): Promise<Cl
  *  (`Type`, `URL`, the full `Status` line) -- same status symbols as `list`, one block. */
 export async function claudeMcpGet(name: string, opts: ClaudeMcpListOptions = {}): Promise<{ ok: boolean; statusLine: string | null }> {
   const configDir = opts.configDir ?? fleetConfigDir(opts.exists);
-  const cwd = opts.cwd ?? 'C:/dev';
+  const cwd = fleetWorkerCwd();
 
   const result = await Promise.race([
     execRun({

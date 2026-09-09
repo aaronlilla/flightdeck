@@ -11,6 +11,7 @@ import type {
 import { hm } from '../freshness.js';
 import { fmtTokens } from '../../shared/format-tokens.js';
 import { Linkify } from './Linkify.js';
+import { IntegrationsPanel } from './IntegrationsPanel.js';
 
 /** A cap this file reads as `Infinity` (no console override yet, and nothing this board
  *  can honestly derive from the policy's own dollar-denominated defaults) prints as
@@ -323,7 +324,7 @@ export function Settings(props: SettingsProps): JSX.Element {
                 <span className="lbl">MCP servers</span>
               </div>
               <div className="m" style={{ fontSize: 'var(--fs-meta)' }}>
-                {mcps.map((i) => <Row key={i.id} i={i} now={now} onToast={onToast} />)}
+                <IntegrationsPanel items={mcps} now={now} onToast={onToast} />
               </div>
             </div>
           </>

@@ -77,7 +77,7 @@ function integration(extra: Partial<Integration> = {}): Integration {
     id: 'aws', kind: 'conn', name: 'AWS sandboxes', desc: '', latencyMs: null, status: 'down',
     checkedAt: Date.now(), since: Date.now() - 60_000, cause: 'SSO token expired 13:58 (12h lifetime)',
     effect: null, fix: null, fixLabel: null, dependents: ['FLT-211'], step: null, canConnect: true, links: {},
-    scope: null, lastHealthyAt: null, retryCount: 0,
+    scope: null, lastHealthyAt: null, retryCount: 0, mcpState: null, lastError: null,
     ...extra,
   };
 }

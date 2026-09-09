@@ -289,6 +289,18 @@ export function reconnectIntegration(id: string): Promise<ReconnectResponse> {
   return post<ReconnectResponse>(`/integrations/${encodeURIComponent(id)}/reconnect`, {});
 }
 
+/**
+ * `GET /integrations/:id/connect/:attempt` -- a read, so it needs no `ACTIONS` catalog
+ * entry (`tests/console/actions-catalog.test.ts` only scans this file's writes). The
+ * matching `POST /integrations/:id/connect` deliberately does NOT live here: see
+ * `IntegrationsPanel.tsx`'s own doc comment for why that call bypasses this module.
+ */
+export function getConnectAttempt(id: string, attempt: string): Promise<{ state: string; link?: string; error?: string }> {
+  return call<{ state: string; link?: string; error?: string }>(
+    `/integrations/${encodeURIComponent(id)}/connect/${encodeURIComponent(attempt)}`,
+  );
+}
+
 export function applyProposal(id: string): Promise<ActionResult> {
   return post<ActionResult>(`/proposals/${encodeURIComponent(id)}/apply`, {});
 }
