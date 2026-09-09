@@ -1,8 +1,8 @@
 /**
  * Reads a `/goal` condition out of a goal file, for the queue's `goal` source (Aaron,
- * 2026-09-08): a brief under `C:/dev/.claude/goals/*.md` with a sibling `*.block.txt`
- * holding the literal `/goal ...` block a fresh session would paste in, or an exported
- * task under `C:/dev/boltbetz-docs/40-changes/tasks/*.md` carrying a fenced
+ * 2026-09-08): a brief under a workspace's own `.claude/goals/*.md` with a sibling
+ * `*.block.txt` holding the literal `/goal ...` block a fresh session would paste in,
+ * or an exported task under a docs repository's tasks directory carrying a fenced
  * ```goal-spec JSON block that this module can turn into an equivalent condition.
  *
  * Nothing here spawns a process or touches the queue -- `queue.ts#addGoalItem` calls

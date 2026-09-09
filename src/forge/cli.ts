@@ -405,6 +405,20 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
     }
 
     case 'up': {
+      // A supervisor of paid workers never dies on one stray promise. Node's default
+      // for an unhandled rejection is to exit, and on 2026-09-08 one failed `gh` spawn
+      // inside a background PR read took the console down four times in seven minutes,
+      // stranding every worker it had launched. Journal it, print it, carry on.
+      const guardJournal = new Journal(journalPath());
+      process.on('unhandledRejection', (reason) => {
+        const message = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
+        console.error(`unhandled rejection (console stays up): ${message}`);
+        try {
+          guardJournal.append({ event: 'console.unhandled', actor: 'console', kind: 'rejection', message: message.slice(0, 2000) });
+        } catch {
+          // The journal itself failing must not turn a survived rejection into an exit.
+        }
+      });
       const state = replay(journalPath());
 
       // Before anything else starts: pick up whatever the registry says crashed. A row

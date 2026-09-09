@@ -160,7 +160,7 @@ export const FORGE_EVENT_NAMES = [
   // Written today, confirmed by the scan specimen below over src/forge/**. Includes
   // B.3's own rows (`run.resumed`, `inbox.acknowledged`, `warden.parked`), which are on
   // `main` as of PR #3 (5385179) and are no longer merely proposed.
-  'ask.answered', 'ask.raised', 'cutover.completed', 'cutover.moved', 'engine.error',
+  'ask.answered', 'ask.raised', 'console.unhandled', 'cutover.completed', 'cutover.moved', 'engine.error',
   'forge.ask', 'forge.done', 'forge.handoff', 'forge.report', 'gotcha', 'inbox.acknowledged',
   'inbox.delivered', 'liveness.cleared', 'liveness.stuck', 'note', 'permission.denied',
   'run.blocked', 'run.finished', 'run.handoff', 'run.parked', 'run.paused', 'run.resumed',
