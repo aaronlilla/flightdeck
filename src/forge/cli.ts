@@ -56,6 +56,7 @@ import { replay, Journal, JournalCache } from './journal.js';
 import { checkLaunch, launchEnv, loginInFlight, pinnedRuntime, runtimeHead, runtimeVersion } from './launcher.js';
 import { assess, LivenessSupervisor } from './liveness.js';
 import { loadConsoleEnv } from './console-env.js';
+import { titleFromHeading } from './console/lanes.js';
 import {
   ensureHome, fleetConfigDirChoice, forgeHome, gotchasDir, inboxDir, intakeBriefsDir, journalPath,
   killSwitchPath, lanesDir, queuePath, registryDir, runsDir,
@@ -820,9 +821,18 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         column: 'forge', started: Date.now(), owner: 'forge',
         className: plannedClassName, model: plannedModel,
       });
+      // W1: the reasoner that pads a short forge_ask before it ever reaches the inbox.
+      // Every other reasoner seam this process opens (the router in `up`, the Warden
+      // tick's drift check, council) builds its own the same way; this one is `run`'s
+      // own, since a single `forge run` process has no router-level reasoner to share.
+      const askReasoner = reasonerFor('claude', {
+        journal: new Journal(journalPath()), queryFn: deps.reasonerQueryFn,
+      });
       const engine = deps.engine ?? new SdkEngine({
         journalPath: journalPath(), inboxDir: inboxDir(), gotchasDir: gotchasDir(),
         killSwitch: () => readKillSwitch(killSwitchPath()).engaged,
+        reasoner: askReasoner,
+        briefTitle: titleFromHeading(brief, slug) ?? undefined,
         // I12: written the moment the SDK's init message names the session, not after
         // the first turn resolves -- a process killed mid-segment still leaves a
         // registry row and a lane `reconcileRegistry` can resume.
