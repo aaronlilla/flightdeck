@@ -63,7 +63,7 @@ export function FlightReview({ proposals, now, tokensToday, dailyTokens }: Fligh
           <div key={tile.label} data-testid="metric" style={{ position: 'relative', border: `1px solid ${tile.border}`, padding: '20px 22px', display: 'flex', flexDirection: 'column', gap: 6, minHeight: 170 }}>
             <Marks />
             <span className="kick" style={{ letterSpacing: '.12em' }}>{tile.label}</span>
-            <span className="hd" style={{ fontSize: 'var(--fs-metric)', lineHeight: 1, color: tile.color, fontVariantNumeric: 'tabular-nums' }}>{tile.value}</span>
+            <span className="hd" style={{ fontSize: 'var(--fs-metric)', lineHeight: 1, color: tile.color, fontVariantNumeric: 'tabular-nums', overflowWrap: 'anywhere', minWidth: 0 }}>{tile.value}</span>
             <p style={{ margin: 'auto 0 0', color: 'var(--ink2)' }}>{tile.note}</p>
           </div>
         ))}

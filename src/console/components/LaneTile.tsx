@@ -29,7 +29,7 @@ export function LaneTile({ lane, now, blocker = null, onOpen, onCommand }: LaneT
   const word = boardStateWord(lane);
   const cta = boardCta(lane, blocker);
   const head = tileHeadlineParts(lane);
-  const title = head.title ?? (head.key ? head.key : 'Untitled run');
+  const title = head.title?.trim() || (head.key ? head.key : 'Untitled run');
   const keyText = head.key ?? `${kindLabel(lane.kind)} run`;
   return (
     <div
@@ -42,10 +42,10 @@ export function LaneTile({ lane, now, blocker = null, onOpen, onCommand }: LaneT
     >
       <Marks />
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
-        <span className="key" data-testid="tile-key">{keyText}</span>
-        <span data-testid="tile-state" style={{ fontSize: 'var(--fs-kicker)', fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: word.color }}>{word.word}</span>
+        <span className="key" data-testid="tile-key" title={keyText} style={{ minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{keyText}</span>
+        <span data-testid="tile-state" style={{ flex: 'none', fontSize: 'var(--fs-kicker)', fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: word.color }}>{word.word}</span>
       </div>
-      <div className="hd" data-testid="tile-title" style={{ fontSize: 'var(--fs-rowhead)', lineHeight: 1.1, flex: 'none', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{title}</div>
+      <div className="hd" data-testid="tile-title" dir="auto" title={title} style={{ fontSize: 'var(--fs-rowhead)', lineHeight: 1.1, flex: 'none', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{title}</div>
       <p data-testid="tile-now" style={{ margin: 0, flex: 'none', color: 'var(--ink2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{lane.now || lane.plain || lane.stepText}</p>
       <div data-testid="tile-footer" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 'auto' }}>
         <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', marginRight: 8 }}>

@@ -57,9 +57,13 @@ textarea.inp{line-height:1.45;padding:8px 10px;resize:vertical}
 .disc::-webkit-details-marker{display:none}
 .tri{display:inline-block;width:0;height:0;border-left:5px solid var(--ink3);border-top:3px solid transparent;border-bottom:3px solid transparent;align-self:center}
 /* Row grids on the Board (Waiting for merge, Blocked or parked, Finished today). */
-.rowMerge{position:relative;border:1px solid var(--line);padding:10px 14px;display:grid;grid-template-columns:90px 1fr auto auto;gap:16px;align-items:center}
-.rowBlocked{border:1px solid var(--line);padding:9px 14px;display:grid;grid-template-columns:90px 1fr 150px auto;gap:16px;align-items:center}
-.rowDone{display:grid;grid-template-columns:90px 1fr auto;gap:16px}
+.rowMerge{position:relative;border:1px solid var(--line);padding:10px 14px;display:grid;grid-template-columns:90px minmax(0,1fr) auto auto;gap:16px;align-items:center}
+.rowBlocked{border:1px solid var(--line);padding:9px 14px;display:grid;grid-template-columns:90px minmax(0,1fr) 150px auto;gap:16px;align-items:center}
+.rowDone{display:grid;grid-template-columns:90px minmax(0,1fr) auto;gap:16px}
+/* A key in a fixed 90px track keeps to it; the text beside it wraps rather than running under a
+   neighbour, and long unbroken words (paths, URLs, shas) break anywhere. */
+.rowMerge>.key,.rowBlocked>.key,.rowDone>.hd{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rowMerge,.rowBlocked,.rowDone,.rail,.queue-row,.blocker-card,.sheet-body{overflow-wrap:anywhere}
 /* The width stepper (Queue and Settings). */
 .step{display:flex;align-items:stretch;border:1px solid var(--line2);flex:none}
 .step button{width:36px;background:transparent;border:0;color:var(--ink);font-size:var(--fs-card);cursor:pointer}

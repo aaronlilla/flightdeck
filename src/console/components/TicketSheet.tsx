@@ -64,7 +64,7 @@ export function TicketSheet({ lane, now, onClose, onCommand, onSendLane }: Ticke
         </div>
         <button type="button" aria-label="Close" data-testid="sheet-close" style={{ width: 32, height: 32, flex: 'none', background: 'transparent', border: '1px solid var(--line2)', color: 'var(--ink2)', fontSize: 'var(--fs-key)', cursor: 'pointer', borderRadius: 0 }} onClick={onClose}>✕</button>
       </div>
-      <div className="scroll" style={{ flex: 1, overflow: 'auto', padding: '18px 24px', display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <div className="scroll sheet-body" style={{ flex: 1, overflow: 'auto', padding: '18px 24px', display: 'flex', flexDirection: 'column', gap: 20 }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 'var(--fs-key)' }}>
           <p style={{ margin: 0 }}><span className="kick" style={{ display: 'inline-block', width: 110 }}>What happened</span>{failed ? `The summary did not load: ${failed}` : summary ? (summary.what.join(' ') || lane.did || 'Nothing on record yet.') : 'Loading…'}</p>
           <p style={{ margin: 0 }}><span className="kick" style={{ display: 'inline-block', width: 110 }}>Where it is</span>{summary?.status ?? lane.now ?? ''}</p>
@@ -96,7 +96,7 @@ export function TicketSheet({ lane, now, onClose, onCommand, onSendLane }: Ticke
         </div>
         <details>
           <summary className="disc" style={{ alignItems: 'center' }}><span className="tri" />Technical</summary>
-          <dl style={{ margin: '8px 0 0', display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '2px 12px', fontSize: 'var(--fs-meta)', color: 'var(--ink2)' }}>
+          <dl style={{ margin: '8px 0 0', display: 'grid', gridTemplateColumns: 'auto minmax(0, 1fr)', gap: '2px 12px', fontSize: 'var(--fs-meta)', color: 'var(--ink2)', overflowWrap: 'anywhere' }}>
             <dt style={{ color: 'var(--ink3)' }}>Run</dt><dd style={{ margin: 0 }}>{lane.id}</dd>
             {lane.sandbox?.branch ? <><dt style={{ color: 'var(--ink3)' }}>Branch</dt><dd style={{ margin: 0 }}>{lane.sandbox.branch}</dd></> : null}
             {lane.sandbox?.path ? <><dt style={{ color: 'var(--ink3)' }}>Worktree</dt><dd style={{ margin: 0 }}>{lane.sandbox.path}</dd></> : null}
@@ -106,12 +106,12 @@ export function TicketSheet({ lane, now, onClose, onCommand, onSendLane }: Ticke
           </dl>
         </details>
       </div>
-      <div style={{ borderTop: '1px solid var(--line)', padding: '16px 24px 20px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div className="scroll" style={{ borderTop: '1px solid var(--line)', padding: '16px 24px 20px', display: 'flex', flexDirection: 'column', gap: 16, maxHeight: '55%', overflow: 'auto', flex: 'none' }}>
         {question ? (
           <div data-testid="question-card" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <label className="kick" style={{ fontSize: 'var(--fs-meta)', color: 'var(--warn)', fontWeight: 700 }}>Answer its question</label>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {question.opts.slice(0, 4).map((option, index) => (
+              {question.opts.filter((option) => option.trim().length > 0).map((option, index) => (
                 <button key={option} type="button" className="opt" data-testid="question-option" data-recommended={index === 0 ? 'true' : 'false'} onClick={() => submitAnswer(option)}><i /><span>{option}</span></button>
               ))}
             </div>

@@ -100,7 +100,7 @@ function ActionCard({ message, tone, kicker, title, body, onCommand, onTopic, co
         <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>{resolved === 'declined' ? 'Not now.' : resolved === 'answered' ? 'Answered.' : 'Confirmed.'}</span>
       ) : message.btns && message.btns.length > 0 ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 2 }}>
-          {message.btns.slice(0, 4).map((button, index) => (
+          {message.btns.map((button, index) => (
             <button
               key={button.label} type="button" className={buttonClass(button)} data-testid="question-option" data-recommended={index === 0 ? 'true' : 'false'}
               style={{ fontSize: 'var(--fs-key)', letterSpacing: '.03em', lineHeight: 1.3, textAlign: 'left', padding: '10px 14px', minHeight: 44, width: '100%', whiteSpace: 'normal' }}
@@ -304,7 +304,7 @@ export function ConductorRail(props: ConductorRailProps): JSX.Element {
         ) : null}
         <div style={{ display: 'flex', gap: 8, alignItems: 'stretch' }}>
           <textarea
-            id={composerId} className="inp" rows={3} style={{ minHeight: 72 }} placeholder={placeholder} value={composer}
+            id={composerId} className="inp" dir="auto" rows={3} style={{ minHeight: 72 }} placeholder={placeholder} value={composer}
             disabled={!feed.live}
             onChange={(e) => onComposerChange(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}

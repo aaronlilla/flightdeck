@@ -50,10 +50,10 @@ function BlockerCard({ blocker, onOpenSettings, onSendToLane, laneTitle }: { blo
     for (const lane of blocker.blocks) onSendToLane(lane.laneId, text.trim());
     setNote('');
   };
-  const agents = count === 1 ? 'the agent' : 'both agents';
+  const agents = count === 1 ? 'the agent' : count === 2 ? 'both agents' : `all ${count} agents`;
   const primaryClass = you ? 'btn warn' : 'btn';
   return (
-    <div data-testid={`blocker-${blocker.id}`} style={{ position: 'relative', border: `1px solid ${you ? 'var(--warn)' : 'var(--line2)'}`, padding: '18px 20px', maxWidth: 860, display: 'grid', gridTemplateColumns: '110px 1fr 210px', gap: 22, background: you ? 'var(--warnTint)' : 'transparent' }}>
+    <div data-testid={`blocker-${blocker.id}`} className="blocker-card" style={{ position: 'relative', border: `1px solid ${you ? 'var(--warn)' : 'var(--line2)'}`, padding: '18px 20px', maxWidth: 860, display: 'grid', gridTemplateColumns: '110px 1fr 210px', gap: 22, background: you ? 'var(--warnTint)' : 'transparent' }}>
       <Marks />
       <div>
         <div className="hd" style={{ fontSize: 'var(--fs-count)', lineHeight: 1, color: you ? 'var(--warn)' : 'var(--ink)' }}>{count}</div>
@@ -83,7 +83,7 @@ function BlockerCard({ blocker, onOpenSettings, onSendToLane, laneTitle }: { blo
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'stretch' }}>
           <input className="inp" data-testid="question-freetext" placeholder={`Tell ${agents} on ${blocker.blocks.map((lane) => lane.label).join(' and ')} what to do instead, or ask what they tried…`} value={note} onChange={(e) => setNote(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') sendToAgents(note); }} />
-          <button type="button" className="btn" style={{ padding: '6px 14px' }} onClick={() => sendToAgents(note)}>{count === 1 ? 'Send to the agent' : 'Send to both agents'}</button>
+          <button type="button" className="btn" style={{ padding: '6px 14px' }} onClick={() => sendToAgents(note)}>{count === 1 ? 'Send to the agent' : `Send to ${agents}`}</button>
         </div>
       </div>
     </div>

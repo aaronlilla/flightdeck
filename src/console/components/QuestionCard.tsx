@@ -39,7 +39,8 @@ function Marks(): JSX.Element {
 export function QuestionCard(props: QuestionCardProps): JSX.Element {
   const { head, stamp, text, options, onAnswer, freetext, composerId, variant = 'board', placeholder, answer, onHead } = props;
   const [typed, setTyped] = useState('');
-  const shown = options.slice(0, 4);
+  const shown = options.filter((option) => option.trim().length > 0);
+  const prompt = text.trim() || 'The agent asked a question but sent no text; answer below or open the lane.';
   const submitTyped = (): void => {
     const value = typed.trim();
     if (!value) return;
@@ -62,7 +63,7 @@ export function QuestionCard(props: QuestionCardProps): JSX.Element {
           : <span className="key" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{head}</span>}
         <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)', whiteSpace: 'nowrap', flex: 'none' }}>{stamp}</span>
       </div>
-      <p className="hd" style={{ margin: 0, fontSize: 'var(--fs-lead)', lineHeight: 1.25 }}>{text}</p>
+      <p className="hd" dir="auto" style={{ margin: 0, fontSize: 'var(--fs-lead)', lineHeight: 1.25, overflowWrap: 'anywhere' }}>{prompt}</p>
       {answer !== undefined ? (
         <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>Answered: {answer}</span>
       ) : (
@@ -74,7 +75,7 @@ export function QuestionCard(props: QuestionCardProps): JSX.Element {
                 data-recommended={index === 0 ? 'true' : 'false'}
                 onClick={() => onAnswer(option)}
               >
-                <i /><span>{option}</span>
+                <i /><span dir="auto" style={{ overflowWrap: 'anywhere' }}>{option}</span>
               </button>
             ))}
           </div>

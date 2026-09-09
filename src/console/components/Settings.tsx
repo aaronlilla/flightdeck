@@ -74,15 +74,17 @@ export function Settings({ integrations, caps, now, maxInFlight, theme, onTheme 
   const [daily, setDaily] = useState<string | null>(null);
   const shown = daily ?? (caps ? capInput(caps.dailyTokens) : '');
   const setWidth = (value: number): void => { if (value >= 1 && value <= 12) void width.run(value); };
+  const [capError, setCapError] = useState<string | null>(null);
   const parseTokens = (text: string): number | null => {
-    const match = /^\s*(\d+(?:\.\d+)?)\s*([km])?/i.exec(text);
+    const match = /^\s*(\d+(?:\.\d+)?)\s*([km])?\s*$/i.exec(text);
     if (!match) return null;
     const unit = (match[2] ?? '').toLowerCase();
     return Math.round(Number(match[1]) * (unit === 'm' ? 1_000_000 : unit === 'k' ? 1_000 : 1));
   };
   const saveCap = (): void => {
     const value = parseTokens(shown);
-    if (value === null) return;
+    if (value === null) { setCapError(`"${shown.trim()}" is not a token count. Write a number with an optional k or M, like 40M.`); return; }
+    setCapError(null);
     void save.run({ dailyTokens: value }).then((outcome) => { if (outcome.kind === 'confirm') void save.confirm(); setDaily(null); });
   };
   const used = caps?.tokensToday ?? 0;
@@ -119,6 +121,7 @@ export function Settings({ integrations, caps, now, maxInFlight, theme, onTheme 
               <span style={{ padding: '7px 12px', fontSize: 'var(--fs-ui)', borderLeft: '1px solid var(--line2)', ...(caps?.enforcement === 'off' ? { background: 'var(--acc)', color: 'var(--accInk)' } : { color: 'var(--ink2)' }) }}>Warn only</span>
             </div>
           </div>
+          {capError ? <span data-testid="cap-error" style={{ fontSize: 'var(--fs-meta)', color: 'var(--warn)' }}>{capError}</span> : null}
           <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>{caps?.enforcement === 'on' ? 'The policy file enforces the cap; new work stops at it.' : 'No enforcement is configured; the cap is a warning.'}</span>
           {save.result?.kind === 'done' ? <span style={{ fontSize: 'var(--fs-meta)', color: save.result.ok ? 'var(--ink3)' : 'var(--warn)' }}>{save.result.text}</span> : null}
         </div>

@@ -68,14 +68,14 @@ export function Chrome({ view, badges, feed, project, queueOn = true, now, onNav
             );
           })}
         </nav>
-        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 14, fontSize: 'var(--fs-ui)', color: 'var(--ink2)' }}>
-          <span data-testid="feed-state" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <div style={{ marginLeft: 'auto', minWidth: 0, display: 'flex', alignItems: 'center', gap: 14, fontSize: 'var(--fs-ui)', color: 'var(--ink2)', whiteSpace: 'nowrap' }}>
+          <span data-testid="feed-state" title={feed.reason ?? undefined} style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
             <i style={{ width: 8, height: 8, background: feed.live ? 'var(--acc)' : 'var(--warn)', display: 'block' }} />
             {feed.live ? 'Feed live' : `Feed lost${feed.reason ? `: ${feed.reason}` : ''}`}
           </span>
           {!queueOn ? <span data-testid="queue-off" style={{ color: 'var(--warn)' }}>Queue off: nothing starts</span> : null}
-          {project ? <span data-testid="project-label">{project.name ? `${project.key} · ${project.name}` : project.key}</span> : null}
-          <span style={{ fontVariantNumeric: 'tabular-nums', color: 'var(--ink)' }}>{hm(now)}</span>
+          {project ? <span data-testid="project-label" title={project.name ?? project.key} style={{ minWidth: 0, maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis' }}>{project.name ? `${project.key} · ${project.name}` : project.key}</span> : null}
+          <span style={{ flex: 'none', fontVariantNumeric: 'tabular-nums', color: 'var(--ink)' }}>{hm(now)}</span>
         </div>
       </div>
     </div>
