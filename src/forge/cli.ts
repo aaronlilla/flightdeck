@@ -12,6 +12,7 @@
  *   forge queue add INPUT     queue a ticket, brief path or hotfix against the running server
  *   forge queue ls            list what is on the queue, filtered or as JSON
  *   forge inbox               Jira tickets waiting on a reply, an answer, or a status fix
+ *   forge rounds [--apply]    the Conductor's walk around the board: what is stale and why; --apply acts
  *
  * `stop --all` is the control that has to work when nothing else does, so it takes no
  * arguments it could get wrong, is safe to run twice, and says plainly when there was
@@ -1294,6 +1295,16 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       return { code: 2, lines: ['forge queue add INPUT | forge queue ls [--state S] [--json] [--all]'] };
     }
 
+    case 'rounds': {
+      const apply = rest.includes('--apply');
+      const wantsJson = rest.includes('--json');
+      const result = await serverRequest(apply ? '/rounds/apply' : '/rounds', apply ? { method: 'POST' } : {}, deps.fetchFn);
+      if (result.down) return { code: 1, lines: [result.error!] };
+      const body = result.body as { lines?: string[]; error?: string } | undefined;
+      if (!result.ok || !body) return { code: 1, lines: [body?.error ?? `rounds failed: HTTP ${result.status}`] };
+      if (wantsJson) return { code: 0, lines: [JSON.stringify(result.body)] };
+      return { code: 0, lines: body.lines ?? [] };
+    }
     case 'inbox': {
       const missing = JIRA_ENV_VARS.filter((name) => !process.env[name]);
       if (missing.length) return { code: 1, lines: [`inbox failed: missing ${missing.join(', ')}`] };

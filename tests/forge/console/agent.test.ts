@@ -480,11 +480,21 @@ describe('every Conductor tool calls its named existing function; the six irreve
       input: { id: 'q1' }, resultMatches: /q1 is queued again/,
       before: () => { expect(new QueueStore(join(dir, 'queue.jsonl')).all().map((item) => item.state)).toEqual(['queued']); },
     },
+    rounds: {
+      setup: () => { new QueueStore(join(dir, 'queue.jsonl')).append({ id: 'q2', at: 1, source: 'ticket', input: 'ACME-2', ticket: 'ACME-2', state: 'parked', reason: 'parked', createdAt: 1, updatedAt: 1 } as never); },
+      input: {}, resultMatches: /Rounds \(dry run, nothing changed\)[\s\S]*ACME-2 \[q2\]: parked/,
+      before: () => { expect(new QueueStore(join(dir, 'queue.jsonl')).get('q2')!.state).toBe('parked'); },
+    },
+    rounds_apply: {
+      setup: () => { new QueueStore(join(dir, 'queue.jsonl')).append({ id: 'q3', at: 1, source: 'ticket', input: 'ACME-3', ticket: 'ACME-3', state: 'parked', reason: 'parked', createdAt: 1, updatedAt: 1 } as never); },
+      input: {}, resultMatches: /Restarted ACME-3: parked .* with no blocker on the board/,
+      before: () => { expect(new QueueStore(join(dir, 'queue.jsonl')).get('q3')!.state).toBe('queued'); },
+    },
   };
 
   it('the spec table covers exactly the tools the server registers', () => {
     expect(Object.keys(specs).sort()).toEqual([...CONDUCTOR_TOOL_NAMES].sort());
-    expect(CONDUCTOR_TOOL_NAMES).toHaveLength(23);
+    expect(CONDUCTOR_TOOL_NAMES).toHaveLength(25);
   });
 
   for (const name of CONDUCTOR_TOOL_NAMES) {

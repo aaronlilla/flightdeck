@@ -128,7 +128,7 @@ export interface Policy {
   /** The Conductor agent behind `POST /command` (2026-09-08). On by default: a policy
    *  file with no `conductor` key at all routes the rail to the agent, and only an
    *  explicit `{ agent: { enabled: false } }` keeps every message on the regex grammar. */
-  conductor?: { agent?: { enabled?: boolean } };
+  conductor?: { agent?: { enabled?: boolean }; rounds?: Partial<RoundsPolicy> };
   /**
    * The protected-capability classifier's own config (roadmap P4.6, decision 6): file
    * globs and, where a path alone will not tell, an added-text pattern to search a
@@ -266,6 +266,27 @@ export function routerEnabled(path?: string): boolean {
  *  Defaults to on; only an explicit `conductor.agent.enabled: false` turns it off. */
 export function conductorAgentEnabled(path?: string): boolean {
   return loadPolicy(path).conductor?.agent?.enabled !== false;
+}
+
+/** The Conductor's rounds (`console/rounds-route.ts`): the walk around the board that
+ *  clears merged rows, relaunches dead workers, restarts what nothing holds, and hands
+ *  open asks to the Conductor. `enabled` runs the ticker; `apply` lets it act, and is
+ *  off until the operator has read a dry-run sheet and turned it on. */
+export interface RoundsPolicy {
+  enabled: boolean;
+  apply: boolean;
+  everyMinutes: number;
+  silentMinutes: number;
+  orphanHours: number;
+  maxRelaunches: number;
+}
+
+export const DEFAULT_ROUNDS_POLICY: RoundsPolicy = {
+  enabled: true, apply: false, everyMinutes: 10, silentMinutes: 30, orphanHours: 24, maxRelaunches: 2,
+};
+
+export function roundsConfig(path?: string): RoundsPolicy {
+  return { ...DEFAULT_ROUNDS_POLICY, ...(loadPolicy(path).conductor?.rounds ?? {}) };
 }
 
 /**

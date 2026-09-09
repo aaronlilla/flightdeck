@@ -56,6 +56,8 @@ export interface ConductorToolHandlers {
   queue_add: (input: { source: (typeof QUEUE_SOURCES)[number]; input: string }) => Promise<ToolOutcome>;
   queue_remove: (input: { id: string }) => Promise<ToolOutcome>;
   queue_retry: (input: { id: string }) => Promise<ToolOutcome>;
+  rounds: (input: Record<string, never>) => Promise<ToolOutcome>;
+  rounds_apply: (input: Record<string, never>) => Promise<ToolOutcome>;
 }
 
 export type ConductorToolName = keyof ConductorToolHandlers;
@@ -146,6 +148,12 @@ export function buildConductorMcpServer(handlers: ConductorToolHandlers): McpSdk
       tool('queue_retry', 'Queue a parked or failed item again.',
         { id: z.string() },
         async (args) => reply(await handlers.queue_retry(args))),
+      tool('rounds', 'Walk the board without changing it: rows whose PR merged, running rows with a dead worker, parked rows nothing holds, open asks that read as done, finished lanes with no queue row. Says what it would do and why.',
+        {},
+        async () => reply(await handlers.rounds({}))),
+      tool('rounds_apply', 'Do the rounds: clear merged rows, relaunch dead workers, restart parked rows nothing holds, archive stale lanes. Asks are only listed for you to answer with answer_ask.',
+        {},
+        async () => reply(await handlers.rounds_apply({}))),
     ],
   });
 }
@@ -158,7 +166,7 @@ const NOOP_HANDLERS: ConductorToolHandlers = {
   amend_run: async () => NOOP, answer_ask: async () => NOOP, set_daily_cap: async () => NOOP,
   set_run_cap: async () => NOOP, spend_today: async () => NOOP, what_stuck: async () => NOOP,
   why_stuck: async () => NOOP, queue_list: async () => NOOP, queue_add: async () => NOOP,
-  queue_remove: async () => NOOP, queue_retry: async () => NOOP,
+  queue_remove: async () => NOOP, queue_retry: async () => NOOP, rounds: async () => NOOP, rounds_apply: async () => NOOP,
 };
 
 /** Reflected off the built server, the way `FORGE_TOOL_NAMES` is, so a tool added to
