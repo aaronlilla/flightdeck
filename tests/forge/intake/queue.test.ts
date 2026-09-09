@@ -192,19 +192,77 @@ describe('advanceItem: goal source', () => {
     expect(runKeysSeen[1]).toContain(itemB.id);
   });
 
-  it('fails when the run finishes with a non-done verdict', async () => {
+  // 2026-09-08 live incident: Q-17bb4283 hit the implement-class context ceiling and
+  // handed off to a successor session the same way a brief-source item does. The
+  // handoff itself never surfaces here: `deps.launcher.status` keeps answering
+  // `finished: false` for as long as a successor is still running, mid-handoff, via
+  // the same shared `runOutcome` reader both source types use (`chain-wire.ts`). So
+  // reproducing "the goal item takes the successor path" means simulating what its
+  // status reports once every successor is done: a terminal, non-`done` verdict such
+  // as `exhausted`. That used to fail the item outright with the bare word `exhausted`
+  // (or `parked`) as its reason. It now parks instead, exactly like a brief-source item
+  // on the same verdict, and stays reachable by retry rather than getting abandoned.
+  it('parks, not fails, when the run finishes with a non-done verdict after exhausting its handoff chain', async () => {
     const store = tempStore();
     const item = addGoalItem(store, '/w/.claude/goals/2026-09-08-thing.md', '/goal Work the thing.', 1000);
     const { deps } = buildDeps(store, { launchGoal: async () => ({ runKey: 'goal-run-3' }) });
     const launched = await advanceItem(item, deps);
+    expect(launched.state).toBe('running');
+    expect(launched.runKey).toBe('goal-run-3');
 
-    const { deps: deps2 } = buildDeps(store, {
-      launcher: { status: async () => ({ finished: true, verdict: 'blocked' }) },
+    const { deps: deps2, events } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'exhausted' }) },
     });
     const finished = await advanceItem(launched, deps2);
 
-    expect(finished.state).toBe('failed');
-    expect(finished.reason).toBe('blocked');
+    expect(finished.state).toBe('parked');
+    expect(finished.reason).toBe('exhausted');
+    expect(finished.runKey).toBe('goal-run-3');
+    expect(events.map((e) => e['event'])).toContain('queue.parked');
+  });
+
+  // Mid-handoff (a successor still running), there is no terminal state at all: the
+  // shared `runOutcome` reader answers `finished: false` for exactly as long as a
+  // successor is in flight. The item takes neither the `done` branch nor the park
+  // branch. It comes back unchanged, still `running` on its original run key, and
+  // gets picked up again on the next tick.
+  it('stays running on its own run key while a handoff to a successor session is still in flight', async () => {
+    const store = tempStore();
+    const item = addGoalItem(store, '/w/.claude/goals/2026-09-08-thing.md', '/goal Work the thing.', 1000);
+    const { deps } = buildDeps(store, { launchGoal: async () => ({ runKey: 'goal-run-5' }) });
+    const launched = await advanceItem(item, deps);
+
+    const { deps: deps2 } = buildDeps(store, { launcher: { status: async () => ({ finished: false }) } });
+    const stillRunning = await advanceItem(launched, deps2);
+
+    expect(stillRunning.state).toBe('running');
+    expect(stillRunning.runKey).toBe('goal-run-5');
+  });
+
+  it('an operator retry relaunches a parked goal item on a fresh run key via launchGoal', async () => {
+    const store = tempStore();
+    const item = addGoalItem(store, '/w/.claude/goals/2026-09-08-thing.md', '/goal Work the thing.', 1000);
+    let launchCalls = 0;
+    const { deps } = buildDeps(store, {
+      launchGoal: async (input) => { launchCalls += 1; return { runKey: `${input.runKey}-${launchCalls}` }; },
+    });
+    const launched = await advanceItem(item, deps);
+
+    const { deps: deps2 } = buildDeps(store, {
+      launchGoal: deps.launchGoal,
+      launcher: { status: async () => ({ finished: true, verdict: 'exhausted' }) },
+    });
+    const parked = await advanceItem(launched, deps2);
+    expect(parked.state).toBe('parked');
+
+    const retried = retryItem(store, parked.id, 5000)!;
+    expect(retried.state).toBe('running');
+    expect(retried.runKey).toBe(parked.runKey);
+
+    const relaunched = await advanceItem(retried, deps2);
+    expect(relaunched.state).toBe('running');
+    expect(relaunched.runKey).not.toBe(launched.runKey);
+    expect(launchCalls).toBe(2);
   });
 });
 
