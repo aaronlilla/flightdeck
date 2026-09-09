@@ -226,6 +226,10 @@ export interface RebaseOutcome {
   ok: boolean;
   behind: number;
   reason?: string;
+  /** Files the worker left modified or untracked in its worktree that the rebase
+   *  committed on its own branch before replaying, so a dirty tree never parks an
+   *  otherwise-finished item. Absent (or empty) means the tree was already clean. */
+  committedLeftover?: string[];
 }
 
 export interface QueueRuntimeDeps {
@@ -633,6 +637,22 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
   // replay happens here, after the work is done and before the gate reads the diff.
   if (deps.rebaseOnBase && item.worktreePath && item.base) {
     const replay = await deps.rebaseOnBase({ worktreePath: item.worktreePath, base: item.base });
+    if (replay.committedLeftover?.length) {
+      deps.append({
+        event: 'queue.leftover-committed', actor: 'queue', itemId: item.id, files: replay.committedLeftover,
+      });
+      if (deps.commentOnPr) {
+        const body = `The queue committed files the worker left uncommitted before rebasing onto \`${item.base}\`: ${
+          replay.committedLeftover.map((file) => `\`${file}\``).join(', ')
+        }.`;
+        try {
+          await deps.commentOnPr({ repo: item.repo!, pr: pr.number, body });
+        } catch {
+          // Best effort, same as the council-notes comment above -- a comment failing
+          // never blocks the item, and the journal row already carries the file list.
+        }
+      }
+    }
     if (!replay.ok) {
       return writeTransition(
         item,

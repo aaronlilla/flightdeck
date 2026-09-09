@@ -1312,6 +1312,58 @@ describe('a branch must sit on the latest base before anyone reviews it', () => 
     expect(parked?.reason).toContain('conflicts with develop');
     expect(councilCalls).toBe(0);
   });
+
+  // 2026-09-08: Q-0fb06912 and Q-56440c7b both parked on "You have unstaged changes"
+  // because a worker left a test-isolation edit uncommitted. The rebase itself now
+  // commits those leftovers before replaying (chain-wire.ts) -- this proves the queue
+  // side journals that and tells a reviewer, rather than the item silently sailing on
+  // as if nothing happened.
+  it('journals a leftover commit and notes it on the PR, without parking the item', async () => {
+    const store = tempStore();
+    store.append({
+      id: 'q-abc-3', at: 1000, source: 'ticket', input: 'ABC-3', ticket: 'ABC-3', repo: 'owner/name',
+      briefPath: 'C:/briefs/abc-3.md', branch: 'feature/abc-3', worktreePath: 'C:/worktrees/repo--abc-3',
+      base: 'develop', state: 'running', runKey: 'abc-3', reason: null, pr: null, journalIds: [],
+      createdAt: 1000, updatedAt: 1000,
+    });
+    const { deps, events } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/9' }) },
+      rebaseOnBase: async () => ({ ok: true, behind: 2, committedLeftover: ['tests/setup.ts'] }),
+      council: async () => ({ verdict: 'PASS' as const }),
+    });
+    const commented: { repo: string; pr: number; body: string }[] = [];
+    deps.commentOnPr = async (input) => { commented.push(input); };
+
+    await runQueueTick(deps, store.all());
+
+    expect(store.all()[0]?.state).toBe('review');
+    const leftoverEvent = events.find((e) => e['event'] === 'queue.leftover-committed');
+    expect(leftoverEvent).toMatchObject({ itemId: 'q-abc-3', files: ['tests/setup.ts'] });
+    const leftoverComment = commented.find((c) => c.body.includes('tests/setup.ts'));
+    expect(leftoverComment?.repo).toBe('owner/name');
+    expect(leftoverComment?.pr).toBe(9);
+  });
+
+  it('a failing PR comment about the leftover commit never parks the item', async () => {
+    const store = tempStore();
+    store.append({
+      id: 'q-abc-4', at: 1000, source: 'ticket', input: 'ABC-4', ticket: 'ABC-4', repo: 'owner/name',
+      briefPath: 'C:/briefs/abc-4.md', branch: 'feature/abc-4', worktreePath: 'C:/worktrees/repo--abc-4',
+      base: 'develop', state: 'running', runKey: 'abc-4', reason: null, pr: null, journalIds: [],
+      createdAt: 1000, updatedAt: 1000,
+    });
+    const { deps, events } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/9' }) },
+      rebaseOnBase: async () => ({ ok: true, behind: 2, committedLeftover: ['tests/setup.ts'] }),
+      council: async () => ({ verdict: 'PASS' as const }),
+    });
+    deps.commentOnPr = async () => { throw new Error('gh: rate limited'); };
+
+    await runQueueTick(deps, store.all());
+
+    expect(store.all()[0]?.state).toBe('review');
+    expect(events.some((e) => e['event'] === 'queue.leftover-committed')).toBe(true);
+  });
 });
 
 
