@@ -40,6 +40,11 @@ export interface ClassSpec {
    *  change. A class carrying none (every class before this field existed) falls back to
    *  `DEFAULT_MAX_DIFF_LINES`. */
   maxDiffLines?: number;
+  /** R-23: the ceiling on real model calls this class may make in a rolling hour. The
+   *  narration layer is the first class with one: it is called from a read route, so
+   *  without a cap a board nobody is watching could narrate forever. A class carrying
+   *  none is uncapped, which is every class that shipped before this field. */
+  maxCallsPerHour?: number;
 }
 
 /**
@@ -319,6 +324,16 @@ export function reasonerTimeoutMs(path?: string): number {
  */
 export function reasonerTimeoutMsFor(className: string, path?: string): number {
   return loadPolicy(path).classes[className]?.timeoutMs ?? reasonerTimeoutMs(path);
+}
+
+/**
+ * R-23: how many real model calls a class may make in a rolling hour, or null when the
+ * policy sets none. Null reads as uncapped rather than as zero on purpose -- every class
+ * that shipped before this field is uncapped today, and a silent zero would turn a policy
+ * file that has not caught up into a fleet that never reasons.
+ */
+export function maxCallsPerHourFor(className: string, path?: string): number | null {
+  return loadPolicy(path).classes[className]?.maxCallsPerHour ?? null;
 }
 
 /** The default when a class names no `maxDiffLines` of its own. */

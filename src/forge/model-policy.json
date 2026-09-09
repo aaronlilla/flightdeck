@@ -68,6 +68,7 @@
     "audit-judge": {"model": "opus", "effort": "high", "maxContext": 150000, "maxTurns": 30, "provider": "codex"},
     "research": {"model": "sonnet", "effort": "medium", "maxContext": 150000, "maxTurns": 40, "provider": "claude"},
     "evaluate": {"model": "haiku", "effort": "low", "maxContext": 30000, "maxTurns": 6, "provider": "claude"},
+    "narrate": {"model": "haiku", "effort": "low", "maxContext": 20000, "maxTurns": 1, "provider": "claude", "timeoutMs": 60000, "maxCallsPerHour": 300},
     "sweep": {"model": "sonnet", "effort": "low", "maxContext": 80000, "maxTurns": 20, "provider": "claude"}
   },
   "_governor_comment": [
@@ -90,6 +91,7 @@
       "audit-judge": 25,
       "research": 15,
       "evaluate": 3,
+      "narrate": 2,
       "sweep": 10
     }
   },

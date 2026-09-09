@@ -956,3 +956,53 @@ export interface BlockersActionResult {
   lastCheck: string | null;
   started: string[];
 }
+
+// ---------------------------------------------------------------------------------------
+// Narration (R-23)
+// ---------------------------------------------------------------------------------------
+
+/**
+ * One human-facing string in three registers.
+ *
+ * The rule (Aaron, 2026-09-09): internals stay machine readable, and every sentence a
+ * person reads is produced from those internals by one narration layer. `glance` is what
+ * a card or a row shows; `detail` is what the disclosure under it opens; `raw` is the
+ * facts themselves, ids intact, which `?verbose=1` answers. `narratedAt` is null while
+ * the template is standing in -- a miss never blocks the route, so the first read of a
+ * new fact set is always the template and the narrated text lands on a later poll.
+ */
+export interface Narrated {
+  glance: string;
+  detail: string;
+  raw: string;
+  narratedAt: number | null;
+}
+
+export type NarrationFactValue = string | number | boolean | null;
+
+/**
+ * Fact keys the narration cache may never be keyed on, refused at the type as well as at
+ * runtime (`assertNarrationFacts`). A clock value in the key means every poll is a fresh
+ * key and every poll costs a model call, which is the failure mode that makes "cached"
+ * read Met while nothing is cached.
+ */
+export type VolatileFactKey =
+  | 'since' | 'now' | 'at' | 'elapsed' | 'elapsedMs' | 'ageMs' | 'age'
+  | 'updatedAt' | 'observedAt' | 'verifiedAt' | 'polledAt' | 'renderedAt' | 'ts' | 'uptime';
+
+/** Any fact record, minus the volatile keys above. */
+export type NarrationFactMap =
+  { [key: string]: NarrationFactValue | undefined } & { [K in VolatileFactKey]?: never };
+
+/**
+ * What the narrator is given: which surface asked, the facts behind the sentence, and the
+ * template sentence the server would have shown on its own. The template is what serves
+ * on a miss, on a rejection and past the hourly cap, so it is never a placeholder -- it is
+ * the shipped fallback.
+ */
+export interface NarrationFacts {
+  surface: string;
+  facts: NarrationFactMap;
+  template: string;
+  detailTemplate?: string;
+}

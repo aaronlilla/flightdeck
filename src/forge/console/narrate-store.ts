@@ -1,0 +1,291 @@
+/**
+ * The narration cache and the queue behind it.
+ *
+ * The contract the whole layer rests on: `Narrator.get` is synchronous and always
+ * answers. A hit returns the narrated registers; a miss returns the server's own template
+ * with `narratedAt: null` and puts the key on a background queue. Nothing on a read route
+ * ever waits for a model. When a narration lands, the store writes it to disk and
+ * publishes the surface's slice event, and the console refetches that slice the way it
+ * does for any other change.
+ *
+ * What is deliberately not here: a retry. A call that came back wrong is written as a
+ * rejection and served as the template forever after, until the facts themselves change
+ * and make a different key (`escalation: never-by-retry`). Paying twice for the same
+ * wrong answer is the failure this design is built to refuse.
+ */
+import { mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+import type { Narrated, NarrationFacts } from '../../shared/console-model.js';
+import type { SliceName } from '../../shared/console-events.js';
+import type { Reasoner } from '../contracts.js';
+import type { Journal } from '../journal.js';
+import { forgeHome } from '../paths.js';
+import { maxCallsPerHourFor, modelFor } from '../policy.js';
+
+import {
+  buildNarrationPrompt, narratedFrom, narrationKey, parseNarration, rawFor, templateNarration,
+} from './narrate.js';
+import { checkNarration, protectedTokensFor, type NarrationVerdict } from './narrate-checker.js';
+
+/** One entry on disk. `input` is kept whole so a restart can re-check an entry against
+ *  the facts it was written for without the caller having to hand them back. */
+export interface NarrationEntry {
+  key: string;
+  input: NarrationFacts;
+  glance: string;
+  detail: string;
+  narratedAt: number;
+  model: string;
+  verdict: NarrationVerdict;
+}
+
+const HOUR_MS = 3_600_000;
+
+/** The disk half: one JSON file per key under `<FORGE_HOME>/narration`, written tmp then
+ *  renamed so a half-written file is never read, and indexed in memory at construction. */
+export class NarrationStore {
+  private readonly dir: string;
+  private readonly index = new Map<string, NarrationEntry>();
+
+  constructor(home: string = forgeHome()) {
+    this.dir = join(home, 'narration');
+    mkdirSync(this.dir, { recursive: true });
+    this.load();
+  }
+
+  /** Re-reads the whole directory. A file that will not parse is skipped rather than
+   *  thrown on: one corrupt entry must not take the board down, and the key it names is
+   *  simply narrated again. */
+  load(): void {
+    this.index.clear();
+    let names: string[];
+    try {
+      names = readdirSync(this.dir);
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      if (!name.endsWith('.json')) continue;
+      try {
+        const entry = JSON.parse(readFileSync(join(this.dir, name), 'utf8')) as NarrationEntry;
+        if (entry && typeof entry.key === 'string') this.index.set(entry.key, entry);
+      } catch {
+        // skipped on purpose, see above
+      }
+    }
+  }
+
+  get(key: string): NarrationEntry | undefined {
+    return this.index.get(key);
+  }
+
+  has(key: string): boolean {
+    return this.index.has(key);
+  }
+
+  size(): number {
+    return this.index.size;
+  }
+
+  put(entry: NarrationEntry): void {
+    this.index.set(entry.key, entry);
+    const final = join(this.dir, `${entry.key}.json`);
+    const tmp = `${final}.tmp`;
+    writeFileSync(tmp, JSON.stringify(entry, null, 2), 'utf8');
+    renameSync(tmp, final);
+  }
+}
+
+export interface NarratorDeps {
+  /** Always a real `Reasoner` built by `reasonerFor`, never a stand-in for the narrator
+   *  itself: a test injects its `queryFn`, the same seam the reasoner's own suite uses. */
+  reasoner: Reasoner;
+  journal: Pick<Journal, 'append'>;
+  /** Publishes the surface's slice event when a narration lands. */
+  publish?: (slice: SliceName, reason: string, ref?: string) => void;
+  home?: string;
+  now?: () => number;
+  /** Concurrency of the background queue. Two by default: enough that one slow call does
+   *  not stall the board, low enough that a cold cache cannot storm the model. */
+  concurrency?: number;
+  policyPath?: string;
+}
+
+/** What a caller asks for: the facts, plus which slice to refetch once the text lands. */
+export interface NarrationRequest extends NarrationFacts {
+  slice?: SliceName;
+  ref?: string;
+}
+
+const CLASS_NAME = 'narrate';
+
+/**
+ * The narrator. One per server.
+ */
+export class Narrator {
+  private readonly store: NarrationStore;
+  private readonly queue: NarrationRequest[] = [];
+  private readonly pending = new Set<string>();
+  private readonly callTimes: number[] = [];
+  private running = 0;
+  private lastCappedRowAt = 0;
+  private idleWaiters: Array<() => void> = [];
+
+  constructor(private readonly deps: NarratorDeps) {
+    this.store = new NarrationStore(deps.home);
+  }
+
+  private now(): number {
+    return this.deps.now ? this.deps.now() : Date.now();
+  }
+
+  /** `FORGE_NARRATE=off` disables the model entirely: templates everywhere, the cache
+   *  untouched and still served, not a single call made. */
+  private enabled(): boolean {
+    return (process.env['FORGE_NARRATE'] ?? '').toLowerCase() !== 'off';
+  }
+
+  /** Whether a call may be reserved now, counting reservations rather than completions:
+   *  a cap enforced only once calls come back is no cap at all when a cold board asks for
+   *  a thousand sentences at once. Cache hits are never counted -- they cost nothing. */
+  private reserveCall(): boolean {
+    const cap = maxCallsPerHourFor(CLASS_NAME, this.deps.policyPath);
+    const at = this.now();
+    while (this.callTimes.length && at - (this.callTimes[0] ?? 0) >= HOUR_MS) this.callTimes.shift();
+    if (cap !== null && this.callTimes.length >= cap) {
+      if (at - this.lastCappedRowAt >= HOUR_MS) {
+        this.lastCappedRowAt = at;
+        this.deps.journal.append({
+          event: 'narration.capped', actor: 'narrator', class: CLASS_NAME,
+          maxCallsPerHour: cap, servedTemplate: true,
+        });
+      }
+      return false;
+    }
+    this.callTimes.push(at);
+    return true;
+  }
+
+  /**
+   * The one read path. Answers immediately, every time.
+   */
+  get(input: NarrationRequest): Narrated {
+    const key = narrationKey(input);
+    const entry = this.store.get(key);
+    if (entry) {
+      if (entry.verdict.ok) return narratedFrom(input, entry.glance, entry.detail, entry.narratedAt);
+      // A rejected narration is served as the template and never called again.
+      return templateNarration(input);
+    }
+    this.enqueue(key, input);
+    return templateNarration(input);
+  }
+
+  private enqueue(key: string, input: NarrationRequest): void {
+    if (!this.enabled()) return;
+    if (this.pending.has(key)) return;
+    if (!this.reserveCall()) return;
+    this.pending.add(key);
+    this.queue.push(input);
+    this.pump();
+  }
+
+  private pump(): void {
+    const limit = this.deps.concurrency ?? 2;
+    while (this.running < limit && this.queue.length) {
+      const next = this.queue.shift();
+      if (!next) break;
+      this.running += 1;
+      void this.work(next).finally(() => {
+        this.running -= 1;
+        if (this.queue.length) this.pump();
+        else if (this.running === 0) this.settle();
+      });
+    }
+  }
+
+  private settle(): void {
+    const waiters = this.idleWaiters;
+    this.idleWaiters = [];
+    for (const resolve of waiters) resolve();
+  }
+
+  /** Resolves when the queue is empty and nothing is in flight. For tests and for a
+   *  script that wants to know the first pass finished; the server never awaits it. */
+  idle(): Promise<void> {
+    if (this.running === 0 && this.queue.length === 0) return Promise.resolve();
+    return new Promise((resolve) => { this.idleWaiters.push(resolve); });
+  }
+
+  private async work(input: NarrationRequest): Promise<void> {
+    const key = narrationKey(input);
+    const model = modelFor(CLASS_NAME, this.deps.policyPath);
+    try {
+      const prompt = buildNarrationPrompt(input, protectedTokensFor(input));
+      const reply = await this.deps.reasoner.call({ className: CLASS_NAME, prompt });
+      const parsed = parseNarration(reply.text);
+      const verdict: NarrationVerdict = parsed
+        ? checkNarration(input, parsed)
+        : {
+          ok: false, token: null, register: null, rule: 'empty',
+          reason: 'the reply was not a narration object',
+        };
+      this.store.put({
+        key,
+        input: { surface: input.surface, facts: input.facts, template: input.template, ...(input.detailTemplate ? { detailTemplate: input.detailTemplate } : {}) },
+        glance: parsed?.glance ?? input.template,
+        detail: parsed?.detail ?? (input.detailTemplate ?? input.template),
+        narratedAt: this.now(),
+        model,
+        verdict,
+      });
+      if (!verdict.ok) {
+        this.deps.journal.append({
+          event: 'narration.rejected', actor: 'narrator', class: CLASS_NAME,
+          surface: input.surface, rule: verdict.rule, token: verdict.token,
+          register: verdict.register, reason: verdict.reason,
+        });
+      }
+      if (input.slice) {
+        this.deps.publish?.(input.slice, `narration landed for ${input.surface}`, input.ref);
+      }
+    } catch (error) {
+      // A failed call is journaled by the reasoner itself (`reasoner.call` with
+      // `parsed: false`, or `reasoner.timeout`). Nothing is cached, because the failure
+      // says nothing about the facts -- but nothing is retried on this pass either.
+      this.deps.journal.append({
+        event: 'narration.failed', actor: 'narrator', class: CLASS_NAME,
+        surface: input.surface, error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      this.pending.delete(key);
+    }
+  }
+
+  /** The `raw` register on its own, for a route answering `?verbose=1` without asking
+   *  for a narration at all. */
+  raw(input: NarrationFacts): string {
+    return rawFor(input);
+  }
+
+  /** How many entries the cache holds, for the proof script and the tests. */
+  cacheSize(): number {
+    return this.store.size();
+  }
+
+  /** Re-reads the directory, the way a restarted server does. */
+  reload(): void {
+    this.store.load();
+  }
+}
+
+/**
+ * Person-authored text: an operator's own words, an agent's reply, the question a run
+ * wrote, a PR title, a brief heading. It is never narrated, never cached and never sent
+ * to a model -- the three registers are the same string, and `narratedAt` stays null
+ * because nothing narrated it.
+ */
+export function passThrough(text: string): Narrated {
+  return { glance: text, detail: text, raw: text, narratedAt: null };
+}
