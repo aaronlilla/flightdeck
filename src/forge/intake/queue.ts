@@ -420,7 +420,7 @@ async function relaunchOnRetryOrPark(
 /** Whole-slug match only: `after: BBZ-20` names BBZ-20, never BBZ-205. A slug matches an
  *  item whose `input`, brief file name (with or without the `queue-` prefix and `.md`),
  *  or branch (bare, or as `branchFor(slug)`) is that slug exactly, case-insensitively. */
-function slugMatches(candidate: QueueItem, slug: string): boolean {
+export function slugMatches(candidate: QueueItem, slug: string): boolean {
   const lower = slug.toLowerCase();
   const names = new Set<string>();
   if (candidate.input) names.add(candidate.input.toLowerCase());

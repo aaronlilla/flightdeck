@@ -95,7 +95,7 @@ describe('UX rule 1: no identifier text visible to the operator (RED on main)', 
     expect(screen.queryByText(RAW_HEX_ID)).not.toBeInTheDocument();
   });
 
-  it.fails('the queue card does not render a bare Q-hex id as its title', () => {
+  it('the queue card does not render a bare Q-hex id as its title', () => {
     render(
       <QueueView
         items={[queueItem({ id: RAW_Q_ID, title: null, ticket: null })]}
@@ -107,7 +107,7 @@ describe('UX rule 1: no identifier text visible to the operator (RED on main)', 
     expect(screen.queryByText(RAW_Q_ID)).not.toBeInTheDocument();
   });
 
-  it.fails('the Conductor rail question card does not render a raw run id as its source', () => {
+  it('the Conductor rail question card does not render a raw run id as its source', () => {
     const message: Message = {
       k: 'ask1', type: 'question', text: 'placeholder question text', ts: Date.now(), source: RAW_QUEUE_BRIEF_ID,
       opts: ['A', 'B'], askKey: 'ask1',

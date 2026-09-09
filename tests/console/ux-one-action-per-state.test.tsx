@@ -96,7 +96,7 @@ describe('UX rule 3: one primary action per Lane state, named as the plan names 
     });
   });
 
-  it.fails('review: the queue card renders exactly one primary action (Merge or Nudge Joe), not two', () => {
+  it('review: the queue card renders exactly one primary action (Merge or Nudge Joe), not two', () => {
     render(
       <QueueView
         items={[queueItem({

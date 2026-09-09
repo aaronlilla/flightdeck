@@ -1,90 +1,62 @@
 import type { JSX } from 'react';
 
-import { LaneCta } from './LaneCta.js';
-
-import { actionable } from '../keyboard-actionable.js';
-import { boardStateWord, laneCta, plainLine, tileHeadlineParts, timeInStateText } from '../laneVM.js';
-import type { TipSpec } from '../store.js';
-import type { Lane } from '../../shared/console-model.js';
-import { Linkify } from './Linkify.js';
-
-export interface LaneTileProps {
-  lane: Lane;
-  feedLive: boolean;
-  now: number;
-  onOpen: (id: string) => void;
-  onOpenCost: (id: string) => void;
-  onCommand: (id: string, cmd: string) => void;
-  onTip: (tip: TipSpec | null) => void;
-}
-
-/** The four corner marks from the design's blueprint styling (`FD Board.dc.html`).
- *  Decorative only. */
-function CornerMarks(): JSX.Element {
-  const mark = { position: 'absolute' as const, width: 11, height: 11, background: 'var(--mk)' };
-  return (
-    <>
-      <i aria-hidden="true" style={{ ...mark, top: -6, left: -6 }} />
-      <i aria-hidden="true" style={{ ...mark, top: -6, right: -6 }} />
-      <i aria-hidden="true" style={{ ...mark, bottom: -6, left: -6 }} />
-      <i aria-hidden="true" style={{ ...mark, bottom: -6, right: -6 }} />
-    </>
-  );
-}
+import { boardCta, boardStateWord, timeInStateText, tileHeadlineParts, kindLabel, type BoardCommand } from '../laneVM.js';
+import type { Blocker, Lane } from '../../shared/console-model.js';
+import { Marks } from './QuestionCard.js';
 
 /**
- * The Board card (design 2/3, `doctrine/design/FD Board.dc.html`): key and state
- * word, title, one sentence on what the lane is doing now, time in state, and exactly
- * one button. Everything the old tile carried beyond that, chips, the YOU block, the
- * context gauge, the cost readout, the PR summary, attempt disclosures, is gone. Click
- * the card and the ticket sheet still has all of it. `feedLive`, `onOpenCost` and
- * `onTip` stay in the prop list unused for now, because `LaneGroupTile` and
- * `LanesGrid` still pass them through; drop them from the list once nothing upstream
- * needs the wider contract.
+ * One card of the Board's running grid (`FD Board.dc.html`, the `lanes` loop): key, the
+ * state word, the title, one sentence on what it is doing, how long it has been in that
+ * state, and the one button its state earns. The run id never renders; a lane with no
+ * ticket shows what kind of run it is where the key would go.
  */
-export function LaneTile({ lane, now, onOpen, onCommand }: LaneTileProps): JSX.Element {
-  const headline = tileHeadlineParts(lane);
-  const cta = laneCta(lane);
-  const word = boardStateWord(lane);
-  // H2.1 (fixed 2026-09-09): a manual lane with no ticket and no title used to show
-  // its own raw run id as the title, the one machine string the rest of the board was
-  // built to hide. No fallback now: a lane with neither shows nothing here.
-  const titleText = lane.title;
-  const nowSentence = lane.you ?? plainLine(lane);
+export interface LaneTileProps {
+  lane: Lane;
+  now: number;
+  /** The open blocker this lane waits on, when the Blockers view knows one. It decides
+   *  the button on a blocked card and the "who" on the blocked rows. */
+  blocker?: Blocker | null;
+  onOpen: (id: string) => void;
+  onCommand: (id: string, cmd: BoardCommand) => void;
+  /** Kept for callers written against the earlier card; the design's card has no cost
+   *  readout, hover card or live-feed treatment, so these are accepted and unused. */
+  feedLive?: boolean;
+  onOpenCost?: (id: string) => void;
+  onTip?: (tip: unknown) => void;
+}
 
+export function LaneTile({ lane, now, blocker = null, onOpen, onCommand }: LaneTileProps): JSX.Element {
+  const word = boardStateWord(lane);
+  const cta = boardCta(lane, blocker);
+  const head = tileHeadlineParts(lane);
+  const title = head.title?.trim() || (head.key ? head.key : 'Untitled run');
+  const keyText = head.key ?? `${kindLabel(lane.kind)} run`;
   return (
     <div
-      className="lane"
       data-testid={`lane-${lane.id}`}
-      data-state={lane.state}
-      data-run-id={lane.id}
-      style={{ position: 'relative', boxSizing: 'border-box' }}
-      {...actionable(() => onOpen(lane.id))}
+      style={{
+        position: 'relative', minWidth: 0, border: `1px solid ${word.border}`, borderStyle: word.borderStyle, padding: '12px 14px',
+        display: 'flex', flexDirection: 'column', gap: 5, minHeight: 112, background: word.background, cursor: 'pointer',
+      }}
+      onClick={() => onOpen(lane.id)}
     >
-      <CornerMarks />
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 6 }}>
-        {headline.key ? (
-          <span className="m" style={{ fontSize: 'var(--fs-title)', fontWeight: 700 }}><Linkify text={headline.key} repo={lane.repo ?? undefined} /></span>
-        ) : <span />}
-        <span className="lbl" style={{ color: word.color }}>{word.word}</span>
+      <Marks />
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
+        <span className="key" data-testid="tile-key" title={keyText} style={{ minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{keyText}</span>
+        <span data-testid="tile-state" style={{ flex: 'none', fontSize: 'var(--fs-kicker)', fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: word.color }}>{word.word}</span>
       </div>
-      {titleText ? (
-        <div className="m" style={{ fontSize: 'var(--fs-title)', fontWeight: 400, color: 'var(--ink)', overflowWrap: 'anywhere' }}>
-          <Linkify text={titleText} repo={lane.repo ?? undefined} />
-        </div>
-      ) : null}
-      <div style={{ fontSize: 'var(--fs-body)', lineHeight: 1.4, color: 'var(--ink2)' }}>
-        <Linkify text={nowSentence} repo={lane.repo ?? undefined} />
-      </div>
-      <div className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>{timeInStateText(lane, now, word.word)}</div>
-      <div data-testid="tile-footer" style={{ display: 'flex', gap: 6 }}>
-        <span data-testid="primary-action" style={{ flex: 1, display: 'flex' }}>
-          <LaneCta
-            lane={lane} cmd={cta.cmd} label={cta.label} cls={cta.cls}
-            style={{ padding: '7px 9px', fontSize: 'var(--fs-ui)', flex: 1, height: 36, boxSizing: 'border-box' }}
-            onCommand={onCommand} stopPropagation
-          />
+      <div className="hd" data-testid="tile-title" dir="auto" title={title} style={{ fontSize: 'var(--fs-rowhead)', lineHeight: 1.1, flex: 'none', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{title}</div>
+      <p data-testid="tile-now" style={{ margin: 0, flex: 'none', color: 'var(--ink2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{lane.now || lane.plain || lane.stepText}</p>
+      <div data-testid="tile-footer" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 'auto' }}>
+        <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', marginRight: 8 }}>
+          {timeInStateText(lane, now, word.word)}{lane.attempts > 1 ? ` · attempt ${lane.attempt} of ${lane.attempts}` : ''}
         </span>
+        <button
+          type="button" className={`btn ${cta.kind}`} data-testid="primary-action" data-cmd={cta.cmd}
+          onClick={(e) => { e.stopPropagation(); onCommand(lane.id, cta.cmd); }}
+        >
+          {cta.label}
+        </button>
       </div>
     </div>
   );

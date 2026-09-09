@@ -1,104 +1,136 @@
 import type { JSX } from 'react';
 
-import type { Lane } from '../../shared/console-model.js';
-import type { Filter, Sort, TipSpec } from '../store.js';
+import { hm } from '../freshness.js';
+import { blockerFor, boardCta, boardStateWord, durationWords, groupLanesByTicket, idleReason, IDLE_STATE, laneHeadline, type BoardCommand } from '../laneVM.js';
+import type { Blocker, Lane, QueueItem } from '../../shared/console-model.js';
 import { LaneGroupTile } from './LaneGroupTile.js';
-import { CARD_GAP_PX } from '../grid.js';
-import { groupLanesByTicket } from '../laneVM.js';
+import { NeedsYou, type Need } from './NeedsYou.js';
+import { Marks } from './QuestionCard.js';
 
-const FINISHED_STATES = new Set(['done', 'merged', 'killed']);
-
-/** The Board's own two-column, eight-card grid (design 2/3, `doctrine/design/FD
- *  Board.dc.html`) -- fixed at two columns, unlike the queue's `BOARD_GRID_COLUMNS`,
- *  which still auto-fills up to four. */
-const BOARD_COLUMNS = 2;
-const BOARD_SLOTS = 8;
-
-function localMidnight(now: number): number {
-  const d = new Date(now);
-  d.setHours(0, 0, 0, 0);
-  return d.getTime();
-}
-
-/** H2.2: `archived` reads the caller's own already-fetched archived set (retired
- *  lanes), never the live board; every other filter hides a `probe` lane unless
- *  `showProbes` is on, so ALL/NEEDS ME/RUNNING/FINISHED count exactly what a probe
- *  toggle-off board actually shows. */
-export function visibleLanes(lanes: Lane[], filter: Filter, sort: Sort, now: number = Date.now(), showProbes = false): Lane[] {
-  let filtered: Lane[];
-  if (filter === 'archived') {
-    filtered = lanes.filter((l) => l.retiredAt !== null);
-  } else {
-    const withoutProbes = showProbes ? lanes : lanes.filter((l) => l.kind !== 'probe');
-    if (filter === 'needs-me') {
-      filtered = withoutProbes.filter((l) => l.state === 'parked' || l.state === 'blocked' || (l.state === 'running' && l.runaway));
-    } else if (filter === 'running') {
-      filtered = withoutProbes.filter((l) => l.state === 'running' || l.state === 'handed-off');
-    } else if (filter === 'finished') {
-      filtered = withoutProbes.filter((l) => FINISHED_STATES.has(l.state));
-    } else if (filter !== 'all') {
-      filtered = withoutProbes.filter((l) => l.repo === filter);
-    } else {
-      filtered = withoutProbes;
-    }
-  }
-  const sorted = [...filtered];
-  if (sort === 'cost') sorted.sort((a, b) => b.tokens - a.tokens);
-  else if (sort === 'age') sorted.sort((a, b) => a.startedAt - b.startedAt);
-  else sorted.sort((a, b) => a.state.localeCompare(b.state));
-  return sorted;
-}
-
+/**
+ * `FD Board.dc.html`: the running grid (one card per active lane, dashed idle cards up
+ * to the queue's width), then Needs you, Waiting for merge, Blocked or parked, and
+ * Finished today. Every button calls the route its state names through `onCommand`.
+ */
 export interface LanesGridProps {
   lanes: Lane[];
-  filter: Filter;
-  sort: Sort;
-  feedLive: boolean;
+  blockers: Blocker[];
+  queue: { items: QueueItem[]; paused: boolean; pauseReason: string | null; maxInFlight: number; on: boolean };
+  needs: Need[];
   now: number;
-  showProbes: boolean;
   onOpen: (id: string) => void;
-  onOpenCost: (id: string) => void;
-  onCommand: (id: string, cmd: string) => void;
-  onTip: (tip: TipSpec | null) => void;
+  onCommand: (id: string, cmd: BoardCommand) => void;
+  /** A Needs-you answer, or any free text for a lane: `answer <key> <text>`. */
+  onLaneCommand: (id: string, command: string) => void;
+  onQueue: () => void;
 }
 
-/** An empty Board slot (design 2/3): a dashed-border placeholder card that names what
- *  it is waiting for, filled in whenever fewer than `BOARD_SLOTS` lanes are running. */
-function IdleSlot({ index }: { index: number }): JSX.Element {
-  return (
-    <div
-      data-testid={`idle-slot-${index}`}
-      style={{
-        border: '1px dashed var(--ink3)', borderRadius: 8, padding: 16, minHeight: 120,
-        display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center',
-      }}
-    >
-      <span className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>Waiting for a Ready ticket</span>
-    </div>
-  );
+const FINISHED_STATES = new Set(['merged', 'killed']);
+
+function isActive(lane: Lane): boolean {
+  return lane.retiredAt === null && !FINISHED_STATES.has(lane.state);
+}
+
+function startOfToday(now: number): number {
+  const date = new Date(now);
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+}
+
+function mergeLine(lane: Lane, now: number): string {
+  const pr = lane.pr;
+  if (!pr) return 'ready';
+  const checks = pr.checks === 'success' ? 'checks passed' : pr.checks === 'failure' ? 'checks failing' : pr.checks === 'pending' ? 'checks running' : 'checks not read yet';
+  const council = pr.verdict ? `council ${pr.verdict.toLowerCase()}` : 'no council verdict yet';
+  const since = durationWords(now - lane.since);
+  return `PR #${pr.no}, ${checks}, ${council} ${since} ago.`;
 }
 
 export function LanesGrid(props: LanesGridProps): JSX.Element {
-  const { lanes, filter, sort, feedLive, now, showProbes, onOpen, onOpenCost, onCommand, onTip } = props;
-  const shown = visibleLanes(lanes, filter, sort, now, showProbes);
-  const groups = groupLanesByTicket(shown);
-  const idleCount = Math.max(0, BOARD_SLOTS - groups.length);
+  const { lanes, blockers, queue, needs, now, onOpen, onCommand, onLaneCommand, onQueue } = props;
+  const active = lanes.filter(isActive);
+  const groups = groupLanesByTicket(active);
+  const idleCount = Math.max(0, queue.maxInFlight - groups.length);
+  const reason = idleReason(queue);
+  const ready = active.filter((lane) => boardStateWord(lane).word === 'Ready to merge');
+  const blocked = active.filter((lane) => boardStateWord(lane).word === 'Blocked');
+  const today = startOfToday(now);
+  const finished = lanes.filter((lane) => (lane.state === 'merged' || (lane.pr?.merged === true)) && (lane.endedAt ?? lane.since) >= today);
+  const handed = queue.items.filter((item) => item.handoffAt !== undefined && item.handoffAt >= today).length;
+
   return (
-    <div
-      className="scroll"
-      style={{
-        flex: 1, padding: '12px 16px 16px', display: 'grid', gridTemplateColumns: `repeat(${BOARD_COLUMNS}, 1fr)`,
-        // 2026-09-08: `1fr` rows plus a tile that stretched to `height: 100%` is what
-        // made the taller cards overlap on the live board -- `auto` rows sized to each
-        // tile's own (now fixed-slot) content, with `alignItems: 'start'` so no tile
-        // stretches to fill a row it does not need.
-        gridAutoRows: 'auto', alignItems: 'start', gap: CARD_GAP_PX, alignContent: 'start',
-      }}
-    >
-      {groups.map((group) => (
-        <LaneGroupTile key={group.key} group={group} feedLive={feedLive} now={now} onOpen={onOpen} onOpenCost={onOpenCost} onCommand={onCommand} onTip={onTip} />
-      ))}
-      {Array.from({ length: idleCount }, (_, i) => <IdleSlot key={`idle-${i}`} index={i} />)}
-    </div>
+    <main data-testid="board" className="scroll" style={{ flex: 1, minWidth: 0, height: '100%', overflow: 'auto', padding: '22px 24px 28px', display: 'flex', flexDirection: 'column', gap: 24, background: 'var(--bg)', color: 'var(--ink)', fontSize: 'var(--fs-body)', lineHeight: 1.45 }}>
+      <div data-testid="lanes-grid" style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr)', gap: 14 }}>
+        {groups.map((group) => (
+          <LaneGroupTile key={group.key} group={group} now={now} blocker={blockerFor(group.lanes[0]!, blockers)} onOpen={onOpen} onCommand={onCommand} />
+        ))}
+        {Array.from({ length: idleCount }, (_, index) => (
+          <div key={`idle-${index}`} data-testid="idle-slot" style={{ position: 'relative', border: `1px solid ${IDLE_STATE.border}`, borderStyle: IDLE_STATE.borderStyle, padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 5, minHeight: 112 }}>
+            <Marks />
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
+              <span className="key">Slot {groups.length + index + 1}</span>
+              <span style={{ fontSize: 'var(--fs-kicker)', fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: IDLE_STATE.color }}>Idle</span>
+            </div>
+            <div className="hd" style={{ fontSize: 'var(--fs-rowhead)', lineHeight: 1.1, flex: 'none' }}>Idle</div>
+            <p style={{ margin: 0, flex: 'none', color: 'var(--ink2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{reason}</p>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 'auto' }}>
+              <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>idle</span>
+              <button type="button" className="btn" onClick={onQueue}>Open queue</button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <NeedsYou items={needs} now={now} onCommand={onLaneCommand} />
+
+      {ready.length > 0 ? (
+        <section data-testid="waiting-for-merge" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <h6 className="sec">Waiting for merge <span className="n">{ready.length}</span></h6>
+          {ready.map((lane) => (
+            <div key={lane.id} className="rowMerge">
+              <Marks />
+              <span className="key">{lane.ticket ?? ''}</span>
+              <span><span className="hd" style={{ fontSize: 'var(--fs-lead)' }}>{laneHeadline(lane).main}</span><span style={{ color: 'var(--ink2)' }}> — {mergeLine(lane, now)}</span></span>
+              <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>ready {durationWords(now - lane.since)}</span>
+              <button type="button" className="btn primary" onClick={() => onCommand(lane.id, 'merge')}>Merge</button>
+            </div>
+          ))}
+        </section>
+      ) : null}
+
+      {blocked.length > 0 ? (
+        <section data-testid="blocked-or-parked" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <h6 className="sec">Blocked or parked <span className="n">{blocked.length}</span></h6>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {blocked.map((lane) => {
+              const blocker = blockerFor(lane, blockers);
+              const cta = boardCta(lane, blocker);
+              const who = blocker?.who ?? (blocker && !blocker.youCanResolve ? 'Not you' : 'You');
+              return (
+                <div key={lane.id} className="rowBlocked">
+                  <span className="key">{lane.ticket ?? ''}</span>
+                  <span><span className="hd" style={{ fontSize: 'var(--fs-lead)' }}>{laneHeadline(lane).main}</span><span style={{ color: 'var(--ink2)' }}> — {blocker?.detail ?? lane.reason ?? lane.now ?? 'no reason on record.'}</span></span>
+                  <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>{who} · {durationWords(now - lane.since)}</span>
+                  <button type="button" className={`btn ${cta.kind === 'secondary' ? '' : cta.kind}`} onClick={() => onCommand(lane.id, cta.cmd)}>{cta.label}</button>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      ) : null}
+
+      <details data-testid="finished-today" style={{ borderTop: '1px solid var(--line)', paddingTop: 12 }}>
+        <summary className="disc"><span className="tri" />Finished today <span style={{ fontWeight: 400 }}>{handed} handed to QA · {finished.length} merged</span></summary>
+        <ul style={{ margin: '10px 0 0', padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 6, color: 'var(--ink2)' }}>
+          {finished.map((lane) => (
+            <li key={lane.id} className="rowDone">
+              <span className="hd" style={{ letterSpacing: '.05em' }}>{lane.ticket ?? ''}</span>
+              <span>{laneHeadline(lane).main} — merged</span>
+              <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>{hm(lane.endedAt ?? lane.since)}</span>
+            </li>
+          ))}
+        </ul>
+      </details>
+    </main>
   );
 }
