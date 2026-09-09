@@ -407,6 +407,12 @@ export class ConsoleReads {
           run, repo, basic, cache, Date.now(), this.ghDetailLookup, this.attestationReader,
         );
         writePrCache(cachePath, nextCache);
+      } catch (error) {
+        // A failed `gh` read (a spawn refused under load, a network blip) leaves the
+        // lane reading what it already had; the next poll tries again. Never a rejection:
+        // this task has no awaiter in production, and an unhandled one killed the
+        // console four times on 2026-09-08.
+        console.error(`pr refresh for ${run} failed: ${error instanceof Error ? error.message : String(error)}`);
       } finally {
         this.prRefreshInFlight.delete(run);
       }
@@ -431,6 +437,11 @@ export class ConsoleReads {
         const cache = readPrCache(cachePath);
         const { cache: nextCache } = await computeBranchPr(run, repo, branch, cache, Date.now(), this.ghBranchLookup);
         writePrCache(cachePath, nextCache);
+      } catch (error) {
+        // Same rule as scheduleQueuePrRefresh: log, keep the lane's last answer, retry
+        // on the next poll. The 2026-09-08 crash loop was exactly this task rejecting
+        // on a `gh` spawn that failed with errno -4094.
+        console.error(`branch pr discovery for ${run} failed: ${error instanceof Error ? error.message : String(error)}`);
       } finally {
         this.branchPrDiscoveryInFlight.delete(run);
       }
