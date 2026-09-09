@@ -27,7 +27,7 @@ Aaron, 2026-09-08. Only Aaron edits this paragraph.
 | R-13 | `event` kind: triage session, verdicts, `create` on the Jira client, form-shaped filing | autonomy | planned | | a synthetic Sentry issue becomes a ticket with a finding |
 | R-14 | digest lane: noise ledger folded once a day into one Jira comment | tokens | planned | | the digest posts once with its card's count |
 | R-15 | supply rule: blockers first, then the back-fill order | clock | planned | | a free slot fills in the stated order |
-| R-16 | console surfaces rebuilt to `doctrine/design/Flightdeck Console.dc.html` | autonomy | running | PR #93 (1/3, tokens+Chrome) | the R-04 tests green and the console matches the design's Board, Chrome and Rail |
+| R-16 | console surfaces rebuilt to `doctrine/design/Flightdeck Console.dc.html` | autonomy | review | #101 | screenshot pairs in the PR |
 | R-17 | conductor tools: repo read, tests, forge CLI, every console route, self-brief authoring | autonomy | planned | | the conductor clears a blocker with no person |
 | R-18 | project files and workflow discovery; every reader off FORGE_* | any-board | planned | | a second Jira project runs one ticket with no code change |
 | R-19 | a worker's leftover uncommitted files never park the item at the gate | autonomy | running | | the two 2026-09-08 cases pass |
