@@ -122,30 +122,20 @@ and 11 always apply, everywhere, at full strength.
     widening the exemption list: an exemption puts a hole exactly where
     the detector belongs.
 
-14. **HUMANIZE WHAT OTHER PEOPLE READ.** Before producing text that someone
-    other than Aaron and Claude will read, run the `humanizer` skill. The
-    audiences are fixed (Aaron, 2026-09-09): the BoltBetz repositories
-    `v2-React-Native`, `BBManagementSystemV2`, `bb-infra` and `boltbetz-docs`,
-    in their main checkouts and their worktrees, where it fires without
-    being asked on commit messages, PR titles/bodies/review comments,
-    issues, releases, tags, README, CHANGELOG, `docs/**`, `.md`/`.mdx`,
-    user-facing UI copy, error strings, log text and doc comments; every
-    Jira, Confluence, Slack or email draft from any directory; and every
-    published artifact. A repository only Aaron and Claude read, which is
-    `flightdeck`, `dev-harness` and every other tooling repo under `C:\dev`,
-    is not outward-facing: commits and PRs there skip the skill. Order 13
-    still binds there in full; only the humanizer step is scoped.
+14. **HUMANIZE ANYTHING OUTWARD-FACING.** Before producing text a person
+    other than Aaron may read, run the `humanizer` skill. It fires without
+    being asked on: commit messages, PR titles/bodies/review comments,
+    issues, releases, tags; README, CHANGELOG, `docs/**`, `.md`/`.mdx`;
+    user-facing UI copy, error strings, log text, doc comments; published
+    artifacts; and email or message drafts. When unsure whether something
+    is outward-facing, assume it is.
 
-    Excluded everywhere: internal agent files (`CLAUDE.md`, `.claude/**`,
-    memory, plan files), and chat replies to Aaron, which are conversation
-    and not deliverables. Humanizing must never change a technical fact —
-    paths, identifiers, error codes, units, and numbers survive verbatim.
-    `humanizer` outranks `stop-slop` on conflict. The skill runs as a Haiku
-    fork (`context: fork`): pass it the complete text, get only the rewrite
-    back, and nothing of its body enters the calling session. Orders 13
-    and 14 are the same mechanism: the skill states the policy, the guard
-    enforces it, and the authorship guard carries the same repo allowlist
-    for its humanizer advisory.
+    Excluded: internal agent files (`CLAUDE.md`, `.claude/**`, memory,
+    plan files), and chat replies to Aaron, which are conversation and not
+    deliverables. Humanizing must never change a technical fact — paths,
+    identifiers, error codes, units, and numbers survive verbatim.
+    `humanizer` outranks `stop-slop` on conflict. Orders 13 and 14 are the
+    same mechanism: the skill states the policy, the guard enforces it.
 
 15. **EARN CONVERGENCE.** A conclusion is not reached, it is survived.
     Orders 1–11 verify outputs; this one verifies the reasoning that
