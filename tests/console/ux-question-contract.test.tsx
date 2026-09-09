@@ -45,7 +45,7 @@ function assertQuestionCardContract(): void {
 import { within } from '@testing-library/react';
 
 describe('UX rule 2: every question renders through one shared, multiple-choice component (RED on main)', () => {
-  it.fails('the Conductor rail question card uses the shared question-card contract', () => {
+  it('the Conductor rail question card uses the shared question-card contract', () => {
     const message: Message = {
       k: 'ask1', type: 'question', text: 'which fix round should run next?', ts: Date.now(), source: 'FLT-1',
       opts: ['round A', 'round B'], askKey: 'ask1',
@@ -59,7 +59,7 @@ describe('UX rule 2: every question renders through one shared, multiple-choice 
     assertQuestionCardContract();
   });
 
-  it.fails('the Conductor rail confirm card uses the shared question-card contract', () => {
+  it('the Conductor rail confirm card uses the shared question-card contract', () => {
     const message: Message = {
       k: 'c1', type: 'confirm', text: 'Kill FLT-1?', ts: Date.now(), source: 'console', blast: 'discards the diff.',
     };
@@ -72,7 +72,7 @@ describe('UX rule 2: every question renders through one shared, multiple-choice 
     assertQuestionCardContract();
   });
 
-  it.fails('the lane sheet run ask renders through the shared question-card contract', () => {
+  it('the lane sheet run ask renders through the shared question-card contract', () => {
     const askedLane: Lane = {
       title: null, kind: 'manual', sourceUrl: null, plain: '', mergeable: null, attempts: 1, retiredAt: null,
       id: 'FLT-2', ticket: 'FLT-2', model: 'sonnet-5', modelId: 'claude-sonnet-5', className: 'implement',
@@ -93,7 +93,7 @@ describe('UX rule 2: every question renders through one shared, multiple-choice 
     expect((need as unknown as { options?: unknown }).options).toBeDefined();
   });
 
-  it.fails('a blocker with a choice renders through the shared question-card contract', () => {
+  it('a blocker with a choice renders through the shared question-card contract', () => {
     const blocker: Blocker = {
       id: 'blk-1', kind: 'integration', title: 'AWS session expired', detail: 'the console cannot reach the fleet API',
       howToResolve: 'run aws login', thenWhat: 'lanes resume', state: 'open', since: Date.now(),

@@ -327,17 +327,6 @@ export function errorText(error: unknown): string {
   return String(error);
 }
 
-const SUCCESS_TOAST_MS = 4_000;
-const FAILURE_TOAST_MS = 8_000;
-
-/** A toast that clears itself: green success after 4s, red failure after 8s so a
- *  longer error actually gets read. The views with no rail of their own (Queue,
- *  Blockers, Settings) show every outcome this way as well as inline. */
-export function showToast(dispatch: (action: StoreAction) => void, text: string, ok: boolean): void {
-  dispatch({ type: 'toast', toast: { glyph: ok ? '✓' : '✕', title: text, sub: '', big: '', color: ok ? undefined : 'var(--block)' } });
-  setTimeout(() => dispatch({ type: 'toast', toast: null }), ok ? SUCCESS_TOAST_MS : FAILURE_TOAST_MS);
-}
-
 export function actionKey(id: string, ref?: string): string {
   return ref ? `${id}:${ref}` : id;
 }

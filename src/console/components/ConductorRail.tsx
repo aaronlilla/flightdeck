@@ -1,331 +1,22 @@
 import type { JSX } from 'react';
+import { useLayoutEffect, useRef } from 'react';
+
+import { hm } from '../freshness.js';
 import { useStore } from '../store.js';
-import { useCallback, useContext, useLayoutEffect, useRef, useState } from 'react';
+import type { Feed, Message, MessageButton } from '../../shared/console-model.js';
+import { Marks, QuestionCard } from './QuestionCard.js';
 
-import { computeFreshness, compactFreshnessStamp, freshnessClass, hm } from '../freshness.js';
-import { actionable } from '../keyboard-actionable.js';
-import { collapseWardenEvents } from '../laneVM.js';
-import { StoreContext } from '../store.js';
-import { Linkify } from './Linkify.js';
-import type { Feed, Message } from '../../shared/console-model.js';
-
-/** Chip label paired with the command it actually sends. The prototype's own
- *  `quick` list maps 'pause all' to the fuller 'pause everything' text, and both
- *  go through `send()`, so the chip click echoes an operator bubble just like
- *  typing it would. Order and text match the prototype exactly. */
-export const QUICK_COMMANDS: [label: string, command: string][] = [
-  ['pause all', 'pause everything'],
-  ["what's stuck", "what's stuck"],
-  ['spend today', 'spend today'],
-  ['merge ready lanes', 'merge ready lanes'],
-];
-
-/** Item 14: a reply reads "Conductor" only when it actually came from one of
- *  these -- everything else (a worker's own run) names the run it came from. */
-const CONDUCTOR_REPLY_SOURCES = new Set(['conductor', 'console', 'system']);
-
-/** A line starting with `- ` in a reply or a refusal renders as a list item,
- *  and the rest of the text keeps the server's own line breaks (`whiteSpace:
- *  'pre-wrap'`) instead of collapsing a multi-line reply onto one line. */
-function WrappedText({ text, repo }: { text: string; repo?: string | null }): JSX.Element {
-  const lines = text.split('\n');
-  const isList = lines.length > 1 && lines.some((line) => line.trimStart().startsWith('- '));
-  if (!isList) return <div data-testid="wrapped-text" style={{ whiteSpace: 'pre-wrap' }}><Linkify text={text} repo={repo} /></div>;
-  return (
-    <div data-testid="wrapped-text" style={{ whiteSpace: 'pre-wrap' }}>
-      {lines.map((line, i) => (
-        line.trimStart().startsWith('- ')
-          ? <div key={i} style={{ paddingLeft: 14, textIndent: -14 }}>• <Linkify text={line.trimStart().slice(2)} repo={repo} /></div>
-          : <div key={i}><Linkify text={line} repo={repo} /></div>
-      ))}
-    </div>
-  );
-}
-
-/** 2026-09-08: the rail has no lane of its own to read a repo off (a message may
- *  belong to any lane, or none) -- this resolves `message.lane`/`message.source`
- *  against the store's own lanes, and falls back to `links.defaultRepo`. */
-function useMessageRepo(message: Message): string | null {
-  // A card can render outside the store (a unit test, a sheet mounted on its own);
-  // then there is no lane list to search and no default repo, and the text stays plain.
-  const ctx = useContext(StoreContext);
-  if (!ctx) return null;
-  const { state } = ctx;
-  const key = message.lane ?? message.source;
-  const found = state.lanes.find((l) => l.id === key || l.ticket === key);
-  return found?.repo ?? state.links.defaultRepo;
-}
-
-/** Exported so a lane-scoped thread (the ticket sheet) can render each message
- *  with the exact same per-type card the Conductor rail uses, rather than a
- *  second, drifting copy of this switch. */
-export function MessageCard({
-  message, feedLive, now, verbose = false, labelFor, replyLabel, onCommand, onUndo, onOpenJournal,
-}: {
-  message: Message; feedLive: boolean; now: number;
-  /** 2026-09-08: plain by default. A `receipt`'s own jid text renders only in
-   *  verbose mode; every other type is unaffected by this flag. */
-  verbose?: boolean;
-  /** A person's name for a lane id, used by a `question` card's own header
-   *  ("Question from <label>"). Falls back to the raw source id when unset or
-   *  when it knows nothing about that particular id. */
-  labelFor?: (id: string) => string | null;
-  /** Item 6: overrides a `reply` card's own label outright, skipping `labelFor`
-   *  entirely -- the ticket sheet passes `'Worker'`, since every reply inside a run's
-   *  own thread is that run's own report and `labelFor` there resolves to the lane's
-   *  whole title (the live sheet's own bug: a report labelled in capitals with the
-   *  lane's title). The board-wide rail leaves this unset and keeps `labelFor(source)`,
-   *  since a rail mixes replies from many different runs. */
-  replyLabel?: string;
-  onCommand: (text: string) => void; onUndo: (jid: string) => void; onOpenJournal: (jid: string) => void;
-}): JSX.Element {
-  const [free, setFree] = useState('');
-  const [showTip, setShowTip] = useState(false);
-  // Every message carries a stamp: verifiedAt falls back to the message's own
-  // ts (an "observed" reading) rather than suppressing the stamp when a seeded
-  // fixture omits verifiedAt.
-  const fresh = computeFreshness(message.verifiedAt ?? null, message.ts, feedLive, now);
-  const repo = useMessageRepo(message);
-
-  switch (message.type) {
-    // Item 7: a plain-mode digest of a run's own tool calls reads as a quiet
-    // mono line with no chip border, not another all-caps chip.
-    case 'activity':
-      return (
-        <div className="m" style={{ alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: 7, fontSize: 'var(--fs-meta)', color: 'var(--ink3)', minWidth: 0, overflowWrap: 'anywhere' }}>
-          <span><Linkify text={message.text} repo={repo} /></span>
-          <span className={freshnessClass(fresh)}>{compactFreshnessStamp(fresh)}</span>
-        </div>
-      );
-    case 'event':
-      return (
-        <div style={{ alignSelf: 'center', display: 'flex', alignItems: 'center', gap: 7 }}>
-          <span
-            className="chip"
-            style={{ borderColor: 'var(--ink2)', color: 'var(--ink2)', whiteSpace: 'normal', textTransform: 'none', letterSpacing: 'normal' }}
-          >
-            <Linkify text={message.text} repo={repo} />
-          </span>
-          <span className={freshnessClass(fresh)}>{compactFreshnessStamp(fresh)}</span>
-        </div>
-      );
-    case 'operator':
-      return (
-        <div style={{ alignSelf: 'flex-end', maxWidth: '82%', background: 'var(--ink)', color: 'var(--bg)', padding: '9px 13px', borderRadius: '10px 10px 3px 10px', font: 'var(--fs-body)/1.5 "IBM Plex Sans",sans-serif', overflowWrap: 'anywhere' }}>
-          <Linkify text={message.text} repo={repo} />
-        </div>
-      );
-    case 'reply': {
-      // Item 14: every reply used to say "Conductor", including a worker's own
-      // root-cause report inside its run thread -- a reply is labeled that only
-      // when it actually came from the conductor/console/system; anything else
-      // names the run it came from (or "Worker" when nothing can name it).
-      // 2026-09-08: a rail reply names the path that answered it, so a grammar
-      // fallback never reads as the agent having spoken.
-      const conductorLabel = message.path === 'grammar' ? 'Conductor (grammar)' : 'Conductor';
-      const replySource = replyLabel
-        ?? (CONDUCTOR_REPLY_SOURCES.has(message.source) ? conductorLabel : (labelFor?.(message.source) ?? 'Worker'));
-      return (
-        <div style={{ maxWidth: '92%' }}>
-          <div className="lbl" data-testid="reply-label" style={{ color: 'var(--ink3)', marginBottom: 3 }}>{replySource}</div>
-          <div style={{ borderLeft: '2px solid var(--line2)', paddingLeft: 10, font: 'var(--fs-body)/1.5 "IBM Plex Sans",sans-serif', overflowWrap: 'anywhere' }}>
-            <WrappedText text={message.text} repo={repo} />
-          </div>
-          {message.btns && message.btns.length > 0 ? (
-            <div style={{ display: 'flex', gap: 6, margin: '8px 0 0 12px', flexWrap: 'wrap' }}>
-              {message.btns.map((b) => (
-                <span key={b.label} className={b.cls === 'destroy' ? 'btnR' : b.cls === 'answer' ? 'btnA' : b.cls === 'defer' ? 'btnS' : 'btnP'} style={{ padding: '6px 10px', fontSize: 'var(--fs-ui)' }} {...actionable(() => onCommand(b.cmd))}>
-                  {b.label}
-                </span>
-              ))}
-            </div>
-          ) : null}
-        </div>
-      );
-    }
-    case 'refusal':
-      return (
-        <div style={{ maxWidth: '88%', border: '1px dashed var(--block)', borderLeft: '3px solid var(--block)', borderRadius: 4, padding: '9px 12px' }}>
-          <div className="lbl" style={{ color: 'var(--block)', marginBottom: 3 }}>Refused</div>
-          <div style={{ font: 'var(--fs-body)/1.5 "IBM Plex Sans",sans-serif', color: 'var(--ink2)', overflowWrap: 'anywhere' }}>
-            <WrappedText text={message.text} repo={repo} />
-          </div>
-        </div>
-      );
-    case 'thinking':
-      return (
-        <div style={{ display: 'flex', gap: 5, alignItems: 'center' }}>
-          <span className="lbl" data-testid="conductor-working" style={{ color: 'var(--ink3)' }}>{message.text || 'conductor is planning'}</span>
-          <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--ink3)', animation: 'fddot 1.2s infinite' }} />
-          <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--ink3)', animation: 'fddot 1.2s infinite .2s' }} />
-          <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--ink3)', animation: 'fddot 1.2s infinite .4s' }} />
-        </div>
-      );
-    case 'receipt': {
-      const tip = showTip ? (
-        <span className="tip" style={{ position: 'absolute', top: '100%', left: 0, zIndex: 1, whiteSpace: 'normal', overflowWrap: 'anywhere' }}>
-          {hm(message.ts)} · {message.source} · {message.text}{message.undoable && !message.undone ? ' · reversible, undo 24h' : ''}
-        </span>
-      ) : null;
-      return (
-        <div className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink2)', display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap', minWidth: 0, overflowWrap: 'anywhere', textDecoration: message.undone ? 'line-through' : 'none' }}>
-          {verbose && message.jid ? (
-            <a
-              data-testid="receipt-jid"
-              style={{ fontWeight: 700, color: 'var(--ink)', cursor: 'pointer', position: 'relative' }}
-              {...actionable(() => onOpenJournal(message.jid as string))}
-              onMouseEnter={() => setShowTip(true)}
-              onMouseLeave={() => setShowTip(false)}
-            >
-              {message.jid}
-              {tip}
-            </a>
-          ) : null}
-          {/* Item 13: plain mode showed the jid link with no text at all -- a link
-              rendered with nothing visible in it, reading as a stray dash sitting
-              above every receipt. Plain mode renders no anchor here at all; the
-              receipt's own sentence carries the click target and the hover
-              tooltip instead, and the undo link (below) is unaffected either way. */}
-          <span
-            data-testid={!verbose && message.jid ? 'receipt-jid' : undefined}
-            style={message.jid ? { position: 'relative', cursor: 'pointer' } : undefined}
-            {...(!verbose && message.jid ? actionable(() => onOpenJournal(message.jid as string)) : {})}
-            onMouseEnter={() => { if (!verbose && message.jid) setShowTip(true); }}
-            onMouseLeave={() => { if (!verbose) setShowTip(false); }}
-          >
-            <Linkify text={message.text} repo={repo} />
-            {!verbose ? tip : null}
-          </span>
-          {message.undoable && !message.undone && message.jid ? <a style={{ fontWeight: 600 }} {...actionable(() => onUndo(message.jid as string))}>undo</a> : null}
-          <span className={freshnessClass(fresh)}>{compactFreshnessStamp(fresh)}</span>
-        </div>
-      );
-    }
-    case 'plan':
-      return (
-        <div className="plate" style={{ maxWidth: '94%' }}>
-          <div className="lbl" style={{ padding: '7px 12px', borderBottom: '1px solid var(--line)', color: 'var(--ink2)', display: 'flex', justifyContent: 'space-between' }}>
-            <span>Plan · {message.items?.length ?? 0} actions</span>
-            <span>{message.resolved ?? 'awaiting go'}</span>
-          </div>
-          <div style={{ padding: '4px 0' }}>
-            {message.items?.map((a, i) => (
-              <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'baseline', padding: '6px 12px' }}>
-                <span className="m" style={{ fontSize: 'var(--fs-meta)', fontWeight: 700, color: 'var(--ink3)' }}>{i + 1}</span>
-                <span style={{ flex: 1, minWidth: 0, font: 'var(--fs-body)/1.45 "IBM Plex Sans",sans-serif', overflowWrap: 'anywhere' }}><Linkify text={a.text} repo={repo} /></span>
-                <span
-                  className="chip"
-                  style={{
-                    borderColor: a.irreversible ? 'var(--block)' : 'var(--run)',
-                    background: a.irreversible ? 'var(--block)' : 'transparent',
-                    color: a.irreversible ? 'var(--aInk)' : 'var(--run)',
-                  }}
-                >
-                  {a.irreversible ? 'irreversible' : 'reversible'}
-                </span>
-              </div>
-            ))}
-          </div>
-          {!message.resolved ? (
-            <div style={{ display: 'flex', gap: 8, padding: '0 12px 12px' }}>
-              {message.btns && message.btns.length > 0 ? (
-                message.btns.map((b) => (
-                  <span key={b.label} className={b.cls === 'go' ? 'btnP' : 'btnS'} {...actionable(() => onCommand(b.cmd))}>
-                    {b.label}{b.cls === 'go' ? ' →' : ''}
-                  </span>
-                ))
-              ) : (
-                <>
-                  <span className="btnP" {...actionable(() => onCommand(`run ${message.k}`))}>Run plan →</span>
-                  <span className="btnS" {...actionable(() => onCommand(`dismiss ${message.k}`))}>Not now</span>
-                </>
-              )}
-            </div>
-          ) : null}
-        </div>
-      );
-    case 'confirm':
-      return (
-        <div style={{ border: '2px solid var(--block)', borderRadius: 4, maxWidth: '94%' }}>
-          <div className="lbl" style={{ background: 'var(--block)', color: 'var(--aInk)', padding: '7px 12px', display: 'flex', justifyContent: 'space-between' }}>
-            <span>Confirm — irreversible</span>
-            <span>{message.resolved ?? 'awaiting you'}</span>
-          </div>
-          <div style={{ padding: '11px 12px', font: 'var(--fs-body)/1.5 "IBM Plex Sans",sans-serif', overflowWrap: 'anywhere' }}>
-            <Linkify text={message.text} repo={repo} /> <strong>{message.blast}</strong>
-          </div>
-          {!message.resolved ? (
-            <div style={{ display: 'flex', gap: 10, padding: '0 12px 12px' }}>
-              {message.btns && message.btns.length > 0 ? (
-                message.btns.map((b) => (
-                  <span key={b.label} className={b.cls === 'destroy' ? 'btnR' : 'btnS'} {...actionable(() => onCommand(b.cmd))}>
-                    {b.label}
-                  </span>
-                ))
-              ) : (
-                <>
-                  <span className="btnR" {...actionable(() => onCommand(`confirm ${message.k}`))}>Confirm</span>
-                  <span className="btnS" {...actionable(() => onCommand(`decline ${message.k}`))}>Not now</span>
-                </>
-              )}
-            </div>
-          ) : null}
-        </div>
-      );
-    case 'question':
-      return (
-        <div style={{ border: '1px solid var(--hand)', borderRadius: 4, maxWidth: '94%' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 12px', borderBottom: '1px solid var(--line)' }}>
-            <span className="lbl" style={{ color: 'var(--hand)' }}>Question · from <Linkify text={labelFor?.(message.source) ?? message.source} repo={repo} /></span>
-            <span className={freshnessClass(fresh)}>{compactFreshnessStamp(fresh)}</span>
-          </div>
-          <div style={{ padding: '10px 12px', font: 'var(--fs-body)/1.5 "IBM Plex Sans",sans-serif', overflowWrap: 'anywhere' }}><Linkify text={message.text} repo={repo} /></div>
-          {message.answer === undefined ? (
-            <>
-              {/* One option per row, full width, text wrapping: an option is a sentence a
-                 worker wrote, and a no-wrap pill ran off the rail (2026-09-08). */}
-              <div data-testid="question-options" style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '0 12px 10px' }}>
-                {message.opts?.map((o) => (
-                  <span
-                    key={o} className="btnA"
-                    style={{ padding: '7px 10px', fontSize: 'var(--fs-ui)', whiteSpace: 'normal', textAlign: 'left', justifyContent: 'flex-start', overflowWrap: 'anywhere', width: '100%', lineHeight: 1.35, letterSpacing: 0.3, textTransform: 'none' }}
-                    {...actionable(() => onCommand(`answer ${message.askKey ?? ''} ${o}`))}
-                  >
-                    {o}
-                  </span>
-                ))}
-              </div>
-              <div style={{ margin: '0 12px 6px', fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>
-                Pick one, or type a longer answer below and press Send.
-              </div>
-              <div style={{ margin: '0 12px 12px', background: 'var(--well)', boxShadow: 'inset 0 2px 5px rgba(0,0,0,.6)', borderRadius: 3, padding: '7px 10px', display: 'flex' }}>
-                <input
-                  className="inp m" style={{ fontSize: 'var(--fs-ui)' }} placeholder="or type an answer, ⏎"
-                  value={free} onChange={(e) => setFree(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter' && free.trim()) { onCommand(`answer ${message.askKey ?? ''} ${free}`); setFree(''); } }}
-                />
-              </div>
-            </>
-          ) : (
-            <div className="m" style={{ padding: '0 12px 10px', fontSize: 'var(--fs-meta)', color: 'var(--run)' }}>answered: {message.answer}</div>
-          )}
-        </div>
-      );
-    case 'pr':
-      return (
-        <div className="plate" style={{ maxWidth: '94%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 12px', gap: 12 }}>
-          <div>
-            <div className="lbl" style={{ color: 'var(--merge)', marginBottom: 3 }}>Draft PR · {message.source}</div>
-            <a className="m" style={{ fontSize: 'var(--fs-body)', fontWeight: 700, overflowWrap: 'anywhere' }} href={message.pr?.url}>{message.text} ↗</a>
-          </div>
-          <span className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 'none' }}>
-            {message.pr?.files ?? 0} files · <span style={{ color: 'var(--run)', fontWeight: 700 }}>+{message.pr?.add ?? 0}</span> <span style={{ color: 'var(--block)', fontWeight: 700 }}>−{message.pr?.del ?? 0}</span>
-          </span>
-        </div>
-      );
-    default:
-      return <div><Linkify text={message.text} repo={repo} /></div>;
-  }
+/**
+ * `FD Rail.dc.html`: the Conductor rail. Rows by kind (status, receipt with Undo,
+ * operator, the agent's own words, the question card, action cards with kicker, title,
+ * body, meta table and stacked buttons, and the tool-call disclosure), then the command
+ * chips, the topic row with its Conductor / agent switch, and the composer.
+ */
+export interface RailCommand {
+  label: string;
+  /** Sent through `onSend` as typed text, or handled by the page when it starts with
+   *  `open ` (a view or a lane). */
+  cmd: string;
 }
 
 export interface ConductorRailProps {
@@ -334,175 +25,268 @@ export interface ConductorRailProps {
   now: number;
   composer: string;
   onComposerChange: (text: string) => void;
-  /** Typed composer text and quick-command chips go through the prototype's own
-   *  `send()`, so both echo an operator bubble before the command runs. */
-  onSend: (text: string) => void;
-  /** Reply, plan, confirm, and question buttons, plus a question's free-text answer,
-   *  wire straight to `act()` / `answer()` / `runPlan()` in the prototype, bypassing
-   *  `send()` entirely, so clicking one never echoes a fake operator bubble. */
+  /** Typed text and chips. `toLane` is set when the recipient switch points at the
+   *  agent working the topic lane. */
+  onSend: (text: string, toLane?: string) => void;
+  /** A card button's own command, a question's answer. */
   onCommand: (text: string) => void;
   onUndo: (jid: string) => void;
-  onOpenJournal: (jid: string) => void;
-  /** 2026-09-08: plain by default -- see `MessageCard`'s own doc. */
-  verbose?: boolean;
+  onOpenJournal?: (jid: string) => void;
   labelFor?: (id: string) => string | null;
-  /** `FD Rail.dc.html`'s header reads "N agents · live" -- absent (no live lane
-   *  count wired yet) hides that text rather than showing a fabricated 0. */
+  /** Active lanes right now; the header reads "N agents · live". */
   agentCount?: number;
+  topic?: { id: string; label: string } | null;
+  recipient?: 'conductor' | 'agent';
+  onRecipient?: (recipient: 'conductor' | 'agent') => void;
+  onTopic?: (laneId: string | null) => void;
+  commands?: RailCommand[];
+  onStop?: () => void;
+  verbose?: boolean;
 }
 
-/** Right rail, single thread; composer disabled with a reason banner when the feed is down. */
-/** How close to the bottom, in pixels, still counts as reading the newest message. */
-const PINNED_SLACK_PX = 24;
+const CONDUCTOR_SOURCES = new Set(['conductor', 'console', 'system', 'operator']);
 
-/**
- * Chat scrolling for the thread. The list opens pinned to its newest message and stays
- * pinned as messages arrive; the moment the reader scrolls up it holds still, counts
- * what lands below, and offers a pill that jumps back down. Scrolling to the bottom by
- * hand re-pins. Measured off the scroll container itself, never off React state, so a
- * message that arrives mid-scroll cannot be mistaken for the reader letting go.
- */
-function useChatScroll(messageCount: number, newestKey: string | undefined): {
-  ref: React.RefObject<HTMLDivElement | null>; unread: number; onScroll: () => void; jump: () => void;
-} {
-  const ref = useRef<HTMLDivElement | null>(null);
-  const pinned = useRef(true);
-  const [unread, setUnread] = useState(0);
-  const lastCount = useRef(messageCount);
+export const DEFAULT_COMMANDS: RailCommand[] = [
+  { label: "What's stuck?", cmd: "what's stuck" },
+  { label: "Merge what's ready", cmd: 'merge ready lanes' },
+  { label: 'Pause everything', cmd: 'pause everything' },
+  { label: 'Spend today', cmd: 'spend today' },
+];
 
-  const isAtBottom = (el: HTMLDivElement): boolean => el.scrollHeight - el.scrollTop - el.clientHeight <= PINNED_SLACK_PX;
+type Tone = 'warn' | 'acc' | 'neutral';
+const TONE: Record<Tone, [string, string]> = { warn: ['var(--warn)', 'var(--warnTint)'], acc: ['var(--acc)', 'transparent'], neutral: ['var(--ink2)', 'transparent'] };
 
-  const jump = useCallback(() => {
-    const el = ref.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-    pinned.current = true;
-    setUnread(0);
-  }, []);
+function buttonClass(button: MessageButton): string {
+  switch (button.cls) {
+    case 'go': case 'destroy': return 'btn primary';
+    case 'answer': return 'btn warn';
+    case 'defer': return 'btn ghost';
+    default: return 'btn';
+  }
+}
 
-  const onScroll = useCallback(() => {
-    const el = ref.current;
-    if (!el) return;
-    const atBottom = isAtBottom(el);
-    pinned.current = atBottom;
-    if (atBottom) setUnread(0);
-  }, []);
+function Stamp({ ts }: { ts: number }): JSX.Element {
+  return <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)', fontVariantNumeric: 'tabular-nums' }}>{hm(ts)}</span>;
+}
 
-  useLayoutEffect(() => {
-    const el = ref.current;
-    const arrived = Math.max(0, messageCount - lastCount.current);
-    lastCount.current = messageCount;
-    if (!el) return;
-    if (pinned.current) {
-      el.scrollTop = el.scrollHeight;
-    } else if (arrived > 0) {
-      setUnread((n) => n + arrived);
+function Row({ ts, children }: { ts: number; children: JSX.Element }): JSX.Element {
+  return <div style={{ display: 'grid', gridTemplateColumns: '40px 1fr', gap: 8, alignItems: 'baseline' }}><Stamp ts={ts} />{children}</div>;
+}
+
+/** An action card: a confirm, a plan, a blocker with a choice, a decision, a refusal. */
+function ActionCard({ message, tone, kicker, title, body, onCommand, onTopic, composerId }: {
+  message: Message; tone: Tone; kicker: string; title: string; body: string;
+  onCommand: (text: string) => void; onTopic?: (laneId: string) => void; composerId?: string;
+}): JSX.Element {
+  const [color, ground] = TONE[tone];
+  const lane = message.lane ?? (CONDUCTOR_SOURCES.has(message.source) ? null : message.source);
+  const resolved = message.resolved;
+  const asks = Boolean(message.btns && message.btns.length > 0 && !resolved);
+  return (
+    <div data-testid={asks ? 'question-card' : `card-${message.type}`} data-card={message.type} style={{ position: 'relative', marginLeft: 48, border: `1px solid ${color}`, background: ground, padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <Marks />
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
+        <span className="kick" style={{ color, fontWeight: 700, minWidth: 0, cursor: lane && onTopic ? 'pointer' : undefined }} onClick={() => { if (lane && onTopic) onTopic(lane); }}>{kicker}</span>
+        <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)', whiteSpace: 'nowrap', flex: 'none' }}>{hm(message.ts)}</span>
+      </div>
+      <p className="hd" style={{ margin: 0, fontSize: 'var(--fs-card)', lineHeight: 1.2 }}>{title}</p>
+      {body ? <p style={{ margin: 0, color: 'var(--ink2)', fontSize: 'var(--fs-ui)', whiteSpace: 'pre-wrap' }}>{body}</p> : null}
+      {message.meta && message.meta.length > 0 ? (
+        <div style={{ border: '1px solid var(--line)', padding: '6px 10px', display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '2px 12px', fontSize: 'var(--fs-meta)', color: 'var(--ink2)' }}>
+          {message.meta.map((row) => <><span key={`${row.k}-k`} style={{ color: 'var(--ink3)' }}>{row.k}</span><span key={`${row.k}-v`}>{row.v}</span></>)}
+        </div>
+      ) : null}
+      {resolved ? (
+        <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>{resolved === 'declined' ? 'Not now.' : resolved === 'answered' ? 'Answered.' : 'Confirmed.'}</span>
+      ) : message.btns && message.btns.length > 0 ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 2 }}>
+          {message.btns.slice(0, 4).map((button, index) => (
+            <button
+              key={button.label} type="button" className={buttonClass(button)} data-testid="question-option" data-recommended={index === 0 ? 'true' : 'false'}
+              style={{ fontSize: 'var(--fs-key)', letterSpacing: '.03em', lineHeight: 1.3, textAlign: 'left', padding: '10px 14px', minHeight: 44, width: '100%', whiteSpace: 'normal' }}
+              onClick={() => { if (lane && onTopic) onTopic(lane); onCommand(button.cmd); }}
+            >
+              {button.label}
+            </button>
+          ))}
+          <label htmlFor={composerId} data-testid="question-freetext" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)', cursor: 'pointer' }}>Or reply below; a typed answer goes to this card.</label>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+export function MessageCard({ message, labelFor, onCommand, onUndo, onTopic, composerId }: {
+  message: Message; labelFor?: (id: string) => string | null; onCommand: (text: string) => void;
+  onUndo: (jid: string) => void; onTopic?: (laneId: string) => void; composerId: string;
+}): JSX.Element | null {
+  const label = (id: string): string | null => labelFor?.(id) ?? null;
+  const from = message.lane ?? message.source;
+  switch (message.type) {
+    case 'operator': {
+      const to = message.lane ? label(message.lane) ?? 'the agent' : null;
+      return (
+        <Row ts={message.ts}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 3, alignItems: 'flex-start' }}>
+            {to ? <span className="kick" style={{ letterSpacing: '.08em' }}>to the agent on {to}</span> : null}
+            <p style={{ margin: 0, padding: '8px 10px', background: 'var(--panel)', border: '1px solid var(--line)', color: 'var(--ink)', whiteSpace: 'pre-wrap' }}>{message.text}</p>
+          </div>
+        </Row>
+      );
     }
-  }, [messageCount, newestKey]);
-
-  return { ref, unread, onScroll, jump };
+    case 'reply':
+      if (!CONDUCTOR_SOURCES.has(message.source)) {
+        return (
+          <Row ts={message.ts}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <span className="kick" style={{ letterSpacing: '.08em' }}><span className="hd" style={{ fontSize: 'var(--fs-ui)', color: 'var(--ink2)', letterSpacing: 0, textTransform: 'none' }}>{label(message.source) ?? 'An agent'}</span> · the agent</span>
+              <p style={{ margin: 0, color: 'var(--ink)', paddingLeft: 10, borderLeft: '2px dashed var(--line2)', whiteSpace: 'pre-wrap' }}>{message.text}</p>
+              {message.btns && message.btns.length > 0 && !message.resolved ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
+                  {message.btns.map((button) => <button key={button.label} type="button" className={buttonClass(button)} style={{ textAlign: 'left', whiteSpace: 'normal' }} onClick={() => onCommand(button.cmd)}>{button.label}</button>)}
+                </div>
+              ) : null}
+            </div>
+          </Row>
+        );
+      }
+      return (
+        <Row ts={message.ts}>
+          <div>
+            <p data-testid="status-row" style={{ margin: 0, color: 'var(--ink)', whiteSpace: 'pre-wrap' }}>{message.text}</p>
+            {message.btns && message.btns.length > 0 && !message.resolved ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 6 }}>
+                {message.btns.map((button) => <button key={button.label} type="button" className={buttonClass(button)} style={{ textAlign: 'left', whiteSpace: 'normal' }} onClick={() => onCommand(button.cmd)}>{button.label}</button>)}
+              </div>
+            ) : null}
+          </div>
+        </Row>
+      );
+    case 'event':
+    case 'thinking':
+    case 'pr':
+      return <Row ts={message.ts}><p data-testid="status-row" style={{ margin: 0, color: 'var(--ink)' }}>{message.type === 'pr' && message.pr ? `Draft PR #${message.pr.no}: ${message.text}` : message.text}</p></Row>;
+    case 'activity':
+      if (message.tools && message.tools.length > 0) {
+        return (
+          <details style={{ marginLeft: 48, fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>
+            <summary className="disc" style={{ gap: 6, alignItems: 'center', fontFamily: 'inherit', fontWeight: 400, letterSpacing: 0, textTransform: 'none', fontSize: 'var(--fs-meta)' }}><span className="tri" />{message.text}</summary>
+            <ul style={{ margin: '6px 0 0', paddingLeft: 14, color: 'var(--ink2)', lineHeight: 1.6 }}>{message.tools.map((tool) => <li key={tool}>{tool}</li>)}</ul>
+          </details>
+        );
+      }
+      return <div style={{ marginLeft: 48, fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>{message.text}</div>;
+    case 'receipt':
+      return (
+        <Row ts={message.ts}>
+          <p style={{ margin: 0, color: 'var(--ink)', paddingLeft: 10, borderLeft: '2px solid var(--acc)', textDecoration: message.undone ? 'line-through' : 'none' }}>
+            {message.text}
+            {message.undoable && !message.undone && message.jid ? <> <a href="#" data-testid="receipt-undo" style={{ color: 'var(--acc)', fontSize: 'var(--fs-meta)' }} onClick={(e) => { e.preventDefault(); onUndo(message.jid as string); }}>Undo</a></> : null}
+          </p>
+        </Row>
+      );
+    case 'question':
+      return (
+        <QuestionCard
+          variant="rail" freetext="composer" composerId={composerId}
+          head={`Question${label(from) ? ` · ${label(from)}` : ''}`}
+          stamp={hm(message.ts)} text={message.text} options={message.opts ?? []}
+          answer={message.answer}
+          onHead={onTopic && !CONDUCTOR_SOURCES.has(from) ? () => onTopic(from) : undefined}
+          onAnswer={(answer) => { if (onTopic && !CONDUCTOR_SOURCES.has(from)) onTopic(from); onCommand(`answer ${message.askKey ?? ''} ${answer}`.trim()); }}
+        />
+      );
+    case 'confirm': {
+      const laneLabel = label(from);
+      const headline = message.title ?? (message.text === 'confirm?' ? (message.blast ?? 'Confirm?') : message.text);
+      const body = message.body ?? (message.text === 'confirm?' ? '' : (message.blast ?? ''));
+      const withButtons = message.btns && message.btns.length > 0 ? message : { ...message, btns: [{ label: 'Confirm', cmd: `confirm ${message.k}`, cls: 'destroy' as const }, { label: 'Not now', cmd: `dismiss ${message.k}` }] };
+      return <ActionCard message={withButtons} tone="acc" kicker={message.kicker ?? `Confirm · cannot be undone${laneLabel ? ` · ${laneLabel}` : ''}`} title={headline} body={body} onCommand={onCommand} onTopic={onTopic} composerId={composerId} />;
+    }
+    case 'plan':
+      return <ActionCard message={message} tone="acc" kicker={message.kicker ?? `Plan · ${message.items?.length ?? 0} actions`} title={message.title ?? message.text} body={message.body ?? (message.items ?? []).map((item, index) => `${index + 1}. ${item.text}${item.irreversible ? ' (cannot be undone)' : ''}`).join('\n')} onCommand={onCommand} onTopic={onTopic} composerId={composerId} />;
+    case 'blocker':
+      return <ActionCard message={message} tone="warn" kicker={message.kicker ?? `Blocked${label(from) ? ` · ${label(from)}` : ''}`} title={message.title ?? message.text} body={message.body ?? ''} onCommand={onCommand} onTopic={onTopic} composerId={composerId} />;
+    case 'decision':
+      return <ActionCard message={message} tone="neutral" kicker={message.kicker ?? `Decided for you${label(from) ? ` · ${label(from)}` : ''} · no reply needed`} title={message.title ?? message.text} body={message.body ?? ''} onCommand={onCommand} onTopic={onTopic} composerId={composerId} />;
+    case 'refusal':
+      return <ActionCard message={message} tone="warn" kicker="Refused" title={message.text} body="" onCommand={onCommand} composerId={composerId} />;
+    default:
+      return null;
+  }
 }
 
 export function ConductorRail(props: ConductorRailProps): JSX.Element {
-  const { thread, feed, now, composer, verbose = false, labelFor, onComposerChange, onSend, onCommand, onUndo, onOpenJournal, agentCount } = props;
-  // The composer's own action state (`App.tsx#processCommand` keys it `sendCommand:rail`):
-  // a working row within one render of Send, and the send control held while the
-  // grammar answers. The reply cards are the inline result and land in the thread.
+  const { thread, feed, now, composer, onComposerChange, onSend, onCommand, onUndo, labelFor, agentCount, topic = null, recipient = 'conductor', onRecipient, onTopic, commands = DEFAULT_COMMANDS, onStop } = props;
   const composerAction = useStore().state.actions['sendCommand:rail'];
-  const composerBusy = composerAction?.pending ?? false;
-  const scroll = useChatScroll(thread.length, thread.at(-1)?.k);
-  const isPending = (m: Message): boolean => (
-    (m.type === 'question' && m.answer === undefined)
-    || (m.type === 'confirm' && m.resolved === undefined)
-    || (m.type === 'plan' && m.resolved === undefined)
-  );
-  const pendingMessages = thread.filter(isPending);
-  const pending = pendingMessages.length;
-  // Sweep #13: "N waiting" named nothing to jump to -- the oldest unresolved card is
-  // the one already first in the thread's own append order, since a card resolves
-  // itself in place rather than moving.
-  const oldestPendingKey = pendingMessages[0]?.k;
+  const busy = composerAction?.pending ?? false;
+  // The list opens at the top (the design's 1a); it follows the newest message once
+  // the conversation moves (the design's 2a to 2d, `stickToEnd`).
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const seen = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    const el = listRef.current;
+    if (seen.current !== null && seen.current > 0 && thread.length > seen.current && el) el.scrollTop = el.scrollHeight;
+    if (thread.length > 0 || seen.current === null) seen.current = thread.length;
+  }, [thread.length]);
+  const toAgent = recipient === 'agent' && topic !== null;
+  const composerId = 'rail-composer';
+  const send = (): void => {
+    const text = composer.trim();
+    if (!text || busy) return;
+    onSend(text, toAgent ? topic!.id : undefined);
+    onComposerChange('');
+  };
+  const placeholder = !topic ? 'Tell the conductor…'
+    : toAgent ? `Talk to the agent working ${topic.label}: tell it what to do instead, ask what it tried, or give it what it needs.`
+      : `Answer or ask about ${topic.label}. Long answers are fine; Shift+Enter for a new line.`;
+  void now;
   return (
-    <div style={{ width: '400px', flex: 'none', borderLeft: '2px solid var(--line2)', display: 'flex', flexDirection: 'column', background: 'var(--panel)', minHeight: 0 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid var(--line)' }}>
+    <aside className="rail" data-testid="conductor-rail" style={{ width: 400, flex: 'none', height: '100%', display: 'flex', flexDirection: 'column', borderLeft: '1px solid var(--line)', background: 'var(--bg)', color: 'var(--ink)', fontSize: 'var(--fs-body)', lineHeight: 1.45 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', borderBottom: '1px solid var(--line)' }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-          <span className="lbl">Conductor</span>
-          {agentCount !== undefined ? (
-            <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>{agentCount} agents · live</span>
-          ) : null}
+          <span className="hd" style={{ fontSize: 'var(--fs-card)', letterSpacing: '.02em' }}>Conductor</span>
+          {agentCount !== undefined ? <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>{agentCount} {agentCount === 1 ? 'agent' : 'agents'} · {feed.live ? 'live' : 'feed lost'}</span> : null}
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span
-            className="m"
-            style={{ fontSize: 'var(--fs-meta)', fontWeight: 700, color: 'var(--block)', cursor: pending > 0 ? 'pointer' : 'default' }}
-            {...actionable(() => {
-              if (!oldestPendingKey) return;
-              document.getElementById(`rail-msg-${oldestPendingKey}`)?.scrollIntoView({ block: 'center' });
-            })}
-          >
-            {pending > 0 ? `${pending} waiting ↓` : ''}
-          </span>
-          <button
-            type="button"
-            className="btnS"
-            style={{ font: '600 var(--fs-meta)/1.35 "IBM Plex Mono",monospace', letterSpacing: '.06em', textTransform: 'uppercase', padding: '5px 12px', background: 'transparent', color: 'var(--block)', border: '1px solid var(--block)', borderRadius: 0, cursor: 'pointer' }}
-            {...actionable(() => onSend('pause everything'))}
-          >
-            Stop
-          </button>
-        </div>
+        <button type="button" className="btn" data-testid="rail-stop" style={{ fontSize: 'var(--fs-ui)', letterSpacing: '.06em', textTransform: 'uppercase', padding: '5px 12px', color: 'var(--warn)', borderColor: 'var(--warn)' }} onClick={() => (onStop ? onStop() : onSend('pause everything'))}>Stop</button>
       </div>
-      <div style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex', flexDirection: 'column' }}>
-      <div ref={scroll.ref} onScroll={scroll.onScroll} className="scroll" data-testid="rail-thread" style={{ flex: 1, minHeight: 0, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12, opacity: feed.live ? 1 : 0.6 }}>
-        {collapseWardenEvents(thread).map((m) => (
-          <div key={m.k} id={`rail-msg-${m.k}`}>
-            <MessageCard message={m} feedLive={feed.live} now={now} verbose={verbose} labelFor={labelFor} onCommand={onCommand} onUndo={onUndo} onOpenJournal={onOpenJournal} />
+      <div ref={listRef} data-testid="rail-thread" className="scroll" style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {thread.map((message) => (
+          <div key={message.k} id={`rail-msg-${message.k}`}>
+            <MessageCard message={message} labelFor={labelFor} onCommand={onCommand} onUndo={onUndo} onTopic={onTopic} composerId={composerId} />
           </div>
         ))}
       </div>
-      {scroll.unread > 0 ? (
-        <span
-          className="chip chipB chipOn"
-          data-testid="rail-jump"
-          style={{ position: 'absolute', left: '50%', bottom: 10, transform: 'translateX(-50%)', boxShadow: '0 2px 8px rgba(0,0,0,.45)' }}
-          {...actionable(scroll.jump)}
-        >
-          {scroll.unread} new ↓
-        </span>
-      ) : null}
-      </div>
-      {feed.live ? (
-        <>
-          <div style={{ margin: '0 16px 8px', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {QUICK_COMMANDS.map(([label, command]) => (
-              <span key={label} className="chip chipB" {...actionable(() => onSend(command))}>{label}</span>
-            ))}
-          </div>
-          <div style={{ margin: '0 16px 16px', background: 'var(--well)', boxShadow: 'inset 0 2px 5px rgba(0,0,0,.6)', borderRadius: 3, padding: '8px 8px 8px 12px', display: 'flex', alignItems: 'center', gap: 8 }}>
-            <input
-              className="inp" placeholder="command… e.g. why is lane 3 stuck" value={composer}
-              onChange={(e) => onComposerChange(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter' && composer.trim() && !composerBusy) { onSend(composer); onComposerChange(''); } }}
-            />
-            <span
-              className="btnP" style={{ padding: '5px 10px', fontSize: 'var(--fs-ui)', opacity: composerBusy ? 0.55 : 1 }}
-              aria-busy={composerBusy} aria-disabled={composerBusy} data-testid="action-sendCommand-rail" data-pending={composerBusy ? 'true' : 'false'}
-              {...actionable(() => { if (composer.trim() && !composerBusy) { onSend(composer); onComposerChange(''); } })}
-            >
-              {composerBusy ? 'Working…' : 'Send ⏎'}
-            </span>
-          </div>
-          {composerBusy ? (
-            <div className="m" data-testid="rail-working" style={{ margin: '-8px 16px 12px', fontSize: 'var(--fs-meta)', color: 'var(--ink2)' }}>working…</div>
-          ) : composerAction?.result?.kind === 'done' && !composerAction.result.ok ? (
-            <div className="m" data-testid="rail-composer-result" style={{ margin: '-8px 16px 12px', fontSize: 'var(--fs-meta)', color: 'var(--block)' }}>✕ {composerAction.result.text}</div>
-          ) : null}
-        </>
-      ) : (
-        <div className="lbl" style={{ margin: '0 16px 16px', background: 'var(--block)', color: 'var(--aInk)', borderRadius: 3, padding: '12px 14px', lineHeight: 1.8, letterSpacing: '.8px' }}>
-          Composer disabled · feed disconnected ({feed.reason ?? 'unknown'}) · commands resume when feed returns
+      <div style={{ padding: '12px 16px 16px', borderTop: '1px solid var(--line)', display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {commands.map((command) => (
+            <button key={command.label} type="button" className="btn ghost" style={{ fontFamily: 'Barlow,sans-serif', fontWeight: 400, fontSize: 'var(--fs-meta)', letterSpacing: 0, padding: '4px 9px', color: 'var(--ink2)', borderColor: 'var(--line2)' }} onClick={() => onCommand(command.cmd)}>{command.label}</button>
+          ))}
         </div>
-      )}
-    </div>
+        {topic ? (
+          <div data-testid="rail-topic" style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+              <span>About <span className="hd" style={{ fontSize: 'var(--fs-ui)', color: 'var(--ink2)', letterSpacing: '.05em' }}>{topic.label}</span> · send to</span>
+              <a href="#" style={{ color: 'var(--acc)' }} onClick={(e) => { e.preventDefault(); onTopic?.(null); }}>Clear</a>
+            </div>
+            <div style={{ display: 'flex', border: '1px solid var(--line2)' }}>
+              <button type="button" style={{ flex: 1, font: 'inherit', fontSize: 'var(--fs-meta)', padding: '5px 10px', minHeight: 30, border: 0, cursor: 'pointer', whiteSpace: 'nowrap', background: toAgent ? 'transparent' : 'var(--acc)', color: toAgent ? 'var(--ink2)' : 'var(--accInk)' }} onClick={() => onRecipient?.('conductor')}>Conductor</button>
+              <button type="button" style={{ flex: 1, font: 'inherit', fontSize: 'var(--fs-meta)', padding: '5px 10px', minHeight: 30, border: 0, borderLeft: '1px solid var(--line2)', cursor: 'pointer', whiteSpace: 'nowrap', background: toAgent ? 'var(--acc)' : 'transparent', color: toAgent ? 'var(--accInk)' : 'var(--ink2)' }} onClick={() => onRecipient?.('agent')}>The agent on {topic.label}</button>
+            </div>
+          </div>
+        ) : null}
+        <div style={{ display: 'flex', gap: 8, alignItems: 'stretch' }}>
+          <textarea
+            id={composerId} className="inp" rows={3} style={{ minHeight: 72 }} placeholder={placeholder} value={composer}
+            disabled={!feed.live}
+            onChange={(e) => onComposerChange(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
+          />
+          <button type="button" className="btn primary" data-testid="action-sendCommand-rail" aria-busy={busy} style={{ alignSelf: 'stretch', fontSize: 'var(--fs-key)', padding: '6px 18px', minWidth: 72 }} onClick={send}>{busy ? 'Working…' : 'Send'}</button>
+        </div>
+        {!feed.live ? <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--warn)' }}>The feed is disconnected{feed.reason ? ` (${feed.reason})` : ''}; commands resume when it returns.</span> : null}
+        {composerAction?.result?.kind === 'done' && !composerAction.result.ok ? <span data-testid="rail-composer-result" style={{ fontSize: 'var(--fs-meta)', color: 'var(--warn)' }}>{composerAction.result.text}</span> : null}
+      </div>
+    </aside>
   );
 }

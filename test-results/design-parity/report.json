@@ -1,0 +1,38 @@
+[
+  {
+    "board": "2a",
+    "theme": "dark",
+    "console": "C:\\dev\\worktrees\\flightdeck--design-parity\\test-results\\design-parity\\2a-flow-blocker-dark-console.png",
+    "design": "C:\\dev\\worktrees\\flightdeck--design-parity\\test-results\\design-parity\\2a-flow-blocker-dark-design.png",
+    "diffPercent": 6.7,
+    "sizes": "console 1440x900 · design 1442x903",
+    "note": "full page"
+  },
+  {
+    "board": "2c",
+    "theme": "dark",
+    "console": "C:\\dev\\worktrees\\flightdeck--design-parity\\test-results\\design-parity\\2c-flow-question-dark-console.png",
+    "design": "C:\\dev\\worktrees\\flightdeck--design-parity\\test-results\\design-parity\\2c-flow-question-dark-design.png",
+    "diffPercent": 7,
+    "sizes": "console 1440x900 · design 1442x903",
+    "note": "full page"
+  },
+  {
+    "board": "2a",
+    "theme": "light",
+    "console": "C:\\dev\\worktrees\\flightdeck--design-parity\\test-results\\design-parity\\2a-flow-blocker-light-console.png",
+    "design": "C:\\dev\\worktrees\\flightdeck--design-parity\\test-results\\design-parity\\2a-flow-blocker-light-design.png",
+    "diffPercent": 6,
+    "sizes": "console 1440x900 · design 1442x903",
+    "note": "full page"
+  },
+  {
+    "board": "2c",
+    "theme": "light",
+    "console": "C:\\dev\\worktrees\\flightdeck--design-parity\\test-results\\design-parity\\2c-flow-question-light-console.png",
+    "design": "C:\\dev\\worktrees\\flightdeck--design-parity\\test-results\\design-parity\\2c-flow-question-light-design.png",
+    "diffPercent": 6.2,
+    "sizes": "console 1440x900 · design 1442x903",
+    "note": "full page"
+  }
+]

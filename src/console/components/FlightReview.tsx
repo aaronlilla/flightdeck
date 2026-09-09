@@ -1,118 +1,86 @@
 import type { JSX } from 'react';
-import { ACTIONS } from '../actions.js';
-import { ActionButton } from './ActionButton.js';
-import { useState } from 'react';
 
-import type { ProposalsResponse, Rule } from '../../shared/console-model.js';
+import { ACTIONS, useAction } from '../actions.js';
+import type { ProposalsResponse, ReviewMetrics } from '../../shared/console-model.js';
 import { fmtTokens } from '../../shared/format-tokens.js';
-import { hm } from '../freshness.js';
-import { Linkify } from './Linkify.js';
+import { Marks } from './QuestionCard.js';
 
+/**
+ * `Flightdeck Console.dc.html` 1f: today's six figures off the journal (tickets in, PRs
+ * merged, handed to QA, blockers cleared, tokens spent, the slowest step) and the one
+ * change worth making, which is the top open proposal with Apply and Not now.
+ */
 export interface FlightReviewProps {
   proposals: ProposalsResponse | null;
   now: number;
-  onUndo: (jid: string) => void;
+  tokensToday?: number;
+  dailyTokens?: number;
 }
 
-interface KindTaxon {
-  label: string;
-  color: string;
-  /** The Apply button's class, taken from the rule kind (the prototype's own
-   *  seed data, script_wrapped.txt: `btn: 'btnP'` for cost/speed, `'btnA'` for
-   *  human wait) rather than one fixed style for every kind. */
-  btnCls: 'btnP' | 'btnA';
+interface Tile { label: string; value: string; note: string; color: string; border: string }
+
+function dayTitle(now: number): string {
+  const date = new Date(now);
+  const day = date.toLocaleDateString('en-GB', { weekday: 'long' });
+  return `Today, ${day} ${date.getDate()} ${date.toLocaleDateString('en-GB', { month: 'long' })}`;
 }
 
-/** The three proposal categories the review screen actually distinguishes, and the
- *  colors that drive both the chip text and the whole plate's border. A rule kind this
- *  fleet has not seen before (never one this codebase invented on the console's own
- *  authority) falls back to its own id, upper-cased, in the neutral ink color rather
- *  than guessing which of the three it belongs to. */
-const KIND_TAXONOMY: Record<string, KindTaxon> = {
-  cost: { label: 'COST', color: 'var(--block)', btnCls: 'btnP' },
-  'kill-after-fails': { label: 'COST', color: 'var(--block)', btnCls: 'btnP' },
-  'human wait': { label: 'HUMAN WAIT', color: 'var(--park)', btnCls: 'btnA' },
-  'auto-answer': { label: 'HUMAN WAIT', color: 'var(--park)', btnCls: 'btnA' },
-  speed: { label: 'SPEED', color: 'var(--ink2)', btnCls: 'btnP' },
-  'self-iteration': { label: 'SPEED', color: 'var(--ink2)', btnCls: 'btnP' },
-};
-
-function kindTaxon(kind: string): KindTaxon {
-  return KIND_TAXONOMY[kind] ?? { label: kind.toUpperCase(), color: 'var(--ink3)', btnCls: 'btnP' };
+function tiles(metrics: ReviewMetrics, tokensToday: number | undefined, dailyTokens: number | undefined): Tile[] {
+  const count = (value: number | undefined): string => (value === undefined ? 'not measured' : String(value));
+  const tokens = tokensToday ?? 0;
+  const capNote = dailyTokens && Number.isFinite(dailyTokens) ? `${Math.round((tokens / dailyTokens) * 100)}% of the daily cap.` : 'No daily cap is set.';
+  const perMerge = metrics.tokensPerMerge !== null ? ` ${fmtTokens(metrics.tokensPerMerge)} per merge.` : '';
+  const slowest = metrics.slowestHop;
+  return [
+    { label: 'Tickets in', value: count(metrics.ticketsIn), note: 'Picked up from Ready for Dev since midnight.', color: 'var(--ink)', border: 'var(--line)' },
+    { label: 'PRs merged', value: String(metrics.mergedToday), note: metrics.mergedToday > 0 ? 'Merged by the fleet today.' : 'Nothing has merged yet today.', color: 'var(--acc)', border: 'var(--acc)' },
+    { label: 'Handed to QA', value: count(metrics.handedToQa), note: 'Tickets moved to QA with a test plan today.', color: 'var(--ink)', border: 'var(--line)' },
+    { label: 'Blockers cleared', value: count(metrics.blockersCleared), note: 'Cleared today, by you or on their own.', color: 'var(--ink)', border: 'var(--line)' },
+    { label: 'Tokens spent', value: fmtTokens(tokens), note: `${capNote}${perMerge}`, color: 'var(--ink)', border: 'var(--line)' },
+    {
+      label: 'Slowest step',
+      value: slowest ? `${slowest.minutes} min` : metrics.humanWaitMin > 0 ? `${metrics.humanWaitMin} min` : 'none',
+      note: slowest ? `${slowest.name}.` : metrics.humanWaitMin > 0 ? 'Waiting for your answers.' : 'No step waited on anything today.',
+      color: slowest || metrics.humanWaitMin > 0 ? 'var(--warn)' : 'var(--ink)', border: slowest || metrics.humanWaitMin > 0 ? 'var(--warn)' : 'var(--line)',
+    },
+  ];
 }
 
-function RuleCard({ rule, onUndo }: {
-  rule: Rule; onUndo: (jid: string) => void;
-}): JSX.Element {
-  const [expanded, setExpanded] = useState(rule.expanded ?? false);
-  const taxon = kindTaxon(rule.kind);
-  return (
-    <div className="plate" style={{ display: 'grid', gridTemplateColumns: '1fr 250px', gap: 20, padding: '16px 18px', borderColor: taxon.color }}>
-      <div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
-          <span className="chip" style={{ color: taxon.color, borderColor: taxon.color }}>{taxon.label}</span>
-          <span className="m" style={{ fontSize: 'var(--fs-ui)', fontWeight: 700 }}><Linkify text={rule.title} /></span>
-        </div>
-        <div className="m" style={{ fontSize: 'var(--fs-body)', color: 'var(--ink2)' }}>
-          <Linkify text={rule.summary} /> · <a onClick={() => setExpanded((v) => !v)}>{expanded ? 'collapse ▴' : 'evidence ▸'}</a>
-        </div>
-        {expanded ? (
-          <div className="m" style={{ fontSize: 'var(--fs-body)', lineHeight: 1.9, color: 'var(--ink2)', marginTop: 8, borderTop: '1px solid var(--line)', paddingTop: 8 }}>
-            <b style={{ color: 'var(--ink)' }}>evidence</b> <Linkify text={rule.evidence} /><br />
-            <b style={{ color: 'var(--ink)' }}>effect</b> <Linkify text={rule.effect} />
-          </div>
-        ) : null}
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, justifyContent: 'center' }}>
-        {rule.status === 'open' ? (
-          <>
-            <ActionButton spec={ACTIONS.applyProposal} args={[rule.id]} className={taxon.btnCls} style={{ padding: 11 }} busy="Applying…">Apply rule →</ActionButton>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <span className="btnS" style={{ flex: 1 }} onClick={() => setExpanded(true)}>Evidence</span>
-              <ActionButton spec={ACTIONS.dismissProposal} args={[rule.id]} className="btnS" style={{ flex: 1 }} busy="Dismissing…">Dismiss</ActionButton>
-            </div>
-          </>
-        ) : null}
-        {rule.status === 'applied' ? (
-          <>
-            <span className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--run)', textAlign: 'center' }}>✓ applied · {rule.jid}</span>
-            <span className="btnS" onClick={() => rule.jid && onUndo(rule.jid)}>Undo</span>
-          </>
-        ) : null}
-        {rule.status === 'dismissed' ? (
-          <>
-            <span className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)', textAlign: 'center' }}>dismissed</span>
-            <ActionButton spec={ACTIONS.restoreProposal} args={[rule.id]} className="btnS" busy="Restoring…">Restore</ActionButton>
-          </>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
-/** Flight review: metrics tiles + Conductor proposals, each Apply/Evidence/Dismiss. */
-export function FlightReview({ proposals, now, onUndo }: FlightReviewProps): JSX.Element {
+export function FlightReview({ proposals, now, tokensToday, dailyTokens }: FlightReviewProps): JSX.Element {
+  const top = proposals?.rules.find((rule) => rule.status === 'open') ?? null;
+  const apply = useAction(ACTIONS.applyProposal, top?.id);
+  const dismiss = useAction(ACTIONS.dismissProposal, top?.id);
   const metrics = proposals?.metrics;
-  const rules = proposals?.rules ?? [];
+  const result = apply.result?.kind === 'done' ? apply.result : dismiss.result?.kind === 'done' ? dismiss.result : null;
   return (
-    <div className="scroll" data-testid="review-view" style={{ flex: 1, padding: '28px 36px' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', borderBottom: '2px solid var(--line2)', paddingBottom: 12, marginBottom: 22 }}>
-        <span className="lbl">Flight review · {hm(now)}</span>
-        <span className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink2)' }}>{rules.length} proposals · applied rules get a journal id + undo</span>
+    <main data-testid="flight-review" className="scroll" style={{ flex: 1, minWidth: 0, overflow: 'auto', padding: '26px 28px', display: 'flex', flexDirection: 'column', gap: 22 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+        <h2 className="hd" style={{ margin: 0, fontSize: 'var(--fs-page)', lineHeight: 1 }}>{dayTitle(now)}</h2>
+        <span style={{ fontSize: 'var(--fs-ui)', color: 'var(--ink3)' }}>Since midnight · updates live</span>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 12, marginBottom: 22 }}>
-        <div className="plate" style={{ padding: '12px 14px' }}><div className="lbl" style={{ color: 'var(--ink2)' }}>merged today</div><div className="m" style={{ fontSize: 'var(--fs-heading)', fontWeight: 700, marginTop: 4, color: 'var(--run)' }}>{metrics?.mergedToday ?? 0}</div></div>
-        <div className="plate" style={{ padding: '12px 14px' }}><div className="lbl" style={{ color: 'var(--ink2)' }}>human wait</div><div className="m" style={{ fontSize: 'var(--fs-heading)', fontWeight: 700, marginTop: 4, color: 'var(--park)' }}>{metrics?.humanWaitMin ?? 0}m</div></div>
-        <div className="plate" style={{ padding: '12px 14px' }}><div className="lbl" style={{ color: 'var(--ink2)' }}>tokens / merge</div><div className="m" style={{ fontSize: 'var(--fs-heading)', fontWeight: 700, marginTop: 4 }}>{metrics?.tokensPerMerge !== null && metrics?.tokensPerMerge !== undefined ? fmtTokens(metrics.tokensPerMerge) : '--'}</div></div>
-        <div className="plate" style={{ padding: '12px 14px' }}><div className="lbl" style={{ color: 'var(--ink2)' }}>wasted tokens</div><div className="m" style={{ fontSize: 'var(--fs-heading)', fontWeight: 700, marginTop: 4, color: 'var(--block)' }}>{fmtTokens(metrics?.tokensWasted ?? 0)}</div></div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 18 }}>
+        {(metrics ? tiles(metrics, tokensToday, dailyTokens) : []).map((tile) => (
+          <div key={tile.label} data-testid="metric" style={{ position: 'relative', border: `1px solid ${tile.border}`, padding: '20px 22px', display: 'flex', flexDirection: 'column', gap: 6, minHeight: 170 }}>
+            <Marks />
+            <span className="kick" style={{ letterSpacing: '.12em' }}>{tile.label}</span>
+            <span className="hd" style={{ fontSize: 'var(--fs-metric)', lineHeight: 1, color: tile.color, fontVariantNumeric: 'tabular-nums' }}>{tile.value}</span>
+            <p style={{ margin: 'auto 0 0', color: 'var(--ink2)' }}>{tile.note}</p>
+          </div>
+        ))}
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-        {rules.length > 0 ? (
-          rules.map((r) => <RuleCard key={r.id} rule={r} onUndo={onUndo} />)
-        ) : (
-          <div className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)', padding: '24px 0', textAlign: 'center' }}>no proposals yet.</div>
-        )}
-      </div>
-    </div>
+      {top ? (
+        <div data-testid="proposal" style={{ position: 'relative', border: '1px solid var(--line)', padding: '16px 20px', display: 'grid', gridTemplateColumns: '1fr auto', gap: 20, alignItems: 'center', background: 'var(--panel)' }}>
+          <div>
+            <span className="kick" style={{ letterSpacing: '.12em' }}>One change worth making</span>
+            <p style={{ margin: '4px 0 0', fontSize: 'var(--fs-key)' }}>{top.title}. {top.summary}</p>
+            {result ? <span style={{ fontSize: 'var(--fs-meta)', color: result.ok ? 'var(--ink3)' : 'var(--warn)' }}>{result.text}</span> : null}
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button type="button" className="btn" style={{ padding: '7px 14px' }} aria-busy={dismiss.pending} onClick={() => void dismiss.run(top.id)}>Not now</button>
+            <button type="button" className="btn primary" style={{ padding: '7px 14px' }} aria-busy={apply.pending} onClick={() => void apply.run(top.id)}>Apply</button>
+          </div>
+        </div>
+      ) : null}
+    </main>
   );
 }

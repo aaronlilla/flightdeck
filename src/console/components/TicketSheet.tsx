@@ -1,724 +1,135 @@
-import type { JSX, RefObject } from 'react';
-import { ACTIONS } from '../actions.js';
-import type { ActionOutcome } from '../store.js';
-import { ActionOutcomeView } from './ActionButton.js';
-import { LaneCta } from './LaneCta.js';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import type { JSX } from 'react';
+import { useEffect, useState } from 'react';
 
 import * as api from '../api.js';
-import { errorText, showToast, useAction } from '../actions.js';
-import { HOP_NAMES } from '../../shared/console-model.js';
-import { humanizeParkReason } from '../../shared/humanize.js';
-import { actionable } from '../keyboard-actionable.js';
-import { costClass, ctxPercent, kindLabel, laneCta, laneHeadline, stateOf } from '../laneVM.js';
-import { computeFreshness, freshnessClass, freshnessStamp, hm } from '../freshness.js';
-import { useStore } from '../store.js';
-import type { Action } from '../store.js';
-import type { Dispatch } from 'react';
-import { MessageCard } from './ConductorRail.js';
-import { Linkify } from './Linkify.js';
-import type { JournalNarrativeEntry, Lane, LaneStory, LaneSummary, Message } from '../../shared/console-model.js';
-import { fmtTokens } from '../../shared/format-tokens.js';
+import { hm } from '../freshness.js';
+import { boardStateWord, durationWords, laneHeadline } from '../laneVM.js';
+import type { Lane, LaneStory, LaneSummary } from '../../shared/console-model.js';
+import { Marks } from './QuestionCard.js';
 
+/**
+ * `Flightdeck Console.dc.html` 1d: the lane sheet over the board. Its title and state,
+ * three sentences (what happened, where it is, what is next) off the run's summary, the
+ * question it asked if there is one, its story as a timeline, and two separate controls:
+ * Answer for the question, Send for a note while it works. The run's ids sit behind one
+ * "Technical" disclosure.
+ */
 export interface TicketSheetProps {
   lane: Lane;
-  feedLive: boolean;
   now: number;
-  /** Sweep #8: "View council" opens this sheet with nothing pointing at the council
-   *  content it promised -- set when the sheet was opened from that CTA specifically,
-   *  so the sheet can scroll to and highlight the audit line rather than leaving the
-   *  operator to find it themselves. */
-  focus?: 'audit';
-  /** 2026-09-08: plain by default -- the thread and the story ask the server for
-   *  the raw rows only in verbose mode; the Journal panel and the id chip beside
-   *  the headline render only then too. Defaults to `false` so a caller that has
-   *  not wired the switch through yet still gets a working, plain sheet. */
-  verbose?: boolean;
-  /** A person's name for a lane id -- used by the run thread's own question cards
-   *  ("Question from <label>"). Optional so a caller with no board-wide lookup yet
-   *  still gets a working sheet. */
-  labelFor?: (id: string) => string | null;
   onClose: () => void;
-  /** Item 15: the same plain/verbose switch the top bar carries, discoverable from
-   *  the sheet header too -- optional so a caller with no toggle wired yet still
-   *  gets a working sheet, with the switch simply absent from its header. */
-  onToggleVerbose?: () => void;
+  /** `answer <key> <text>` and the run's other commands, through the page. */
   onCommand: (id: string, cmd: string) => void;
-  onOpenCost: (id: string) => void;
-  onOpenSandbox: (id: string) => void;
-  /** May return a promise (App's `runAction` does): the sheet awaits it before
-   *  re-fetching its own run thread, since the thread it already holds was fetched
-   *  once on open and a send otherwise never appears in it until the sheet is
-   *  closed and reopened. */
-  onSendLane: (id: string, text: string) => void | Promise<void | { cards: Message[] }>;
-  /** C.1's Amend: appends to the run's brief rather than sending it a message. Runs
-   *  through the catalog on the App side, so it keeps the receipt and the refetch. */
-  onAmendLane: (id: string, text: string) => void | Promise<void>;
-  /** How long the composer's working row waits before it says the Conductor did not
-   *  answer. `/state`'s `conductor.timeoutMs`; defaults to the class default. */
-  conductorTimeoutMs?: number;
-  /** C.1: the same composer's draft, delivered as a brief amendment (`POST /amend`)
-   *  rather than a plain inbox message. */
-  onUndo: (jid: string) => void;
-  onOpenJournal: (jid: string) => void;
+  /** A note to the agent while it works (`POST /command` with the run as context). */
+  onSendLane: (id: string, text: string) => void | Promise<unknown>;
 }
 
-interface HopStyle {
-  border: 'solid' | 'dashed';
-  color: string;
-  bg: string;
-  glyph: string;
-  glyphColor: string;
-  labelColor: string;
-  badge: string;
-  anim: string;
-}
-
-/** Callback registry, keyed by lane id, so a reaudit poll started from one mounted
- *  sheet keeps updating that sheet's own `summary` state live -- and, if the sheet
- *  is closed and reopened on the same lane mid-poll, the newly mounted sheet picks
- *  the live updates back up. The poll itself (module-level, in `pollReaudit` below)
- *  survives a sheet close either way: this registry only affects what redraws
- *  cosmetically while something is mounted to redraw, never whether the poll runs. */
-const reauditSummarySubscribers = new Map<string, (summary: LaneSummary) => void>();
-
-/** One timeout handle per lane currently being re-audited, so navigating away and
- *  back to the same lane's sheet never starts a second, competing poll loop. */
-const reauditTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
-/** Polls `getRunSummary` every 3s until the audit's own head no longer trails the
- *  PR's current one (`readiness.headMoved` false once a fresh attestation lands).
- *  Runs at module scope, independent of any mounted `TicketSheet` -- started by
- *  `startReaudit` and outliving a sheet close, so the top bar keeps showing
- *  progress and the operator gets the final toast even if they closed the sheet. */
-function pollReaudit(id: string, dispatch: Dispatch<Action>, displayName: string): void {
-  const key = `reaudit:${id}`;
-  api.getRunSummary(id).then((next) => {
-    reauditSummarySubscribers.get(id)?.(next);
-    if (next.audit && next.readiness && !next.readiness.headMoved) {
-      reauditTimers.delete(id);
-      dispatch({ type: 'pending-clear', key });
-      showToast(dispatch, `Re-audit finished for ${displayName}: ${next.audit.verdict}`, true);
-      return;
-    }
-    reauditTimers.set(id, setTimeout(() => pollReaudit(id, dispatch, displayName), 3_000));
-  }).catch((caught: unknown) => {
-    reauditTimers.delete(id);
-    dispatch({ type: 'pending-clear', key });
-    showToast(dispatch, errorText(caught), false);
-  });
-}
-
-/** Kicks off a reaudit: marks `reaudit:<id>` busy in the store immediately (so the
- *  button and the top bar both pick it up on the very next render), then starts the
- *  poll above once the server confirms the round actually started. */
-function startReaudit(id: string, dispatch: Dispatch<Action>, displayName: string): void {
-  const key = `reaudit:${id}`;
-  dispatch({ type: 'pending-set', key, label: `Re-audit running for ${displayName}` });
-  api.reauditRun(id).then((result) => {
-    if (!result.started) {
-      dispatch({ type: 'pending-clear', key });
-      showToast(dispatch, 're-audit did not start', false);
-      return;
-    }
-    reauditTimers.set(id, setTimeout(() => pollReaudit(id, dispatch, displayName), 3_000));
-  }).catch((caught: unknown) => {
-    dispatch({ type: 'pending-clear', key });
-    showToast(dispatch, errorText(caught), false);
-  });
-}
-
-/** One entry per hop state, matching the prototype's own `HS` table (`hops()`,
- *  `script_wrapped.txt` ~206-212): a done/merged/blocked node is a solid filled disc, a
- *  live/parked node is a pulsing outlined ring, and a ghost node is a dashed empty ring. */
-const HOP_STYLE: Record<'done' | 'merged' | 'live' | 'blocked' | 'parked' | 'ghost', HopStyle> = {
-  done: { border: 'solid', color: 'var(--run)', bg: 'var(--run)', glyph: '✓', glyphColor: 'var(--bg)', labelColor: 'var(--ink)', badge: '', anim: 'none' },
-  merged: { border: 'solid', color: 'var(--merge)', bg: 'var(--merge)', glyph: '⇗', glyphColor: 'var(--bg)', labelColor: 'var(--ink)', badge: 'merged', anim: 'none' },
-  live: { border: 'solid', color: 'var(--hand)', bg: 'transparent', glyph: '●', glyphColor: 'var(--hand)', labelColor: 'var(--ink)', badge: 'live', anim: 'fdring 1.8s ease-out infinite' },
-  blocked: { border: 'solid', color: 'var(--block)', bg: 'var(--block)', glyph: '■', glyphColor: 'var(--aInk)', labelColor: 'var(--ink)', badge: 'blocked', anim: 'none' },
-  parked: { border: 'solid', color: 'var(--park)', bg: 'transparent', glyph: '◆', glyphColor: 'var(--park)', labelColor: 'var(--ink)', badge: 'parked', anim: 'fdpulse 1.4s steps(2,jump-none) infinite' },
-  ghost: { border: 'dashed', color: 'var(--line2)', bg: 'transparent', glyph: '', glyphColor: 'var(--ink3)', labelColor: 'var(--ink3)', badge: '', anim: 'none' },
-};
-
-/** A hop's sub-label: the queue, the sandbox id, the model, the fixed council-judge
- *  count, or the merge target -- exactly `hops()`'s own `names` table. */
-function hopSubLabel(index: number, lane: Lane): string {
-  switch (index) {
-    case 0: return 'queue';
-    // 2026-09-08: the branch name, not the sandbox's own id -- a name the operator
-    // recognizes rather than another machine string.
-    case 1: return lane.sandbox?.branch ?? 'worktree';
-    case 2: return lane.model;
-    case 3: return 'council judge ×3';
-    case 4: return lane.pr ? `PR #${lane.pr.no} → main` : '';
-    default: return '';
-  }
-}
-
-/** A hop's resolved state: `hops()`'s own resolution -- a merged lane fills only its
- *  merge hop, a paused lane's current hop reads as ghost rather than whatever
- *  `hopStatus` says, and every hop before the current one is always done. */
-function hopState(index: number, lane: Lane): keyof typeof HOP_STYLE {
-  if (lane.state === 'merged') return index === 4 ? 'merged' : 'done';
-  if (index < lane.hop) return 'done';
-  if (index === lane.hop) {
-    if (lane.state === 'parked') return 'parked';
-    if (lane.state === 'paused') return 'ghost';
-    return lane.hopStatus;
-  }
-  return 'ghost';
-}
-
-/** The band's text, background and text color: `hops()`'s sibling logic in the
- *  prototype (script_wrapped.txt ~273-274) -- a parked lane always reads "parked --
- *  human needed since HH:MM"; an over-cap running lane reads its state plus " -- over
- *  cap, retry loop" on a red band; everything else is bare glyph + label with no time
- *  appended at all. */
-function bandFor(lane: Lane): { text: string; bg: string; ink: string } {
-  const st = stateOf(lane.state);
-  const overCap = lane.tokenCap !== null && lane.tokens > lane.tokenCap && lane.state === 'running';
-  if (lane.state === 'parked') {
-    const why = lane.reason ? ` — ${humanizeParkReason(lane.reason)}` : '';
-    return { text: `◆ parked — human needed since ${hm(lane.since)}${why}`, bg: 'var(--park)', ink: 'var(--aInk)' };
-  }
-  const suffix = lane.runaway && lane.state === 'running' ? ' — over cap, retry loop' : '';
-  return {
-    text: `${st.glyph} ${st.label}${suffix}`,
-    bg: overCap ? 'var(--block)' : 'var(--panel2)',
-    ink: overCap ? 'var(--aInk)' : 'var(--ink2)',
-  };
-}
-
-/** H2.4: the run's own story -- one dated sentence per entry, with a link when the
- *  entry names one (a PR, a ticket, a change). Rendered before the journal panel. */
-function StoryPanel({ story, repo }: { story: LaneStory | null; repo?: string | null }): JSX.Element | null {
-  const [briefOpen, setBriefOpen] = useState(false);
-  if (!story || (story.entries.length === 0 && !story.brief)) return null;
-  return (
-    <div style={{ marginBottom: 16 }}>
-      {story.entries.length > 0 ? (
-        <>
-          <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 10 }}>Story</div>
-          <div className="m" style={{ fontSize: 'var(--fs-body)', lineHeight: 2, color: 'var(--ink2)', overflowWrap: 'anywhere' }}>
-            {story.entries.map((entry, i) => (
-              <div key={i}>
-                <span style={{ color: 'var(--ink3)', fontWeight: 600 }}>{hm(entry.at)}</span>{' '}
-                {entry.url ? (
-                  <a href={entry.url} style={{ color: 'var(--ink)' }}>{entry.text}</a>
-                ) : (
-                  <span><Linkify text={entry.text} repo={repo} /></span>
-                )}
-              </div>
-            ))}
-          </div>
-        </>
-      ) : null}
-      {story.brief ? (
-        <div style={{ marginTop: 10 }}>
-          <span className="lbl" style={{ color: 'var(--ink2)', cursor: 'pointer' }} {...actionable(() => setBriefOpen((v) => !v))}>brief</span>
-          {briefOpen ? <div className="m" style={{ fontSize: 'var(--fs-body)', color: 'var(--ink2)', marginTop: 6 }}>{story.brief.excerpt}</div> : null}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-/** 2026-09-07: the ticket sheet's top summary block -- what was done, the lane's own
- *  status, whether it was audited, and whether it is proven ready to merge, with the
- *  Re-check and Re-audit buttons right there rather than making an operator dig for
- *  either fact somewhere else on the sheet. Renders nothing (rather than a loading
- *  placeholder) until the first fetch lands, matching `StoryPanel`'s own convention. */
-function SummaryPanel({
-  summary, loadFailed, onRecheck, onReaudit, reauditRunning, recheckRunning, recheckResult, auditRef, highlightAudit, repo,
-}: {
-  summary: LaneSummary | null;
-  loadFailed?: boolean;
-  onRecheck: () => void;
-  onReaudit: () => void;
-  reauditRunning: boolean;
-  recheckRunning: boolean;
-  recheckResult: ActionOutcome | null;
-  auditRef?: RefObject<HTMLDivElement | null>;
-  highlightAudit?: boolean;
-  repo?: string | null;
-}): JSX.Element | null {
-  if (loadFailed) {
-    return (
-      <div data-testid="ticket-sheet-summary" style={{ padding: '18px 22px', borderBottom: '1px solid var(--line)' }}>
-        <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 10 }}>Summary</div>
-        <div className="m" style={{ fontSize: 'var(--fs-body)', color: 'var(--block)' }}>could not load the summary.</div>
-      </div>
-    );
-  }
-  if (!summary) {
-    return (
-      <div data-testid="ticket-sheet-summary" style={{ padding: '18px 22px', borderBottom: '1px solid var(--line)' }}>
-        <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 10 }}>Summary</div>
-        <div className="m" style={{ fontSize: 'var(--fs-body)', color: 'var(--ink3)' }}>Checking the PR, its checks and the audit…</div>
-      </div>
-    );
-  }
-  const { audit, readiness } = summary;
-  const auditLine = audit
-    ? `Council ${audit.verdict}, ${audit.reviewed} of ${audit.total} reviewed, `
-      + `${audit.findings} ${audit.findings === 1 ? 'finding' : 'findings'}, at ${hm(audit.at)} on ${audit.head.slice(0, 7)}`
-      + (audit.stale ? ` -- stale: ${audit.staleWhy}` : '')
-    : 'Not audited.';
-  return (
-    <div data-testid="ticket-sheet-summary" style={{ padding: '18px 22px', borderBottom: '1px solid var(--line)', display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div>
-        <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 10 }}>What happened</div>
-        {summary.what.length > 0 ? (
-          <ul className="m" style={{ margin: 0, paddingLeft: 18, fontSize: 'var(--fs-body)', color: 'var(--ink)', lineHeight: 1.6 }}>
-            {summary.what.map((line, i) => <li key={i}><Linkify text={line} repo={repo} /></li>)}
-          </ul>
-        ) : (
-          <div className="m" style={{ fontSize: 'var(--fs-body)', color: 'var(--ink3)' }}>Nothing on record yet.</div>
-        )}
-      </div>
-      <div>
-        <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 10 }}>Where it is</div>
-        <div className="m" style={{ fontSize: 'var(--fs-body)', color: 'var(--ink2)', marginBottom: 6 }}><Linkify text={summary.status} repo={repo} /></div>
-        <div
-          ref={auditRef} data-testid="ticket-sheet-audit" className="m"
-          style={{
-            fontSize: 'var(--fs-body)', color: 'var(--ink2)', marginBottom: 6,
-            outline: highlightAudit ? '2px solid var(--hand)' : 'none', outlineOffset: 4,
-            transition: 'outline-color .3s',
-          }}
-        >
-          {auditLine}
-          {audit && audit.findingsText.length > 0 ? (
-            <ul style={{ margin: '4px 0 0', paddingLeft: 18, lineHeight: 1.6 }}>
-              {audit.findingsText.map((line, i) => <li key={i}>{line}</li>)}
-            </ul>
-          ) : null}
-        </div>
-        <div data-testid="ticket-sheet-readiness" className="m" style={{ fontSize: 'var(--fs-body)' }}>
-          {readiness?.ok ? (
-            <span style={{ color: 'var(--run)', fontWeight: 700 }}>Ready to merge.</span>
-          ) : (
-            <span style={{ color: 'var(--block)' }}>Not ready: {readiness?.why ?? 'unknown'}.</span>
-          )}
-        </div>
-      </div>
-      <div>
-        <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 10 }}>Next step</div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <span className="m" data-testid="ticket-sheet-next" style={{ fontSize: 'var(--fs-body)', fontWeight: 700, color: 'var(--ink)' }}><Linkify text={summary.next} repo={repo} /></span>
-          <span style={{ flex: 1 }} />
-          <span
-            className="btnS"
-            style={{ padding: '6px 10px', fontSize: 'var(--fs-ui)', opacity: recheckRunning ? 0.55 : 1, display: 'inline-flex', alignItems: 'center', gap: 6 }}
-            aria-busy={recheckRunning} aria-disabled={recheckRunning}
-            data-busy={recheckRunning ? '1' : undefined} data-testid="ticket-sheet-recheck"
-            {...actionable(recheckRunning ? () => undefined : onRecheck)}
-          >
-            {recheckRunning ? <span className="fdSpinner" aria-hidden="true" /> : null}
-            {recheckRunning ? 'Re-checking…' : 'Re-check'}
-          </span>
-          <span
-            className="btnS" aria-busy={reauditRunning ? 'true' : undefined} data-busy={reauditRunning ? '1' : undefined}
-            style={{ padding: '6px 10px', fontSize: 'var(--fs-ui)', opacity: reauditRunning ? 0.7 : 1, cursor: reauditRunning ? 'default' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}
-            {...actionable(reauditRunning ? () => undefined : onReaudit)}
-          >
-            {reauditRunning ? <span className="fdSpinner" aria-hidden="true" /> : null}
-            {reauditRunning ? 'Re-auditing…' : 'Re-audit'}
-          </span>
-          {recheckResult?.kind === 'done' && !recheckRunning ? (
-            <span className="m" data-testid="ticket-sheet-recheck-result" style={{ fontSize: 'var(--fs-meta)', color: recheckResult.ok ? 'var(--run)' : 'var(--block)' }}>
-              {recheckResult.ok ? '✓' : '✕'} {recheckResult.text}
-            </span>
-          ) : null}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function JournalPanel({ entries, repo }: { entries: JournalNarrativeEntry[]; repo?: string | null }): JSX.Element {
-  return (
-    <div className="m" style={{ fontSize: 'var(--fs-body)', lineHeight: 2, color: 'var(--ink2)', overflowWrap: 'anywhere' }}>
-      {entries.map((entry, i) => (
-        <div key={i}>
-          <span style={{ color: entry.color, fontWeight: 600 }}>{hm(entry.t)}</span> <span><Linkify text={entry.text} repo={repo} /></span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-/** Ticket sheet: band, id/model/repo/attempt, cost, context, pipeline rail, journal, run thread. */
-export function TicketSheet(props: TicketSheetProps): JSX.Element {
-  const {
-    lane, feedLive, now, focus, verbose = false, labelFor, onClose, onToggleVerbose, onCommand, onOpenCost, onOpenSandbox,
-    onSendLane, onAmendLane, onUndo, onOpenJournal, conductorTimeoutMs = 120_000,
-  } = props;
-  const [thread, setThread] = useState<Message[]>([]);
-  const [journal, setJournal] = useState<JournalNarrativeEntry[]>([]);
-  const [story, setStory] = useState<LaneStory | null>(null);
+export function TicketSheet({ lane, now, onClose, onCommand, onSendLane }: TicketSheetProps): JSX.Element {
   const [summary, setSummary] = useState<LaneSummary | null>(null);
-  const [summaryLoadFailed, setSummaryLoadFailed] = useState(false);
-  const [draft, setDraft] = useState('');
-  const [highlightAudit, setHighlightAudit] = useState(false);
-  const [idCopied, setIdCopied] = useState(false);
-  const reauditPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const auditRef = useRef<HTMLDivElement | null>(null);
-  const threadRef = useRef<HTMLDivElement | null>(null);
-  const { state: storeState, dispatch: storeDispatch } = useStore();
-  // A dedicated store key per lane rather than local state: the reaudit poll keeps
-  // running (and the top bar keeps showing it) even after this sheet is closed and
-  // its own component instance unmounts.
-  const reauditKey = `reaudit:${lane.id}`;
-  const reauditRunning = reauditKey in storeState.pending;
-  // A person's name for the top bar's "Re-audit running for ..." line -- the ticket
-  // key, else the title, never the raw generated lane id.
-  const displayName = lane.ticket ?? lane.title ?? 'this run';
-
-  // Sweep #8: "View council" must land on the council content it promised, not just
-  // the sheet in general. Fires once summary data actually exists to scroll to.
-  useEffect(() => {
-    if (focus !== 'audit' || !summary || !auditRef.current) return;
-    auditRef.current.scrollIntoView({ block: 'center' });
-    setHighlightAudit(true);
-    const timer = setTimeout(() => setHighlightAudit(false), 2_500);
-    return () => clearTimeout(timer);
-  }, [focus, summary]);
+  const [story, setStory] = useState<LaneStory | null>(null);
+  const [failed, setFailed] = useState<string | null>(null);
+  const [answer, setAnswer] = useState('');
+  const [note, setNote] = useState('');
+  const [sent, setSent] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
-    api.getRunThread(lane.id, { verbose }).then((r) => { if (active) setThread(r.messages); }).catch(() => undefined);
-    api.getRunJournal(lane.id).then((r) => { if (active) setJournal(r.entries); }).catch(() => undefined);
-    api.getRunStory(lane.id, { verbose }).then((r) => { if (active) setStory(r); }).catch(() => undefined);
-    setSummaryLoadFailed(false);
-    api.getRunSummary(lane.id).then((r) => { if (active) setSummary(r); })
-      .catch(() => { if (active) setSummaryLoadFailed(true); });
+    setSummary(null); setStory(null); setFailed(null);
+    api.getRunSummary(lane.id).then((r) => { if (active) setSummary(r); }).catch((error: unknown) => { if (active) setFailed(error instanceof Error ? error.message : String(error)); });
+    api.getRunStory(lane.id).then((r) => { if (active) setStory(r); }).catch(() => undefined);
     return () => { active = false; };
-    // The rail and the sheet both refetch on the same switch (item 1): opening the
-    // sheet with verbose already on asks for raw rows from the start, and flipping
-    // it while the sheet is open refetches the thread and the story in place.
-  }, [lane.id, verbose]);
-
-  // Re-check and Re-audit are catalog actions: busy state, inline answer, rail
-  // receipt. The summary panel still takes the fresh summary a re-check returns.
-  const recheck = useAction(ACTIONS.recheckRun, lane.id);
-  const handleRecheck = useCallback(() => {
-    void recheck.run(lane.id).then((outcome) => {
-      if (outcome.kind !== 'done') return;
-      if (outcome.ok && outcome.raw) setSummary(outcome.raw);
-      // The rail's receipt sits behind this sheet, so a re-check needs the toast as
-      // well as the inline answer: the toast is the only one of the two visible from
-      // every view, and a failure that shows nowhere reads as nothing happening.
-      showToast(storeDispatch, outcome.text, outcome.ok);
-    });
-  }, [lane.id, recheck, storeDispatch]);
-
-  // Keeps this sheet's own `summary` live while a reaudit it (or an earlier, now
-  // closed, instance of this same sheet) started is still polling -- see
-  // `reauditSummarySubscribers` above. Registered for the lifetime of the sheet
-  // rather than only while `reauditRunning` is true, so a poll that starts a beat
-  // after mount is never missed.
-  useEffect(() => {
-    reauditSummarySubscribers.set(lane.id, setSummary);
-    return () => { reauditSummarySubscribers.delete(lane.id); };
   }, [lane.id]);
 
-  // A re-audit outlives this sheet: the poll and the top bar's pending row belong to
-  // the module (`startReaudit`), not to a component that closes the moment the
-  // operator clicks away. The catalog is not the right shape for a call whose answer
-  // arrives minutes later on a different mechanism.
-  const handleReaudit = useCallback(() => {
-    startReaudit(lane.id, storeDispatch, displayName);
-  }, [lane.id, storeDispatch, displayName]);
-
-  // W1: appends a reply row into this sheet's own thread for a rejected send or amend.
-  // The rail already got its own receipt/refusal (App.tsx's `runAction`), but the rail
-  // sits behind the open sheet -- an operator watching the sheet saw nothing at all
-  // until this, exactly the silence the mission complained about.
-  const appendSheetError = useCallback((error: unknown) => {
-    const text = error instanceof Error ? error.message : String(error);
-    const row: Message = {
-      k: `sheet-${Date.now()}-${Math.random()}`, type: 'refusal', text, ts: Date.now(), source: 'console',
-    };
-    setThread((prev) => [...prev, row]);
-  }, []);
-
-  // A send lands on the run's own thread server-side, but the thread above was fetched
-  // once on open and never polls -- without this, the message the operator just typed
-  // would silently vanish from the sheet until it was closed and reopened.
-  const amend = useAction(ACTIONS.amendRun, lane.id);
-  const [sending, setSending] = useState(false);
-  const sendAndRefetch = useCallback((text: string) => {
-    // W3/W4 (2026-09-08): the composer talks to the Conductor. A working row goes up
-    // at once and turns into the timeout text if nothing comes back in time; the reply
-    // cards (operator bubble, receipts, reply, any confirm card) replace it. An older
-    // `onSendLane` that returns nothing keeps the refetch it always had.
-    const workingKey = `working-${Date.now()}-${Math.random()}`;
-    const operator: Message = { k: `op-${Date.now()}-${Math.random()}`, type: 'operator', text, ts: Date.now(), source: 'operator' };
-    const working: Message = { k: workingKey, type: 'thinking', text: 'Conductor is working…', ts: Date.now(), source: 'conductor' };
-    setThread((prev) => [...prev, operator, working]);
-    const seconds = Math.round(conductorTimeoutMs / 1000);
-    const timer = setTimeout(() => {
-      setThread((prev) => prev.map((row) => (row.k === workingKey
-        ? { ...row, text: `the Conductor did not answer in ${seconds}s; the grammar answered instead…` }
-        : row)));
-    }, conductorTimeoutMs);
-    setSending(true);
-    Promise.resolve(onSendLane(lane.id, text))
-      .then(async (result) => {
-        clearTimeout(timer);
-        if (result && 'cards' in result) {
-          const answer = result.cards.filter((row) => row.type !== 'operator');
-          setThread((prev) => [...prev.filter((row) => row.k !== workingKey), ...answer]);
-          return;
-        }
-        const r = await api.getRunThread(lane.id, { verbose });
-        setThread(r.messages);
-      })
-      .catch((error: unknown) => {
-        clearTimeout(timer);
-        setThread((prev) => prev.filter((row) => row.k !== workingKey));
-        appendSheetError(error);
-      })
-      .finally(() => setSending(false));
-  }, [onSendLane, lane.id, verbose, appendSheetError, conductorTimeoutMs]);
-
-  // C.1: same shape as sendAndRefetch, but through the amendment path, so a correction
-  // typed into this composer shows up in the run's own thread the same way a send does.
-  const amendAndRefetch = useCallback((text: string) => {
-    Promise.resolve(onAmendLane(lane.id, text))
-      .then(() => api.getRunThread(lane.id, { verbose }))
-      .then((r) => setThread(r.messages))
-      .catch(appendSheetError);
-  }, [onAmendLane, lane.id, verbose, appendSheetError]);
-
-  // Item 6: the thread scrolls to its newest message on open and after a send.
-  // jsdom (the test environment) has no `scrollTo` on a plain element, so this
-  // guards rather than crashing every render in a test.
-  useEffect(() => {
-    const el = threadRef.current;
-    if (el && typeof el.scrollTo === 'function') el.scrollTo({ top: el.scrollHeight });
-  }, [thread]);
-
-  const headline = laneHeadline(lane);
-  const cta = laneCta(lane);
-  const pct = ctxPercent(lane);
-  const fresh = computeFreshness(lane.verifiedAt, lane.observedAt, feedLive, now);
-  const canPause = (lane.state === 'running' || lane.state === 'handed-off') && !lane.runaway;
-  // `blocked` included: it is otherwise the one lane state whose own CTA ("Gate log ->")
-  // just reopens this same sheet, which reads as a genuine dead end for a lane blocked
-  // by a stuck-session signal or a stale park record rather than an integration outage.
-  // `exhausted` for the same reason: its own call to action, "Compact + resume", answers
-  // an honest 501 because the runner cannot hand a run off on demand, which would leave an
-  // exhausted run with no action at all. A run the operator can see must always be one the
-  // operator can end.
-  const canKill = (
-    lane.state === 'running' || lane.state === 'handed-off' || lane.state === 'paused'
-    || lane.state === 'blocked' || lane.state === 'exhausted' || lane.state === 'parked'
-  ) && !lane.runaway;
-  const band = bandFor(lane);
-
+  const word = boardStateWord(lane);
+  const head = laneHeadline(lane);
+  const question = lane.question;
+  const submitAnswer = (text: string): void => {
+    if (!question || !text.trim()) return;
+    onCommand(lane.id, `answer ${question.key} ${text.trim()}`);
+    setAnswer('');
+  };
+  const submitNote = (): void => {
+    const text = note.trim();
+    if (!text) return;
+    void Promise.resolve(onSendLane(lane.id, text)).then(() => setSent(text));
+    setNote('');
+  };
+  const entries = story?.entries ?? [];
   return (
-    <div
-      className="plate" data-testid="ticket-sheet"
-      // The sheet is the screen's height less the overlay's margins and scrolls inside:
-      // a long story or run thread used to push the band and the composer off the top
-      // and bottom of the window (2026-09-07).
-      style={{ width: 'min(1400px, calc(100vw - 48px))', height: 'calc(100vh - 48px)', maxHeight: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', borderColor: 'var(--line2)' }}
-    >
-      <div className="lbl" style={{ background: band.bg, color: band.ink, padding: '7px 20px', display: 'flex', justifyContent: 'space-between', gap: 12, borderRadius: '3px 3px 0 0' }}>
-        <span>{band.text}</span>
-        <span style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          {/* Item 15: the same plain/verbose switch the top bar carries, right where
-              a person is actually reading raw ids and looking for a way out of them --
-              the top bar's own chip is out of sight the moment a sheet covers it. */}
-          {onToggleVerbose ? (
-            <span
-              className="chip chipB" data-testid="ticket-sheet-verbose-chip"
-              title="show raw ids and every row"
-              style={{ cursor: 'pointer' }}
-              {...actionable(onToggleVerbose)}
-            >
-              {verbose ? 'verbose' : 'plain'}
-            </span>
-          ) : null}
-          <span style={{ cursor: 'pointer' }} {...actionable(onClose)}>esc to close ✕</span>
-        </span>
-      </div>
-      {/* The header through the pipeline can run long (a full Summary, a wide
-          pipeline) at a short viewport -- wrapped in its own scrollable region,
-          `flex: '0 1 auto'`, so IT gives way first. `ticket-sheet-body` below
-          carries a real pixel floor (`flex: '1 0 280px'`, no shrink) so the run
-          thread and the composer always keep enough room to stay usable, rather
-          than both regions fighting the squeeze and the thread losing down to a
-          height of 0 (found live: a click landed on the "Run thread" label
-          instead of the button under it, because the thread's own scroll
-          container had shrunk to nothing). */}
-      <div className="scroll" style={{ flex: '0 1 auto', minHeight: 0, overflowY: 'auto' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '16px 22px', borderBottom: '1px solid var(--line)' }}>
-        {/* Item 3: the big line is the lane's own title, else its ticket key, else
-            "Untitled run" -- never the run id, which lives only in the title attribute
-            (and, in verbose mode, in the small id chip on the row below). */}
-        <span className="m" title={headline.runId} style={{ fontSize: 'var(--fs-heading)', fontWeight: 700 }}>
-          <Linkify text={lane.title ?? lane.ticket ?? 'Untitled run'} repo={lane.repo} />
-        </span>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px 20px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-            {lane.ticket ? (
-              lane.sourceUrl ? (
-                <a className="chip chipB" href={lane.sourceUrl} target="_blank" rel="noreferrer">{lane.ticket}</a>
-              ) : (
-                <span className="chip"><Linkify text={lane.ticket} repo={lane.repo} /></span>
-              )
-            ) : null}
-            <span className="chip">{kindLabel(lane.kind)}</span>
-            <span className="chip">{lane.model}</span>
-            <span className="chip">{lane.repo}</span>
-            <span className="chip">attempt {lane.attempt}</span>
-            <a className="m" style={{ fontSize: 'var(--fs-ui)' }} {...actionable(() => onOpenSandbox(lane.id))}>sandbox</a>
-            {verbose ? (
-              <span
-                data-testid="ticket-sheet-id-chip"
-                className="chip m" title="click to copy the run id"
-                {...actionable(() => {
-                  void navigator.clipboard?.writeText(lane.id).then(() => setIdCopied(true)).catch(() => undefined);
-                  setTimeout(() => setIdCopied(false), 1_500);
-                })}
-              >
-                id {lane.id}{idCopied ? ' · copied' : ''}
-              </span>
-            ) : null}
-          </div>
+    <aside data-testid="ticket-sheet" role="dialog" aria-label={head.main} style={{ position: 'absolute', top: 0, right: 0, bottom: 0, width: 600, background: 'var(--bg)', borderLeft: '1px solid var(--line2)', boxShadow: '-12px 0 32px rgba(0,0,0,.25)', display: 'flex', flexDirection: 'column' }} onClick={(e) => e.stopPropagation()}>
+      <div style={{ padding: '20px 24px 14px', borderBottom: '1px solid var(--line)', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16 }}>
+        <div>
+          <div className="key">{lane.ticket ?? ''}{lane.ticket ? ' · ' : ''}<span style={{ color: word.color }}>{word.word} · {durationWords(now - lane.since)}</span></div>
+          <h2 className="hd" data-testid="sheet-title" style={{ margin: '2px 0 0', fontSize: 'var(--fs-sheet)', lineHeight: 1.1 }}>{lane.title ?? head.main}</h2>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 20, flexWrap: 'wrap' }}>
-          <div style={{ textAlign: 'right' }}>
-            <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 3 }}>tokens</div>
-            <span className={costClass(lane)} {...actionable(() => onOpenCost(lane.id))}>{fmtTokens(lane.tokens)}</span>
+        <button type="button" aria-label="Close" data-testid="sheet-close" style={{ width: 32, height: 32, flex: 'none', background: 'transparent', border: '1px solid var(--line2)', color: 'var(--ink2)', fontSize: 'var(--fs-key)', cursor: 'pointer', borderRadius: 0 }} onClick={onClose}>✕</button>
+      </div>
+      <div className="scroll" style={{ flex: 1, overflow: 'auto', padding: '18px 24px', display: 'flex', flexDirection: 'column', gap: 20 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 'var(--fs-key)' }}>
+          <p style={{ margin: 0 }}><span className="kick" style={{ display: 'inline-block', width: 110 }}>What happened</span>{failed ? `The summary did not load: ${failed}` : summary ? (summary.what.join(' ') || lane.did || 'Nothing on record yet.') : 'Loading…'}</p>
+          <p style={{ margin: 0 }}><span className="kick" style={{ display: 'inline-block', width: 110 }}>Where it is</span>{summary?.status ?? lane.now ?? ''}</p>
+          <p style={{ margin: 0 }}><span className="kick" style={{ display: 'inline-block', width: 110 }}>What's next</span>{summary?.next ?? lane.you ?? ''}</p>
+        </div>
+        {question ? (
+          <div style={{ position: 'relative', border: '1px solid var(--warn)', background: 'var(--warnTint)', padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <Marks />
+            <span className="kick" style={{ color: 'var(--warn)', fontWeight: 700 }}>It asked · {hm(question.askedAt)}</span>
+            <p className="hd" style={{ margin: 0, fontSize: 'var(--fs-heading)', lineHeight: 1.2 }}>{question.text}</p>
           </div>
-          <div style={{ width: 140 }}>
-            <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 4 }}>context {pct}% · ceiling {Math.round(lane.ctxCeiling / 1000)}k</div>
-            <div style={{ height: 8, background: 'var(--well)', boxShadow: 'inset 0 1px 3px rgba(0,0,0,.6)', borderRight: '3px solid var(--block)', borderRadius: 2 }}>
-              <div style={{ height: 6, margin: 1, width: `${pct}%`, background: `repeating-linear-gradient(90deg, ${stateOf(lane.state).color} 0 5px, transparent 5px 7px)` }} />
+        ) : null}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+          <span className="kick" style={{ marginBottom: 8 }}>Its story</span>
+          {entries.map((entry, index) => (
+            <div key={`${entry.at}-${index}`} style={{ display: 'grid', gridTemplateColumns: '44px 14px 1fr', gap: 10, alignItems: 'baseline', padding: '5px 0' }}>
+              <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)', fontVariantNumeric: 'tabular-nums' }}>{hm(entry.at)}</span>
+              <span style={{ width: 7, height: 7, background: entry.kind === 'park' || entry.kind === 'answer' ? 'var(--warn)' : 'var(--ink3)', display: 'inline-block', alignSelf: 'center', marginLeft: 3 }} />
+              <span style={{ color: entry.kind === 'park' ? 'var(--ink)' : 'var(--ink2)' }}>{entry.url ? <a href={entry.url} target="_blank" rel="noopener" style={{ color: 'inherit', textDecoration: 'underline' }}>{entry.text}</a> : entry.text}</span>
+            </div>
+          ))}
+          {summary?.next ? (
+            <div style={{ display: 'grid', gridTemplateColumns: '44px 14px 1fr', gap: 10, alignItems: 'baseline', padding: '5px 0' }}>
+              <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>next</span>
+              <span style={{ width: 7, height: 7, background: 'transparent', display: 'inline-block', alignSelf: 'center', marginLeft: 3 }} />
+              <span style={{ color: 'var(--ink3)' }}>{summary.next}</span>
+            </div>
+          ) : null}
+        </div>
+        <details>
+          <summary className="disc" style={{ alignItems: 'center' }}><span className="tri" />Technical</summary>
+          <dl style={{ margin: '8px 0 0', display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '2px 12px', fontSize: 'var(--fs-meta)', color: 'var(--ink2)' }}>
+            <dt style={{ color: 'var(--ink3)' }}>Run</dt><dd style={{ margin: 0 }}>{lane.id}</dd>
+            {lane.sandbox?.branch ? <><dt style={{ color: 'var(--ink3)' }}>Branch</dt><dd style={{ margin: 0 }}>{lane.sandbox.branch}</dd></> : null}
+            {lane.sandbox?.path ? <><dt style={{ color: 'var(--ink3)' }}>Worktree</dt><dd style={{ margin: 0 }}>{lane.sandbox.path}</dd></> : null}
+            {lane.live.pid ? <><dt style={{ color: 'var(--ink3)' }}>Process</dt><dd style={{ margin: 0 }}>{lane.live.pid}{lane.live.alive ? ' (alive)' : ' (gone)'}</dd></> : null}
+            <dt style={{ color: 'var(--ink3)' }}>Model</dt><dd style={{ margin: 0 }}>{lane.modelId ?? lane.model}</dd>
+            {lane.pr ? <><dt style={{ color: 'var(--ink3)' }}>PR</dt><dd style={{ margin: 0 }}><a href={lane.pr.url} target="_blank" rel="noopener">#{lane.pr.no}</a></dd></> : null}
+          </dl>
+        </details>
+      </div>
+      <div style={{ borderTop: '1px solid var(--line)', padding: '16px 24px 20px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+        {question ? (
+          <div data-testid="question-card" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <label className="kick" style={{ fontSize: 'var(--fs-meta)', color: 'var(--warn)', fontWeight: 700 }}>Answer its question</label>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {question.opts.slice(0, 4).map((option, index) => (
+                <button key={option} type="button" className="opt" data-testid="question-option" data-recommended={index === 0 ? 'true' : 'false'} onClick={() => submitAnswer(option)}><i /><span>{option}</span></button>
+              ))}
+            </div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'stretch' }}>
+              <textarea className="inp warnFocus" data-testid="question-freetext" rows={2} style={{ minHeight: 56 }} placeholder="Or write the answer in full…" value={answer} onChange={(e) => setAnswer(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitAnswer(answer); } }} />
+              <button type="button" className="btn warn" style={{ fontSize: 'var(--fs-key)', padding: '6px 18px', minWidth: 88 }} onClick={() => submitAnswer(answer)}>Answer</button>
             </div>
           </div>
-          <span className={freshnessClass(fresh)}>{freshnessStamp(fresh)}</span>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end' }}>
-            <LaneCta lane={lane} cmd={cta.cmd} label={cta.label} cls={cta.cls} style={{ padding: '7px 11px', fontSize: 'var(--fs-ui)' }} onCommand={onCommand} />
-            {canPause ? <LaneCta lane={lane} cmd="pause" label="Pause" cls="btnS" style={{ padding: '7px 11px', fontSize: 'var(--fs-ui)' }} onCommand={onCommand} /> : null}
-            {canKill ? <LaneCta lane={lane} cmd="kill" label="Kill" cls="btnR" style={{ padding: '7px 11px', fontSize: 'var(--fs-ui)' }} onCommand={onCommand} /> : null}
+        ) : null}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <label className="kick" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink2)' }}>Send a note while it works</label>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'stretch' }}>
+            <input className="inp" data-testid="sheet-note" placeholder="e.g. Use the existing redis client" value={note} onChange={(e) => setNote(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') submitNote(); }} />
+            <button type="button" className="btn" style={{ fontSize: 'var(--fs-key)', padding: '6px 18px', minWidth: 88 }} onClick={submitNote}>Send</button>
           </div>
+          {sent ? <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>Sent: {sent}</span> : null}
         </div>
       </div>
-      {lane.pr && !lane.pr.merged && lane.mergeable && lane.mergeable.ok === false ? (
-        <div className="m" style={{ padding: '8px 22px 0', fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>
-          Why not merged: {lane.mergeable.why}
-        </div>
-      ) : null}
-      <SummaryPanel
-        summary={summary} loadFailed={summaryLoadFailed} onRecheck={handleRecheck} onReaudit={handleReaudit} reauditRunning={reauditRunning}
-        recheckRunning={recheck.pending} recheckResult={recheck.result}
-        auditRef={auditRef} highlightAudit={highlightAudit} repo={lane.repo}
-      />
-      <div style={{ padding: '20px 22px', borderBottom: '1px solid var(--line)' }}>
-        <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 16 }}>Pipeline</div>
-        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'center', overflowX: 'auto' }}>
-          {HOP_NAMES.map((name, i) => {
-            const state = hopState(i, lane);
-            const style = HOP_STYLE[state];
-            const sub = hopSubLabel(i, lane);
-            return (
-              <div key={name} style={{ display: 'contents' }}>
-                {i > 0 ? <div style={{ width: 56, height: 2, background: 'var(--line2)', marginTop: 15 }} /> : null}
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, width: 112 }}>
-                  <div style={{
-                    width: 32, height: 32, borderWidth: 2, borderStyle: style.border, borderColor: style.color,
-                    background: style.bg, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    font: '700 var(--fs-ui)/1.4 "IBM Plex Mono",monospace', color: style.glyphColor, animation: style.anim,
-                  }}
-                  >
-                    {style.glyph}
-                  </div>
-                  <div className="m" style={{ fontSize: 'var(--fs-meta)', fontWeight: 600, color: style.labelColor, textAlign: 'center' }}>{name}</div>
-                  {sub ? <div className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)', textAlign: 'center' }}>{sub}</div> : null}
-                  {style.badge ? <span className="lbl" style={{ color: style.color }}>{style.badge}</span> : null}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-        </div>
-      </div>
-      {/* Item 6: two independently scrolling columns -- the body itself never
-          scrolls, so the composer stays reachable without hunting for it, at
-          1440x900 and at 1280x720. `flex: '1 0 280px'` (no shrink) is the floor
-          the comment above explains. */}
-      <div data-testid="ticket-sheet-body" style={{ display: 'flex', flex: '1 0 280px', overflow: 'hidden' }}>
-        <div data-testid="ticket-sheet-story" className="scroll" style={{ width: 340, flex: '1 1 300px', borderRight: '1px solid var(--line)', padding: '16px 22px', overflowY: 'auto' }}>
-          <StoryPanel story={story} repo={lane.repo} />
-          {verbose ? (
-            <>
-              <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 10 }}>Journal</div>
-              <JournalPanel entries={journal} repo={lane.repo} />
-            </>
-          ) : null}
-          {lane.pr ? (
-            <>
-              <div className="lbl" style={{ color: 'var(--ink2)', margin: '16px 0 8px' }}>Draft output</div>
-              <div className="plate" style={{ padding: '10px 12px' }}>
-                <a
-                  className="m" style={{ fontSize: 'var(--fs-ui)', fontWeight: 700 }}
-                  href={lane.pr.url} target="_blank" rel="noopener noreferrer"
-                >
-                  draft PR #{lane.pr.no} ↗
-                </a>
-                <div className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink2)', marginTop: 4 }}>
-                  {lane.pr.files} files · <span style={{ color: 'var(--run)', fontWeight: 700 }}>+{lane.pr.add}</span> <span style={{ color: 'var(--block)', fontWeight: 700 }}>−{lane.pr.del}</span>
-                </div>
-              </div>
-            </>
-          ) : null}
-        </div>
-        <div style={{ flex: '2 1 380px', minHeight: 0, padding: '16px 22px', display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <div className="lbl" style={{ color: 'var(--ink2)', flex: 'none' }}>Run thread</div>
-          <div ref={threadRef} data-testid="ticket-sheet-thread" className="scroll" style={{ flex: '1 1 auto', minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {thread.map((m) => (
-              <MessageCard
-                key={m.k} message={m} feedLive={feedLive} now={now} verbose={verbose} labelFor={labelFor}
-                // Item 6: every reply on this run's own thread is that run's own
-                // report -- `labelFor` here is the board-wide title lookup, which
-                // otherwise resolves a reply's label to the lane's whole title.
-                replyLabel={m.source === 'conductor' ? undefined : 'Worker'}
-                onCommand={(text) => onCommand(lane.id, text)} onUndo={onUndo}
-                onOpenJournal={onOpenJournal}
-              />
-            ))}
-          </div>
-          <div style={{ flex: 'none', background: 'var(--well)', boxShadow: 'inset 0 2px 5px rgba(0,0,0,.6)', borderRadius: 3, padding: '8px 8px 8px 12px', display: 'flex', alignItems: 'center', gap: 8 }}>
-            <input
-              className="inp" placeholder="Tell this run something… Send delivers it now; Amend rewrites its brief" value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter' && draft.trim()) { sendAndRefetch(draft); setDraft(''); } }}
-            />
-            <span
-              className="btnP" style={{ padding: '5px 10px', fontSize: 'var(--fs-ui)', opacity: sending ? 0.55 : 1 }}
-              aria-busy={sending} aria-disabled={sending} data-testid={`action-sendCommand-${lane.id}`} data-pending={sending ? 'true' : 'false'}
-              {...actionable(() => { if (draft.trim() && !sending) { sendAndRefetch(draft); setDraft(''); } })}
-            >
-              {sending ? 'Sending…' : 'Send ⏎'}
-            </span>
-            <span
-              className="btnS" style={{ padding: '5px 10px', fontSize: 'var(--fs-ui)', opacity: amend.pending ? 0.55 : 1 }}
-              aria-busy={amend.pending} aria-disabled={amend.pending} data-testid={`action-amendRun-${lane.id}`} data-pending={amend.pending ? 'true' : 'false'}
-              {...actionable(() => { if (draft.trim() && !amend.pending) { amendAndRefetch(draft); setDraft(''); } })}
-            >
-              {amend.pending ? 'Amending…' : 'Amend'}
-            </span>
-          </div>
-          <div style={{ display: 'flex', gap: 10, minHeight: 0 }}>
-            <ActionOutcomeView result={amend.result} pending={amend.pending} specId="amendRun" actionRef={lane.id} onConfirm={() => undefined} onDismiss={amend.dismiss} onClear={amend.clear} />
-          </div>
-        </div>
-      </div>
-    </div>
+    </aside>
   );
 }

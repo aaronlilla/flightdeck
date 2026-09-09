@@ -22,7 +22,7 @@ import { buildBacklogJql as defaultBuildBacklogJql, readQueueWidth, writeQueueWi
 import { queueTitleFor } from './queue-title.js';
 import type { QueueStore } from '../intake/queueStore.js';
 import type {
-  ActionResult, QueueAddRequest, QueueAddResponse, QueueResponse, QueueSource,
+  ActionResult, QueueAddRequest, QueueAddResponse, QueueItem, QueueResponse, QueueSource,
 } from '../../shared/console-model.js';
 
 const QUEUE_SOURCES: readonly QueueSource[] = ['ticket', 'brief', 'query', 'backlog', 'hotfix', 'goal'];
@@ -106,6 +106,45 @@ function briefTextFrom(input: string): string {
   return readFileSync(line, 'utf8');
 }
 
+/** How a source names where an item came from, for the Queue view's "why it is next". */
+const SOURCE_WORDS: Record<QueueSource, string> = {
+  ticket: 'a ticket in Ready for Dev',
+  brief: 'a pasted brief',
+  query: 'a Jira query',
+  backlog: 'the backlog filter',
+  hotfix: 'a typed hotfix',
+  goal: 'a goal file',
+};
+
+/**
+ * The Queue view's two sentences for a queued item (`Flightdeck Console.dc.html` 1c):
+ * why it sits where it does, and when it starts. Both come from the queue's own facts:
+ * position in the order, the source it was added from, its `after:` lines, the width
+ * and what is in flight, and whether the queue is paused. Items already past `queued`
+ * get neither.
+ */
+export function queueOrderWords(
+  item: QueueItem, all: QueueItem[], queue: { paused: boolean; maxInFlight: number; inFlight: number },
+): { whyNext?: string; startsIn?: string } {
+  if (item.state !== 'queued') return {};
+  const queued = all.filter((row) => row.state === 'queued');
+  const position = queued.findIndex((row) => row.id === item.id);
+  const ordinal = position === 0 ? 'First' : position === 1 ? 'Second' : position === 2 ? 'Third' : `${position + 1}th`;
+  const waitsFor = (item.after ?? []).filter((slug) => !all.some((row) => row.state === 'done' && (row.input === slug || row.branch === `feature/${slug}`)));
+  const why = waitsFor.length > 0
+    ? `${ordinal} in the queue, from ${SOURCE_WORDS[item.source]}. Its brief says to wait for ${waitsFor.join(', ')}.`
+    : `${ordinal} in the queue, from ${SOURCE_WORDS[item.source]}; queued ${new Date(item.createdAt).toISOString().slice(11, 16)} UTC.`;
+  let starts: string;
+  if (queue.paused) starts = 'When the queue resumes';
+  else if (waitsFor.length > 0) starts = `After ${waitsFor.join(', ')} finishes`;
+  else {
+    const free = Math.max(0, queue.maxInFlight - queue.inFlight);
+    const ahead = queued.slice(0, position).filter((row) => !(row.after && row.after.length > 0)).length;
+    starts = ahead < free ? 'Takes a free slot on the next tick' : ahead === free ? 'When the next slot frees' : `After ${ahead - free + 1} more finish`;
+  }
+  return { whyNext: why, startsIn: starts };
+}
+
 export class QueueRoutes {
   constructor(private readonly opts: QueueRoutesOptions) {}
 
@@ -140,12 +179,16 @@ export class QueueRoutes {
   }
 
   private response(): QueueResponse {
-    // `title` is filled here, on the way out, rather than stored on the item: every
-    // item already on disk gets one on the next read, and a brief edited under a
-    // queued item retitles itself with no write.
+    // `title`, `whyNext` and `startsIn` are filled here, on the way out, rather than
+    // stored on the item: every item already on disk gets them on the next read, and a
+    // brief edited under a queued item retitles itself with no write.
+    const items = this.opts.store.all();
+    const paused = this.opts.readPaused();
+    const maxInFlight = readQueueWidth();
+    const inFlight = items.filter((item) => item.state === 'planning' || item.state === 'running').length;
     return {
-      items: this.opts.store.all().map((item) => ({ ...item, title: queueTitleFor(item) })),
-      paused: this.opts.readPaused(), maxInFlight: readQueueWidth(),
+      items: items.map((item) => ({ ...item, title: queueTitleFor(item), ...queueOrderWords(item, items, { paused, maxInFlight, inFlight }) })),
+      paused, maxInFlight,
     };
   }
 
