@@ -8,6 +8,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import * as api from '../api.js';
 import { errorText, showToast, useAction } from '../actions.js';
 import { HOP_NAMES } from '../../shared/console-model.js';
+import { humanizeParkReason } from '../../shared/humanize.js';
 import { actionable } from '../keyboard-actionable.js';
 import { costClass, ctxPercent, kindLabel, laneCta, laneHeadline, stateOf } from '../laneVM.js';
 import { computeFreshness, freshnessClass, freshnessStamp, hm } from '../freshness.js';
@@ -177,7 +178,8 @@ function bandFor(lane: Lane): { text: string; bg: string; ink: string } {
   const st = stateOf(lane.state);
   const overCap = lane.tokenCap !== null && lane.tokens > lane.tokenCap && lane.state === 'running';
   if (lane.state === 'parked') {
-    return { text: `◆ parked — human needed since ${hm(lane.since)}`, bg: 'var(--park)', ink: 'var(--aInk)' };
+    const why = lane.reason ? ` — ${humanizeParkReason(lane.reason)}` : '';
+    return { text: `◆ parked — human needed since ${hm(lane.since)}${why}`, bg: 'var(--park)', ink: 'var(--aInk)' };
   }
   const suffix = lane.runaway && lane.state === 'running' ? ' — over cap, retry loop' : '';
   return {
@@ -512,7 +514,7 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
   // operator can end.
   const canKill = (
     lane.state === 'running' || lane.state === 'handed-off' || lane.state === 'paused'
-    || lane.state === 'blocked' || lane.state === 'exhausted'
+    || lane.state === 'blocked' || lane.state === 'exhausted' || lane.state === 'parked'
   ) && !lane.runaway;
   const band = bandFor(lane);
 

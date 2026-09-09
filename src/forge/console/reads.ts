@@ -828,7 +828,7 @@ export class ConsoleReads {
 
   private runThreadResponse(run: string, verbose = false): RunThreadResponse {
     const fleet = this.journalCache.read(this.journalPath);
-    const result = computeRunThread(run, fleet.events, new RunInbox(run).all(), { verbose });
+    const result = computeRunThread(run, fleet.events, new RunInbox(run).all(), { verbose, openAsks: this.inbox.open() });
     return verbose ? { ...result, verbose: true } : result;
   }
 
