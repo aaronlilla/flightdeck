@@ -234,6 +234,19 @@ export function retryItem(store: QueueStore, id: string, now: number = Date.now(
   return { ...item, ...patch };
 }
 
+/** R-11: closes an item the watcher's feed reports as moved to a Done status category
+ *  in Jira. Lands it on `done` with the given reason, the same terminal state a
+ *  merge/promote hop uses, so its lane retires without going through a run at all. */
+export function closeItemDone(
+  store: QueueStore, id: string, reason: string, now: number = Date.now(),
+): QueueItem | undefined {
+  const item = store.get(id);
+  if (!item) return undefined;
+  const patch: Partial<QueueItem> = { state: 'done', reason, updatedAt: now };
+  store.append({ id, at: now, ...patch });
+  return { ...item, ...patch };
+}
+
 // ---------------------------------------------------------------------------------------
 // The worker: advancing what is already in the queue
 // ---------------------------------------------------------------------------------------

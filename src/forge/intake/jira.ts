@@ -17,6 +17,7 @@
  * catches.
  */
 import { redact } from '../redact.js';
+import type { PollSourceName } from '../contracts.js';
 import type { FakePollFeed, PollItemDetail, RawPollItem } from './poller.js';
 
 export interface JiraConfig {
@@ -25,6 +26,10 @@ export interface JiraConfig {
   token: string;
   jql?: string;
   fetchFn?: typeof fetch;
+  // R-11: the watcher polls the same Jira search as `chainIntake`'s feed, but through
+  // its own watermark so the two never step on each other's progress. Defaults to
+  // 'jira', the name every caller before this one relied on.
+  sourceName?: PollSourceName;
 }
 
 export const DEFAULT_JIRA_JQL = 'assignee = currentUser() AND statusCategory != Done ORDER BY updated ASC';
@@ -66,12 +71,15 @@ interface JiraSearchIssue {
   fields: {
     summary?: string;
     description?: unknown;
-    status?: { name?: string };
+    status?: { name?: string; statusCategory?: { name?: string } };
     updated?: string;
     issuetype?: { name?: string };
     priority?: { name?: string };
     labels?: string[];
     components?: { name?: string }[];
+    // R-11: the watcher's own read -- the newest comment on the issue, used to tell a
+    // fresh instruction posted to an owned ticket from silence since the last poll.
+    comment?: { comments?: { author?: { displayName?: string }; body?: unknown }[] };
   };
   renderedFields?: { description?: string };
 }
@@ -82,8 +90,20 @@ interface JiraSearchResponse {
   isLast?: boolean;
 }
 
+/** R-11: the newest entry in `fields.comment.comments`. Jira returns them oldest
+ *  first, so the last element is the one the watcher cares about. Resolves to
+ *  `undefined` when the issue has no comments; `PollItemDetail.latestComment` uses
+ *  that same `undefined` for "no comment yet" now that this always requests the field. */
+function latestCommentFor(issue: JiraSearchIssue): { author: string; body: string } | undefined {
+  const comments = issue.fields.comment?.comments ?? [];
+  const last = comments[comments.length - 1];
+  if (!last) return undefined;
+  return { author: last.author?.displayName ?? '', body: flattenAdf(last.body) };
+}
+
 function detailFor(issue: JiraSearchIssue): PollItemDetail {
   const description = issue.renderedFields?.description ?? flattenAdf(issue.fields.description);
+  const latestComment = latestCommentFor(issue);
   return {
     summary: issue.fields.summary ?? '',
     description,
@@ -93,6 +113,10 @@ function detailFor(issue: JiraSearchIssue): PollItemDetail {
     // R1: what the repository router matches labels and components against.
     labels: issue.fields.labels ?? [],
     components: (issue.fields.components ?? []).map((c) => c.name ?? '').filter((name) => name.length > 0),
+    // R-11: a Done status category closes the lane, a fresh comment on an owned
+    // ticket becomes a `/send`.
+    ...(issue.fields.status?.statusCategory?.name ? { statusCategory: issue.fields.status.statusCategory.name } : {}),
+    ...(latestComment ? { latestComment } : {}),
   };
 }
 
@@ -107,7 +131,7 @@ export function createJiraFeed(config: JiraConfig): FakePollFeed {
   const auth = basicAuth(config.email, config.token);
 
   return {
-    name: 'jira',
+    name: config.sourceName ?? 'jira',
     async fetchSince(): Promise<RawPollItem[]> {
       const items: RawPollItem[] = [];
       let nextPageToken: string | undefined;
@@ -119,7 +143,10 @@ export function createJiraFeed(config: JiraConfig): FakePollFeed {
           headers: { 'content-type': 'application/json', authorization: auth },
           body: JSON.stringify({
             jql: config.jql ?? DEFAULT_JIRA_JQL,
-            fields: ['summary', 'description', 'status', 'updated', 'issuetype', 'priority', 'labels', 'components'],
+            fields: [
+              'summary', 'description', 'status', 'updated', 'issuetype', 'priority', 'labels', 'components',
+              'comment',
+            ],
             maxResults: 50,
             ...(nextPageToken ? { nextPageToken } : {}),
           }),

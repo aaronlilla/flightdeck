@@ -21,7 +21,7 @@ import { autoMergeAllowed } from './council/risk.js';
 import { countAddDel, REAL_GH } from './council/gh.js';
 import type { Packet, PollSourceName, Watermark } from './contracts.js';
 import { run as execRun } from './exec.js';
-import type { QueueMergeDeps, QueuePlannedBrief, QueuePlanner, QueuePromoteDeps, QueueRuntimeDeps, QueueTicketSearch } from './intake/queue.js';
+import { closeItemDone, type QueueMergeDeps, type QueuePlannedBrief, type QueuePlanner, type QueuePromoteDeps, type QueueRuntimeDeps, type QueueTicketSearch } from './intake/queue.js';
 import { gitSquashMergeToBase, type GitRunFn } from './intake/gitMerge.js';
 import { developDeployVerifier } from './intake/otaVerify.js';
 import { appendRoutinesSection, loadRoutines, matchRoutines } from './self/routines.js';
@@ -29,13 +29,17 @@ import { routinesDir } from './paths.js';
 import { createJiraFeed, createJiraWriteClient, type JiraConfig } from './intake/jira.js';
 import { runQueueHandoff } from './intake/queueHandoff.js';
 import type { PollItemDetail } from './intake/poller.js';
+import type { QueueStore } from './intake/queueStore.js';
 import { planFromPacket } from './intake/planner.js';
 import { resolvePlanProvider } from './intake/reasoner.js';
 import { parseRepoMap, routeRepo, repoFromBrief, ticketFromBrief } from './intake/repoRoute.js';
+import { readWatermark, writeWatermark } from './intake/watermarkStore.js';
+import { runWatcherIntake, type WatcherIntakeResult } from './intake/watcherIntake.js';
 import { Journal } from './journal.js';
 import { loadPolicy } from './policy.js';
 import { queueBriefsDir, journalPath, killSwitchPath } from './paths.js';
 import { reasonerFor } from './reasoner-claude.js';
+import { RunInbox } from './runinbox.js';
 import { readKillSwitch } from './supervisor.js';
 import { readQueuePaused } from './console/queue-pause.js';
 import { readQueueWidth } from './console/queue-width.js';
@@ -72,6 +76,78 @@ export function buildBacklogJql(filter: string, env: NodeJS.ProcessEnv = process
   if (!project) throw new Error('backlog: missing FORGE_BACKLOG_PROJECT');
   const escaped = filter.replace(/"/g, '\\"');
   return `project = ${project} AND statusCategory != Done AND text ~ "${escaped}"`;
+}
+
+/** R-11: the watcher's own JQL -- everything currently assigned to the configured
+ *  account on `FORGE_BACKLOG_PROJECT`, minus what is already Done or already in
+ *  human review, so the watcher never re-adds a ticket the queue is about to hand off.
+ *  Throws naming the missing variable, the same honesty `buildBacklogJql` keeps. */
+export function watcherJqlFromEnv(env: NodeJS.ProcessEnv = process.env): string {
+  const project = env['FORGE_BACKLOG_PROJECT'];
+  if (!project) throw new Error('watcher: missing FORGE_BACKLOG_PROJECT');
+  return `project = ${project} AND assignee = currentUser() AND statusCategory != Done `
+    + `AND status not in ("In Review", "QA") ORDER BY updated ASC`;
+}
+
+const DEFAULT_WATCHER_POLL_SECONDS = 30;
+
+/** R-11: whether the watcher should run at all, read the same honest way `queueSearch`
+ *  refuses a missing credential -- `FORGE_BACKLOG_PROJECT` names the board, the three
+ *  `FORGE_JIRA_*` variables are the credential. Both are required; either missing turns
+ *  the watcher off with a one-line reason `forge up` prints instead of a silent no-op. */
+export function watcherEnabledFromEnv(env: NodeJS.ProcessEnv = process.env): { enabled: boolean; reason: string } {
+  const missing = [
+    ...(env['FORGE_BACKLOG_PROJECT'] ? [] : ['FORGE_BACKLOG_PROJECT']),
+    ...JIRA_ENV_VARS.filter((name) => !env[name]),
+  ];
+  if (missing.length) return { enabled: false, reason: `watcher NOT started: missing ${missing.join(', ')}` };
+  return { enabled: true, reason: 'watcher on' };
+}
+
+/** R-11: the watcher's own cadence -- 30s by default, kept on the same override the
+ *  chain's own poll reads (`FORGE_CHAIN_POLL_S`) rather than a second env var, since an
+ *  operator who already tuned that value almost certainly wants both polls to move
+ *  together. */
+export function watcherPollSecondsFromEnv(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env['FORGE_CHAIN_POLL_S'];
+  const parsed = raw ? Number(raw) : DEFAULT_WATCHER_POLL_SECONDS;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_WATCHER_POLL_SECONDS;
+}
+
+/**
+ * R-11: one production poll of the watcher's own feed against the real `QueueStore`.
+ * `runWatcherIntake` (the pure specimen-tested core) never touches `RunInbox` or
+ * `closeItemDone` itself -- both are real writes, so they live here, the same split
+ * every other real Jira/`gh` call in this file keeps from its own pure core.
+ */
+export async function runProductionWatcherTick(
+  store: QueueStore, configFn: () => JiraConfig | undefined = jiraConfigFromEnv,
+): Promise<WatcherIntakeResult> {
+  const config = configFn();
+  if (!config) {
+    const missing = JIRA_ENV_VARS.filter((name) => !process.env[name]);
+    throw new Error(`watcher: jira not configured, missing ${missing.join(', ')}`);
+  }
+  const feed = createJiraFeed({ ...config, jql: watcherJqlFromEnv(), sourceName: 'jira-watch' });
+  const result = await runWatcherIntake({
+    feed,
+    store,
+    watermarks: { get: (source) => readWatermark(source), set: (source, mark) => writeWatermark(source, mark) },
+  });
+
+  // The two real writes `runWatcherIntake` itself never performs: dropping a comment
+  // into the run's own inbox (same delivery `POST /send` uses) and closing a lane whose
+  // ticket moved to Done. An owned item with no `runKey` yet (still `queued`/`planning`)
+  // never reaches `SEND_STATES`, so `item.runKey` is always set here in practice --
+  // still checked, so a race never throws into the poll loop.
+  for (const send of result.sends) {
+    const item = store.get(send.itemId);
+    if (item?.runKey) new RunInbox(item.runKey).send(send.text, 'jira');
+  }
+  for (const closed of result.closed) {
+    closeItemDone(store, closed.itemId, closed.reason);
+  }
+  return result;
 }
 
 /**

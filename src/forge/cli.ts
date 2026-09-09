@@ -63,7 +63,10 @@ import {
 import { runQueueTick } from './intake/queue.js';
 import { acquireQueueLock } from './intake/queueLock.js';
 import { QueueStore } from './intake/queueStore.js';
-import { buildQueueRuntimeDeps, queueMergeDeps, queuePromoteDeps } from './queue-wire.js';
+import {
+  buildQueueRuntimeDeps, queueMergeDeps, queuePromoteDeps,
+  runProductionWatcherTick, watcherEnabledFromEnv, watcherPollSecondsFromEnv,
+} from './queue-wire.js';
 import { buildSelfLoop } from './self-wire.js';
 import { QueueTickBackoff } from './queue-backoff.js';
 import { loadPolicy, modelFor, modelIdFor, tierOfBrief } from './policy.js';
@@ -656,6 +659,32 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         queueLine = `queue on, polling every ${pollSeconds}s`;
       }
 
+      // R-11: the Jira watcher -- on by default once `FORGE_BACKLOG_PROJECT` and the
+      // three `FORGE_JIRA_*` variables are all set, off otherwise with the one line
+      // `watcherEnabledFromEnv` names. Shares the queue's own lock: it writes to the
+      // same `QueueStore` a queue tick does, so the "one process ticks this queue"
+      // rule the lock enforces above applies here too.
+      let watcherLine = '';
+      const watcherGate = watcherEnabledFromEnv();
+      if (watcherGate.enabled && queueLock?.ok) {
+        const watcherJournal = new Journal(journalPath());
+        const watcherPollSeconds = watcherPollSecondsFromEnv();
+        const watcherTick = setInterval(() => {
+          void runProductionWatcherTick(queueStore).catch((error) => {
+            watcherJournal.append({
+              event: 'watcher.tick-error', actor: 'watcher',
+              message: error instanceof Error ? error.message : String(error),
+            });
+          });
+        }, watcherPollSeconds * 1000);
+        watcherTick.unref();
+        watcherLine = `watcher on, polling every ${watcherPollSeconds}s`;
+      } else if (watcherGate.enabled) {
+        watcherLine = 'watcher NOT started: the queue lock is held elsewhere';
+      } else {
+        watcherLine = watcherGate.reason;
+      }
+
       // The self loop (`self-wire.ts`): findings about the fleet become queue items on
       // FORGE_SELF_REPO, a self item whose gate cleared merges, and once trunk has moved
       // this process asks its launcher for a restart by exiting 75 -- only while nothing
@@ -696,6 +725,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           `inbox: ${inbox.open().length} waiting`,
           chainLine,
           queueLine,
+          watcherLine,
           selfLine,
         ].filter(Boolean),
       };

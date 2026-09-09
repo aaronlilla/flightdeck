@@ -263,6 +263,9 @@ export const FORGE_EVENT_NAMES = [
   // `queue.tick-error` for a worker tick that threw before any item advanced.
   'queue.planning', 'queue.planned', 'queue.launched', 'queue.parked', 'queue.failed',
   'queue.review', 'queue.tick-error',
+  // R-11: the Jira watcher's own tick failure, the same shape as `queue.tick-error`
+  // above -- one row per poll that threw before any add/send/close reached the queue.
+  'watcher.tick-error',
   // 2026-09-08: the pre-gate rebase commits whatever a worker left uncommitted in its
   // worktree before replaying onto the base, rather than parking on "You have unstaged
   // changes" for a person to clean up by hand -- one row per item this happened to,
