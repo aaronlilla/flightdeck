@@ -799,7 +799,10 @@ export class ConsoleReads {
       const what = binder.field(bag, 'what', {
         surface: 'summary.what', facts: facts as NarrationFacts['facts'], template: whatTemplate,
       }, ref);
-      if (what !== null) summary.what = [what];
+      // Only collapse the sentence list when the narrator actually rewrote it. A lane
+      // the narrator never saw keeps the builder's own sentences, one per element, the
+      // way every existing consumer already reads them.
+      if (what !== null && what !== whatTemplate) summary.what = [what];
     }
 
     const now = lane.narration?.['now'];
