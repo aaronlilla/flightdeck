@@ -78,6 +78,8 @@ export const MUTATING_ROUTES: readonly MutatingRoute[] = [
   { name: 'queue-pause', pattern: /^\/queue\/(?:pause|resume)$/, slices: ['queue'] },
   { name: 'queue-item', pattern: /^\/queue\/([^/]+)\/(?:remove|retry|merge|promote)$/, slices: ['queue', 'lanes'] },
   { name: 'blocker', pattern: /^\/blockers\/([^/]+)\/(?:resolve|check)$/, slices: ['blockers', 'lanes'] },
+  { name: 'accounts-connect', pattern: /^\/accounts\/connect$/, slices: ['accounts'] },
+  { name: 'accounts-disconnect', pattern: /^\/accounts\/([^/]+)\/disconnect$/, slices: ['accounts'] },
 ];
 
 /**
