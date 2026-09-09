@@ -134,9 +134,9 @@ describe('nothing in the rail runs off the side', () => {
     expect(offenders).toEqual([]);
   });
 
-  it('reads at body size, with the wider column that needs', () => {
+  it('reads at the fixed 400px frame width (FD Rail.dc.html)', () => {
     const { container } = render(railFor([longReceipt()]));
     const rail = container.firstElementChild as HTMLElement;
-    expect(rail.style.width).toBe('clamp(360px, 30vw, 480px)');
+    expect(rail.style.width).toBe('400px');
   });
 });

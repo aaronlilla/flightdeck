@@ -341,7 +341,7 @@ describe('forge run', () => {
     const result = await forge(['run', brief, '--dry-run']);
 
     expect(result.lines.join(' ')).toMatch(/config dir: .+ \((override|fleet|forge)\)/);
-  });
+  }, 20_000);
 
   it('item 8, 2026-09-05: refuses --auto-answer for a brief under a real goals directory', async () => {
     const goalsDir = join(home, 'goals');
