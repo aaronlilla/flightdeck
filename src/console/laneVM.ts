@@ -264,6 +264,30 @@ export function collapseWardenEvents(thread: Message[]): Message[] {
   return out;
 }
 
+/** W5: the Activity drawer's own read of a run of `event`/`activity` rows sharing the
+ *  exact same text -- "BBZ-175 moved to In Review and Haiping was assigned" logged once
+ *  per worker that touched the ticket reads as one line with a count, the same way
+ *  `collapseWardenEvents` already folds a warden tick storm, but keyed on the text
+ *  itself rather than one hardcoded source. Only ever runs over the drawer's own
+ *  observation subset -- never the conversation the rail actually shows. */
+export function collapseRepeatedObservations(rows: Message[]): Message[] {
+  const out: Message[] = [];
+  let run: Message[] = [];
+  const flush = (): void => {
+    if (run.length === 0) return;
+    const last = run[run.length - 1] as Message;
+    out.push(run.length === 1 ? last : { ...last, k: `obs-run-${last.k}`, text: `${last.text} ×${run.length}` });
+    run = [];
+  };
+  for (const m of rows) {
+    const prev = run[run.length - 1];
+    if (prev && prev.text === m.text) run.push(m);
+    else { flush(); run = [m]; }
+  }
+  flush();
+  return out;
+}
+
 export interface TipContent {
   head: string;
   body: string;

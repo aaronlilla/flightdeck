@@ -4,7 +4,7 @@ import { useCallback, useContext, useLayoutEffect, useRef, useState } from 'reac
 
 import { computeFreshness, compactFreshnessStamp, freshnessClass, hm } from '../freshness.js';
 import { actionable } from '../keyboard-actionable.js';
-import { collapseWardenEvents } from '../laneVM.js';
+import { collapseRepeatedObservations } from '../laneVM.js';
 import { StoreContext } from '../store.js';
 import { Linkify } from './Linkify.js';
 import type { Feed, Message } from '../../shared/console-model.js';
@@ -409,6 +409,14 @@ function useChatScroll(messageCount: number, newestKey: string | undefined): {
   return { ref, unread, onScroll, jump };
 }
 
+/** W5: the machinery, never the conversation -- an `event` chip or an `activity`
+ *  digest is a run's own tool noise, not something a person asked for or said.
+ *  Everything else (operator/reply/question/plan/confirm/receipt/refusal/pr/thinking)
+ *  is a conversation row and stays in the rail proper. */
+function isObservation(m: Message): boolean {
+  return m.type === 'event' || m.type === 'activity';
+}
+
 export function ConductorRail(props: ConductorRailProps): JSX.Element {
   const { thread, feed, now, composer, verbose = false, labelFor, onComposerChange, onSend, onCommand, onUndo, onOpenJournal } = props;
   // The composer's own action state (`App.tsx#processCommand` keys it `sendCommand:rail`):
@@ -416,7 +424,15 @@ export function ConductorRail(props: ConductorRailProps): JSX.Element {
   // grammar answers. The reply cards are the inline result and land in the thread.
   const composerAction = useStore().state.actions['sendCommand:rail'];
   const composerBusy = composerAction?.pending ?? false;
-  const scroll = useChatScroll(thread.length, thread.at(-1)?.k);
+  // W5: the rail thread is conversation only -- every `event`/`activity` row moves to
+  // the Activity drawer below, closed by default. The badge counts the raw rows the
+  // fleet actually logged; the drawer's own open body folds repeats (a warden tick
+  // storm, the same Jira write logged once per worker) into one line with a count.
+  const observationRows = thread.filter(isObservation);
+  const conversation = thread.filter((m) => !isObservation(m));
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const collapsedObservations = collapseRepeatedObservations(observationRows);
+  const scroll = useChatScroll(conversation.length, conversation.at(-1)?.k);
   const isPending = (m: Message): boolean => (
     (m.type === 'question' && m.answer === undefined)
     || (m.type === 'confirm' && m.resolved === undefined)
@@ -443,9 +459,26 @@ export function ConductorRail(props: ConductorRailProps): JSX.Element {
           {pending > 0 ? `${pending} waiting ↓` : ''}
         </span>
       </div>
+      {observationRows.length > 0 ? (
+        <div data-testid="activity-drawer" style={{ margin: '10px 16px 0', border: '1px solid var(--line)', borderRadius: 4, flex: 'none' }} {...actionable(() => setDrawerOpen((open) => !open))}>
+          <div className="lbl" style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 10px', color: 'var(--ink3)' }}>
+            <span>Activity {drawerOpen ? '▾' : '▸'}</span>
+            <span data-testid="activity-drawer-badge">{observationRows.length}</span>
+          </div>
+          {drawerOpen ? (
+            <div data-testid="activity-drawer-body" style={{ padding: '0 10px 8px', display: 'flex', flexDirection: 'column', gap: 4, borderTop: '1px solid var(--line)' }}>
+              {collapsedObservations.map((m) => (
+                <div key={m.k} className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)', overflowWrap: 'anywhere' }}>
+                  {m.text}
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       <div style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex', flexDirection: 'column' }}>
       <div ref={scroll.ref} onScroll={scroll.onScroll} className="scroll" data-testid="rail-thread" style={{ flex: 1, minHeight: 0, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12, opacity: feed.live ? 1 : 0.6 }}>
-        {collapseWardenEvents(thread).map((m) => (
+        {conversation.map((m) => (
           <div key={m.k} id={`rail-msg-${m.k}`}>
             <MessageCard message={m} feedLive={feed.live} now={now} verbose={verbose} labelFor={labelFor} onCommand={onCommand} onUndo={onUndo} onOpenJournal={onOpenJournal} />
           </div>

@@ -323,14 +323,12 @@ describe('ConductorRail', () => {
     });
   });
 
-  describe('event row', () => {
-    it('never dims an event chip regardless of freshness', () => {
-      renderRail([{ k: 'e1', type: 'event', text: 'gate opened', ts: Date.now() - 60_000, source: 'system' }], feedUp);
-      const chip = screen.getByText('gate opened');
-      const row = chip.parentElement as HTMLElement;
-      expect(row.style.opacity).toBe('');
-    });
-  });
+  // W5 moved every event row into the closed-by-default Activity drawer, rendered as
+  // a plain collapsed line (see `collapseRepeatedObservations`) rather than through
+  // `MessageCard`'s `case 'event'`. A freshness-driven opacity check on a single event
+  // chip has no analog left: the drawer folds any number of underlying events with
+  // different timestamps into one aggregate line, so per-row freshness dimming is a
+  // deliberate scope narrowing here, not an oversight.
 
   // Final fidelity sweep #2: the prototype never collapses repeated replies and
   // never caps the thread behind a "show earlier" link -- every message renders,
@@ -344,7 +342,11 @@ describe('ConductorRail', () => {
     });
 
     it('renders more than 200 messages with no show earlier link and no cap', () => {
-      const longThread: Message[] = Array.from({ length: 210 }, (_, i) => ({ k: `m${i}`, type: 'event', text: `event ${i}`, ts: i, source: 'system' }));
+      // W5: an `event`-typed row now moves to the Activity drawer instead of the
+      // conversation list, so this fixture uses `reply` -- the no-cap, no-"show
+      // earlier" guarantee this test actually cares about is orthogonal to where
+      // observation rows land.
+      const longThread: Message[] = Array.from({ length: 210 }, (_, i) => ({ k: `m${i}`, type: 'reply', text: `event ${i}`, ts: i, source: 'system' }));
       renderRail(longThread);
       expect(screen.getByText('event 0')).toBeInTheDocument();
       expect(screen.getByText('event 209')).toBeInTheDocument();
@@ -352,44 +354,56 @@ describe('ConductorRail', () => {
     });
   });
 
-  // H2.5: a run of warden ticks reads as one chip with a count, not one per tick.
+  // H2.5: a run of warden ticks reads as one line with a count, not one per tick.
+  // W5 moved this collapsing from the conversation thread into the Activity drawer,
+  // so these now open the drawer before asserting.
   describe('warden ticks', () => {
-    it('collapses five consecutive warden ticks into one chip', () => {
-      const ticks: Message[] = Array.from({ length: 5 }, (_, i) => ({ k: `w${i}`, type: 'event', text: `tick ${i}`, ts: i, source: 'warden' }));
+    it('collapses five consecutive warden ticks into one chip', async () => {
+      const ticks: Message[] = Array.from({ length: 5 }, (_, i) => ({ k: `w${i}`, type: 'event', text: 'tick', ts: i, source: 'warden' }));
       renderRail(ticks);
-      expect(screen.getByText('warden ×5')).toBeInTheDocument();
-      expect(screen.queryByText('tick 0')).not.toBeInTheDocument();
+      await userEvent.click(screen.getByTestId('activity-drawer'));
+      const body = screen.getByTestId('activity-drawer-body');
+      expect(within(body).getByText('tick ×5')).toBeInTheDocument();
     });
 
-    it('leaves other events untouched around a warden run', () => {
+    it('leaves other events untouched around a warden run', async () => {
       renderRail([
         { k: 'a', type: 'event', text: 'sandbox ready', ts: 0, source: 'system' },
         { k: 'w1', type: 'event', text: 'tick', ts: 1, source: 'warden' },
         { k: 'w2', type: 'event', text: 'tick', ts: 2, source: 'warden' },
         { k: 'b', type: 'event', text: 'gate opened', ts: 3, source: 'system' },
       ]);
-      expect(screen.getByText('sandbox ready')).toBeInTheDocument();
-      expect(screen.getByText('warden ×2')).toBeInTheDocument();
-      expect(screen.getByText('gate opened')).toBeInTheDocument();
+      await userEvent.click(screen.getByTestId('activity-drawer'));
+      const body = screen.getByTestId('activity-drawer-body');
+      expect(within(body).getByText('sandbox ready')).toBeInTheDocument();
+      expect(within(body).getByText('tick ×2')).toBeInTheDocument();
+      expect(within(body).getByText('gate opened')).toBeInTheDocument();
     });
   });
 
   // Item 7: message cards read as words, not machine chips.
   describe('activity digest', () => {
-    it('renders a quiet mono line with no chip border', () => {
+    it('renders a quiet mono line with no chip border', async () => {
       renderRail([{ k: 'a1', type: 'activity', text: 'Worked 16:57 to 17:04: 140 commands, 45 file reads, 11 edits', ts: Date.now(), source: 'FLT-1' }]);
-      const line = screen.getByText(/^Worked 16:57 to 17:04/);
+      await userEvent.click(screen.getByTestId('activity-drawer'));
+      const body = screen.getByTestId('activity-drawer-body');
+      const line = within(body).getByText(/^Worked 16:57 to 17:04/);
       expect(line).toHaveStyle({ color: 'var(--ink3)' });
       expect(line.className).not.toMatch(/chip/);
     });
   });
 
   describe('event chip wrapping', () => {
-    it('wraps a long event sentence instead of clipping it at the rail edge', () => {
+    it('wraps a long event sentence instead of clipping it at the rail edge', async () => {
+      // W5: the standalone event chip's inline `whiteSpace`/`textTransform` styling is
+      // gone -- the drawer's collapsed line is a plain div relying on block default
+      // wrapping plus `overflow-wrap: anywhere`, so this now asserts that instead.
       const long = 'a lane wide off the reservation deregistered its own worktree and never told the queue';
       renderRail([{ k: 'e1', type: 'event', text: long, ts: Date.now(), source: 'system' }]);
-      const chip = screen.getByText(long);
-      expect(chip).toHaveStyle({ whiteSpace: 'normal', textTransform: 'none' });
+      await userEvent.click(screen.getByTestId('activity-drawer'));
+      const body = screen.getByTestId('activity-drawer-body');
+      const chip = within(body).getByText(long);
+      expect(chip).toHaveStyle({ overflowWrap: 'anywhere' });
     });
   });
 
