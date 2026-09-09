@@ -26,7 +26,7 @@ import type { StuckSignal } from '../liveness.js';
 import { processAlive, type Registry } from '../registry.js';
 import type { RunRequest } from '../exec.js';
 import { accountsRegistryPath, addAccount, liveRunsByAccount, loadAccounts, removeAccount } from '../accounts.js';
-import { AccountsService, diskWriters, fleetLoginDir, realProbe } from '../accounts-service.js';
+import { AccountsService, diskWriters, fleetLoginDir, realProbe, type AccountsServiceDeps } from '../accounts-service.js';
 import { readAccountUsage, recordPlan } from '../accounts-usage.js';
 import { AccountsConnect, realLogout, realProbeStatus, realSpawnLogin } from '../accounts-connect.js';
 import type { Lanes } from '../supervisor.js';
@@ -274,6 +274,11 @@ export interface ConsoleWritesDeps {
    *  only cares about the write side never has to build a whole lanes view). */
   lanesView?: () => LanesResponse;
   spawnFn?: RunRequest['spawnFn'];
+  /** The account limits probe. A specimen passes a fake so no test reaches a provider. */
+  accountsProbe?: AccountsServiceDeps['probe'];
+  /** The machine's own Claude login directory, or null for none. Overridable so a
+   *  specimen's account list is not shaped by whatever login this machine holds. */
+  fleetLoginDir?: () => string | null;
   ledgerPath?: string;
   capsOverridesPath?: string;
   rulesConfigPath?: string;
@@ -395,8 +400,8 @@ export class ConsoleWrites {
       recordReading: diskWriters.recordReading,
       recordReadError: diskWriters.recordReadError,
       liveRuns: () => this.liveRunsByAccount(),
-      fleetConfigDir: fleetLoginDir(() => fleetConfigDir()),
-      probe: realProbe(),
+      fleetConfigDir: deps.fleetLoginDir ?? fleetLoginDir(() => fleetConfigDir()),
+      probe: deps.accountsProbe ?? realProbe(),
     });
     this.accountsConnect = new AccountsConnect({
       loadAccounts: () => loadAccounts(registryPath),

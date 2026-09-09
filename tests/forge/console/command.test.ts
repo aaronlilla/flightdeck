@@ -727,16 +727,18 @@ describe('accounts: POST /accounts/connect, GET /accounts/connect/:attempt, POST
       ledgerPath: join(dir, 'accounts-actions.jsonl'),
       accountsRegistryPath: join(dir, 'accounts-registry.json'),
       spawnFn: fakeSpawn(queue),
+      accountsProbe: async () => ({ windows: [] }),
+      fleetLoginDir: () => null,
     });
   }
 
   it('connects an account end to end: connecting through to connected, then lists it', async () => {
     const withAccounts = accountsWrites([
       { code: 0, stdout: 'open this link to continue: https://example.test/authorize/abc\n' },
-      { code: 0, stdout: '{"authenticated":true}\n' },
+      { code: 0, stdout: '{"loggedIn":true,"email":"work@example.com","subscriptionType":"max"}\n' },
     ]);
     const { response, result } = fakeResponse();
-    const handled = await withAccounts.handle('/accounts/connect', fakeRequest('POST', { label: 'work' }), response);
+    const handled = await withAccounts.handle('/accounts/connect', fakeRequest('POST', { provider: 'claude' }), response);
     expect(handled).toBe(true);
     const started = (await result).body as { ok: boolean; attemptId: string };
     expect(started.ok).toBe(true);
@@ -753,8 +755,9 @@ describe('accounts: POST /accounts/connect, GET /accounts/connect/:attempt, POST
 
     const list = fakeResponse();
     await withAccounts.handle('/accounts', fakeRequest('GET'), list.response);
-    const body = (await list.result).body as { items: Array<{ label: string }> };
-    expect(body.items.map((item) => item.label)).toEqual(['work']);
+    const body = (await list.result).body as { items: Array<{ email?: string; plan?: string }> };
+    expect(body.items.map((item) => item.email)).toEqual(['work@example.com']);
+    expect(body.items[0]?.plan).toBe('max');
   });
 
   it('a failed probe answers "failed" with the probe\'s own error, and adds nothing', async () => {
@@ -763,7 +766,7 @@ describe('accounts: POST /accounts/connect, GET /accounts/connect/:attempt, POST
       { code: 1, stdout: '{"error":"not authenticated"}\n' },
     ]);
     const { response, result } = fakeResponse();
-    await withAccounts.handle('/accounts/connect', fakeRequest('POST', { label: 'work' }), response);
+    await withAccounts.handle('/accounts/connect', fakeRequest('POST', { provider: 'claude' }), response);
     const started = (await result).body as { attemptId: string };
 
     let attempt: { state: string } | undefined;
@@ -787,8 +790,8 @@ describe('accounts: POST /accounts/connect, GET /accounts/connect/:attempt, POST
     // than running two live connects through the fake process queue.
     writeFileSync(join(dir, 'accounts-registry.json'), JSON.stringify({
       accounts: [
-        { id: 'test-a', label: 'one', configDir: join(dir, 'a'), connectedAt: 1 },
-        { id: 'test-b', label: 'two', configDir: join(dir, 'b'), connectedAt: 2 },
+        { id: 'test-a', provider: 'claude', label: 'one', configDir: join(dir, 'a'), connectedAt: 1 },
+        { id: 'test-b', provider: 'claude', label: 'two', configDir: join(dir, 'b'), connectedAt: 2 },
       ],
     }), 'utf8');
     registry.admit({ goal: 'goal-a', cwd: join(dir, 'wt-a'), briefPath: join(dir, 'a.md'), pid: process.pid });
