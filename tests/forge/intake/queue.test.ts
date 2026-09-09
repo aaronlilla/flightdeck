@@ -36,6 +36,8 @@ interface FixtureOverrides {
   paused?: () => boolean;
   maxInFlight?: () => number;
   launchGoal?: QueueRuntimeDeps['launchGoal'];
+  mergeAllowed?: QueueRuntimeDeps['mergeAllowed'];
+  postMergeVerify?: QueueRuntimeDeps['postMergeVerify'];
 }
 
 function buildDeps(store: QueueStore, overrides: FixtureOverrides = {}): { deps: QueueRuntimeDeps; events: Record<string, unknown>[] } {
@@ -75,6 +77,8 @@ function buildDeps(store: QueueStore, overrides: FixtureOverrides = {}): { deps:
     },
     store,
     ...(overrides.launchGoal ? { launchGoal: overrides.launchGoal } : {}),
+    ...(overrides.mergeAllowed ? { mergeAllowed: overrides.mergeAllowed } : {}),
+    ...(overrides.postMergeVerify ? { postMergeVerify: overrides.postMergeVerify } : {}),
   };
   return { deps, events };
 }
@@ -388,6 +392,55 @@ describe('advanceItem', () => {
     await advanceItem(current, deps); // gate
 
     expect(gateInput?.merge).toBe(false);
+  });
+
+  it('BBZ: an item whose repo is on the operator\'s autoMerge allow-list reaches done with the merge recorded', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let gateInput: { repo: string; pr: number; merge: boolean } | undefined;
+    const { deps, events } = buildDeps(store, {
+      launcher: {
+        status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/9' }),
+      },
+      gate: async (input) => { gateInput = input; return { merged: true, mergeSha: 'deadbeef' }; },
+      mergeAllowed: (repo) => repo === 'owner/name',
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps); // plan
+    current = await advanceItem(current, deps); // launch
+    const result = await advanceItem(current, deps); // gate + merge
+
+    expect(gateInput?.merge).toBe(true);
+    expect(result.state).toBe('done');
+    expect(result.mergedBy).toBe('queue');
+    expect(result.mergedAt).toBeDefined();
+    expect(events.map((e) => e['event'])).toContain('queue.done');
+  });
+
+  it('BBZ: a repo absent from the autoMerge allow-list still stops at review with a draft PR', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let gateInput: { repo: string; pr: number; merge: boolean } | undefined;
+    const { deps } = buildDeps(store, {
+      launcher: {
+        status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/9' }),
+      },
+      gate: async (input) => { gateInput = input; return { merged: false }; },
+      // Configured, but for a different repo -- the allow-list itself is what gates this,
+      // not merely whether `mergeAllowed` is wired at all.
+      mergeAllowed: (repo) => repo === 'some/other-repo',
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps); // plan
+    current = await advanceItem(current, deps); // launch
+    const result = await advanceItem(current, deps); // gate
+
+    expect(gateInput?.merge).toBe(false);
+    expect(result.state).toBe('review');
+    expect(result.pr).toMatchObject({ no: 9, draft: true });
+    expect(result.mergedBy).toBeUndefined();
   });
 
   it('parks an item whose repo does not route, without touching the launcher', async () => {
