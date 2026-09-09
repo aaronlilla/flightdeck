@@ -19,12 +19,16 @@ import { dirname, join } from 'node:path';
 
 import type { Actuator } from '../contracts.js';
 import { foldChainState } from '../chain.js';
-import type { Inbox } from '../inbox.js';
+import type { Inbox, InboxEntry } from '../inbox.js';
 import { deliverAnswer } from '../runinbox.js';
 import { appendOnce, replay } from '../journal.js';
 import type { StuckSignal } from '../liveness.js';
-import type { Registry } from '../registry.js';
+import { processAlive, type Registry } from '../registry.js';
 import type { RunRequest } from '../exec.js';
+import {
+  accountsRegistryPath, addAccount, liveRunsByAccount, loadAccounts, removeAccount,
+} from '../accounts.js';
+import { AccountsConnect, realLogout, realProbeStatus, realSpawnLogin } from '../accounts-connect.js';
 import type { Lanes } from '../supervisor.js';
 import type { QueueStore } from '../intake/queueStore.js';
 import { conductorAgentEnabled, governorBudget } from '../policy.js';
@@ -45,7 +49,10 @@ import {
   applyRule, dismissRule, restoreRule, rulesPath, setRuleStatus, startEnforcementTick,
   type RulesDeps,
 } from './rules.js';
-import type { ActionResult, LanesResponse, Message, PlanItem } from '../../shared/console-model.js';
+import type {
+  AccountsResponse, ActionResult, ConnectAttemptResponse, ConnectStartResponse, DisconnectResponse,
+  LanesResponse, Message, PlanItem,
+} from '../../shared/console-model.js';
 import { fmtTokens } from '../../shared/format-tokens.js';
 import { stripMachineIds } from '../../shared/humanize.js';
 import type { ConductorAgent, ConductorContext } from './agent.js';
@@ -175,6 +182,7 @@ export type Intent =
   | { kind: 'spend-today' }
   | { kind: 'status' }
   | { kind: 'answer'; askKey: string | null; text: string }
+  | { kind: 'answer-by-number'; askKey: string | null; optionNumber: number }
   | { kind: 'confirm'; token: string }
   | { kind: 'run-plan'; token: string }
   | { kind: 'dismiss'; token: string }
@@ -232,6 +240,16 @@ export function parseIntent(raw: string): Intent {
   // it here, ahead of the plain free-text form below, is what stops the whole tail
   // ("f92af4249f6a27ae Restart the forge MCP connection") from being delivered to the
   // run as if the operator had typed the key as part of their answer.
+  // `answer <askKey> <n>` and bare `answer <n>` (W4): a person picking an option by its
+  // list position rather than retyping its text. Checked ahead of the generic keyed and
+  // free-text forms below so a purely numeric answer resolves against the ask's own
+  // options instead of being delivered as the literal digit string.
+  if ((match = text.match(/^answer\s+([0-9a-f]{8,})\s+(\d+)$/i))) {
+    return { kind: 'answer-by-number', askKey: match[1]!, optionNumber: Number(match[2]) };
+  }
+  if ((match = text.match(/^answer\s+(\d+)$/i))) {
+    return { kind: 'answer-by-number', askKey: null, optionNumber: Number(match[1]) };
+  }
   if ((match = text.match(/^answer\s+([0-9a-f]{8,})\s+(.+)$/i))) {
     return { kind: 'answer', askKey: match[1]!, text: match[2]! };
   }
@@ -271,6 +289,9 @@ export interface ConsoleWritesDeps {
   lanesViewAll?: () => LanesResponse;
   /** Where `retired.jsonl` lives. Defaults to `forgeHome()`. A specimen only. */
   forgeHomeDir?: string;
+  /** Overrides where the account registry lives. A specimen only; production reads
+   *  `accounts.ts`'s own default under `forgeHome()`. */
+  accountsRegistryPath?: string;
 }
 
 function readBody<T>(request: IncomingMessage): Promise<T | null> {
@@ -342,6 +363,10 @@ export class ConsoleWrites {
 
   private readonly integrations: IntegrationsRegistry;
 
+  private readonly accountsConnect: AccountsConnect;
+
+  private readonly accountsPath: string;
+
   private readonly pendingConfirms = new Map<string, PendingConfirm>();
 
   private readonly pendingPlans = new Map<string, PendingPlan>();
@@ -359,6 +384,17 @@ export class ConsoleWrites {
       ...(deps.integrationsConfigPath ? { configPath: deps.integrationsConfigPath } : {}),
       ...(deps.spawnFn ? { spawnFn: deps.spawnFn } : {}),
       ...(deps.lanesView ? { lanesView: deps.lanesView } : {}),
+    });
+    this.accountsPath = deps.accountsRegistryPath ?? accountsRegistryPath();
+    const registryPath = this.accountsPath;
+    this.accountsConnect = new AccountsConnect({
+      loadAccounts: () => loadAccounts(registryPath),
+      addAccount: (record) => addAccount(record, registryPath),
+      removeAccount: (id) => removeAccount(id, registryPath),
+      liveRunCount: (accountId) => this.liveRunsByAccount()[accountId] ?? 0,
+      spawnLogin: realSpawnLogin(deps.spawnFn),
+      probeStatus: realProbeStatus(deps.spawnFn),
+      logout: realLogout(deps.spawnFn),
     });
     // Not started here: `server.ts` starts it from `listen()` and stops it in `close()`,
     // the same lifecycle the heartbeat timer already has. Starting it the moment a
@@ -438,6 +474,17 @@ export class ConsoleWrites {
 
   private spendToday(): number {
     return tokensToday(replay(this.deps.journalPath).runs, Date.now());
+  }
+
+  /** Fresh every call, per the disconnect refusal's own rule: never a cached count. A
+   *  goal is "live" the same way `Registry.admit` decides it -- a row on disk whose pid
+   *  is still alive -- rather than reading it off a lane, which the run being counted
+   *  could itself have just rewritten. */
+  private liveRunsByAccount(): Record<string, number> {
+    const liveGoals = this.deps.registry.all()
+      .filter((row) => processAlive(row.pid))
+      .map((row) => row.goal);
+    return liveRunsByAccount(replay(this.deps.journalPath).events, liveGoals);
   }
 
   /**
@@ -601,6 +648,22 @@ export class ConsoleWrites {
    *  agent's fallback path. */
   runGrammar(text: string, source: string): Promise<Message[]> {
     return this.executeIntent(parseIntent(text), source);
+  }
+
+  /** Delivers an answer's text to a matched ask and returns its receipt (or refusal) --
+   *  shared by both the free-text `answer` intent and `answer-by-number` (W4), which
+   *  resolve to the same option text a person could have typed by hand. */
+  private async deliverAnswerCard(source: string, match: InboxEntry, text: string): Promise<Message[]> {
+    const answered = this.deps.inbox.answer(match.key, text);
+    if (!answered) return [refusalCard(source, `could not answer ${match.key}`)];
+    await deliverAnswer(answered, match.key, text);
+    const { jid } = recordAction(this.deps.journalPath, this.ledger, {
+      kind: 'answer', text: `answered ${match.key}: ${text}`, undo: null, extra: { askKey: match.key },
+    });
+    const questionHead = match.question.length > 70 ? `${match.question.slice(0, 70)}…` : match.question;
+    return [receiptCard(source, {
+      ok: true, jid, message: `Answered "${questionHead}": ${text}`, undoable: false,
+    })];
   }
 
   private async executeIntent(intent: Intent, source: string): Promise<Message[]> {
@@ -803,16 +866,33 @@ export class ConsoleWrites {
           ?? open.find((ask) => ask.question.toLowerCase().includes(intent.text.toLowerCase()))
           ?? (!intent.askKey && open.length === 1 ? open[0] : undefined);
         if (!match) return [refusalCard(source, `no open question matches "${intent.askKey ?? intent.text}"`)];
-        const answered = this.deps.inbox.answer(match.key, intent.text);
-        if (!answered) return [refusalCard(source, `could not answer ${match.key}`)];
-        await deliverAnswer(answered, match.key, intent.text);
-        const { jid } = recordAction(this.deps.journalPath, this.ledger, {
-          kind: 'answer', text: `answered ${match.key}: ${intent.text}`, undo: null, extra: { askKey: match.key },
-        });
-        const questionHead = match.question.length > 70 ? `${match.question.slice(0, 70)}…` : match.question;
-        return [receiptCard(source, {
-          ok: true, jid, message: `Answered "${questionHead}": ${intent.text}`, undoable: false,
-        })];
+        return this.deliverAnswerCard(source, match, intent.text);
+      }
+
+      // `answer <key> <n>` / bare `answer <n>` (W4): `n` is a 1-based position into the
+      // matched ask's own options, resolved to that option's text before delivery -- the
+      // run never sees the bare digit as if it were typed as the answer itself.
+      case 'answer-by-number': {
+        const open = this.deps.inbox.open();
+        if (intent.askKey) {
+          const match = open.find((ask) => ask.key === intent.askKey);
+          if (!match) return [refusalCard(source, `no open question matches "${intent.askKey}"`)];
+          const optionText = match.options[intent.optionNumber - 1];
+          if (optionText === undefined) {
+            return [refusalCard(source, `${match.key} has no option ${intent.optionNumber} (it has ${match.options.length})`)];
+          }
+          return this.deliverAnswerCard(source, match, optionText);
+        }
+        if (open.length === 0) return [refusalCard(source, `no open question matches "${intent.optionNumber}"`)];
+        if (open.length > 1) {
+          return [refusalCard(source, `${open.length} questions are open; answer with the key, e.g. "answer <key> ${intent.optionNumber}"`)];
+        }
+        const match = open[0]!;
+        const optionText = match.options[intent.optionNumber - 1];
+        if (optionText === undefined) {
+          return [refusalCard(source, `${match.key} has no option ${intent.optionNumber} (it has ${match.options.length})`)];
+        }
+        return this.deliverAnswerCard(source, match, optionText);
       }
 
       case 'unknown':
@@ -858,7 +938,56 @@ export class ConsoleWrites {
       return true;
     }
 
+    if (path === '/accounts' && method === 'GET') {
+      if (!this.deps.authorized(request, response)) return true;
+      const live = this.liveRunsByAccount();
+      const items = loadAccounts(this.accountsPath).map((account) => ({
+        id: account.id, label: account.label, connectedAt: account.connectedAt,
+        liveRuns: live[account.id] ?? 0,
+      }));
+      respond(response, 200, { items } satisfies AccountsResponse);
+      return true;
+    }
+
     let match: RegExpMatchArray | null;
+
+    if (path === '/accounts/connect' && method === 'POST') {
+      if (!this.deps.authorized(request, response)) return true;
+      const body = await readBody<{ label?: string }>(request);
+      const label = body?.label?.trim();
+      if (!label) {
+        respond(response, 400, { ok: false, error: 'a connect attempt needs a label' } satisfies ConnectStartResponse);
+        return true;
+      }
+      const result = this.accountsConnect.startConnect(label);
+      respond(response, result.ok ? 200 : 409, result.ok
+        ? { ok: true, attemptId: result.attemptId } satisfies ConnectStartResponse
+        : { ok: false, error: result.error } satisfies ConnectStartResponse);
+      return true;
+    }
+
+    if ((match = path.match(/^\/accounts\/connect\/([^/]+)$/)) && method === 'GET') {
+      if (!this.deps.authorized(request, response)) return true;
+      const attempt = this.accountsConnect.getAttempt(decodeURIComponent(match[1]!));
+      if (!attempt) {
+        respond(response, 404, { error: `no connect attempt ${decodeURIComponent(match[1]!)}` });
+        return true;
+      }
+      respond(response, 200, {
+        id: attempt.id, label: attempt.label, state: attempt.state,
+        ...(attempt.link !== undefined ? { link: attempt.link } : {}),
+        ...(attempt.error !== undefined ? { error: attempt.error } : {}),
+        ...(attempt.accountId !== undefined ? { accountId: attempt.accountId } : {}),
+      } satisfies ConnectAttemptResponse);
+      return true;
+    }
+
+    if ((match = path.match(/^\/accounts\/([^/]+)\/disconnect$/)) && method === 'POST') {
+      if (!this.deps.authorized(request, response)) return true;
+      const result = await this.accountsConnect.disconnect(decodeURIComponent(match[1]!));
+      respond(response, result.ok ? 200 : 409, result satisfies DisconnectResponse);
+      return true;
+    }
 
     if ((match = path.match(/^\/integrations\/([^/]+)\/check$/)) && method === 'POST') {
       if (!this.deps.authorized(request, response)) return true;

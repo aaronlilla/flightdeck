@@ -20,7 +20,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
-import { buildForgeMcpServer, type ForgeToolHandlers } from '../adapter/engine.js';
+import { buildForgeMcpServer, FORGE_ASK_SHAPE, type ForgeToolHandlers } from '../adapter/engine.js';
 import type { GotchaInput } from './gotcha.js';
 import { CLASS_BUDGETS, DEFAULT_CLASS } from './exec.js';
 import type { FleetProcess, LivenessSignal, StuckSignal } from './liveness.js';
@@ -263,6 +263,10 @@ export const FORGE_EVENT_NAMES = [
   // `queue.tick-error` for a worker tick that threw before any item advanced.
   'queue.planning', 'queue.planned', 'queue.launched', 'queue.parked', 'queue.failed',
   'queue.review', 'queue.tick-error',
+  // R-11 part 2: the Jira watcher bridge's own tick row (`intake/watcherWire.ts`) --
+  // `watcher.poll` once per poll that added, sent, or closed at least one item, and
+  // `watcher.tick-error` for a tick that threw before any of those.
+  'watcher.poll', 'watcher.tick-error',
   // 2026-09-08: the pre-gate rebase commits whatever a worker left uncommitted in its
   // worktree before replaying onto the base, rather than parking on "You have unstaged
   // changes" for a person to clean up by hand -- one row per item this happened to,
@@ -301,6 +305,12 @@ export const FORGE_EVENT_NAMES = [
   // H1.8: one lane's own outcome from the bulk `POST /merge-ready` -- always an
   // operator's own click, never a worker acting on its own.
   'merge-ready.merged',
+  // W1, 2026-09-08: `completeAskOptions` (`console/ask-options.ts`) padding a
+  // `forge_ask` call's options out to four or more before the ask reaches the inbox --
+  // `source: 'worker'` when the worker already supplied enough, `source: 'drafted'`
+  // when a reasoner call filled the gap, and the same row on any reasoner failure
+  // (worker's own options kept, `recommended: null`).
+  'forge.ask.options',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];
@@ -627,11 +637,7 @@ export const FORGE_TOOLS: string[] = FORGE_TOOL_NAMES.map((name) => `mcp__forge_
 
 export const ForgeDoneInputSchema = z.object({ evidence: z.string().min(1) });
 export const ForgeHandoffInputSchema = z.object({ packet: z.string().min(1) });
-export const ForgeAskInputSchema = z.object({
-  question: z.string().min(1),
-  options: z.array(z.string()).optional(),
-  kind: z.enum(['question', 'blocker']).optional(),
-});
+export const ForgeAskInputSchema = z.object(FORGE_ASK_SHAPE);
 export const ForgeGotchaInputSchema = z.object({
   run: z.string().min(1),
   what: z.string().min(1),
@@ -1084,7 +1090,7 @@ export type CliExitCode = (typeof CLI_EXIT_CODES)[keyof typeof CLI_EXIT_CODES];
  * on purpose, the same reasoning as `FORGE_EVENT_NAMES`: a caller that wants a sixth
  * source adds it here first.
  */
-export const POLL_SOURCE_NAMES = ['jira', 'sentry', 'cloudwatch', 'slack', 'github'] as const;
+export const POLL_SOURCE_NAMES = ['jira', 'sentry', 'cloudwatch', 'slack', 'github', 'jira-watch'] as const;
 
 export type PollSourceName = (typeof POLL_SOURCE_NAMES)[number];
 

@@ -50,8 +50,13 @@ describe('plainStatus', () => {
   it('parked on a question: leads with the question, trimmed to 90 characters', () => {
     const longQuestion = 'staging or dev, and should the migration run before or after the deploy window closes tonight?';
     const text = plainStatus(lane({ state: 'parked', question: { key: 'k1', text: longQuestion, opts: ['a', 'b'], askedAt: 1 } }), context);
-    expect(text.startsWith('Waiting for your answer: ')).toBe(true);
-    expect(text.length).toBeLessThanOrEqual('Waiting for your answer: '.length + 90);
+    expect(text.startsWith('Asking: ')).toBe(true);
+    expect(text.length).toBeLessThanOrEqual('Asking: '.length + 90);
+  });
+
+  it('parked on an ask with no readable question: names it rather than printing a bare colon', () => {
+    const text = plainStatus(lane({ state: 'parked', question: { key: 'k1', text: '', opts: [], askedAt: 1 } }), context);
+    expect(text).toBe('Asked with no question; dismiss or resume');
   });
 
   it('parked by the warden: names the reason and offers Resume', () => {

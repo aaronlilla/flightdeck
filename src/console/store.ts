@@ -117,8 +117,16 @@ export interface State {
   paletteQuery: string;
   tip: TipSpec | null;
   toast: ToastSpec | null;
-  theme: 'thD' | 'thL';
+  /** The design's two themes. Light by default; dark when the operator flipped it or
+   *  the OS asks for it and nothing was flipped. */
+  theme: 'light' | 'dark';
   composer: string;
+  /** The rail's topic: the lane a typed message is about, and whether it goes to the
+   *  Conductor or to the agent working that lane. */
+  topic: string | null;
+  recipient: 'conductor' | 'agent';
+  /** `/state`'s own project: the key and Jira name the chrome shows. */
+  project: { key: string; name: string | null } | null;
   laneComposer: Record<string, string>;
   /** 2026-09-08: plain by default -- every route answers human sentences, machine
    *  ids stripped. Verbose asks every read for `?verbose=1` instead: raw rows, ids
@@ -143,6 +151,9 @@ export type Action =
   /** Rewrites one local card in place, keeping its key so nothing re-attaches a
    *  stale copy of it on the next refetch. */
   | { type: 'local-card-text'; k: string; text: string }
+  /** Marks a card the page put up itself (a confirm off a board click) as answered, in
+   *  the thread and in the local list both, so the next refetch keeps it answered. */
+  | { type: 'local-card-resolve'; k: string; resolved: 'confirmed' | 'declined' }
   | { type: 'action-pending'; key: string }
   | { type: 'action-result'; key: string; result: ActionOutcome }
   | { type: 'action-clear'; key: string }
@@ -170,12 +181,28 @@ export type Action =
   | { type: 'palette-query'; query: string }
   | { type: 'tip'; tip: TipSpec | null }
   | { type: 'toast'; toast: ToastSpec | null }
-  | { type: 'theme'; theme: 'thD' | 'thL' }
+  | { type: 'theme'; theme: 'light' | 'dark' }
+  | { type: 'topic'; topic: string | null; recipient?: 'conductor' | 'agent' }
+  | { type: 'recipient'; recipient: 'conductor' | 'agent' }
+  | { type: 'project'; project: { key: string; name: string | null } | null }
   | { type: 'composer'; text: string }
   | { type: 'lane-composer'; run: string; text: string }
   | { type: 'verbose'; verbose: boolean }
   | { type: 'pending-set'; key: string; label: string }
   | { type: 'pending-clear'; key: string };
+
+function readStoredTheme(): 'light' | 'dark' {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const stored = localStorage.getItem('fd.theme');
+      if (stored === 'light' || stored === 'dark') return stored;
+    }
+    if (typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(prefers-color-scheme: dark)').matches) return 'dark';
+  } catch {
+    // No storage or no media query support: light, the design's default.
+  }
+  return 'light';
+}
 
 function readStoredVerbose(): boolean {
   try {
@@ -217,8 +244,11 @@ export function initialState(): State {
     paletteQuery: '',
     tip: null,
     toast: null,
-    theme: (typeof localStorage !== 'undefined' && localStorage.getItem('fd.theme') === 'thL') ? 'thL' : 'thD',
+    theme: readStoredTheme(),
     composer: '',
+    topic: null,
+    recipient: 'conductor',
+    project: null,
     laneComposer: {},
     verbose: readStoredVerbose(),
     pending: {},
@@ -254,6 +284,12 @@ export function reducer(state: State, action: Action): State {
         ...state,
         thread: state.thread.map((m) => (m.k === action.k ? { ...m, text: action.text } : m)),
         localCards: state.localCards.map((m) => (m.k === action.k ? { ...m, text: action.text } : m)),
+      };
+    case 'local-card-resolve':
+      return {
+        ...state,
+        thread: state.thread.map((m) => (m.k === action.k ? { ...m, resolved: action.resolved } : m)),
+        localCards: state.localCards.map((m) => (m.k === action.k ? { ...m, resolved: action.resolved } : m)),
       };
     case 'thread-append':
       return {
@@ -335,8 +371,18 @@ export function reducer(state: State, action: Action): State {
     case 'toast':
       return { ...state, toast: action.toast };
     case 'theme':
-      if (typeof localStorage !== 'undefined') localStorage.setItem('fd.theme', action.theme);
+      try {
+        if (typeof localStorage !== 'undefined') localStorage.setItem('fd.theme', action.theme);
+      } catch {
+        // Not remembered without storage; the flip still applies to this page.
+      }
       return { ...state, theme: action.theme };
+    case 'topic':
+      return { ...state, topic: action.topic, recipient: action.topic === null ? 'conductor' : (action.recipient ?? state.recipient) };
+    case 'recipient':
+      return { ...state, recipient: action.recipient };
+    case 'project':
+      return { ...state, project: action.project };
     case 'composer':
       return { ...state, composer: action.text };
     case 'lane-composer':

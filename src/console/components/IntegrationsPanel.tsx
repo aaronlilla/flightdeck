@@ -1,7 +1,7 @@
 import type { JSX } from 'react';
 import { useEffect, useState } from 'react';
 import type { Integration, McpConnState } from '../../shared/console-model.js';
-import { getConnectAttempt } from '../api.js';
+import { getIntegrationConnectAttempt } from '../api.js';
 import { redactErrorBody } from '../redact.js';
 
 /**
@@ -14,7 +14,7 @@ import { redactErrorBody } from '../redact.js';
  * receipt/journal pipeline. Routing this call through that pipeline would be routing
  * a one-time login URL through it too, so this module keeps its own tiny copy of
  * `api.ts`'s `token()`/`call()` shape instead of extending the scanned surface.
- * `getConnectAttempt` is a plain GET, exempt from that scanner, so it lives in
+ * `getIntegrationConnectAttempt` is a plain GET, exempt from that scanner, so it lives in
  * `api.ts` normally.
  */
 function connectToken(): string {
@@ -153,7 +153,7 @@ export function IntegrationsPanel({ items, now, onToast }: IntegrationsPanelProp
   async function onOpen(id: string): Promise<void> {
     const local = attemptFor(id);
     if (!local.attempt) { onToast?.(`${id} has no connect attempt in flight`, false); return; }
-    const view = await getConnectAttempt(id, local.attempt);
+    const view = await getIntegrationConnectAttempt(id, local.attempt);
     if (view.link) {
       window.open(view.link, '_blank', 'noopener');
     } else if (view.error) {

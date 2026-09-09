@@ -149,6 +149,12 @@ export interface LaneQuestion {
   text: string;
   opts: string[];
   askedAt: number;
+  /** Index into `opts` the pipeline recommends, or `null` when nothing was picked
+   *  (`completeAskOptions`, W1). */
+  recommended?: number | null;
+  /** Whether `opts` came from the worker's `forge_ask` call as-is, or got padded out
+   *  by the reasoner (`completeAskOptions`, W1). */
+  optionSource?: 'worker' | 'drafted';
 }
 
 /**
@@ -310,7 +316,11 @@ export type MessageType =
   | 'receipt'
   | 'refusal'
   | 'pr'
-  | 'thinking';
+  | 'thinking'
+  /** A blocker that offers a choice, drawn as a card in the rail (`blocker.raised`). */
+  | 'blocker'
+  /** A decision the agent made on its own and is telling the operator about. */
+  | 'decision';
 
 export interface MessageButton {
   label: string;
@@ -335,6 +345,12 @@ export interface Message {
   jid?: string;
   askKey?: string;
   opts?: string[];
+  /** Index into `opts` the pipeline recommends, or `null` when nothing was picked
+   *  (`completeAskOptions`, W1). */
+  recommended?: number | null;
+  /** Whether `opts` came from the worker's `forge_ask` call as-is, or got padded out
+   *  by the reasoner (`completeAskOptions`, W1). */
+  optionSource?: 'worker' | 'drafted';
   answer?: string;
   btns?: MessageButton[];
   items?: PlanItem[];
@@ -349,6 +365,17 @@ export interface Message {
   /** Which path answered a rail message: the Conductor agent, or the regex grammar it
    *  falls back to. Absent on every row older than the agent. */
   path?: 'agent' | 'grammar';
+  /** The rail card fields (`FD Rail.dc.html`, kind `card`): the kicker line, the
+   *  headline, one or two sentences, and a small key/value table. A `confirm`, `plan`,
+   *  `blocker` or `decision` renders as that card; `text` stays the headline when
+   *  `title` is absent. */
+  kicker?: string;
+  title?: string;
+  body?: string;
+  meta?: { k: string; v: string }[];
+  /** The tool calls behind an `activity` digest, one line each, for the rail's
+   *  "N tool calls" disclosure. Absent when the digest has no per-call detail. */
+  tools?: string[];
 }
 
 export interface ThreadResponse {
@@ -452,6 +479,46 @@ export interface ReconnectResponse {
   jid: string | null;
 }
 
+/** One connected Claude account, for the Accounts panel's list. Never carries
+ *  `configDir`: a filesystem path on the machine running the fleet is not something the
+ *  console needs to render, and keeping it off the wire keeps it off every client. */
+export interface AccountItem {
+  id: string;
+  label: string;
+  connectedAt: number;
+  /** Runs currently attributed to this account, re-derived fresh on every request. */
+  liveRuns: number;
+}
+
+export interface AccountsResponse {
+  items: AccountItem[];
+}
+
+export type ConnectState = 'connecting' | 'waiting-in-browser' | 'probing' | 'connected' | 'failed';
+
+/** `GET /accounts/connect/:attempt`'s body. `link` and `error` reach the browser that
+ *  is polling this one attempt, and nowhere else -- no journal row, no slice-event
+ *  payload, no broadcast to any other open console tab. */
+export interface ConnectAttemptResponse {
+  id: string;
+  label: string;
+  state: ConnectState;
+  link?: string;
+  error?: string;
+  accountId?: string;
+}
+
+export interface ConnectStartResponse {
+  ok: boolean;
+  attemptId?: string;
+  error?: string;
+}
+
+export interface DisconnectResponse {
+  ok: boolean;
+  error?: string;
+}
+
 export interface Caps {
   /** Every field here is a token count, not a dollar figure -- this fleet runs on a
    *  flat subscription, so a `$` cap here was always fiction wearing a number's shape.
@@ -494,6 +561,13 @@ export interface ReviewMetrics {
   /** Tokens spent on runs whose last state today is killed, blocked or exhausted --
    *  never a dollar figure. */
   tokensWasted: number;
+  /** The flight review's other tiles (2026-09-09): tickets picked up today, tickets
+   *  handed to QA today, blockers cleared today, and the slowest step of the day named
+   *  with its longest wait. Absent on a response older than these fields. */
+  ticketsIn?: number;
+  handedToQa?: number;
+  blockersCleared?: number;
+  slowestHop?: { name: string; minutes: number } | null;
 }
 
 export interface ProposalsResponse {
@@ -606,6 +680,10 @@ export interface QueueItem {
    *  matching it (by `input`, `briefPath` basename or `branch`) is `done`, or a
    *  `feature/<slug>` branch is already merged into `origin/main`. */
   after?: string[];
+  /** R-02: the `R-nn` id from roadmap.md's Items table that this item's brief named,
+   *  recorded when the item's repo is the self repo and the brief carried a
+   *  `roadmap: R-nn` line. */
+  roadmap?: string | null;
   /** BBZ-60/62/74/202, 2026-09-08: how many consecutive ticks `advanceItem` has found
    *  the gate's checks still pending on this item's PR -- 0 or absent means the checks
    *  have never come back pending. Reset the moment a tick's council result is no longer
@@ -613,6 +691,11 @@ export interface QueueItem {
    *  Once it reaches `PENDING_CHECKS_POLL_CAP` (`intake/queue.ts`), the item parks instead
    *  of retrying again, so a check that never finishes cannot hold an item forever. */
   pendingGatePolls?: number;
+  /** The Queue view's two columns (2026-09-09, `Flightdeck Console.dc.html` 1c), filled by
+   *  `GET /queue` at read time like `title`: why this item sits where it does in the
+   *  order, and when it starts, in words. Absent on a response older than this field. */
+  whyNext?: string;
+  startsIn?: string;
 }
 
 export interface QueueResponse {
@@ -728,6 +811,9 @@ export interface ConsoleStateSummary {
    *  instead of rendering new data with stale components (2026-09-07: a window open
    *  since the morning showed the old tiles over the new sentences). */
   build?: string;
+  /** The Jira project this fleet works, off `FORGE_BACKLOG_PROJECT`, with its name once
+   *  Jira has answered for it. Absent when no project is configured. */
+  project?: { key: string; name: string | null };
 }
 
 /**
@@ -831,6 +917,12 @@ export interface Blocker {
   thenWhat: string;
   /** The last confirmation attempt's outcome, in words, when one ran. */
   lastCheck: string | null;
+  /** Who can clear it, as the Blockers view names them: "You", the repo owner a
+   *  merge waits on, or the outside vendor. Absent on a row written before this field
+   *  existed; the view then reads `youCanResolve`. */
+  who?: string;
+  /** One short line under the name: "owns the repo", "outside vendor". */
+  whoNote?: string;
 }
 
 export interface BlockersResponse {

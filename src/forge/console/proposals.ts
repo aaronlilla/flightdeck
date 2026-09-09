@@ -80,12 +80,52 @@ export function computeMetrics(events: ForgeEvent[], now: number, tokensByRun: R
     }
   }
 
+  const ticketsIn = today.filter((row) => row.event === 'queue.launched').length;
+  const handedToQa = today.filter((row) => row.event === 'queue.review').length;
+  const blockersCleared = today.filter((row) => row.event === 'blocker.cleared').length;
+
   return {
     mergedToday,
     humanWaitMin: Math.round(humanWaitMs / 60_000),
     tokensPerMerge: mergedToday > 0 ? Math.round(tokensToday / mergedToday) : null,
     tokensWasted: Math.round(tokensWasted),
+    ticketsIn,
+    handedToQa,
+    blockersCleared,
+    slowestHop: slowestHop(today, humanWaitMs),
   };
+}
+
+/**
+ * The slowest step of the day, named: the longest single wait between two of a queue
+ * item's own transitions (planned to launched, launched to review, review to merged),
+ * against the total time agents spent waiting on the operator's answers. `null` when
+ * nothing waited on anything today.
+ */
+export function slowestHop(today: ForgeEvent[], humanWaitMs: number): { name: string; minutes: number } | null {
+  const steps: Array<{ from: string; to: string; name: string }> = [
+    { from: 'queue.planned', to: 'queue.launched', name: 'Provisioning a worktree and launching' },
+    { from: 'queue.launched', to: 'queue.review', name: 'Working a ticket to a draft PR' },
+    { from: 'queue.review', to: 'queue.done', name: 'Waiting for a merge' },
+  ];
+  let best: { name: string; minutes: number } | null = humanWaitMs > 0 ? { name: 'Waiting for your answers', minutes: Math.round(humanWaitMs / 60_000) } : null;
+  for (const step of steps) {
+    const startedAt = new Map<string, number>();
+    for (const row of today) {
+      const id = typeof row.itemId === 'string' ? row.itemId : typeof row.id === 'string' ? row.id : null;
+      const key = typeof row.item === 'string' ? row.item : id;
+      if (!key) continue;
+      if (row.event === step.from) startedAt.set(key, row.at);
+      if (row.event === step.to) {
+        const from = startedAt.get(key);
+        if (from === undefined) continue;
+        const minutes = Math.round((row.at - from) / 60_000);
+        if (!best || minutes > best.minutes) best = { name: step.name, minutes };
+        startedAt.delete(key);
+      }
+    }
+  }
+  return best;
 }
 
 /** The two rule kinds this server can propose on its own, from evidence in today's

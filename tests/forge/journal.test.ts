@@ -318,3 +318,59 @@ describe('B.3.9: JournalCache reads only the appended bytes', () => {
     expect(incremental.burn).toEqual(full.burn);
   });
 });
+
+describe('replayed usage rows are deduped against the SDK\'s per-block repeat', () => {
+  it('counts one exact repeat of a subagent.usage row within 5s once, not twice', () => {
+    write(
+      { event: 'run.started', run: 'alpha', actor: 'runner', at: 1_000 },
+      {
+        event: 'subagent.usage', run: 'alpha', actor: 'worker', model: 'claude-sonnet-5', at: 1_100,
+        usage: { input: 100, cacheRead: 50, cacheCreation: 0, output: 10 },
+      },
+      {
+        event: 'subagent.usage', run: 'alpha', actor: 'worker', model: 'claude-sonnet-5', at: 1_400,
+        usage: { input: 100, cacheRead: 50, cacheCreation: 0, output: 10 },
+      },
+    );
+    const state = replay(path);
+    // 1 row's worth of tokens: 100 + 50 + 0 + 10 = 160, not 320.
+    expect(state.runs['alpha']?.tokensUsed).toBe(160);
+    expect(state.runs['alpha']?.cacheReadTokens).toBe(50);
+    expect(state.runs['alpha']?.costUsd).toBeCloseTo(state.burn['sonnet'] ?? -1, 8);
+    expect(state.burn['sonnet']).toBeGreaterThan(0);
+    // The repeat still lands in the raw event log -- only the accumulation skips it.
+    expect(state.events.filter((event) => event.event === 'subagent.usage')).toHaveLength(2);
+  });
+
+  it('counts both rows when the same usage numbers land more than 5s apart', () => {
+    write(
+      { event: 'run.started', run: 'alpha', actor: 'runner', at: 1_000 },
+      {
+        event: 'subagent.usage', run: 'alpha', actor: 'worker', model: 'claude-sonnet-5', at: 1_100,
+        usage: { input: 100, cacheRead: 50, cacheCreation: 0, output: 10 },
+      },
+      {
+        event: 'subagent.usage', run: 'alpha', actor: 'worker', model: 'claude-sonnet-5', at: 11_101,
+        usage: { input: 100, cacheRead: 50, cacheCreation: 0, output: 10 },
+      },
+    );
+    const state = replay(path);
+    expect(state.runs['alpha']?.tokensUsed).toBe(320);
+  });
+
+  it('counts both rows when cacheRead differs, even seconds apart', () => {
+    write(
+      { event: 'run.started', run: 'alpha', actor: 'runner', at: 1_000 },
+      {
+        event: 'subagent.usage', run: 'alpha', actor: 'worker', model: 'claude-sonnet-5', at: 1_100,
+        usage: { input: 100, cacheRead: 50, cacheCreation: 0, output: 10 },
+      },
+      {
+        event: 'subagent.usage', run: 'alpha', actor: 'worker', model: 'claude-sonnet-5', at: 1_400,
+        usage: { input: 100, cacheRead: 999, cacheCreation: 0, output: 10 },
+      },
+    );
+    const state = replay(path);
+    expect(state.runs['alpha']?.tokensUsed).toBe(160 + 1_109);
+  });
+});

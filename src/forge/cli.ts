@@ -35,8 +35,9 @@ import { autoMergeAllowed, councilPolicy, repoAllowedForCouncil } from './counci
 import { redactPrBody } from './council/redact-sinks.js';
 import { SEVERITY_RANK } from './council/synthesis.js';
 import { runCutover } from './cutover.js';
-import { readLoginLock } from './credential-horizon.js';
-import { buildBurnLedger, checkBudget } from './governor.js';
+import { CredentialHorizon, readLoginLock } from './credential-horizon.js';
+import { accountFor, buildBurnLedger, checkBudget, WindowGate } from './governor.js';
+import { accountsRegistryPath, liveRunsByAccount, loadAccounts } from './accounts.js';
 import { reconcileBurnOnce } from './burn-reconcile.js';
 import { planIntakeWrites } from './intake/dryRun.js';
 import { createJiraFeed, createJiraWriteClient, probeJira, type JiraWriteClient } from './intake/jira.js';
@@ -46,7 +47,7 @@ import type { FakePollFeed } from './intake/poller.js';
 import { planFromPacket } from './intake/planner.js';
 import { parseRepoMap } from './intake/repoRoute.js';
 import { resolvePlanProvider } from './intake/reasoner.js';
-import { readWatermark, writeWatermark } from './intake/watermarkStore.js';
+import { readWatermark, writeWatermark, fileWatermarkStore } from './intake/watermarkStore.js';
 import { fetchInboxIssues, classifyInbox } from './intake/inbox.js';
 import { serverRequest } from './server-request.js';
 import { readProcessList, watchedProcesses, probeProcessListCached } from './fleetwatch.js';
@@ -56,6 +57,7 @@ import { replay, Journal, JournalCache } from './journal.js';
 import { checkLaunch, launchEnv, loginInFlight, pinnedRuntime, runtimeHead, runtimeVersion } from './launcher.js';
 import { assess, LivenessSupervisor } from './liveness.js';
 import { loadConsoleEnv } from './console-env.js';
+import { titleFromHeading } from './console/lanes.js';
 import {
   ensureHome, fleetConfigDirChoice, forgeHome, gotchasDir, inboxDir, intakeBriefsDir, journalPath,
   killSwitchPath, lanesDir, queuePath, registryDir, runsDir,
@@ -63,7 +65,8 @@ import {
 import { runQueueTick } from './intake/queue.js';
 import { acquireQueueLock } from './intake/queueLock.js';
 import { QueueStore } from './intake/queueStore.js';
-import { buildQueueRuntimeDeps, queueMergeDeps, queuePromoteDeps } from './queue-wire.js';
+import { buildQueueRuntimeDeps, queueMergeDeps, queuePromoteDeps, jiraConfigFromEnv } from './queue-wire.js';
+import { readWatcherPollSeconds, watcherFeed, watcherTick } from './intake/watcherWire.js';
 import { buildSelfLoop } from './self-wire.js';
 import { QueueTickBackoff } from './queue-backoff.js';
 import { loadPolicy, modelFor, modelIdFor, tierOfBrief } from './policy.js';
@@ -87,6 +90,16 @@ import {
 import { readChainEnv, repoKindFor } from './chain-env.js';
 import { buildChainDeps, hasRunRegistered } from './chain-wire.js';
 import { isGoalFile } from './intake/goalFile.js';
+
+
+/** The port the console is actually served on: `FORGE_PORT` when a second `forge up` was
+ *  started on one, else the default. A link that names the wrong port sends a person to a
+ *  page that is not there. */
+function consolePort(): number {
+  const raw = process.env['FORGE_PORT'];
+  const parsed = raw ? Number(raw) : NaN;
+  return Number.isFinite(parsed) ? parsed : FORGE_PORT;
+}
 
 export interface CliResult {
   code: number;
@@ -656,6 +669,36 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         queueLine = `queue on, polling every ${pollSeconds}s`;
       }
 
+      // R-11 part 2: the Jira watcher bridge -- FORGE_BACKLOG_PROJECT names the project it
+      // watches, the same variable buildBacklogJql already reads for a backlog add. Its own
+      // timer at FORGE_CHAIN_POLL_S seconds (default 30, not the chain's 300s default),
+      // since a comment or a status move on an owned ticket should reach the queue fast.
+      let watcherLine = '';
+      const watcherProject = process.env['FORGE_BACKLOG_PROJECT'];
+      const watcherJiraConfig = jiraConfigFromEnv();
+      if (!watcherProject) {
+        watcherLine = 'jira watcher NOT started: no FORGE_BACKLOG_PROJECT';
+      } else if (!watcherJiraConfig) {
+        watcherLine = 'jira watcher NOT started: no Jira credentials';
+      } else {
+        const watcherJournal = new Journal(journalPath());
+        const watcherPollSeconds = readWatcherPollSeconds();
+        const watermarks = fileWatermarkStore();
+        const feed = watcherFeed(watcherProject, watcherJiraConfig);
+        const watcherTickTimer = setInterval(() => {
+          void watcherTick({
+            feed, watermarks, store: queueStore, journal: watcherJournal,
+          }).catch((error: unknown) => {
+            watcherJournal.append({
+              event: 'watcher.tick-error', actor: 'watcher',
+              message: error instanceof Error ? error.message : String(error),
+            } as never);
+          });
+        }, watcherPollSeconds * 1000);
+        watcherTickTimer.unref();
+        watcherLine = `jira watcher on for ${watcherProject}, every ${watcherPollSeconds}s`;
+      }
+
       // The self loop (`self-wire.ts`): findings about the fleet become queue items on
       // FORGE_SELF_REPO, a self item whose gate cleared merges, and once trunk has moved
       // this process asks its launcher for a restart by exiting 75 -- only while nothing
@@ -696,6 +739,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           `inbox: ${inbox.open().length} waiting`,
           chainLine,
           queueLine,
+          watcherLine,
           selfLine,
         ].filter(Boolean),
       };
@@ -820,16 +864,12 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         column: 'forge', started: Date.now(), owner: 'forge',
         className: plannedClassName, model: plannedModel,
       });
-      const engine = deps.engine ?? new SdkEngine({
-        journalPath: journalPath(), inboxDir: inboxDir(), gotchasDir: gotchasDir(),
-        killSwitch: () => readKillSwitch(killSwitchPath()).engaged,
-        // I12: written the moment the SDK's init message names the session, not after
-        // the first turn resolves -- a process killed mid-segment still leaves a
-        // registry row and a lane `reconcileRegistry` can resume.
-        onSessionStarted: (_run, sessionId, model) => {
-          registry.setSession(slug, sessionId, model);
-          lanes.put(slug, { session_id: sessionId });
-        },
+      // W1: the reasoner that pads a short forge_ask before it ever reaches the inbox.
+      // Every other reasoner seam this process opens (the router in `up`, the Warden
+      // tick's drift check, council) builds its own the same way; this one is `run`'s
+      // own, since a single `forge run` process has no router-level reasoner to share.
+      const askReasoner = reasonerFor('claude', {
+        journal: new Journal(journalPath()), queryFn: deps.reasonerQueryFn,
       });
       // P4.7/I9: the real actuator, so a model-mismatch turn actually parks (writes the
       // park record the PreToolUse hook checks on this run's own next tool call) rather
@@ -839,6 +879,60 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       const actuatorJournal = new Journal(journalPath());
       const actuator = new WardenActuator({
         journal: actuatorJournal, journalPath: journalPath(), registry, lanes,
+      });
+      // P4.8: picks the least-utilized, unpaused Claude account for this launch instead
+      // of every run piling onto `fleetConfigDir()`'s account. `accountFor` and
+      // `WindowGate` (governor.ts) were built and unit-tested but never wired into the
+      // one production call site that actually launches a worker: this is that wiring.
+      // A registry with no connected accounts yet, or one where every account is paused
+      // or over its ceiling, resolves to `undefined`, and `Worker` falls back to
+      // `fleetConfigDir()` exactly as before, so an empty registry never blocks a launch.
+      const registeredAccounts = loadAccounts(accountsRegistryPath())
+        .map((record) => ({ id: record.id, configDir: record.configDir }));
+      const liveGoalsForAccounts = registry.all()
+        .filter((row) => processAlive(row.pid))
+        .map((row) => row.goal);
+      const liveRunsPerAccount = liveRunsByAccount(replay(journalPath()).events, liveGoalsForAccounts);
+      const selectedAccount = registeredAccounts.length > 0
+        ? accountFor(launchClass, registeredAccounts, new WindowGate(), liveRunsPerAccount, Date.now())
+        : undefined;
+      // Where a `gh` credential lapse from the drift check lands. An expired token
+      // reads as an unknown mergeable state, and answering that with "rebase onto the
+      // base branch" asks for something no rebase can deliver. The park goes under
+      // `credential:github`, the id the console's own GitHub integration row uses, so the
+      // two name one credential rather than two. `warden-tick.ts:359-365` is written to
+      // clear that key, but it is gated on deps `forge up` does not pass, so nothing
+      // calls `tick()` yet: the run's way back is the ask the drift path raises on the
+      // board, not this park.
+      const credentialHorizon = new CredentialHorizon({
+        journal: actuatorJournal,
+        blockers: new BlockerBoard({ journal: actuatorJournal, actuator }),
+        // The one message Aaron gets, on a surface he already watches.
+        // `CredentialHorizon` redacts before calling this, so nothing here re-reads a
+        // secret.
+        notifyAaron: (message) => {
+          actuatorJournal.append({ event: 'note', run: slug, actor: 'warden', note: message });
+        },
+        // A worker runs unattended, so it never opens an interactive login itself:
+        // that hangs on a prompt nobody is there to answer. It points at the console's
+        // GitHub row instead, where Reconnect runs `gh auth login --web` with a person
+        // present.
+        startFlow: async () => ({ page: `http://127.0.0.1:${consolePort()}/#integrations` }),
+        isAlive: processAlive,
+      });
+      const engine = deps.engine ?? new SdkEngine({
+        journalPath: journalPath(), inboxDir: inboxDir(), gotchasDir: gotchasDir(),
+        killSwitch: () => readKillSwitch(killSwitchPath()).engaged,
+        credentialHorizon,
+        reasoner: askReasoner,
+        briefTitle: titleFromHeading(brief, slug) ?? undefined,
+        // I12: written the moment the SDK's init message names the session, not after
+        // the first turn resolves -- a process killed mid-segment still leaves a
+        // registry row and a lane `reconcileRegistry` can resume.
+        onSessionStarted: (_run, sessionId, model) => {
+          registry.setSession(slug, sessionId, model);
+          lanes.put(slug, { session_id: sessionId });
+        },
       });
       const worker = new Worker({
         run: slug,
@@ -858,6 +952,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         ...(maxTurns !== undefined ? { maxTurns } : {}),
         ...(autoAnswer !== undefined ? { autoAnswer } : {}),
         ...(goal ? { goalLoop: true } : {}),
+        ...(selectedAccount ? { account: selectedAccount } : {}),
       });
       let result: Awaited<ReturnType<Worker['run']>>;
       try {

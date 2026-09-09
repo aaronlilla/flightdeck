@@ -6,12 +6,16 @@
  */
 import { redactErrorBody } from './redact.js';
 import type {
+  AccountsResponse,
   ActionResult,
   BlockersActionResult,
   BlockersResponse,
   Caps,
   CommandResponse,
+  ConnectAttemptResponse,
+  ConnectStartResponse,
   ConsoleStateSummary,
+  DisconnectResponse,
   IntegrationsResponse,
   JournalResponse,
   LaneStory,
@@ -295,7 +299,7 @@ export function reconnectIntegration(id: string): Promise<ReconnectResponse> {
  * matching `POST /integrations/:id/connect` deliberately does NOT live here: see
  * `IntegrationsPanel.tsx`'s own doc comment for why that call bypasses this module.
  */
-export function getConnectAttempt(id: string, attempt: string): Promise<{ state: string; link?: string; error?: string }> {
+export function getIntegrationConnectAttempt(id: string, attempt: string): Promise<{ state: string; link?: string; error?: string }> {
   return call<{ state: string; link?: string; error?: string }>(
     `/integrations/${encodeURIComponent(id)}/connect/${encodeURIComponent(attempt)}`,
   );
@@ -362,4 +366,20 @@ export function promoteQueueItem(id: string, version: string, message: string, c
  *  refused action here. */
 export function postQueueWidth(maxInFlight: number): Promise<ActionResult> {
   return post<ActionResult>('/queue/width', { maxInFlight });
+}
+
+export function getAccounts(): Promise<AccountsResponse> {
+  return call<AccountsResponse>('/accounts');
+}
+
+export function connectAccount(label: string): Promise<ConnectStartResponse> {
+  return post<ConnectStartResponse>('/accounts/connect', { label });
+}
+
+export function getConnectAttempt(attemptId: string): Promise<ConnectAttemptResponse> {
+  return call<ConnectAttemptResponse>(`/accounts/connect/${encodeURIComponent(attemptId)}`);
+}
+
+export function disconnectAccount(id: string): Promise<DisconnectResponse> {
+  return post<DisconnectResponse>(`/accounts/${encodeURIComponent(id)}/disconnect`, {});
 }

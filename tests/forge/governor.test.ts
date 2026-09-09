@@ -14,6 +14,7 @@ import { describe, expect, it } from 'vitest';
 
 import { Journal, replay, type ForgeEvent } from '../../src/forge/journal.js';
 import {
+  accountFor,
   buildBurnLedger,
   checkBudget,
   checkConformance,
@@ -23,6 +24,7 @@ import {
   reconcileBurn,
   resolveResetTime,
   WindowGate,
+  type Account,
 } from '../../src/forge/governor.js';
 import { classFor, providerFor } from '../../src/forge/policy.js';
 
@@ -162,7 +164,7 @@ describe('window pause on a rate-limit event, with a reset time', () => {
   it('pauses every queued run of that tier and never admits one before the reset time', () => {
     const gate = new WindowGate();
     const now = Date.parse('2026-09-04T18:00:00Z');
-    gate.onRateLimitEvent('sonnet', 'rate limit exceeded', now);
+    gate.onRateLimitEvent('sonnet', 'five_hour', 'rate limit exceeded', now);
 
     const beforeReset = gate.admit([{ run: 'r1', tier: 'sonnet' }], now + 60_000);
     expect(beforeReset.admitted).toHaveLength(0);
@@ -179,9 +181,9 @@ describe('window pause on a rate-limit event, with a reset time', () => {
   it('never resumes early just because a later, unrelated event arrived', () => {
     const gate = new WindowGate();
     const now = Date.parse('2026-09-04T18:00:00Z');
-    gate.onRateLimitEvent('sonnet', 'rate limit exceeded', now);
+    gate.onRateLimitEvent('sonnet', 'five_hour', 'rate limit exceeded', now);
     // An event on a different tier must not lift this tier's pause.
-    gate.onRateLimitEvent('haiku', 'rate limit exceeded', now + 30_000);
+    gate.onRateLimitEvent('haiku', 'five_hour', 'rate limit exceeded', now + 30_000);
     const result = gate.admit([{ run: 'r1', tier: 'sonnet' }], now + 60_000);
     expect(result.admitted).toHaveLength(0);
   });
@@ -189,13 +191,39 @@ describe('window pause on a rate-limit event, with a reset time', () => {
   it('leaves a cheap class free to run while an expensive one is paused', () => {
     const gate = new WindowGate();
     const now = Date.parse('2026-09-04T18:00:00Z');
-    gate.onRateLimitEvent('opus', 'rate limit exceeded', now);
+    gate.onRateLimitEvent('opus', 'five_hour', 'rate limit exceeded', now);
     const result = gate.admit(
       [{ run: 'r1', tier: 'opus' }, { run: 'r2', tier: 'haiku' }],
       now + 60_000,
     );
     expect(result.admitted.map((entry) => entry.run)).toEqual(['r2']);
     expect(result.queued.map((entry) => entry.run)).toEqual(['r1']);
+  });
+});
+
+describe('P4.8: WindowGate keyed by (account, window), never by tier alone', () => {
+  it('pauses two different accounts independently: one paused account never blocks another', () => {
+    const gate = new WindowGate();
+    const now = Date.parse('2026-09-04T18:00:00Z');
+    gate.onRateLimitEvent('test-a', 'five_hour', 'rate limit exceeded', now);
+    expect(gate.isPaused('test-a', 'five_hour', now)).toBe(true);
+    expect(gate.isPaused('test-b', 'five_hour', now)).toBe(false);
+  });
+
+  it('an account\'s five_hour pause never pauses its own seven_day window', () => {
+    const gate = new WindowGate();
+    const now = Date.parse('2026-09-04T18:00:00Z');
+    gate.onRateLimitEvent('test-a', 'five_hour', 'rate limit exceeded', now);
+    expect(gate.isPaused('test-a', 'five_hour', now)).toBe(true);
+    expect(gate.isPaused('test-a', 'seven_day', now)).toBe(false);
+  });
+
+  it('isAccountPaused reports true when either window is paused', () => {
+    const gate = new WindowGate();
+    const now = Date.parse('2026-09-04T18:00:00Z');
+    expect(gate.isAccountPaused('test-a', now)).toBe(false);
+    gate.onRateLimitEvent('test-a', 'seven_day', 'usage limit reached', now);
+    expect(gate.isAccountPaused('test-a', now)).toBe(true);
   });
 });
 
@@ -335,6 +363,73 @@ describe('budgets Aaron sets, queued against and never silently exceeded', () =>
   });
 });
 
+describe('accountFor: the least-utilized, non-paused account for a run', () => {
+  const now = Date.parse('2026-09-04T18:00:00Z');
+
+  function account(id: string, extra: Partial<Account> = {}): Account {
+    return { id, configDir: `/accounts/${id}`, ...extra };
+  }
+
+  it('picks the account with the lowest max utilization across both windows', () => {
+    const accounts = [
+      account('test-a', { utilization: { five_hour: 0.8, seven_day: 0.1 } }),
+      account('test-b', { utilization: { five_hour: 0.2, seven_day: 0.1 } }),
+    ];
+    const picked = accountFor('implement', accounts, new WindowGate(), {}, now);
+    expect(picked?.id).toBe('test-b');
+  });
+
+  it('is not a constant: swapping which account is cheaper swaps the pick too', () => {
+    const accounts = [
+      account('test-a', { utilization: { five_hour: 0.1 } }),
+      account('test-b', { utilization: { five_hour: 0.8 } }),
+    ];
+    // The falsifier this specimen exists to catch: a hardcoded "always test-a" would
+    // pass the specimen above and only fail here.
+    expect(accountFor('implement', accounts, new WindowGate(), {}, now)?.id).toBe('test-a');
+  });
+
+  it('breaks a utilization tie by fewest live runs', () => {
+    const accounts = [
+      account('test-a', { utilization: { five_hour: 0.3 } }),
+      account('test-b', { utilization: { five_hour: 0.3 } }),
+    ];
+    const picked = accountFor('implement', accounts, new WindowGate(), { 'test-a': 3, 'test-b': 1 }, now);
+    expect(picked?.id).toBe('test-b');
+  });
+
+  it('never picks an account paused on either rate-limit window', () => {
+    const gate = new WindowGate();
+    gate.onRateLimitEvent('test-a', 'five_hour', 'rate limit exceeded', now);
+    const accounts = [
+      account('test-a', { utilization: { five_hour: 0 } }),
+      account('test-b', { utilization: { five_hour: 0.9 } }),
+    ];
+    // test-a is cheaper on paper but paused right now, so the busier-but-usable account wins.
+    expect(accountFor('implement', accounts, gate, {}, now)?.id).toBe('test-b');
+  });
+
+  it('never picks an account explicitly paused by an operator', () => {
+    const accounts = [
+      account('test-a', { paused: true, utilization: { five_hour: 0 } }),
+      account('test-b', { utilization: { five_hour: 0.9 } }),
+    ];
+    expect(accountFor('implement', accounts, new WindowGate(), {}, now)?.id).toBe('test-b');
+  });
+
+  it('falls back to undefined when every account is paused or over capacity', () => {
+    const gate = new WindowGate();
+    gate.onRateLimitEvent('test-a', 'five_hour', 'rate limit exceeded', now);
+    gate.onRateLimitEvent('test-b', 'seven_day', 'usage limit reached', now);
+    const accounts = [account('test-a'), account('test-b')];
+    expect(accountFor('implement', accounts, gate, {}, now)).toBeUndefined();
+  });
+
+  it('returns undefined rather than throwing on an empty account list', () => {
+    expect(accountFor('implement', [], new WindowGate(), {}, now)).toBeUndefined();
+  });
+});
+
 describe('Codex\'s own ledger, separate from the fleet\'s and carrying no USD', () => {
   it('folds a stream of Codex ledger lines into a count and a total duration', () => {
     const lines = [
@@ -347,5 +442,31 @@ describe('Codex\'s own ledger, separate from the fleet\'s and carrying no USD', 
     expect(folded.count).toBe(2);
     expect(folded.totalDurationMs).toBe(3000);
     expect(folded).not.toHaveProperty('usd');
+  });
+});
+
+describe('reconcileBurn does not double-count the SDK\'s per-block usage repeat', () => {
+  it('does not flag a mismatch when a subagent.usage row is an exact near-instant repeat', () => {
+    writeEvents(
+      { event: 'run.started', run: 'r1', actor: 'runner', className: 'implement', model: 'claude-sonnet-5', at: 1_000 },
+      {
+        event: 'usage', run: 'r1', actor: 'worker', model: 'claude-sonnet-5', at: 1_100,
+        usage: { input: 1_000_000, cacheRead: 0, cacheCreation: 0, output: 0 },
+      },
+      // The SDK's own per-block repeat of the exact same usage object, moments later.
+      {
+        event: 'usage', run: 'r1', actor: 'worker', model: 'claude-sonnet-5', at: 1_150,
+        usage: { input: 1_000_000, cacheRead: 0, cacheCreation: 0, output: 0 },
+      },
+      {
+        event: 'result.usage', run: 'r1', actor: 'worker', at: 1_200,
+        modelUsage: { 'claude-sonnet-5': { input: 1_000_000, cacheRead: 0, cacheCreation: 0, output: 0, costUsd: 3.0 } },
+      },
+    );
+    const state = replay(path);
+    const ledger = buildBurnLedger(state.events);
+    // Before the fix, perMessageSum counted the repeat too and doubled to ~6.0,
+    // which is more than 5% away from the result-message sum and would false-flag.
+    expect(reconcileBurn(state, ledger)).toHaveLength(0);
   });
 });

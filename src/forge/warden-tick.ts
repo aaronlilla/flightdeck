@@ -93,6 +93,11 @@ export interface WardenTickDeps {
    *  engaging stays visible without this tick ever clearing it itself -- clearing stays a
    *  person's call, per Aaron's 2026-09-04 rule. */
   killSwitch?: () => { engaged: boolean; reason?: string };
+
+  /** R-02 guard #3: every currently-running queue item whose repo is the self repo, with
+   *  its own roadmap id (or null/undefined if it has none). Absent means this tick never
+   *  checks for an off-roadmap lane, the same opt-in default every other dep here uses. */
+  selfRepoBriefLanes?: () => Array<{ run: string; roadmap?: string | null }>;
 }
 
 /** Signals `assess()` can raise that name a run and are safe for a generic actuator park.
@@ -172,6 +177,7 @@ export class WardenTick {
     await this.checkConformance(onError);
     await this.resumeClearedCredentials(onError);
     await this.noteKillSwitch(onError);
+    await this.parkOffRoadmap(onError);
   }
 
   /** B.2: one relaunch per goal, ever, then a park. */
@@ -262,6 +268,18 @@ export class WardenTick {
         event: 'warden.health', actor: 'warden', key: 'kill-switch', signal: 'kill-switch',
         evidence: state,
       });
+    }, onError);
+  }
+
+  /** R-02 guard #3: parks any self-repo lane whose item names no roadmap id, through the
+   *  same blockers path every other wall on a run goes through. */
+  private async parkOffRoadmap(onError?: (label: string, error: unknown) => void): Promise<void> {
+    if (!this.deps.selfRepoBriefLanes) return;
+    await guarded('offRoadmap', async () => {
+      for (const lane of this.deps.selfRepoBriefLanes!()) {
+        if (lane.roadmap) continue;
+        await this.deps.blockers.raise('off-roadmap', 'off-roadmap: no R-id on the brief', lane.run);
+      }
     }, onError);
   }
 

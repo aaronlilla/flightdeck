@@ -1,3 +1,5 @@
+import type { ChildProcess, SpawnOptions } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -402,6 +404,49 @@ describe('ConsoleWrites.command / kill confirm flow', () => {
     const receipt = cards.find((card) => card.type === 'receipt')!;
     expect(receipt.text).toBe('Answered "Restart the forge MCP connection?": Restart');
   });
+
+  it('W4: "answer <n>" resolves the option by number against the one open ask', async () => {
+    inbox.raise({ run: 'alpha', question: 'NOT NULL or nullable?', options: ['NOT NULL', 'nullable + backfill'] });
+
+    const cards = await writes.command('answer 2');
+
+    expect(inbox.open()).toHaveLength(0);
+    const receipt = cards.find((card) => card.type === 'receipt')!;
+    expect(receipt.text).toBe('Answered "NOT NULL or nullable?": nullable + backfill');
+  });
+
+  it('W4: "answer <key> <n>" resolves the option by number against that key', async () => {
+    const raised = inbox.raise({ run: 'alpha', question: 'NOT NULL or nullable?', options: ['NOT NULL', 'nullable + backfill'] });
+
+    const cards = await writes.command(`answer ${raised.key} 1`);
+
+    const answered = inbox.entry(raised.key);
+    expect(answered?.answer).toBe('NOT NULL');
+    const receipt = cards.find((card) => card.type === 'receipt')!;
+    expect(receipt.text).toBe('Answered "NOT NULL or nullable?": NOT NULL');
+  });
+
+  it('W4: "answer <n>" refuses with the ambiguity reply when two asks are open', async () => {
+    inbox.raise({ run: 'alpha', question: 'NOT NULL or nullable?', options: ['NOT NULL', 'nullable + backfill'] });
+    inbox.raise({ run: 'beta', question: 'staging or dev?', options: ['staging', 'dev'] });
+
+    const cards = await writes.command('answer 1');
+
+    const refusal = cards.find((card) => card.type === 'refusal')!;
+    expect(refusal).toBeDefined();
+    expect(refusal.text).toContain('2 questions are open');
+    expect(inbox.open()).toHaveLength(2);
+  });
+
+  it('W4: "answer <key> <n>" refuses when the key has no such option', async () => {
+    const raised = inbox.raise({ run: 'alpha', question: 'NOT NULL or nullable?', options: ['NOT NULL', 'nullable + backfill'] });
+
+    const cards = await writes.command(`answer ${raised.key} 5`);
+
+    const refusal = cards.find((card) => card.type === 'refusal')!;
+    expect(refusal).toBeDefined();
+    expect(inbox.open()).toHaveLength(1);
+  });
 });
 
 describe('ConsoleWrites: lane addressing by ticket key or title (deliverable 4)', () => {
@@ -650,5 +695,119 @@ describe('grammar verbs remove/archive/retire, reopen, verify actually execute',
     const cards = await writes.command('verify alpha');
     const refusal = cards.find((card) => card.type === 'refusal');
     expect(refusal?.text).toMatch(/no chain packet names a repo for run alpha/);
+  });
+});
+
+describe('accounts: POST /accounts/connect, GET /accounts/connect/:attempt, POST /accounts/:id/disconnect', () => {
+  /** A fake `child_process.spawn` a `claude login`/`claude auth status` call runs
+   *  through, so this describe block never opens a real process. `queueClose` lets each
+   *  test script what a `claude` invocation prints and exits with, in call order. */
+  function fakeSpawn(queue: Array<{ stdout?: string; code: number }>) {
+    let index = 0;
+    return (_command: string, _args: string[] = [], _options: SpawnOptions = {}): ChildProcess => {
+      const script = queue[index] ?? { code: 0 };
+      index += 1;
+      const child = new EventEmitter() as unknown as ChildProcess;
+      (child as unknown as { pid: number }).pid = 5000 + index;
+      const stdout = new EventEmitter();
+      const stderr = new EventEmitter();
+      (child as unknown as { stdout: EventEmitter }).stdout = stdout;
+      (child as unknown as { stderr: EventEmitter }).stderr = stderr;
+      setImmediate(() => {
+        if (script.stdout) stdout.emit('data', Buffer.from(script.stdout));
+        child.emit('close', script.code);
+      });
+      return child;
+    };
+  }
+
+  function accountsWrites(queue: Array<{ stdout?: string; code: number }>): ConsoleWrites {
+    return new ConsoleWrites({
+      journalPath, registry, inbox, actuator, authorized: () => true,
+      ledgerPath: join(dir, 'accounts-actions.jsonl'),
+      accountsRegistryPath: join(dir, 'accounts-registry.json'),
+      spawnFn: fakeSpawn(queue),
+    });
+  }
+
+  it('connects an account end to end: connecting through to connected, then lists it', async () => {
+    const withAccounts = accountsWrites([
+      { code: 0, stdout: 'open this link to continue: https://example.test/authorize/abc\n' },
+      { code: 0, stdout: '{"authenticated":true}\n' },
+    ]);
+    const { response, result } = fakeResponse();
+    const handled = await withAccounts.handle('/accounts/connect', fakeRequest('POST', { label: 'work' }), response);
+    expect(handled).toBe(true);
+    const started = (await result).body as { ok: boolean; attemptId: string };
+    expect(started.ok).toBe(true);
+
+    let attempt: { state: string; link?: string } | undefined;
+    for (let i = 0; i < 50 && attempt?.state !== 'connected' && attempt?.state !== 'failed'; i += 1) {
+      const poll = fakeResponse();
+      await withAccounts.handle(`/accounts/connect/${started.attemptId}`, fakeRequest('GET'), poll.response);
+      attempt = (await poll.result).body as { state: string; link?: string };
+      if (attempt.state !== 'connected' && attempt.state !== 'failed') await new Promise((r) => setTimeout(r, 0));
+    }
+    expect(attempt?.state).toBe('connected');
+    expect(attempt?.link).toBe('https://example.test/authorize/abc');
+
+    const list = fakeResponse();
+    await withAccounts.handle('/accounts', fakeRequest('GET'), list.response);
+    const body = (await list.result).body as { items: Array<{ label: string }> };
+    expect(body.items.map((item) => item.label)).toEqual(['work']);
+  });
+
+  it('a failed probe answers "failed" with the probe\'s own error, and adds nothing', async () => {
+    const withAccounts = accountsWrites([
+      { code: 0, stdout: 'https://example.test/authorize/xyz\n' },
+      { code: 1, stdout: '{"error":"not authenticated"}\n' },
+    ]);
+    const { response, result } = fakeResponse();
+    await withAccounts.handle('/accounts/connect', fakeRequest('POST', { label: 'work' }), response);
+    const started = (await result).body as { attemptId: string };
+
+    let attempt: { state: string } | undefined;
+    for (let i = 0; i < 50 && attempt?.state !== 'failed'; i += 1) {
+      const poll = fakeResponse();
+      await withAccounts.handle(`/accounts/connect/${started.attemptId}`, fakeRequest('GET'), poll.response);
+      attempt = (await poll.result).body as { state: string };
+      if (attempt.state !== 'failed') await new Promise((r) => setTimeout(r, 0));
+    }
+    expect(attempt?.state).toBe('failed');
+
+    const list = fakeResponse();
+    await withAccounts.handle('/accounts', fakeRequest('GET'), list.response);
+    const body = (await list.result).body as { items: unknown[] };
+    expect(body.items).toHaveLength(0);
+  });
+
+  it('refuses to disconnect the sole remaining account, and refuses one with a live run', async () => {
+    const withAccounts = accountsWrites([]);
+    // Seed two accounts directly through the registry file this instance reads, rather
+    // than running two live connects through the fake process queue.
+    writeFileSync(join(dir, 'accounts-registry.json'), JSON.stringify({
+      accounts: [
+        { id: 'test-a', label: 'one', configDir: join(dir, 'a'), connectedAt: 1 },
+        { id: 'test-b', label: 'two', configDir: join(dir, 'b'), connectedAt: 2 },
+      ],
+    }), 'utf8');
+    registry.admit({ goal: 'goal-a', cwd: join(dir, 'wt-a'), briefPath: join(dir, 'a.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'goal-a', actor: 'runner', account: 'test-a' });
+
+    const liveRun = fakeResponse();
+    await withAccounts.handle('/accounts/test-a/disconnect', fakeRequest('POST'), liveRun.response);
+    const liveRunBody = (await liveRun.result).body as { ok: boolean; error?: string };
+    expect(liveRunBody.ok).toBe(false);
+    expect(liveRunBody.error).toMatch(/run/i);
+
+    const removed = fakeResponse();
+    await withAccounts.handle('/accounts/test-b/disconnect', fakeRequest('POST'), removed.response);
+    expect((await removed.result).body as { ok: boolean }).toEqual({ ok: true });
+
+    const last = fakeResponse();
+    await withAccounts.handle('/accounts/test-a/disconnect', fakeRequest('POST'), last.response);
+    const lastBody = (await last.result).body as { ok: boolean; error?: string };
+    expect(lastBody.ok).toBe(false);
+    expect(lastBody.error).toMatch(/last/i);
   });
 });
