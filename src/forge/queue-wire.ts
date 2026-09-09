@@ -17,6 +17,7 @@ import { join } from 'node:path';
 import { chainCouncil, chainGate, chainGh, chainRebase, chainLauncher, chainLaunchGoal } from './chain-wire.js';
 import { checkoutFor, repoKindFor as repoKindForEnv, type ChainEnv } from './chain-env.js';
 import type { CliResult, ForgeDeps } from './cli.js';
+import { autoMergeAllowed } from './council/risk.js';
 import { countAddDel, REAL_GH } from './council/gh.js';
 import type { Packet, PollSourceName, Watermark } from './contracts.js';
 import { run as execRun } from './exec.js';
@@ -418,6 +419,12 @@ export function buildQueueRuntimeDeps(
     backendHandoff: queueBackendHandoff(),
     jiraHandoff: queueJiraHandoff(),
     prSnapshot: queuePrSnapshot(),
+    // BBZ, 2026-09-08: read fresh every tick (`autoMergeAllowed` re-reads
+    // `FORGE_COUNCIL_AUTOMERGE` off `councilPolicy()` on each call), the same allow-list
+    // `forge gate --merge` already refuses against for a person -- this is the queue's
+    // own worker asking for the identical decision instead of waiting on a click.
+    mergeAllowed: (repo) => autoMergeAllowed(repo),
+    postMergeVerify: queuePostMergeVerify(chainEnv),
     prMerged: async (repo, pr) => {
       const result = await execRun({
         argv: ['gh', 'pr', 'view', String(pr), '--repo', repo, '--json', 'mergedAt'],
