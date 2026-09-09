@@ -80,7 +80,7 @@ describe('UX rule 2: every question renders through one shared, multiple-choice 
       ctxTokens: 40_000, ctxCeiling: 200_000, ctxCompactAt: 180_000, tokens: 200_000, tokenCap: 2_000_000, tokensPerMin: 0,
       fails: 0, hop: 0, hopStatus: 'live', observedAt: Date.now(), verifiedAt: Date.now(), heart: true, since: Date.now(),
       startedAt: Date.now(), endedAt: null, pr: null, sandbox: null, blockedBy: null, runaway: false,
-      needsAaron: null, live: { alive: false, pid: null, lastEventAt: null, checkedAt: 0 }, did: null, now: '', you: null,
+      needsAaron: null, live: { alive: false, pid: null, lastEventAt: null, checkedAt: 0 }, did: null, didVerbatim: false, now: '', you: null,
       question: { key: 'ask2', text: 'compact now or push through?', opts: ['compact', 'push through'], askedAt: Date.now() },
     };
     // `NeedsYou` builds plain data, not JSX -- rendering its own plate is out of scope

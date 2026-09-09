@@ -175,7 +175,13 @@ describe('the model never blocks a route', () => {
       expect(narrated.narratedAt).toBeNull();
       expect(narrated.raw).toContain('lane: NWR-96');
     }
-    expect(Date.now() - started).toBeLessThan(50);
+    // The bound was 50ms and it failed the full suite at 51ms on a loaded box, which
+    // measured this machine rather than the code. What the falsifier is actually about is
+    // whether a read waits on a call: the query here never resolves, so a route that
+    // awaited it would sit until the class timeout (60s in the shipped policy) or forever.
+    // Two seconds is still an order of magnitude inside that and cannot be reached by
+    // twelve cache misses that only enqueue.
+    expect(Date.now() - started).toBeLessThan(2_000);
     // The queue really did open sessions; the reads simply never waited for them.
     expect(hang.opened()).toBeGreaterThan(0);
   });

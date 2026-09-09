@@ -14,7 +14,7 @@ function lane(partial: Partial<Lane> & Pick<Lane, 'id' | 'state' | 'since'>): La
   const now = Date.now();
   const built: Lane = {
     ticket: partial.id, title: null, kind: 'ticket', sourceUrl: null, plain: '', mergeable: null, attempts: 1, retiredAt: null,
-    did: null, now: '', you: null, model: 'sonnet-5', modelId: 'claude-sonnet-5', className: 'implement', repo: 'northwind/rewards',
+    did: null, didVerbatim: false, now: '', you: null, model: 'sonnet-5', modelId: 'claude-sonnet-5', className: 'implement', repo: 'northwind/rewards',
     attempt: 1, reason: null, stepN: 2, stepTotal: 6, stepText: 'working', ctxTokens: 40_000, ctxCeiling: 200_000, ctxCompactAt: 180_000,
     tokens: 240_000, tokenCap: 4_000_000, tokensPerMin: 0, fails: 0, hop: 2, hopStatus: 'live', observedAt: now, verifiedAt: now,
     heart: true, startedAt: partial.since, endedAt: null, question: null, pr: null, sandbox: null, blockedBy: null, runaway: false,
@@ -67,12 +67,15 @@ function blockerRegisters(blocker: Blocker): Blocker {
 export function parityBlockers(): Blocker[] {
   const now = Date.now();
   const m = (minutes: number): number => now - minutes * 60_000;
-  return [
+  // Annotated rather than inferred: an array literal widens `kind` to `string`, and these
+  // rows have to be `Blocker`s before `blockerRegisters` can narrate them.
+  const rows: Blocker[] = [
     { id: 'integration:sentry', kind: 'integration', title: 'The Sentry token expired', detail: 'Sentry stopped answering at the last health check; the token expired.', youCanResolve: true, howToResolve: 'Paste a new token in Settings.', who: 'You', whoNote: 'about a minute', links: [], blocks: [{ laneId: 'NWR-178', label: 'NWR-178' }, { laneId: 'NWR-155', label: 'NWR-155' }], blockedBy: [], state: 'open', since: m(44), checkedAt: null, resolvedAt: null, thenWhat: 'Both tickets resume on their own.', lastCheck: null },
     { id: 'billing:northwind/rewards', kind: 'billing', title: 'GitHub Actions minutes are used up for the month', detail: 'The checks on PR #418 were refused: the spending limit is reached.', youCanResolve: false, howToResolve: 'Someone buys more minutes or raises the plan.', who: 'GitHub billing', whoNote: 'outside vendor; you hold the card', links: [{ label: 'GitHub billing settings', url: 'https://github.com/settings/billing' }], blocks: [{ laneId: 'NWR-202', label: 'NWR-202' }], blockedBy: [], state: 'open', since: m(9), checkedAt: null, resolvedAt: null, thenWhat: 'Checks re-run automatically.', lastCheck: null },
     { id: 'owner:cloudwatch', kind: 'owner', title: 'CloudWatch will not let the agent read the reconciliation logs', detail: 'Needs CloudWatch read access on the reconciliation log group.', youCanResolve: false, howToResolve: 'Dana grants read access on the log group.', who: 'Dana', whoNote: 'owns the AWS account', links: [], blocks: [{ laneId: 'NWR-141', label: 'NWR-141' }], blockedBy: [], state: 'open', since: m(135), checkedAt: null, resolvedAt: null, thenWhat: 'The lane resumes once access lands.', lastCheck: null },
     { id: 'integration:jira', kind: 'integration', title: 'Jira rate limit', detail: 'Jira answered 429 for ten minutes.', youCanResolve: true, howToResolve: 'Wait it out.', who: 'You', links: [], blocks: [{ laneId: 'NWR-77', label: 'NWR-77' }], blockedBy: [], state: 'resolved', since: m(170), checkedAt: m(160), resolvedAt: m(160), thenWhat: 'Restarted NWR-77.', lastCheck: 'lifted; restarted NWR-77' },
-  ].map(blockerRegisters);
+  ];
+  return rows.map(blockerRegisters);
 }
 
 export function parityQueue(): QueueItem[] {

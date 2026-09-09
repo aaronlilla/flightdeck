@@ -45,7 +45,7 @@ function lane(extra: Partial<Lane> & { id: string }): Lane {
     reason: null, stepN: 1, stepTotal: 6, stepText: 'working', ctxTokens: 1, ctxCeiling: 2, ctxCompactAt: 2, tokens: 1, tokenCap: null,
     tokensPerMin: 0, fails: 0, hop: 0, hopStatus: 'live', observedAt: now, verifiedAt: now, heart: true, since: now - 60_000, startedAt: now - 60_000,
     endedAt: null, question: null, pr: null, sandbox: null, blockedBy: null, runaway: false, needsAaron: null,
-    live: { alive: true, pid: 1, lastEventAt: now, checkedAt: now }, did: null, now: 'Working on it.', you: null, ...extra,
+    live: { alive: true, pid: 1, lastEventAt: now, checkedAt: now }, did: null, didVerbatim: false, now: 'Working on it.', you: null, ...extra,
   };
 }
 
