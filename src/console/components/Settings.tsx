@@ -3,8 +3,9 @@ import { useState } from 'react';
 
 import { ACTIONS, useAction } from '../actions.js';
 import { durationWords } from '../laneVM.js';
-import type { Caps, Integration } from '../../shared/console-model.js';
+import type { AccountItem, Caps, Integration } from '../../shared/console-model.js';
 import { fmtTokens } from '../../shared/format-tokens.js';
+import { Accounts } from './Accounts.js';
 import { Marks } from './QuestionCard.js';
 import { IntegrationsPanel } from './IntegrationsPanel.js';
 
@@ -16,6 +17,10 @@ import { IntegrationsPanel } from './IntegrationsPanel.js';
  */
 export interface SettingsProps {
   integrations: Integration[];
+  /** The Claude accounts runs launch under. Empty means the fleet login is used. */
+  accounts: AccountItem[];
+  /** Refetches the accounts slice after a connect or disconnect. */
+  onAccountsChanged?: () => void;
   caps: Caps | null;
   now: number;
   maxInFlight: number;
@@ -69,7 +74,7 @@ function capInput(value: number): string {
   return Number.isFinite(value) ? fmtTokens(value) : '';
 }
 
-export function Settings({ integrations, caps, now, maxInFlight, theme, onTheme }: SettingsProps): JSX.Element {
+export function Settings({ integrations, accounts, onAccountsChanged, caps, now, maxInFlight, theme, onTheme }: SettingsProps): JSX.Element {
   const width = useAction(ACTIONS.postQueueWidth);
   const save = useAction(ACTIONS.setCaps);
   const [daily, setDaily] = useState<string | null>(null);
@@ -101,6 +106,8 @@ export function Settings({ integrations, caps, now, maxInFlight, theme, onTheme 
         <h6 className="sec">MCP servers</h6>
         <IntegrationsPanel items={integrations.filter((row) => row.kind === 'mcp')} now={now} />
       </section>
+      <Accounts accounts={accounts} now={now} onChanged={onAccountsChanged} />
+
       <section style={{ position: 'relative', border: '1px solid var(--line)', padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
         <Marks />
         <h6 className="sec">Agents</h6>

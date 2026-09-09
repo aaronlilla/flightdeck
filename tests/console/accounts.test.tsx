@@ -2,6 +2,17 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const NOW = Date.parse('2026-09-09T12:00:00Z');
+
+/** The connect form sits behind "Add an account" (design 1e), so a case that types a
+ *  label opens it first, exactly as a person would. */
+function renderWithFormOpen(ui: Parameters<typeof render>[0]): ReturnType<typeof render> {
+  const result = render(ui);
+  fireEvent.click(screen.getByTestId('add-account'));
+  return result;
+}
+
+
 import { Accounts } from '../../src/console/components/Accounts.js';
 import type { AccountItem, ConnectAttemptResponse, ConnectStartResponse, DisconnectResponse } from '../../src/shared/console-model.js';
 
@@ -31,7 +42,7 @@ describe('Accounts: the connect form', () => {
       return { id: 'attempt-1', label: 'work', state, ...(state === 'connected' ? { accountId: 'test-a' } : {}) };
     });
 
-    render(<Accounts accounts={[]} pollMs={1} />);
+    renderWithFormOpen(<Accounts now={NOW} accounts={[]} pollMs={1} />);
     fireEvent.change(screen.getByLabelText('Label'), { target: { value: 'work' } });
     fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
 
@@ -45,7 +56,7 @@ describe('Accounts: the connect form', () => {
       id: 'attempt-1', label: 'work', state: 'waiting-in-browser',
     } satisfies ConnectAttemptResponse);
 
-    render(<Accounts accounts={[]} pollMs={50_000} />);
+    renderWithFormOpen(<Accounts now={NOW} accounts={[]} pollMs={50_000} />);
     fireEvent.change(screen.getByLabelText('Label'), { target: { value: 'work' } });
     const button = screen.getByRole('button', { name: 'Connect' });
     fireEvent.click(button);
@@ -59,7 +70,7 @@ describe('Accounts: the connect form', () => {
       id: 'attempt-1', label: 'work', state: 'waiting-in-browser', link: 'https://example.test/authorize/abc',
     } satisfies ConnectAttemptResponse);
 
-    render(<Accounts accounts={[]} pollMs={1} />);
+    renderWithFormOpen(<Accounts now={NOW} accounts={[]} pollMs={1} />);
     fireEvent.change(screen.getByLabelText('Label'), { target: { value: 'work' } });
     fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
 
@@ -74,7 +85,7 @@ describe('Accounts: the connect form', () => {
       id: 'attempt-1', label: 'work', state: 'failed', error: 'not authenticated',
     } satisfies ConnectAttemptResponse);
 
-    render(<Accounts accounts={[]} pollMs={1} />);
+    renderWithFormOpen(<Accounts now={NOW} accounts={[]} pollMs={1} />);
     fireEvent.change(screen.getByLabelText('Label'), { target: { value: 'work' } });
     fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
 
@@ -84,7 +95,7 @@ describe('Accounts: the connect form', () => {
   it('shows the start refusal verbatim when starting the attempt itself fails', async () => {
     vi.mocked(api.connectAccount).mockResolvedValue({ ok: false, error: 'a connect attempt for "work" is already in flight' } satisfies ConnectStartResponse);
 
-    render(<Accounts accounts={[]} pollMs={1} />);
+    renderWithFormOpen(<Accounts now={NOW} accounts={[]} pollMs={1} />);
     fireEvent.change(screen.getByLabelText('Label'), { target: { value: 'work' } });
     fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
 
@@ -95,7 +106,7 @@ describe('Accounts: the connect form', () => {
 
 describe('Accounts: the connected accounts list', () => {
   it('lists every account with a Disconnect button', () => {
-    render(<Accounts accounts={[account({ id: 'test-a', label: 'work' }), account({ id: 'test-b', label: 'personal' })]} />);
+    render(<Accounts now={NOW} accounts={[account({ id: 'test-a', label: 'work' }), account({ id: 'test-b', label: 'personal' })]} />);
     expect(screen.getByTestId('account-test-a')).toHaveTextContent('work');
     expect(screen.getByTestId('account-test-b')).toHaveTextContent('personal');
     expect(screen.getAllByRole('button', { name: 'Disconnect' })).toHaveLength(2);
@@ -106,7 +117,7 @@ describe('Accounts: the connected accounts list', () => {
       ok: false, error: 'refusing to disconnect the last remaining account',
     } satisfies DisconnectResponse);
 
-    render(<Accounts accounts={[account()]} />);
+    render(<Accounts now={NOW} accounts={[account()]} />);
     fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
 
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(
@@ -119,7 +130,7 @@ describe('Accounts: the connected accounts list', () => {
       ok: false, error: 'refusing to disconnect "work": 2 run(s) still in flight on it',
     } satisfies DisconnectResponse);
 
-    render(<Accounts accounts={[account({ liveRuns: 2 }), account({ id: 'test-b', label: 'spare' })]} />);
+    render(<Accounts now={NOW} accounts={[account({ liveRuns: 2 }), account({ id: 'test-b', label: 'spare' })]} />);
     fireEvent.click(screen.getAllByRole('button', { name: 'Disconnect' })[0]!);
 
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(
@@ -131,7 +142,7 @@ describe('Accounts: the connected accounts list', () => {
     vi.mocked(api.disconnectAccount).mockResolvedValue({ ok: true } satisfies DisconnectResponse);
     const onChanged = vi.fn();
 
-    render(<Accounts accounts={[account(), account({ id: 'test-b', label: 'spare' })]} onChanged={onChanged} />);
+    render(<Accounts now={NOW} accounts={[account(), account({ id: 'test-b', label: 'spare' })]} onChanged={onChanged} />);
     fireEvent.click(screen.getAllByRole('button', { name: 'Disconnect' })[0]!);
 
     await waitFor(() => expect(onChanged).toHaveBeenCalled());

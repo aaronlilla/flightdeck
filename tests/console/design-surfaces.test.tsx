@@ -108,7 +108,7 @@ describe('the Queue and Settings steppers write the width', () => {
 
   it('Settings posts one fewer and flips the theme', async () => {
     const onTheme = vi.fn();
-    render(<Settings integrations={[]} caps={null} now={now} maxInFlight={4} theme="light" onTheme={onTheme} />);
+    render(<Settings integrations={[]} accounts={[]} caps={null} now={now} maxInFlight={4} theme="light" onTheme={onTheme} />);
     await userEvent.click(within(screen.getByTestId('settings-width')).getByRole('button', { name: 'one fewer' }));
     expect(mocks.postQueueWidth).toHaveBeenCalledWith(3);
     await userEvent.click(screen.getByTestId('theme-dark'));

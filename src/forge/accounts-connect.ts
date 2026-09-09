@@ -38,6 +38,8 @@ export interface LoginResult {
 }
 
 export interface ProbeResult {
+  /** `subscriptionType` from the probe body (`max`, `pro`, `team`), when it said one. */
+  plan?: string;
   ok: boolean;
   error?: string;
 }
@@ -50,6 +52,9 @@ export interface LogoutResult {
 export interface AccountsConnectDeps {
   loadAccounts: () => AccountRecord[];
   addAccount: (record: AccountRecord) => void;
+  /** Records the plan the probe reported, so Settings can show it. Optional: a
+   *  specimen that does not care about the plan leaves it unset. */
+  recordPlan?: (accountId: string, plan: string, now: number) => void;
   removeAccount: (id: string) => void;
   /** Fresh on every call -- never a cached count -- so disconnect's refusal is judged
    *  against the current fleet, not the fleet as it was when this class was built. */
@@ -130,8 +135,22 @@ export function realProbeStatus(spawnFn?: RunRequest['spawnFn']): (configDir: st
     if (result.returncode !== 0) {
       return { ok: false, error: `claude auth status exited ${result.returncode}: ${result.tail}` };
     }
-    return { ok: true };
+    return { ok: true, ...(planFrom(result.tail) ? { plan: planFrom(result.tail) } : {}) };
   };
+}
+
+/** `subscriptionType` out of a `claude auth status --json` body, or undefined when the
+ *  body is not JSON or does not carry one. Never guesses a plan. */
+export function planFrom(text: string): string | undefined {
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start < 0 || end <= start) return undefined;
+  try {
+    const parsed = JSON.parse(text.slice(start, end + 1)) as { subscriptionType?: unknown };
+    return typeof parsed.subscriptionType === 'string' ? parsed.subscriptionType : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** The real `logout`: `claude auth logout` under the account's own config directory.
@@ -217,6 +236,7 @@ export class AccountsConnect {
 
       const accountId = this.randomId();
       this.deps.addAccount({ id: accountId, label: attempt.label, configDir, connectedAt: this.now() });
+      if (probe.plan) this.deps.recordPlan?.(accountId, probe.plan, this.now());
       attempt.accountId = accountId;
       attempt.state = 'connected';
     } catch (error) {

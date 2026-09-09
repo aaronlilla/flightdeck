@@ -79,6 +79,11 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
           if (mounted.current) dispatch({ type: 'integrations', integrations: integrations.items });
           break;
         }
+        case 'accounts': {
+          const accounts = await api.getAccounts();
+          if (mounted.current) dispatch({ type: 'accounts', accounts: accounts.items });
+          break;
+        }
         case 'caps': {
           const caps = await api.getCaps();
           if (mounted.current) dispatch({ type: 'caps', caps });
@@ -111,9 +116,9 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     if (refreshing.current) return;
     refreshing.current = true;
     try {
-      const [lanesR, threadR, integrationsR, capsR, proposalsR, queueR, consoleStateR, blockersR] = await Promise.allSettled([
+      const [lanesR, threadR, integrationsR, capsR, proposalsR, queueR, consoleStateR, blockersR, accountsR] = await Promise.allSettled([
         api.getLanes({ all: true }), api.getThread(), api.getIntegrations(), api.getCaps(),
-        api.getProposals(), api.getQueue(), api.getState(), api.getBlockers(),
+        api.getProposals(), api.getQueue(), api.getState(), api.getBlockers(), api.getAccounts(),
       ]);
       if (!mounted.current) return;
       const failedSlices: string[] = [];
@@ -130,6 +135,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       const queue = settled(queueR, 'queue');
       const consoleState = settled(consoleStateR, 'state');
       const blockers = settled(blockersR, 'blockers');
+      const accounts = settled(accountsR, 'accounts');
       failCount.current = failedSlices.length > 0 ? failCount.current + 1 : 0;
       if (lanes) dispatch({ type: 'lanes', lanes: lanes.lanes, links: lanes.links, tokensToday: lanes.tokensToday });
       if (thread) dispatch({ type: 'thread', thread: applyResolved(thread.messages) });
@@ -141,6 +147,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       if (consoleState?.conductor) dispatch({ type: 'conductor-timeout', timeoutMs: consoleState.conductor.timeoutMs });
       if (consoleState) dispatch({ type: 'project', project: consoleState.project ?? null });
       if (blockers) dispatch({ type: 'blockers', blockers });
+      if (accounts) dispatch({ type: 'accounts', accounts: accounts.items });
       if (consoleState?.build) {
         if (servedBuildRef.current && servedBuildRef.current !== consoleState.build) {
           window.location.reload();
@@ -433,7 +440,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
             {state.view === 'blockers' ? <BlockersView blockers={blockers} chains={state.blockers?.chains ?? []} laneTitle={(id) => state.lanes.find((l) => l.id === id)?.title ?? null} onOpenSettings={() => dispatch({ type: 'view', view: 'settings' })} onSendToLane={onSendLane} /> : null}
             {state.view === 'queue' ? <QueueView items={state.queue} paused={state.queuePaused} pauseReason={state.queuePauseReason} maxInFlight={state.queueMaxInFlight} working={working} /> : null}
             {state.view === 'review' ? <FlightReview proposals={state.proposals} now={state.now} tokensToday={state.caps?.tokensToday} dailyTokens={state.caps?.dailyTokens} /> : null}
-            {state.view === 'settings' ? <Settings integrations={state.integrations} caps={state.caps} now={state.now} maxInFlight={state.queueMaxInFlight} theme={state.theme} onTheme={(theme) => dispatch({ type: 'theme', theme })} /> : null}
+            {state.view === 'settings' ? <Settings integrations={state.integrations} accounts={state.accounts} onAccountsChanged={() => void refreshSlice('accounts')} caps={state.caps} now={state.now} maxInFlight={state.queueMaxInFlight} theme={state.theme} onTheme={(theme) => dispatch({ type: 'theme', theme })} /> : null}
             <ConductorRail
               thread={state.thread} feed={state.feed} now={state.now} composer={state.composer}
               onComposerChange={(text) => dispatch({ type: 'composer', text })}

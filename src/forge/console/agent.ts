@@ -26,7 +26,9 @@ import { randomUUID } from 'node:crypto';
 import { Engine, type QueryFn } from '../../adapter/engine.js';
 import type { Inbox } from '../inbox.js';
 import { appendOnce } from '../journal.js';
-import { fleetConfigDir, forgeHome } from '../paths.js';
+import { loadAccounts, configDirForSession } from '../accounts.js';
+import { readAccountUsage } from '../accounts-usage.js';
+import { forgeHome } from '../paths.js';
 import {
   contextFor, effortFor, modelFor, modelIdFor, reasonerTimeoutMsFor,
 } from '../policy.js';
@@ -502,9 +504,19 @@ export class ConductorAgent {
     return out as unknown as ConductorToolHandlers;
   }
 
+  /** Which account this session authenticates through. The registry decides when it
+   *  has an account that is not rate-limited; otherwise the fleet login, exactly as
+   *  before accounts existed. Read per session rather than cached, so connecting an
+   *  account in Settings takes effect on the Conductor's next turn. */
+  private sessionConfigDir(): string {
+    return configDirForSession(
+      loadAccounts(), readAccountUsage(), {}, this.now(), this.deps.existsConfigDir,
+    ).configDir;
+  }
+
   private env(): NodeJS.ProcessEnv {
     const env = workerEnv(this.deps.env ?? process.env);
-    env['CLAUDE_CONFIG_DIR'] = fleetConfigDir(this.deps.existsConfigDir);
+    env['CLAUDE_CONFIG_DIR'] = this.sessionConfigDir();
     return env;
   }
 
@@ -672,7 +684,7 @@ export class ConductorAgent {
         event: 'conductor.usage', actor: 'conductor',
         model: result.model || modelIdFor(modelFor(CONDUCTOR_CLASS, this.deps.policyPath), this.deps.policyPath),
         class: CONDUCTOR_CLASS, usage: result.usage, context: result.context, durationMs: this.now() - startedAt,
-        account: fleetConfigDir(this.deps.existsConfigDir), sessionId: this.sessionId,
+        account: this.sessionConfigDir(), sessionId: this.sessionId,
         ...(context.run ? { run: context.run } : {}),
       });
       const replyText = result.text || 'Done. Nothing else is waiting on you.';
