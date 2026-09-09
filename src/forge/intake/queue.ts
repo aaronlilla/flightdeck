@@ -18,7 +18,7 @@
 import { randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 
-import type { ChainCouncilFn, ChainGateFn, ChainGh, ChainLauncher } from '../chain.js';
+import type { ChainCouncilFn, ChainGateFn, ChainGh, ChainLauncher, ChainProvisionResult } from '../chain.js';
 import { runKeyForBrief } from '../chain.js';
 import type { QueueItem, QueueItemState, QueueSource } from '../../shared/console-model.js';
 import { branchFor } from '../chain-env.js';
@@ -311,6 +311,18 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** Pulls the run key a registry admission refusal already named as live, out of the
+ *  free-text reason `Registry.admit` (`registry.ts`) produces for a launch that lost a
+ *  race to a run already holding the same worktree or the same goal name. Returns
+ *  `undefined` for any other launch failure (a `git worktree add` failure, a failed
+ *  `npm ci`), which still fails the item exactly as before this function existed. */
+function liveRunKeyFrom(message: string): string | undefined {
+  const cwdCollision = /already has a live run \(goal ([^,]+), pid \d+\)/.exec(message);
+  if (cwdCollision) return cwdCollision[1];
+  const selfCollision = /\bgoal (\S+) already has a live run \(pid \d+\)/.exec(message);
+  return selfCollision?.[1];
+}
+
 function prFromUrl(url: string): { number: number; url: string } | undefined {
   const match = /\/pull\/(\d+)/.exec(url);
   return match ? { number: Number(match[1]), url } : undefined;
@@ -501,8 +513,9 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
   }
 
   if (!item.runKey) {
+    let provisioned: ChainProvisionResult | undefined;
     try {
-      const provisioned = await deps.launcher.provision({ packetId: item.id, ticket: item.ticket!, repo: item.repo! });
+      provisioned = await deps.launcher.provision({ packetId: item.id, ticket: item.ticket!, repo: item.repo! });
       const launched = await deps.launcher.launch({
         packetId: item.id, ticket: item.ticket!, repo: item.repo!, briefPath: item.briefPath!,
         worktreePath: provisioned.worktreePath, branch: provisioned.branch,
@@ -513,7 +526,22 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
         deps, 'queue.launched', { runKey: launched.runKey },
       );
     } catch (error) {
-      return writeTransition(item, { state: 'failed', reason: tailOf(messageOf(error)) }, deps, 'queue.failed', { hop: 'launch' });
+      const message = messageOf(error);
+      // The worktree this item just tried to launch on already carries a live run --
+      // failing the item here would orphan that run with nothing attached to it, which
+      // is exactly what happened live on 2026-09-08 (BBZ-140 / Q-7a01a197: it went
+      // `failed` on this catch while the run it collided with kept going unattended).
+      // Attach to the run that won the race instead, and keep polling its status the
+      // same way a launch that succeeded on the first try would.
+      const liveRunKey = provisioned ? liveRunKeyFrom(message) : undefined;
+      if (liveRunKey) {
+        return writeTransition(
+          item,
+          { runKey: liveRunKey, state: 'running', branch: provisioned!.branch, worktreePath: provisioned!.worktreePath, base: provisioned!.base },
+          deps, 'queue.duplicate-launch', { attemptedRunKey: runKeyForBrief(item.briefPath!), liveRunKey },
+        );
+      }
+      return writeTransition(item, { state: 'failed', reason: tailOf(message) }, deps, 'queue.failed', { hop: 'launch' });
     }
   }
 
