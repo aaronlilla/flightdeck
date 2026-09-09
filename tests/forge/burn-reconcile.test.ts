@@ -32,7 +32,7 @@ describe('reconcileBurnOnce', () => {
     const events = reconcileBurnOnce(state, reported);
     expect(events).toHaveLength(1);
     expect(events[0]!['event']).toBe('burn.mismatch');
-    expect(reported.has('r1')).toBe(true);
+    expect([...reported]).toEqual(['r1|1000|0']);
   });
 
   it('never reports the same run\'s mismatch twice', () => {
@@ -47,6 +47,35 @@ describe('reconcileBurnOnce', () => {
     const reported = new Set<string>();
     expect(reconcileBurnOnce(state, reported)).toHaveLength(1);
     expect(reconcileBurnOnce(state, reported)).toHaveLength(0);
+  });
+
+  it('after a restart, a mismatch the journal already carries with the same figures is not written again', () => {
+    const state = baseState({
+      events: [
+        {
+          id: '2', seq: 2, at: 2, version: 1, event: 'result.usage', actor: 'runner', run: 'r1',
+          modelUsage: { 'claude-sonnet-5': { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUsd: 10 } },
+        },
+        { id: '9', seq: 9, at: 9, version: 1, event: 'burn.mismatch', actor: 'governor', run: 'r1', resultUsd: 10, perMessageUsd: 0 },
+      ],
+    });
+    // A fresh Set is what every `forge up` starts with.
+    expect(reconcileBurnOnce(state, new Set())).toHaveLength(0);
+  });
+
+  it('writes again once the figures moved', () => {
+    const state = baseState({
+      events: [
+        {
+          id: '2', seq: 2, at: 2, version: 1, event: 'result.usage', actor: 'runner', run: 'r1',
+          modelUsage: { 'claude-sonnet-5': { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUsd: 10 } },
+        },
+        { id: '9', seq: 9, at: 9, version: 1, event: 'burn.mismatch', actor: 'governor', run: 'r1', resultUsd: 4, perMessageUsd: 0 },
+      ],
+    });
+    const events = reconcileBurnOnce(state, new Set());
+    expect(events).toHaveLength(1);
+    expect(events[0]!['resultUsd']).toBe(10);
   });
 
   it('reports nothing when the two sums agree', () => {
