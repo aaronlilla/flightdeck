@@ -8,7 +8,19 @@ import type { Caps, Feed } from '../../shared/console-model.js';
 import { fmtTokens } from '../../shared/format-tokens.js';
 import type { State, View } from '../store.js';
 
+import icon from '../../../brand/flightdeck-icon.png';
 import lockup from '../../../brand/flightdeck-lockup-h96.png';
+
+/** doctrine/design/FD Chrome.dc.html tab order and labels; the view id behind each stays
+ *  the one the store already routes on, so nothing about navigation changes -- only the
+ *  word on the tab and where it sits in the row. */
+const TABS: ReadonlyArray<{ view: View; label: string }> = [
+  { view: 'blockers', label: 'Blockers' },
+  { view: 'board', label: 'Board' },
+  { view: 'queue', label: 'Queue' },
+  { view: 'review', label: 'Review' },
+  { view: 'settings', label: 'Settings' },
+];
 
 export interface TopBarProps {
   view: View;
@@ -68,65 +80,98 @@ export function TopBar(props: TopBarProps): JSX.Element {
     observer.observe(el);
     return () => observer.disconnect();
   }, []);
+  // Every badge keeps the exact glyph and color the board already reads: a filled bullet
+  // ahead of Settings, a bare count after Review, a titled count on Queue and Blockers.
+  const badges: Record<View, { n: number; node: (n: number) => JSX.Element } | null> = {
+    board: null,
+    settings: { n: settingsBadge, node: (n) => <span style={{ color: 'var(--block)' }}> ● {n} down</span> },
+    review: { n: reviewBadge, node: (n) => <span style={{ color: 'var(--park)' }}> {n} proposed</span> },
+    queue: { n: queueBadge, node: (n) => <span title="needs attention" style={{ color: 'var(--park)' }}> {n}</span> },
+    blockers: { n: blockersBadge, node: (n) => <span style={{ color: 'var(--block)' }}> {n}</span> },
+  };
   return (
-    <div
-      ref={barRef}
-      style={{
-        display: 'flex', alignItems: 'center', gap: '14px 20px', padding: '10px 22px',
-        borderBottom: '1px solid var(--line)', background: 'var(--panel)', boxShadow: 'inset 0 1px 0 var(--hi)', flexWrap: 'wrap',
-        position: 'relative', zIndex: 1,
-      }}
-    >
-      <img src={lockup} alt="Flightdeck" data-testid="brand-lockup" style={{ height: 28, display: 'block' }} />
-      <div style={{ display: 'flex', gap: 16 }}>
-        <a className={`nav ${view === 'board' ? 'navOn' : ''}`} onClick={() => onNav('board')}>Board</a>
-        <a className={`nav ${view === 'settings' ? 'navOn' : ''}`} onClick={() => onNav('settings')}>
-          Settings{settingsBadge > 0 ? <span style={{ color: 'var(--block)' }}> ● {settingsBadge} down</span> : null}
-        </a>
-        <a className={`nav ${view === 'review' ? 'navOn' : ''}`} onClick={() => onNav('review')}>
-          Flight review{reviewBadge > 0 ? <span style={{ color: 'var(--park)' }}> {reviewBadge} proposed</span> : null}
-        </a>
-        <a className={`nav ${view === 'queue' ? 'navOn' : ''}`} onClick={() => onNav('queue')}>
-          Queue{queueBadge > 0 ? <span title="needs attention" style={{ color: 'var(--park)' }}> {queueBadge}</span> : null}
-        </a>
-        <a className={`nav ${view === 'blockers' ? 'navOn' : ''}`} onClick={() => onNav('blockers')}>
-          Blockers{blockersBadge > 0 ? <span style={{ color: 'var(--block)' }}> {blockersBadge}</span> : null}
-        </a>
-      </div>
-      <span style={{ flex: 1 }} />
-      {liveCount > 0 ? (
-        <span
-          data-testid="topbar-live-count" className="m"
-          style={{ fontSize: 'var(--fs-meta)', color: 'var(--run)', display: 'flex', alignItems: 'center', gap: 6 }}
-        >
-          <span className="live-pulse" aria-hidden="true" />
-          {liveCount} live
-        </span>
-      ) : null}
-      {oldestPending ? (
-        <span data-testid="topbar-working" className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink2)', display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span className="fdSpinner" aria-hidden="true" />
-          Working: {oldestPending.label} · {workingSeconds}s
-        </span>
-      ) : null}
-      <span className="m" style={{ fontSize: 'var(--fs-ui)', color: 'var(--ink3)', border: '1px solid var(--line2)', borderRadius: 3, padding: '4px 10px', cursor: 'pointer' }} onClick={onOpenPalette}>
-        ⌘K jump
-      </span>
-      <span className="lbl" style={{ color: 'var(--ink2)' }}>tokens today</span>
-      <span
-        className={overDaily ? 'w2' : 'w0'}
-        style={{ fontSize: 'var(--fs-body)', padding: '2px 8px' }}
-        onClick={onOpenCost}
+    <div ref={barRef} style={{ position: 'relative', zIndex: 1 }}>
+      {/* doctrine/design/FD Chrome.dc.html: the 32px window strip -- the app icon and the
+          plain word "Flightdeck", above the tab bar rather than folded into it. */}
+      <div
+        style={{
+          height: 32, display: 'flex', alignItems: 'center', gap: 8, padding: '0 10px',
+          background: 'var(--panel)', borderBottom: '1px solid var(--line)',
+          fontSize: 'var(--fs-meta)', color: 'var(--ink2)',
+        }}
       >
-        {fmtTokens(tokensToday)}{caps && Number.isFinite(caps.dailyTokens) ? ` / ${fmtTokens(caps.dailyTokens)}` : ''}
-      </span>
-      <span className={feed.live ? 'stF' : 'stO'}>
-        {feed.live ? `■ live feed · ${latencyMs}ms` : `○ feed lost ${hm(feed.lostAt ?? now)}`}
-      </span>
-      <span className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink2)', minWidth: 62 }}>{hm(now)}</span>
-      <ActionButton spec={ACTIONS.stopAll} args={[]} actionRef="topbar" className="btnR" style={{ padding: '5px 10px', fontSize: 'var(--fs-ui)' }} busy="Stopping…">Stop all</ActionButton>
-      <span className="chip chipB" title="show raw ids and every row" onClick={onToggleVerbose}>{verbose ? 'verbose' : 'plain'}</span>
-      <span className="chip chipB" onClick={onToggleTheme}>{theme === 'thD' ? 'day mode' : 'night ops'}</span>
+        <img src={icon} alt="" style={{ width: 16, height: 16, display: 'block' }} />
+        <span>Flightdeck</span>
+      </div>
+      <div
+        style={{
+          display: 'flex', alignItems: 'center', gap: '14px 20px', padding: '0 22px', minHeight: 48,
+          borderBottom: '1px solid var(--line)', background: 'var(--panel)', boxShadow: 'inset 0 1px 0 var(--hi)', flexWrap: 'wrap',
+        }}
+      >
+        <img src={lockup} alt="Flightdeck" data-testid="brand-lockup" style={{ height: 28, display: 'block' }} />
+        <nav style={{ display: 'flex', gap: 22, alignItems: 'center', height: 48 }}>
+          {TABS.map(({ view: tabView, label }) => {
+            const badge = badges[tabView];
+            const on = view === tabView;
+            return (
+              <a
+                key={tabView}
+                onClick={() => onNav(tabView)}
+                style={{
+                  fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 600, fontSize: 'var(--fs-title)',
+                  letterSpacing: '.04em', textTransform: 'uppercase', color: on ? 'var(--ink)' : 'var(--ink2)',
+                  height: 48, display: 'flex', alignItems: 'center',
+                  borderBottom: `2px solid ${on ? 'var(--acc)' : 'transparent'}`, textDecoration: 'none', cursor: 'pointer',
+                }}
+              >
+                {label}
+                {badge && badge.n > 0 ? badge.node(badge.n) : null}
+              </a>
+            );
+          })}
+        </nav>
+        <span style={{ flex: 1 }} />
+        {liveCount > 0 ? (
+          <span
+            data-testid="topbar-live-count" className="m"
+            style={{ fontSize: 'var(--fs-meta)', color: 'var(--run)', display: 'flex', alignItems: 'center', gap: 6 }}
+          >
+            <span className="live-pulse" aria-hidden="true" />
+            {liveCount} live
+          </span>
+        ) : null}
+        {oldestPending ? (
+          <span data-testid="topbar-working" className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink2)', display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span className="fdSpinner" aria-hidden="true" />
+            Working: {oldestPending.label} · {workingSeconds}s
+          </span>
+        ) : null}
+        <span className="m" style={{ fontSize: 'var(--fs-ui)', color: 'var(--ink3)', border: '1px solid var(--line2)', borderRadius: 0, padding: '4px 10px', cursor: 'pointer' }} onClick={onOpenPalette}>
+          ⌘K jump
+        </span>
+        <span className="lbl" style={{ color: 'var(--ink2)' }}>tokens today</span>
+        <span
+          className={overDaily ? 'w2' : 'w0'}
+          style={{ fontSize: 'var(--fs-body)', padding: '2px 8px' }}
+          onClick={onOpenCost}
+        >
+          {fmtTokens(tokensToday)}{caps && Number.isFinite(caps.dailyTokens) ? ` / ${fmtTokens(caps.dailyTokens)}` : ''}
+        </span>
+        <span
+          style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-ui)', color: 'var(--ink2)' }}
+          className={feed.live ? 'stF' : 'stO'}
+        >
+          {feed.live ? (
+            <><i aria-hidden="true" style={{ width: 8, height: 8, background: 'var(--acc)', display: 'block' }} />{`Feed live · ${latencyMs}ms`}</>
+          ) : `○ feed lost ${hm(feed.lostAt ?? now)}`}
+        </span>
+        <span style={{ fontSize: 'var(--fs-ui)', color: 'var(--ink2)' }}>Flightdeck</span>
+        <span className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink2)', minWidth: 62 }}>{hm(now)}</span>
+        <ActionButton spec={ACTIONS.stopAll} args={[]} actionRef="topbar" className="btnR" style={{ padding: '5px 10px', fontSize: 'var(--fs-ui)' }} busy="Stopping…">Stop all</ActionButton>
+        <span className="chip chipB" title="show raw ids and every row" onClick={onToggleVerbose}>{verbose ? 'verbose' : 'plain'}</span>
+        <span className="chip chipB" onClick={onToggleTheme}>{theme === 'thD' ? 'day mode' : 'night ops'}</span>
+      </div>
     </div>
   );
 }
