@@ -18,6 +18,11 @@ export interface FindingRow extends SelfFinding {
    *  finding is recorded but has not yet been (or will never be, past the in-flight
    *  ceiling) turned into work. */
   enqueuedItemId?: string;
+  /** R-02 guard #4: set once `enqueue.ts` has appended this finding to
+   *  `doctrine/ROADMAP.md`'s `## Proposed` section because it cited no `R-nn` id.
+   *  Absent means it was never proposed -- present stops the same finding from being
+   *  appended again on every tick. */
+  proposedAt?: number;
 }
 
 type FindingRawRow = Partial<FindingRow> & { id: string; at: number };
@@ -71,5 +76,12 @@ export class FindingsLedger {
   markEnqueued(id: string, itemId: string, now: number): void {
     if (!this.get(id)) return;
     appendFileSync(this.path, `${JSON.stringify({ id, at: now, enqueuedItemId: itemId })}\n`, 'utf8');
+  }
+
+  /** R-02 guard #4: marks a recorded finding as already appended to `## Proposed`.
+   *  Same no-op-on-unknown-id discipline as `markEnqueued`. */
+  markProposed(id: string, now: number): void {
+    if (!this.get(id)) return;
+    appendFileSync(this.path, `${JSON.stringify({ id, at: now, proposedAt: now })}\n`, 'utf8');
   }
 }

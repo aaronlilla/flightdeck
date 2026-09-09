@@ -13,7 +13,15 @@ import { readFileSync } from 'node:fs';
 
 import { serverTokenPath } from './paths.js';
 
-const REQUEST_TIMEOUT_MS = 10_000;
+export const REQUEST_TIMEOUT_MS = 10_000;
+
+/** A caller's own ceiling for one request, or the default. `FORGE_REQUEST_TIMEOUT_MS`
+ *  overrides both, so a specimen can force a timeout without waiting ten seconds. */
+export function requestTimeoutMs(wanted: number = REQUEST_TIMEOUT_MS): number {
+  const raw = process.env['FORGE_REQUEST_TIMEOUT_MS'];
+  const parsed = raw ? Number(raw) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : wanted;
+}
 
 export interface ServerRequestResult {
   ok: boolean;
@@ -38,6 +46,7 @@ export async function serverRequest(
   path: string,
   init: RequestInit = {},
   fetchFn: typeof fetch = fetch,
+  timeoutMs: number = REQUEST_TIMEOUT_MS,
 ): Promise<ServerRequestResult> {
   let token: string;
   try {
@@ -46,7 +55,8 @@ export async function serverRequest(
     return { ok: false, down: true, error: 'forge up is not running on 4120' };
   }
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const ceiling = requestTimeoutMs(timeoutMs);
+  const timer = setTimeout(() => controller.abort(), ceiling);
   try {
     const response = await fetchFn(`http://127.0.0.1:${forgePort()}${path}`, {
       ...init,
@@ -61,6 +71,11 @@ export async function serverRequest(
     }
     return { ok: response.ok, status: response.status, body };
   } catch {
+    // A request the server did not answer in time is not the same fact as no server:
+    // the route may be doing real work (a gh read, a journal replay). Say which.
+    if (controller.signal.aborted) {
+      return { ok: false, down: true, error: `forge up did not answer ${path} in ${Math.round(ceiling / 1000)}s` };
+    }
     return { ok: false, down: true, error: 'forge up is not running on 4120' };
   } finally {
     clearTimeout(timer);

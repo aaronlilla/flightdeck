@@ -42,6 +42,15 @@ describe('a fleet-unknown trip', () => {
     expect(events[0]?.['hint']).toMatch(/pgrep not found/);
   });
 
+  it('carries the trip key, so a health-repeat finding can name it instead of reading "key ?"', () => {
+    // S-81782ab668cbbbb3: the warden reported fleet-unknown 3 times, and every evidence
+    // line in analyze.ts's health-repeat finding read "key ?", because this function
+    // never put `key` on the journaled row for analyze.ts to read back.
+    reportFleetHealth(journal, [FLEET_UNKNOWN]);
+    const { events } = replayEvents(readFileSync(journalPath, 'utf8'));
+    expect(events[0]?.['key']).toBe('fleet');
+  });
+
   it('takes no actuator parameter at all: the falsifier this closes is a caller wiring a park into it', () => {
     // The function's own arity is the proof: nothing here can reach `park`, `nudge`,
     // `resume` or `kill`, because none of those is a parameter it accepts.

@@ -15,14 +15,14 @@ import { resolve } from 'node:path';
 
 import {
   addBacklogItems, addBriefItem, addGoalItem, addHotfixItem, addQueryItems, addTicketItem, mergeItem, promoteItem,
-  removeItem, retryItem, type QueueMergeDeps, type QueuePromoteDeps, type QueueTicketSearch,
+  QUEUE_IN_FLIGHT_STATES, removeItem, retryItem, slugMatches, type QueueMergeDeps, type QueuePromoteDeps, type QueueTicketSearch,
 } from '../intake/queue.js';
 import { resolveGoalBlock } from '../intake/goalFile.js';
 import { buildBacklogJql as defaultBuildBacklogJql, readQueueWidth, writeQueueWidth } from '../queue-wire.js';
 import { queueTitleFor } from './queue-title.js';
 import type { QueueStore } from '../intake/queueStore.js';
 import type {
-  ActionResult, QueueAddRequest, QueueAddResponse, QueueResponse, QueueSource,
+  ActionResult, QueueAddRequest, QueueAddResponse, QueueItem, QueueResponse, QueueSource,
 } from '../../shared/console-model.js';
 
 const QUEUE_SOURCES: readonly QueueSource[] = ['ticket', 'brief', 'query', 'backlog', 'hotfix', 'goal'];
@@ -106,6 +106,74 @@ function briefTextFrom(input: string): string {
   return readFileSync(line, 'utf8');
 }
 
+/** How a source names where an item came from, for the Queue view's "why it is next". */
+const SOURCE_WORDS: Record<QueueSource, string> = {
+  ticket: 'a ticket in Ready for Dev',
+  brief: 'a pasted brief',
+  query: 'a Jira query',
+  backlog: 'the backlog filter',
+  hotfix: 'a typed hotfix',
+  goal: 'a goal file',
+};
+
+/** What every queued item's words are read against, built once per `GET /queue`. */
+export interface QueueOrderContext {
+  queued: QueueItem[];
+  done: QueueItem[];
+  paused: boolean;
+  maxInFlight: number;
+  inFlight: number;
+}
+
+export function queueOrderContext(all: QueueItem[], queue: { paused: boolean; maxInFlight: number }): QueueOrderContext {
+  return {
+    queued: all.filter((row) => row.state === 'queued'),
+    done: all.filter((row) => row.state === 'done'),
+    paused: queue.paused,
+    maxInFlight: queue.maxInFlight,
+    inFlight: all.filter((row) => QUEUE_IN_FLIGHT_STATES.includes(row.state)).length,
+  };
+}
+
+/** The `after:` slugs no done item satisfies, by the scheduler's own `slugMatches`. */
+function unresolvedAfter(item: QueueItem, ctx: QueueOrderContext): string[] {
+  return (item.after ?? []).filter((slug) => !ctx.done.some((row) => slugMatches(row, slug)));
+}
+
+/**
+ * The Queue view's two sentences for a queued item (`Flightdeck Console.dc.html` 1c):
+ * why it sits where it does, and when it starts. Both come from the queue's own facts:
+ * position in the order, the source it was added from, its unresolved `after:` lines,
+ * the width and what is in flight, and whether the queue is paused. Items already past
+ * `queued` get neither.
+ */
+export function queueOrderWordsWith(item: QueueItem, ctx: QueueOrderContext): { whyNext?: string; startsIn?: string } {
+  if (item.state !== 'queued') return {};
+  const position = ctx.queued.findIndex((row) => row.id === item.id);
+  const ordinal = position === 0 ? 'First' : position === 1 ? 'Second' : position === 2 ? 'Third' : `${position + 1}th`;
+  const waitsFor = unresolvedAfter(item, ctx);
+  const why = waitsFor.length > 0
+    ? `${ordinal} in the queue, from ${SOURCE_WORDS[item.source]}. Its brief says to wait for ${waitsFor.join(', ')}.`
+    : `${ordinal} in the queue, from ${SOURCE_WORDS[item.source]}; queued ${new Date(item.createdAt).toISOString().slice(11, 16)} UTC.`;
+  let starts: string;
+  if (ctx.paused) starts = 'When the queue resumes';
+  else if (waitsFor.length > 0) starts = `After ${waitsFor.join(', ')} finishes`;
+  else {
+    const free = Math.max(0, ctx.maxInFlight - ctx.inFlight);
+    const ahead = ctx.queued.slice(0, position).filter((row) => unresolvedAfter(row, ctx).length === 0).length;
+    starts = ahead < free ? 'Takes a free slot on the next tick' : ahead === free ? 'When the next slot frees' : `After ${ahead - free + 1} more finish`;
+  }
+  return { whyNext: why, startsIn: starts };
+}
+
+/** One item's words against the whole list; `queueOrderWordsWith` is the per-read form. */
+export function queueOrderWords(
+  item: QueueItem, all: QueueItem[], queue: { paused: boolean; maxInFlight: number; inFlight?: number },
+): { whyNext?: string; startsIn?: string } {
+  const ctx = queueOrderContext(all, queue);
+  return queueOrderWordsWith(item, queue.inFlight === undefined ? ctx : { ...ctx, inFlight: queue.inFlight });
+}
+
 export class QueueRoutes {
   constructor(private readonly opts: QueueRoutesOptions) {}
 
@@ -140,12 +208,16 @@ export class QueueRoutes {
   }
 
   private response(): QueueResponse {
-    // `title` is filled here, on the way out, rather than stored on the item: every
-    // item already on disk gets one on the next read, and a brief edited under a
-    // queued item retitles itself with no write.
+    // `title`, `whyNext` and `startsIn` are filled here, on the way out, rather than
+    // stored on the item: every item already on disk gets them on the next read, and a
+    // brief edited under a queued item retitles itself with no write.
+    const items = this.opts.store.all();
+    const paused = this.opts.readPaused();
+    const maxInFlight = readQueueWidth();
+    const ctx = queueOrderContext(items, { paused, maxInFlight });
     return {
-      items: this.opts.store.all().map((item) => ({ ...item, title: queueTitleFor(item) })),
-      paused: this.opts.readPaused(), maxInFlight: readQueueWidth(),
+      items: items.map((item) => ({ ...item, title: queueTitleFor(item), ...queueOrderWordsWith(item, ctx) })),
+      paused, maxInFlight,
     };
   }
 
@@ -169,8 +241,24 @@ export class QueueRoutes {
           }
           return { ok: true, items: [addTicketItem(this.opts.store, key)] };
         }
-        case 'brief':
-          return { ok: true, items: [addBriefItem(this.opts.store, briefTextFrom(body.input))] };
+        case 'brief': {
+          const selfRepo = (process.env['FORGE_SELF_REPO'] ?? '').trim();
+          let roadmapText = '';
+          if (selfRepo) {
+            try {
+              roadmapText = readFileSync(resolve(process.cwd(), 'doctrine/ROADMAP.md'), 'utf8');
+            } catch {
+              roadmapText = '';
+            }
+          }
+          return {
+            ok: true,
+            items: [addBriefItem(
+              this.opts.store, briefTextFrom(body.input), undefined,
+              selfRepo ? { selfRepo, roadmapText } : undefined,
+            )],
+          };
+        }
         case 'hotfix':
           return { ok: true, items: [addHotfixItem(this.opts.store, body.input)] };
         case 'goal': {

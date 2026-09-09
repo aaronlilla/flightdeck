@@ -25,6 +25,22 @@ for (const name of [
 }
 
 /**
+ * This suite runs on the same machine that drives the real fleet. Every `FORGE_*`
+ * variable the real deployment needs (`FORGE_CONFIG_DIR`, `FORGE_GH_BACKEND_OWNER`,
+ * `FORGE_REPO_VERIFY`, and dozens more) is already sitting in this shell's environment.
+ * A test meant to prove "no override present, defaults apply" was silently reading this
+ * machine's real production config instead. `buildWorkerOptions()` pinned the fleet's
+ * actual `.claude-fleet` directory rather than the specimen's temp one, and a queue-item
+ * `plain` sentence read the real backend owner rather than the null the specimen expected.
+ * Both passed on a machine with no `FORGE_*` config, so CI never caught them, and both
+ * failed here first. Stripped once per test file, same as the CI markers above, so every
+ * specimen that wants a `FORGE_*` value sets it itself instead of inheriting the operator's.
+ */
+for (const name of Object.keys(process.env)) {
+  if (name.startsWith('FORGE_')) delete process.env[name];
+}
+
+/**
  * The SDK's own `query` throws in every test in this suite.
  *
  * Nothing under test is allowed to reach the model: every session specimen injects its

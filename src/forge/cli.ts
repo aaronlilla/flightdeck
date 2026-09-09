@@ -12,6 +12,7 @@
  *   forge queue add INPUT     queue a ticket, brief path or hotfix against the running server
  *   forge queue ls            list what is on the queue, filtered or as JSON
  *   forge inbox               Jira tickets waiting on a reply, an answer, or a status fix
+ *   forge rounds [--apply]    the Conductor's walk around the board: what is stale and why; --apply acts
  *
  * `stop --all` is the control that has to work when nothing else does, so it takes no
  * arguments it could get wrong, is safe to run twice, and says plainly when there was
@@ -45,7 +46,7 @@ import type { FakePollFeed } from './intake/poller.js';
 import { planFromPacket } from './intake/planner.js';
 import { parseRepoMap } from './intake/repoRoute.js';
 import { resolvePlanProvider } from './intake/reasoner.js';
-import { readWatermark, writeWatermark } from './intake/watermarkStore.js';
+import { readWatermark, writeWatermark, fileWatermarkStore } from './intake/watermarkStore.js';
 import { fetchInboxIssues, classifyInbox } from './intake/inbox.js';
 import { serverRequest } from './server-request.js';
 import { readProcessList, watchedProcesses, probeProcessListCached } from './fleetwatch.js';
@@ -62,7 +63,8 @@ import {
 import { runQueueTick } from './intake/queue.js';
 import { acquireQueueLock } from './intake/queueLock.js';
 import { QueueStore } from './intake/queueStore.js';
-import { buildQueueRuntimeDeps, queueMergeDeps, queuePromoteDeps } from './queue-wire.js';
+import { buildQueueRuntimeDeps, queueMergeDeps, queuePromoteDeps, jiraConfigFromEnv } from './queue-wire.js';
+import { readWatcherPollSeconds, watcherFeed, watcherTick } from './intake/watcherWire.js';
 import { buildSelfLoop } from './self-wire.js';
 import { QueueTickBackoff } from './queue-backoff.js';
 import { loadPolicy, modelFor, modelIdFor, tierOfBrief } from './policy.js';
@@ -83,7 +85,7 @@ import { Worker, type EngineLike, type WorkerConfig } from './worker.js';
 import {
   chainStatusLines, foldChainState, runChainTick, runKeyForBrief,
 } from './chain.js';
-import { readChainEnv } from './chain-env.js';
+import { readChainEnv, repoKindFor } from './chain-env.js';
 import { buildChainDeps, hasRunRegistered } from './chain-wire.js';
 import { isGoalFile } from './intake/goalFile.js';
 
@@ -415,6 +417,20 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
     }
 
     case 'up': {
+      // A supervisor of paid workers never dies on one stray promise. Node's default
+      // for an unhandled rejection is to exit, and on 2026-09-08 one failed `gh` spawn
+      // inside a background PR read took the console down four times in seven minutes,
+      // stranding every worker it had launched. Journal it, print it, carry on.
+      const guardJournal = new Journal(journalPath());
+      process.on('unhandledRejection', (reason) => {
+        const message = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
+        console.error(`unhandled rejection (console stays up): ${message}`);
+        try {
+          guardJournal.append({ event: 'console.unhandled', actor: 'console', kind: 'rejection', message: message.slice(0, 2000) });
+        } catch {
+          // The journal itself failing must not turn a survived rejection into an exit.
+        }
+      });
       const state = replay(journalPath());
 
       // Before anything else starts: pick up whatever the registry says crashed. A row
@@ -651,6 +667,36 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         queueLine = `queue on, polling every ${pollSeconds}s`;
       }
 
+      // R-11 part 2: the Jira watcher bridge -- FORGE_BACKLOG_PROJECT names the project it
+      // watches, the same variable buildBacklogJql already reads for a backlog add. Its own
+      // timer at FORGE_CHAIN_POLL_S seconds (default 30, not the chain's 300s default),
+      // since a comment or a status move on an owned ticket should reach the queue fast.
+      let watcherLine = '';
+      const watcherProject = process.env['FORGE_BACKLOG_PROJECT'];
+      const watcherJiraConfig = jiraConfigFromEnv();
+      if (!watcherProject) {
+        watcherLine = 'jira watcher NOT started: no FORGE_BACKLOG_PROJECT';
+      } else if (!watcherJiraConfig) {
+        watcherLine = 'jira watcher NOT started: no Jira credentials';
+      } else {
+        const watcherJournal = new Journal(journalPath());
+        const watcherPollSeconds = readWatcherPollSeconds();
+        const watermarks = fileWatermarkStore();
+        const feed = watcherFeed(watcherProject, watcherJiraConfig);
+        const watcherTickTimer = setInterval(() => {
+          void watcherTick({
+            feed, watermarks, store: queueStore, journal: watcherJournal,
+          }).catch((error: unknown) => {
+            watcherJournal.append({
+              event: 'watcher.tick-error', actor: 'watcher',
+              message: error instanceof Error ? error.message : String(error),
+            } as never);
+          });
+        }, watcherPollSeconds * 1000);
+        watcherTickTimer.unref();
+        watcherLine = `jira watcher on for ${watcherProject}, every ${watcherPollSeconds}s`;
+      }
+
       // The self loop (`self-wire.ts`): findings about the fleet become queue items on
       // FORGE_SELF_REPO, a self item whose gate cleared merges, and once trunk has moved
       // this process asks its launcher for a restart by exiting 75 -- only while nothing
@@ -691,6 +737,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           `inbox: ${inbox.open().length} waiting`,
           chainLine,
           queueLine,
+          watcherLine,
           selfLine,
         ].filter(Boolean),
       };
@@ -1315,6 +1362,19 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       return { code: 2, lines: ['forge queue add INPUT | forge queue ls [--state S] [--json] [--all]'] };
     }
 
+    case 'rounds': {
+      const ROUNDS_TIMEOUT_MS = 60_000;
+      const apply = rest.includes('--apply');
+      const wantsJson = rest.includes('--json');
+      // A walk reads the blocker board, which shells out to gh per repo; the default
+      // ten-second ceiling is for routes that answer from memory.
+      const result = await serverRequest(apply ? '/rounds/apply' : '/rounds', apply ? { method: 'POST' } : {}, deps.fetchFn, ROUNDS_TIMEOUT_MS);
+      if (result.down) return { code: 1, lines: [result.error!] };
+      const body = result.body as { lines?: string[]; error?: string } | undefined;
+      if (!result.ok || !body) return { code: 1, lines: [body?.error ?? `rounds failed: HTTP ${result.status}`] };
+      if (wantsJson) return { code: 0, lines: [JSON.stringify(result.body)] };
+      return { code: 0, lines: body.lines ?? [] };
+    }
     case 'inbox': {
       const missing = JIRA_ENV_VARS.filter((name) => !process.env[name]);
       if (missing.length) return { code: 1, lines: [`inbox failed: missing ${missing.join(', ')}`] };
@@ -1373,10 +1433,15 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       const snapshot = await gh.viewPr(repo, pr);
 
       if (snapshot.checks.conclusion !== 'success') {
+        // BBZ-60/62/74/202, 2026-09-08: `pending` is "not yet", never "no" -- a queued or
+        // in-progress check almost always turns green on its own. Marking it on `data`
+        // lets `chainCouncil` and the queue's `advanceItem` retry instead of parking,
+        // without either of them string-matching this line.
         return {
           code: 2,
           lines: [`refused: checks are ${snapshot.checks.conclusion} on head `
             + `${snapshot.headSha}, not green`],
+          ...(snapshot.checks.conclusion === 'pending' ? { data: { pending: true } } : {}),
         };
       }
 
@@ -1565,27 +1630,38 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         return {
           code: 1,
           lines: [`refused: checks are ${snapshot.checks.conclusion} on head ${snapshot.checks.headSha}`],
+          ...(snapshot.checks.conclusion === 'pending' ? { data: { pending: true } } : {}),
         };
       }
+
+      // Haiping (QA) only ever looks at a `frontend`-kind repo. A backend repo or the
+      // self repo has nobody to hand a visual plan to, so demanding one here bought
+      // nothing but a `REPLACE:`-riddled block pasted to satisfy the schema (PRs
+      // #79/#83) or a merge stuck on review with no handoff to write (PR #82).
+      const chainEnv = readChainEnv();
+      const isSelf = (process.env['FORGE_SELF_REPO'] ?? '').trim() === repo;
+      const needsHaipingHandoff = !isSelf && repoKindFor(chainEnv, repo) === 'frontend';
 
       let haiping: HaipingHandoff | undefined;
-      const handoffFile = handoffFlag >= 0 ? rest[handoffFlag + 1] : undefined;
-      if (handoffFile) {
-        try {
-          const parsed = JSON.parse(readFileSync(handoffFile, 'utf8'));
-          haiping = checkHandoff('haiping', parsed).complete ? (parsed as HaipingHandoff) : undefined;
-        } catch {
-          haiping = undefined;
+      if (needsHaipingHandoff) {
+        const handoffFile = handoffFlag >= 0 ? rest[handoffFlag + 1] : undefined;
+        if (handoffFile) {
+          try {
+            const parsed = JSON.parse(readFileSync(handoffFile, 'utf8'));
+            haiping = checkHandoff('haiping', parsed).complete ? (parsed as HaipingHandoff) : undefined;
+          } catch {
+            haiping = undefined;
+          }
+        } else {
+          haiping = findHaipingHandoff(snapshot.body);
         }
-      } else {
-        haiping = findHaipingHandoff(snapshot.body);
-      }
 
-      if (!haiping) {
-        return {
-          code: 1,
-          lines: ['refused: no complete Haiping handoff found in the PR body or --handoff file'],
-        };
+        if (!haiping) {
+          return {
+            code: 1,
+            lines: ['refused: no complete Haiping handoff found in the PR body or --handoff file'],
+          };
+        }
       }
 
       if (!merge) {
@@ -1680,7 +1756,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         // the QA handoff to Jira. A Jira failure never fails the merge -- the row above
         // already stands as `complete` -- so every branch here only ever adds lines and
         // journal rows, never changes `code`.
-        if (write.state === 'complete' && haiping.ticket) {
+        if (write.state === 'complete' && haiping?.ticket) {
           const missingJira = JIRA_ENV_VARS.filter((name) => !process.env[name]);
           if (missingJira.length) {
             gateJournal.append({

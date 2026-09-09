@@ -60,6 +60,8 @@ beforeEach(() => {
   for (const name of ['FORGE_JIRA_SITE', 'FORGE_JIRA_EMAIL', 'FORGE_JIRA_TOKEN', 'FORGE_JIRA_QA_ACCOUNT', 'FORGE_JIRA_QA_TRANSITION']) {
     delete process.env[name];
   }
+  delete process.env['FORGE_REPO_KIND'];
+  delete process.env['FORGE_SELF_REPO'];
   simulateDivergentReadback = false;
 });
 
@@ -355,6 +357,21 @@ describe('forge council', () => {
     });
     expect(result.code).toBe(2);
     expect(result.lines.join(' ')).toMatch(/not green/);
+    expect(result.data?.['pending']).toBeUndefined();
+  });
+
+  // BBZ-60/62/74/202, 2026-09-08: a `pending` conclusion is "not yet", never "no" -- the
+  // gate must give a caller (`chainCouncil`, then the queue's `advanceItem`) a
+  // machine-readable way to tell it apart from an actual failure, instead of forcing
+  // everyone downstream to string-match the English refusal line.
+  it('checks that are pending refuse the same way but mark data.pending, exit 2', async () => {
+    process.env['FORGE_COUNCIL_REPOS'] = REPO;
+    const result = await forge(['council', '--repo', REPO, '--pr', String(PR)], {
+      councilGh: fakeGh([smallSnapshot({ checks: { runId: 'r', headSha: 'head-1', conclusion: 'pending' } })]),
+    });
+    expect(result.code).toBe(2);
+    expect(result.lines.join(' ')).toMatch(/pending/);
+    expect(result.data?.['pending']).toBe(true);
   });
 
   // Rival account 3, this plan: a bare hand-typed `forge council` never read
@@ -433,15 +450,44 @@ describe('forge gate', () => {
     });
     expect(result.code).toBe(1);
     expect(result.lines.join(' ')).toMatch(/checks are failure/);
+    expect(result.data?.['pending']).toBeUndefined();
   });
 
-  it('refuses when the Haiping handoff is missing from the PR body', async () => {
+  // Symmetry with `forge council`: a `pending` check on the gate hop is also "not yet",
+  // never "no" -- marked on `data` rather than left for a caller to string-match.
+  it('refuses when a check is pending on the current head, but marks data.pending', async () => {
+    await attestPass();
+    const result = await forge(['gate', '--repo', REPO, '--pr', String(PR)], {
+      councilGh: fakeGh([
+        smallSnapshot({ body: bodyWithHandoff(), checks: { runId: 'r', headSha: 'head-1', conclusion: 'pending' } }),
+      ]),
+    });
+    expect(result.code).toBe(1);
+    expect(result.lines.join(' ')).toMatch(/checks are pending/);
+    expect(result.data?.['pending']).toBe(true);
+  });
+
+  it('refuses when the Haiping handoff is missing from the PR body on a frontend repo', async () => {
     await attestPass({ body: 'no handoff at all' });
     const result = await forge(['gate', '--repo', REPO, '--pr', String(PR)], {
       councilGh: fakeGh([smallSnapshot({ body: 'no handoff at all' })]),
     });
     expect(result.code).toBe(1);
     expect(result.lines.join(' ')).toMatch(/Haiping handoff/);
+  });
+
+  // Haiping only ever looks at a `frontend`-kind repo. Applying his handoff requirement
+  // to a backend repo (or the self repo's own PRs) produced no QA plan a human would
+  // use -- just a `REPLACE:`-riddled block a worker pasted to satisfy the schema
+  // (PRs #79/#83), or a merge stuck on review because nobody had one to paste (PR #82).
+  it('does not require a Haiping handoff for a repo whose kind is not frontend', async () => {
+    process.env['FORGE_REPO_KIND'] = `${REPO}=backend`;
+    await attestPass({ body: 'no handoff at all' });
+    const result = await forge(['gate', '--repo', REPO, '--pr', String(PR)], {
+      councilGh: fakeGh([smallSnapshot({ body: 'no handoff at all' })]),
+    });
+    expect(result.code).toBe(0);
+    expect(result.lines.join(' ')).not.toMatch(/Haiping handoff/);
   });
 
   it('passes without --merge and says so, without touching gh.mergePr', async () => {

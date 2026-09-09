@@ -59,6 +59,7 @@ import { RunInbox, deliverAnswer } from './runinbox.js';
 import { assertRunListening } from './console/listening.js';
 import { amendRunBrief, type AmendDeps } from './console/amend.js';
 import { ConductorAgent } from './console/agent.js';
+import { RoundsRoutes } from './console/rounds-route.js';
 import type { QueryFn } from '../adapter/engine.js';
 import { conductorAgentEnabled, reasonerTimeoutMsFor } from './policy.js';
 import { CONDUCTOR_CLASS } from './console/agent.js';
@@ -296,8 +297,14 @@ export class ForgeServer {
 
   private readonly blockersRoutes: BlockersRoutes;
 
+  /** The Conductor's rounds behind `GET /rounds` / `POST /rounds/apply` and its ticker. */
+  readonly rounds: RoundsRoutes;
+
   /** The Conductor agent behind `POST /command` (`console/agent.ts`). */
   readonly conductor: ConductorAgent;
+  /** The Jira project's own name, read once from `/rest/api/3/project/<key>` when the
+   *  Jira credentials are set; `null` until then and when they are not. */
+  private projectName: string | null = null;
 
   private readonly queueStoreForMerge: QueueStore;
 
@@ -371,11 +378,24 @@ export class ForgeServer {
       writes: this.consoleWrites, reads: this.consoleReads, queue: this.queueRoutes,
       amend: this.amendDeps(), inbox: this.inbox, journalPath: this.journalPath,
       publish: (event) => this.publish(event),
+      rounds: { sheet: () => this.rounds.sheet(), apply: () => this.rounds.apply() },
       ...(options.conductorQueryFn ? { queryFn: options.conductorQueryFn } : {}),
       ...(options.modelPolicyPath ? { policyPath: options.modelPolicyPath } : {}),
       ...(options.conductorIdleMs !== undefined ? { idleMs: options.conductorIdleMs } : {}),
     });
     this.consoleWrites.attachAgent(this.conductor);
+    this.rounds = new RoundsRoutes({
+      store: this.queueStoreForMerge,
+      lanesAll: () => this.consoleReads.lanesResponse(true, true).lanes,
+      blockers: async () => (await this.blockersRoutes.list()).blockers,
+      retireDeps: () => this.retireLaneDeps(),
+      journalPath: this.journalPath,
+      authorized: (request, response) => this.authorized(request, response),
+      publish: (event) => this.publish(event),
+      appendThread: (message) => appendThread(message),
+      askConductor: (text) => this.conductor.handle(text),
+      ...(options.modelPolicyPath ? { policyPath: options.modelPolicyPath } : {}),
+    });
     this.blockersRoutes = new BlockersRoutes({
       journalPath: this.journalPath,
       authorized: (request, response) => this.authorized(request, response),
@@ -404,7 +424,28 @@ export class ForgeServer {
     return this.sockets.size;
   }
 
+  /** `FORGE_BACKLOG_PROJECT`'s name off Jira, once; a failed read leaves `null`. */
+  private async readProjectName(): Promise<void> {
+    const key = process.env['FORGE_BACKLOG_PROJECT'];
+    const site = process.env['FORGE_JIRA_SITE'];
+    const email = process.env['FORGE_JIRA_EMAIL'];
+    const token = process.env['FORGE_JIRA_TOKEN'];
+    if (!key || !site || !email || !token) return;
+    try {
+      const base = /^https?:\/\//.test(site) ? site : `https://${site}`;
+      const response = await fetch(`${base.replace(/\/$/, '')}/rest/api/3/project/${encodeURIComponent(key)}`, {
+        headers: { authorization: `Basic ${Buffer.from(`${email}:${token}`).toString('base64')}`, accept: 'application/json' },
+      });
+      if (!response.ok) return;
+      const body = await response.json() as { name?: unknown };
+      if (typeof body.name === 'string') this.projectName = body.name;
+    } catch {
+      // Unreachable Jira leaves the name unknown; the chrome shows the key alone.
+    }
+  }
+
   async listen(): Promise<number> {
+    void this.readProjectName();
     const server = createServer((request, response) => { void this.route(request, response); });
     server.on('connection', (socket) => {
       this.accepted.add(socket as unknown as Duplex);
@@ -445,6 +486,7 @@ export class ForgeServer {
     // console refreshes inside 2s instead of waiting on the 5s poll.
     this.liveTimer = setInterval(() => this.tickLiveness(), this.liveTickMs);
     this.liveTimer.unref?.();
+    this.rounds.start();
     this.consoleWrites.start();
     return this.port;
   }
@@ -469,6 +511,7 @@ export class ForgeServer {
   }
 
   async close(): Promise<void> {
+    this.rounds.stop();
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = undefined;
@@ -624,6 +667,9 @@ export class ForgeServer {
       // not running at all, distinct from a running queue that is merely paused.
       queue_on: process.env['FORGE_QUEUE'] === '1',
       build: runtimeVersion(),
+      // The chrome's project label: the key this fleet works and, once Jira has answered
+      // for it, its name. Absent when no project is configured.
+      ...(process.env['FORGE_BACKLOG_PROJECT'] ? { project: { key: process.env['FORGE_BACKLOG_PROJECT'], name: this.projectName } } : {}),
       // The self loop's own count of what it found, queued and merged about this fleet
       // (`self-wire.ts`); absent when FORGE_SELF_REPO is unset.
       self: this.selfStatus?.() ?? null,
@@ -760,6 +806,7 @@ export class ForgeServer {
     if (await this.consoleWrites.handle(path, request, response)) return;
     if (await this.queueRoutes.handle(path, request, response)) return;
     if (await this.blockersRoutes.handle(path, request, response)) return;
+    if (await this.rounds.handle(path, request, response)) return;
     if (request.method === 'GET') {
       return this.serveStatic(path, response);
     }

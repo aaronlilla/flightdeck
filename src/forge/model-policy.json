@@ -155,5 +155,17 @@
     "to it, with the regex grammar as the fallback when the session cannot open or does",
     "not answer inside reasoner.timeoutMs; false keeps every message on the grammar."
   ],
-  "conductor": {"agent": {"enabled": true}}
+  "_rounds_comment": [
+    "The Conductor's rounds (2026-09-08): every everyMinutes it walks the queue, the lanes",
+    "and the blocker board. apply: false only journals a rounds.sheet row and posts one rail",
+    "card when the findings change; apply: true clears rows whose PR merged, relaunches",
+    "workers with no process (at most maxRelaunches per item), restarts parked rows nothing",
+    "holds, archives finished lanes older than orphanHours with no queue row, and hands open",
+    "asks to the Conductor to answer or leave. silentMinutes is how long a running lane may",
+    "go without a process or an event before it counts as dead."
+  ],
+  "conductor": {
+    "agent": {"enabled": true},
+    "rounds": {"enabled": true, "apply": true, "everyMinutes": 10, "silentMinutes": 30, "orphanHours": 24, "maxRelaunches": 2}
+  }
 }

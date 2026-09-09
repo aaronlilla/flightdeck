@@ -83,6 +83,38 @@ describe('ConsoleReads.lanesResponse: title and sourceUrl', () => {
     expect(lane!.sourceUrl).toBeNull();
   });
 
+  it('titles a brief lane with no heading off its body text, same fallback the queue uses', () => {
+    const forgeHomeDir = tempDir('console-reads-');
+    const briefsDir = join(forgeHomeDir, 'briefs');
+    mkdirSync(briefsDir, { recursive: true });
+    const briefPath = join(briefsDir, 'queue-brief-1788919399491.md');
+    writeFileSync(briefPath, 'the runner hung after context ran out and parked for an answer\n', 'utf8');
+
+    const queueStore = new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl'));
+    queueStore.append({
+      id: 'Q-1', at: 1, source: 'brief', input: briefPath, ticket: null, repo: 'o/n',
+      briefPath, branch: 'feature/queue-brief-1788919399491', worktreePath: 'w', base: 'develop',
+      state: 'running', reason: null, runKey: 'queue-brief-1788919399491', pr: null, journalIds: [],
+      createdAt: 1, updatedAt: 1,
+    });
+
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'queue-brief-1788919399491', actor: 'runner' });
+    journal.close();
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put('queue-brief-1788919399491', { column: 'queue-brief-1788919399491' });
+
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore, jiraSite: null,
+    });
+
+    const [lane] = reads.lanesResponse().lanes;
+    expect(lane!.title).toBe('The runner hung after context ran out and parked for an answer');
+  });
+
   it('mergeable reads the queue\'s own merge allow-list for the lane\'s repo (H1.4)', () => {
     const forgeHomeDir = tempDir('console-reads-');
     const journalPath = join(forgeHomeDir, 'fleet.jsonl');
@@ -985,5 +1017,47 @@ describe('ConsoleReads.lanesResponse: live', () => {
     expect(lane!.state).toBe('running');
     expect(lane!.live.alive).toBe(false);
     expect(lane!.live.pid).toBe(4242);
+  });
+});
+
+// 2026-09-08 17:09 to 17:16 live finding: the console crash-looped four times because
+// one background branch lookup rejected (a `gh` spawn failing with errno -4094 under
+// load) and nothing caught it. A supervisor of paid workers never dies on one failed
+// read; the lane simply keeps reading no PR until the next poll tries again.
+describe('a branch lookup that throws', () => {
+  it('never rejects the background task, and the lane keeps answering', async () => {
+    const forgeHomeDir = tempDir('console-reads-');
+    const queueStore = new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl'));
+    queueStore.append({
+      id: 'Q-1', at: 1, source: 'ticket', input: 'S-b9d39bae548707e0', ticket: null, repo: 'o/n',
+      briefPath: null, branch: 'feature/s-b9d39bae548707e0', worktreePath: 'w', base: 'main',
+      state: 'running', reason: null, runKey: 'S-b9d39bae548707e0', pr: null, journalIds: [],
+      createdAt: 1, updatedAt: 1,
+    });
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'S-b9d39bae548707e0', actor: 'runner' });
+    journal.close();
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put('S-b9d39bae548707e0', { column: 'self' });
+
+    let calls = 0;
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore, jiraSite: null,
+      ghBranchLookup: async () => {
+        calls += 1;
+        const error = new Error('spawn UNKNOWN') as Error & { code: string; errno: number; syscall: string };
+        error.code = 'UNKNOWN'; error.errno = -4094; error.syscall = 'spawn';
+        throw error;
+      },
+    });
+
+    expect(reads.lanesResponse().lanes[0]!.pr).toBeNull();
+    const server = reads as unknown as { settlePrRefreshes(): Promise<void> };
+    await expect(server.settlePrRefreshes()).resolves.toBeUndefined();
+    expect(reads.lanesResponse().lanes[0]!.pr).toBeNull();
+    // Nothing was cached for a failed read, so the next poll looks again.
+    expect(calls).toBe(2);
   });
 });

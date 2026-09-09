@@ -73,4 +73,10 @@ export class QueueStore {
   get(id: string): QueueItem | undefined {
     return this.all().find((item) => item.id === id);
   }
+
+  /** Every row ever appended for `id`, in order: the item's own transition log, for a
+   *  reader that needs to count how often something happened rather than the fold. */
+  history(id: string): QueueRow[] {
+    return this.rows().filter((row) => row.id === id);
+  }
 }

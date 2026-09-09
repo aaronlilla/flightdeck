@@ -64,8 +64,8 @@ describe('store reducer', () => {
 
   it('toggles the theme', () => {
     let state = initialState();
-    state = reducer(state, { type: 'theme', theme: 'thL' });
-    expect(state.theme).toBe('thL');
+    state = reducer(state, { type: 'theme', theme: 'dark' });
+    expect(state.theme).toBe('dark');
   });
 
   it('starts plain and toggles verbose, remembering it in localStorage', () => {

@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;700&family=Barlow+Condensed:wght@400;600&display=swap"></helmet>
+<div style="display:flex;flex-direction:column;flex:none;font-family:Barlow,system-ui,sans-serif;color:var(--ink);background:var(--bg)">
+  <div style="height:32px;display:flex;align-items:center;justify-content:space-between;padding:0 0 0 10px;background:var(--panel);border-bottom:1px solid var(--line);font-size:12px;color:var(--ink2)">
+    <div style="display:flex;align-items:center;gap:8px"><img src="brand/flightdeck-icon.png" alt="" style="width:16px;height:16px;display:block"><span>Flightdeck</span></div>
+    <div style="display:flex;height:32px">
+      <span style="width:46px;display:grid;place-items:center;font-size:14px">&#x2013;</span>
+      <span style="width:46px;display:grid;place-items:center"><i style="display:block;width:10px;height:10px;border:1px solid currentColor"></i></span>
+      <span style="width:46px;display:grid;place-items:center;font-size:15px">&#x2715;</span>
+    </div>
+  </div>
+  <div style="height:48px;display:flex;align-items:center;gap:28px;padding:0 20px;border-bottom:1px solid var(--line)">
+    <span style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:20px;letter-spacing:.06em;text-transform:uppercase">Flightdeck</span>
+    <nav style="display:flex;gap:22px;align-items:center;height:48px">
+      <sc-for list="{{ items }}" as="it" hint-placeholder-count="5">
+        <sc-if value="{{ it.on }}" hint-placeholder-val="{{ false }}"><a href="#" style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:16px;letter-spacing:.04em;text-transform:uppercase;color:var(--ink);text-decoration:none;height:48px;display:flex;align-items:center;border-bottom:2px solid var(--acc);gap:6px">{{ it.label }}<sc-if value="{{ it.badge }}" hint-placeholder-val="{{ false }}"><span style="font-family:Barlow,sans-serif;font-size:11px;font-weight:700;padding:1px 6px;background:var(--warn);color:var(--warnInk)">{{ it.badge }}</span></sc-if></a></sc-if>
+        <sc-if value="{{ it.off }}" hint-placeholder-val="{{ true }}"><a href="#" style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:16px;letter-spacing:.04em;text-transform:uppercase;color:var(--ink2);text-decoration:none;height:48px;display:flex;align-items:center;border-bottom:2px solid transparent;gap:6px" style-hover="color:var(--ink)">{{ it.label }}<sc-if value="{{ it.badge }}" hint-placeholder-val="{{ false }}"><span style="font-family:Barlow,sans-serif;font-size:11px;font-weight:700;padding:1px 6px;background:var(--warn);color:var(--warnInk)">{{ it.badge }}</span></sc-if></a></sc-if>
+      </sc-for>
+    </nav>
+    <div style="margin-left:auto;display:flex;align-items:center;gap:14px;font-size:13px;color:var(--ink2)"><span style="display:flex;align-items:center;gap:6px"><i style="width:8px;height:8px;background:var(--acc);display:block"></i>Feed live</span><span>ACM · Acme Rewards</span><span style="font-variant-numeric:tabular-nums;color:var(--ink)">10:57</span></div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:80},&quot;active&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;Board&quot;,&quot;options&quot;:[&quot;Blockers&quot;,&quot;Board&quot;,&quot;Queue&quot;,&quot;Review&quot;,&quot;Settings&quot;],&quot;tsType&quot;:&quot;string&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    const active = this.props.active ?? 'Board';
+    const badges = { Blockers: '3', Board: '2' };
+    return { items: ['Blockers', 'Board', 'Queue', 'Review', 'Settings'].map(label => ({ label, on: label === active, off: label !== active, badge: badges[label] || null })) };
+  }
+}
+</script>
+</body>
+</html>

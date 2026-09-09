@@ -35,7 +35,7 @@ import { computeJournalNarrative } from './journal-narrative.js';
 import { readAttestation } from '../council/attest.js';
 import { queueMergeAllowed } from '../queue-wire.js';
 import {
-  chainLinks, computeLanes, labelFor as laneLabelFor, mergeableFor, mergeReadyReportFrom, tokensToday, titleFor,
+  chainLinks, computeLanes, firstBodyParagraph, labelFor as laneLabelFor, mergeableFor, mergeReadyReportFrom, tokensToday, titleFor,
   titleFromHeading, windowLanes, type LanesInput,
 } from './lanes.js';
 import { computeLaneStory, type GitCommit } from './story.js';
@@ -407,6 +407,12 @@ export class ConsoleReads {
           run, repo, basic, cache, Date.now(), this.ghDetailLookup, this.attestationReader,
         );
         writePrCache(cachePath, nextCache);
+      } catch (error) {
+        // A failed `gh` read (a spawn refused under load, a network blip) leaves the
+        // lane reading what it already had; the next poll tries again. Never a rejection:
+        // this task has no awaiter in production, and an unhandled one killed the
+        // console four times on 2026-09-08.
+        console.error(`pr refresh for ${run} failed: ${error instanceof Error ? error.message : String(error)}`);
       } finally {
         this.prRefreshInFlight.delete(run);
       }
@@ -431,6 +437,11 @@ export class ConsoleReads {
         const cache = readPrCache(cachePath);
         const { cache: nextCache } = await computeBranchPr(run, repo, branch, cache, Date.now(), this.ghBranchLookup);
         writePrCache(cachePath, nextCache);
+      } catch (error) {
+        // Same rule as scheduleQueuePrRefresh: log, keep the lane's last answer, retry
+        // on the next poll. The 2026-09-08 crash loop was exactly this task rejecting
+        // on a `gh` spawn that failed with errno -4094.
+        console.error(`branch pr discovery for ${run} failed: ${error instanceof Error ? error.message : String(error)}`);
       } finally {
         this.branchPrDiscoveryInFlight.delete(run);
       }
@@ -817,7 +828,7 @@ export class ConsoleReads {
 
   private runThreadResponse(run: string, verbose = false): RunThreadResponse {
     const fleet = this.journalCache.read(this.journalPath);
-    const result = computeRunThread(run, fleet.events, new RunInbox(run).all(), { verbose });
+    const result = computeRunThread(run, fleet.events, new RunInbox(run).all(), { verbose, openAsks: this.inbox.open() });
     return verbose ? { ...result, verbose: true } : result;
   }
 
@@ -1041,7 +1052,8 @@ export class ConsoleReads {
 function readBriefHeading(path: string, ticket: string | null): string | null {
   if (!existsSync(path)) return null;
   try {
-    return titleFromHeading(readFileSync(path, 'utf8'), ticket);
+    const text = readFileSync(path, 'utf8');
+    return titleFromHeading(text, ticket) ?? firstBodyParagraph(text);
   } catch {
     return null;
   }
