@@ -190,6 +190,18 @@ describe('TicketSheet', () => {
       renderSheet([], { state: 'parked', since });
       expect(screen.getByText(new RegExp('^◆ parked — human needed since'))).toBeInTheDocument();
     });
+
+    // 2026-09-08: a lane parked on a context-ceiling handoff showed only the word
+    // "parked" -- no hint of why. The band should append the run's own reason,
+    // the same way the rail already reads it for a parking journal row.
+    it('names a ceiling-handoff reason in the band, not just "parked"', () => {
+      const since = new Date('2026-01-01T13:58:00').getTime();
+      renderSheet([], {
+        state: 'parked', since,
+        reason: 'run.handoff context reached 152357 tokens, the implement class ceiling is 150000',
+      });
+      expect(screen.getByText(/context reached 152357 tokens, the implement class ceiling is 150000/)).toBeInTheDocument();
+    });
   });
 
   describe('canPause / canKill', () => {
@@ -219,6 +231,14 @@ describe('TicketSheet', () => {
     // always be here too, so every lane state keeps at least one way out.
     it('offers Kill for a blocked lane, so blocked is never a dead end', () => {
       renderSheet([], { state: 'blocked', runaway: false });
+      expect(screen.getByText('Kill')).toBeInTheDocument();
+    });
+
+    // 2026-09-08: a parked lane with no open ask offered neither Resume nor Kill --
+    // its own CTA is now Resume (laneVM), so the sheet's secondary button needs to
+    // offer Kill too, or a lane parked on a context-ceiling handoff has no way out.
+    it('offers Kill for a parked lane, alongside its own Resume CTA', () => {
+      renderSheet([], { state: 'parked', runaway: false, question: null });
       expect(screen.getByText('Kill')).toBeInTheDocument();
     });
   });

@@ -252,6 +252,35 @@ describe('computeRunThread', () => {
     expect(receipt).toBeDefined();
     expect(receipt!.jid).toBe(`J-${row.id.slice(0, 8)}`);
   });
+
+  // 2026-09-08: the board-wide rail already turns an open inbox ask into an
+  // answerable `question` card (see `computeThread`'s own test above); the sheet's
+  // per-run thread read only the journal and never merged the ask in at all, so the
+  // same question that was answerable on the rail had no click-to-answer path on the
+  // sheet, only the free-text composer's `answer <key> <text>` typed by hand.
+  it('surfaces the run\'s own open inbox ask as an answerable question card', () => {
+    const entry: InboxEntry = {
+      key: 'ask-1', question: 'Probe: continue to the end?', options: ['Yes', 'No'],
+      kind: 'question', runs: ['alpha'], goals: ['alpha'], asked: 1, at: 2_000,
+      disposition: 'park',
+    };
+    const result = computeRunThread('alpha', [], [], { openAsks: [entry] });
+    const question = result.messages.find((m) => m.type === 'question');
+    expect(question).toBeDefined();
+    expect(question?.askKey).toBe('ask-1');
+    expect(question?.opts).toEqual(['Yes', 'No']);
+    expect(question?.text).toBe('Probe: continue to the end?');
+  });
+
+  it('never surfaces an open ask that belongs to a different run', () => {
+    const entry: InboxEntry = {
+      key: 'ask-1', question: 'Probe: continue to the end?', options: ['Yes', 'No'],
+      kind: 'question', runs: ['beta'], goals: ['beta'], asked: 1, at: 2_000,
+      disposition: 'park',
+    };
+    const result = computeRunThread('alpha', [], [], { openAsks: [entry] });
+    expect(result.messages.find((m) => m.type === 'question')).toBeUndefined();
+  });
 });
 
 describe('computeRunThread: plain mode (deliverable 7)', () => {

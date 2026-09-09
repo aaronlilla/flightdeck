@@ -72,12 +72,25 @@ describe('LaneTile', () => {
   // 2026-09-08 rework: the pinned "◆ human needed" band above the headline is gone --
   // "nothing else above the title" (the brief's own tile order), and the YOU block
   // (below the chip row) is the card's most prominent element instead.
-  it('renders the parked state label and the Answer CTA for a parked lane, with a YOU block', () => {
+  it('renders the parked state label and a YOU block for a parked lane', () => {
     render(<LaneTile lane={lane({ state: 'parked', you: 'Read the reason, then Resume or Kill.' })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
     expect(screen.getByText(/parked/)).toBeInTheDocument();
     expect(screen.getByText('YOU')).toBeInTheDocument();
     expect(screen.getByText('Read the reason, then Resume or Kill.')).toBeInTheDocument();
+  });
+
+  // 2026-09-08: a parked lane with no open ask offered "Answer ->" anyway, a button
+  // that posted an answer with no question to answer -- reproduced live on
+  // queue-brief-1788902840701, which parked on a context-ceiling handoff, never an ask.
+  // The Answer CTA appears only when the lane actually has an open question.
+  it('offers Answer for a parked lane with an open ask', () => {
+    render(<LaneTile lane={lane({ state: 'parked', you: 'Read the reason, then Resume or Kill.', question: { key: 'k1', text: 'continue?', opts: ['yes', 'no'], askedAt: 0 } })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
     expect(screen.getByText('Answer →')).toBeInTheDocument();
+  });
+
+  it('offers no Answer CTA for a parked lane with no open ask', () => {
+    render(<LaneTile lane={lane({ state: 'parked', you: 'Read the reason, then Resume or Kill.', question: null })} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
+    expect(screen.queryByText('Answer →')).not.toBeInTheDocument();
   });
 
   // 2026-09-08 rework: the tile no longer derives its own sentence off stepN/stepTotal

@@ -22,7 +22,6 @@ function lane(state: LaneState, extra: Partial<Lane> = {}): Lane {
 describe('laneCta', () => {
   const cases: Array<[LaneState, string]> = [
     ['running', 'Watch live'],
-    ['parked', 'Answer →'],
     ['handed-off', 'View council'],
     ['paused', 'Resume ▶'],
     ['done', 'Merge now →'],
@@ -34,6 +33,21 @@ describe('laneCta', () => {
 
   it.each(cases)('renders the one CTA the HANDOFF names for %s', (state, label) => {
     expect(laneCta(lane(state)).label).toBe(label);
+  });
+
+  // 2026-09-08: a parked lane with no open ask offered "Answer ->" anyway, a button
+  // that posted an answer with no question to answer -- reproduced live on
+  // queue-brief-1788902840701, which parked on a context-ceiling handoff, never an ask.
+  it('a parked lane with an open ask offers Answer', () => {
+    const cta = laneCta(lane('parked', { question: { key: 'k1', text: 'continue?', opts: ['yes', 'no'], askedAt: 0 } }));
+    expect(cta.label).toBe('Answer →');
+    expect(cta.cmd).toBe('answer');
+  });
+
+  it('a parked lane with no open ask offers Resume, not Answer', () => {
+    const cta = laneCta(lane('parked', { question: null }));
+    expect(cta.label).toBe('Resume ▶');
+    expect(cta.cmd).toBe('resume');
   });
 
   it('a runaway running lane offers Kill attempt instead of Watch live', () => {
