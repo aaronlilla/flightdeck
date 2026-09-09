@@ -27,9 +27,10 @@ import { branchFor } from '../chain-env.js';
 import { evaluateAction } from '../rules/index.js';
 import { renderNotes } from '../council/renderNotes.js';
 import { terminalStateFor, type RepoKind } from './handoff.js';
-import { parseAfterLines } from './repoRoute.js';
+import { parseAfterLines, repoFromBrief, roadmapFromBrief } from './repoRoute.js';
 import type { QueueStore } from './queueStore.js';
 import { workspaceRoot } from '../paths.js';
+import { roadmapIdOpen } from '../roadmap.js';
 
 /**
  * A.1: `ChainCouncilResult` (`chain.ts`) carries no findings text, only a verdict and an
@@ -62,12 +63,16 @@ function newItemId(): string {
   return `Q-${randomUUID().slice(0, 8)}`;
 }
 
-function blankItem(id: string, source: QueueSource, input: string, ticket: string | null, at: number): QueueItem {
+function blankItem(
+  id: string, source: QueueSource, input: string, ticket: string | null, at: number,
+  roadmap: string | null = null,
+): QueueItem {
   const after = parseAfterLines(input);
   return {
     id, source, input, ticket, repo: null, briefPath: null, branch: null, worktreePath: null, base: null,
     state: 'queued', reason: null, runKey: null, pr: null, journalIds: [], createdAt: at, updatedAt: at,
     ...(after.length ? { after } : {}),
+    ...(roadmap ? { roadmap } : {}),
   };
 }
 
@@ -114,8 +119,27 @@ export function addTicketItem(store: QueueStore, ticket: string, now: number = D
   return item;
 }
 
-export function addBriefItem(store: QueueStore, briefText: string, now: number = Date.now()): QueueItem {
-  const item = blankItem(newItemId(), 'brief', briefText, null, now);
+/** R-02 guard #1: when `guard` is supplied and the brief's own `repo:` line names the
+ *  self repo, the brief must carry a `roadmap: R-nn` line naming a row that is still
+ *  open in `doctrine/ROADMAP.md` -- otherwise this throws, and the caller (`queue-route.ts`)
+ *  turns that into the ordinary `{ ok: false, error }` refusal every other add failure
+ *  already gets. A brief for any other repo, or a caller with no `guard` wired at all,
+ *  is unaffected: the roadmap id is still recorded on the item when the brief happens to
+ *  carry one, just never required. */
+export function addBriefItem(
+  store: QueueStore, briefText: string, now: number = Date.now(),
+  guard?: { selfRepo: string; roadmapText: string },
+): QueueItem {
+  const roadmapId = roadmapFromBrief(briefText);
+  if (guard && guard.selfRepo && repoFromBrief(briefText) === guard.selfRepo) {
+    if (!roadmapId) {
+      throw new Error(`brief for ${guard.selfRepo} is missing a "roadmap: R-nn" line`);
+    }
+    if (!roadmapIdOpen(guard.roadmapText, roadmapId)) {
+      throw new Error(`brief names unknown or already-done roadmap id ${roadmapId}`);
+    }
+  }
+  const item = blankItem(newItemId(), 'brief', briefText, null, now, roadmapId);
   store.append({ ...item, at: now });
   return item;
 }

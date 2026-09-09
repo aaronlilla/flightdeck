@@ -97,6 +97,54 @@ describe('addTicketItem / addBriefItem', () => {
     expect(item).toMatchObject({ source: 'brief', input: '# Goal: fix the thing', ticket: null, state: 'queued' });
   });
 
+  describe('addBriefItem: R-02 guard #1', () => {
+    const ROADMAP = [
+      '| id | delivers | serves | status | pr | proof |',
+      '| --- | --- | --- | --- | --- | --- |',
+      '| R-01 | thing one | queue | done | owner/repo#1 | link |',
+      '| R-02 | thing two | queue | planned |  |  |',
+    ].join('\n');
+
+    it('refuses a self-repo brief with no roadmap line', () => {
+      const store = tempStore();
+      const brief = ['repo: aaronlilla/flightdeck', 'do the thing'].join('\n');
+      expect(() => addBriefItem(store, brief, 1000, { selfRepo: 'aaronlilla/flightdeck', roadmapText: ROADMAP }))
+        .toThrow(/missing a "roadmap: R-nn" line/);
+    });
+
+    it('refuses a self-repo brief naming an unknown or already-done roadmap id', () => {
+      const store = tempStore();
+      const doneBrief = ['repo: aaronlilla/flightdeck', 'roadmap: R-01', 'do the thing'].join('\n');
+      expect(() => addBriefItem(store, doneBrief, 1000, { selfRepo: 'aaronlilla/flightdeck', roadmapText: ROADMAP }))
+        .toThrow(/unknown or already-done roadmap id R-01/);
+
+      const unknownBrief = ['repo: aaronlilla/flightdeck', 'roadmap: R-99', 'do the thing'].join('\n');
+      expect(() => addBriefItem(store, unknownBrief, 1000, { selfRepo: 'aaronlilla/flightdeck', roadmapText: ROADMAP }))
+        .toThrow(/unknown or already-done roadmap id R-99/);
+    });
+
+    it('accepts a self-repo brief naming an open roadmap id and records it on the item', () => {
+      const store = tempStore();
+      const brief = ['repo: aaronlilla/flightdeck', 'roadmap: R-02', 'do the thing'].join('\n');
+      const item = addBriefItem(store, brief, 1000, { selfRepo: 'aaronlilla/flightdeck', roadmapText: ROADMAP });
+      expect(item).toMatchObject({ source: 'brief', roadmap: 'R-02', state: 'queued' });
+    });
+
+    it('leaves a brief for a different repo unaffected even with no roadmap line', () => {
+      const store = tempStore();
+      const brief = ['repo: aaronlilla/other-repo', 'do the thing'].join('\n');
+      const item = addBriefItem(store, brief, 1000, { selfRepo: 'aaronlilla/flightdeck', roadmapText: ROADMAP });
+      expect(item).toMatchObject({ source: 'brief', state: 'queued' });
+    });
+
+    it('leaves a brief unaffected with no guard at all, same as the existing call form', () => {
+      const store = tempStore();
+      const brief = ['repo: aaronlilla/flightdeck', 'do the thing'].join('\n');
+      const item = addBriefItem(store, brief, 1000);
+      expect(item).toMatchObject({ source: 'brief', state: 'queued' });
+    });
+  });
+
   it('A.6: adds a queued item for a typed hotfix with no ticket yet', () => {
     const store = tempStore();
     const item = addHotfixItem(store, 'null check crashes the login screen', 1000);

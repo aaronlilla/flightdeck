@@ -573,6 +573,10 @@ export interface QueueItem {
    *  matching it (by `input`, `briefPath` basename or `branch`) is `done`, or a
    *  `feature/<slug>` branch is already merged into `origin/main`. */
   after?: string[];
+  /** R-02: the `R-nn` id from roadmap.md's Items table that this item's brief named,
+   *  recorded when the item's repo is the self repo and the brief carried a
+   *  `roadmap: R-nn` line. */
+  roadmap?: string | null;
   /** BBZ-60/62/74/202, 2026-09-08: how many consecutive ticks `advanceItem` has found
    *  the gate's checks still pending on this item's PR -- 0 or absent means the checks
    *  have never come back pending. Reset the moment a tick's council result is no longer
