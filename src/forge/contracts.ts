@@ -1084,7 +1084,7 @@ export type CliExitCode = (typeof CLI_EXIT_CODES)[keyof typeof CLI_EXIT_CODES];
  * on purpose, the same reasoning as `FORGE_EVENT_NAMES`: a caller that wants a sixth
  * source adds it here first.
  */
-export const POLL_SOURCE_NAMES = ['jira', 'sentry', 'cloudwatch', 'slack', 'github'] as const;
+export const POLL_SOURCE_NAMES = ['jira', 'sentry', 'cloudwatch', 'slack', 'github', 'jira-watch'] as const;
 
 export type PollSourceName = (typeof POLL_SOURCE_NAMES)[number];
 
