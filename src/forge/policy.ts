@@ -10,7 +10,7 @@
  * nothing a run does to itself changes its tier. There is deliberately no function here
  * that takes a failure count.
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -163,7 +163,7 @@ export function policyPath(): string {
   return process.env['FORGE_POLICY_PATH'] ?? join(HERE, 'model-policy.json');
 }
 
-let cache: { path: string; text: string; policy: Policy } | undefined;
+let cache: { path: string; text: string; policy: Policy; size: number; mtimeMs: number } | undefined;
 
 /**
  * The policy, re-read whenever the file changes.
@@ -173,10 +173,14 @@ let cache: { path: string; text: string; policy: Policy } | undefined;
  * green row that proves nothing.
  */
 export function loadPolicy(path = policyPath()): Policy {
+  // The file is read again only when its size or mtime moved. Reading it on every
+  // call was 40% of the 4120 server's CPU on 2026-09-09: `priceFor` and `aliasOf` run
+  // once per journal event, tens of thousands of times per `/state`.
+  const stat = statSync(path);
+  if (cache && cache.path === path && cache.size === stat.size && cache.mtimeMs === stat.mtimeMs) return cache.policy;
   const text = readFileSync(path, 'utf8');
-  if (cache && cache.path === path && cache.text === text) return cache.policy;
-  const policy = JSON.parse(text) as Policy;
-  cache = { path, text, policy };
+  const policy = cache && cache.path === path && cache.text === text ? cache.policy : JSON.parse(text) as Policy;
+  cache = { path, text, policy, size: stat.size, mtimeMs: stat.mtimeMs };
   return policy;
 }
 

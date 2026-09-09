@@ -117,7 +117,7 @@ export class AccountsService {
 }
 
 /** A `fetch` for the probes with a hard deadline, so a hung provider never holds a slot. */
-export function timedFetch(timeoutMs = 8_000): Fetch {
+export function timedFetch(timeoutMs = 20_000): Fetch {
   return async (url, init) => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
