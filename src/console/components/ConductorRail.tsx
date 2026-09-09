@@ -266,7 +266,7 @@ function ActivityDrawer({ observations, verbose }: { observations: Message[]; ve
       {open ? (
         <div data-testid="activity-drawer-body" style={{ padding: '0 16px 10px', display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 200, overflowY: 'auto' }}>
           {groups.map((group) => (
-            <div key={group.text} style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>
+            <div key={group.text} data-testid="activity-row" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>
               <NarratedLine bag={group.first.narration} field="text" glance={group.text} testid="rail" {...(verbose === undefined ? {} : { verbose })} />
               {` · ${group.count}`}
             </div>

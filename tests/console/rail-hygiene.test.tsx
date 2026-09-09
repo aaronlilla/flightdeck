@@ -89,8 +89,15 @@ describe('rail hygiene (W5)', () => {
     renderRail(thread);
     await userEvent.click(screen.getByTestId('activity-drawer'));
     const body = screen.getByTestId('activity-drawer-body');
-    expect(within(body).getByText(/the fleet lost track of it.*20/)).toBeInTheDocument();
-    expect(within(body).getByText(/BBZ-175 moved to In Review and Haiping was assigned.*7/)).toBeInTheDocument();
+    // A row is read whole rather than by `getByText`: since the narration layer landed the
+    // collapsed line is a `rail-glance` span followed by the ` · <count>` text node, and
+    // `getByText` only ever sees an element's own direct text. Reading the row's
+    // `textContent` still asserts what this test guards -- the observation sentence and its
+    // count, together, in one row of the drawer body -- and additionally that they are in
+    // the same row rather than merely both somewhere in the drawer.
+    const rows = within(body).getAllByTestId('activity-row').map((row) => row.textContent ?? '');
+    expect(rows.some((row) => /the fleet lost track of it.*20/.test(row))).toBe(true);
+    expect(rows.some((row) => /BBZ-175 moved to In Review and Haiping was assigned.*7/.test(row))).toBe(true);
   });
 
   it('never lets a raw journal event name reach the rail, closed or open', async () => {
