@@ -94,12 +94,20 @@ export interface IntegrationsPanelProps {
   onToast?: (text: string, ok: boolean) => void;
 }
 
+/**
+ * The dot's colour, in the palette the console actually has. This map first named
+ * `--run`, `--hand`, `--park` and `--block`, none of which the stylesheet defines, so
+ * every dot painted nothing. The design's colour vocabulary is two hues and the inks
+ * (`styles.css`: "a value here is a value in the design; nothing is retuned"), so these
+ * follow `Settings.tsx`'s own reading of the same states: accent for a working
+ * connection, warn for anything that wants a human, ink for a state not yet read.
+ */
 const LED_COLOR: Record<McpConnState, string> = {
-  connected: 'var(--run)',
-  connecting: 'var(--hand)',
-  'pending-approval': 'var(--park)',
-  'needs-login': 'var(--block)',
-  failed: 'var(--block)',
+  connected: 'var(--acc)',
+  connecting: 'var(--warn)',
+  'pending-approval': 'var(--warn)',
+  'needs-login': 'var(--warn)',
+  failed: 'var(--warn)',
   unknown: 'var(--ink3)',
 };
 
@@ -175,7 +183,7 @@ export function IntegrationsPanel({ items, now, onToast }: IntegrationsPanelProp
         const state: McpConnState = local.attempt && raw !== 'connected' && raw !== 'failed' ? 'connecting' : raw;
         const control = controlFor(state);
         return (
-          <div className="row" key={i.id} data-testid={`integration-row-${i.id}`} data-mcp-state={state}>
+          <div className="mcp-row" key={i.id} data-testid={`integration-row-${i.id}`} data-mcp-state={state}>
             <span className="led" style={{ background: LED_COLOR[state] }} />
             <b>{i.name}</b>
             <span style={{ color: 'var(--ink2)' }}>{i.desc}</span>
@@ -184,7 +192,7 @@ export function IntegrationsPanel({ items, now, onToast }: IntegrationsPanelProp
             <span style={{ display: 'inline-flex', gap: 6, justifySelf: 'end' }}>
               {control === 'connect' ? (
                 <button
-                  type="button" className="btnR" style={{ padding: '5px 10px', fontSize: 'var(--fs-ui)' }}
+                  type="button" className="btn" style={{ padding: '5px 10px', fontSize: 'var(--fs-ui)' }}
                   data-testid={`integration-connect-${i.id}`} disabled={local.pending}
                   onClick={() => { void onConnect(i.id); }}
                 >
@@ -193,7 +201,7 @@ export function IntegrationsPanel({ items, now, onToast }: IntegrationsPanelProp
               ) : null}
               {control === 'open' ? (
                 <button
-                  type="button" className="btnR" style={{ padding: '5px 10px', fontSize: 'var(--fs-ui)' }}
+                  type="button" className="btn" style={{ padding: '5px 10px', fontSize: 'var(--fs-ui)' }}
                   data-testid={`integration-open-${i.id}`}
                   onClick={() => { void onOpen(i.id); }}
                 >

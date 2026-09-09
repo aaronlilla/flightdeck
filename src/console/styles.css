@@ -64,6 +64,26 @@ textarea.inp{line-height:1.45;padding:8px 10px;resize:vertical}
    neighbour, and long unbroken words (paths, URLs, shas) break anywhere. */
 .rowMerge>.key,.rowBlocked>.key,.rowDone>.hd{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rowMerge,.rowBlocked,.rowDone,.rail,.queue-row,.blocker-card,.sheet-body{overflow-wrap:anywhere}
+/* Settings' MCP servers plate. Six tracks, in the order the row renders them: the state
+   dot, the server's name, what it does, its latency, its connection state, and the row's
+   control. This row was written asking for a `.row` class the stylesheet never defined,
+   so it laid out as a plain block and ran its own words together --
+   `filesystemsandbox-scoped read/write · 6 tools4 msconnected`. */
+.mcp-row{display:grid;grid-template-columns:8px minmax(0,120px) minmax(0,1fr) 56px minmax(0,1fr) auto;gap:12px;align-items:center;padding:9px 0;border-bottom:1px solid var(--line)}
+.mcp-row>*{min-width:0;overflow-wrap:anywhere}
+.mcp-row:last-child{border-bottom:0}
+/* The connection dot; its colour is set per row from `LED_COLOR`. */
+.led{width:8px;height:8px;display:block;flex:none}
+/* An inline link inside body text -- a Jira key, a PR mention, a bare url (`Linkify.tsx`).
+   It sits in running text, so it takes the accent and an underline rather than a box. */
+.m{color:var(--acc);text-decoration:underline;text-underline-offset:2px}
+.m:hover{text-decoration-thickness:2px}
+/* The Accounts panel. Not mounted anywhere yet; these keep its form and list on the
+   console's own grid rather than browser defaults the day it is. */
+.accounts-panel{display:flex;flex-direction:column;gap:14px;min-width:0}
+.accounts-connect-form{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.accounts-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
+.accounts-list>li{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:12px;align-items:center}
 /* The width stepper (Queue and Settings). */
 .step{display:flex;align-items:stretch;border:1px solid var(--line2);flex:none}
 .step button{width:36px;background:transparent;border:0;color:var(--ink);font-size:var(--fs-card);cursor:pointer}
