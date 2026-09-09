@@ -573,6 +573,13 @@ export interface QueueItem {
    *  matching it (by `input`, `briefPath` basename or `branch`) is `done`, or a
    *  `feature/<slug>` branch is already merged into `origin/main`. */
   after?: string[];
+  /** BBZ-60/62/74/202, 2026-09-08: how many consecutive ticks `advanceItem` has found
+   *  the gate's checks still pending on this item's PR -- 0 or absent means the checks
+   *  have never come back pending. Reset the moment a tick's council result is no longer
+   *  pending (cleared or an actual failure), so it counts a streak, not a lifetime total.
+   *  Once it reaches `PENDING_CHECKS_POLL_CAP` (`intake/queue.ts`), the item parks instead
+   *  of retrying again, so a check that never finishes cannot hold an item forever. */
+  pendingGatePolls?: number;
 }
 
 export interface QueueResponse {

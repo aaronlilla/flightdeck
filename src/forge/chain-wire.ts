@@ -787,6 +787,9 @@ export function chainCouncil(deps: ForgeDeps): ChainCouncilFn {
       ...(attestationPath ? { attestationPath } : {}),
       ...(result.data?.['coverageNote'] ? { coverageNote: result.data['coverageNote'] as string } : {}),
       ...(findingsText ? { findingsText } : {}),
+      // BBZ-60/62/74/202, 2026-09-08: carries `forge council`'s own `data.pending`
+      // through unchanged, so the queue's `advanceItem` can retry instead of parking.
+      ...(result.data?.['pending'] ? { pending: true } : {}),
     };
   };
 }
@@ -802,6 +805,7 @@ export function chainGate(deps: ForgeDeps): ChainGateFn {
       merged,
       ...(result.data?.['mergeSha'] ? { mergeSha: result.data['mergeSha'] as string } : {}),
       ...(!merged && result.lines.length ? { reason: result.lines } : {}),
+      ...(result.data?.['pending'] ? { pending: true } : {}),
     };
   };
 }

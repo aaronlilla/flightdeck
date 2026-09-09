@@ -355,6 +355,21 @@ describe('forge council', () => {
     });
     expect(result.code).toBe(2);
     expect(result.lines.join(' ')).toMatch(/not green/);
+    expect(result.data?.['pending']).toBeUndefined();
+  });
+
+  // BBZ-60/62/74/202, 2026-09-08: a `pending` conclusion is "not yet", never "no" -- the
+  // gate must give a caller (`chainCouncil`, then the queue's `advanceItem`) a
+  // machine-readable way to tell it apart from an actual failure, instead of forcing
+  // everyone downstream to string-match the English refusal line.
+  it('checks that are pending refuse the same way but mark data.pending, exit 2', async () => {
+    process.env['FORGE_COUNCIL_REPOS'] = REPO;
+    const result = await forge(['council', '--repo', REPO, '--pr', String(PR)], {
+      councilGh: fakeGh([smallSnapshot({ checks: { runId: 'r', headSha: 'head-1', conclusion: 'pending' } })]),
+    });
+    expect(result.code).toBe(2);
+    expect(result.lines.join(' ')).toMatch(/pending/);
+    expect(result.data?.['pending']).toBe(true);
   });
 
   // Rival account 3, this plan: a bare hand-typed `forge council` never read
@@ -433,6 +448,21 @@ describe('forge gate', () => {
     });
     expect(result.code).toBe(1);
     expect(result.lines.join(' ')).toMatch(/checks are failure/);
+    expect(result.data?.['pending']).toBeUndefined();
+  });
+
+  // Symmetry with `forge council`: a `pending` check on the gate hop is also "not yet",
+  // never "no" -- marked on `data` rather than left for a caller to string-match.
+  it('refuses when a check is pending on the current head, but marks data.pending', async () => {
+    await attestPass();
+    const result = await forge(['gate', '--repo', REPO, '--pr', String(PR)], {
+      councilGh: fakeGh([
+        smallSnapshot({ body: bodyWithHandoff(), checks: { runId: 'r', headSha: 'head-1', conclusion: 'pending' } }),
+      ]),
+    });
+    expect(result.code).toBe(1);
+    expect(result.lines.join(' ')).toMatch(/checks are pending/);
+    expect(result.data?.['pending']).toBe(true);
   });
 
   it('refuses when the Haiping handoff is missing from the PR body', async () => {

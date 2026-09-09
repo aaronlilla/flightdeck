@@ -157,6 +157,11 @@ export interface ChainCouncilResult {
    *  board rather than only recoverable from an attestation file (which a coverage-
    *  caused FIX FIRST never even writes). */
   coverageNote?: string;
+  /** BBZ-60/62/74/202, 2026-09-08: set when `forge council` refused because the PR's
+   *  checks are still queued/in-progress, never for an actual failing check. `verdict`
+   *  carries no meaning on a pending result -- callers must check this field first, never
+   *  match on the English refusal text, which is what silently parked all four tickets. */
+  pending?: boolean;
 }
 
 export type ChainCouncilFn = (input: {
@@ -175,6 +180,9 @@ export interface ChainGateResult {
    *  words instead of sending a reader to dig the journal out by hand. Absent when the
    *  gate merged, or when nothing more specific than "did not merge" is on record. */
   reason?: string[];
+  /** Symmetry with `ChainCouncilResult.pending`: set when the gate itself refused because
+   *  checks are still pending on the current head. */
+  pending?: boolean;
 }
 
 export type ChainGateFn = (input: { repo: string; pr: number; merge: boolean }) => Promise<ChainGateResult>;
