@@ -8,6 +8,7 @@ import { collapseRepeatedObservations } from '../laneVM.js';
 import { StoreContext } from '../store.js';
 import { Linkify } from './Linkify.js';
 import type { Feed, Message } from '../../shared/console-model.js';
+import { FREE_TEXT_OPTION } from '../../forge/console/ask-options.js';
 
 /** Chip label paired with the command it actually sends. The prototype's own
  *  `quick` list maps 'pause all' to the fuller 'pause everything' text, and both
@@ -80,6 +81,7 @@ export function MessageCard({
   onCommand: (text: string) => void; onUndo: (jid: string) => void; onOpenJournal: (jid: string) => void;
 }): JSX.Element {
   const [free, setFree] = useState('');
+  const freeInputRef = useRef<HTMLInputElement | null>(null);
   const [showTip, setShowTip] = useState(false);
   // Every message carries a stamp: verifiedAt falls back to the message's own
   // ts (an "observed" reading) rather than suppressing the stamp when a seeded
@@ -295,11 +297,17 @@ export function MessageCard({
               <div data-testid="question-options" style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '0 12px 10px' }}>
                 {message.opts?.map((o, i) => {
                   const recommended = message.recommended === i;
+                  const isFreeText = o === FREE_TEXT_OPTION;
                   return (
                     <span
                       key={o} className="btnA" data-recommended={recommended || undefined}
                       style={{ padding: '7px 10px', fontSize: 'var(--fs-ui)', textAlign: 'left', justifyContent: 'flex-start', lineHeight: 1.35, letterSpacing: 0.3, textTransform: 'none', display: 'flex', gap: 8, alignItems: 'baseline' }}
-                      {...actionable(() => onCommand(`answer ${message.askKey ?? ''} ${o}`))}
+                      {...actionable(() => (
+                        // The free-text row is a prompt, not a real choice -- clicking it
+                        // opens the input below instead of sending its own placeholder
+                        // words back as the answer.
+                        isFreeText ? freeInputRef.current?.focus() : onCommand(`answer ${message.askKey ?? ''} ${o}`)
+                      ))}
                     >
                       <span style={{ whiteSpace: 'normal', overflowWrap: 'anywhere', width: '100%' }}>{o}</span>
                       {recommended ? <span className="stO" style={{ color: 'var(--run)' }}>Recommended</span> : null}
@@ -309,6 +317,7 @@ export function MessageCard({
               </div>
               <div style={{ margin: '0 12px 12px', background: 'var(--well)', boxShadow: 'inset 0 2px 5px rgba(0,0,0,.6)', borderRadius: 3, padding: '7px 10px', display: 'flex' }}>
                 <input
+                  ref={freeInputRef}
                   className="inp m" style={{ fontSize: 'var(--fs-ui)' }} placeholder="or type an answer, ⏎"
                   value={free} onChange={(e) => setFree(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter' && free.trim()) { onCommand(`answer ${message.askKey ?? ''} ${free}`); setFree(''); } }}

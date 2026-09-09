@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { ConductorRail, QUICK_COMMANDS } from '../../src/console/components/ConductorRail.js';
 import { StoreContext, initialState } from '../../src/console/store.js';
 import type { Feed, Message } from '../../src/shared/console-model.js';
+import { FREE_TEXT_OPTION } from '../../src/forge/console/ask-options.js';
 
 const feedUp: Feed = { live: true, lostAt: null, reason: null, retryInS: null, lastHeartbeatAt: Date.now() };
 const feedDown: Feed = { live: false, lostAt: Date.now(), reason: 'the fleet server is unreachable', retryInS: 5, lastHeartbeatAt: null };
@@ -162,6 +163,20 @@ describe('ConductorRail', () => {
     onCommand.mockClear();
     await userEvent.click(screen.getByText('Resume'));
     expect(onCommand).toHaveBeenCalledWith('resume FLT-5');
+  });
+
+  // The free-text option is a placeholder telling the operator to type their own
+  // answer, never a real choice -- clicking it must focus the free-text input,
+  // never send the literal placeholder string as the answer.
+  it('clicking the free-text option focuses the input instead of sending its placeholder text', async () => {
+    const onCommand = vi.fn();
+    renderRail([{
+      k: 'q6', type: 'question', text: 'Which env?', ts: Date.now(), source: 'FLT-6',
+      askKey: 'ask-6', opts: ['dev', 'staging', 'prod', FREE_TEXT_OPTION], recommended: 0,
+    }], feedUp, { onCommand });
+    await userEvent.click(screen.getByText(FREE_TEXT_OPTION));
+    expect(onCommand).not.toHaveBeenCalled();
+    expect(screen.getByPlaceholderText(/or type an answer/)).toHaveFocus();
   });
 
   it('disables the composer and shows the reason banner when the feed is down', () => {
