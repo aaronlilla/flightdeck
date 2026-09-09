@@ -166,6 +166,6 @@
   ],
   "conductor": {
     "agent": {"enabled": true},
-    "rounds": {"enabled": true, "apply": false, "everyMinutes": 10, "silentMinutes": 30, "orphanHours": 24, "maxRelaunches": 2}
+    "rounds": {"enabled": true, "apply": true, "everyMinutes": 10, "silentMinutes": 30, "orphanHours": 24, "maxRelaunches": 2}
   }
 }
