@@ -268,7 +268,7 @@ function AddWork({ onToast }: { onToast: (outcome: ActionOutcome) => void }): JS
         </div>
       ) : null}
       {source === 'goal' ? (
-        <div className="m" style={{ fontSize: 10.5, color: 'var(--ink3)' }}>
+        <div className="m" style={{ fontSize: 'var(--fs-ui)', color: 'var(--ink3)' }}>
           The sibling .block.txt or the goal-spec block becomes the /goal condition.
         </div>
       ) : null}
