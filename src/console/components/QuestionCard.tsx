@@ -68,7 +68,7 @@ export function QuestionCard(props: QuestionCardProps): JSX.Element {
         <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>Answered: {answer}</span>
       ) : (
         <>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <div data-testid="question-options" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {shown.map((option, index) => (
               <button
                 key={option} type="button" className="opt" data-testid="question-option"
