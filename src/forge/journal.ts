@@ -119,9 +119,28 @@ export interface FleetState {
 /** The highest `seq` already on disk, or 0 for a file with none (empty, missing, or
  *  written before this field existed). The next row's seq is always one past this. */
 function maxSeqOnDisk(path: string): number {
-  if (!existsSync(path)) return 0;
-  let max = 0;
-  for (const line of readFileSync(path, 'utf8').split('\n')) {
+  if (!existsSync(path)) {
+    seqOnDisk.delete(path);
+    return 0;
+  }
+  const size = statSync(path).size;
+  const known = seqOnDisk.get(path);
+  if (known && known.size === size) return known.seq;
+  // Seq only ever climbs, so the answer is in whatever was appended since the last
+  // look. Scanning the whole file here cost 10 s and more per append at 20 MB, on
+  // the 4120 server's own thread, on 2026-09-09. A file that shrank is read from the
+  // start again.
+  let from = known && known.size < size ? known.size : 0;
+  let tail = readRange(path, from, size);
+  // The remembered size is only a valid offset if the file still has our row ending
+  // there: the appended text must begin on a fresh line. A file rewritten with other
+  // content that happens to be larger begins mid-row here, and is read from the start.
+  if (from > 0 && (readRange(path, from - 1, from) !== '\n' || !startsWithRow(tail))) {
+    from = 0;
+    tail = readRange(path, 0, size);
+  }
+  let max = from > 0 && known ? known.seq : 0;
+  for (const line of tail.split('\n')) {
     if (!line.trim()) continue;
     try {
       const row = JSON.parse(line) as { seq?: unknown };
@@ -130,7 +149,48 @@ function maxSeqOnDisk(path: string): number {
       // A torn or corrupt line carries no usable seq; it does not move the count.
     }
   }
+  seqOnDisk.set(path, { size, seq: max });
   return max;
+}
+
+/** The last seq known to be on disk at `path`, with the file size it was true at. */
+const seqOnDisk = new Map<string, { size: number; seq: number }>();
+
+/** Whether `text` opens on a whole row: a JSON object, or nothing at all. */
+function startsWithRow(text: string): boolean {
+  const first = text.split('\n', 1)[0] ?? '';
+  if (!first.trim()) return true;
+  try {
+    JSON.parse(first);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Records a row this process just wrote, so the next append reads nothing back. */
+function noteWritten(path: string, seq: number): void {
+  seqOnDisk.set(path, { size: statSync(path).size, seq });
+}
+
+function readRange(path: string, start: number, end: number): string {
+  if (end <= start) return '';
+  const fd = openSync(path, 'r');
+  try {
+    const buffer = Buffer.alloc(end - start);
+    readSync(fd, buffer, 0, end - start, start);
+    return buffer.toString('utf8');
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** True when the file's last byte is not a newline. Reads that one byte, not the file. */
+function endsMidLine(path: string): boolean {
+  if (!existsSync(path)) return false;
+  const size = statSync(path).size;
+  if (size === 0) return false;
+  return readRange(path, size - 1, size) !== '\n';
 }
 
 /**
@@ -176,9 +236,7 @@ export class Journal {
    * line that was actually interrupted.
    */
   private needsNewline(): boolean {
-    if (!existsSync(this.path)) return false;
-    const text = readFileSync(this.path, 'utf8');
-    return text.length > 0 && !text.endsWith('\n');
+    return endsMidLine(this.path);
   }
 
   append(event: Partial<ForgeEvent>): ForgeEvent {
@@ -198,6 +256,7 @@ export class Journal {
     const fd = this.handle();
     writeSync(fd, JSON.stringify(row) + '\n');
     fsyncSync(fd);
+    noteWritten(this.path, this.lastSeq);
     return row;
   }
 
@@ -220,6 +279,7 @@ export function appendOnce(path: string, event: Partial<ForgeEvent>): ForgeEvent
     version: 1,
   } as ForgeEvent;
   appendFileSync(path, JSON.stringify(row) + '\n', 'utf8');
+  noteWritten(path, row.seq);
   return row;
 }
 
