@@ -1296,9 +1296,12 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
     }
 
     case 'rounds': {
+      const ROUNDS_TIMEOUT_MS = 60_000;
       const apply = rest.includes('--apply');
       const wantsJson = rest.includes('--json');
-      const result = await serverRequest(apply ? '/rounds/apply' : '/rounds', apply ? { method: 'POST' } : {}, deps.fetchFn);
+      // A walk reads the blocker board, which shells out to gh per repo; the default
+      // ten-second ceiling is for routes that answer from memory.
+      const result = await serverRequest(apply ? '/rounds/apply' : '/rounds', apply ? { method: 'POST' } : {}, deps.fetchFn, ROUNDS_TIMEOUT_MS);
       if (result.down) return { code: 1, lines: [result.error!] };
       const body = result.body as { lines?: string[]; error?: string } | undefined;
       if (!result.ok || !body) return { code: 1, lines: [body?.error ?? `rounds failed: HTTP ${result.status}`] };
