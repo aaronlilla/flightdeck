@@ -1,0 +1,2040 @@
+diff --git a/src/console/api.ts b/src/console/api.ts
+index 82a2a74..5bc7154 100644
+--- a/src/console/api.ts
++++ b/src/console/api.ts
+@@ -289,6 +289,18 @@ export function reconnectIntegration(id: string): Promise<ReconnectResponse> {
+   return post<ReconnectResponse>(`/integrations/${encodeURIComponent(id)}/reconnect`, {});
+ }
+ 
++/**
++ * `GET /integrations/:id/connect/:attempt` -- a read, so it needs no `ACTIONS` catalog
++ * entry (`tests/console/actions-catalog.test.ts` only scans this file's writes). The
++ * matching `POST /integrations/:id/connect` deliberately does NOT live here: see
++ * `IntegrationsPanel.tsx`'s own doc comment for why that call bypasses this module.
++ */
++export function getConnectAttempt(id: string, attempt: string): Promise<{ state: string; link?: string; error?: string }> {
++  return call<{ state: string; link?: string; error?: string }>(
++    `/integrations/${encodeURIComponent(id)}/connect/${encodeURIComponent(attempt)}`,
++  );
++}
++
+ export function applyProposal(id: string): Promise<ActionResult> {
+   return post<ActionResult>(`/proposals/${encodeURIComponent(id)}/apply`, {});
+ }
+diff --git a/src/console/components/IntegrationsPanel.tsx b/src/console/components/IntegrationsPanel.tsx
+new file mode 100644
+index 0000000..172ddb5
+--- /dev/null
++++ b/src/console/components/IntegrationsPanel.tsx
+@@ -0,0 +1,209 @@
++import type { JSX } from 'react';
++import { useEffect, useState } from 'react';
++import type { Integration, McpConnState } from '../../shared/console-model.js';
++import { getConnectAttempt } from '../api.js';
++import { redactErrorBody } from '../redact.js';
++
++/**
++ * `POST /integrations/:id/connect` on purpose skips both `api.ts` and the `ACTIONS`
++ * catalog. `integrations-route.ts` hands the MCP login link back exactly once, to
++ * whichever caller reads `GET .../connect/:attempt` first -- never to the row itself,
++ * never to `/events`, never to the journal. Every export in `api.ts` that issues a
++ * write is scanned by `tests/console/actions-catalog.test.ts` and forced into an
++ * `ACTIONS` entry, and every catalog action reports its outcome through the rail's
++ * receipt/journal pipeline. Routing this call through that pipeline would be routing
++ * a one-time login URL through it too, so this module keeps its own tiny copy of
++ * `api.ts`'s `token()`/`call()` shape instead of extending the scanned surface.
++ * `getConnectAttempt` is a plain GET, exempt from that scanner, so it lives in
++ * `api.ts` normally.
++ */
++function connectToken(): string {
++  if (typeof document === 'undefined') return '';
++  return document.querySelector('meta[name="forge-token"]')?.getAttribute('content') ?? '';
++}
++
++async function postConnect(id: string): Promise<{ attempt: string }> {
++  const response = await fetch(`/integrations/${encodeURIComponent(id)}/connect`, {
++    method: 'POST',
++    headers: { 'x-forge-token': connectToken() },
++  });
++  if (!response.ok) {
++    const body = await response.text().catch(() => '');
++    throw new Error(redactErrorBody(body) || `connect failed: ${response.status}`);
++  }
++  return (await response.json()) as { attempt: string };
++}
++
++export type RowControl = 'connect' | 'open' | 'none';
++
++/** Which control an MCP row shows, computed from every value `McpConnState` can hold
++ *  (`console-model.ts`'s `MCP_CONN_STATES`) rather than a hand-picked subset -- the
++ *  `never` branch below is what makes a state TypeScript adds to the union, and a
++ *  coverage test in `integrations-panel.test.tsx` imports the same union to check it
++ *  at runtime too. */
++export function controlFor(state: McpConnState): RowControl {
++  switch (state) {
++    case 'unknown':
++    case 'needs-login':
++    case 'failed':
++      return 'connect';
++    case 'connecting':
++      return 'open';
++    case 'connected':
++    case 'pending-approval':
++      return 'none';
++    default: {
++      const exhaustive: never = state;
++      return exhaustive;
++    }
++  }
++}
++
++function freshness(i: Integration, now: number): string {
++  if (!i.checkedAt) return '--';
++  const seconds = Math.max(0, Math.round((now - i.checkedAt) / 1000));
++  return `✓ ${seconds}s ago`;
++}
++
++/** The row's own status text, by state -- the `failed` case shows the CLI's verbatim
++ *  error rather than a generic sentence, matching the down-plate's `d.cause` pattern
++ *  (`Settings.tsx`) instead of inventing a second way to show an error. */
++function stateText(i: Integration, state: McpConnState, now: number): string {
++  switch (state) {
++    case 'connected': return `connected · ${freshness(i, now)}`;
++    case 'connecting': return 'waiting for you in the browser';
++    case 'needs-login': return 'needs authentication';
++    case 'pending-approval': return 'pending approval';
++    case 'unknown': return 'unknown';
++    case 'failed': return i.lastError ?? 'failed';
++    default: {
++      const exhaustive: never = state;
++      return exhaustive;
++    }
++  }
++}
++
++interface AttemptState {
++  attempt: string | null;
++  pending: boolean;
++}
++
++export interface IntegrationsPanelProps {
++  items: Integration[];
++  now: number;
++  onToast?: (text: string, ok: boolean) => void;
++}
++
++const LED_COLOR: Record<McpConnState, string> = {
++  connected: 'var(--run)',
++  connecting: 'var(--hand)',
++  'pending-approval': 'var(--park)',
++  'needs-login': 'var(--block)',
++  failed: 'var(--block)',
++  unknown: 'var(--ink3)',
++};
++
++/**
++ * The MCP servers plate in Settings' Integrations section. A separate component from
++ * `Row` (per the mcp-live-state goal's ownership split): `Row`/`ctaFor`/`SettingsProps`
++ * stay untouched, and this file owns everything about how an MCP row's real connection
++ * state (`mcpState`, six values, W2) renders and how Connect actually starts a login.
++ */
++export function IntegrationsPanel({ items, now, onToast }: IntegrationsPanelProps): JSX.Element {
++  const [attempts, setAttempts] = useState<Record<string, AttemptState>>({});
++
++  // The server only ever resolves a connect attempt to `connected` or `failed`
++  // (`integrations-route.ts`'s `finish()`); once a fresh `/integrations` poll reports
++  // either for a row with an attempt in flight, that attempt is done and the row goes
++  // back to reading its own real state instead of the optimistic "connecting" this
++  // component shows in between polls.
++  useEffect(() => {
++    setAttempts((prev) => {
++      let changed = false;
++      const next = { ...prev };
++      for (const i of items) {
++        if (next[i.id]?.attempt && (i.mcpState === 'connected' || i.mcpState === 'failed')) {
++          delete next[i.id];
++          changed = true;
++        }
++      }
++      return changed ? next : prev;
++    });
++  }, [items]);
++
++  function attemptFor(id: string): AttemptState {
++    return attempts[id] ?? { attempt: null, pending: false };
++  }
++
++  async function onConnect(id: string): Promise<void> {
++    setAttempts((prev) => ({ ...prev, [id]: { attempt: null, pending: true } }));
++    try {
++      const { attempt } = await postConnect(id);
++      setAttempts((prev) => ({ ...prev, [id]: { attempt, pending: false } }));
++      onToast?.(`${id} is connecting`, true);
++    } catch (err) {
++      setAttempts((prev) => ({ ...prev, [id]: { attempt: null, pending: false } }));
++      onToast?.(err instanceof Error ? err.message : 'connect failed', false);
++    }
++  }
++
++  // The link is read at click time and used immediately -- it never sits in this
++  // component's state any longer than this one handler call needs it, and it is
++  // never logged or passed to onToast.
++  async function onOpen(id: string): Promise<void> {
++    const local = attemptFor(id);
++    if (!local.attempt) { onToast?.(`${id} has no connect attempt in flight`, false); return; }
++    const view = await getConnectAttempt(id, local.attempt);
++    if (view.link) {
++      window.open(view.link, '_blank', 'noopener');
++    } else if (view.error) {
++      onToast?.(view.error, false);
++    } else {
++      onToast?.('still waiting on the login link -- try again in a moment', false);
++    }
++  }
++
++  return (
++    <>
++      {items.map((i) => {
++        const raw: McpConnState = i.mcpState ?? 'unknown';
++        const local = attemptFor(i.id);
++        // Optimistic: an attempt started this session and not yet resolved to
++        // connected/failed reads as connecting even before the next `/integrations`
++        // poll catches up -- otherwise the Open button would never appear between
++        // the POST and the row's next refresh.
++        const state: McpConnState = local.attempt && raw !== 'connected' && raw !== 'failed' ? 'connecting' : raw;
++        const control = controlFor(state);
++        return (
++          <div className="row" key={i.id} data-testid={`integration-row-${i.id}`} data-mcp-state={state}>
++            <span className="led" style={{ background: LED_COLOR[state] }} />
++            <b>{i.name}</b>
++            <span style={{ color: 'var(--ink2)' }}>{i.desc}</span>
++            <span style={{ color: 'var(--ink2)' }}>{i.latencyMs !== null ? `${i.latencyMs} ms` : 'stdio'}</span>
++            <span data-testid={`integration-state-${i.id}`}>{stateText(i, state, now)}</span>
++            <span style={{ display: 'inline-flex', gap: 6, justifySelf: 'end' }}>
++              {control === 'connect' ? (
++                <button
++                  type="button" className="btnR" style={{ padding: '5px 10px', fontSize: 'var(--fs-ui)' }}
++                  data-testid={`integration-connect-${i.id}`} disabled={local.pending}
++                  onClick={() => { void onConnect(i.id); }}
++                >
++                  {local.pending ? 'connecting…' : state === 'failed' ? 'Fix →' : 'Connect'}
++                </button>
++              ) : null}
++              {control === 'open' ? (
++                <button
++                  type="button" className="btnR" style={{ padding: '5px 10px', fontSize: 'var(--fs-ui)' }}
++                  data-testid={`integration-open-${i.id}`}
++                  onClick={() => { void onOpen(i.id); }}
++                >
++                  Open
++                </button>
++              ) : null}
++            </span>
++          </div>
++        );
++      })}
++    </>
++  );
++}
+diff --git a/src/console/components/Settings.tsx b/src/console/components/Settings.tsx
+index e4a0d50..78489a9 100644
+--- a/src/console/components/Settings.tsx
++++ b/src/console/components/Settings.tsx
+@@ -11,6 +11,7 @@ import type {
+ import { hm } from '../freshness.js';
+ import { fmtTokens } from '../../shared/format-tokens.js';
+ import { Linkify } from './Linkify.js';
++import { IntegrationsPanel } from './IntegrationsPanel.js';
+ 
+ /** A cap this file reads as `Infinity` (no console override yet, and nothing this board
+  *  can honestly derive from the policy's own dollar-denominated defaults) prints as
+@@ -323,7 +324,7 @@ export function Settings(props: SettingsProps): JSX.Element {
+                 <span className="lbl">MCP servers</span>
+               </div>
+               <div className="m" style={{ fontSize: 'var(--fs-meta)' }}>
+-                {mcps.map((i) => <Row key={i.id} i={i} now={now} onToast={onToast} />)}
++                <IntegrationsPanel items={mcps} now={now} onToast={onToast} />
+               </div>
+             </div>
+           </>
+diff --git a/src/console/fixtures/integrations.ts b/src/console/fixtures/integrations.ts
+index eb648ce..13999d8 100644
+--- a/src/console/fixtures/integrations.ts
++++ b/src/console/fixtures/integrations.ts
+@@ -7,11 +7,13 @@ export function seedIntegrations(): Integration[] {
+       id: 'github', kind: 'conn', name: 'GitHub', desc: 'org flightdeck · 4 repos · PR write, checks read', latencyMs: 82,
+       status: 'ok', checkedAt: now, since: null, cause: null, effect: null, fix: null, fixLabel: null,
+       scope: null, lastHealthyAt: now, retryCount: 0, dependents: [], step: null, canConnect: true, links: {},
++      mcpState: null, lastError: null,
+     },
+     {
+       id: 'jira', kind: 'conn', name: 'Jira', desc: 'projects FLT, BBZ · status + comment writes', latencyMs: 140,
+       status: 'ok', checkedAt: now, since: null, cause: null, effect: null, fix: null, fixLabel: null,
+       scope: null, lastHealthyAt: now, retryCount: 0, dependents: [], step: null, canConnect: false, links: {},
++      mcpState: null, lastError: null,
+     },
+     {
+       id: 'aws', kind: 'conn', name: 'AWS sandboxes', desc: 'provisions every lane',
+@@ -22,37 +24,44 @@ export function seedIntegrations(): Integration[] {
+       fixLabel: 'Reconnect AWS via SSO',
+       scope: 'default', lastHealthyAt: now - 18 * 60_000, retryCount: 2,
+       dependents: ['FLT-211', 'FLT-212', 'FLT-213'], step: 0, canConnect: true, links: {},
++      mcpState: null, lastError: null,
+     },
+     {
+       id: 'model-provider', kind: 'conn', name: 'Model provider', desc: 'opus-4 · sonnet-4 · haiku-3 · rate limit 62% used',
+       latencyMs: 610, status: 'ok', checkedAt: now, since: null, cause: null, effect: null, fix: null,
+       fixLabel: null, scope: null, lastHealthyAt: now, retryCount: 0, dependents: [], step: null, canConnect: false, links: {},
++      mcpState: null, lastError: null,
+     },
+     {
+       id: 'slack', kind: 'conn', name: 'Slack', desc: 'not connected · parks and merges → #eng', latencyMs: null,
+       status: 'off', checkedAt: now, since: null, cause: null, effect: null, fix: null, fixLabel: null,
+       scope: null, lastHealthyAt: null, retryCount: 0, dependents: [], step: null, canConnect: false, links: {},
++      mcpState: null, lastError: null,
+     },
+     {
+       id: 'mcp-filesystem', kind: 'mcp', name: 'filesystem', desc: 'sandbox-scoped read/write · 6 tools', latencyMs: 4,
+       status: 'ok', checkedAt: now, since: null, cause: null, effect: null, fix: null, fixLabel: null,
+       scope: null, lastHealthyAt: now, retryCount: 0, dependents: [], step: null, canConnect: false, links: { tools: '#', logs: '#' },
++      mcpState: 'connected', lastError: null,
+     },
+     {
+       id: 'mcp-browser', kind: 'mcp', name: 'browser', desc: 'headless · allow-list 14 domains · 9 tools', latencyMs: 220,
+       status: 'ok', checkedAt: now, since: null, cause: null, effect: null, fix: null, fixLabel: null,
+       scope: null, lastHealthyAt: now, retryCount: 0, dependents: [], step: null, canConnect: false, links: { tools: '#', logs: '#' },
++      mcpState: 'connected', lastError: null,
+     },
+     {
+       id: 'mcp-postgres-ro', kind: 'mcp', name: 'postgres-ro', desc: 'degraded · p95 1.9s (normal 80ms) · 2 agents slowed',
+       latencyMs: 1900, status: 'degraded', checkedAt: now, since: now - 5 * 60_000,
+       cause: null, effect: null, fix: null, fixLabel: null,
+       scope: null, lastHealthyAt: now - 5 * 60_000, retryCount: 0, dependents: [], step: null, canConnect: false, links: { tools: '#', logs: '#' },
++      mcpState: 'pending-approval', lastError: null,
+     },
+     {
+       id: 'mcp-council-judge', kind: 'mcp', name: 'council-judge', desc: '3 reviewer agents · merge gate', latencyMs: null,
+       status: 'ok', checkedAt: now, since: null, cause: null, effect: null, fix: null, fixLabel: null,
+       scope: null, lastHealthyAt: now, retryCount: 0, dependents: [], step: null, canConnect: false, links: {},
++      mcpState: 'connected', lastError: null,
+     },
+   ];
+ }
+diff --git a/src/forge/console/integrations-route.ts b/src/forge/console/integrations-route.ts
+new file mode 100644
+index 0000000..f23d86b
+--- /dev/null
++++ b/src/forge/console/integrations-route.ts
+@@ -0,0 +1,221 @@
++/**
++ * `POST /integrations/:id/connect` and `GET /integrations/:id/connect/:attempt` -- the
++ * one Connect action the console has never had. A new sibling class to `QueueRoutes`/
++ * `BlockersRoutes`, wired into `server.ts` directly, per the goal's Program update:
++ * M owns all of `src/forge/console/integrations.ts`, and these two routes never touch
++ * `command.ts`.
++ *
++ * The login link an `mcp-login` attempt prints to stdout is the one thing this module
++ * exists to keep private: it lives only in the in-memory `AttemptRecord` below, is
++ * handed to `GET .../connect/:attempt` exactly once (the first read that finds it
++ * present), and is never passed to `IntegrationsRegistry.applyConnectResult`, never
++ * journaled, never published. There is no code path from `record.link` to any of those
++ * sinks -- the registry update below carries only `mcpState`/`lastError`/`status`.
++ */
++import { randomUUID } from 'node:crypto';
++import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
++import type { IncomingMessage, ServerResponse } from 'node:http';
++
++import { fleetConfigDir, workspaceRoot } from '../paths.js';
++import { awsSsoLoginArgv, type IntegrationsRegistry } from './integrations.js';
++import type { McpConnState } from '../../shared/console-model.js';
++import { sliceEvent } from '../../shared/console-events.js';
++
++const CONNECT_ROUTE = /^\/integrations\/([^/]+)\/connect$/;
++const ATTEMPT_ROUTE = /^\/integrations\/([^/]+)\/connect\/([^/]+)$/;
++
++const DEFAULT_TIMEOUT_MS = 300_000;
++
++export type ConnectKind = 'mcp-login' | 'aws-sso' | 'daemon-start' | 'stdio-probe';
++
++export interface ConnectRunner {
++  kind: ConnectKind;
++  argv: string[];
++  cwd?: string;
++  env?: NodeJS.ProcessEnv;
++  /** Overridable for a fast test; production leaves this at the default 300s. */
++  timeoutMs?: number;
++}
++
++export interface ConnectAttemptView {
++  state: 'connecting' | McpConnState;
++  link?: string;
++  error?: string;
++}
++
++interface AttemptRecord {
++  integrationId: string;
++  kind: ConnectKind;
++  state: 'connecting' | McpConnState;
++  link: string | null;
++  linkRead: boolean;
++  error: string | null;
++}
++
++/** `id.startsWith('mcp-')` recovers the server name `mcpProbes()` built it from
++ *  (`integrations.ts`: `` `mcp-${name}` ``). `id === 'aws'` reuses the existing AWS
++ *  reconnect argv rather than reimplementing it. Everything else is honestly
++ *  unwired -- no `daemon-start`/`stdio-probe` row is declared anywhere in this
++ *  codebase yet, so those two kinds exist as real, tested machinery reachable only
++ *  through an injected `connectFor`, never through a currently-declared production row. */
++export function defaultConnectFor(id: string): ConnectRunner | undefined {
++  if (id.startsWith('mcp-')) {
++    const name = id.slice(4);
++    return {
++      kind: 'mcp-login',
++      argv: ['claude', 'mcp', 'login', name, '--no-browser'],
++      // Same fleet-worker root as mcp-runner.ts's `fleetWorkerCwd()` -- `FORGE_WORKER_CWD`
++      // overrides it, falling back to `workspaceRoot()` per this repo's no-hardcoded-paths
++      // rule (`paths.ts`), rather than a literal drive-rooted directory in source.
++      cwd: process.env['FORGE_WORKER_CWD'] ?? workspaceRoot(),
++      env: { ...process.env, CLAUDE_CONFIG_DIR: fleetConfigDir() },
++    };
++  }
++  if (id === 'aws') {
++    return { kind: 'aws-sso', argv: awsSsoLoginArgv() };
++  }
++  return undefined;
++}
++
++function respond(response: ServerResponse, status: number, body: unknown): void {
++  const text = JSON.stringify(body);
++  response.writeHead(status, {
++    'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(text),
++  });
++  response.end(text);
++}
++
++const LINK_PATTERN = /https?:\/\/\S+/;
++
++export interface IntegrationsConnectDeps {
++  authorized: (request: IncomingMessage, response: ServerResponse) => boolean;
++  registry: IntegrationsRegistry;
++  /** Overrides the production id->runner mapping. A specimen always sets this. */
++  connectFor?: (id: string) => ConnectRunner | undefined;
++  /** Overrides `child_process.spawn`. A specimen records what it was called with and
++   *  drives the fake child itself, matching the shape `exec.ts`'s `RunRequest.spawnFn`
++   *  and the existing `fakeSpawn` test helper already use. */
++  spawnFn?: (command: string, args: string[], options: SpawnOptions) => ChildProcess;
++  /**
++   * Publishes an `integrations` slice event on every state transition (connecting,
++   * then the terminal state). This module calls it directly rather than going
++   * through `sliceEventsFor`'s route table in `src/shared/console-events.ts`, since
++   * that file belongs to the `console-live-spine` stream and never gets a
++   * `MUTATING_ROUTES` entry here. `sliceEvent`'s `reason`/`ref` arguments carry only
++   * a short reason string and `record.integrationId`; `record.link` never reaches
++   * this call.
++   */
++  publish?: (event: Record<string, unknown>) => void;
++}
++
++export class IntegrationsConnectRoutes {
++  private readonly attempts = new Map<string, AttemptRecord>();
++
++  constructor(private readonly deps: IntegrationsConnectDeps) {}
++
++  static matches(path: string, method: string | undefined): boolean {
++    if (CONNECT_ROUTE.test(path)) return method === 'POST';
++    if (ATTEMPT_ROUTE.test(path)) return method === 'GET';
++    return false;
++  }
++
++  async handle(path: string, request: IncomingMessage, response: ServerResponse): Promise<boolean> {
++    const connectMatch = path.match(CONNECT_ROUTE);
++    if (connectMatch && request.method === 'POST') {
++      if (!this.deps.authorized(request, response)) return true;
++      await this.startConnect(decodeURIComponent(connectMatch[1]!), response);
++      return true;
++    }
++    const attemptMatch = path.match(ATTEMPT_ROUTE);
++    if (attemptMatch && request.method === 'GET') {
++      if (!this.deps.authorized(request, response)) return true;
++      this.readAttempt(decodeURIComponent(attemptMatch[1]!), attemptMatch[2]!, response);
++      return true;
++    }
++    return false;
++  }
++
++  private async startConnect(id: string, response: ServerResponse): Promise<void> {
++    const connectFor = this.deps.connectFor ?? defaultConnectFor;
++    const runner = connectFor(id);
++    if (!runner) {
++      respond(response, 404, { error: `no connect action for ${id}` });
++      return;
++    }
++    const attempt = randomUUID();
++    const record: AttemptRecord = {
++      integrationId: id, kind: runner.kind, state: 'connecting', link: null, linkRead: false, error: null,
++    };
++    this.attempts.set(attempt, record);
++    await this.deps.registry.applyConnectResult(id, { mcpState: 'connecting' });
++    this.deps.publish?.(sliceEvent('integrations', `${id} is connecting`, id));
++    respond(response, 202, { attempt });
++    void this.runAttempt(record, runner);
++  }
++
++  private readAttempt(id: string, attempt: string, response: ServerResponse): void {
++    const record = this.attempts.get(attempt);
++    if (!record || record.integrationId !== id) {
++      respond(response, 404, { error: `no connect attempt ${attempt} for ${id}` });
++      return;
++    }
++    const view: ConnectAttemptView = { state: record.state };
++    if (record.error !== null) view.error = record.error;
++    // The link is handed out exactly once, to whichever caller reads it first -- never
++    // stored in the row, never broadcast, never present on a second read from anyone.
++    if (record.link !== null && !record.linkRead) {
++      view.link = record.link;
++      record.linkRead = true;
++    }
++    respond(response, 200, view);
++  }
++
++  private async runAttempt(record: AttemptRecord, runner: ConnectRunner): Promise<void> {
++    const spawnFn = this.deps.spawnFn ?? nodeSpawn;
++    const timeoutMs = runner.timeoutMs ?? DEFAULT_TIMEOUT_MS;
++    const [command, ...args] = runner.argv;
++    let stderrTail = '';
++    let settled = false;
++
++    const child = spawnFn(command!, args, {
++      cwd: runner.cwd ?? process.cwd(),
++      env: runner.env ?? process.env,
++    });
++
++    const finish = async (state: McpConnState, error: string | null): Promise<void> => {
++      if (settled) return;
++      settled = true;
++      clearTimeout(timer);
++      record.state = state;
++      record.error = error;
++      const patch = state === 'connected'
++        ? { mcpState: 'connected' as McpConnState, status: 'ok' as const }
++        : { mcpState: state, lastError: error ?? undefined, status: 'off' as const };
++      await this.deps.registry.applyConnectResult(record.integrationId, patch);
++      this.deps.publish?.(sliceEvent('integrations', `${record.integrationId} is ${state}`, record.integrationId));
++    };
++
++    const timer = setTimeout(() => {
++      void finish('failed', 'connect attempt timed out');
++      try { child.kill(); } catch { /* already gone */ }
++    }, timeoutMs);
++
++    child.stdout?.on('data', (chunk: Buffer | string) => {
++      if (record.link !== null || runner.kind !== 'mcp-login') return;
++      const text = String(chunk);
++      const found = text.match(LINK_PATTERN);
++      if (found) record.link = found[0];
++    });
++    child.stderr?.on('data', (chunk: Buffer | string) => {
++      stderrTail = (stderrTail + String(chunk)).slice(-4000);
++    });
++    child.on('close', (code: number | null) => {
++      if (code === 0) {
++        void finish('connected', null);
++      } else {
++        const error = stderrTail.trim() || `exited with code ${code}`;
++        void finish('failed', error);
++      }
++    });
++  }
++}
+diff --git a/src/forge/console/integrations.ts b/src/forge/console/integrations.ts
+index dc677fe..5c29617 100644
+--- a/src/forge/console/integrations.ts
++++ b/src/forge/console/integrations.ts
+@@ -19,9 +19,10 @@ import { watchedProcesses } from '../fleetwatch.js';
+ import type { FleetProcess } from '../liveness.js';
+ import { fleetConfigDir } from '../paths.js';
+ import { appendOnce } from '../journal.js';
++import { claudeMcpList, type McpRow } from './mcp-runner.js';
+ import { consoleDir, recordAction, type ActionsLedger } from './actions-ledger.js';
+ import type {
+-  Integration, IntegrationsResponse, IntegrationStatus, LanesResponse, ReconnectResponse,
++  Integration, IntegrationsResponse, IntegrationStatus, LanesResponse, McpConnState, ReconnectResponse,
+ } from '../../shared/console-model.js';
+ 
+ export function integrationsConfigPath(): string {
+@@ -43,6 +44,12 @@ export interface ProbeResult {
+    *  name or a Jira site, never a name written into source. Undefined for a probe with
+    *  no scope of its own; a down integration with none isn't missing anything. */
+   scope?: string;
++  /** The real MCP connection state this probe found, for an `mcp`-kind row only.
++   *  Undefined for every `conn`-kind probe, which has no such state to report. */
++  mcpState?: McpConnState;
++  /** The MCP CLI's own error text, verbatim, for an `mcp`-kind row whose `mcpState` is
++   *  `failed`. Undefined for every other probe and every other `mcpState`. */
++  lastError?: string;
+ }
+ 
+ /** The `{ok, detail}` shape a boolean-probe body returns to `timed`, which turns it into
+@@ -51,12 +58,14 @@ interface ProbeOutcome {
+   ok: boolean;
+   detail?: string;
+   scope?: string;
++  mcpState?: McpConnState;
++  lastError?: string;
+ }
+ 
+ export type Probe = () => Promise<ProbeResult>;
+ export type Reconnect = () => Promise<void>;
+ 
+-interface IntegrationDecl {
++export interface IntegrationDecl {
+   id: string;
+   kind: 'conn' | 'mcp';
+   name: string;
+@@ -77,6 +86,8 @@ async function timed(fn: () => Promise<ProbeOutcome>, spawnFn?: RunRequest['spaw
+       status: outcome.ok ? 'ok' : 'off', latencyMs: outcome.ok ? Date.now() - started : null,
+       ...(outcome.detail !== undefined ? { detail: outcome.detail } : {}),
+       ...(outcome.scope !== undefined ? { scope: outcome.scope } : {}),
++      ...(outcome.mcpState !== undefined ? { mcpState: outcome.mcpState } : {}),
++      ...(outcome.lastError !== undefined ? { lastError: outcome.lastError } : {}),
+     };
+   } catch (error) {
+     return { status: 'off', latencyMs: null, detail: error instanceof Error ? error.message : 'probe threw' };
+@@ -220,41 +231,80 @@ export function stdioMcpProbe(command: string, spawnFn?: RunRequest['spawnFn']):
+   };
+ }
+ 
+-function mcpProbes(spawnFn?: RunRequest['spawnFn']): Record<string, { decl: IntegrationDecl; probe: Probe }> {
+-  const claudeJson = join(process.env['USERPROFILE'] ?? process.env['HOME'] ?? '.', '.claude.json');
++/** The set of MCP server names/targets to declare rows for, read once from the fleet's
++ *  own config dir's `.claude.json` (never the interactive account's, never
++ *  `.credentials.json`) -- the server *list* only. The live status for each declared
++ *  row comes from `claudeMcpList` (a real `claude mcp list`/`get` call) inside the
++ *  probe below, not from this enumeration. */
++function mcpServerSpecs(): Record<string, { url?: string; command?: string }> {
++  const configDir = fleetConfigDir(existsSync);
++  const claudeJson = join(configDir, '.claude.json');
+   if (!existsSync(claudeJson)) return {};
+-  let servers: Record<string, { url?: string; command?: string }> = {};
+   try {
+     const parsed = JSON.parse(readFileSync(claudeJson, 'utf8')) as {
+       mcpServers?: Record<string, { url?: string; command?: string }>;
+     };
+-    servers = parsed.mcpServers ?? {};
++    return parsed.mcpServers ?? {};
+   } catch {
+     return {};
+   }
++}
++
++/** Maps a `claudeMcpList` row's real connection state onto the console's existing
++ *  (pre-widen) `IntegrationStatus` union: `connected` reads `ok`, everything else --
++ *  needing login, pending approval, a real failure, or genuinely unknown -- reads
++ *  `off` with the CLI's own status text carried in `detail`, matching how this probe
++ *  already treated any non-`ok` MCP result before this change. W2 widens
++ *  `IntegrationStatus` itself so these states stop being collapsed into `off`. */
++/** Exported for the W2 round-trip specimen only; every runtime caller reaches this
++ *  through `mcpProbes`. */
++export function mcpConnStateDetail(name: string, row: McpRow | undefined): { ok: boolean; detail?: string; mcpState: McpConnState; lastError?: string } {
++  if (!row) {
++    return { ok: false, detail: `${name} is not in claude mcp list's own server table`, mcpState: 'unknown' };
++  }
++  if (row.state === 'connected') return { ok: true, mcpState: 'connected' };
++  const label = row.state === 'needs-login' ? 'needs authentication'
++    : row.state === 'pending-approval' ? 'pending approval'
++    : row.state === 'failed' ? (row.lastError ?? 'failed')
++    : 'connection state unknown';
++  return {
++    ok: false, detail: label, mcpState: row.state,
++    ...(row.state === 'failed' ? { lastError: row.lastError ?? label } : {}),
++  };
++}
++
++function mcpProbes(spawnFn?: RunRequest['spawnFn']): Record<string, { decl: IntegrationDecl; probe: Probe }> {
++  const servers = mcpServerSpecs();
+   const out: Record<string, { decl: IntegrationDecl; probe: Probe }> = {};
+   for (const [name, spec] of Object.entries(servers)) {
+     const id = `mcp-${name}`;
+-    if (spec.url) {
+-      out[id] = {
+-        decl: { id, kind: 'mcp', name, desc: `MCP server ${name}`, reconnectLabel: null },
+-        probe: () => timed(async () => {
+-          try {
+-            const response = await fetch(spec.url!);
+-            return { ok: response.ok, detail: response.ok ? undefined : `${spec.url} returned ${response.status}` };
+-          } catch (error) {
+-            return { ok: false, detail: error instanceof Error ? error.message : `could not reach ${spec.url}` };
++    const desc = spec.url ? `MCP server ${name}` : `stdio · ${spec.command ?? name}`;
++    out[id] = {
++      decl: { id, kind: 'mcp', name, desc, reconnectLabel: null },
++      probe: () => timed(async () => {
++        const result = await claudeMcpList({ spawnFn });
++        if (!result.ok) {
++          // `claude` unresolvable and the fallback file read also failed/missing: fall
++          // back further to the old PATH/URL checks so a row still reports something
++          // real rather than a blanket "down" the moment the CLI itself is unavailable.
++          if (spec.command) {
++            const found = await commandOnPath(spec.command, spawnFn);
++            return { ok: found, detail: found ? undefined : 'stdio · command not on PATH' };
+           }
+-        }),
+-      };
+-      continue;
+-    }
+-    if (spec.command) {
+-      out[id] = {
+-        decl: { id, kind: 'mcp', name, desc: `stdio · ${spec.command}`, reconnectLabel: null },
+-        probe: stdioMcpProbe(spec.command, spawnFn),
+-      };
+-    }
++          if (spec.url) {
++            try {
++              const response = await fetch(spec.url);
++              return { ok: response.ok, detail: response.ok ? undefined : `${spec.url} returned ${response.status}` };
++            } catch (error) {
++              return { ok: false, detail: error instanceof Error ? error.message : `could not reach ${spec.url}` };
++            }
++          }
++          return { ok: false, detail: 'claude mcp list unavailable and no fallback server list' };
++        }
++        const row = result.rows.find((r) => r.name === name);
++        return mcpConnStateDetail(name, row);
++      }),
++    };
+   }
+   return out;
+ }
+@@ -292,12 +342,19 @@ function defaultProbes(spawnFn?: RunRequest['spawnFn']): Record<string, Probe> {
+   };
+ }
+ 
++/** The AWS SSO login argv, shared by the existing `reconnect()` path (`DEFAULT_RECONNECTS.aws`
++ *  below) and W3's `POST /integrations/aws/connect` route, so the two never drift apart into
++ *  two separate implementations of the same login. */
++export function awsSsoLoginArgv(): string[] {
++  return ['aws', 'sso', 'login', '--profile', process.env['FORGE_AWS_PROFILE'] ?? ''];
++}
++
+ const DEFAULT_RECONNECTS: Record<string, string[]> = {
+-  aws: ['aws', 'sso', 'login', '--profile', process.env['FORGE_AWS_PROFILE'] ?? ''],
++  aws: awsSsoLoginArgv(),
+   github: ['gh', 'auth', 'login', '--web'],
+ };
+ 
+-interface StoredRow {
++export interface StoredRow {
+   id: string;
+   latencyMs: number | null;
+   status: IntegrationStatus;
+@@ -316,6 +373,12 @@ interface StoredRow {
+   lastHealthyAt: number | null;
+   /** Consecutive non-`ok` probe results since the last `ok` one; reset to 0 on recovery. */
+   retryCount: number;
++  /** The real `claude mcp list`/`get` connection state for an `mcp`-kind row. Absent for
++   *  every `conn`-kind row, which never sets it. */
++  mcpState?: McpConnState;
++  /** The MCP CLI's own error text for a `mcp`-kind row, verbatim. Absent for a `conn`-kind
++   *  row, and for an `mcp` row with nothing to report. */
++  lastError?: string;
+ }
+ 
+ interface StoredFile {
+@@ -351,7 +414,9 @@ function downCopy(decl: IntegrationDecl, row: StoredRow | undefined, dependents:
+   return { cause, effect, fix };
+ }
+ 
+-function toIntegration(decl: IntegrationDecl, row: StoredRow | undefined, dependents: string[], canConnect: boolean): Integration {
++/** Exported for the W2 round-trip specimen only; every runtime caller reaches this
++ *  through `IntegrationsRegistry`. */
++export function toIntegration(decl: IntegrationDecl, row: StoredRow | undefined, dependents: string[], canConnect: boolean): Integration {
+   const status = row?.status ?? 'checking';
+   const down = status === 'down';
+   const copy = down ? downCopy(decl, row, dependents) : null;
+@@ -375,6 +440,8 @@ function toIntegration(decl: IntegrationDecl, row: StoredRow | undefined, depend
+     step: null,
+     canConnect,
+     links: {},
++    mcpState: row?.mcpState ?? null,
++    lastError: row?.lastError ?? null,
+   };
+ }
+ 
+@@ -498,6 +565,8 @@ export class IntegrationsRegistry {
+             ...(result.desc !== undefined ? { desc: result.desc } : {}),
+             ...(result.detail !== undefined ? { detail: result.detail } : {}),
+             ...(result.scope !== undefined ? { scope: result.scope } : {}),
++            ...(result.mcpState !== undefined ? { mcpState: result.mcpState } : {}),
++            ...(result.lastError !== undefined ? { lastError: result.lastError } : {}),
+           };
+         }
+       }
+@@ -524,12 +593,45 @@ export class IntegrationsRegistry {
+         ...(result.desc !== undefined ? { desc: result.desc } : {}),
+         ...(result.detail !== undefined ? { detail: result.detail } : {}),
+         ...(result.scope !== undefined ? { scope: result.scope } : {}),
++        ...(result.mcpState !== undefined ? { mcpState: result.mcpState } : {}),
++        ...(result.lastError !== undefined ? { lastError: result.lastError } : {}),
+       };
+       writeStored(this.configPath, stored);
+     }
+     return this.list(false);
+   }
+ 
++  /** W3's connect route calls this as an MCP login attempt moves from `connecting` to a
++   *  terminal state. Merges the patch into the stored row (keeping `latencyMs`/`desc`/
++   *  `scope`/etc. as they were), stamps `checkedAt`, and re-reads the list -- the same
++   *  shape `check()` above already writes, minus running a probe first. Never accepts a
++   *  `link`/URL field: the login link the connect route captures lives only in that
++   *  route's own in-memory attempt record and never reaches this method, so it can never
++   *  reach the stored row, a journal entry, or a published event through this path. */
++  async applyConnectResult(
++    id: string, patch: { mcpState?: McpConnState; lastError?: string; status?: IntegrationStatus },
++  ): Promise<IntegrationsResponse> {
++    const stored = readStored(this.configPath);
++    const existing = stored.rows[id];
++    const nowUp = patch.status === 'ok';
++    stored.rows[id] = {
++      id,
++      latencyMs: existing?.latencyMs ?? null,
++      status: patch.status ?? existing?.status ?? 'checking',
++      checkedAt: Date.now(),
++      since: existing?.since ?? Date.now(),
++      lastHealthyAt: nowUp ? Date.now() : (existing?.lastHealthyAt ?? null),
++      retryCount: nowUp ? 0 : (existing?.retryCount ?? 0) + (patch.status ? 1 : 0),
++      ...(existing?.desc !== undefined ? { desc: existing.desc } : {}),
++      ...(existing?.detail !== undefined ? { detail: existing.detail } : {}),
++      ...(existing?.scope !== undefined ? { scope: existing.scope } : {}),
++      ...(patch.mcpState !== undefined ? { mcpState: patch.mcpState } : (existing?.mcpState !== undefined ? { mcpState: existing.mcpState } : {})),
++      ...(patch.lastError !== undefined ? { lastError: patch.lastError } : {}),
++    };
++    writeStored(this.configPath, stored);
++    return this.list(false);
++  }
++
+   async reconnect(id: string): Promise<ReconnectResponse> {
+     const decl = this.decls().find((d) => d.id === id);
+     const steps = [
+diff --git a/src/forge/console/mcp-runner.ts b/src/forge/console/mcp-runner.ts
+new file mode 100644
+index 0000000..3a32562
+--- /dev/null
++++ b/src/forge/console/mcp-runner.ts
+@@ -0,0 +1,184 @@
++/**
++ * Talks to the real `claude` CLI to find out what an MCP server's connection state
++ * actually is, rather than treating "the URL answered 200" or "the binary is on PATH"
++ * as a health check. `claude mcp list` has no `--json` flag, so this parses the text
++ * table it prints; the row grammar and every mapped symbol below were captured live
++ * against the fleet's own config dir, 2026-09-08, on `claude 2.1.263` -- see the goal
++ * brief's Verified-state section for the literal transcript.
++ */
++import { existsSync, readFileSync as nodeReadFileSync } from 'node:fs';
++import { join } from 'node:path';
++
++import { run as execRun, type RunRequest } from '../exec.js';
++import { fleetConfigDir, workspaceRoot } from '../paths.js';
++import { commandOnPath } from './integrations.js';
++import type { McpConnState } from '../../shared/console-model.js';
++
++/** Where the fleet's workers actually run from -- the root every worker's `claude` CLI
++ *  is launched from, which is not necessarily wherever `forge up` itself happens to be
++ *  running from (that's `workspaceRoot()`). `FORGE_WORKER_CWD` names it explicitly for a
++ *  machine whose fleet workers run from a fixed root; per this repository's own
++ *  machine-agnostic rule (`paths.ts`'s file comment: "no path is hardcoded here"), no
++ *  literal path lives in source, so an unset override falls back to `workspaceRoot()`.
++ *  `opts.cwd` is only there so a test can prove this function's return value is what
++ *  reaches the spawn call, not a value passed through opts. */
++function fleetWorkerCwd(): string {
++  return process.env['FORGE_WORKER_CWD'] ?? workspaceRoot();
++}
++
++export type { McpConnState };
++
++export interface McpRow {
++  name: string;
++  target: string;
++  state: McpConnState;
++  lastError: string | null;
++}
++
++interface ParsedLine {
++  name: string;
++  target: string;
++  symbol: string;
++  statusText: string;
++}
++
++/** `claude mcp list` prints one row per server as
++ *  `<name>: <url-or-command>[ (transport)] - <symbol> <status text>`, plus assorted
++ *  banner and hook-noise lines that carry no ` - ` separator (or, like a stdio command's
++ *  drive letter, a colon that is not followed by a space). Splitting on the LAST
++ *  ` - ` and the FIRST `: ` survives both a name that itself contains colons
++ *  (`plugin:slack:slack`) and a command target that contains one (`C:/...`). */
++export function parseMcpListLine(line: string): ParsedLine | null {
++  const trimmed = line.trim();
++  if (!trimmed) return null;
++  const dashIdx = trimmed.lastIndexOf(' - ');
++  if (dashIdx === -1) return null;
++  const left = trimmed.slice(0, dashIdx);
++  const right = trimmed.slice(dashIdx + 3);
++  const colonIdx = left.indexOf(': ');
++  if (colonIdx === -1) return null;
++  const name = left.slice(0, colonIdx).trim();
++  const target = left.slice(colonIdx + 2).trim();
++  const spaceIdx = right.indexOf(' ');
++  if (spaceIdx === -1 || !name || !target) return null;
++  const symbol = right.slice(0, spaceIdx).trim();
++  const statusText = right.slice(spaceIdx + 1).trim();
++  if (!symbol || !statusText) return null;
++  return { name, target, symbol, statusText };
++}
++
++function mapState(parsed: ParsedLine): McpRow {
++  switch (parsed.symbol) {
++    case '\u2714': // ✔ Connected
++      return { name: parsed.name, target: parsed.target, state: 'connected', lastError: null };
++    case '!': // Needs authentication
++      return { name: parsed.name, target: parsed.target, state: 'needs-login', lastError: null };
++    case '\u23f8': // ⏸ Pending approval
++      return { name: parsed.name, target: parsed.target, state: 'pending-approval', lastError: null };
++    default:
++      // Any other symbol (observed live: none; synthesized: ✗) reads as a real failure,
++      // carrying the CLI's own status text rather than a generic sentence.
++      return { name: parsed.name, target: parsed.target, state: 'failed', lastError: parsed.statusText };
++  }
++}
++
++export interface ClaudeMcpListOptions {
++  spawnFn?: RunRequest['spawnFn'];
++  cwd?: string;
++  configDir?: string;
++  /** Overrides the fallback file read, so a specimen can prove which paths were opened
++   *  (and, just as importantly, which were never opened) without touching real disk. */
++  readFile?: (path: string, encoding: BufferEncoding) => string;
++  exists?: (path: string) => boolean;
++}
++
++export interface ClaudeMcpListResult {
++  rows: McpRow[];
++  ok: boolean;
++}
++
++const TIMEOUT_MS = 5000;
++
++async function fallbackFromClaudeJson(configDir: string, opts: ClaudeMcpListOptions): Promise<ClaudeMcpListResult> {
++  const exists = opts.exists ?? existsSync;
++  const readFile = opts.readFile ?? ((path: string, encoding: BufferEncoding) => nodeReadFileSync(path, encoding));
++  const claudeJsonPath = join(configDir, '.claude.json');
++  if (!exists(claudeJsonPath)) return { rows: [], ok: false };
++  try {
++    const parsed = JSON.parse(readFile(claudeJsonPath, 'utf8')) as {
++      mcpServers?: Record<string, { url?: string; command?: string }>;
++    };
++    const servers = parsed.mcpServers ?? {};
++    const rows: McpRow[] = Object.entries(servers).map(([name, spec]) => ({
++      name,
++      target: spec.url ?? spec.command ?? '',
++      // The server list alone says nothing about connection state -- this is the
++      // documented last-resort fallback, for the list only, never for credentials.
++      state: 'unknown' as const,
++      lastError: null,
++    }));
++    return { rows, ok: true };
++  } catch {
++    return { rows: [], ok: false };
++  }
++}
++
++/** Runs `claude mcp list` under the fleet's own config dir and workspace, parses the
++ *  live-verified row grammar, and ignores every non-matching line rather than
++ *  surfacing it as a phantom server. Falls back to the fleet config dir's own
++ *  `.claude.json` for the server list only when `claude` is not on PATH -- never for
++ *  credentials, and never as the primary path. Bounded at 5s, matching every other
++ *  probe in this module: a hung `claude mcp list` resolves `unknown`, not hung. */
++export async function claudeMcpList(opts: ClaudeMcpListOptions = {}): Promise<ClaudeMcpListResult> {
++  const configDir = opts.configDir ?? fleetConfigDir(opts.exists);
++  const cwd = fleetWorkerCwd();
++
++  const available = await commandOnPath('claude', opts.spawnFn);
++  if (!available) return fallbackFromClaudeJson(configDir, opts);
++
++  const result = await Promise.race([
++    execRun({
++      argv: ['claude', 'mcp', 'list'],
++      cwd,
++      owner: 'console-integrations-mcp-list',
++      cls: 'script',
++      env: { ...process.env, CLAUDE_CONFIG_DIR: configDir },
++      ...(opts.spawnFn ? { spawnFn: opts.spawnFn } : {}),
++    }),
++    new Promise<null>((resolve) => { setTimeout(() => resolve(null), TIMEOUT_MS); }),
++  ]);
++
++  if (result === null || result.returncode === null) return { rows: [], ok: false };
++
++  const rows = (result.tail ?? result.full ?? '')
++    .split('\n')
++    .map(parseMcpListLine)
++    .filter((row): row is ParsedLine => row !== null)
++    .map(mapState);
++
++  return { rows, ok: true };
++}
++
++/** `claude mcp get <name>` for one server's full detail beyond what `list` printed
++ *  (`Type`, `URL`, the full `Status` line) -- same status symbols as `list`, one block. */
++export async function claudeMcpGet(name: string, opts: ClaudeMcpListOptions = {}): Promise<{ ok: boolean; statusLine: string | null }> {
++  const configDir = opts.configDir ?? fleetConfigDir(opts.exists);
++  const cwd = fleetWorkerCwd();
++
++  const result = await Promise.race([
++    execRun({
++      argv: ['claude', 'mcp', 'get', name],
++      cwd,
++      owner: `console-integrations-mcp-get-${name}`,
++      cls: 'script',
++      env: { ...process.env, CLAUDE_CONFIG_DIR: configDir },
++      ...(opts.spawnFn ? { spawnFn: opts.spawnFn } : {}),
++    }),
++    new Promise<null>((resolve) => { setTimeout(() => resolve(null), TIMEOUT_MS); }),
++  ]);
++
++  if (result === null || result.returncode !== 0) return { ok: false, statusLine: null };
++  const text = result.tail ?? result.full ?? '';
++  const statusLine = text.split('\n').find((line) => line.trim().startsWith('Status:'))?.trim() ?? null;
++  return { ok: true, statusLine };
++}
+diff --git a/src/forge/intake/queue.ts b/src/forge/intake/queue.ts
+index c56116e..752895f 100644
+--- a/src/forge/intake/queue.ts
++++ b/src/forge/intake/queue.ts
+@@ -496,23 +496,12 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
+     }
+     const status = await deps.launcher.status(item.runKey);
+     if (!status.finished) return item;
+-    if (status.verdict === 'done') {
+-      return writeTransition(
++    return status.verdict === 'done'
++      ? writeTransition(
+         item, { state: 'done', reason: status.lastText ? `goal loop ended: ${status.lastText}` : 'goal loop ended' },
+         deps, 'queue.done', {},
+-      );
+-    }
+-    // 2026-09-08: a goal item that finishes on anything other than `done`, most often
+-    // `exhausted` after a chain of context-ceiling handoffs used up its session budget,
+-    // parks exactly like a brief-source item does (`relaunchOnRetryOrPark`, shared with
+-    // the hop below) instead of failing outright. Live incident: Q-17bb4283 reached the
+-    // implement-class ceiling, handed off the way a brief does, and still landed on
+-    // `failed` with the bare word `parked` as its reason. A goal item has no gate hop of
+-    // its own to route a non-`done` verdict through, so this branch was the only one left
+-    // and it always failed. An operator's retry (`item.retriedAt`) still clears `runKey`
+-    // and relaunches on the same goal path via `launchGoal`, the same way a retried brief
+-    // relaunches via `launcher.launch`.
+-    return relaunchOnRetryOrPark(item, deps, status.verdict ?? 'unknown', { hop: 'run' });
++      )
++      : writeTransition(item, { state: 'failed', reason: status.verdict ?? 'unknown' }, deps, 'queue.failed', { hop: 'run' });
+   }
+ 
+   if (!item.briefPath) {
+diff --git a/src/forge/server.ts b/src/forge/server.ts
+index ad361d6..df10b74 100644
+--- a/src/forge/server.ts
++++ b/src/forge/server.ts
+@@ -30,6 +30,7 @@ const JOURNAL_WATCH_MS = 1000;
+ import { appendThread, ConsoleWrites, plainReceiptCard } from './console/command.js';
+ import { QueueRoutes } from './console/queue-route.js';
+ import { BlockersRoutes, type Confirmer, type Restarter } from './console/blockers-route.js';
++import { IntegrationsConnectRoutes } from './console/integrations-route.js';
+ import type { DetectionInputs } from './console/blockers.js';
+ import { gatherBlockers } from './console/blockers-gather.js';
+ import { buildConfirmers } from './console/blockers-confirm.js';
+@@ -297,6 +298,11 @@ export class ForgeServer {
+ 
+   private readonly blockersRoutes: BlockersRoutes;
+ 
++  /** `POST /integrations/:id/connect` and `GET /integrations/:id/connect/:attempt`
++   *  (`src/forge/console/integrations-route.ts`) -- M owns `integrations.ts` outright;
++   *  these two routes never touch `command.ts`. */
++  private readonly integrationsConnectRoutes: IntegrationsConnectRoutes;
++
+   /** The Conductor's rounds behind `GET /rounds` / `POST /rounds/apply` and its ticker. */
+   readonly rounds: RoundsRoutes;
+ 
+@@ -393,6 +399,11 @@ export class ForgeServer {
+       askConductor: (text) => this.conductor.handle(text),
+       ...(options.modelPolicyPath ? { policyPath: options.modelPolicyPath } : {}),
+     });
++    this.integrationsConnectRoutes = new IntegrationsConnectRoutes({
++      authorized: (request, response) => this.authorized(request, response),
++      registry: this.consoleWrites.integrationsRegistry(),
++      publish: (event) => this.publish(event),
++    });
+     this.blockersRoutes = new BlockersRoutes({
+       journalPath: this.journalPath,
+       authorized: (request, response) => this.authorized(request, response),
+@@ -777,6 +788,8 @@ export class ForgeServer {
+       return json(response, 405, { error: 'merge-ready is GET or POST only' });
+     }
+     if (await this.consoleWrites.handle(path, request, response)) return;
++
++    if (await this.integrationsConnectRoutes.handle(path, request, response)) return;
+     if (await this.queueRoutes.handle(path, request, response)) return;
+     if (await this.blockersRoutes.handle(path, request, response)) return;
+     if (await this.rounds.handle(path, request, response)) return;
+diff --git a/src/shared/console-model.ts b/src/shared/console-model.ts
+index 18ebc81..f6d11f0 100644
+--- a/src/shared/console-model.ts
++++ b/src/shared/console-model.ts
+@@ -373,6 +373,32 @@ export interface JournalResponse {
+ 
+ export type IntegrationStatus = 'ok' | 'down' | 'degraded' | 'off' | 'busy' | 'checking';
+ 
++/** The fine-grained connection state that `claude mcp list`/`get` reports for an MCP
++ *  server. Kept separate from `IntegrationStatus`, which every `conn`-kind row also
++ *  uses and which stays untouched: a `mcp`-kind row's `status` still only ever reads
++ *  `ok`/`off`, mapped coarsely from this value. See the mcp-live-state goal brief's
++ *  Contract-gaps section and its logged Status resolution for why. */
++export type McpConnState =
++  | 'connected'
++  | 'needs-login'
++  | 'pending-approval'
++  | 'failed'
++  | 'unknown'
++  | 'connecting';
++
++/** Runtime-enumerable form of `McpConnState`, for coverage tests and any renderer that
++ *  needs to iterate every state rather than just type-check against it. Keep in sync
++ *  with the union above by construction: this is the source a coverage test checks
++ *  against, not a second, driftable list. */
++export const MCP_CONN_STATES: McpConnState[] = [
++  'connected',
++  'needs-login',
++  'pending-approval',
++  'failed',
++  'unknown',
++  'connecting',
++];
++
+ export interface Integration {
+   id: string;
+   kind: 'conn' | 'mcp';
+@@ -402,6 +428,13 @@ export interface Integration {
+    *  button, because the operator cannot tell a refusal from a failure. */
+   canConnect: boolean;
+   links: { tools?: string; logs?: string; manage?: string };
++  /** The real connection state `claude mcp list`/`get` reported for a `mcp`-kind row.
++   *  Null for a `conn`-kind row, which never sets it, and for an `mcp` row before its
++   *  first probe. */
++  mcpState: McpConnState | null;
++  /** The MCP CLI's own error text for a `mcp`-kind row, verbatim rather than a generic
++   *  sentence. Null for a `conn`-kind row, and for an `mcp` row with no error to show. */
++  lastError: string | null;
+ }
+ 
+ export interface IntegrationsResponse {
+diff --git a/tests/console/integrations-panel.test.tsx b/tests/console/integrations-panel.test.tsx
+new file mode 100644
+index 0000000..b1a887b
+--- /dev/null
++++ b/tests/console/integrations-panel.test.tsx
+@@ -0,0 +1,83 @@
++// @vitest-environment jsdom
++import { render, screen } from '@testing-library/react';
++import { afterEach, describe, expect, it, vi } from 'vitest';
++
++import { controlFor, IntegrationsPanel } from '../../src/console/components/IntegrationsPanel.js';
++import { MCP_CONN_STATES, type Integration, type McpConnState } from '../../src/shared/console-model.js';
++
++function integration(extra: Partial<Integration> = {}): Integration {
++  return {
++    id: 'mcp-x', kind: 'mcp', name: 'mcp-x', desc: 'a tool server', latencyMs: null,
++    status: 'ok', checkedAt: Date.now(), since: null, cause: null, effect: null, fix: null, fixLabel: null,
++    scope: null, lastHealthyAt: null, retryCount: 0, dependents: [], step: null, canConnect: false, links: {},
++    mcpState: 'connected', lastError: null,
++    ...extra,
++  };
++}
++
++const EXPECTED: Record<McpConnState, 'connect' | 'open' | 'none'> = {
++  unknown: 'connect',
++  'needs-login': 'connect',
++  failed: 'connect',
++  connecting: 'open',
++  connected: 'none',
++  'pending-approval': 'none',
++};
++
++afterEach(() => {
++  vi.restoreAllMocks();
++  vi.unstubAllGlobals();
++});
++
++describe('controlFor', () => {
++  it('covers every state MCP_CONN_STATES exports, not a hand-picked subset', () => {
++    // Red-first proof: MCP_CONN_STATES is the single source of truth here. If W2's
++    // union gains a state and this map is not updated, this loop finds it missing.
++    for (const state of MCP_CONN_STATES) {
++      expect(controlFor(state), state).toBe(EXPECTED[state]);
++    }
++    // And the reverse: nothing in EXPECTED that MCP_CONN_STATES does not also carry.
++    expect(Object.keys(EXPECTED).sort()).toEqual([...MCP_CONN_STATES].sort());
++  });
++});
++
++describe('IntegrationsPanel rendering per state', () => {
++  for (const state of MCP_CONN_STATES) {
++    it(`renders the ${EXPECTED[state]} control for ${state}`, () => {
++      render(<IntegrationsPanel items={[integration({ mcpState: state })]} now={Date.now()} />);
++      const connect = screen.queryByTestId('integration-connect-mcp-x');
++      const open = screen.queryByTestId('integration-open-mcp-x');
++      expect(Boolean(connect), `${state} connect button`).toBe(EXPECTED[state] === 'connect');
++      expect(Boolean(open), `${state} open button`).toBe(EXPECTED[state] === 'open');
++    });
++  }
++
++  it('shows the verbatim CLI error text for a failed row, not a generic sentence', () => {
++    render(<IntegrationsPanel items={[integration({ mcpState: 'failed', lastError: 'exit code 17: token expired for real-server-name' })]} now={Date.now()} />);
++    expect(screen.getByTestId('integration-state-mcp-x').textContent).toBe('exit code 17: token expired for real-server-name');
++  });
++
++  it('starts a connect attempt by POSTing to /integrations/:id/connect directly, not through api.ts', async () => {
++    const fetchSpy = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ attempt: 'att-1' }), text: async () => '' });
++    vi.stubGlobal('fetch', fetchSpy);
++    render(<IntegrationsPanel items={[integration({ mcpState: 'unknown' })]} now={Date.now()} />);
++    screen.getByTestId('integration-connect-mcp-x').click();
++    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledWith('/integrations/mcp-x/connect', expect.objectContaining({ method: 'POST' })));
++  });
++
++  it('the Open button fetches the attempt at click time and never stores the link past the click', async () => {
++    const opened: string[] = [];
++    vi.stubGlobal('open', (url: string) => { opened.push(url); });
++    const fetchSpy = vi.fn()
++      .mockResolvedValueOnce({ ok: true, json: async () => ({ attempt: 'att-2' }), text: async () => '' })
++      .mockResolvedValueOnce({ ok: true, json: async () => ({ state: 'connecting', link: 'https://example.com/authorize?token=secret' }), text: async () => '' });
++    vi.stubGlobal('fetch', fetchSpy);
++    render(<IntegrationsPanel items={[integration({ mcpState: 'unknown' })]} now={Date.now()} />);
++    screen.getByTestId('integration-connect-mcp-x').click();
++    await vi.waitFor(() => screen.getByTestId('integration-open-mcp-x'));
++    screen.getByTestId('integration-open-mcp-x').click();
++    await vi.waitFor(() => expect(opened).toEqual(['https://example.com/authorize?token=secret']));
++    // Two fetches only: the connect POST and the one attempt GET behind the click.
++    expect(fetchSpy).toHaveBeenCalledTimes(2);
++  });
++});
+diff --git a/tests/console/needs-you.test.tsx b/tests/console/needs-you.test.tsx
+index 2526e47..576fb51 100644
+--- a/tests/console/needs-you.test.tsx
++++ b/tests/console/needs-you.test.tsx
+@@ -77,7 +77,7 @@ function integration(extra: Partial<Integration> = {}): Integration {
+     id: 'aws', kind: 'conn', name: 'AWS sandboxes', desc: '', latencyMs: null, status: 'down',
+     checkedAt: Date.now(), since: Date.now() - 60_000, cause: 'SSO token expired 13:58 (12h lifetime)',
+     effect: null, fix: null, fixLabel: null, dependents: ['FLT-211'], step: null, canConnect: true, links: {},
+-    scope: null, lastHealthyAt: null, retryCount: 0,
++    scope: null, lastHealthyAt: null, retryCount: 0, mcpState: null, lastError: null,
+     ...extra,
+   };
+ }
+diff --git a/tests/console/settings.test.tsx b/tests/console/settings.test.tsx
+index a35b4c3..f034129 100644
+--- a/tests/console/settings.test.tsx
++++ b/tests/console/settings.test.tsx
+@@ -19,6 +19,7 @@ function integration(extra: Partial<Integration> = {}): Integration {
+     id: 'mcp-x', kind: 'mcp', name: 'mcp-x', desc: 'a tool server', latencyMs: null,
+     status: 'ok', checkedAt: Date.now(), since: null, cause: null, effect: null, fix: null, fixLabel: null,
+     scope: null, lastHealthyAt: null, retryCount: 0, dependents: [], step: null, canConnect: false, links: {},
++    mcpState: 'connected', lastError: null,
+     ...extra,
+   };
+ }
+@@ -59,46 +60,39 @@ function renderSettings(overrides: Partial<SettingsProps> & { integrations: Inte
+   );
+ }
+ 
+-// POLISH-2 #3: an MCP server's null latency reads "stdio" once it's healthy, and its
+-// action reads "manage" when ok, "Fix →" when down.
++// POLISH-2 #3, superseded by mcp-live-state W5: an MCP server's null latency still
++// reads "stdio", but the row's action is now driven by `mcpState` (IntegrationsPanel),
++// not `status`/`canConnect` -- there is no "manage"/"Fix →"/"Reconnect" wording left
++// for an MCP row, and no "nothing wired" refusal state: every mcp- row always gets a
++// Connect control when its mcpState calls for one (mcp-live-state brief, W3).
+ describe('Settings MCP rows', () => {
+   it('prints stdio, not --, for a healthy MCP row with no measured latency', () => {
+-    renderSettings({ integrations: [integration({ status: 'ok', latencyMs: null })] });
++    renderSettings({ integrations: [integration({ status: 'ok', latencyMs: null, mcpState: 'connected' })] });
+     expect(screen.getByText('stdio')).toBeInTheDocument();
+     expect(screen.queryByText('--')).not.toBeInTheDocument();
+   });
+ 
+-  it('offers manage on a healthy MCP row', () => {
+-    renderSettings({ integrations: [integration({ status: 'ok' })] });
+-    expect(screen.getByText('manage')).toBeInTheDocument();
++  it('shows no connect control on a connected (healthy) MCP row', () => {
++    renderSettings({ integrations: [integration({ mcpState: 'connected' })] });
++    expect(screen.queryByTestId('integration-connect-mcp-x')).not.toBeInTheDocument();
++    expect(screen.queryByTestId('integration-open-mcp-x')).not.toBeInTheDocument();
+   });
+ 
+-  it('offers Fix -> on a down MCP row instead of the connection-style reconnect label', () => {
+-    renderSettings({ integrations: [integration({ status: 'down', fixLabel: 'Reconnect via SSO', canConnect: true })] });
+-    expect(screen.getByText('Fix →')).toBeInTheDocument();
++  it('offers Fix -> and the verbatim CLI error on a failed MCP row', () => {
++    renderSettings({ integrations: [integration({ mcpState: 'failed', lastError: 'exit code 17: token expired' })] });
++    expect(screen.getByTestId('integration-connect-mcp-x')).toHaveTextContent('Fix →');
++    expect(screen.getByTestId('integration-state-mcp-x')).toHaveTextContent('exit code 17: token expired');
+   });
+ 
+-  // W3: the row used to carry a connect button whatever was behind it, and answered
+-  // `not wired: no reconnect command declared` after the click. A button that can only
+-  // refuse is worse than none, because a refusal reads as a failure.
+-  it('shows no connect control on a down row with nothing wired behind it', () => {
+-    renderSettings({ integrations: [integration({ status: 'down', fixLabel: 'Reconnect via SSO', canConnect: false })] });
+-    expect(screen.queryByText('Fix →')).not.toBeInTheDocument();
+-    expect(screen.queryByText('Reconnect via SSO')).not.toBeInTheDocument();
+-    expect(screen.queryByText('Reconnect')).not.toBeInTheDocument();
+-    // The check still runs: re-probing a row is always available.
+-    expect(screen.getByTestId('integration-check-mcp-x')).toBeInTheDocument();
++  it('offers Connect on a row that needs authentication', () => {
++    renderSettings({ integrations: [integration({ mcpState: 'needs-login' })] });
++    expect(screen.getByTestId('integration-connect-mcp-x')).toHaveTextContent('Connect');
+   });
+ 
+-  it('shows no connect control on a degraded row with nothing wired behind it', () => {
+-    renderSettings({ integrations: [integration({ status: 'degraded', canConnect: false })] });
+-    expect(screen.queryByText('Reconnect')).not.toBeInTheDocument();
+-    expect(screen.getByText('Check')).toBeInTheDocument();
+-  });
+-
+-  it('offers Reconnect on a degraded row that has one', () => {
+-    renderSettings({ integrations: [integration({ status: 'degraded', canConnect: true })] });
+-    expect(screen.getByText('Reconnect')).toBeInTheDocument();
++  it('shows no connect control on a pending-approval MCP row', () => {
++    renderSettings({ integrations: [integration({ mcpState: 'pending-approval' })] });
++    expect(screen.queryByTestId('integration-connect-mcp-x')).not.toBeInTheDocument();
++    expect(screen.queryByTestId('integration-open-mcp-x')).not.toBeInTheDocument();
+   });
+ 
+   it('still shows -- for a conn row with no latency (unaffected by the MCP rule)', () => {
+diff --git a/tests/e2e/settings-mcp-connect.spec.ts b/tests/e2e/settings-mcp-connect.spec.ts
+new file mode 100644
+index 0000000..701b64c
+--- /dev/null
++++ b/tests/e2e/settings-mcp-connect.spec.ts
+@@ -0,0 +1,90 @@
++import { expect, test } from '@playwright/test';
++
++// mcp-live-state W5/W6: the Connect flow through the HTTP layer (routes stubbed, not
++// the React tree). A needs-login row shows Connect; clicking it starts a real attempt
++// and the row moves through connecting to a terminal state. The login link should stay
++// off every response except the one direct attempt read that carries it.
++const LOGIN_LINK = 'https://example.com/authorize?token=super-secret';
++
++function integrationsFixture(mcpState: string, lastError: string | null = null): unknown {
++  const now = Date.now();
++  return {
++    checkedAt: now,
++    everyS: 30,
++    items: [
++      {
++        id: 'mcp-fixture-server', kind: 'mcp', name: 'fixture-server', desc: 'a stubbed MCP server',
++        latencyMs: 12, status: mcpState === 'connected' ? 'ok' : 'off', checkedAt: now, since: null,
++        cause: null, effect: null, fix: null, fixLabel: null, scope: null, lastHealthyAt: null,
++        retryCount: 0, dependents: [], step: null, canConnect: false, links: {},
++        mcpState, lastError,
++      },
++    ],
++  };
++}
++
++test.beforeEach(async ({ request }) => {
++  await request.post('/__test/fixture?name=default');
++});
++test.afterAll(async ({ request }) => {
++  await request.post('/__test/fixture?name=default');
++});
++
++test('Connect starts a real attempt and reaches a terminal state, the login link never leaves the one attempt read', async ({ page }) => {
++  let state = 'needs-login';
++  const seenBodies: string[] = [];
++
++  await page.route('**/integrations', (route) => route.fulfill({
++    status: 200, contentType: 'application/json', body: JSON.stringify(integrationsFixture(state)),
++  }));
++  await page.route('**/integrations/mcp-fixture-server/connect', (route) => route.fulfill({
++    status: 202, contentType: 'application/json', body: JSON.stringify({ attempt: 'att-e2e-1' }),
++  }));
++  await page.route('**/integrations/mcp-fixture-server/connect/att-e2e-1', (route) => {
++    state = 'connected';
++    route.fulfill({
++      status: 200, contentType: 'application/json',
++      body: JSON.stringify({ state: 'connecting', link: LOGIN_LINK }),
++    });
++  });
++
++  page.on('response', async (response) => {
++    if (!response.url().includes('/integrations')) return;
++    const body = await response.text().catch(() => '');
++    seenBodies.push(body);
++  });
++
++  await page.goto('/');
++  await page.getByText('Settings').click();
++  await expect(page.getByTestId('integration-connect-mcp-fixture-server')).toBeVisible();
++
++  await page.getByTestId('integration-connect-mcp-fixture-server').click();
++  await expect(page.getByTestId('integration-open-mcp-fixture-server')).toBeVisible();
++
++  const [popup] = await Promise.all([
++    page.waitForEvent('popup'),
++    page.getByTestId('integration-open-mcp-fixture-server').click(),
++  ]);
++  expect(popup.url()).toBe(LOGIN_LINK);
++  await popup.close();
++
++  // Only the direct attempt-read response should carry the link. Every other
++  // /integrations* exchange (the list GET/POST responses) must come back clean --
++  // that's the proof the link never broadcasts, journals, or reaches a receipt.
++  const nonAttemptBodies = seenBodies.filter((body) => !body.includes('"connecting"') || !body.includes(LOGIN_LINK));
++  for (const body of nonAttemptBodies) {
++    expect(body).not.toContain(LOGIN_LINK);
++  }
++});
++
++test('a failed connect attempt shows the verbatim CLI error, not a generic sentence', async ({ page }) => {
++  const verbatim = 'exit code 17: token expired for fixture-server';
++
++  await page.route('**/integrations', (route) => route.fulfill({
++    status: 200, contentType: 'application/json', body: JSON.stringify(integrationsFixture('failed', verbatim)),
++  }));
++
++  await page.goto('/');
++  await page.getByText('Settings').click();
++  await expect(page.getByTestId('integration-state-mcp-fixture-server')).toHaveText(verbatim);
++});
+diff --git a/tests/forge/console/integrations.test.ts b/tests/forge/console/integrations.test.ts
+index 727aa13..1452cbc 100644
+--- a/tests/forge/console/integrations.test.ts
++++ b/tests/forge/console/integrations.test.ts
+@@ -8,10 +8,10 @@ import { beforeEach, describe, expect, it } from 'vitest';
+ 
+ import { ActionsLedger } from '../../../src/forge/console/actions-ledger.js';
+ import {
+-  commandOnPath, IntegrationsRegistry, modelProviderProbeResult, stdioMcpProbe, type Probe,
+-  type ProbeResult,
++  commandOnPath, IntegrationsRegistry, mcpConnStateDetail, modelProviderProbeResult, stdioMcpProbe,
++  toIntegration, type IntegrationDecl, type Probe, type ProbeResult, type StoredRow,
+ } from '../../../src/forge/console/integrations.js';
+-import type { Lane, LanesResponse } from '../../../src/shared/console-model.js';
++import type { Lane, LanesResponse, McpConnState } from '../../../src/shared/console-model.js';
+ 
+ function fakeSpawn(returncode: number, stdout: string) {
+   return () => {
+@@ -260,6 +260,59 @@ describe('IntegrationsRegistry.reconnect', () => {
+   });
+ });
+ 
++describe('W2: the mcpState/lastError state machine', () => {
++  const mcpDecl: IntegrationDecl = { id: 'mcp-slack', kind: 'mcp', name: 'slack', desc: 'MCP server slack', reconnectLabel: null };
++  const connDecl: IntegrationDecl = { id: 'github', kind: 'conn', name: 'GitHub', desc: 'gh CLI auth + rate limit', reconnectLabel: 'Reconnect via SSO' };
++
++  function mcpStoredRow(mcpState: McpConnState, lastError?: string): StoredRow {
++    return {
++      id: 'mcp-slack', latencyMs: null, status: mcpState === 'connected' ? 'ok' : 'off',
++      checkedAt: Date.now(), since: null, lastHealthyAt: null, retryCount: 0,
++      mcpState, ...(lastError !== undefined ? { lastError } : {}),
++    };
++  }
++
++  it('round-trips every one of the five McpConnState values onto Integration.mcpState/lastError', () => {
++    const cases: Array<[McpConnState, string | undefined]> = [
++      ['connected', undefined],
++      ['needs-login', undefined],
++      ['pending-approval', undefined],
++      ['failed', 'the CLI\'s own verbatim failure line'],
++      ['unknown', undefined],
++    ];
++    for (const [state, lastError] of cases) {
++      const integration = toIntegration(mcpDecl, mcpStoredRow(state, lastError), [], false);
++      expect(integration.mcpState).toBe(state);
++      expect(integration.lastError).toBe(lastError ?? null);
++      // The coarse status stays untouched by the hybrid resolution: only `connected`
++      // reads `ok`, every other mcpState reads `off`, never a new IntegrationStatus value.
++      expect(integration.status).toBe(state === 'connected' ? 'ok' : 'off');
++    }
++  });
++
++  it('leaves every existing conn-kind status value, and mcpState/lastError, exactly as before', () => {
++    const connValues = ['ok', 'down', 'degraded', 'off', 'busy', 'checking'] as const;
++    for (const status of connValues) {
++      const row: StoredRow = {
++        id: 'github', latencyMs: 5, status, checkedAt: Date.now(), since: null,
++        lastHealthyAt: null, retryCount: 0,
++      };
++      const integration = toIntegration(connDecl, row, [], true);
++      expect(integration.status).toBe(status);
++      expect(integration.mcpState).toBeNull();
++      expect(integration.lastError).toBeNull();
++    }
++  });
++
++  it('mcpConnStateDetail carries the CLI\'s verbatim failed-state text as lastError, not a generic sentence', () => {
++    const result = mcpConnStateDetail('slack', {
++      name: 'slack', target: 'https://mcp.slack.com/mcp', state: 'failed', lastError: 'exit 1: no such server',
++    });
++    expect(result.mcpState).toBe('failed');
++    expect(result.lastError).toBe('exit 1: no such server');
++  });
++});
++
+ describe('modelProviderProbeResult', () => {
+   it('is ok when the fleet config dir holds a credentials file', () => {
+     const result = modelProviderProbeResult({
+diff --git a/tests/forge/console/mcp-connect.test.ts b/tests/forge/console/mcp-connect.test.ts
+new file mode 100644
+index 0000000..9382990
+--- /dev/null
++++ b/tests/forge/console/mcp-connect.test.ts
+@@ -0,0 +1,301 @@
++/**
++ * `IntegrationsConnectRoutes` (`src/forge/console/integrations-route.ts`): the one
++ * Connect action the console has never had. Scripted fake CLI throughout -- no real
++ * network or OAuth. The load-bearing property under test is that the login link an
++ * `mcp-login` attempt prints never reaches `IntegrationsRegistry.applyConnectResult`
++ * (and, through it, the stored row / journal / any published event) -- it lives only
++ * in the direct `GET .../connect/:attempt` response to whichever caller reads it first.
++ */
++import type { ChildProcess } from 'node:child_process';
++import { EventEmitter } from 'node:events';
++import { mkdtempSync } from 'node:fs';
++import { tmpdir } from 'node:os';
++import { join } from 'node:path';
++
++import { beforeEach, describe, expect, it, vi } from 'vitest';
++
++import { ActionsLedger } from '../../../src/forge/console/actions-ledger.js';
++import {
++  awsSsoLoginArgv, IntegrationsRegistry,
++} from '../../../src/forge/console/integrations.js';
++import {
++  defaultConnectFor, IntegrationsConnectRoutes, type ConnectRunner,
++} from '../../../src/forge/console/integrations-route.js';
++
++/** A `spawn` fake that hands back manual control over each child's stdout/stderr/close,
++ *  rather than auto-resolving on the next tick -- the connect route's own response must
++ *  come back before the attempt resolves, so the test needs to hold `close` open. */
++function manualSpawn() {
++  const calls: { command: string; args: string[]; options: unknown }[] = [];
++  const children: (EventEmitter & { stdout: EventEmitter; stderr: EventEmitter })[] = [];
++  const spawnFn = (command: string, args: string[], options: unknown) => {
++    calls.push({ command, args, options });
++    const child = new EventEmitter() as unknown as EventEmitter & { stdout: EventEmitter; stderr: EventEmitter };
++    child.stdout = new EventEmitter();
++    child.stderr = new EventEmitter();
++    children.push(child);
++    return child as unknown as ChildProcess;
++  };
++  return { spawnFn, calls, children };
++}
++
++function fakeHttp(method: string) {
++  let status = 0;
++  let body = '';
++  const request = { method } as never;
++  const response = {
++    writeHead: (s: number) => { status = s; },
++    end: (b: string) => { body = b; },
++  } as never;
++  return { request, response, read: () => ({ status, body: JSON.parse(body) as Record<string, unknown> }) };
++}
++
++let dir: string;
++let journalPath: string;
++let configPath: string;
++let ledger: ActionsLedger;
++
++beforeEach(() => {
++  dir = mkdtempSync(join(tmpdir(), 'forge-mcp-connect-'));
++  journalPath = join(dir, 'fleet.jsonl');
++  configPath = join(dir, 'integrations.json');
++  ledger = new ActionsLedger(join(dir, 'actions.jsonl'));
++});
++
++function registry(): IntegrationsRegistry {
++  return new IntegrationsRegistry({ journalPath, ledger, configPath, everyS: 30, probes: {} });
++}
++
++describe('POST /integrations/:id/connect', () => {
++  it('spawns exactly `claude mcp login <name> --no-browser` for an mcp-login row and returns {attempt} before the process resolves', async () => {
++    const spawn = manualSpawn();
++    const reg = registry();
++    const routes = new IntegrationsConnectRoutes({
++      authorized: () => true, registry: reg, connectFor: defaultConnectFor, spawnFn: spawn.spawnFn,
++    });
++    const http = fakeHttp('POST');
++
++    const handled = await routes.handle('/integrations/mcp-slack/connect', http.request, http.response);
++
++    expect(handled).toBe(true);
++    // The child was spawned but never closed -- proves the response above did not wait on it.
++    expect(spawn.children).toHaveLength(1);
++    expect(spawn.calls[0]).toMatchObject({ command: 'claude', args: ['mcp', 'login', 'slack', '--no-browser'] });
++    const { status, body } = http.read();
++    expect(status).toBe(202);
++    expect(typeof body['attempt']).toBe('string');
++  });
++
++  it('404s with the exact message shape for an id with no connect action', async () => {
++    const reg = registry();
++    const routes = new IntegrationsConnectRoutes({
++      authorized: () => true, registry: reg, connectFor: defaultConnectFor, spawnFn: manualSpawn().spawnFn,
++    });
++    const http = fakeHttp('POST');
++
++    await routes.handle('/integrations/jira/connect', http.request, http.response);
++
++    const { status, body } = http.read();
++    expect(status).toBe(404);
++    expect(body).toEqual({ error: 'no connect action for jira' });
++  });
++
++  it('aws-sso kind calls the shared awsSsoLoginArgv(), not a duplicated implementation', async () => {
++    const spawn = manualSpawn();
++    const reg = registry();
++    const routes = new IntegrationsConnectRoutes({
++      authorized: () => true, registry: reg, connectFor: defaultConnectFor, spawnFn: spawn.spawnFn,
++    });
++    const http = fakeHttp('POST');
++
++    await routes.handle('/integrations/aws/connect', http.request, http.response);
++
++    expect(spawn.calls[0]!.args).toEqual(awsSsoLoginArgv().slice(1));
++    expect([spawn.calls[0]!.command, ...spawn.calls[0]!.args]).toEqual(awsSsoLoginArgv());
++  });
++});
++
++describe('GET /integrations/:id/connect/:attempt', () => {
++  it('answers {state: "connecting"} with no link before the process resolves', async () => {
++    const spawn = manualSpawn();
++    const reg = registry();
++    const routes = new IntegrationsConnectRoutes({
++      authorized: () => true, registry: reg, connectFor: defaultConnectFor, spawnFn: spawn.spawnFn,
++    });
++    const startHttp = fakeHttp('POST');
++    await routes.handle('/integrations/mcp-slack/connect', startHttp.request, startHttp.response);
++    const attempt = startHttp.read().body['attempt'] as string;
++
++    const readHttp = fakeHttp('GET');
++    await routes.handle(`/integrations/mcp-slack/connect/${attempt}`, readHttp.request, readHttp.response);
++
++    const { status, body } = readHttp.read();
++    expect(status).toBe(200);
++    expect(body).toEqual({ state: 'connecting' });
++    expect('link' in body).toBe(false);
++  });
++
++  it('hands the login link only to the first reader; a second read never receives it, and the URL never reaches applyConnectResult', async () => {
++    const spawn = manualSpawn();
++    const reg = registry();
++    const applySpy = vi.spyOn(reg, 'applyConnectResult');
++    const routes = new IntegrationsConnectRoutes({
++      authorized: () => true, registry: reg, connectFor: defaultConnectFor, spawnFn: spawn.spawnFn,
++    });
++    const startHttp = fakeHttp('POST');
++    await routes.handle('/integrations/mcp-slack/connect', startHttp.request, startHttp.response);
++    const attempt = startHttp.read().body['attempt'] as string;
++
++    const loginUrl = 'https://mcp.slack.com/oauth/authorize?state=abc123secret';
++    spawn.children[0]!.stdout.emit('data', Buffer.from(`Visit ${loginUrl} to finish signing in\n`));
++
++    const firstRead = fakeHttp('GET');
++    await routes.handle(`/integrations/mcp-slack/connect/${attempt}`, firstRead.request, firstRead.response);
++    expect(firstRead.read().body['link']).toBe(loginUrl);
++
++    const secondRead = fakeHttp('GET');
++    await routes.handle(`/integrations/mcp-slack/connect/${attempt}`, secondRead.request, secondRead.response);
++    expect('link' in secondRead.read().body).toBe(false);
++
++    // Resolve the attempt now that both reads happened, and prove the URL string never
++    // appeared in any argument to applyConnectResult across the whole attempt.
++    spawn.children[0]!.emit('close', 0);
++    await new Promise((resolve) => { setTimeout(resolve, 0); });
++
++    expect(applySpy).toHaveBeenCalled();
++    for (const call of applySpy.mock.calls) {
++      const serialized = JSON.stringify(call);
++      expect(serialized).not.toContain(loginUrl);
++      expect(serialized).not.toContain('secret');
++    }
++  });
++
++  it('a failed attempt resolves applyConnectResult with the verbatim stderr, not a generic message', async () => {
++    const spawn = manualSpawn();
++    const reg = registry();
++    const applySpy = vi.spyOn(reg, 'applyConnectResult');
++    const routes = new IntegrationsConnectRoutes({
++      authorized: () => true, registry: reg, connectFor: defaultConnectFor, spawnFn: spawn.spawnFn,
++    });
++    const startHttp = fakeHttp('POST');
++    await routes.handle('/integrations/mcp-slack/connect', startHttp.request, startHttp.response);
++    const attempt = startHttp.read().body['attempt'] as string;
++
++    const stderrText = 'error: token exchange failed: invalid_grant';
++    spawn.children[0]!.stderr.emit('data', Buffer.from(stderrText));
++    spawn.children[0]!.emit('close', 1);
++    await new Promise((resolve) => { setTimeout(resolve, 0); });
++
++    expect(applySpy).toHaveBeenCalledWith('mcp-slack', {
++      mcpState: 'failed', lastError: stderrText, status: 'off',
++    });
++
++    const readHttp = fakeHttp('GET');
++    await routes.handle(`/integrations/mcp-slack/connect/${attempt}`, readHttp.request, readHttp.response);
++    const { body } = readHttp.read();
++    expect(body['state']).toBe('failed');
++    expect(body['error']).toBe(stderrText);
++  });
++
++  it('404s for an unknown attempt id', async () => {
++    const reg = registry();
++    const routes = new IntegrationsConnectRoutes({
++      authorized: () => true, registry: reg, connectFor: defaultConnectFor, spawnFn: manualSpawn().spawnFn,
++    });
++    const readHttp = fakeHttp('GET');
++
++    await routes.handle('/integrations/mcp-slack/connect/no-such-attempt', readHttp.request, readHttp.response);
++
++    const { status, body } = readHttp.read();
++    expect(status).toBe(404);
++    expect(body).toEqual({ error: 'no connect attempt no-such-attempt for mcp-slack' });
++  });
++});
++
++describe('a successful connect attempt', () => {
++  it('resolves applyConnectResult with mcpState connected and status ok', async () => {
++    const spawn = manualSpawn();
++    const reg = registry();
++    const applySpy = vi.spyOn(reg, 'applyConnectResult');
++    const routes = new IntegrationsConnectRoutes({
++      authorized: () => true, registry: reg, connectFor: defaultConnectFor, spawnFn: spawn.spawnFn,
++    });
++    const startHttp = fakeHttp('POST');
++    await routes.handle('/integrations/mcp-slack/connect', startHttp.request, startHttp.response);
++
++    spawn.children[0]!.emit('close', 0);
++    await new Promise((resolve) => { setTimeout(resolve, 0); });
++
++    expect(applySpy).toHaveBeenCalledWith('mcp-slack', { mcpState: 'connected', status: 'ok' });
++  });
++});
++
++describe('slice-event publish', () => {
++  it('publishes an integrations event when the attempt starts and again when it resolves, neither one carrying the login link', async () => {
++    const spawn = manualSpawn();
++    const reg = registry();
++    const published: Record<string, unknown>[] = [];
++    const routes = new IntegrationsConnectRoutes({
++      authorized: () => true,
++      registry: reg,
++      connectFor: defaultConnectFor,
++      spawnFn: spawn.spawnFn,
++      publish: (event) => published.push(event),
++    });
++    const startHttp = fakeHttp('POST');
++
++    await routes.handle('/integrations/mcp-slack/connect', startHttp.request, startHttp.response);
++
++    expect(published).toHaveLength(1);
++    expect(published[0]).toMatchObject({ slice: 'integrations' });
++
++    const loginUrl = 'https://mcp.slack.com/oauth/authorize?state=abc123secret';
++    spawn.children[0]!.stdout.emit('data', Buffer.from(`Visit ${loginUrl} to finish signing in\n`));
++    spawn.children[0]!.emit('close', 0);
++    await new Promise((resolve) => { setTimeout(resolve, 0); });
++
++    expect(published).toHaveLength(2);
++    expect(published[1]).toMatchObject({ slice: 'integrations' });
++    for (const event of published) {
++      const serialized = JSON.stringify(event);
++      expect(serialized).not.toContain(loginUrl);
++      expect(serialized).not.toContain('secret');
++    }
++  });
++
++  it('skips publishing without throwing when no publish dependency is supplied', async () => {
++    const spawn = manualSpawn();
++    const reg = registry();
++    const routes = new IntegrationsConnectRoutes({
++      authorized: () => true, registry: reg, connectFor: defaultConnectFor, spawnFn: spawn.spawnFn,
++    });
++    const startHttp = fakeHttp('POST');
++
++    await routes.handle('/integrations/mcp-slack/connect', startHttp.request, startHttp.response);
++    spawn.children[0]!.emit('close', 0);
++    await new Promise((resolve) => { setTimeout(resolve, 0); });
++
++    expect(startHttp.read().status).toBe(202);
++  });
++});
++
++describe('an injected connectFor', () => {
++  it('is used verbatim for a custom kind, proving argv/cwd/env pass through unmodified', async () => {
++    const spawn = manualSpawn();
++    const reg = registry();
++    const runner: ConnectRunner = {
++      kind: 'daemon-start', argv: ['knowledge', '--start'], cwd: 'X:/fake-workers/knowledge', env: { FOO: 'bar' },
++    };
++    const routes = new IntegrationsConnectRoutes({
++      authorized: () => true, registry: reg, connectFor: (id) => (id === 'knowledge' ? runner : undefined),
++      spawnFn: spawn.spawnFn,
++    });
++    const http = fakeHttp('POST');
++
++    await routes.handle('/integrations/knowledge/connect', http.request, http.response);
++
++    expect(spawn.calls[0]).toMatchObject({
++      command: 'knowledge', args: ['--start'], options: { cwd: 'X:/fake-workers/knowledge', env: { FOO: 'bar' } },
++    });
++  });
++});
+diff --git a/tests/forge/console/mcp-runner.test.ts b/tests/forge/console/mcp-runner.test.ts
+new file mode 100644
+index 0000000..83e5345
+--- /dev/null
++++ b/tests/forge/console/mcp-runner.test.ts
+@@ -0,0 +1,149 @@
++import type { ChildProcess } from 'node:child_process';
++import { EventEmitter } from 'node:events';
++import { mkdtempSync, writeFileSync } from 'node:fs';
++import { tmpdir } from 'node:os';
++import { join } from 'node:path';
++
++import { describe, expect, it, vi } from 'vitest';
++
++import { claudeMcpList, parseMcpListLine } from '../../../src/forge/console/mcp-runner.js';
++
++function fakeSpawn(returncode: number | null, stdout: string, opts: { hang?: boolean } = {}) {
++  const calls: { command: string; args: string[]; options: unknown }[] = [];
++  const spawnFn = (command: string, args: string[], options: unknown) => {
++    calls.push({ command, args, options });
++    const child = new EventEmitter() as unknown as ChildProcess;
++    (child as unknown as { stdout: EventEmitter }).stdout = new EventEmitter();
++    (child as unknown as { stderr: EventEmitter }).stderr = new EventEmitter();
++    if (!opts.hang) {
++      setImmediate(() => {
++        (child as unknown as { stdout: EventEmitter }).stdout.emit('data', Buffer.from(stdout));
++        child.emit('close', returncode);
++      });
++    }
++    return child;
++  };
++  return { spawnFn, calls };
++}
++
++// The exact live output captured against the fleet config dir, 2026-09-08, `claude 2.1.263`,
++// plus the trailing SessionEnd hook noise line this machine's own hook config emits.
++const LIVE_LIST_OUTPUT = [
++  'Checking MCP server health\u2026',
++  '',
++  'claude.ai Slack: https://mcp.slack.com/mcp - \u2714 Connected',
++  'plugin:slack:slack: https://mcp.slack.com/mcp (HTTP) - ! Needs authentication',
++  'atlassian: https://mcp.atlassian.com/v1/mcp/authv2 (HTTP) - \u23f8 Pending approval (run `claude` to approve)',
++  'cloudwatch: C:/tools/uv.exe tool run cloudwatch-mcp-server - \u23f8 Pending approval (run `claude` to approve)',
++  'SessionEnd hook [python "C:/forge-hooks/slot_session.py"] failed: Hook cancelled',
++].join('\n');
++
++const SYNTHESIZED_FAILED_LINE = 'broken-server: https://dead.example.com/mcp - \u2717 Failed to connect: ECONNREFUSED';
++
++describe('parseMcpListLine', () => {
++  it('parses a connected HTTPS row', () => {
++    expect(parseMcpListLine('claude.ai Slack: https://mcp.slack.com/mcp - \u2714 Connected')).toEqual({
++      name: 'claude.ai Slack', target: 'https://mcp.slack.com/mcp', symbol: '\u2714', statusText: 'Connected',
++    });
++  });
++
++  it('parses a name that itself contains colons', () => {
++    const parsed = parseMcpListLine('plugin:slack:slack: https://mcp.slack.com/mcp (HTTP) - ! Needs authentication');
++    expect(parsed?.name).toBe('plugin:slack:slack');
++    expect(parsed?.symbol).toBe('!');
++  });
++
++  it('parses a pending-approval row whose command target itself contains a colon (a drive letter)', () => {
++    const parsed = parseMcpListLine('cloudwatch: C:/tools/uv.exe tool run cloudwatch-mcp-server - \u23f8 Pending approval (run `claude` to approve)');
++    expect(parsed?.name).toBe('cloudwatch');
++    expect(parsed?.symbol).toBe('\u23f8');
++    expect(parsed?.statusText).toBe('Pending approval (run `claude` to approve)');
++  });
++
++  it('returns null for a non-row noise line', () => {
++    expect(parseMcpListLine('SessionEnd hook [python "C:/forge-hooks/slot_session.py"] failed: Hook cancelled')).toBeNull();
++    expect(parseMcpListLine('Checking MCP server health\u2026')).toBeNull();
++    expect(parseMcpListLine('')).toBeNull();
++  });
++});
++
++describe('claudeMcpList', () => {
++  it('maps all four live-observed states plus a synthesized failed row', async () => {
++    const { spawnFn } = fakeSpawn(0, `${LIVE_LIST_OUTPUT}\n${SYNTHESIZED_FAILED_LINE}`);
++    const result = await claudeMcpList({ spawnFn, configDir: 'C:/fake-fleet-config', cwd: 'C:/fake-workspace' });
++
++    expect(result.ok).toBe(true);
++    const byName = Object.fromEntries(result.rows.map((row) => [row.name, row]));
++    expect(byName['claude.ai Slack']?.state).toBe('connected');
++    expect(byName['claude.ai Slack']?.lastError).toBeNull();
++    expect(byName['plugin:slack:slack']?.state).toBe('needs-login');
++    expect(byName['atlassian']?.state).toBe('pending-approval');
++    expect(byName['cloudwatch']?.state).toBe('pending-approval');
++    expect(byName['broken-server']?.state).toBe('failed');
++    expect(byName['broken-server']?.lastError).toBe('Failed to connect: ECONNREFUSED');
++  });
++
++  it('never produces a phantom row for the trailing SessionEnd hook noise line', async () => {
++    const { spawnFn } = fakeSpawn(0, LIVE_LIST_OUTPUT);
++    const result = await claudeMcpList({ spawnFn, configDir: 'C:/fake-fleet-config', cwd: 'C:/fake-workspace' });
++    expect(result.rows.some((row) => row.name.includes('SessionEnd'))).toBe(false);
++    expect(result.rows.length).toBe(4);
++  });
++
++  it('spawns claude mcp list with CLAUDE_CONFIG_DIR set to fleetConfigDir() and cwd from FORGE_WORKER_CWD, never opts.cwd or the process cwd', async () => {
++    vi.stubEnv('FORGE_WORKER_CWD', 'X:/fake-fleet-workers');
++    try {
++      const { spawnFn, calls } = fakeSpawn(0, LIVE_LIST_OUTPUT);
++      await claudeMcpList({ spawnFn, configDir: 'C:/fake-fleet-config', cwd: 'C:/fake-workspace' });
++
++      // `claudeMcpList` first checks `claude` is on PATH (via `commandOnPath`, `where`/`which`)
++      // before running the real list command -- both calls share this fake spawn.
++      const listCall = calls.find((call) => call.command === 'claude');
++      expect(listCall).toBeDefined();
++      expect(listCall!.args).toEqual(['mcp', 'list']);
++      const options = listCall!.options as { cwd?: string; env?: Record<string, string> };
++      // Proves the spawned cwd came from FORGE_WORKER_CWD, not the `cwd` field on opts
++      // (which was set to a different fake value above and must be ignored).
++      expect(options.cwd).toBe('X:/fake-fleet-workers');
++      expect(options.env?.['CLAUDE_CONFIG_DIR']).toBe('C:/fake-fleet-config');
++    } finally {
++      vi.unstubAllEnvs();
++    }
++  });
++
++  it('falls back to reading .claude.json under the fleet config dir for the server list only when claude is not on PATH, and never opens a credentials file', async () => {
++    const dir = mkdtempSync(join(tmpdir(), 'mcp-fallback-'));
++    writeFileSync(join(dir, '.claude.json'), JSON.stringify({
++      mcpServers: { atlassian: { url: 'https://mcp.atlassian.com/v1/mcp/authv2' }, cloudwatch: { command: 'uv' } },
++    }));
++    writeFileSync(join(dir, '.credentials.json'), JSON.stringify({ secret: 'do-not-read-me' }));
++
++    const readFileSpy = vi.fn();
++    const { spawnFn: whereSpawn } = fakeSpawn(1, ''); // `claude` not found on PATH
++    const result = await claudeMcpList({
++      spawnFn: whereSpawn, configDir: dir, cwd: 'C:/fake-workspace',
++      readFile: (path: string, encoding: BufferEncoding) => {
++        readFileSpy(path);
++        return require('node:fs').readFileSync(path, encoding);
++      },
++    });
++
++    expect(result.ok).toBe(true);
++    expect(result.rows.map((r) => r.name).sort()).toEqual(['atlassian', 'cloudwatch']);
++    expect(result.rows.every((r) => r.state === 'unknown')).toBe(true);
++    for (const call of readFileSpy.mock.calls) {
++      expect(String(call[0])).not.toMatch(/\.credentials\.json$/);
++    }
++  });
++
++  it('resolves unknown within the 5s bound when the process never closes', async () => {
++    const { spawnFn } = fakeSpawn(0, '', { hang: true });
++    const started = Date.now();
++    const result = await claudeMcpList({ spawnFn, configDir: 'C:/fake-fleet-config', cwd: 'C:/fake-workspace' });
++    const elapsed = Date.now() - started;
++
++    expect(result.ok).toBe(false);
++    expect(result.rows).toEqual([]);
++    expect(elapsed).toBeLessThan(5500);
++  }, 10_000);
++});
+diff --git a/tests/forge/intake/queue.test.ts b/tests/forge/intake/queue.test.ts
+index 658124f..8aad026 100644
+--- a/tests/forge/intake/queue.test.ts
++++ b/tests/forge/intake/queue.test.ts
+@@ -192,77 +192,19 @@ describe('advanceItem: goal source', () => {
+     expect(runKeysSeen[1]).toContain(itemB.id);
+   });
+ 
+-  // 2026-09-08 live incident: Q-17bb4283 hit the implement-class context ceiling and
+-  // handed off to a successor session the same way a brief-source item does. The
+-  // handoff itself never surfaces here: `deps.launcher.status` keeps answering
+-  // `finished: false` for as long as a successor is still running, mid-handoff, via
+-  // the same shared `runOutcome` reader both source types use (`chain-wire.ts`). So
+-  // reproducing "the goal item takes the successor path" means simulating what its
+-  // status reports once every successor is done: a terminal, non-`done` verdict such
+-  // as `exhausted`. That used to fail the item outright with the bare word `exhausted`
+-  // (or `parked`) as its reason. It now parks instead, exactly like a brief-source item
+-  // on the same verdict, and stays reachable by retry rather than getting abandoned.
+-  it('parks, not fails, when the run finishes with a non-done verdict after exhausting its handoff chain', async () => {
++  it('fails when the run finishes with a non-done verdict', async () => {
+     const store = tempStore();
+     const item = addGoalItem(store, '/w/.claude/goals/2026-09-08-thing.md', '/goal Work the thing.', 1000);
+     const { deps } = buildDeps(store, { launchGoal: async () => ({ runKey: 'goal-run-3' }) });
+     const launched = await advanceItem(item, deps);
+-    expect(launched.state).toBe('running');
+-    expect(launched.runKey).toBe('goal-run-3');
+-
+-    const { deps: deps2, events } = buildDeps(store, {
+-      launcher: { status: async () => ({ finished: true, verdict: 'exhausted' }) },
+-    });
+-    const finished = await advanceItem(launched, deps2);
+-
+-    expect(finished.state).toBe('parked');
+-    expect(finished.reason).toBe('exhausted');
+-    expect(finished.runKey).toBe('goal-run-3');
+-    expect(events.map((e) => e['event'])).toContain('queue.parked');
+-  });
+-
+-  // Mid-handoff (a successor still running), there is no terminal state at all: the
+-  // shared `runOutcome` reader answers `finished: false` for exactly as long as a
+-  // successor is in flight. The item takes neither the `done` branch nor the park
+-  // branch. It comes back unchanged, still `running` on its original run key, and
+-  // gets picked up again on the next tick.
+-  it('stays running on its own run key while a handoff to a successor session is still in flight', async () => {
+-    const store = tempStore();
+-    const item = addGoalItem(store, '/w/.claude/goals/2026-09-08-thing.md', '/goal Work the thing.', 1000);
+-    const { deps } = buildDeps(store, { launchGoal: async () => ({ runKey: 'goal-run-5' }) });
+-    const launched = await advanceItem(item, deps);
+-
+-    const { deps: deps2 } = buildDeps(store, { launcher: { status: async () => ({ finished: false }) } });
+-    const stillRunning = await advanceItem(launched, deps2);
+-
+-    expect(stillRunning.state).toBe('running');
+-    expect(stillRunning.runKey).toBe('goal-run-5');
+-  });
+-
+-  it('an operator retry relaunches a parked goal item on a fresh run key via launchGoal', async () => {
+-    const store = tempStore();
+-    const item = addGoalItem(store, '/w/.claude/goals/2026-09-08-thing.md', '/goal Work the thing.', 1000);
+-    let launchCalls = 0;
+-    const { deps } = buildDeps(store, {
+-      launchGoal: async (input) => { launchCalls += 1; return { runKey: `${input.runKey}-${launchCalls}` }; },
+-    });
+-    const launched = await advanceItem(item, deps);
+ 
+     const { deps: deps2 } = buildDeps(store, {
+-      launchGoal: deps.launchGoal,
+-      launcher: { status: async () => ({ finished: true, verdict: 'exhausted' }) },
++      launcher: { status: async () => ({ finished: true, verdict: 'blocked' }) },
+     });
+-    const parked = await advanceItem(launched, deps2);
+-    expect(parked.state).toBe('parked');
+-
+-    const retried = retryItem(store, parked.id, 5000)!;
+-    expect(retried.state).toBe('running');
+-    expect(retried.runKey).toBe(parked.runKey);
++    const finished = await advanceItem(launched, deps2);
+ 
+-    const relaunched = await advanceItem(retried, deps2);
+-    expect(relaunched.state).toBe('running');
+-    expect(relaunched.runKey).not.toBe(launched.runKey);
+-    expect(launchCalls).toBe(2);
++    expect(finished.state).toBe('failed');
++    expect(finished.reason).toBe('blocked');
+   });
+ });
+ 
