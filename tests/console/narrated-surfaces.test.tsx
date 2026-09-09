@@ -154,7 +154,7 @@ describe('the Settings source rows', () => {
         'It holds the secrets and the logs for us-east-1, so nothing is waiting on it right now.',
         '{"surface":"integration.note","facts":{"status":"ok","blocks":0,"scope":"us-east-1"}}'),
     };
-    const { unmount } = render(<Settings integrations={[integration({ narration })]} caps={null} now={now} maxInFlight={4} theme="dark" onTheme={vi.fn()} />);
+    const { unmount } = render(<Settings integrations={[integration({ narration })]} accounts={[]} caps={null} now={now} maxInFlight={4} theme="dark" onTheme={vi.fn()} />);
     expect(registers('source-status').glance).toBe('Connected.');
     expect(registers('source-status').detail).toContain('came back clean');
     expect(registers('source-status').raw).toBeNull();
@@ -163,7 +163,7 @@ describe('the Settings source rows', () => {
     expect(screen.getByTestId('source-note-glance').parentElement?.textContent).toContain('checked');
     unmount();
 
-    render(<Settings integrations={[integration({ narration })]} caps={null} now={now} maxInFlight={4} theme="dark" onTheme={vi.fn()} verbose />);
+    render(<Settings integrations={[integration({ narration })]} accounts={[]} caps={null} now={now} maxInFlight={4} theme="dark" onTheme={vi.fn()} verbose />);
     expect(registers('source-note').raw).toContain('"surface":"integration.note"');
   });
 });
