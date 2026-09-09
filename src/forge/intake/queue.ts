@@ -43,6 +43,15 @@ export type QueueCouncilFn = (input: Parameters<ChainCouncilFn>[0]) => Promise<Q
 
 export const QUEUE_IN_FLIGHT_STATES: readonly QueueItemState[] = ['planning', 'running'];
 
+/** BBZ-60/62/74/202, 2026-09-08: the number of consecutive ticks `advanceItem` retries a
+ *  gate hop whose checks came back pending before giving up and parking. Four real
+ *  tickets sat at this hop with checks that all went green within a few minutes, so this
+ *  is sized generously against the queue's own tick cadence rather than against how long
+ *  a check can legitimately run -- it exists only to stop a check that never finishes
+ *  (a hung runner, a workflow nobody canceled) from holding an item forever, not to bound
+ *  ordinary CI time. */
+export const PENDING_CHECKS_POLL_CAP = 20;
+
 // ---------------------------------------------------------------------------------------
 // Adding work
 // ---------------------------------------------------------------------------------------
@@ -599,6 +608,32 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
     // this ticket's diff. Provisioning refreshes the remote ref, so this one is current.
     ...(item.base ? { baseRef: `origin/${item.base}` } : {}),
   });
+  // BBZ-60/62/74/202, 2026-09-08: a pending check is "not yet", never "no" -- four real
+  // items parked on `refused: checks are pending on head <sha>` and needed an operator to
+  // merge them by hand once the same checks went green minutes later. Checked before
+  // `councilCleared` below (which would otherwise read the pending placeholder verdict as
+  // a plain non-pass and park it the same way a real failure does): leaving `state`
+  // untouched keeps the item in `QUEUE_IN_FLIGHT_STATES`, so the next tick calls the
+  // council again instead of leaving it stuck.
+  if (council.pending) {
+    const polls = (item.pendingGatePolls ?? 0) + 1;
+    if (polls >= PENDING_CHECKS_POLL_CAP) {
+      return writeTransition(
+        item,
+        { state: 'parked', reason: `checks never settled after ${PENDING_CHECKS_POLL_CAP} polls` },
+        deps, 'queue.parked', { hop: 'gate' },
+      );
+    }
+    return writeTransition(
+      item, { pendingGatePolls: polls, reason: `checks are pending on head ${pr.number}, waiting to retry` },
+      deps, 'queue.pending-checks', { hop: 'gate' },
+    );
+  }
+  if (item.pendingGatePolls) {
+    // The streak broke -- the next park (if any) should not read as a pending timeout.
+    item = { ...item, pendingGatePolls: undefined };
+  }
+
   const councilCleared = council.verdict === 'PASS' || council.verdict === 'PASS WITH NOTES';
   if (!councilCleared) {
     // A.1: a FIX FIRST on an item that has not already used its one fix round relaunches

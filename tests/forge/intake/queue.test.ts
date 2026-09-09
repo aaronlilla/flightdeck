@@ -15,7 +15,7 @@ import { describe, expect, it } from 'vitest';
 import type { ChainCouncilFn, ChainGateFn, ChainGh, ChainLauncher, ChainRunStatus } from '../../../src/forge/chain.js';
 import {
   addBacklogItems, addBriefItem, addGoalItem, addHotfixItem, addQueryItems, addTicketItem, advanceItem, mergeItem, promoteItem,
-  QUEUE_IN_FLIGHT_STATES, removeItem, retryItem, runQueueTick,
+  PENDING_CHECKS_POLL_CAP, QUEUE_IN_FLIGHT_STATES, removeItem, retryItem, runQueueTick,
   type QueuePlanner, type QueueRuntimeDeps, type QueueTicketSearch,
 } from '../../../src/forge/intake/queue.js';
 import { QueueStore } from '../../../src/forge/intake/queueStore.js';
@@ -490,6 +490,68 @@ describe('advanceItem', () => {
     const result = await advanceItem(current, deps);
     expect(result.state).toBe('parked');
     expect(result.reason).toBe('unverified');
+  });
+
+  // BBZ-60/62/74/202, 2026-09-08: four items reached the gate hop while their PR checks
+  // were still queued and parked with the council's raw "checks are pending" refusal --
+  // every one of them went green minutes later, but a parked item never retries and
+  // `mergeItem` only answers "not in review", so the queue could not finish its own
+  // work. A pending council result is "not yet", never "no": the item must stay in a
+  // state the next tick retries, not park.
+  it('a pending council result stays running and retries, rather than parking', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'unavailable', pending: true }),
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    const result = await advanceItem(current, deps);
+    expect(result.state).toBe('running');
+    expect(result.reason).toMatch(/checks are pending/);
+    expect(result.pendingGatePolls).toBe(1);
+  });
+
+  it('a pending council result that later turns success carries the item on to review', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let pending = true;
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => (pending ? { verdict: 'unavailable', pending: true } : { verdict: 'PASS' }),
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    expect(current.state).toBe('running');
+
+    pending = false;
+    const result = await advanceItem(current, deps);
+    expect(result.state).toBe('review');
+  });
+
+  it('parks a pending council result once it has never settled after the poll cap', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'unavailable', pending: true }),
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps); // plan
+    current = await advanceItem(current, deps); // launch
+    for (let i = 0; i < PENDING_CHECKS_POLL_CAP; i += 1) {
+      current = await advanceItem(current, deps);
+      if (current.state === 'parked') break;
+    }
+    expect(current.state).toBe('parked');
+    expect(current.reason).toMatch(/never settled/);
   });
 
   it('fails an item whose provisioning throws', async () => {

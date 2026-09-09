@@ -1352,10 +1352,15 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       const snapshot = await gh.viewPr(repo, pr);
 
       if (snapshot.checks.conclusion !== 'success') {
+        // BBZ-60/62/74/202, 2026-09-08: `pending` is "not yet", never "no" -- a queued or
+        // in-progress check almost always turns green on its own. Marking it on `data`
+        // lets `chainCouncil` and the queue's `advanceItem` retry instead of parking,
+        // without either of them string-matching this line.
         return {
           code: 2,
           lines: [`refused: checks are ${snapshot.checks.conclusion} on head `
             + `${snapshot.headSha}, not green`],
+          ...(snapshot.checks.conclusion === 'pending' ? { data: { pending: true } } : {}),
         };
       }
 
@@ -1544,6 +1549,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         return {
           code: 1,
           lines: [`refused: checks are ${snapshot.checks.conclusion} on head ${snapshot.checks.headSha}`],
+          ...(snapshot.checks.conclusion === 'pending' ? { data: { pending: true } } : {}),
         };
       }
 
