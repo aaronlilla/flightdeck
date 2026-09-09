@@ -54,6 +54,9 @@ Aaron, 2026-09-08. Only Aaron edits this paragraph.
 | R-40 | no merge on a stale base: the gate re-runs the checks on the merge result when the base advanced since the PR's last green run | autonomy | planned | | a PR whose base moved is re-verified before merge, and `main` is never left red |
 | R-41 | `check:roadmap` fails a run only for the branch under test, never for another open PR's body; `verify`'s steps and CI's steps are the same list | autonomy | planned | | a worker's `npm run verify` cannot fail because another draft PR cites no R-id |
 | R-42 | a self-fix may never delete or skip a test to clear a red check; it fixes the code or parks and asks | autonomy | planned | | a specimen self-brief that deletes a failing test is refused at the gate |
+| R-43 | AI accounts section in Settings, a rate limit remembered on disk across processes, and every session picking an account that is not limited | autonomy | review | #116 | 13 cases in `tests/forge/accounts-failover.test.ts`, proven red first; the 1e pair shows a ready row and a limited row |
+| R-44 | account headroom: a measured five-hour and seven-day figure behind the design's bar on the 1e account row | autonomy | planned | | the bar is drawn from a real reading, never a guess; today the only account-level signal is a rate limit's reset time |
+| R-45 | the artboard gaps left after R-16: decision card event line, the agent's own voice in the board rail, per-call tools list, confirm card body and meta, blocker card actions that act, lane-sheet question context | autonomy | planned | | each artboard's element renders from real state, with its pair reshot |
 
 ## Not in scope
 
