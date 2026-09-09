@@ -505,6 +505,40 @@ describe('advanceItem', () => {
     expect(result.reason).toContain('git worktree add failed');
   });
 
+  it('attaches to the live run instead of failing when launch refuses a duplicate worktree', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const { deps, events } = buildDeps(store, {
+      launcher: {
+        launch: async () => {
+          throw new Error(
+            'worker process exited with code 1 before the run registered\n' +
+            'refusing to start queue-brief-2: C:/worktrees/repo--abc-1 already has a live run (goal queue-brief-1, pid 62720)',
+          );
+        },
+      },
+    });
+
+    const planned = await advanceItem(item, deps);
+    const result = await advanceItem(planned, deps);
+    expect(result.state).toBe('running');
+    expect(result.runKey).toBe('queue-brief-1');
+    expect(events.some((e) => e['event'] === 'queue.duplicate-launch' && e['liveRunKey'] === 'queue-brief-1')).toBe(true);
+  });
+
+  it('still fails an item whose launch throws for a reason that is not a live-run refusal', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const { deps } = buildDeps(store, {
+      launcher: { launch: async () => { throw new Error('git worktree add failed'); } },
+    });
+
+    const planned = await advanceItem(item, deps);
+    const result = await advanceItem(planned, deps);
+    expect(result.state).toBe('failed');
+    expect(result.reason).toContain('git worktree add failed');
+  });
+
   it('resumes planning for an item already stuck in planning after a crash', async () => {
     const store = tempStore();
     store.append({
@@ -1070,6 +1104,38 @@ describe('runQueueTick', () => {
           calls += 1;
           await held;
           return { ticket, repo: 'owner/name', briefPath: `C:/briefs/${ticket}.md` };
+        },
+      },
+    });
+
+    const first = runQueueTick(deps, store.all());
+    await Promise.resolve();
+    const second = runQueueTick(deps, store.all());
+    release?.();
+    await Promise.all([first, second]);
+
+    expect(calls).toBe(1);
+  });
+
+  // Same race as the plan hop above, but at the launch hop specifically -- the hop that
+  // orphaned a live run on 2026-09-08 (BBZ-140 / Q-7a01a197) because a second overlapping
+  // tick called `deps.launcher.launch` again for an item already mid-launch.
+  it('never launches an item a second time while its first launch has not returned', async () => {
+    const store = tempStore();
+    store.append({
+      id: 'q1', at: 1000, source: 'ticket', input: 'A-1', ticket: 'A-1', repo: 'owner/name',
+      briefPath: 'C:/briefs/a-1.md', branch: null, worktreePath: null, base: null,
+      state: 'running', runKey: null, reason: null, pr: null, journalIds: [], createdAt: 1000, updatedAt: 1000,
+    });
+    let calls = 0;
+    let release: (() => void) | undefined;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const { deps } = buildDeps(store, {
+      launcher: {
+        launch: async ({ ticket }) => {
+          calls += 1;
+          await held;
+          return { runKey: ticket.toLowerCase() };
         },
       },
     });
