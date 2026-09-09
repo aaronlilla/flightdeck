@@ -83,6 +83,38 @@ describe('ConsoleReads.lanesResponse: title and sourceUrl', () => {
     expect(lane!.sourceUrl).toBeNull();
   });
 
+  it('titles a brief lane with no heading off its body text, same fallback the queue uses', () => {
+    const forgeHomeDir = tempDir('console-reads-');
+    const briefsDir = join(forgeHomeDir, 'briefs');
+    mkdirSync(briefsDir, { recursive: true });
+    const briefPath = join(briefsDir, 'queue-brief-1788919399491.md');
+    writeFileSync(briefPath, 'the runner hung after context ran out and parked for an answer\n', 'utf8');
+
+    const queueStore = new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl'));
+    queueStore.append({
+      id: 'Q-1', at: 1, source: 'brief', input: briefPath, ticket: null, repo: 'o/n',
+      briefPath, branch: 'feature/queue-brief-1788919399491', worktreePath: 'w', base: 'develop',
+      state: 'running', reason: null, runKey: 'queue-brief-1788919399491', pr: null, journalIds: [],
+      createdAt: 1, updatedAt: 1,
+    });
+
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'queue-brief-1788919399491', actor: 'runner' });
+    journal.close();
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put('queue-brief-1788919399491', { column: 'queue-brief-1788919399491' });
+
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore, jiraSite: null,
+    });
+
+    const [lane] = reads.lanesResponse().lanes;
+    expect(lane!.title).toBe('The runner hung after context ran out and parked for an answer');
+  });
+
   it('mergeable reads the queue\'s own merge allow-list for the lane\'s repo (H1.4)', () => {
     const forgeHomeDir = tempDir('console-reads-');
     const journalPath = join(forgeHomeDir, 'fleet.jsonl');

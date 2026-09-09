@@ -158,9 +158,10 @@ describe('TicketSheet', () => {
     expect(screen.queryByText(/cap 10 tokens/)).not.toBeInTheDocument();
   });
 
-  it('always shows the literal "ceiling 200k", matching the prototype, never a computed figure', () => {
-    renderSheet([], { ctxCeiling: 180_000 });
-    expect(screen.getByText(/ceiling 200k/)).toBeInTheDocument();
+  it('reads the ceiling off the lane\'s own ctxCeiling, matching the board card, never a hardcoded figure', () => {
+    renderSheet([], { ctxCeiling: 150_000, ctxTokens: 109_500 });
+    expect(screen.queryByText(/ceiling 200k/)).not.toBeInTheDocument();
+    expect(screen.getByText(/ceiling 150k/)).toBeInTheDocument();
   });
 
   // Sweep #7: this line had never had an href -- fixed the same day the sweep found

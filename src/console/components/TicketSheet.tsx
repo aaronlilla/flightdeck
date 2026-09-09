@@ -594,7 +594,7 @@ export function TicketSheet(props: TicketSheetProps): JSX.Element {
             <span className={costClass(lane)} {...actionable(() => onOpenCost(lane.id))}>{fmtTokens(lane.tokens)}</span>
           </div>
           <div style={{ width: 140 }}>
-            <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 4 }}>context {pct}% · ceiling 200k</div>
+            <div className="lbl" style={{ color: 'var(--ink2)', marginBottom: 4 }}>context {pct}% · ceiling {Math.round(lane.ctxCeiling / 1000)}k</div>
             <div style={{ height: 8, background: 'var(--well)', boxShadow: 'inset 0 1px 3px rgba(0,0,0,.6)', borderRight: '3px solid var(--block)', borderRadius: 2 }}>
               <div style={{ height: 6, margin: 1, width: `${pct}%`, background: `repeating-linear-gradient(90deg, ${stateOf(lane.state).color} 0 5px, transparent 5px 7px)` }} />
             </div>
