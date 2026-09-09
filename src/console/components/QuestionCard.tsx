@@ -40,7 +40,7 @@ export function QuestionCard(props: QuestionCardProps): JSX.Element {
   const { head, stamp, text, options, onAnswer, freetext, composerId, variant = 'board', placeholder, answer, onHead } = props;
   const [typed, setTyped] = useState('');
   const shown = options.filter((option) => option.trim().length > 0);
-  const prompt = text.trim() || 'The agent asked a question but sent no text; answer below or open the lane.';
+  const prompt = text.trim() || 'No question text';
   const submitTyped = (): void => {
     const value = typed.trim();
     if (!value) return;
@@ -82,7 +82,7 @@ export function QuestionCard(props: QuestionCardProps): JSX.Element {
           {freetext === 'inline' ? (
             <div style={{ display: 'flex', gap: 8, alignItems: 'stretch' }}>
               <input
-                className="inp warnFocus" data-testid="question-freetext" placeholder={placeholder ?? 'Or type your own answer…'}
+                className="inp warnFocus" data-testid="question-freetext" placeholder={placeholder ?? 'Other…'}
                 value={typed} onChange={(e) => setTyped(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter') submitTyped(); }}
               />
@@ -90,7 +90,7 @@ export function QuestionCard(props: QuestionCardProps): JSX.Element {
             </div>
           ) : (
             <label htmlFor={composerId} data-testid="question-freetext" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)', cursor: 'pointer' }}>
-              Pick one, or type a longer answer below and press Send.
+              Or type below
             </label>
           )}
         </>

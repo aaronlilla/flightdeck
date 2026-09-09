@@ -53,13 +53,12 @@ export function QueueView({ items, paused, pauseReason, maxInFlight, working = 0
     <main data-testid="queue-view" className="scroll" style={{ flex: 1, minWidth: 0, overflow: 'auto', padding: '26px 28px', display: 'flex', flexDirection: 'column', gap: 20 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 24 }}>
         <div>
-          <h2 className="hd" style={{ margin: 0, fontSize: 'var(--fs-page)', lineHeight: 1 }}>What runs next</h2>
-          <p style={{ margin: '6px 0 0', color: 'var(--ink2)' }}>{paused ? `The queue is paused${pauseReason ? `: ${pauseReason}` : ''}. Nothing starts until it resumes.` : 'Priority order from Ready for Dev. The next ticket starts the moment a slot frees.'}</p>
+          {paused ? <p className="hd" style={{ margin: 0, fontSize: 'var(--fs-rowhead)', color: 'var(--warn)' }}>{pauseReason ? `Paused · ${pauseReason}` : 'Paused'}</p> : null}
         </div>
         <div style={{ position: 'relative', border: '1px solid var(--line)', padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 16 }}>
           <Marks />
           <div style={{ display: 'flex', flexDirection: 'column' }}>
-            <label style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink2)' }}>Agents running at once</label>
+            <label style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink2)' }}>At once</label>
             <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>{working} working · {idle} idle</span>
           </div>
           <div className="step" data-testid="queue-width">
@@ -70,7 +69,7 @@ export function QueueView({ items, paused, pauseReason, maxInFlight, working = 0
         </div>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '44px 1fr 1fr 190px', gap: 18, padding: '0 16px 8px', borderBottom: '1px solid var(--line2)' }} className="kick">
-        <span>#</span><span>Ticket</span><span>Why it is next</span><span>Starts</span>
+        <span>#</span><span>Ticket</span><span>Why</span><span>Starts</span>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column' }}>
         {next.map((item, index) => (
@@ -81,11 +80,11 @@ export function QueueView({ items, paused, pauseReason, maxInFlight, working = 0
             <span style={{ color: index === 0 && !paused ? 'var(--acc)' : 'var(--ink)' }}>{item.startsIn ?? ''}</span>
           </div>
         ))}
-        {next.length === 0 ? <p style={{ margin: '14px 16px', color: 'var(--ink2)' }}>Nothing is queued. Ready for Dev is empty, or every ticket there is already on the Board.</p> : null}
+        {next.length === 0 ? <p style={{ margin: '14px 16px', color: 'var(--ink2)' }}>Empty</p> : null}
       </div>
       {later.length > 0 ? (
         <section style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <h6 className="sec">Already past the queue <span className="n">{later.length}</span></h6>
+          <h6 className="sec">Past the queue <span className="n">{later.length}</span></h6>
           <div style={{ display: 'flex', flexDirection: 'column' }}>{later.map((item) => <LaterRow key={item.id} item={item} />)}</div>
         </section>
       ) : null}

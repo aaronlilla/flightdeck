@@ -3,7 +3,6 @@ import { useState } from 'react';
 
 import { ACTIONS, useAction } from '../actions.js';
 import { hm } from '../freshness.js';
-import { durationWords } from '../laneVM.js';
 import type { Blocker } from '../../shared/console-model.js';
 import { Marks } from './QuestionCard.js';
 
@@ -70,7 +69,7 @@ function BlockerCard({ blocker, onOpenSettings, onSendToLane, laneTitle }: { blo
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', gap: 12 }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-          <span className="kick">Who can do it</span>
+          <span className="kick">Who</span>
           <span className="hd" style={{ fontSize: 'var(--fs-rowhead)', color: whoColor }}>{who}</span>
           {whoNote ? <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>{whoNote}</span> : null}
         </div>
@@ -78,12 +77,12 @@ function BlockerCard({ blocker, onOpenSettings, onSendToLane, laneTitle }: { blo
       </div>
       <div data-testid="question-card" style={{ gridColumn: '1/-1', display: 'flex', flexDirection: 'column', gap: 8, borderTop: '1px solid var(--line)', paddingTop: 12 }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <button type="button" className="opt" data-testid="question-option" data-recommended="true" onClick={primary.run}><i /><span>Clear it: {blocker.howToResolve}</span></button>
-          <button type="button" className="opt" data-testid="question-option" data-recommended="false" onClick={() => sendToAgents('Finish without it and leave a note for QA about what was skipped.')}><i /><span>Tell {agents} to finish without it and leave a note for QA</span></button>
+          <button type="button" className="opt" data-testid="question-option" data-recommended="true" onClick={primary.run}><i /><span>Clear it</span></button>
+          <button type="button" className="opt" data-testid="question-option" data-recommended="false" onClick={() => sendToAgents('Finish without it; leave a note for QA')}><i /><span>Finish without it</span></button>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'stretch' }}>
-          <input className="inp" data-testid="question-freetext" placeholder={`Tell ${agents} on ${blocker.blocks.map((lane) => lane.label).join(' and ')} what to do instead, or ask what they tried…`} value={note} onChange={(e) => setNote(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') sendToAgents(note); }} />
-          <button type="button" className="btn" style={{ padding: '6px 14px' }} onClick={() => sendToAgents(note)}>{count === 1 ? 'Send to the agent' : `Send to ${agents}`}</button>
+          <input className="inp" data-testid="question-freetext" placeholder={`Message ${agents}…`} value={note} onChange={(e) => setNote(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') sendToAgents(note); }} />
+          <button type="button" className="btn" style={{ padding: '6px 14px' }} onClick={() => sendToAgents(note)}>Send</button>
         </div>
       </div>
     </div>
@@ -96,8 +95,6 @@ function startOfToday(now: number): number {
   return date.getTime();
 }
 
-const WORDS = ['Nothing', 'One thing', 'Two things', 'Three things', 'Four things', 'Five things', 'Six things', 'Seven things', 'Eight things', 'Nine things'];
-
 export function BlockersView({ blockers, chains, onOpenSettings, onSendToLane, laneTitle }: BlockersViewProps): JSX.Element {
   const byId = new Map(blockers.map((blocker) => [blocker.id, blocker]));
   const chained = chains.flat().map((id) => byId.get(id)).filter((blocker): blocker is Blocker => Boolean(blocker) && blocker!.state !== 'resolved');
@@ -105,20 +102,14 @@ export function BlockersView({ blockers, chains, onOpenSettings, onSendToLane, l
     .sort((a, b) => b.blocks.length - a.blocks.length);
   const today = startOfToday(Date.now());
   const cleared = blockers.filter((blocker) => blocker.state === 'resolved' && (blocker.resolvedAt ?? 0) >= today);
-  const n = open.length;
-  const headline = n === 0 ? 'Nothing is stopping work' : n === 1 ? 'One thing is stopping work' : `${WORDS[n] ?? String(n)} are stopping work`;
   return (
     <main data-testid="blockers-view" className="scroll" style={{ flex: 1, minWidth: 0, overflow: 'auto', padding: '26px 28px', display: 'flex', flexDirection: 'column', gap: 18 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', maxWidth: 860 }}>
-        <h2 className="hd" style={{ margin: 0, fontSize: 'var(--fs-page)', lineHeight: 1 }}>{headline}</h2>
-        <span style={{ fontSize: 'var(--fs-ui)', color: 'var(--ink3)' }}>Sorted by how many agents each one stops</span>
-      </div>
       {open.map((blocker) => <BlockerCard key={blocker.id} blocker={blocker} onOpenSettings={onOpenSettings} onSendToLane={onSendToLane} laneTitle={laneTitle} />)}
       <details style={{ maxWidth: 860, borderTop: '1px solid var(--line)', paddingTop: 12, marginTop: 6 }}>
         <summary className="disc" style={{ alignItems: 'center' }}><span className="tri" />Cleared today <span style={{ fontWeight: 400 }}>{cleared.length}</span></summary>
         <ul style={{ margin: '10px 0 0', padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 6, color: 'var(--ink2)' }}>
           {cleared.map((blocker) => (
-            <li key={blocker.id}>{blocker.title} cleared at {hm(blocker.resolvedAt ?? blocker.since)}{blocker.lastCheck ? ` — ${blocker.lastCheck}` : ''} after {durationWords((blocker.resolvedAt ?? blocker.since) - blocker.since)}.</li>
+            <li key={blocker.id}>{blocker.title} · {hm(blocker.resolvedAt ?? blocker.since)}</li>
           ))}
         </ul>
       </details>

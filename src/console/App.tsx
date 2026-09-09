@@ -156,7 +156,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
         servedBuildRef.current = consoleState.build;
       }
       if (failedSlices.length > 0) {
-        dispatch({ type: 'thread-append', messages: [receiptCard(null, `Could not load ${failedSlices.join(', ')}.`, false)], local: true });
+        dispatch({ type: 'thread-append', messages: [receiptCard(null, `Could not load ${failedSlices.join(', ')}`, false)], local: true });
       }
       if (failCount.current >= 2) dispatch({ type: 'feed-lost', reason: 'the fleet server is unreachable' });
       else dispatch({ type: 'feed-live' });
@@ -246,7 +246,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     if (working) {
       dispatch({ type: 'thread-append', messages: [working], local: true });
       const seconds = Math.round(stateRef.current.conductorTimeoutMs / 1000);
-      timeoutTimer = setTimeout(() => dispatch({ type: 'local-card-text', k: working.k, text: `The Conductor did not answer in ${seconds}s; the grammar answered instead.` }), stateRef.current.conductorTimeoutMs);
+      timeoutTimer = setTimeout(() => dispatch({ type: 'local-card-text', k: working.k, text: `No answer in ${seconds}s; the grammar replied` }), stateRef.current.conductorTimeoutMs);
     }
     const dropWorking = (): void => { if (!working) return; if (timeoutTimer) clearTimeout(timeoutTimer); dispatch({ type: 'local-card-drop', k: working.k }); };
     dispatch({ type: 'action-pending', key });
@@ -348,7 +348,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     if (cmd === 'nudge') {
       const blocker = lane ? blockerFor(lane, blockers) : null;
       const who = blocker?.who ?? 'the owner';
-      onRailSend(`Nudge ${who} about ${labelFor(id) ?? 'this lane'}: ${blocker?.howToResolve ?? 'it is waiting on them.'}`);
+      onRailSend(`Nudge ${who} about ${labelFor(id) ?? 'this lane'}: ${blocker?.howToResolve ?? 'it is waiting on them'}`);
       return;
     }
     switch (cmd) {
@@ -378,7 +378,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   useEffect(() => {
     if (!sheet || sheet.type !== 'ticket' || sheetLane) return;
     dispatch({ type: 'sheet', sheet: null });
-    appendReceipt(null, `${labelFor(sheet.id) ?? 'That lane'} is no longer on the board.`, false);
+    appendReceipt(null, `${labelFor(sheet.id) ?? 'That lane'} left the board`, false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sheet, sheetLane]);
 
