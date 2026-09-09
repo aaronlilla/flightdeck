@@ -670,7 +670,6 @@ export function buildLane(input: LaneBuildInput): Lane {
     pr: prFor(id),
     sandbox: sandboxFor(packet, registryRow, id),
     blockedBy: blockedByIntegration ?? (stuckHint?.signal === 'fleet-unknown' ? 'fleet' : null),
-    account: runState?.account ?? lane.account ?? null,
     // I2: a `handed-off` lane also needs a live registry row -- a process that could
     // still spend -- the same way `heart` does above; a genuinely `running` lane is
     // already live by definition (`laneStateFor` only reads that off the journal's own

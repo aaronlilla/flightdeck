@@ -20,7 +20,7 @@
  * it. A stop that lost an afternoon is a stop nobody dares press.
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import type { QueryFn } from '../adapter/engine.js';
 import { BlockerBoard } from './blockers.js';
@@ -37,7 +37,7 @@ import { SEVERITY_RANK } from './council/synthesis.js';
 import { runCutover } from './cutover.js';
 import { CredentialHorizon, readLoginLock } from './credential-horizon.js';
 import { accountFor, buildBurnLedger, checkBudget, WindowGate } from './governor.js';
-import { accountsRegistryPath, addAccount, checkAddCandidate, liveRunsByAccount, loadAccounts, removeAccount } from './accounts.js';
+import { accountsRegistryPath, liveRunsByAccount, loadAccounts } from './accounts.js';
 import { reconcileBurnOnce } from './burn-reconcile.js';
 import { planIntakeWrites } from './intake/dryRun.js';
 import { createJiraFeed, createJiraWriteClient, probeJira, type JiraWriteClient } from './intake/jira.js';
@@ -54,7 +54,6 @@ import { readProcessList, watchedProcesses, probeProcessListCached } from './fle
 import { Gotchas } from './gotcha.js';
 import { Inbox, isAskStale } from './inbox.js';
 import { replay, Journal, JournalCache } from './journal.js';
-import { probeAccounts, readProbeEnv } from './accounts-probe.js';
 import { checkLaunch, launchEnv, loginInFlight, pinnedRuntime, runtimeHead, runtimeVersion } from './launcher.js';
 import { assess, LivenessSupervisor } from './liveness.js';
 import { loadConsoleEnv } from './console-env.js';
@@ -730,31 +729,6 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       }
       server.selfStatus = () => selfLoop.status();
 
-      // The accounts probe: one SDK usage call per registered Claude account, on its own
-      // timer, so the board knows each account's plan windows without waiting for a run
-      // to hit one. `FORGE_ACCOUNTS_PROBE=1` turns it on, like `FORGE_CHAIN`; it takes
-      // no turn and journals `account.probe` and `account.window` rows. One probe pass
-      // at a time: a pass still running when the next tick fires is left alone.
-      let accountsLine = '';
-      const probeEnv = readProbeEnv();
-      if (probeEnv.enabled) {
-        const probeJournal = new Journal(journalPath());
-        let probing = false;
-        const probeOnce = () => {
-          if (probing) return;
-          probing = true;
-          void probeAccounts({ accounts: loadAccounts(), journal: probeJournal, cwd: process.cwd() })
-            .catch((error) => {
-              probeJournal.append({ event: 'account.probe', actor: 'probe', account: '*', ok: false, message: error instanceof Error ? error.message : String(error) });
-            })
-            .finally(() => { probing = false; });
-        };
-        const probeTick = setInterval(probeOnce, probeEnv.everySeconds * 1000);
-        probeTick.unref();
-        setTimeout(probeOnce, 5_000).unref();
-        accountsLine = `accounts probe on for ${loadAccounts().length} Claude account(s), every ${probeEnv.everySeconds}s`;
-      }
-
       return {
         code: 0,
         lines: [
@@ -767,7 +741,6 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           queueLine,
           watcherLine,
           selfLine,
-          accountsLine,
         ].filter(Boolean),
       };
     }
@@ -1090,56 +1063,6 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           ...stale.map((goal) => `  stale       ${goal}`),
         ],
       };
-    }
-
-    case 'accounts': {
-      const sub = rest[0] ?? 'list';
-      const registryPath = accountsRegistryPath();
-      const accounts = loadAccounts(registryPath);
-      if (sub === 'list') {
-        const lines = accounts.map((account) => {
-          const cap = account.maxConcurrent ? `, up to ${account.maxConcurrent} at once` : '';
-          return `${account.id.padEnd(12)} ${account.configDir}${cap}`;
-        });
-        return { code: 0, lines: [...lines, accounts.length ? `from ${registryPath}` : `no accounts yet; ${registryPath} does not exist`] };
-      }
-      if (sub === 'add') {
-        const [id, dir, capRaw] = [rest[1], rest[2], rest[3]];
-        if (!id || !dir) return { code: 2, lines: ['forge accounts add <id> <config-dir> [max-concurrent]'] };
-        const cap = capRaw ? Number(capRaw) : undefined;
-        if (capRaw && (!Number.isInteger(cap) || (cap as number) < 1)) return { code: 2, lines: [`max-concurrent must be a positive integer, not '${capRaw}'`] };
-        const resolved = resolve(dir);
-        // Refusals first, before anything touches the dir: the operator's own config dir
-        // must never be probed, and a duplicate never asked twice.
-        const candidate = checkAddCandidate(accounts, { id, configDir: resolved, ...(cap !== undefined ? { maxConcurrent: cap } : {}) });
-        if (!candidate.ok) return { code: 1, lines: [`refusing: ${candidate.reason}`] };
-        if (!existsSync(resolved)) return { code: 1, lines: [`refusing: ${resolved} does not exist; log in there first (CLAUDE_CONFIG_DIR=${resolved} claude, then /login)`] };
-        // Verified through the SDK's usage call under that dir, never by opening a
-        // credential file: the same probe `forge up` runs, once, before the write.
-        const journal = new Journal(journalPath());
-        let verified: Awaited<ReturnType<typeof probeAccounts>>[number] | undefined;
-        try {
-          [verified] = await probeAccounts({ accounts: [{ id, label: id, configDir: resolved, connectedAt: 0 }], journal, cwd: process.cwd() });
-        } finally {
-          journal.close();
-        }
-        if (!verified?.ok) return { code: 1, lines: [`refusing: ${resolved} did not answer the usage call: ${verified?.error ?? 'no result'}`, 'Log in there first, then add it again.'] };
-        try {
-          addAccount({ id, label: id, configDir: resolved, connectedAt: Date.now(), ...(cap !== undefined ? { maxConcurrent: cap } : {}) }, registryPath);
-        } catch (error) {
-          return { code: 1, lines: [`refusing: ${error instanceof Error ? error.message : String(error)}`] };
-        }
-        const windows = verified.readings.map((r) => `${r.window.replace('_', ' ')} ${r.utilization === null ? 'unavailable' : `${r.utilization}%`}`).join(', ');
-        return { code: 0, lines: [`added ${id} at ${resolved} (${verified.subscription ?? 'unknown plan'}; ${windows})`, `written to ${registryPath}`] };
-      }
-      if (sub === 'remove') {
-        const id = rest[1];
-        if (!id) return { code: 2, lines: ['forge accounts remove <id>'] };
-        if (!accounts.some((account) => account.id === id)) return { code: 1, lines: [`refusing: no account '${id}' in ${registryPath}`] };
-        removeAccount(id, registryPath);
-        return { code: 0, lines: [`removed ${id} from ${registryPath}`] };
-      }
-      return { code: 2, lines: ['forge accounts [list|add <id> <config-dir> [max-concurrent]|remove <id>]'] };
     }
 
     case 'gotchas': {
@@ -2048,7 +1971,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         code: 2,
         lines: [
           'forge up | status | run BRIEF | send RUN TEXT | answer KEY ANSWER | stop --all '
-            + '| gotchas | clear LANE | accounts [list|add ID DIR [N]|remove ID] | cutover [--from DIR] | intake --dry-run | reason --class CLASS '
+            + '| gotchas | clear LANE | cutover [--from DIR] | intake --dry-run | reason --class CLASS '
             + '| council --repo O/N --pr N | gate --repo O/N --pr N [--merge] [--handoff FILE] '
             + '| chain [retry PACKET [--reason "<why>"]] | [skip PACKET [--reason "<why>"]]',
           `the server listens on ${FORGE_PORT}`,

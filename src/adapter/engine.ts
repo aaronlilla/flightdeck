@@ -438,23 +438,6 @@ export class Engine {
         return;
       }
 
-      case 'rate_limit_event': {
-        const info = (message as { rate_limit_info?: {
-          status?: 'allowed' | 'allowed_warning' | 'rejected';
-          rateLimitType?: string; utilization?: number; resetsAt?: number;
-        } }).rate_limit_info;
-        if (!info || !info.status) return;
-        this.emit({
-          type: 'rate-limit',
-          status: info.status,
-          window: info.rateLimitType ?? null,
-          utilization: typeof info.utilization === 'number' ? info.utilization : null,
-          // The SDK sends seconds since the epoch; everything else in flightdeck is ms.
-          resetsAt: typeof info.resetsAt === 'number' ? info.resetsAt * 1000 : null,
-        });
-        return;
-      }
-
       default: {
         this.emit({ type: 'unknown-message', kind: message.type });
       }
