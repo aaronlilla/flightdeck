@@ -197,6 +197,34 @@ describe('GET /integrations/:id/connect/:attempt', () => {
     expect(body['error']).toBe(stderrText);
   });
 
+  it('redacts a URL carried in stderr before it reaches applyConnectResult, readAttempt, or GET /integrations -- the module doc comment\'s "the login link is the one thing kept private" promise applies to stderr too, not only stdout', async () => {
+    const spawn = manualSpawn();
+    const reg = registry();
+    const applySpy = vi.spyOn(reg, 'applyConnectResult');
+    const routes = new IntegrationsConnectRoutes({
+      authorized: () => true, registry: reg, connectFor: defaultConnectFor, spawnFn: spawn.spawnFn,
+    });
+    const startHttp = fakeHttp('POST');
+    await routes.handle('/integrations/mcp-slack/connect', startHttp.request, startHttp.response);
+    const attempt = startHttp.read().body['attempt'] as string;
+
+    const leakedUrl = 'https://mcp.example.com/oauth/authorize?token=super-secret-value';
+    const stderrText = `please visit ${leakedUrl} to finish signing in`;
+    spawn.children[0]!.stderr.emit('data', Buffer.from(stderrText));
+    spawn.children[0]!.emit('close', 1);
+    await new Promise((resolve) => { setTimeout(resolve, 0); });
+
+    const lastCall = applySpy.mock.calls[applySpy.mock.calls.length - 1];
+    const persisted = lastCall?.[1] as { lastError?: string } | undefined;
+    expect(persisted?.lastError).not.toContain(leakedUrl);
+    expect(persisted?.lastError).toContain('please visit');
+
+    const readHttp = fakeHttp('GET');
+    await routes.handle(`/integrations/mcp-slack/connect/${attempt}`, readHttp.request, readHttp.response);
+    const { body } = readHttp.read();
+    expect(body['error']).not.toContain(leakedUrl);
+  });
+
   it('404s for an unknown attempt id', async () => {
     const reg = registry();
     const routes = new IntegrationsConnectRoutes({

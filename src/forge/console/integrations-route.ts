@@ -213,7 +213,11 @@ export class IntegrationsConnectRoutes {
       if (code === 0) {
         void finish('connected', null);
       } else {
-        const error = stderrTail.trim() || `exited with code ${code}`;
+        const raw = stderrTail.trim() || `exited with code ${code}`;
+        // Stderr can carry the same login link stdout does (a CLI that fails after
+        // printing the auth URL, or echoes it back on a bad flag) -- redact it here so
+        // the one-time-link guarantee above holds for both streams, not just stdout.
+        const error = raw.replace(LINK_PATTERN, '[link redacted]');
         void finish('failed', error);
       }
     });
