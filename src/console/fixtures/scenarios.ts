@@ -122,19 +122,29 @@ export function raceThread(): Message[] {
   }];
 }
 
-/** W5 (ask-cards-and-type-scale): a parked lane whose question already carries four
- *  options and a recommendation (W1's `completeAskOptions` shape), for the e2e
- *  coverage that picking the recommended option and sending clears the ask from
- *  Needs You. */
+/** W5 (ask-cards-and-type-scale): the shared payload behind `askRecommendedLanes` and
+ *  `askRecommendedThread`. Both fixtures describe the same ask (FLT-410's retry-backoff
+ *  question) in two different shapes -- a lane's `question` field and a persisted
+ *  `type: 'question'` message -- and previously hard-coded that payload twice, which let
+ *  an edit to one drift from the other. One source now, read by both. */
+const ASK_410_NOW = Date.now() - 90_000;
+const ASK_410 = {
+  key: 'ask-410',
+  text: 'the retry backoff should cap at 30s or keep doubling forever?',
+  opts: ['Cap at 30s', 'Keep doubling forever', 'Cap at 60s', 'Something else, I will type it'] as string[],
+  recommended: 0,
+};
+
+/** A parked lane whose question already carries four options and a recommendation
+ *  (W1's `completeAskOptions` shape), for the e2e coverage that picking the recommended
+ *  option and sending clears the ask from Needs You. */
 export function askRecommendedLanes(): Lane[] {
-  const now = Date.now() - 90_000;
   return [
     lane({
       id: 'FLT-410', state: 'parked', stepText: 'blocked on a question',
       question: {
-        key: 'ask-410', text: 'the retry backoff should cap at 30s or keep doubling forever?',
-        opts: ['Cap at 30s', 'Keep doubling forever', 'Cap at 60s', 'Something else, I will type it'],
-        askedAt: now, recommended: 0, optionSource: 'drafted',
+        key: ASK_410.key, text: ASK_410.text, opts: ASK_410.opts,
+        askedAt: ASK_410_NOW, recommended: ASK_410.recommended, optionSource: 'drafted',
       },
     }),
   ];
@@ -146,12 +156,10 @@ export function askRecommendedLanes(): Lane[] {
  *  (plain mode) or a card with no recommendation (verbose mode). Same pattern as
  *  `raceThread`. */
 export function askRecommendedThread(): Message[] {
-  const now = Date.now() - 90_000;
   return [{
-    k: 'ask-410-q', type: 'question', text: 'the retry backoff should cap at 30s or keep doubling forever?',
-    ts: now, source: 'FLT-410', lane: 'FLT-410', askKey: 'ask-410',
-    opts: ['Cap at 30s', 'Keep doubling forever', 'Cap at 60s', 'Something else, I will type it'],
-    recommended: 0,
+    k: 'ask-410-q', type: 'question', text: ASK_410.text,
+    ts: ASK_410_NOW, source: 'FLT-410', lane: 'FLT-410', askKey: ASK_410.key,
+    opts: ASK_410.opts, recommended: ASK_410.recommended,
   }];
 }
 
