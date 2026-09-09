@@ -6,7 +6,8 @@
  * cheap and deterministic, the same choice `tests/forge/console/proposals.test.ts` makes
  * for the fleet journal).
  */
-import { mkdtempSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -19,6 +20,7 @@ import {
   type QueuePlanner, type QueueRuntimeDeps, type QueueTicketSearch,
 } from '../../../src/forge/intake/queue.js';
 import { QueueStore } from '../../../src/forge/intake/queueStore.js';
+import { gitSquashMergeToBase, type GitRunFn } from '../../../src/forge/intake/gitMerge.js';
 
 function tempStore(): QueueStore {
   const dir = mkdtempSync(join(tmpdir(), 'queue-'));
@@ -1685,6 +1687,72 @@ describe('mergeItem: A.7', () => {
         store: { append: () => {} } as never,
       });
       expect(rows.filter((row) => row['event'] === 'queue.recouncil')).toHaveLength(1);
+    });
+  });
+
+  describe('R-22: merge lands through git when deps.gitMerge is wired', () => {
+    function sh(cwd: string, ...argv: string[]): string {
+      return execFileSync('git', argv, { cwd, encoding: 'utf8' });
+    }
+    const realGit: GitRunFn = (argv, cwd) =>
+      new Promise((resolve) => {
+        try {
+          const stdout = execFileSync('git', argv, { cwd, encoding: 'utf8' });
+          resolve({ ok: true, stdout });
+        } catch (error) {
+          const stdout = error && typeof error === 'object' && 'stdout' in error ? String((error as { stdout: unknown }).stdout ?? '') : '';
+          resolve({ ok: false, stdout });
+        }
+      });
+
+    it('reaches done with mergedBy: queue and advances the real base ref, without ever calling gate', { timeout: 20000 }, async () => {
+      const root = mkdtempSync(join(tmpdir(), 'queue-gitmerge-'));
+      const bareDir = join(root, 'origin.git');
+      const seedDir = join(root, 'seed');
+      const checkoutDir = join(root, 'checkout');
+
+      sh(root, 'init', '--bare', bareDir);
+      sh(root, 'clone', bareDir, seedDir);
+      sh(seedDir, 'config', 'user.email', 'test@example.com');
+      sh(seedDir, 'config', 'user.name', 'Test');
+      sh(seedDir, 'commit', '--allow-empty', '-m', 'base commit');
+      sh(seedDir, 'branch', '-M', 'develop');
+      sh(seedDir, 'push', 'origin', 'develop');
+      sh(seedDir, 'checkout', '-b', 'feature/abc-1');
+      writeFileSync(join(seedDir, 'feature.txt'), 'feature content\n');
+      sh(seedDir, 'add', 'feature.txt');
+      sh(seedDir, 'commit', '-m', 'feature commit');
+      sh(seedDir, 'push', 'origin', 'feature/abc-1');
+
+      sh(root, 'clone', bareDir, checkoutDir);
+      sh(checkoutDir, 'config', 'user.email', 'test@example.com');
+      sh(checkoutDir, 'config', 'user.name', 'Test');
+
+      const store = tempStore();
+      const added = addTicketItem(store, 'ABC-1', 1000);
+      store.append({
+        id: added.id, at: 2000, state: 'review', repo: 'owner/name', branch: 'feature/abc-1', base: 'develop',
+        pr: { no: 9, url: 'https://github.com/owner/name/pull/9', files: 1, add: 1, del: 0, draft: true },
+      });
+      const item = store.get(added.id)!;
+
+      let gateCalls = 0;
+      const result = await mergeItem(item, {
+        mergeAllowed: () => true,
+        gate: async () => { gateCalls += 1; return { merged: true }; },
+        gitMerge: async ({ base, branch, subject, body }) => gitSquashMergeToBase({ checkoutDir, base, branch, subject, body }, realGit),
+        clock: () => 3000,
+        store: { append: () => {} } as never,
+      });
+
+      expect(gateCalls).toBe(0);
+      expect(result.ok).toBe(true);
+      expect(result.item?.state).toBe('done');
+      expect(result.item?.mergedBy).toBe('queue');
+
+      sh(seedDir, 'fetch', 'origin', 'develop');
+      const log = sh(seedDir, 'log', 'origin/develop', '-1', '--format=%s').trim();
+      expect(log).toBe('Merge feature/abc-1 (#9)');
     });
   });
 });

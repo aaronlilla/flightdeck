@@ -31,6 +31,7 @@ Aaron, 2026-09-08. Only Aaron edits this paragraph.
 | R-19 | a worker's leftover uncommitted files never park the item at the gate | autonomy | running | | the two 2026-09-08 cases pass |
 | R-20 | a goal-source item continues to its successor on a context handoff | autonomy | planned | | Q-17bb4283's shape passes |
 | R-21 | the console cuts over to a new head on a quiet interval, not only when the queue is idle | clock | planned | | no hand restart after a merge |
+| R-22 | the Merge click lands through git (fetch, squash, commit, push) instead of `gh pr merge`, so a GitHub mutation rate limit never blocks a reviewed PR; gate/council/PR-discovery still call `gh` (not yet moved off the API) | autonomy | review | this PR | real bare-remote fixture: item reaches done, mergedBy queue, base ref advanced, gate never called |
 
 ## Not in scope
 

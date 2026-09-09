@@ -991,6 +991,13 @@ export interface QueueMergeDeps {
    *  landed. Absent means this environment never wires it, and the item still lands on
    *  `done`, just without an OTA line in its reason. */
   postMergeVerify?: (input: { repo: string; branch: string; mergeSha?: string }) => Promise<{ android: string; ios: string } | undefined>;
+  /** R-22: when present, the Merge click lands the PR with git itself: fetch, squash onto
+   *  a local checkout of the base, commit, push, instead of `gh pr merge`. That way a
+   *  GitHub rate limit on mutations never blocks something already reviewed. The one API
+   *  call this environment still spends is the PR create, upstream of this click; nothing
+   *  here calls `gh`. Absent means the pre-R-22 `deps.gate({merge:true})` path runs
+   *  unchanged, so every existing gate-based specimen keeps passing. */
+  gitMerge?: (input: { repo: string; pr: number; branch: string; base: string; subject: string; body: string }) => Promise<{ ok: boolean; mergeSha?: string; reason?: string }>;
   clock(): number;
   store: QueueStore;
 }
@@ -1013,27 +1020,37 @@ export async function mergeItem(item: QueueItem, deps: QueueMergeDeps): Promise<
     return { ok: false, message: `${item.repo ?? 'this repo'} is not on the queue's merge allow-list` };
   }
 
-  let result = await deps.gate({ repo: item.repo!, pr: item.pr.no, merge: true });
-
-  // B (2026-09-08): PR #121 picked up a fix commit after its last council round, and the
-  // gate refused with "no attestation for owner/name#9 at head <sha> -- run forge council
-  // first" even though the fix was already good -- the attestation the gate wants is for
-  // a head that no longer exists. Rather than sending an operator back to run `forge
-  // council` by hand, re-council this head once and retry the gate if it clears.
-  if (!result.merged && deps.council && (result.reason ?? []).some((line) => line.includes('no attestation for'))) {
-    deps.append?.({ event: 'queue.recouncil', actor: 'queue', itemId: item.id, repo: item.repo, pr: item.pr.no });
-    const council = await deps.council({
-      repo: item.repo!, pr: item.pr.no, forceCodex: true,
-      ...(item.worktreePath ? { cwd: item.worktreePath } : {}),
-      ...(item.base ? { baseRef: `origin/${item.base}` } : {}),
+  let result: { merged: boolean; reason?: string[]; mergeSha?: string };
+  if (deps.gitMerge) {
+    const base = item.base ?? 'develop';
+    const gm = await deps.gitMerge({
+      repo: item.repo!, pr: item.pr.no, branch: item.branch!, base,
+      subject: `Merge ${item.branch} (#${item.pr.no})`, body: '',
     });
-    const councilCleared = council.verdict === 'PASS' || council.verdict === 'PASS WITH NOTES';
-    if (councilCleared) {
-      result = await deps.gate({ repo: item.repo!, pr: item.pr.no, merge: true });
-    } else {
-      const why = result.reason?.length ? result.reason.join(' | ') : 'no reason recorded';
-      const summary = council.coverageNote ? `${council.verdict}: ${council.coverageNote}` : council.verdict;
-      return { ok: false, message: `the merge did not complete: ${why} (recouncil: ${summary})` };
+    result = gm.ok ? { merged: true, mergeSha: gm.mergeSha } : { merged: false, reason: gm.reason ? [gm.reason] : undefined };
+  } else {
+    result = await deps.gate({ repo: item.repo!, pr: item.pr.no, merge: true });
+
+    // B (2026-09-08): PR #121 picked up a fix commit after its last council round, and the
+    // gate refused with "no attestation for owner/name#9 at head <sha> -- run forge council
+    // first" even though the fix was already good -- the attestation the gate wants is for
+    // a head that no longer exists. Rather than sending an operator back to run `forge
+    // council` by hand, re-council this head once and retry the gate if it clears.
+    if (!result.merged && deps.council && (result.reason ?? []).some((line) => line.includes('no attestation for'))) {
+      deps.append?.({ event: 'queue.recouncil', actor: 'queue', itemId: item.id, repo: item.repo, pr: item.pr.no });
+      const council = await deps.council({
+        repo: item.repo!, pr: item.pr.no, forceCodex: true,
+        ...(item.worktreePath ? { cwd: item.worktreePath } : {}),
+        ...(item.base ? { baseRef: `origin/${item.base}` } : {}),
+      });
+      const councilCleared = council.verdict === 'PASS' || council.verdict === 'PASS WITH NOTES';
+      if (councilCleared) {
+        result = await deps.gate({ repo: item.repo!, pr: item.pr.no, merge: true });
+      } else {
+        const why = result.reason?.length ? result.reason.join(' | ') : 'no reason recorded';
+        const summary = council.coverageNote ? `${council.verdict}: ${council.coverageNote}` : council.verdict;
+        return { ok: false, message: `the merge did not complete: ${why} (recouncil: ${summary})` };
+      }
     }
   }
 
