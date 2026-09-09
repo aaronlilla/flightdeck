@@ -238,7 +238,7 @@
     "theme": "light",
     "console": "test-results/design-parity/2a-flow-blocker-light-console.png",
     "design": "test-results/design-parity/2a-flow-blocker-light-design.png",
-    "diffPercent": 6,
+    "diffPercent": 5.9,
     "sizes": "console 1440x900 · design 1442x903",
     "note": "full page"
   },
