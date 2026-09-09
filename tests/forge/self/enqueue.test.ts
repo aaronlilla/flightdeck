@@ -121,6 +121,44 @@ describe('observation kinds never become queue items', () => {
   });
 });
 
+describe('guard #4: a finding with no roadmap id routes to Proposed, never the queue', () => {
+  it('appends a Proposed line and enqueues nothing for a finding that cites no R-id', () => {
+    const proposed: string[] = [];
+    const items = enqueueFindings(
+      [finding('f1', 'the warden parked r1 for no reason')],
+      { ...deps, appendProposed: (line) => proposed.push(line) },
+    );
+    expect(items).toHaveLength(0);
+    expect(store.all()).toHaveLength(0);
+    expect(proposed).toHaveLength(1);
+    expect(proposed[0]).toContain('f1');
+    expect(proposed[0]).toContain('the warden parked r1 for no reason');
+  });
+
+  it('enqueues as normal when the finding cites an R-id', () => {
+    const proposed: string[] = [];
+    const items = enqueueFindings(
+      [finding('f1', 'fixes R-02 guard drift')],
+      { ...deps, appendProposed: (line) => proposed.push(line) },
+    );
+    expect(items).toHaveLength(1);
+    expect(proposed).toHaveLength(0);
+  });
+
+  it('never appends the same finding to Proposed twice across ticks', () => {
+    const proposed: string[] = [];
+    const appendProposed = (line: string): void => { proposed.push(line); };
+    enqueueFindings([finding('f1', 'no id here')], { ...deps, appendProposed });
+    enqueueFindings([finding('f1', 'no id here')], { ...deps, appendProposed });
+    expect(proposed).toHaveLength(1);
+  });
+
+  it('with no appendProposed wired, a finding with no R-id still enqueues (unwired = today\'s behavior)', () => {
+    const items = enqueueFindings([finding('f1', 'no id here')], deps);
+    expect(items).toHaveLength(1);
+  });
+});
+
 describe('one self item per gap, whatever became of the last one', () => {
   it('queues nothing while the newest self item is younger than the gap, even if it parked', async () => {
     const { enqueueFindings } = await import('../../../src/forge/self/enqueue.js');

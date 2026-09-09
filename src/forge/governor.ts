@@ -11,7 +11,7 @@
  * property of one class and `policy.ts` already owns every other per-class fact.
  */
 import { aliasOf, classFor, effectiveGovernorBudget, modelIdFor, priceFor } from './policy.js';
-import type { ForgeEvent, FleetState, Usage } from './journal.js';
+import { isRepeatedUsageRow, type ForgeEvent, type FleetState, type Usage } from './journal.js';
 
 // ---------------------------------------------------------------------------------------
 // Burn ledger, from every worker's modelUsage
@@ -85,9 +85,15 @@ function costOf(usage: Usage, alias: string): number {
  */
 function perMessageSum(events: ForgeEvent[], run: string): number {
   let total = 0;
+  let prev: ForgeEvent | undefined;
   for (const row of events) {
     if (row.run !== run || !row.usage) continue;
-    total += costOf(row.usage, aliasOf(row.model ?? ''));
+    // Same skip `journal.ts`'s fold applies: the SDK repeats one turn's usage object
+    // across every content-block message it sends for that turn, and counting the
+    // repeat here would double this sum against the result-message sum it is compared
+    // against below.
+    if (!isRepeatedUsageRow(prev, row)) total += costOf(row.usage, aliasOf(row.model ?? ''));
+    prev = row;
   }
   return total;
 }

@@ -75,7 +75,7 @@ function queueItem(extra: Partial<QueueItem> = {}): QueueItem {
 const feedUp: Feed = { live: true, lostAt: null, reason: null, retryInS: null, lastHeartbeatAt: Date.now() };
 
 describe('UX rule 1: no identifier text visible to the operator (RED on main)', () => {
-  it.fails('LaneTile does not render the raw lane id as its title text', () => {
+  it('LaneTile does not render the raw lane id as its title text', () => {
     const manualLane = lane({ kind: 'manual', id: RAW_HEX_ID, ticket: null, title: null });
     render(<LaneTile lane={manualLane} feedLive now={Date.now()} onOpen={vi.fn()} onOpenCost={vi.fn()} onCommand={vi.fn()} onTip={vi.fn()} />);
     // Today: `titleLineText` falls back to the raw `lane.id` whenever a manual lane
@@ -84,7 +84,7 @@ describe('UX rule 1: no identifier text visible to the operator (RED on main)', 
     expect(screen.queryByText(RAW_HEX_ID)).not.toBeInTheDocument();
   });
 
-  it.fails('LaneGroupTile (the grouped board card) does not render the raw lane id', () => {
+  it('LaneGroupTile (the grouped board card) does not render the raw lane id', () => {
     const manualLane = lane({ kind: 'manual', id: RAW_HEX_ID, ticket: null, title: null });
     const [group] = groupLanesByTicket([manualLane]);
     render(
@@ -95,7 +95,7 @@ describe('UX rule 1: no identifier text visible to the operator (RED on main)', 
     expect(screen.queryByText(RAW_HEX_ID)).not.toBeInTheDocument();
   });
 
-  it.fails('the queue card does not render a bare Q-hex id as its title', () => {
+  it('the queue card does not render a bare Q-hex id as its title', () => {
     render(
       <QueueView
         items={[queueItem({ id: RAW_Q_ID, title: null, ticket: null })]}
@@ -107,7 +107,7 @@ describe('UX rule 1: no identifier text visible to the operator (RED on main)', 
     expect(screen.queryByText(RAW_Q_ID)).not.toBeInTheDocument();
   });
 
-  it.fails('the Conductor rail question card does not render a raw run id as its source', () => {
+  it('the Conductor rail question card does not render a raw run id as its source', () => {
     const message: Message = {
       k: 'ask1', type: 'question', text: 'placeholder question text', ts: Date.now(), source: RAW_QUEUE_BRIEF_ID,
       opts: ['A', 'B'], askKey: 'ask1',

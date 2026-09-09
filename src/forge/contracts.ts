@@ -263,6 +263,10 @@ export const FORGE_EVENT_NAMES = [
   // `queue.tick-error` for a worker tick that threw before any item advanced.
   'queue.planning', 'queue.planned', 'queue.launched', 'queue.parked', 'queue.failed',
   'queue.review', 'queue.tick-error',
+  // R-11 part 2: the Jira watcher bridge's own tick row (`intake/watcherWire.ts`) --
+  // `watcher.poll` once per poll that added, sent, or closed at least one item, and
+  // `watcher.tick-error` for a tick that threw before any of those.
+  'watcher.poll', 'watcher.tick-error',
   // 2026-09-08: the pre-gate rebase commits whatever a worker left uncommitted in its
   // worktree before replaying onto the base, rather than parking on "You have unstaged
   // changes" for a person to clean up by hand -- one row per item this happened to,
@@ -1084,7 +1088,7 @@ export type CliExitCode = (typeof CLI_EXIT_CODES)[keyof typeof CLI_EXIT_CODES];
  * on purpose, the same reasoning as `FORGE_EVENT_NAMES`: a caller that wants a sixth
  * source adds it here first.
  */
-export const POLL_SOURCE_NAMES = ['jira', 'sentry', 'cloudwatch', 'slack', 'github'] as const;
+export const POLL_SOURCE_NAMES = ['jira', 'sentry', 'cloudwatch', 'slack', 'github', 'jira-watch'] as const;
 
 export type PollSourceName = (typeof POLL_SOURCE_NAMES)[number];
 

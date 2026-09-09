@@ -1,205 +1,127 @@
-import { CARD_GAP_PX, CARD_MIN_PX } from '../grid.js';
-import type { JSX, ReactNode } from 'react';
-import { ACTIONS } from '../actions.js';
-import type { ActionOutcome } from '../store.js';
-import { ActionButton } from './ActionButton.js';
+import type { JSX } from 'react';
 import { useState } from 'react';
 
+import { ACTIONS, useAction } from '../actions.js';
 import { hm } from '../freshness.js';
+import { durationWords } from '../laneVM.js';
 import type { Blocker } from '../../shared/console-model.js';
+import { Marks } from './QuestionCard.js';
 
+/**
+ * `Flightdeck Console.dc.html` 1b: one card per open blocker, sorted by how many agents
+ * it stops. Each card says what it stops, when it clears, who can do it, and offers the
+ * one button that does it. Under those, the choice the blocker offers (UX rule 2: fix it,
+ * or tell the agents to go on without it) and a line to the agents themselves.
+ */
 export interface BlockersViewProps {
   blockers: Blocker[];
-  /** Ordered ids, root first, one array per open chain. A resolved blocker never
-   *  appears in here -- it renders under "Resolved today" instead. */
   chains: string[][];
-  /** Where a bare ticket key (`ABC-1234`) in a blocker's own text goes when nothing in that
-   *  blocker's `links` already names it. Absent means a ticket key with no matching
-   *  link renders as plain text rather than a guessed URL. */
   jiraSite?: string;
+  onOpenSettings?: () => void;
+  /** The title of a stopped lane, next to its key; the server's own label is the key. */
+  laneTitle?: (laneId: string) => string | null;
+  /** Sends typed text to the agent on one lane (the `run`-scoped `POST /command`). */
+  onSendToLane?: (laneId: string, text: string) => void;
 }
 
-const LINKIFY_TOKEN = /([A-Z]{2,6}-\d+|PR #\d+)/g;
-
-/** No `Linkify` component exists in this worktree (the sibling stream that would have
- *  added one never landed here), so title, detail and lane labels are linkified in
- *  place: a ticket key or a `PR #n` token is wrapped in an `<a>` when the blocker's own
- *  `links` array already names a URL for it (the server built those from the real PR
- *  and ticket it detected), and a bare ticket key falls back to `jiraSite` when that is
- *  set. A `PR #n` with no matching link stays plain text -- this view has no repo of
- *  its own to guess a GitHub URL from. */
-function linkify(text: string, links: Blocker['links'], jiraSite: string | undefined, keyPrefix: string): ReactNode[] {
-  const parts = text.split(LINKIFY_TOKEN);
-  return parts.map((part, i) => {
-    // A fresh, non-global test per part: a shared global regex carries lastIndex between
-    // calls and quietly answers false for a token it would otherwise match.
-    if (!/^(?:[A-Z]{2,6}-\d+|PR #\d+)$/.test(part)) return part;
-    const match = links.find((link) => link.label === part || link.label.includes(part));
-    const url = match?.url ?? (/^[A-Z]{2,6}-\d+$/.test(part) && jiraSite ? `${jiraSite}/browse/${part}` : null);
-    if (!url) return part;
-    return (
-      <a key={`${keyPrefix}-${i}`} href={url} target="_blank" rel="noopener noreferrer" style={{ color: 'inherit' }}>
-        {part}
-      </a>
-    );
-  });
+function whoOf(blocker: Blocker): { who: string; note: string; color: string } {
+  const who = blocker.who ?? (blocker.youCanResolve ? 'You' : 'Someone else');
+  return { who, note: blocker.whoNote ?? '', color: who === 'You' ? 'var(--warn)' : 'var(--ink)' };
 }
 
-interface StepResult {
-  kind: 'checking' | 'resolved' | 'not-yet';
-  detail?: string;
-  started?: string[];
-}
-
-/** The lanes a resolved step restarted, read back off the action's own sentence
- *  (`resolved, restarted a, b`), the one place that text is produced. */
-function startedFrom(text: string): string[] {
-  const match = /restarted (.+)$/.exec(text);
-  return match ? match[1]!.split(', ') : [];
-}
-
-function StepButtons({ blocker, enabled }: { blocker: Blocker; enabled: boolean }): JSX.Element {
-  const [result, setResult] = useState<StepResult | null>(null);
-  // The two catalog actions carry the contract (busy, inline answer, rail receipt);
-  // what is kept here is the step's own "Resolved HH:MM · Started: ..." line once
-  // the server has confirmed, which reads better than a chip on a settled step.
-  const onOutcome = (outcome: ActionOutcome): void => {
-    if (outcome.kind !== 'done') return;
-    setResult(outcome.ok ? { kind: 'resolved', started: startedFrom(outcome.text) } : { kind: 'not-yet', detail: outcome.text });
+function BlockerCard({ blocker, onOpenSettings, onSendToLane, laneTitle }: { blocker: Blocker; onOpenSettings?: () => void; onSendToLane?: (laneId: string, text: string) => void; laneTitle?: (laneId: string) => string | null }): JSX.Element {
+  const resolve = useAction(ACTIONS.resolveBlocker, blocker.id);
+  const check = useAction(ACTIONS.checkBlocker, blocker.id);
+  const [note, setNote] = useState('');
+  const count = blocker.blocks.length;
+  const you = blocker.youCanResolve;
+  const { who, note: whoNote, color: whoColor } = whoOf(blocker);
+  const link = blocker.links[0];
+  const primary = blocker.kind === 'integration' && onOpenSettings
+    ? { label: 'Open Settings', run: onOpenSettings }
+    : you
+      ? { label: resolve.pending ? 'Checking…' : 'I fixed it, check again', run: () => void resolve.run(blocker.id) }
+      : link
+        ? { label: `Open ${link.label}`, run: () => window.open(link.url, '_blank', 'noopener') }
+        : { label: check.pending ? 'Checking…' : 'Check again', run: () => void check.run(blocker.id) };
+  const result = resolve.result?.kind === 'done' ? resolve.result : check.result?.kind === 'done' ? check.result : null;
+  const sendToAgents = (text: string): void => {
+    if (!onSendToLane || !text.trim()) return;
+    for (const lane of blocker.blocks) onSendToLane(lane.laneId, text.trim());
+    setNote('');
   };
-
-  if (result?.kind === 'resolved') {
-    const labelFor = new Map(blocker.blocks.map((b) => [b.laneId, b.label]));
-    const startedLabels = (result.started ?? []).map((laneId) => labelFor.get(laneId) ?? laneId);
-    return (
-      <span className="m" style={{ color: 'var(--run)', fontSize: 'var(--fs-body)' }}>
-        Resolved {hm(Date.now())}
-        {startedLabels.length ? (
-          <span style={{ color: 'var(--ink2)' }}> · Started: {startedLabels.join(', ')}</span>
-        ) : null}
-      </span>
-    );
-  }
-
+  const agents = count === 1 ? 'the agent' : count === 2 ? 'both agents' : `all ${count} agents`;
+  const primaryClass = you ? 'btn warn' : 'btn';
   return (
-    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-      {blocker.youCanResolve ? (
-        <ActionButton
-          spec={ACTIONS.resolveBlocker} args={[blocker.id]} className="btnP" disabled={!enabled}
-          style={{ padding: '7px 11px', fontSize: 'var(--fs-ui)' }} busy="Checking…" outcome="none" onOutcome={onOutcome}
-        >
-          Resolved, check it
-        </ActionButton>
-      ) : null}
-      <ActionButton
-        spec={ACTIONS.checkBlocker} args={[blocker.id]} className="btnS" disabled={!enabled}
-        style={{ padding: '7px 11px', fontSize: 'var(--fs-ui)' }} busy="Checking…" outcome="none" onOutcome={onOutcome}
-      >
-        Check again
-      </ActionButton>
-      {result?.kind === 'not-yet' ? (
-        <span className="m" data-testid={`blocker-not-yet-${blocker.id}`} style={{ color: 'var(--block)', fontSize: 'var(--fs-body)' }}>Not yet: {(result.detail ?? 'not confirmed').replace(/^not yet: /, '')}</span>
-      ) : null}
-    </div>
-  );
-}
-
-function ChainStep({ blocker, stepN, enabled, jiraSite }: {
-  blocker: Blocker; stepN: number; enabled: boolean;
-  jiraSite: string | undefined;
-}): JSX.Element {
-  return (
-    <div
-      className="plate"
-      style={{
-        display: 'flex', flexDirection: 'column', gap: 6, padding: '10px 14px', borderColor: enabled ? 'var(--block)' : 'var(--line2)',
-        // A blocker is a paragraph, and a paragraph that runs the full width of a wide
-        // monitor is a paragraph nobody finishes. Two cards wide is the ceiling.
-        opacity: enabled ? 1 : 0.55, maxWidth: 2 * CARD_MIN_PX + CARD_GAP_PX,
-      }}
-    >
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
-        <div className="m" style={{ fontSize: 'var(--fs-title)', fontWeight: 700, display: 'flex', gap: 8, alignItems: 'baseline' }}>
-          <span style={{ color: 'var(--ink3)' }}>{stepN}</span>
-          <span style={{ color: enabled ? 'var(--block)' : 'var(--ink3)' }}>{enabled ? '●' : '○'}</span>
-          <span>{linkify(blocker.title, blocker.links, jiraSite, `${blocker.id}-title`)}</span>
-        </div>
-        <span className="lbl" style={{ color: enabled ? 'var(--block)' : 'var(--ink3)' }}>
-          {enabled ? 'OPEN' : `WAITING ON ${stepN - 1}`}
-        </span>
+    <div data-testid={`blocker-${blocker.id}`} className="blocker-card" style={{ position: 'relative', border: `1px solid ${you ? 'var(--warn)' : 'var(--line2)'}`, padding: '18px 20px', maxWidth: 860, display: 'grid', gridTemplateColumns: '110px 1fr 210px', gap: 22, background: you ? 'var(--warnTint)' : 'transparent' }}>
+      <Marks />
+      <div>
+        <div className="hd" style={{ fontSize: 'var(--fs-count)', lineHeight: 1, color: you ? 'var(--warn)' : 'var(--ink)' }}>{count}</div>
+        <div className="kick" style={{ fontSize: 'var(--fs-meta)', marginTop: 4 }}>{count === 1 ? 'agent stopped' : 'agents stopped'}</div>
+        <div style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)', marginTop: 8 }}>since {hm(blocker.since)}</div>
       </div>
-      <div className="m" style={{ fontSize: 'var(--fs-body)', color: 'var(--ink2)' }}>
-        {linkify(blocker.detail, blocker.links, jiraSite, `${blocker.id}-detail`)}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 }}>
+        <h3 className="hd" style={{ margin: 0, fontSize: 'var(--fs-cardhead)', lineHeight: 1.15 }}>{blocker.title}</h3>
+        <ul style={{ margin: 0, padding: 0, listStyle: 'none', color: 'var(--ink2)', display: 'flex', flexDirection: 'column', gap: 2 }}>
+          {blocker.blocks.map((lane) => { const title = laneTitle?.(lane.laneId); return <li key={lane.laneId}><span className="hd" style={{ letterSpacing: '.05em', color: 'var(--ink)' }}>{lane.label}</span>{title && title !== lane.label ? ` ${title}` : ''}</li>; })}
+        </ul>
+        <p style={{ margin: '2px 0 0' }}><span className="kick" style={{ marginRight: 8 }}>Clears when</span>{blocker.howToResolve} {blocker.thenWhat}</p>
+        {result ? <span style={{ fontSize: 'var(--fs-meta)', color: result.ok ? 'var(--acc)' : 'var(--warn)' }}>{result.text}</span> : blocker.lastCheck ? <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>Last check: {blocker.lastCheck}</span> : null}
       </div>
-      <div className="m" style={{ fontSize: 'var(--fs-body)', color: 'var(--ink2)' }}>To resolve: {blocker.howToResolve}</div>
-      <div className="m" style={{ fontSize: 'var(--fs-body)', color: 'var(--ink3)' }}>Then: {blocker.thenWhat}</div>
-      {blocker.blocks.length ? (
-        <div className="m" style={{ fontSize: 'var(--fs-body)', color: 'var(--ink3)' }}>
-          Blocks: {blocker.blocks.map((b, i) => (
-            <span key={b.laneId}>
-              {i > 0 ? ', ' : ''}
-              {linkify(b.label, blocker.links, jiraSite, `${blocker.id}-block-${b.laneId}`)}
-            </span>
-          ))}
+      <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', gap: 12 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+          <span className="kick">Who can do it</span>
+          <span className="hd" style={{ fontSize: 'var(--fs-rowhead)', color: whoColor }}>{who}</span>
+          {whoNote ? <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>{whoNote}</span> : null}
         </div>
-      ) : null}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginTop: 2 }}>
-        <StepButtons blocker={blocker} enabled={enabled} />
-        <span className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>since {hm(blocker.since)}</span>
+        <button type="button" className={primaryClass} data-testid="blocker-primary" aria-busy={resolve.pending || check.pending} style={{ fontSize: 'var(--fs-key)', padding: '8px 16px', minHeight: 40 }} onClick={primary.run}>{primary.label}</button>
+      </div>
+      <div data-testid="question-card" style={{ gridColumn: '1/-1', display: 'flex', flexDirection: 'column', gap: 8, borderTop: '1px solid var(--line)', paddingTop: 12 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <button type="button" className="opt" data-testid="question-option" data-recommended="true" onClick={primary.run}><i /><span>Clear it: {blocker.howToResolve}</span></button>
+          <button type="button" className="opt" data-testid="question-option" data-recommended="false" onClick={() => sendToAgents('Finish without it and leave a note for QA about what was skipped.')}><i /><span>Tell {agents} to finish without it and leave a note for QA</span></button>
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'stretch' }}>
+          <input className="inp" data-testid="question-freetext" placeholder={`Tell ${agents} on ${blocker.blocks.map((lane) => lane.label).join(' and ')} what to do instead, or ask what they tried…`} value={note} onChange={(e) => setNote(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') sendToAgents(note); }} />
+          <button type="button" className="btn" style={{ padding: '6px 14px' }} onClick={() => sendToAgents(note)}>{count === 1 ? 'Send to the agent' : `Send to ${agents}`}</button>
+        </div>
       </div>
     </div>
   );
 }
 
-/** Blockers view: one column of chains, root first, one at a time. A chain resolves
- *  through its own steps in order -- only the first still-open step in a chain is
- *  actionable, the rest read dimmed until it clears. Resolved chains collapse under
- *  "Resolved today". */
-export function BlockersView({ blockers, chains, jiraSite }: BlockersViewProps): JSX.Element {
-  const byId = new Map(blockers.map((b) => [b.id, b]));
-  const openChains = chains.filter((chain) => chain.some((id) => byId.get(id)?.state === 'open'));
-  const resolvedToday = blockers.filter((b) => b.state === 'resolved');
+function startOfToday(now: number): number {
+  const date = new Date(now);
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+}
 
-  if (openChains.length === 0 && resolvedToday.length === 0) {
-    return (
-      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 40 }}>
-        <span className="lbl" style={{ color: 'var(--ink2)' }}>Nothing is blocked on you.</span>
-      </div>
-    );
-  }
+const WORDS = ['Nothing', 'One thing', 'Two things', 'Three things', 'Four things', 'Five things', 'Six things', 'Seven things', 'Eight things', 'Nine things'];
 
+export function BlockersView({ blockers, chains, onOpenSettings, onSendToLane, laneTitle }: BlockersViewProps): JSX.Element {
+  const byId = new Map(blockers.map((blocker) => [blocker.id, blocker]));
+  const chained = chains.flat().map((id) => byId.get(id)).filter((blocker): blocker is Blocker => Boolean(blocker) && blocker!.state !== 'resolved');
+  const open = [...chained, ...blockers.filter((blocker) => blocker.state !== 'resolved' && !chained.includes(blocker))]
+    .sort((a, b) => b.blocks.length - a.blocks.length);
+  const today = startOfToday(Date.now());
+  const cleared = blockers.filter((blocker) => blocker.state === 'resolved' && (blocker.resolvedAt ?? 0) >= today);
+  const n = open.length;
+  const headline = n === 0 ? 'Nothing is stopping work' : n === 1 ? 'One thing is stopping work' : `${WORDS[n] ?? String(n)} are stopping work`;
   return (
-    <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 18 }}>
-      {openChains.map((chain) => (
-        <div key={chain[0]} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {chain.map((id, i) => {
-            const blocker = byId.get(id);
-            if (!blocker) return null;
-            // Only the first blocker in the chain that is still open is actionable;
-            // everything below it waits its turn even if its own cause already
-            // cleared, per "one at a time, in order".
-            const firstOpenIndex = chain.findIndex((cid) => byId.get(cid)?.state === 'open');
-            return (
-              <ChainStep
-                key={id} blocker={blocker} stepN={i + 1} enabled={i === firstOpenIndex}
-                jiraSite={jiraSite}
-              />
-            );
-          })}
-        </div>
-      ))}
-      {resolvedToday.length ? (
-        <div data-testid="blockers-resolved-today" style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
-          <span className="lbl" style={{ color: 'var(--ink2)' }}>Resolved today</span>
-          {resolvedToday.map((b) => (
-            <div key={b.id} data-testid={`blocker-resolved-${b.id}`} className="m" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)', display: 'flex', gap: 8 }}>
-              <span style={{ color: 'var(--run)' }}>✓</span>
-              <span>{b.title}</span>
-              <span style={{ color: 'var(--ink3)' }}>{b.resolvedAt ? hm(b.resolvedAt) : ''}</span>
-            </div>
+    <main data-testid="blockers-view" className="scroll" style={{ flex: 1, minWidth: 0, overflow: 'auto', padding: '26px 28px', display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', maxWidth: 860 }}>
+        <h2 className="hd" style={{ margin: 0, fontSize: 'var(--fs-page)', lineHeight: 1 }}>{headline}</h2>
+        <span style={{ fontSize: 'var(--fs-ui)', color: 'var(--ink3)' }}>Sorted by how many agents each one stops</span>
+      </div>
+      {open.map((blocker) => <BlockerCard key={blocker.id} blocker={blocker} onOpenSettings={onOpenSettings} onSendToLane={onSendToLane} laneTitle={laneTitle} />)}
+      <details style={{ maxWidth: 860, borderTop: '1px solid var(--line)', paddingTop: 12, marginTop: 6 }}>
+        <summary className="disc" style={{ alignItems: 'center' }}><span className="tri" />Cleared today <span style={{ fontWeight: 400 }}>{cleared.length}</span></summary>
+        <ul style={{ margin: '10px 0 0', padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 6, color: 'var(--ink2)' }}>
+          {cleared.map((blocker) => (
+            <li key={blocker.id}>{blocker.title} cleared at {hm(blocker.resolvedAt ?? blocker.since)}{blocker.lastCheck ? ` — ${blocker.lastCheck}` : ''} after {durationWords((blocker.resolvedAt ?? blocker.since) - blocker.since)}.</li>
           ))}
-        </div>
-      ) : null}
-    </div>
+        </ul>
+      </details>
+    </main>
   );
 }

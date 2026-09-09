@@ -25,6 +25,15 @@ export interface PollItemDetail {
   priority: string;
   labels?: string[];
   components?: string[];
+  /** R-11: the ticket's Jira status-category key or name (e.g. `'done'`). The caller
+   *  lowercases it before comparing, and uses it to tell a Done transition apart from
+   *  any other status move. Absent on every fixture written before R-11. */
+  statusCategory?: string;
+  /** R-11: the newest comment on the ticket, when one exists. The watcher turns this
+   *  into a `/send` for a lane it already owns. `null` means the source checked and
+   *  found none (the mint-fresh-ticket case); absent means the source never populated
+   *  this field at all (every fixture before R-11). */
+  latestComment?: { author: string; body: string } | null;
 }
 
 /** A source's own item, before this module stamps it with the feed's source name. */

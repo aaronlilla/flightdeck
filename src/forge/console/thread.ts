@@ -48,6 +48,31 @@ const CHIP_EVENTS = new Set([
   'warden.parked', 'external.complete',
 ]);
 
+/** A `blocker.raised` row (`src/forge/blockers.ts`) is the rail's blocker card: what
+ *  stopped, which lanes wait, and the two things the operator can do about it. */
+export function blockerCardFor(row: ForgeEvent, titleFor: TitleForFn): Message {
+  const runs = Array.isArray(row.runs) ? (row.runs as string[]) : [];
+  const what = stripMachineIds(String(row.what ?? 'something the agents need is missing'), { labelFor: titleFor });
+  const labels = runs.map((run) => titleFor(run) ?? 'an agent');
+  const first = runs[0];
+  return {
+    k: `blocker-${row.id}`,
+    type: 'blocker',
+    text: what,
+    kicker: `Blocked · ${labels[0] ?? 'the fleet'}${runs.length > 1 ? ` and ${runs.length - 1} more` : ''}`,
+    title: `${labels.length ? labels.join(', ') : 'An agent'} cannot go on: ${what}`,
+    body: runs.length > 1 ? `${runs.length} agents are parked on it.` : 'The agent is parked until it clears.',
+    ts: row.at,
+    source: first ?? 'system',
+    ...(first ? { lane: first } : {}),
+    btns: [
+      { label: 'Open Blockers and clear it', cmd: 'open blockers', cls: 'answer' },
+      ...(first ? [{ label: 'Tell the agent what to do instead', cmd: `open lane ${first}` }] : []),
+    ],
+    verifiedAt: row.at,
+  };
+}
+
 /** `liveness.stuck`/`warden.parked` chips go through `collapseWardenChips` instead of
  *  the ordinary one-row-one-chip mapping below (H1.9) -- a stuck-session trip re-fires
  *  the same row on every liveness tick, and the rail used to render every one of them. */
@@ -151,7 +176,8 @@ export function computeThread(
   const ordinaryChips = windowed
     .filter((row) => CHIP_EVENTS.has(row.event) && !WARDEN_CHIP_EVENTS.has(row.event))
     .map((row) => chipFor(row, titleFor));
-  const chips = [...ordinaryChips, ...wardenChipMessages(windowed.filter((row) => WARDEN_CHIP_EVENTS.has(row.event)), titleFor)];
+  const blockerCards = windowed.filter((row) => row.event === 'blocker.raised').map((row) => blockerCardFor(row, titleFor));
+  const chips = [...ordinaryChips, ...blockerCards, ...wardenChipMessages(windowed.filter((row) => WARDEN_CHIP_EVENTS.has(row.event)), titleFor)];
   const persistedKeys = new Set(persisted.map((message) => message.k));
   let questions = openAsks
     .map(questionMessageFor)

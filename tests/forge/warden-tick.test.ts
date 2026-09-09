@@ -541,6 +541,46 @@ describe('WardenTick.run', () => {
       expect(state.events.some((e) => e.event === 'warden.health' && e['key'] === 'kill-switch')).toBe(false);
     });
   });
+
+  describe('R-02 guard #3: off-roadmap lanes park', () => {
+    it('parks a self-repo lane with no roadmap id and leaves an id-bearing lane alone', async () => {
+      const tick = new WardenTick({
+        journal, actuator, blockers: new BlockerBoard({ journal, actuator }),
+        now: () => Date.now(),
+        stuck: () => [],
+        liveRuns: () => [],
+        reportFleetHealth: () => 0,
+        selfRepoBriefLanes: () => [
+          { run: 'lane-only', roadmap: null },
+          { run: 'good', roadmap: 'R-04' },
+        ],
+      });
+
+      await tick.run();
+
+      const state = replay(journalPath);
+      const raised = state.events.find((e) => e.event === 'blocker.raised' && e['key'] === 'off-roadmap');
+      expect(raised).toBeDefined();
+      expect(raised?.['runs']).toEqual(['lane-only']);
+      const parked = readParkRecord('lane-only');
+      expect(parked?.reason).toContain('off-roadmap: no R-id on the brief');
+    });
+
+    it('does nothing when selfRepoBriefLanes is not supplied', async () => {
+      const tick = new WardenTick({
+        journal, actuator, blockers: new BlockerBoard({ journal, actuator }),
+        now: () => Date.now(),
+        stuck: () => [],
+        liveRuns: () => [],
+        reportFleetHealth: () => 0,
+      });
+
+      await tick.run();
+
+      const state = replay(journalPath);
+      expect(state.events.some((e) => e.event === 'blocker.raised')).toBe(false);
+    });
+  });
 });
 
 describe('DriftCadenceTracker (B.9)', () => {
