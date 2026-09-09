@@ -304,7 +304,7 @@ export function humanBoardLanes(): Lane[] {
   out.push(lane({
     id: 'parked-1', ticket: 'FLT-704', kind: 'ticket', state: 'parked',
     title: 'the migration column should be NOT NULL or nullable', sourceUrl: 'https://example.invalid/browse/FLT-704',
-    plain: 'Waiting for your answer: the migration column should be NOT NULL or nullable with a backfill job?',
+    plain: 'Asking: the migration column should be NOT NULL or nullable with a backfill job?',
     question: { key: 'ask-704', text: 'the migration column should be NOT NULL or nullable with a backfill job?', opts: ['NOT NULL', 'nullable + backfill'], askedAt: now },
   }));
 

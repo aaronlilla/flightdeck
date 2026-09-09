@@ -60,15 +60,29 @@ describe('buildNeeds asks line', () => {
     expect(items[0]?.line).toBe('asks: NOT NULL or nullable?…');
   });
 
-  it('truncates a question past 70 chars before appending the ellipsis', () => {
-    const text = 'x'.repeat(90);
+  it('truncates a question past 140 chars before appending the ellipsis', () => {
+    const text = 'x'.repeat(160);
     const items = buildNeeds([lane({ question: { key: 'ask', text, opts: [], askedAt: 0 } })], [], vi.fn());
-    expect(items[0]?.line).toBe(`asks: ${'x'.repeat(70)}…`);
+    expect(items[0]?.line).toBe(`asks: ${'x'.repeat(140)}…`);
   });
 
   it('never renders a bare "asks:" when the inbox entry has no readable question', () => {
     const items = buildNeeds([lane({ question: { key: 'ask', text: '', opts: [], askedAt: 0 } })], [], vi.fn());
     expect(items[0]?.line).not.toBe('asks: ');
+  });
+
+  it('names the recommended option under the question when one is set', () => {
+    const items = buildNeeds([lane({
+      question: { key: 'ask', text: 'NOT NULL or nullable?', opts: ['NOT NULL', 'nullable'], recommended: 1, askedAt: 0 },
+    })], [], vi.fn());
+    expect(items[0]?.line).toBe('asks: NOT NULL or nullable?… · Recommended: nullable');
+  });
+
+  it('names no recommended option when the ask carries none', () => {
+    const items = buildNeeds([lane({
+      question: { key: 'ask', text: 'NOT NULL or nullable?', opts: ['NOT NULL', 'nullable'], askedAt: 0 },
+    })], [], vi.fn());
+    expect(items[0]?.line).toBe('asks: NOT NULL or nullable?…');
   });
 });
 

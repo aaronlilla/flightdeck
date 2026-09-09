@@ -90,11 +90,14 @@ export function buildNeeds(
       // a blank question here fell straight through as a bare `asks: `. The em dash
       // keeps that same shape without putting words in the run's mouth for a question
       // the console never actually read.
-      const asks = question ? `${question.slice(0, 70)}…` : '—';
+      const asks = question ? `${question.slice(0, 140)}…` : '—';
+      const recommendedIndex = lane.question.recommended;
+      const recommendedOption = recommendedIndex != null ? lane.question.opts[recommendedIndex] : undefined;
+      const recommendedSuffix = recommendedOption ? ` · Recommended: ${recommendedOption}` : '';
       items.push({
         id: `park-${lane.id}`, color: 'var(--park)', title: headline.main, titleId: headline.runId, repo: lane.repo,
         sub: `waiting ${ago(now - lane.since)}`,
-        line: `asks: ${asks}`, cta: 'Answer →', ctaCls: 'btnA',
+        line: `asks: ${asks}${recommendedSuffix}`, cta: 'Answer →', ctaCls: 'btnA',
         onClick: () => onFix('lane', lane.id), more: null,
       });
     }
