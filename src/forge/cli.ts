@@ -20,7 +20,7 @@
  * it. A stop that lost an afternoon is a stop nobody dares press.
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 import type { QueryFn } from '../adapter/engine.js';
 import { BlockerBoard } from './blockers.js';
@@ -37,7 +37,9 @@ import { SEVERITY_RANK } from './council/synthesis.js';
 import { runCutover } from './cutover.js';
 import { CredentialHorizon, readLoginLock } from './credential-horizon.js';
 import { accountFor, buildBurnLedger, checkBudget, WindowGate } from './governor.js';
-import { accountsRegistryPath, liveRunsByAccount, loadAccounts } from './accounts.js';
+import {
+  accountsRegistryPath, addAccount, checkAddCandidate, liveRunsByAccount, loadAccounts, removeAccount,
+} from './accounts.js';
 import { reconcileBurnOnce } from './burn-reconcile.js';
 import { planIntakeWrites } from './intake/dryRun.js';
 import { createJiraFeed, createJiraWriteClient, probeJira, type JiraWriteClient } from './intake/jira.js';
@@ -1180,6 +1182,45 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       return { code: 0, lines: [`${slug} may be relaunched again`] };
     }
 
+    case 'accounts': {
+      const sub = rest[0];
+      const registryPath = accountsRegistryPath();
+      const accounts = loadAccounts(registryPath);
+      if (!sub || sub === 'list') {
+        const lines = accounts.map((account) => {
+          const cap = account.maxConcurrent !== undefined ? `, max ${account.maxConcurrent}` : '';
+          return `${account.id}  ${account.configDir}${cap}`;
+        });
+        return { code: 0, lines: [...lines, accounts.length ? `from ${registryPath}` : `no accounts yet; ${registryPath} does not exist`] };
+      }
+      if (sub === 'add') {
+        const [, id, dir, maxRaw] = rest;
+        if (!id || !dir) return { code: 2, lines: ['forge accounts add <id> <config-dir> [max-concurrent]'] };
+        const resolved = resolve(dir);
+        let cap: number | undefined;
+        if (maxRaw !== undefined) {
+          cap = Number(maxRaw);
+          if (!Number.isInteger(cap) || cap < 1) return { code: 2, lines: [`max-concurrent must be a positive integer, got '${maxRaw}'`] };
+        }
+        const candidate = checkAddCandidate(accounts, { id, configDir: resolved, ...(cap !== undefined ? { maxConcurrent: cap } : {}) });
+        if (!candidate.ok) return { code: 1, lines: [`refusing: ${candidate.reason}`] };
+        try {
+          addAccount({ id, label: id, configDir: resolved, connectedAt: Date.now(), ...(cap !== undefined ? { maxConcurrent: cap } : {}) }, registryPath);
+        } catch (err) {
+          return { code: 1, lines: [`refusing: ${err instanceof Error ? err.message : String(err)}`] };
+        }
+        return { code: 0, lines: [`added '${id}' -> ${resolved}`] };
+      }
+      if (sub === 'remove') {
+        const id = rest[1];
+        if (!id) return { code: 2, lines: ['forge accounts remove <id>'] };
+        if (!accounts.some((account) => account.id === id)) return { code: 1, lines: [`refusing: no account '${id}' in ${registryPath}`] };
+        removeAccount(id, registryPath);
+        return { code: 0, lines: [`removed '${id}'`] };
+      }
+      return { code: 2, lines: ['forge accounts [list|add <id> <config-dir> [max-concurrent]|remove <id>]'] };
+    }
+
     case 'cutover': {
       const fromIndex = rest.indexOf('--from');
       const from = fromIndex >= 0 ? rest[fromIndex + 1] : process.env['FORGE_COORDINATION_DIR'];
@@ -1971,7 +2012,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         code: 2,
         lines: [
           'forge up | status | run BRIEF | send RUN TEXT | answer KEY ANSWER | stop --all '
-            + '| gotchas | clear LANE | cutover [--from DIR] | intake --dry-run | reason --class CLASS '
+            + '| gotchas | clear LANE | accounts [list|add ID DIR [N]|remove ID] | cutover [--from DIR] | intake --dry-run | reason --class CLASS '
             + '| council --repo O/N --pr N | gate --repo O/N --pr N [--merge] [--handoff FILE] '
             + '| chain [retry PACKET [--reason "<why>"]] | [skip PACKET [--reason "<why>"]]',
           `the server listens on ${FORGE_PORT}`,
