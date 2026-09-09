@@ -59,6 +59,7 @@ import { RunInbox, deliverAnswer } from './runinbox.js';
 import { assertRunListening } from './console/listening.js';
 import { amendRunBrief, type AmendDeps } from './console/amend.js';
 import { ConductorAgent } from './console/agent.js';
+import { RoundsRoutes } from './console/rounds-route.js';
 import type { QueryFn } from '../adapter/engine.js';
 import { conductorAgentEnabled, reasonerTimeoutMsFor } from './policy.js';
 import { CONDUCTOR_CLASS } from './console/agent.js';
@@ -296,6 +297,9 @@ export class ForgeServer {
 
   private readonly blockersRoutes: BlockersRoutes;
 
+  /** The Conductor's rounds behind `GET /rounds` / `POST /rounds/apply` and its ticker. */
+  readonly rounds: RoundsRoutes;
+
   /** The Conductor agent behind `POST /command` (`console/agent.ts`). */
   readonly conductor: ConductorAgent;
 
@@ -371,11 +375,24 @@ export class ForgeServer {
       writes: this.consoleWrites, reads: this.consoleReads, queue: this.queueRoutes,
       amend: this.amendDeps(), inbox: this.inbox, journalPath: this.journalPath,
       publish: (event) => this.publish(event),
+      rounds: { sheet: () => this.rounds.sheet(), apply: () => this.rounds.apply() },
       ...(options.conductorQueryFn ? { queryFn: options.conductorQueryFn } : {}),
       ...(options.modelPolicyPath ? { policyPath: options.modelPolicyPath } : {}),
       ...(options.conductorIdleMs !== undefined ? { idleMs: options.conductorIdleMs } : {}),
     });
     this.consoleWrites.attachAgent(this.conductor);
+    this.rounds = new RoundsRoutes({
+      store: this.queueStoreForMerge,
+      lanesAll: () => this.consoleReads.lanesResponse(true, true).lanes,
+      blockers: async () => (await this.blockersRoutes.list()).blockers,
+      retireDeps: () => this.retireLaneDeps(),
+      journalPath: this.journalPath,
+      authorized: (request, response) => this.authorized(request, response),
+      publish: (event) => this.publish(event),
+      appendThread: (message) => appendThread(message),
+      askConductor: (text) => this.conductor.handle(text),
+      ...(options.modelPolicyPath ? { policyPath: options.modelPolicyPath } : {}),
+    });
     this.blockersRoutes = new BlockersRoutes({
       journalPath: this.journalPath,
       authorized: (request, response) => this.authorized(request, response),
@@ -445,6 +462,7 @@ export class ForgeServer {
     // console refreshes inside 2s instead of waiting on the 5s poll.
     this.liveTimer = setInterval(() => this.tickLiveness(), this.liveTickMs);
     this.liveTimer.unref?.();
+    this.rounds.start();
     this.consoleWrites.start();
     return this.port;
   }
@@ -469,6 +487,7 @@ export class ForgeServer {
   }
 
   async close(): Promise<void> {
+    this.rounds.stop();
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = undefined;
@@ -760,6 +779,7 @@ export class ForgeServer {
     if (await this.consoleWrites.handle(path, request, response)) return;
     if (await this.queueRoutes.handle(path, request, response)) return;
     if (await this.blockersRoutes.handle(path, request, response)) return;
+    if (await this.rounds.handle(path, request, response)) return;
     if (request.method === 'GET') {
       return this.serveStatic(path, response);
     }

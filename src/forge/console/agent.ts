@@ -33,6 +33,8 @@ import {
 import { RunInbox } from '../runinbox.js';
 import { workerEnv } from '../worker.js';
 import type { ConsoleReads } from './reads.js';
+import { formatRoundsSheet } from '../rounds.js';
+import type { RoundsRoutes } from './rounds-route.js';
 import type { QueueRoutes } from './queue-route.js';
 import { amendRunBrief, type AmendDeps } from './amend.js';
 import { assertRunListening } from './listening.js';
@@ -74,6 +76,9 @@ export interface ConductorAgentDeps {
   writes: ConsoleWrites;
   reads: Pick<ConsoleReads, 'lanesResponse' | 'runThread' | 'runStory' | 'runSummaryResponse' | 'runRecheckResponse'>;
   queue: Pick<QueueRoutes, 'list' | 'addItems' | 'remove' | 'retry'>;
+  /** The rounds behind the `rounds` / `rounds_apply` tools. Unset (a specimen with no
+   *  server) makes both tools answer that rounds are not wired. */
+  rounds?: Pick<RoundsRoutes, 'sheet' | 'apply'>;
   amend: AmendDeps;
   inbox: Pick<Inbox, 'open'>;
   journalPath: string;
@@ -141,7 +146,9 @@ export const CONDUCTOR_SYSTEM_PROMPT = [
   'lane the conversation was last about. Irreversible tools (kill, retire, merge_ready,',
   'set_daily_cap, set_run_cap, queue_remove) only propose: the operator clicks Confirm on',
   'a card the console shows after your reply. Say the card is waiting; never ask them to',
-  'type a token. Keep replies under six sentences.',
+  'type a token. "Do the rounds" or "clean up the board" means rounds_apply, then answer',
+  'with answer_ask any listed ask the brief or the console state already settles, and',
+  'name the rest. Keep replies under six sentences.',
 ].join(' ');
 
 /** A row the operator sees. `path` says which path answered. */
@@ -448,6 +455,20 @@ export class ConductorAgent {
       queue_retry: async ({ id }) => {
         const result = queue.retry(id);
         return { text: result.ok ? result.message : `refused: ${result.message}`, receipt: result.message };
+      },
+      rounds: async () => {
+        if (!this.deps.rounds) return { text: 'rounds are not wired on this console' };
+        const sheet = await this.deps.rounds.sheet();
+        return { text: formatRoundsSheet(sheet).join('\n') };
+      },
+      rounds_apply: async () => {
+        if (!this.deps.rounds) return { text: 'rounds are not wired on this console' };
+        const result = await this.deps.rounds.apply();
+        const applied = result.receipts.filter((r) => r.applied);
+        const left = result.receipts.filter((r) => !r.applied);
+        const receipt = `rounds applied ${applied.length} action(s)`;
+        const text = [...applied.map((r) => r.text), ...left.map((r) => r.text)].join('\n');
+        return { text: text || 'rounds found nothing to do', receipt };
       },
     };
   }
