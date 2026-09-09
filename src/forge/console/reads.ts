@@ -27,6 +27,7 @@ import type {
   Caps, JournalResponse, Lane, LanePr, LaneStory, LanesResponse, LaneSummary, ProposalsResponse, QueueItem,
   RunCostResponse, RunJournalResponse, RunPrResponse, RunSandboxResponse, RunThreadResponse, ThreadResponse,
 } from '../../shared/console-model.js';
+import { computeAccounts } from './accounts-read.js';
 import { capsOverridesPath, computeCaps, readCapsOverrides } from './caps-read.js';
 import { ensureHardTokens } from './caps-write.js';
 import { computeCostSteps, findCapEnforcementFailure } from './cost-steps.js';
@@ -463,7 +464,7 @@ export class ConsoleReads {
   static matches(path: string, method: string | undefined): boolean {
     if (method !== 'GET') return false;
     return path === '/lanes' || path === '/thread' || path === '/journal' || path === '/caps'
-      || path === '/proposals' || RUN_SUBROUTE.test(path);
+      || path === '/proposals' || path === '/accounts' || RUN_SUBROUTE.test(path);
   }
 
   /** True when a request matched a route this class owns and the response has already
@@ -499,6 +500,10 @@ export class ConsoleReads {
     }
     if (path === '/proposals') {
       json(response, 200, this.proposalsResponse());
+      return true;
+    }
+    if (path === '/accounts') {
+      json(response, 200, computeAccounts({ fleet: this.journalCache.read(this.journalPath), now: Date.now() }));
       return true;
     }
 

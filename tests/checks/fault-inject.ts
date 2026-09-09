@@ -59,6 +59,14 @@ const SPECIMENS: Specimen[] = [
     expect: 'absolute-home-windows',
   },
   {
+    // An accounts registry entry pasted into source, the shape `forge accounts add`
+    // takes: the config dir is a real home path and must be caught like any other.
+    name: 'leaked account config dir',
+    content: `{ "id": "fleet-b", "provider": "claude", "configDir": "${join('C:/Use', 'rs/aaron')}/.claude-fleet-b" }
+`,
+    expect: 'absolute-home-windows',
+  },
+  {
     name: 'absolute posix home path',
     content: `export CLAUDE_HOME=${join('/ho', 'me/aaron')}/.claude\n`,
     expect: 'absolute-home-posix',
