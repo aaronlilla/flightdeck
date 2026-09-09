@@ -3,10 +3,12 @@
  * already running. Four sources feed it -- a Jira ticket key, a pasted brief, a JQL query
  * naming a sprint or epic, and the backlog with an operator's own filter -- and the
  * worker in `runQueueTick` drives each item through the same shape `chain.ts` already
- * proved for a poll-sourced packet: plan, provision, launch, gate. The one difference
- * that matters: `advanceItem` never calls `deps.gate` with `merge: true`. Every item that
- * clears the gate stops at `review` with a draft PR, full stop -- there is no code path
- * in this file that can merge anything.
+ * proved for a poll-sourced packet: plan, provision, launch, gate. Whether `advanceItem`
+ * calls `deps.gate` with `merge: true` is `deps.mergeAllowed`'s own answer for the item's
+ * repo -- the same `FORGE_COUNCIL_AUTOMERGE` allow-list `forge gate --merge` already
+ * checks for a person (`council/risk.ts#autoMergeAllowed`). A repo absent from that list
+ * (every one of them, until an operator opts a repo in) still stops at `review` with a
+ * draft PR exactly as before this existed.
  *
  * Every dependency here is a function this module is handed, the same separation
  * `chain.ts` keeps from `chain-wire.ts`: nothing in this file touches the network,
@@ -270,10 +272,22 @@ export interface QueueRuntimeDeps {
    *  hand (the CLI gate, GitHub itself) lands on `done` on the next sweep instead of
    *  sitting in review with a Merge button forever (seen live 2026-09-07). */
   prMerged?: (repo: string, pr: number) => Promise<boolean>;
-  /** Reused from `chain.ts` unchanged, but `advanceItem` never passes `merge: true` --
-   *  the queue's own decision (every item stops at a draft PR) lives in this file, not
-   *  in whatever the caller wires this to. */
+  /** Reused from `chain.ts` unchanged. Whether `advanceItem` passes `merge: true` is
+   *  this file's own decision (see `mergeAllowed` below), not whatever the caller wires
+   *  this to. */
   gate: ChainGateFn;
+  /** BBZ, 2026-09-08: whether an item's repo may merge the moment its gate clears, with
+   *  no click -- the same allow-list decision `council/risk.ts#autoMergeAllowed` makes
+   *  for a human running `forge gate --merge` (backed by `FORGE_COUNCIL_AUTOMERGE`),
+   *  read fresh every tick so an operator's env change takes effect on the next one.
+   *  Absent means every item still stops at a draft PR, the only behaviour every
+   *  specimen before this stream ever proved. */
+  mergeAllowed?: (repo: string) => boolean;
+  /** Same shape as `QueueMergeDeps.postMergeVerify`, wired here so an item this file
+   *  merges on its own gets the identical OTA verification a person's Merge click
+   *  already gets. Absent means an auto-merged item lands on `done` with no OTA line,
+   *  the same fallback `mergeItem` already has. */
+  postMergeVerify?: (input: { repo: string; branch: string; mergeSha?: string }) => Promise<{ android: string; ios: string } | undefined>;
   /** 2026-09-08: launches a `goal` item -- its own worktree, its own gates, no brief
    *  file to plan or amend. Absent means a goal item always fails at the launch hop;
    *  every other source ignores this. */
@@ -690,9 +704,13 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
     return writeTransition(item, { state: 'parked', reason }, deps, 'queue.parked', { hop: 'gate' });
   }
 
-  // The one line that makes "every item stops at a draft PR" true: `merge` is always
-  // `false`, never `deps.mergeAllowed`-derived or otherwise conditional.
-  await deps.gate({ repo: item.repo!, pr: pr.number, merge: false });
+  // Merge only when this item's repo is on the operator's own autoMerge allow-list --
+  // `deps.mergeAllowed` is the same decision `council/risk.ts#autoMergeAllowed` makes for
+  // a human running `forge gate --merge`. Every other repo, including the controlled-code
+  // management system, gets `merge: false` here exactly as before: unset `mergeAllowed`
+  // reads as false, and so does a `mergeAllowed` that simply doesn't name this repo.
+  const merge = deps.mergeAllowed?.(item.repo!) ?? false;
+  const gateResult = await deps.gate({ repo: item.repo!, pr: pr.number, merge });
 
   // A.2: the council's own notes land on the PR before the item shows as `review`, so a
   // reviewer never has to go dig an attestation file out of `~/.forge` to see what was
@@ -739,6 +757,49 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
         // review -- the controlled-code merge denial is the real safety net here.
       }
     }
+  }
+
+  // A repo on the allow-list whose gate call actually merged ends here, on `done`, with
+  // the same `mergedBy`/`mergedAt` marker `mergeItem`'s own click writes -- the
+  // merged-elsewhere sweep in `runQueueTick` reads that marker before it will ever say a
+  // PR "merged outside the queue". A `merge: true` gate call that did NOT merge (checks
+  // still red, a real conflict) falls through to the ordinary `review` landing below,
+  // same as any other repo -- the draft PR is still there for a person to look at.
+  if (merge && gateResult.merged) {
+    const mergedAt = deps.clock();
+    const verifying = Boolean(deps.postMergeVerify && item.branch);
+    const merged = writeTransition(
+      item,
+      {
+        state: 'done',
+        reason: verifying ? 'merged; OTA pending' : `PR #${pr.number} merged`,
+        mergedBy: 'queue',
+        mergedAt,
+        pr: {
+          no: pr.number, url: pr.url, draft: false,
+          ...(item.changedFiles ? { files: item.changedFiles.length } : {}),
+          ...(prAdd !== undefined ? { add: prAdd } : {}),
+          ...(prDel !== undefined ? { del: prDel } : {}),
+        },
+        ...(handoffAt ? { handoffAt } : {}),
+        ...(council.attestationPath ? { attestationPath: council.attestationPath } : {}),
+      },
+      deps, 'queue.done', { hop: 'gate', ...(gateResult.mergeSha ? { mergeSha: gateResult.mergeSha } : {}) },
+    );
+    if (deps.postMergeVerify && item.branch) {
+      void deps.postMergeVerify({ repo: item.repo!, branch: item.branch, ...(gateResult.mergeSha ? { mergeSha: gateResult.mergeSha } : {}) })
+        .then((outcome) => outcome
+          ? `OTA published: android ${outcome.android}, ios ${outcome.ios}`
+          // Matches `otaVerify.ts`'s `DEFAULT_MAX_WAIT_MS` (30 minutes), same as
+          // `mergeItem`'s own fallback line.
+          : 'merged; deploy run not found after 30 minutes')
+        .catch((error: unknown) => `merged; OTA check failed: ${error instanceof Error ? error.message : String(error)}`)
+        .then((reason) => {
+          const at = deps.clock();
+          deps.store.append({ id: item.id, at, reason, updatedAt: at });
+        });
+    }
+    return merged;
   }
 
   // A.3: the Jira write-back fires once per item, guarded by `handoffAt` rather than by
