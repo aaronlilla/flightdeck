@@ -22,7 +22,7 @@
     "theme": "dark",
     "console": "test-results/design-parity/1c-queue-dark-console.png",
     "design": "test-results/design-parity/1c-queue-dark-design.png",
-    "diffPercent": 4.1,
+    "diffPercent": 4,
     "sizes": "console 1440x900 · design 1442x903",
     "note": "full page"
   },
@@ -112,7 +112,7 @@
     "theme": "dark",
     "console": "test-results/design-parity/2b-flow-confirm-dark-console.png",
     "design": "test-results/design-parity/2b-flow-confirm-dark-design.png",
-    "diffPercent": 7.1,
+    "diffPercent": 7,
     "sizes": "console 1440x900 · design 1442x903",
     "note": "full page"
   },
@@ -247,7 +247,7 @@
     "theme": "light",
     "console": "test-results/design-parity/2b-flow-confirm-light-console.png",
     "design": "test-results/design-parity/2b-flow-confirm-light-design.png",
-    "diffPercent": 6.3,
+    "diffPercent": 6.2,
     "sizes": "console 1440x900 · design 1442x903",
     "note": "full page"
   },
