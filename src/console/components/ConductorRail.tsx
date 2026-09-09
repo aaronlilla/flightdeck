@@ -99,7 +99,7 @@ function ActionCard({ message, tone, kicker, title, body, onCommand, onTopic, co
       {resolved ? (
         <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>{resolved === 'declined' ? 'Not now.' : resolved === 'answered' ? 'Answered.' : 'Confirmed.'}</span>
       ) : message.btns && message.btns.length > 0 ? (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 2 }}>
+        <div data-testid="question-options" style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 2 }}>
           {message.btns.map((button, index) => (
             <button
               key={button.label} type="button" className={buttonClass(button)} data-testid="question-option" data-recommended={index === 0 ? 'true' : 'false'}
@@ -216,10 +216,54 @@ export function MessageCard({ message, labelFor, onCommand, onUndo, onTopic, com
   }
 }
 
+/** `event`/`activity` rows are raw journal observations, not conversation -- they
+ *  used to spill straight into the rail as a wall of machine noise (W5). They move
+ *  into a closed-by-default drawer badged with the raw count, with repeated
+ *  identical texts collapsed into one line with a count. */
+function isObservation(message: Message): boolean {
+  return message.type === 'event' || message.type === 'activity';
+}
+
+function groupObservations(observations: Message[]): { text: string; count: number }[] {
+  const order: string[] = [];
+  const counts = new Map<string, number>();
+  for (const message of observations) {
+    if (!counts.has(message.text)) order.push(message.text);
+    counts.set(message.text, (counts.get(message.text) ?? 0) + 1);
+  }
+  return order.map((text) => ({ text, count: counts.get(text) ?? 0 }));
+}
+
+function ActivityDrawer({ observations }: { observations: Message[] }): JSX.Element | null {
+  const [open, setOpen] = useState(false);
+  if (observations.length === 0) return null;
+  const groups = groupObservations(observations);
+  return (
+    <div style={{ borderTop: '1px solid var(--line)', flex: 'none' }}>
+      <button
+        type="button" data-testid="activity-drawer" onClick={() => setOpen((o) => !o)}
+        style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '8px 16px', background: 'transparent', border: 0, cursor: 'pointer', font: 'inherit', color: 'var(--ink2)', fontSize: 'var(--fs-meta)' }}
+      >
+        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span className="tri" style={{ transform: open ? 'rotate(90deg)' : undefined }} />Activity</span>
+        <span data-testid="activity-drawer-badge" style={{ fontVariantNumeric: 'tabular-nums', color: 'var(--ink3)' }}>{observations.length}</span>
+      </button>
+      {open ? (
+        <div data-testid="activity-drawer-body" style={{ padding: '0 16px 10px', display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 200, overflowY: 'auto' }}>
+          {groups.map((group) => (
+            <div key={group.text} style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>{`${group.text} · ${group.count}`}</div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function ConductorRail(props: ConductorRailProps): JSX.Element {
   const { thread, feed, now, composer, onComposerChange, onSend, onCommand, onUndo, labelFor, agentCount, topic = null, recipient = 'conductor', onRecipient, onTopic, commands = DEFAULT_COMMANDS, onStop } = props;
   const composerAction = useStore().state.actions['sendCommand:rail'];
   const busy = composerAction?.pending ?? false;
+  const conversation = thread.filter((message) => !isObservation(message));
+  const observations = thread.filter(isObservation);
   // The list opens at the top (the design's 1a). Once the conversation moves (2a to
   // 2d, `stickToEnd`) it follows the newest message, but only while the reader is
   // already at the bottom; a reader who scrolled up keeps their place and gets a
@@ -231,13 +275,13 @@ export function ConductorRail(props: ConductorRailProps): JSX.Element {
   const atBottom = (el: HTMLDivElement): boolean => el.scrollHeight - el.scrollTop - el.clientHeight <= 24;
   useLayoutEffect(() => {
     const el = listRef.current;
-    const grew = seen.current !== null && seen.current > 0 && thread.length > seen.current;
+    const grew = seen.current !== null && seen.current > 0 && conversation.length > seen.current;
     if (grew && el) {
       if (pinned.current) el.scrollTop = el.scrollHeight;
-      else setUnread((n) => n + (thread.length - (seen.current ?? 0)));
+      else setUnread((n) => n + (conversation.length - (seen.current ?? 0)));
     }
-    if (thread.length > 0 || seen.current === null) seen.current = thread.length;
-  }, [thread.length]);
+    if (conversation.length > 0 || seen.current === null) seen.current = conversation.length;
+  }, [conversation.length]);
   const onScroll = (): void => {
     const el = listRef.current;
     if (!el) return;
@@ -274,7 +318,7 @@ export function ConductorRail(props: ConductorRailProps): JSX.Element {
       </div>
       <div style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex', flexDirection: 'column' }}>
         <div ref={listRef} onScroll={onScroll} data-testid="rail-thread" className="scroll" style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {thread.map((message) => (
+          {conversation.map((message) => (
             <div key={message.k} id={`rail-msg-${message.k}`}>
               <MessageCard message={message} labelFor={labelFor} onCommand={onCommand} onUndo={onUndo} onTopic={onTopic} composerId={composerId} />
             </div>
@@ -284,6 +328,7 @@ export function ConductorRail(props: ConductorRailProps): JSX.Element {
           <button type="button" className="btn primary" data-testid="rail-jump" style={{ position: 'absolute', left: '50%', bottom: 10, transform: 'translateX(-50%)', fontSize: 'var(--fs-meta)', padding: '4px 10px' }} onClick={jump}>{unread} new below</button>
         ) : null}
       </div>
+      <ActivityDrawer observations={observations} />
       <div style={{ padding: '12px 16px 16px', borderTop: '1px solid var(--line)', display: 'flex', flexDirection: 'column', gap: 10 }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
           {commands.map((command) => (
