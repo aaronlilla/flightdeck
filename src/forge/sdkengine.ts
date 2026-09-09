@@ -17,8 +17,11 @@
  * exactly how a session reached 543,000 tokens with nothing noticing.
  */
 import { Engine, buildForgeMcpServer, type EngineConfig, type ForgeToolHandlers, type PreToolVerdict, type QueryFn } from '../adapter/engine.js';
-import { FORGE_TOOL_NAMES } from './contracts.js';
-import { driftBlocker, readMergeable, resolveMergeable, type DriftClock, type Mergeable } from './drift.js';
+import { FORGE_TOOL_NAMES, redact, type Incarnation } from './contracts.js';
+import {
+  classifyDriftRead, credentialBlocker, readMergeableDetailed,
+  resolveMergeableRead, type DriftClock, type Mergeable, type MergeableRead,
+} from './drift.js';
 import { classifyCommand } from './command-class.js';
 import { toolTarget } from './tool-target.js';
 import { run as execRun } from './exec.js';
@@ -707,7 +710,21 @@ export interface SdkEngineDeps {
    * open (B.3.9). Defaults to running `gh pr view --json mergeable` for real; a specimen
    * overrides this rather than the exec call underneath it.
    */
-  checkDrift?: (cwd: string) => Promise<Mergeable>;
+  checkDrift?: (cwd: string) => Promise<Mergeable | MergeableRead>;
+  /**
+   * Where an auth or rate-limit `gh` failure goes, alongside the ask raised on the board.
+   * `forge run` wires a real `CredentialHorizon`, which takes the single-flight login
+   * lock and parks under `credential:<account>` on a second lapse.
+   *
+   * That park is not self-clearing today. `warden-tick.ts:359-365` would clear it, but it
+   * is gated on `credentialHorizon` and `openCredentialAccounts`, and `forge up` passes
+   * neither, so nothing calls `CredentialHorizon.tick()`. The ask on the board is what a
+   * person actually answers; treat the park as bookkeeping until that tick is wired.
+   */
+  credentialHorizon?: CredentialLapseSink;
+  /** The credential a `gh` lapse parks behind. `github` matches the console's own
+   *  integration row id, which is the only other place this credential is named. */
+  ghAccount?: string;
   /**
    * I16: the clock `resolveMergeable` retries an UNKNOWN read against. Defaults to a
    * real 10s-interval, 90s-window wait; a specimen overrides this with a virtual clock
@@ -730,9 +747,29 @@ export interface SdkEngineDeps {
   onSessionStarted?: (run: string, sessionId: string, model: string) => void;
 }
 
-async function ghDriftCheck(cwd: string): Promise<Mergeable> {
-  const result = await execRun({ argv: ['gh', 'pr', 'view', '--json', 'mergeable'], cwd, owner: 'drift', cls: 'script' });
-  return readMergeable(result.tail);
+async function ghDriftCheck(cwd: string): Promise<MergeableRead> {
+  // `baseRefName` comes off the same call as the mergeable state. The base a question
+  // names has to be the pull request's own base, and a separate call for it can fail on
+  // its own and leave the two disagreeing about the same branch.
+  const result = await execRun({
+    argv: ['gh', 'pr', 'view', '--json', 'mergeable,baseRefName'], cwd, owner: 'drift', cls: 'script',
+  });
+  // Redacted before it is stored, not before it is shown. `gh` prints a token in some
+  // error URLs, and a `MergeableRead` is carried far enough from here that the only
+  // reliable place to scrub it is where it is created.
+  return readMergeableDetailed(redact(result.tail));
+}
+
+/** The one method the drift path needs from `CredentialHorizon`, typed narrowly so a
+ *  specimen fakes a method rather than the whole class's login-flow dependencies. */
+export interface CredentialLapseSink {
+  onLapse(account: string, run: string, incarnation: Incarnation): Promise<'started' | 'parked'>;
+}
+
+/** This process, as `CredentialHorizon` identifies whoever is running a login flow.
+ *  `process.uptime()` is the OS's own start time, not when this run was journaled. */
+function thisIncarnation(): Incarnation {
+  return { pid: process.pid, startedAt: Math.round(Date.now() - process.uptime() * 1000) };
 }
 
 /**
@@ -872,6 +909,14 @@ export class SdkEngine implements EngineLike {
     const toolNameById = new Map<string, string>();
     const bashCommandById = new Map<string, string>();
     const checkDrift = this.deps.checkDrift ?? ghDriftCheck;
+    // A specimen may hand back a bare state instead of a full read; normalising here
+    // keeps every caller below on one shape rather than branching per call site.
+    const readDrift = async (cwd: string): Promise<MergeableRead> => {
+      const answer = await checkDrift(cwd);
+      return typeof answer === 'string' ? { state: answer } : answer;
+    };
+    const credentialHorizon = this.deps.credentialHorizon;
+    const ghAccount = this.deps.ghAccount ?? 'github';
 
     const runSegment = (promptText: string): Promise<FakeTurn[]> => new Promise((resolve, reject) => {
       const turns: FakeTurn[] = [];
@@ -991,25 +1036,81 @@ export class SdkEngine implements EngineLike {
               // A confirmed conflict raises at once -- there is nothing to wait for. A
               // MERGEABLE result clears any drift blocker this run raised earlier, whichever
               // wording (CONFLICTING or a since-exhausted UNKNOWN window) it carried.
-              void resolveMergeable(() => checkDrift(request.cwd), this.deps.driftClock).then((state) => {
-                const blocker = driftBlocker(request.run, state);
-                if (!blocker) {
-                  for (const priorState of ['CONFLICTING', 'UNKNOWN'] as const) {
-                    const prior = driftBlocker(request.run, priorState);
-                    if (!prior) continue;
-                    const key = askKey(prior);
-                    const entry = inbox.entry(key);
-                    if (!entry || entry.answer !== undefined) continue;
-                    inbox.answer(key, 'cleared: a later read found the branch mergeable');
+              void resolveMergeableRead(() => readDrift(request.cwd), this.deps.driftClock).then(async (read) => {
+                const outcome = classifyDriftRead(request.run, read, ghAccount);
+
+                // An expired token and a rate limit both read UNKNOWN, and neither is
+                // something a rebase can clear. Asking about the base branch here puts a
+                // person on a path with no end to it, re-raised on every push. It is a
+                // credential problem, so it goes where credential problems go.
+                if (outcome.kind === 'credential-lapse') {
+                  journal.append({
+                    event: 'note', run: request.run, actor: 'runner',
+                    note: `drift check hit ${read.reason === 'auth' ? 'an auth' : 'a rate-limit'} `
+                      + `failure on ${outcome.account}; recorded as a credential lapse `
+                      + 'rather than base drift',
+                  });
+                  // The entry a person answers. `onLapse` starts a login flow and, on a
+                  // second lapse, parks under `credential:<account>` -- but nothing calls
+                  // `CredentialHorizon.tick()` in the shipped binary, so neither the park
+                  // nor the lock is cleared by anything except the process exiting. Raise
+                  // the ask first, so the way out exists whatever the horizon does.
+                  // `goal` rather than the segment name alone. A handoff renames the
+                  // segment, and answer delivery reads `entry.goals`, so an ask addressed
+                  // only to `goal-2` never reaches the session that is live. The key is
+                  // unaffected: `askKey` scopes a blocker on wording alone.
+                  const ask = { ...credentialBlocker(request.run, outcome.account, outcome.reason), goal };
+                  const entry = inbox.raise(ask);
+                  journal.append({
+                    event: 'run.blocked', run: request.run, actor: 'runner', reason: ask.question,
+                  });
+                  // The ask says to answer it before carrying on, so the run has to
+                  // actually stop. Without this the board shows a blocked run that is
+                  // still taking tool calls with a credential that cannot work, and an
+                  // answer arrives for a session that has already finished.
+                  parkRun({ parked: this.parked, journal }, request.run, entry);
+                  // Only an auth failure goes to the login flow. A rate limit clears with
+                  // time, and `onLapse` would take the single-flight login lock, tell
+                  // Aaron the account "needs a fresh login", and hold that lock against a
+                  // genuinely expired token on the same account that does need it.
+                  if (outcome.reason !== 'auth' || !credentialHorizon) return;
+                  const disposition = await credentialHorizon.onLapse(
+                    outcome.account, request.run, thisIncarnation(),
+                  );
+                  journal.append({
+                    event: 'note', run: request.run, actor: 'runner',
+                    note: `credential horizon ${disposition} the login flow for ${outcome.account}`,
+                  });
+                  return;
+                }
+
+                if (outcome.kind === 'clear') {
+                  // Every open base-drift ask this run is behind, found by reading the
+                  // inbox rather than by rebuilding the wording that was used to raise
+                  // it. The wording carries the base branch and the key is a hash of the
+                  // wording, so a pull request retargeted between two reads leaves an ask
+                  // no reconstruction from the current read can name. That ask sat open
+                  // on a branch that was already mergeable.
+                  for (const entry of inbox.open()) {
+                    // By goal as well as by segment name. A blocker raised before a
+                    // handoff records the predecessor's name, and the successor that
+                    // rebases and pushes something mergeable runs under a different one.
+                    // Matching on the segment alone left the resolved conflict on the
+                    // board with nothing able to clear it.
+                    const mine = entry.runs.includes(request.run) || entry.goals.includes(goal);
+                    if (!mine) continue;
+                    if (!/^Base drift\b/.test(entry.question)) continue;
+                    inbox.answer(entry.key, 'cleared: a later read found the branch mergeable');
                     journal.append({
-                      event: 'run.unblocked', run: request.run, actor: 'runner', reason: prior.question,
+                      event: 'run.unblocked', run: request.run, actor: 'runner', reason: entry.question,
                     });
                   }
                   return;
                 }
-                inbox.raise(blocker);
+
+                inbox.raise({ ...outcome.ask, goal });
                 journal.append({
-                  event: 'run.blocked', run: request.run, actor: 'runner', reason: blocker.question,
+                  event: 'run.blocked', run: request.run, actor: 'runner', reason: outcome.ask.question,
                 });
               }).catch((error) => {
                 journal.append({
