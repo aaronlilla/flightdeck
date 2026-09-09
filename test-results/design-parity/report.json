@@ -4,7 +4,7 @@
     "theme": "dark",
     "console": "test-results/design-parity/1a-board-dark-console.png",
     "design": "test-results/design-parity/1a-board-dark-design.png",
-    "diffPercent": 6.2,
+    "diffPercent": 6.1,
     "sizes": "console 1440x900 · design 1442x903",
     "note": "full page"
   },
@@ -13,7 +13,7 @@
     "theme": "dark",
     "console": "test-results/design-parity/1b-blockers-dark-console.png",
     "design": "test-results/design-parity/1b-blockers-dark-design.png",
-    "diffPercent": 5.8,
+    "diffPercent": 6.1,
     "sizes": "console 1440x900 · design 1442x903",
     "note": "full page"
   },
@@ -22,7 +22,7 @@
     "theme": "dark",
     "console": "test-results/design-parity/1c-queue-dark-console.png",
     "design": "test-results/design-parity/1c-queue-dark-design.png",
-    "diffPercent": 4,
+    "diffPercent": 4.2,
     "sizes": "console 1440x900 · design 1442x903",
     "note": "full page"
   },
@@ -40,7 +40,7 @@
     "theme": "dark",
     "console": "test-results/design-parity/1e-settings-dark-console.png",
     "design": "test-results/design-parity/1e-settings-dark-design.png",
-    "diffPercent": 5.8,
+    "diffPercent": 5.9,
     "sizes": "console 1440x900 · design 1442x903",
     "note": "full page"
   },
@@ -49,7 +49,7 @@
     "theme": "dark",
     "console": "test-results/design-parity/1f-flight-review-dark-console.png",
     "design": "test-results/design-parity/1f-flight-review-dark-design.png",
-    "diffPercent": 4.2,
+    "diffPercent": 4.7,
     "sizes": "console 1440x900 · design 1442x903",
     "note": "full page"
   },
@@ -67,7 +67,7 @@
     "theme": "dark",
     "console": "test-results/design-parity/1h-dialog-question-dark-console.png",
     "design": "test-results/design-parity/1h-dialog-question-dark-design.png",
-    "diffPercent": 11.5,
+    "diffPercent": 11.4,
     "sizes": "console 319x326 · design 682x523",
     "note": "the rail question card (the design draws 1h as a 680x520 dialog; turn 2 of the design replaced it with this card)"
   },
@@ -76,7 +76,7 @@
     "theme": "dark",
     "console": "test-results/design-parity/1i-dialog-confirm-dark-console.png",
     "design": "test-results/design-parity/1i-dialog-confirm-dark-design.png",
-    "diffPercent": 23.6,
+    "diffPercent": 23.9,
     "sizes": "console 319x223 · design 682x523",
     "note": "the rail confirm card, from the server gate behind the board's Merge click"
   },
@@ -85,7 +85,7 @@
     "theme": "dark",
     "console": "test-results/design-parity/1j-dialog-blocker-dark-console.png",
     "design": "test-results/design-parity/1j-dialog-blocker-dark-design.png",
-    "diffPercent": 21.3,
+    "diffPercent": 22.5,
     "sizes": "console 319x306 · design 682x523",
     "note": "the rail blocker card"
   },
@@ -94,7 +94,7 @@
     "theme": "dark",
     "console": "test-results/design-parity/1k-dialog-decision-dark-console.png",
     "design": "test-results/design-parity/1k-dialog-decision-dark-design.png",
-    "diffPercent": 16.4,
+    "diffPercent": 18.9,
     "sizes": "console 319x322 · design 682x523",
     "note": "the rail decision card"
   },
@@ -112,7 +112,7 @@
     "theme": "dark",
     "console": "test-results/design-parity/2b-flow-confirm-dark-console.png",
     "design": "test-results/design-parity/2b-flow-confirm-dark-design.png",
-    "diffPercent": 7,
+    "diffPercent": 7.1,
     "sizes": "console 1440x900 · design 1442x903",
     "note": "full page"
   },
@@ -121,7 +121,7 @@
     "theme": "dark",
     "console": "test-results/design-parity/2c-flow-question-dark-console.png",
     "design": "test-results/design-parity/2c-flow-question-dark-design.png",
-    "diffPercent": 7.2,
+    "diffPercent": 7,
     "sizes": "console 1440x900 · design 1442x903",
     "note": "full page"
   },
@@ -148,7 +148,7 @@
     "theme": "light",
     "console": "test-results/design-parity/1b-blockers-light-console.png",
     "design": "test-results/design-parity/1b-blockers-light-design.png",
-    "diffPercent": 5.3,
+    "diffPercent": 5.7,
     "sizes": "console 1440x900 · design 1442x903",
     "note": "full page"
   },
@@ -157,7 +157,7 @@
     "theme": "light",
     "console": "test-results/design-parity/1c-queue-light-console.png",
     "design": "test-results/design-parity/1c-queue-light-design.png",
-    "diffPercent": 3.6,
+    "diffPercent": 3.8,
     "sizes": "console 1440x900 · design 1442x903",
     "note": "full page"
   },
@@ -166,7 +166,7 @@
     "theme": "light",
     "console": "test-results/design-parity/1d-lane-sheet-light-console.png",
     "design": "test-results/design-parity/1d-lane-sheet-light-design.png",
-    "diffPercent": 5.2,
+    "diffPercent": 5.3,
     "sizes": "console 1440x900 · design 1442x903",
     "note": "full page"
   },
@@ -175,7 +175,7 @@
     "theme": "light",
     "console": "test-results/design-parity/1e-settings-light-console.png",
     "design": "test-results/design-parity/1e-settings-light-design.png",
-    "diffPercent": 5.1,
+    "diffPercent": 5.3,
     "sizes": "console 1440x900 · design 1442x903",
     "note": "full page"
   },
@@ -184,7 +184,7 @@
     "theme": "light",
     "console": "test-results/design-parity/1f-flight-review-light-console.png",
     "design": "test-results/design-parity/1f-flight-review-light-design.png",
-    "diffPercent": 3.8,
+    "diffPercent": 4.3,
     "sizes": "console 1440x900 · design 1442x903",
     "note": "full page"
   },
@@ -202,7 +202,7 @@
     "theme": "light",
     "console": "test-results/design-parity/1h-dialog-question-light-console.png",
     "design": "test-results/design-parity/1h-dialog-question-light-design.png",
-    "diffPercent": 22.3,
+    "diffPercent": 19.9,
     "sizes": "console 319x326 · design 682x523",
     "note": "the rail question card (the design draws 1h as a 680x520 dialog; turn 2 of the design replaced it with this card)"
   },
@@ -211,7 +211,7 @@
     "theme": "light",
     "console": "test-results/design-parity/1i-dialog-confirm-light-console.png",
     "design": "test-results/design-parity/1i-dialog-confirm-light-design.png",
-    "diffPercent": 29,
+    "diffPercent": 29.3,
     "sizes": "console 319x223 · design 682x523",
     "note": "the rail confirm card, from the server gate behind the board's Merge click"
   },
@@ -229,7 +229,7 @@
     "theme": "light",
     "console": "test-results/design-parity/1k-dialog-decision-light-console.png",
     "design": "test-results/design-parity/1k-dialog-decision-light-design.png",
-    "diffPercent": 26.6,
+    "diffPercent": 25.8,
     "sizes": "console 319x322 · design 682x523",
     "note": "the rail decision card"
   },
@@ -247,7 +247,7 @@
     "theme": "light",
     "console": "test-results/design-parity/2b-flow-confirm-light-console.png",
     "design": "test-results/design-parity/2b-flow-confirm-light-design.png",
-    "diffPercent": 6.2,
+    "diffPercent": 6.3,
     "sizes": "console 1440x900 · design 1442x903",
     "note": "full page"
   },
@@ -256,7 +256,7 @@
     "theme": "light",
     "console": "test-results/design-parity/2c-flow-question-light-console.png",
     "design": "test-results/design-parity/2c-flow-question-light-design.png",
-    "diffPercent": 6.3,
+    "diffPercent": 6.2,
     "sizes": "console 1440x900 · design 1442x903",
     "note": "full page"
   },
