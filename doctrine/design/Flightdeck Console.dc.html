@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics><meta name="design_doc_mode" content="canvas"><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;700&family=Barlow+Condensed:wght@400;600&display=swap"><style>body{margin:0;background:#d9d9db;font-family:Barlow,system-ui,sans-serif}a{color:#416180}a:hover{color:#1d2d3d}.dv-turn{padding:40px 44px 32px;border-bottom:1px solid rgba(0,0,0,.08);scroll-margin-top:16px}.dv-thd{display:flex;align-items:baseline;gap:10px;margin:0 0 20px}.dv-tid{font:600 10px ui-monospace,Menlo,monospace;padding:3px 7px;background:#1a1a1a;color:#fff;border-radius:4px;text-decoration:none}.dv-tname{font:600 13px/1.2 system-ui,sans-serif;color:#1a1a1a}.dv-opts{display:flex;flex-wrap:wrap;gap:36px;align-items:flex-start}.dv-opt{flex:none;display:flex;flex-direction:column;gap:9px;scroll-margin-top:16px}.dv-oid{font:600 10.5px ui-monospace,Menlo,monospace;padding:3px 7px;background:rgba(0,0,0,.08);color:#1a1a1a;border-radius:5px;text-decoration:none}.dv-olabel{display:flex;align-items:baseline;gap:8px;font:400 12px/1.3 system-ui,sans-serif;color:rgba(0,0,0,.6)}.dv-card{max-width:100%;border:1px solid rgba(0,0,0,.12);box-shadow:0 1px 3px rgba(0,0,0,.08);overflow:hidden}.dv-opt:target .dv-oid{background:#2a78d6;color:#fff}.dv-next{margin:22px 0 0;font:12px/1.5 system-ui,sans-serif;color:rgba(0,0,0,.5)}.dv-th{margin-left:auto;white-space:nowrap;font:500 11px system-ui,sans-serif;padding:3px 9px;border:1px solid rgba(0,0,0,.2);background:#fff;border-radius:4px;cursor:pointer}.dv-th:hover{background:#eee}.dv-note{max-width:820px;font:13px/1.55 system-ui,sans-serif;color:rgba(0,0,0,.65);margin:0 0 24px}
+[data-theme="light"]{--bg:#f2f2f3;--panel:#e9e9ea;--ink:#1d1f20;--ink2:#5d5d60;--ink3:#7a7a7d;--line:rgba(29,31,32,.16);--line2:rgba(29,31,32,.34);--mark:rgba(29,31,32,.55);--acc:#5980a6;--accInk:#f2f2f3;--accTint:#eef6ff;--warn:oklch(.52 .13 45);--warnInk:#f2f2f3;--warnTint:oklch(.52 .13 45/.08);--scrim:rgba(43,43,45,.55)}
+[data-theme="dark"]{--bg:#1d1f20;--panel:#26282b;--ink:#e9e9ea;--ink2:#b7b7ba;--ink3:#8a8a8d;--line:rgba(233,233,234,.16);--line2:rgba(233,233,234,.34);--mark:rgba(233,233,234,.55);--acc:#94bce3;--accInk:#1d1f20;--accTint:rgba(148,188,227,.12);--warn:oklch(.8 .12 45);--warnInk:#1d1f20;--warnTint:oklch(.8 .12 45/.1);--scrim:rgba(0,0,0,.6)}
+[data-theme]{--mk:linear-gradient(var(--mark),var(--mark)) 5px 0/1px 100% no-repeat,linear-gradient(var(--mark),var(--mark)) 0 5px/100% 1px no-repeat}</style></helmet>
+<section class="dv-turn" id="t2">
+<div class="dv-thd"><a class="dv-tid" href="#t2">2</a><span class="dv-tname">Dialogues rethought: nothing is modal. Every dialogue is a card in the Conductor rail, so the operator can talk about it, change the plan, and decide, without leaving the board. Replaces <a class="dv-oid" href="#1h">1h</a>–<a class="dv-oid" href="#1k">1k</a>.</span></div>
+<p class="dv-note"><b>What changed.</b> The modal in <a class="dv-oid" href="#1j">1j</a> blocked the one place a decision gets made. Now the card carries the same buttons, but the text box under it is live: replying goes to that ticket's card (the topic chip above the input), the Conductor answers with facts from the lane, and the operator can steer to a different fix. The composer has a recipient switch: <b>Conductor</b> (the fleet's manager: merges, queue, blockers, other people) or <b>the agent on that ticket</b> (the worker itself: what it tried, what it needs, what to do instead). Agent replies are marked with the ticket key and a dashed rule; Conductor receipts get a solid one and Undo. The board behind stays fully usable.</p>
+<div class="dv-opts">
+
+<div class="dv-opt" id="2a"><div class="dv-olabel"><a class="dv-oid" href="#2a">2a</a>Blocker that offers a choice, then a different fix agreed with the agent itself<button class="dv-th" onClick="{{ flip }}">Flip theme</button></div>
+<div class="dv-card" data-theme="dark" data-screen-label="Rail blocker conversation" style="width:1440px;height:900px;display:flex;flex-direction:column;background:var(--bg);color:var(--ink);font-family:Barlow,system-ui,sans-serif;font-size:14px;line-height:1.45">
+  <dc-import name="FD Chrome" active="Board" hint-size="1440px,80px"></dc-import>
+  <div style="flex:1;display:flex;min-height:0">
+    <dc-import name="FD Board" hint-size="1040px,100%"></dc-import>
+    <dc-import name="FD Rail" messages="{{ convoBlocker }}" topic="BBZ-178" recipient="agent" stick-to-end="{{ true }}" commands="{{ cmdsBlocker }}" hint-size="400px,100%"></dc-import>
+  </div>
+</div></div>
+
+<div class="dv-opt" id="2b"><div class="dv-olabel"><a class="dv-oid" href="#2b">2b</a>Confirm before an irreversible action, with a question first<button class="dv-th" onClick="{{ flip }}">Flip theme</button></div>
+<div class="dv-card" data-theme="light" data-screen-label="Rail confirm conversation" style="width:1440px;height:900px;display:flex;flex-direction:column;background:var(--bg);color:var(--ink);font-family:Barlow,system-ui,sans-serif;font-size:14px;line-height:1.45">
+  <dc-import name="FD Chrome" active="Board" hint-size="1440px,80px"></dc-import>
+  <div style="flex:1;display:flex;min-height:0">
+    <dc-import name="FD Board" hint-size="1040px,100%"></dc-import>
+    <dc-import name="FD Rail" messages="{{ convoConfirm }}" topic="BBZ-96" stick-to-end="{{ true }}" commands="{{ cmdsConfirm }}" hint-size="400px,100%"></dc-import>
+  </div>
+</div></div>
+
+<div class="dv-opt" id="2c"><div class="dv-olabel"><a class="dv-oid" href="#2c">2c</a>An agent's question, answered with a fourth option it did not offer<button class="dv-th" onClick="{{ flip }}">Flip theme</button></div>
+<div class="dv-card" data-theme="dark" data-screen-label="Rail question conversation" style="width:1440px;height:900px;display:flex;flex-direction:column;background:var(--bg);color:var(--ink);font-family:Barlow,system-ui,sans-serif;font-size:14px;line-height:1.45">
+  <dc-import name="FD Chrome" active="Board" hint-size="1440px,80px"></dc-import>
+  <div style="flex:1;display:flex;min-height:0">
+    <dc-import name="FD Board" hint-size="1040px,100%"></dc-import>
+    <dc-import name="FD Rail" messages="{{ convoQuestion }}" topic="BBZ-226" stick-to-end="{{ true }}" commands="{{ cmdsQuestion }}" hint-size="400px,100%"></dc-import>
+  </div>
+</div></div>
+
+<div class="dv-opt" id="2d"><div class="dv-olabel"><a class="dv-oid" href="#2d">2d</a>A decision the agent made, challenged and changed<button class="dv-th" onClick="{{ flip }}">Flip theme</button></div>
+<div class="dv-card" data-theme="light" data-screen-label="Rail decision conversation" style="width:1440px;height:900px;display:flex;flex-direction:column;background:var(--bg);color:var(--ink);font-family:Barlow,system-ui,sans-serif;font-size:14px;line-height:1.45">
+  <dc-import name="FD Chrome" active="Board" hint-size="1440px,80px"></dc-import>
+  <div style="flex:1;display:flex;min-height:0">
+    <dc-import name="FD Board" hint-size="1040px,100%"></dc-import>
+    <dc-import name="FD Rail" messages="{{ convoDecision }}" topic="BBZ-119" stick-to-end="{{ true }}" commands="{{ cmdsDecision }}" hint-size="400px,100%"></dc-import>
+  </div>
+</div></div>
+
+</div>
+<p class="dv-next">Try next: "show the same card when the operator clicks a lane card's Answer button" · "add a Discuss button to the lane sheet in <a class="dv-oid" href="#1d">1d</a> that sets the topic chip" · "what does the rail look like when two cards are waiting at once"</p>
+</section>
+<section class="dv-turn" id="t1">
+<div class="dv-thd"><a class="dv-tid" href="#t1">1</a><span class="dv-tname">Flightdeck operator console · Industry system · 1440×900 · each artboard flips between dark and light</span></div>
+<p class="dv-note"><b>Assumptions.</b> Sample data is the BBZ (Boltbetz Bankroll) board from the repo's fixtures; teammates Marcus (AWS) and Priya (Jira), vendor GitHub billing. Colour is held to the Industry steel accent plus one rust tone that means exactly one thing: a person has to act. Everything else is neutral ink. Ticket keys and headings are Barlow Condensed; sentences are Barlow, never below 12px. The Conductor rail is on every page; the Blockers tab is first in the nav because it is the first thing read.</p>
+<div class="dv-opts">
+
+<div class="dv-opt" id="1a"><div class="dv-olabel"><a class="dv-oid" href="#1a">1a</a>Board<button class="dv-th" onClick="{{ flip }}">Flip theme</button></div>
+<div class="dv-card" data-theme="dark" data-screen-label="Board" style="width:1440px;height:900px;display:flex;flex-direction:column;background:var(--bg);color:var(--ink);font-family:Barlow,system-ui,sans-serif;font-size:14px;line-height:1.45">
+  <dc-import name="FD Chrome" active="Board" hint-size="1440px,80px"></dc-import>
+  <div style="flex:1;display:flex;min-height:0">
+    <dc-import name="FD Board" hint-size="1040px,100%"></dc-import>
+    <dc-import name="FD Rail" messages="{{ rail }}" hint-size="400px,100%"></dc-import>
+  </div>
+</div></div>
+
+<div class="dv-opt" id="1b"><div class="dv-olabel"><a class="dv-oid" href="#1b">1b</a>Blockers<button class="dv-th" onClick="{{ flip }}">Flip theme</button></div>
+<div class="dv-card" data-theme="light" data-screen-label="Blockers" style="width:1440px;height:900px;display:flex;flex-direction:column;background:var(--bg);color:var(--ink);font-family:Barlow,system-ui,sans-serif;font-size:14px;line-height:1.45">
+  <dc-import name="FD Chrome" active="Blockers" hint-size="1440px,80px"></dc-import>
+  <div style="flex:1;display:flex;min-height:0">
+    <main style="flex:1;min-width:0;overflow:auto;padding:26px 28px;display:flex;flex-direction:column;gap:18px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;max-width:860px"><h2 style="margin:0;font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:30px;line-height:1">Three things are stopping work</h2><span style="font-size:13px;color:var(--ink3)">Sorted by how many agents each one stops</span></div>
+      <sc-for list="{{ blockers }}" as="b" hint-placeholder-count="3">
+        <div style="position:relative;border:1px solid {{ b.border }};padding:18px 20px;max-width:860px;display:grid;grid-template-columns:110px 1fr 210px;gap:22px;background:{{ b.bg }}">
+          <i style="position:absolute;width:11px;height:11px;background:var(--mk);top:-6px;left:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);top:-6px;right:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);bottom:-6px;left:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);bottom:-6px;right:-6px"></i>
+          <div><div style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:44px;line-height:1;color:{{ b.numColor }}">{{ b.count }}</div><div style="font-size:12px;color:var(--ink3);text-transform:uppercase;letter-spacing:.1em;margin-top:4px">{{ b.countLabel }}</div><div style="font-size:12px;color:var(--ink3);margin-top:8px">since {{ b.since }}</div></div>
+          <div style="display:flex;flex-direction:column;gap:8px;min-width:0">
+            <h3 style="margin:0;font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:23px;line-height:1.15">{{ b.title }}</h3>
+            <ul style="margin:0;padding:0;list-style:none;color:var(--ink2);display:flex;flex-direction:column;gap:2px"><sc-for list="{{ b.stops }}" as="s" hint-placeholder-count="2"><li><span style="font-family:'Barlow Condensed',sans-serif;font-weight:600;letter-spacing:.05em;color:var(--ink)">{{ s.key }}</span> {{ s.title }}</li></sc-for></ul>
+            <p style="margin:2px 0 0"><span style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink3);margin-right:8px">Clears when</span>{{ b.action }}</p>
+          </div>
+          <div style="display:flex;flex-direction:column;justify-content:space-between;gap:12px">
+            <div style="display:flex;flex-direction:column;gap:1px"><span style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink3)">Who can do it</span><span style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:19px;color:{{ b.whoColor }}">{{ b.who }}</span><span style="font-size:12px;color:var(--ink3)">{{ b.whoNote }}</span></div>
+            <button style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:15px;letter-spacing:.04em;padding:8px 16px;min-height:40px;border-radius:0;cursor:pointer;background:{{ b.bBg }};color:{{ b.bInk }};border:1px solid {{ b.bBd }}">{{ b.btn }}</button>
+          </div>
+          <div style="grid-column:1/-1;display:flex;gap:8px;align-items:stretch;border-top:1px solid var(--line);padding-top:12px"><input placeholder="{{ b.ask }}" style="flex:1;min-width:0;min-height:40px;padding:6px 10px;font:inherit;font-size:14px;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:0;outline:none" style-focus="border-color:var(--acc)"><button style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:14px;letter-spacing:.04em;padding:6px 14px;white-space:nowrap;background:transparent;color:var(--ink);border:1px solid var(--line2);border-radius:0;cursor:pointer" style-hover="border-color:var(--ink)">{{ b.askBtn }}</button></div>
+        </div>
+      </sc-for>
+      <details style="max-width:860px;border-top:1px solid var(--line);padding-top:12px;margin-top:6px">
+        <summary style="cursor:pointer;list-style:none;display:flex;gap:10px;align-items:center;font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink3)"><span style="display:inline-block;width:0;height:0;border-left:5px solid var(--ink3);border-top:3px solid transparent;border-bottom:3px solid transparent"></span>Cleared today <span style="font-weight:400">4</span></summary>
+        <ul style="margin:10px 0 0;padding:0;list-style:none;display:flex;flex-direction:column;gap:6px;color:var(--ink2)"><li>Jira rate limit lifted at 09:20 — restarted BBZ-77, BBZ-88.</li><li>Priya moved BBZ-133 out of Needs Design at 09:41.</li><li>You answered BBZ-88's question about the cache TTL at 08:55.</li><li>GitHub checks recovered at 08:30 after the runner restart.</li></ul>
+      </details>
+    </main>
+    <dc-import name="FD Rail" messages="{{ rail }}" hint-size="400px,100%"></dc-import>
+  </div>
+</div></div>
+
+<div class="dv-opt" id="1c"><div class="dv-olabel"><a class="dv-oid" href="#1c">1c</a>Queue<button class="dv-th" onClick="{{ flip }}">Flip theme</button></div>
+<div class="dv-card" data-theme="dark" data-screen-label="Queue" style="width:1440px;height:900px;display:flex;flex-direction:column;background:var(--bg);color:var(--ink);font-family:Barlow,system-ui,sans-serif;font-size:14px;line-height:1.45">
+  <dc-import name="FD Chrome" active="Queue" hint-size="1440px,80px"></dc-import>
+  <div style="flex:1;display:flex;min-height:0">
+    <main style="flex:1;min-width:0;overflow:auto;padding:26px 28px;display:flex;flex-direction:column;gap:20px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:24px">
+        <div><h2 style="margin:0;font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:30px;line-height:1">What runs next</h2><p style="margin:6px 0 0;color:var(--ink2)">Priority order from Ready for Dev. The next ticket starts the moment a slot frees.</p></div>
+        <div style="position:relative;border:1px solid var(--line);padding:12px 16px;display:flex;align-items:center;gap:16px">
+          <i style="position:absolute;width:11px;height:11px;background:var(--mk);top:-6px;left:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);top:-6px;right:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);bottom:-6px;left:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);bottom:-6px;right:-6px"></i>
+          <div style="display:flex;flex-direction:column"><label style="font-size:12px;color:var(--ink2)">Agents running at once</label><span style="font-size:12px;color:var(--ink3)">7 working · 1 idle</span></div>
+          <div style="display:flex;align-items:stretch;border:1px solid var(--line2)">
+            <button onClick="{{ dec }}" style="width:36px;background:transparent;border:0;border-right:1px solid var(--line2);color:var(--ink);font-size:18px;cursor:pointer" style-hover="background:var(--panel)">&#x2212;</button>
+            <span style="width:56px;display:grid;place-items:center;font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:24px;font-variant-numeric:tabular-nums">{{ width }}</span>
+            <button onClick="{{ inc }}" style="width:36px;background:transparent;border:0;border-left:1px solid var(--line2);color:var(--ink);font-size:18px;cursor:pointer" style-hover="background:var(--panel)">+</button>
+          </div>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:44px 1fr 1fr 190px;gap:18px;padding:0 16px 8px;border-bottom:1px solid var(--line2);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink3)"><span>#</span><span>Ticket</span><span>Why it is next</span><span>Starts</span></div>
+      <div style="display:flex;flex-direction:column">
+        <sc-for list="{{ queue }}" as="q" hint-placeholder-count="5">
+          <div style="display:grid;grid-template-columns:44px 1fr 1fr 190px;gap:18px;align-items:baseline;padding:14px 16px;border-bottom:1px solid var(--line)" style-hover="background:var(--panel)">
+            <span style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:22px;color:var(--ink3);font-variant-numeric:tabular-nums">{{ q.n }}</span>
+            <span><span style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:15px;letter-spacing:.05em;color:var(--ink2);margin-right:10px">{{ q.key }}</span><span style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:19px">{{ q.title }}</span></span>
+            <span style="color:var(--ink2)">{{ q.why }}</span>
+            <span style="color:{{ q.whenColor }}">{{ q.when }}</span>
+          </div>
+        </sc-for>
+      </div>
+      <p style="margin:0;font-size:12px;color:var(--ink3)">Below these, 14 more tickets sit in Ready for Dev at priority 4 and lower. They start in Jira order.</p>
+    </main>
+    <dc-import name="FD Rail" messages="{{ rail }}" hint-size="400px,100%"></dc-import>
+  </div>
+</div></div>
+
+<div class="dv-opt" id="1d"><div class="dv-olabel"><a class="dv-oid" href="#1d">1d</a>Lane sheet over the board<button class="dv-th" onClick="{{ flip }}">Flip theme</button></div>
+<div class="dv-card" data-theme="light" data-screen-label="Lane sheet" style="width:1440px;height:900px;display:flex;flex-direction:column;background:var(--bg);color:var(--ink);font-family:Barlow,system-ui,sans-serif;font-size:14px;line-height:1.45">
+  <dc-import name="FD Chrome" active="Board" hint-size="1440px,80px"></dc-import>
+  <div style="flex:1;display:flex;min-height:0">
+    <div style="flex:1;min-width:0;position:relative;display:flex">
+      <dc-import name="FD Board" hint-size="1040px,100%"></dc-import>
+      <div style="position:absolute;inset:0;background:var(--scrim)"></div>
+      <aside style="position:absolute;top:0;right:0;bottom:0;width:600px;background:var(--bg);border-left:1px solid var(--line2);box-shadow:-12px 0 32px rgba(0,0,0,.25);display:flex;flex-direction:column">
+        <div style="padding:20px 24px 14px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:flex-start;gap:16px">
+          <div><div style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:15px;letter-spacing:.05em;color:var(--ink2)">BBZ-226 · <span style="color:var(--warn)">Needs you · 9 min</span></div><h2 style="margin:2px 0 0;font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:28px;line-height:1.1">Rate-limit the odds refresh endpoint</h2></div>
+          <button style="width:32px;height:32px;flex:none;background:transparent;border:1px solid var(--line2);color:var(--ink2);font-size:15px;cursor:pointer;border-radius:0" style-hover="color:var(--ink)">&#x2715;</button>
+        </div>
+        <div style="flex:1;overflow:auto;padding:18px 24px;display:flex;flex-direction:column;gap:20px">
+          <div style="display:flex;flex-direction:column;gap:8px;font-size:15px">
+            <p style="margin:0"><span style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink3);display:inline-block;width:110px">What happened</span>It read the ticket and the odds service, then drafted a token-bucket limiter with four tests.</p>
+            <p style="margin:0"><span style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink3);display:inline-block;width:110px">Where it is</span>Paused for 9 minutes, waiting on your answer before it decides what the limiter keys on.</p>
+            <p style="margin:0"><span style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink3);display:inline-block;width:110px">What's next</span>Once you answer it finishes the limiter, opens a draft PR, and the council reviews it.</p>
+          </div>
+          <div style="position:relative;border:1px solid var(--warn);background:var(--warnTint);padding:14px 16px;display:flex;flex-direction:column;gap:6px">
+            <i style="position:absolute;width:11px;height:11px;background:var(--mk);top:-6px;left:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);top:-6px;right:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);bottom:-6px;left:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);bottom:-6px;right:-6px"></i>
+            <span style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--warn);font-weight:700">It asked · 10:48</span>
+            <p style="margin:0;font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:20px;line-height:1.2">Should I limit the odds refresh per user or per IP address?</p>
+            <p style="margin:0;color:var(--ink2)">The ticket mentions account abuse but not which key to use. Per user needs a login; per IP also catches anonymous traffic.</p>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:0">
+            <span style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink3);margin-bottom:8px">Its story</span>
+            <sc-for list="{{ story }}" as="s" hint-placeholder-count="5">
+              <div style="display:grid;grid-template-columns:44px 14px 1fr;gap:10px;align-items:baseline;padding:5px 0"><span style="font-size:12px;color:var(--ink3);font-variant-numeric:tabular-nums">{{ s.at }}</span><span style="width:7px;height:7px;background:{{ s.dot }};display:inline-block;align-self:center;margin-left:3px"></span><span style="color:{{ s.color }}">{{ s.text }}</span></div>
+            </sc-for>
+          </div>
+        </div>
+        <div style="border-top:1px solid var(--line);padding:16px 24px 20px;display:flex;flex-direction:column;gap:16px">
+          <div style="display:flex;flex-direction:column;gap:8px"><label style="font-size:12px;color:var(--warn);font-weight:700;letter-spacing:.1em;text-transform:uppercase">Answer its question</label>
+            <div style="display:flex;flex-direction:column;gap:6px">
+              <button style="font:inherit;font-size:14px;line-height:1.35;text-align:left;padding:9px 12px;min-height:40px;width:100%;background:transparent;border:1px solid var(--line2);color:var(--ink);border-radius:0;cursor:pointer;display:flex;gap:10px;align-items:flex-start" style-hover="border-color:var(--warn);background:var(--warnTint)"><i style="width:12px;height:12px;flex:none;margin-top:3px;border:1px solid var(--line2);display:block"></i><span>Per user, the way bet placement and deposits already work</span></button>
+              <button style="font:inherit;font-size:14px;line-height:1.35;text-align:left;padding:9px 12px;min-height:40px;width:100%;background:transparent;border:1px solid var(--line2);color:var(--ink);border-radius:0;cursor:pointer;display:flex;gap:10px;align-items:flex-start" style-hover="border-color:var(--warn);background:var(--warnTint)"><i style="width:12px;height:12px;flex:none;margin-top:3px;border:1px solid var(--line2);display:block"></i><span>Per IP address, so anonymous callers are covered too</span></button>
+              <button style="font:inherit;font-size:14px;line-height:1.35;text-align:left;padding:9px 12px;min-height:40px;width:100%;background:transparent;border:1px solid var(--line2);color:var(--ink);border-radius:0;cursor:pointer;display:flex;gap:10px;align-items:flex-start" style-hover="border-color:var(--warn);background:var(--warnTint)"><i style="width:12px;height:12px;flex:none;margin-top:3px;border:1px solid var(--line2);display:block"></i><span>Both: per user when logged in, per IP otherwise</span></button>
+            </div>
+            <div style="display:flex;gap:8px;align-items:stretch"><textarea rows="2" placeholder="Or write the answer in full: which key, what limit, which helper to use…" style="flex:1;min-width:0;min-height:56px;padding:8px 10px;font:inherit;font-size:14px;line-height:1.45;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:0;outline:none;resize:vertical" style-focus="border-color:var(--warn)"></textarea><button style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:15px;letter-spacing:.04em;padding:6px 18px;min-width:88px;background:var(--warn);color:var(--warnInk);border:1px solid var(--warn);border-radius:0;cursor:pointer">Answer</button></div></div>
+          <div style="display:flex;flex-direction:column;gap:6px"><label style="font-size:12px;color:var(--ink2);letter-spacing:.1em;text-transform:uppercase">Send a note while it works</label><div style="display:flex;gap:8px;align-items:stretch"><input placeholder="e.g. Use the existing redis client" style="flex:1;min-width:0;min-height:40px;padding:6px 10px;font:inherit;font-size:14px;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:0;outline:none" style-focus="border-color:var(--acc)"><button style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:15px;letter-spacing:.04em;padding:6px 18px;min-width:88px;background:transparent;color:var(--ink);border:1px solid var(--line2);border-radius:0;cursor:pointer" style-hover="border-color:var(--ink)">Send</button></div></div>
+        </div>
+      </aside>
+    </div>
+    <dc-import name="FD Rail" messages="{{ rail }}" hint-size="400px,100%"></dc-import>
+  </div>
+</div></div>
+
+<div class="dv-opt" id="1e"><div class="dv-olabel"><a class="dv-oid" href="#1e">1e</a>Settings<button class="dv-th" onClick="{{ flip }}">Flip theme</button></div>
+<div class="dv-card" data-theme="dark" data-screen-label="Settings" style="width:1440px;height:900px;display:flex;flex-direction:column;background:var(--bg);color:var(--ink);font-family:Barlow,system-ui,sans-serif;font-size:14px;line-height:1.45">
+  <dc-import name="FD Chrome" active="Settings" hint-size="1440px,80px"></dc-import>
+  <div style="flex:1;display:flex;min-height:0">
+    <main style="flex:1;min-width:0;overflow:auto;padding:26px 28px;display:grid;grid-template-columns:1fr 1fr;gap:28px;align-content:start;max-width:1000px">
+      <section style="display:flex;flex-direction:column;gap:10px;grid-column:1/-1">
+        <h6 style="margin:0;font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink2)">Data sources</h6>
+        <sc-for list="{{ sources }}" as="s" hint-placeholder-count="3">
+          <div style="position:relative;border:1px solid {{ s.border }};padding:14px 18px;display:grid;grid-template-columns:150px 1fr auto;gap:18px;align-items:center;background:{{ s.bg }}">
+            <i style="position:absolute;width:11px;height:11px;background:var(--mk);top:-6px;left:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);top:-6px;right:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);bottom:-6px;left:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);bottom:-6px;right:-6px"></i>
+            <div style="display:flex;align-items:center;gap:10px"><i style="width:10px;height:10px;background:{{ s.dot }};display:block;flex:none"></i><span style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:20px">{{ s.name }}</span></div>
+            <div><div style="color:{{ s.statusColor }};font-weight:500">{{ s.status }}</div><div style="font-size:12px;color:var(--ink3)">{{ s.note }}</div></div>
+            <button style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:14px;letter-spacing:.04em;padding:6px 14px;border-radius:0;cursor:pointer;background:{{ s.bBg }};color:{{ s.bInk }};border:1px solid {{ s.bBd }};white-space:nowrap">{{ s.btn }}</button>
+          </div>
+        </sc-for>
+      </section>
+      <section style="display:flex;flex-direction:column;gap:10px;grid-column:1/-1">
+        <h6 style="margin:0;font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink2)">AI accounts</h6>
+        <sc-for list="{{ accounts }}" as="a" hint-placeholder-count="2">
+          <div style="position:relative;border:1px solid var(--line);padding:14px 18px;display:grid;grid-template-columns:150px 1fr 200px;gap:18px;align-items:center">
+            <i style="position:absolute;width:11px;height:11px;background:var(--mk);top:-6px;left:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);top:-6px;right:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);bottom:-6px;left:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);bottom:-6px;right:-6px"></i>
+            <div><div style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:20px">{{ a.name }}</div><div style="font-size:12px;color:var(--ink3)">{{ a.plan }}</div></div>
+            <div style="display:flex;flex-direction:column;gap:6px"><div style="display:flex;justify-content:space-between"><span>{{ a.headroom }}</span><span style="font-size:12px;color:var(--ink3)">{{ a.resets }}</span></div><div style="height:6px;border:1px solid var(--line2);position:relative"><div style="position:absolute;top:0;bottom:0;left:0;width:{{ a.pct }};background:var(--acc)"></div></div></div>
+            <span style="font-size:12px;color:var(--ink3);text-align:right">{{ a.used }}</span>
+          </div>
+        </sc-for>
+        <button style="align-self:flex-start;font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:14px;letter-spacing:.04em;padding:6px 14px;background:transparent;color:var(--ink);border:1px solid var(--line2);border-radius:0;cursor:pointer" style-hover="border-color:var(--ink)">Add an account</button>
+      </section>
+      <section style="position:relative;border:1px solid var(--line);padding:18px 20px;display:flex;flex-direction:column;gap:12px">
+        <i style="position:absolute;width:11px;height:11px;background:var(--mk);top:-6px;left:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);top:-6px;right:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);bottom:-6px;left:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);bottom:-6px;right:-6px"></i>
+        <h6 style="margin:0;font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink2)">Agents</h6>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:16px"><div><label style="display:block;font-size:14px">Agents running at once</label><span style="font-size:12px;color:var(--ink3)">Each agent takes one ticket at a time. Lowering it lets running work finish.</span></div>
+          <div style="display:flex;align-items:stretch;border:1px solid var(--line2);flex:none"><button onClick="{{ dec }}" style="width:36px;background:transparent;border:0;border-right:1px solid var(--line2);color:var(--ink);font-size:18px;cursor:pointer" style-hover="background:var(--panel)">&#x2212;</button><span style="width:56px;display:grid;place-items:center;font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:24px">{{ width }}</span><button onClick="{{ inc }}" style="width:36px;background:transparent;border:0;border-left:1px solid var(--line2);color:var(--ink);font-size:18px;cursor:pointer" style-hover="background:var(--panel)">+</button></div></div>
+      </section>
+      <section style="position:relative;border:1px solid var(--line);padding:18px 20px;display:flex;flex-direction:column;gap:12px">
+        <i style="position:absolute;width:11px;height:11px;background:var(--mk);top:-6px;left:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);top:-6px;right:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);bottom:-6px;left:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);bottom:-6px;right:-6px"></i>
+        <h6 style="margin:0;font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink2)">Daily spend cap</h6>
+        <div style="display:flex;flex-direction:column;gap:6px"><label style="font-size:14px">Tokens per day</label><div style="display:flex;gap:8px"><input value="40M" style="width:120px;min-height:36px;padding:6px 10px;font:inherit;font-size:16px;font-family:'Barlow Condensed',sans-serif;font-weight:600;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:0;outline:none" style-focus="border-color:var(--acc)"><div style="display:inline-flex;border:1px solid var(--line2)"><span style="padding:7px 12px;font-size:13px;background:var(--acc);color:var(--accInk)">Stop new work at the cap</span><span style="padding:7px 12px;font-size:13px;color:var(--ink2);border-left:1px solid var(--line2)">Warn only</span></div></div></div>
+        <div style="display:flex;flex-direction:column;gap:6px"><div style="display:flex;justify-content:space-between"><span>18.2M used today</span><span style="font-size:12px;color:var(--ink3)">resets at midnight</span></div><div style="height:6px;border:1px solid var(--line2);position:relative"><div style="position:absolute;top:0;bottom:0;left:0;width:45%;background:var(--acc)"></div></div></div>
+      </section>
+      <p style="margin:0;grid-column:1/-1;font-size:12px;color:var(--ink3)">Changes apply immediately and are written to the journal, so any of them can be undone from the Conductor.</p>
+    </main>
+    <dc-import name="FD Rail" messages="{{ rail }}" hint-size="400px,100%"></dc-import>
+  </div>
+</div></div>
+
+<div class="dv-opt" id="1f"><div class="dv-olabel"><a class="dv-oid" href="#1f">1f</a>Flight review<button class="dv-th" onClick="{{ flip }}">Flip theme</button></div>
+<div class="dv-card" data-theme="light" data-screen-label="Flight review" style="width:1440px;height:900px;display:flex;flex-direction:column;background:var(--bg);color:var(--ink);font-family:Barlow,system-ui,sans-serif;font-size:14px;line-height:1.45">
+  <dc-import name="FD Chrome" active="Review" hint-size="1440px,80px"></dc-import>
+  <div style="flex:1;display:flex;min-height:0">
+    <main style="flex:1;min-width:0;overflow:auto;padding:26px 28px;display:flex;flex-direction:column;gap:22px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline"><h2 style="margin:0;font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:30px;line-height:1">Today, Tuesday 8 September</h2><span style="font-size:13px;color:var(--ink3)">Since 07:00 · updates live</span></div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:18px">
+        <sc-for list="{{ metrics }}" as="m" hint-placeholder-count="6">
+          <div style="position:relative;border:1px solid {{ m.border }};padding:20px 22px;display:flex;flex-direction:column;gap:6px;min-height:170px;grid-column:{{ m.span }}">
+            <i style="position:absolute;width:11px;height:11px;background:var(--mk);top:-6px;left:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);top:-6px;right:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);bottom:-6px;left:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);bottom:-6px;right:-6px"></i>
+            <span style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink3)">{{ m.label }}</span>
+            <span style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:56px;line-height:1;color:{{ m.color }};font-variant-numeric:tabular-nums">{{ m.value }}</span>
+            <p style="margin:auto 0 0;color:var(--ink2)">{{ m.note }}</p>
+          </div>
+        </sc-for>
+      </div>
+      <div style="position:relative;border:1px solid var(--line);padding:16px 20px;display:grid;grid-template-columns:1fr auto;gap:20px;align-items:center;background:var(--panel)">
+        <div><span style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink3)">One change worth making</span><p style="margin:4px 0 0;font-size:15px">Let agents pick the obvious default when a question has one, and tell you afterwards. Today that would have saved 31 of the 47 minutes agents spent waiting on answers.</p></div>
+        <div style="display:flex;gap:8px"><button style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:14px;letter-spacing:.04em;padding:7px 14px;background:transparent;color:var(--ink);border:1px solid var(--line2);border-radius:0;cursor:pointer" style-hover="border-color:var(--ink)">Not now</button><button style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:14px;letter-spacing:.04em;padding:7px 14px;background:var(--acc);color:var(--accInk);border:1px solid var(--acc);border-radius:0;cursor:pointer">Apply</button></div>
+      </div>
+    </main>
+    <dc-import name="FD Rail" messages="{{ rail }}" hint-size="400px,100%"></dc-import>
+  </div>
+</div></div>
+
+<div class="dv-opt" id="1g"><div class="dv-olabel"><a class="dv-oid" href="#1g">1g</a>Conductor rail, mid-conversation<button class="dv-th" onClick="{{ flip }}">Flip theme</button></div>
+<div class="dv-card" data-theme="dark" data-screen-label="Conductor rail" style="width:1440px;height:900px;display:flex;flex-direction:column;background:var(--bg);color:var(--ink);font-family:Barlow,system-ui,sans-serif;font-size:14px;line-height:1.45">
+  <dc-import name="FD Chrome" active="Board" hint-size="1440px,80px"></dc-import>
+  <div style="flex:1;display:flex;min-height:0">
+    <div style="flex:1;min-width:0;display:flex;opacity:.4"><dc-import name="FD Board" hint-size="1040px,100%"></dc-import></div>
+    <dc-import name="FD Rail" messages="{{ railLong }}" hint-size="400px,100%"></dc-import>
+  </div>
+</div></div>
+
+<div class="dv-opt" id="1h"><div class="dv-olabel"><a class="dv-oid" href="#1h">1h</a>Dialogue · an agent asks a question<button class="dv-th" onClick="{{ flip }}">Flip theme</button></div>
+<div class="dv-card" data-theme="light" data-screen-label="Dialog question" style="width:680px;height:520px;position:relative;display:grid;place-items:center;background:var(--bg);color:var(--ink);font-family:Barlow,system-ui,sans-serif;font-size:14px;line-height:1.45">
+  <div style="position:absolute;inset:0;background:var(--scrim)"></div>
+  <div role="dialog" style="position:relative;width:520px;border:1px solid var(--warn);background:var(--bg);padding:22px 24px;display:flex;flex-direction:column;gap:12px;box-shadow:0 12px 32px rgba(0,0,0,.3)">
+    <i style="position:absolute;width:11px;height:11px;background:var(--mk);top:-6px;left:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);top:-6px;right:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);bottom:-6px;left:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);bottom:-6px;right:-6px"></i>
+    <span style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--warn);font-weight:700">BBZ-226 asks · waiting 9 min</span>
+    <h2 style="margin:0;font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:26px;line-height:1.15">Should I limit the odds refresh per user or per IP address?</h2>
+    <p style="margin:0;color:var(--ink2)">The ticket mentions account abuse but not which key to use. It is paused until you answer.</p>
+    <div style="display:flex;flex-direction:column;gap:6px">
+      <button style="text-align:left;padding:10px 12px;background:transparent;border:1px solid var(--line2);color:var(--ink);border-radius:0;cursor:pointer;font:inherit;display:flex;justify-content:space-between;gap:12px" style-hover="border-color:var(--ink)"><span style="font-weight:700">Per user</span><span style="color:var(--ink3)">needs a login; anonymous traffic is not limited</span></button>
+      <button style="text-align:left;padding:10px 12px;background:transparent;border:1px solid var(--line2);color:var(--ink);border-radius:0;cursor:pointer;font:inherit;display:flex;justify-content:space-between;gap:12px" style-hover="border-color:var(--ink)"><span style="font-weight:700">Per IP</span><span style="color:var(--ink3)">catches everything; shared offices may hit it</span></button>
+      <button style="text-align:left;padding:10px 12px;background:transparent;border:1px solid var(--line2);color:var(--ink);border-radius:0;cursor:pointer;font:inherit;display:flex;justify-content:space-between;gap:12px" style-hover="border-color:var(--ink)"><span style="font-weight:700">Both</span><span style="color:var(--ink3)">two limiters; more code, safest</span></button>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px"><button style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:14px;letter-spacing:.04em;padding:7px 4px;background:transparent;color:var(--ink2);border:0;cursor:pointer" style-hover="color:var(--ink)">Ask me later</button><button style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:15px;letter-spacing:.04em;padding:8px 18px;background:var(--warn);color:var(--warnInk);border:1px solid var(--warn);border-radius:0;cursor:pointer">Answer</button></div>
+  </div>
+</div></div>
+
+<div class="dv-opt" id="1i"><div class="dv-olabel"><a class="dv-oid" href="#1i">1i</a>Dialogue · confirm before an irreversible action<button class="dv-th" onClick="{{ flip }}">Flip theme</button></div>
+<div class="dv-card" data-theme="dark" data-screen-label="Dialog confirm" style="width:680px;height:520px;position:relative;display:grid;place-items:center;background:var(--bg);color:var(--ink);font-family:Barlow,system-ui,sans-serif;font-size:14px;line-height:1.45">
+  <div style="position:absolute;inset:0;background:var(--scrim)"></div>
+  <div role="dialog" style="position:relative;width:520px;border:1px solid var(--acc);background:var(--bg);padding:22px 24px;display:flex;flex-direction:column;gap:12px;box-shadow:0 12px 32px rgba(0,0,0,.5)">
+    <i style="position:absolute;width:11px;height:11px;background:var(--mk);top:-6px;left:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);top:-6px;right:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);bottom:-6px;left:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);bottom:-6px;right:-6px"></i>
+    <span style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--acc);font-weight:700">Confirm · cannot be undone</span>
+    <h2 style="margin:0;font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:26px;line-height:1.15">Merge PR #412 into main?</h2>
+    <p style="margin:0;color:var(--ink2)"><span style="color:var(--ink);font-weight:500">BBZ-96 Fix duplicate deposit rows after retry.</span> Checks passed and the council approved it 3 minutes ago. Merging deploys to dev within five minutes and hands the ticket to QA.</p>
+    <div style="border:1px solid var(--line);padding:10px 12px;display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:13px;color:var(--ink2)"><span style="color:var(--ink3)">Changes</span><span>3 files in payments/ledger, +48 −12</span><span style="color:var(--ink3)">Then</span><span>Jira moves BBZ-96 to QA and the slot picks up BBZ-155.</span></div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:4px"><button style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:15px;letter-spacing:.04em;padding:8px 16px;background:transparent;color:var(--ink);border:1px solid var(--line2);border-radius:0;cursor:pointer" style-hover="border-color:var(--ink)">Cancel</button><button style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:15px;letter-spacing:.04em;padding:8px 18px;background:var(--acc);color:var(--accInk);border:1px solid var(--acc);border-radius:0;cursor:pointer">Merge PR #412</button></div>
+  </div>
+</div></div>
+
+<div class="dv-opt" id="1j"><div class="dv-olabel"><a class="dv-oid" href="#1j">1j</a>Dialogue · a blocker that offers a choice<button class="dv-th" onClick="{{ flip }}">Flip theme</button></div>
+<div class="dv-card" data-theme="light" data-screen-label="Dialog blocker" style="width:680px;height:520px;position:relative;display:grid;place-items:center;background:var(--bg);color:var(--ink);font-family:Barlow,system-ui,sans-serif;font-size:14px;line-height:1.45">
+  <div style="position:absolute;inset:0;background:var(--scrim)"></div>
+  <div role="dialog" style="position:relative;width:520px;border:1px solid var(--warn);background:var(--bg);padding:22px 24px;display:flex;flex-direction:column;gap:12px;box-shadow:0 12px 32px rgba(0,0,0,.3)">
+    <i style="position:absolute;width:11px;height:11px;background:var(--mk);top:-6px;left:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);top:-6px;right:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);bottom:-6px;left:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);bottom:-6px;right:-6px"></i>
+    <span style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--warn);font-weight:700">Blocked · Sentry token expired · 41 min</span>
+    <h2 style="margin:0;font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:26px;line-height:1.15">BBZ-178 cannot reach Sentry. What should it do?</h2>
+    <p style="margin:0;color:var(--ink2)">The breadcrumbs step needs to read the Sentry project. Everything else in the ticket is done and tested.</p>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div style="border:1px solid var(--line2);padding:12px;display:flex;flex-direction:column;gap:8px"><span style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:18px">Wait for a new token</span><span style="color:var(--ink2);flex:1">Stays parked. You paste a token in Settings and it resumes on its own.</span><button style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:14px;letter-spacing:.04em;padding:7px 12px;background:var(--warn);color:var(--warnInk);border:1px solid var(--warn);border-radius:0;cursor:pointer">Fix Sentry now</button></div>
+      <div style="border:1px solid var(--line2);padding:12px;display:flex;flex-direction:column;gap:8px"><span style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:18px">Finish without it</span><span style="color:var(--ink2);flex:1">Opens the PR today with a note for QA that breadcrumbs are missing.</span><button style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:14px;letter-spacing:.04em;padding:7px 12px;background:transparent;color:var(--ink);border:1px solid var(--line2);border-radius:0;cursor:pointer" style-hover="border-color:var(--ink)">Finish without Sentry</button></div>
+    </div>
+    <p style="margin:0;font-size:12px;color:var(--ink3)">BBZ-155 is next in the queue and needs Sentry too.</p>
+  </div>
+</div></div>
+
+<div class="dv-opt" id="1k"><div class="dv-olabel"><a class="dv-oid" href="#1k">1k</a>Dialogue · a decision the agent made for you<button class="dv-th" onClick="{{ flip }}">Flip theme</button></div>
+<div class="dv-card" data-theme="dark" data-screen-label="Dialog decision" style="width:680px;height:520px;position:relative;display:grid;place-items:center;background:var(--bg);color:var(--ink);font-family:Barlow,system-ui,sans-serif;font-size:14px;line-height:1.45">
+  <div style="position:absolute;inset:0;background:var(--scrim)"></div>
+  <div role="dialog" style="position:relative;width:520px;border:1px solid var(--line2);background:var(--bg);padding:22px 24px;display:flex;flex-direction:column;gap:12px;box-shadow:0 12px 32px rgba(0,0,0,.5)">
+    <i style="position:absolute;width:11px;height:11px;background:var(--mk);top:-6px;left:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);top:-6px;right:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);bottom:-6px;left:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);bottom:-6px;right:-6px"></i>
+    <span style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink2);font-weight:700">Decided for you · BBZ-119 · no reply needed</span>
+    <h2 style="margin:0;font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:26px;line-height:1.15">Webhook retries back off exponentially and stop after five attempts.</h2>
+    <p style="margin:0;color:var(--ink2)">The ticket said to retry delivery but not how often. It chose 1, 2, 4, 8 and 16 seconds because the payout provider asks for under a minute in total. The choice is in the PR description and takes one line to change.</p>
+    <div style="border:1px solid var(--line);padding:10px 12px;font-size:13px;color:var(--ink2)"><span style="color:var(--ink3);margin-right:10px">Also considered</span>A fixed 5-second retry (simpler, but 25 seconds of blind waiting on a dead endpoint).</div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:4px"><button style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:15px;letter-spacing:.04em;padding:8px 16px;background:transparent;color:var(--ink);border:1px solid var(--line2);border-radius:0;cursor:pointer" style-hover="border-color:var(--ink)">Change it</button><button style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:15px;letter-spacing:.04em;padding:8px 18px;background:var(--acc);color:var(--accInk);border:1px solid var(--acc);border-radius:0;cursor:pointer">Fine</button></div>
+  </div>
+</div></div>
+
+</div>
+<p class="dv-next">Try next: "make the board cards taller and drop the state word" · "put the blocker count on the left as a bar, not a number" · "show <a class="dv-oid" href="#1g">1g</a> with a refusal card when a command can't run"</p>
+</section>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;mixed&quot;,&quot;options&quot;:[&quot;mixed&quot;,&quot;dark&quot;,&quot;light&quot;],&quot;tsType&quot;:&quot;'mixed'|'dark'|'light'&quot;,&quot;section&quot;:&quot;Theme&quot;}}">
+class Component extends DCLogic {
+  state = { width: 8 };
+  componentDidMount() { this.applyTheme(); }
+  componentDidUpdate(prev) { if (prev.theme !== this.props.theme) this.applyTheme(); }
+  applyTheme() {
+    const t = this.props.theme ?? 'mixed';
+    if (t === 'mixed') return;
+    document.querySelectorAll('.dv-card[data-theme]').forEach(el => { el.dataset.theme = t; });
+  }
+  renderVals() {
+    const P = { bBg: 'var(--acc)', bInk: 'var(--accInk)', bBd: 'var(--acc)' };
+    const W = { bBg: 'var(--warn)', bInk: 'var(--warnInk)', bBd: 'var(--warn)' };
+    const S = { bBg: 'transparent', bInk: 'var(--ink)', bBd: 'var(--line2)' };
+    const rail = [
+      { kind: 'status', ts: '10:41', text: 'BBZ-96 passed checks and the council approved PR #412. It is ready for you to merge.' },
+      { kind: 'tools', text: '3 tool calls', tools: ['Read PR #412 checks', 'Read council attestation', 'Read Jira BBZ-96'] },
+      { kind: 'question', ts: '10:48', from: 'BBZ-226', text: 'Should I limit the odds refresh per user or per IP address?', opts: ['Per user, the way bet placement and deposits already work', 'Per IP address, so anonymous callers are covered too', 'Both: per user when logged in, per IP otherwise'] },
+      { kind: 'status', ts: '10:52', text: 'Sentry stopped answering. BBZ-178 is blocked until a new token is in Settings, and BBZ-155 will hit the same wall when it starts.' },
+      { kind: 'status', ts: '10:55', text: 'BBZ-60 asked whether to run a 40-second table lock on dev. It is paused until you answer.' },
+    ];
+    const railLong = [
+      ...rail.slice(0, 3),
+      { kind: 'operator', ts: '10:50', text: 'Why is BBZ-141 stuck?' },
+      { kind: 'status', ts: '10:50', text: 'BBZ-141 needs CloudWatch read access on the reconciliation log group. Only Marcus can grant it. I nudged him at 09:58 and have not heard back; the ticket has been parked 1 h 12 min.' },
+      { kind: 'tools', text: '4 tool calls', tools: ['Read lane BBZ-141 story', 'Read CloudWatch probe', 'Read integrations.json', 'Read Slack nudge receipt'] },
+      { kind: 'operator', ts: '10:51', text: 'Nudge him again and pause BBZ-141 until tomorrow.' },
+      { kind: 'status', ts: '10:51', text: 'Done. Marcus got a second message, and BBZ-141 will not retry until 07:00 tomorrow. Undo is in the journal.' },
+      { kind: 'status', ts: '10:52', text: 'Sentry stopped answering. BBZ-178 is blocked until a new token is in Settings.' },
+    ];
+    const flip = (e) => { const c = e.currentTarget.closest('.dv-opt').querySelector('[data-theme]'); c.dataset.theme = c.dataset.theme === 'dark' ? 'light' : 'dark'; };
+    const convoBlocker = [
+      { kind: 'status', ts: '10:52', text: 'Sentry stopped answering. BBZ-178 is blocked until a new token is in Settings.' },
+      { kind: 'card', ts: '10:52', toneName: 'warn', kicker: 'Blocked · BBZ-178 · 41 min', title: 'BBZ-178 cannot reach Sentry. What should it do?', body: 'The breadcrumbs step needs to read the Sentry project. Everything else in the ticket is done and tested. BBZ-155, next in the queue, needs Sentry too.', btns: [{ label: 'Fix Sentry now: paste a new token in Settings', kind: 'warn' }, { label: 'Finish without breadcrumbs and leave a note for QA' }, { label: 'Wait; keep it parked', kind: 'ghost' }] },
+      { kind: 'operator', ts: '10:53', to: 'BBZ-178', text: 'What exactly do you need from Sentry? Could you get it from the repo instead?' },
+      { kind: 'agent', ts: '10:53', from: 'BBZ-178', text: 'Two things: the project DSN and the names of the breadcrumbs already emitted, so mine match. Both are in config/sentry.ts on main, last changed in July. I can work from the file; the only risk is a DSN that changed since then, which QA would see on the first event.' },
+      { kind: 'tools', text: '2 tool calls', tools: ['Read config/sentry.ts on main', 'Read git log for config/sentry.ts'] },
+      { kind: 'operator', ts: '10:54', to: 'BBZ-178', text: 'Do that. Put the DSN caveat in the PR description so QA checks it.' },
+      { kind: 'agent', ts: '10:54', from: 'BBZ-178', text: 'Resuming from the repo config. The PR description will carry the caveat. About 15 minutes to a draft PR.' },
+      { kind: 'operator', ts: '10:54', text: 'Ask Priya for a new Sentry token, not me.' },
+      { kind: 'receipt', ts: '10:54', undo: true, text: 'Asked Priya for a Sentry token in #bankroll-dev. BBZ-155 will retry when one arrives; the blocker stays open until then.' },
+    ];
+    const convoConfirm = [
+      { kind: 'status', ts: '10:41', text: 'BBZ-96 passed checks and the council approved PR #412.' },
+      { kind: 'card', ts: '10:57', toneName: 'acc', kicker: 'Confirm · cannot be undone · BBZ-96', title: 'Merge PR #412 into main?', body: 'Fix duplicate deposit rows after retry. Merging deploys to dev within five minutes and hands the ticket to QA.', meta: [{ k: 'Changes', v: '3 files in payments/ledger, +48 −12' }, { k: 'Then', v: 'Jira moves BBZ-96 to QA; the slot picks up BBZ-119.' }], btns: [{ label: 'Merge PR #412', kind: 'primary' }, { label: 'Not yet' }] },
+      { kind: 'operator', ts: '10:57', text: 'What changed in the reconciliation file? That one worries me.' },
+      { kind: 'status', ts: '10:57', text: 'ledger/reconcile.ts gained a guard: a deposit whose provider reference already exists is skipped and logged instead of inserted. Nothing else in that file moved. The council checked the guard against the three duplicate cases from the bug report.' },
+      { kind: 'tools', text: '2 tool calls', tools: ['Read the diff of PR #412 for ledger/reconcile.ts', 'Read the council attestation'] },
+      { kind: 'operator', ts: '10:58', text: 'Merge it, but hold the QA handoff until the dev deploy is green.' },
+      { kind: 'receipt', ts: '10:59', undo: false, text: 'Merged PR #412 at 10:59. BBZ-96 stays in Review until the dev deploy passes, about five minutes; then it moves to QA. The freed slot started BBZ-119.' },
+    ];
+    const convoQuestion = [
+      { kind: 'card', ts: '10:48', toneName: 'warn', kicker: 'Question · BBZ-226 · waiting 9 min', title: 'Should I limit the odds refresh per user or per IP address?', body: 'The ticket mentions account abuse but not which key to use. It is paused until you answer.', btns: [{ label: 'Per user, the way bet placement and deposits already work', kind: 'warn' }, { label: 'Per IP address, so anonymous callers are covered too' }, { label: 'Both: per user when logged in, per IP otherwise' }] },
+      { kind: 'operator', ts: '10:55', text: 'What do our other endpoints do?' },
+      { kind: 'status', ts: '10:55', text: 'The two existing limiters key per user: bet placement at 60 a minute and deposits at 10 a minute, both through lib/ratelimit.ts. Neither limits anonymous traffic; the odds endpoint is the only one anonymous users can call.' },
+      { kind: 'tools', text: '2 tool calls', tools: ['Search the repo for rateLimit(', 'Read lib/ratelimit.ts'] },
+      { kind: 'operator', ts: '10:56', text: 'Per user with the same helper, 120 a minute. Anonymous callers get a flat 30 a minute per IP.' },
+      { kind: 'receipt', ts: '10:56', undo: false, text: 'Answered BBZ-226. It resumed at 10:56 using lib/ratelimit.ts with 120 a minute per user and 30 a minute per IP for anonymous callers. It will open a draft PR in about ten minutes.' },
+    ];
+    const convoDecision = [
+      { kind: 'card', ts: '11:02', toneName: 'neutral', kicker: 'Decided for you · BBZ-119 · no reply needed', title: 'Webhook retries back off exponentially and stop after five attempts.', body: 'The ticket said to retry delivery but not how often. It chose 1, 2, 4, 8 and 16 seconds because the payout provider asks for under a minute in total. One line to change.', btns: [{ label: 'Fine', kind: 'primary' }, { label: 'Change it' }] },
+      { kind: 'operator', ts: '11:03', text: 'Five attempts feels low. That provider goes down for ten minutes at a time.' },
+      { kind: 'status', ts: '11:03', text: 'Fair. With 1 to 16 seconds the last attempt lands 31 seconds after the first, so a ten-minute outage loses every webhook. Two ways to cover it: ten attempts capped at two minutes apart, or a dead-letter table with a replay job. The ticket has no acceptance criteria for outages, so either is a product call.' },
+      { kind: 'tools', text: '3 tool calls', tools: ['Read the PR description for BBZ-119', 'Read Sentry incidents tagged payout-provider (last 90 days)', 'Read the ticket BBZ-119'] },
+      { kind: 'operator', ts: '11:04', text: 'Dead-letter table. Replay every five minutes for an hour, then alert.' },
+      { kind: 'receipt', ts: '11:04', undo: true, text: 'Told BBZ-119. It is adding a dead-letter table and a replay job; the PR grows by roughly two files and I added the outage case to the ticket as acceptance criteria. I will ask before merging.' },
+    ];
+    return {
+      rail, railLong, flip,
+      convoBlocker, convoConfirm, convoQuestion, convoDecision,
+      cmdsBlocker: ['Fix Sentry now', 'Finish without it', 'Who else needs Sentry?', 'Show its story'],
+      cmdsConfirm: ['Merge PR #412', 'Show the diff', 'What did the council say?', 'Not yet'],
+      cmdsQuestion: ['Per user', 'Per IP', 'Show the other limiters', 'Ask me later'],
+      cmdsDecision: ['Fine', 'Change it', 'Show the PR', 'What else did it decide?'],
+      width: this.state.width,
+      inc: () => this.setState(s => ({ width: Math.min(16, s.width + 1) })),
+      dec: () => this.setState(s => ({ width: Math.max(1, s.width - 1) })),
+      blockers: [
+        { count: 2, countLabel: 'agents stopped', since: '10:16', title: 'The Sentry token expired', stops: [{ key: 'BBZ-178', title: 'Add Sentry breadcrumbs to the bet slip' }, { key: 'BBZ-155', title: 'Alert on failed payouts (next in queue)' }], action: 'you paste a new token in Settings. Both tickets resume on their own.', who: 'You', whoColor: 'var(--warn)', whoNote: 'about a minute', btn: 'Open Settings', ask: 'Tell the agents on BBZ-178 and BBZ-155 what to do instead, or ask what they tried…', askBtn: 'Send to both agents', ...W, border: 'var(--warn)', bg: 'var(--warnTint)', numColor: 'var(--warn)' },
+        { count: 1, countLabel: 'agent stopped', since: '10:51', title: 'GitHub Actions minutes are used up for the month', stops: [{ key: 'BBZ-202', title: 'Export monthly statement as CSV' }], action: 'someone buys more minutes or raises the plan. Checks re-run automatically.', who: 'GitHub billing', whoColor: 'var(--ink)', whoNote: 'outside vendor · you hold the card', btn: 'Open billing', ask: 'Tell the agent on BBZ-202 what to do instead: run the tests locally, wait, or open the PR without checks…', askBtn: 'Send to the agent', ...S, border: 'var(--line2)', bg: 'transparent', numColor: 'var(--ink)' },
+        { count: 1, countLabel: 'agent stopped', since: '09:45', title: 'CloudWatch will not let the agent read the reconciliation logs', stops: [{ key: 'BBZ-141', title: 'Nightly reconciliation job times out' }], action: 'Marcus grants read access on the log group. Nudged once at 09:58.', who: 'Marcus', whoColor: 'var(--ink)', whoNote: 'owns the AWS account', btn: 'Nudge Marcus again', ask: 'Tell the agent on BBZ-141 what to do instead, e.g. work from last night\'s exported log…', askBtn: 'Send to the agent', ...S, border: 'var(--line2)', bg: 'transparent', numColor: 'var(--ink)' },
+      ],
+      queue: [
+        { n: 1, key: 'BBZ-155', title: 'Alert on failed payouts', why: 'Highest priority in Ready for Dev; part of the Payouts epic.', when: 'Blocked by Sentry until you fix the token', whenColor: 'var(--warn)' },
+        { n: 2, key: 'BBZ-119', title: 'Retry webhook delivery with backoff', why: 'Same epic as BBZ-96, which is about to merge.', when: 'Takes the idle slot now', whenColor: 'var(--acc)' },
+        { n: 3, key: 'BBZ-233', title: 'Bankroll chart on the mobile layout', why: 'Sprint 34 commitment, due Thursday.', when: 'When BBZ-96 merges, ~5 min', whenColor: 'var(--ink)' },
+        { n: 4, key: 'BBZ-240', title: 'Rename "stake" to "wager" across the API', why: 'Priority 3. Its brief says to wait for BBZ-233.', when: 'After BBZ-233 finishes', whenColor: 'var(--ink2)' },
+        { n: 5, key: 'BBZ-251', title: 'Weekly deposit limit reminders', why: 'Priority 3, oldest in the column.', when: 'Later today', whenColor: 'var(--ink2)' },
+      ],
+      story: [
+        { at: '10:12', text: 'Picked up BBZ-226 from Ready for Dev and made a branch.', dot: 'var(--ink3)', color: 'var(--ink2)' },
+        { at: '10:15', text: 'Read the ticket, the odds service and the two existing limiters.', dot: 'var(--ink3)', color: 'var(--ink2)' },
+        { at: '10:29', text: 'Wrote the token-bucket limiter and four tests; all pass.', dot: 'var(--ink3)', color: 'var(--ink2)' },
+        { at: '10:48', text: 'Asked you which key to limit on and paused.', dot: 'var(--warn)', color: 'var(--ink)' },
+        { at: 'next', text: 'Finish the limiter, open a draft PR, council review.', dot: 'transparent', color: 'var(--ink3)' },
+      ],
+      sources: [
+        { name: 'Jira', status: 'Connected', note: 'boltbetz-bankroll-dev · checked 12 seconds ago', dot: 'var(--acc)', statusColor: 'var(--ink)', btn: 'Check now', ...S, border: 'var(--line)', bg: 'transparent' },
+        { name: 'Sentry', status: 'Not connected — the token expired at 10:16', note: 'Stops 2 agents. Paste a new token and they resume on their own.', dot: 'var(--warn)', statusColor: 'var(--warn)', btn: 'Paste a new token', ...W, border: 'var(--warn)', bg: 'var(--warnTint)' },
+        { name: 'CloudWatch', status: 'Connected', note: 'boltbetz-prod profile · checked 12 seconds ago · read access missing on one log group', dot: 'var(--acc)', statusColor: 'var(--ink)', btn: 'Check now', ...S, border: 'var(--line)', bg: 'transparent' },
+      ],
+      accounts: [
+        { name: 'Anthropic', plan: 'Team plan · primary', headroom: '62% of the 5-hour window left', resets: 'window resets 13:40', pct: '62%', used: 'used by all 8 agents' },
+        { name: 'Anthropic', plan: 'Team plan · backup', headroom: '100% left', resets: 'takes over if the primary runs out', pct: '100%', used: 'idle' },
+      ],
+      metrics: [
+        { label: 'Tickets in', value: '11', note: 'Picked up from Ready for Dev since 07:00.', color: 'var(--ink)', border: 'var(--line)', span: 'auto' },
+        { label: 'PRs merged', value: '7', note: 'All by the fleet; none needed a fix after the council.', color: 'var(--acc)', border: 'var(--acc)', span: 'auto' },
+        { label: 'Handed to QA', value: '6', note: 'One merged PR is waiting for the dev deploy to finish.', color: 'var(--ink)', border: 'var(--line)', span: 'auto' },
+        { label: 'Blockers cleared', value: '4', note: 'Two by you, one by Priya, one cleared itself.', color: 'var(--ink)', border: 'var(--line)', span: 'auto' },
+        { label: 'Tokens spent', value: '18.2M', note: '45% of the daily cap. 2.6M per merge, in line with last week.', color: 'var(--ink)', border: 'var(--line)', span: 'auto' },
+        { label: 'Slowest step', value: '47 min', note: 'Waiting for your answers. Three questions waited over 10 minutes each; BBZ-226 still is.', color: 'var(--warn)', border: 'var(--warn)', span: 'auto' },
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>
