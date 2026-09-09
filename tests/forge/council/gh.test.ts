@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { conclusionOf, countAddDel, countChangedLines } from '../../../src/forge/council/gh.ts';
+import { conclusionOf, countAddDel, countChangedLines, parseGhJson } from '../../../src/forge/council/gh.ts';
 
 describe('countChangedLines', () => {
   it('counts added and removed content lines, never the +++/--- file headers', () => {
@@ -79,5 +79,34 @@ describe('conclusionOf', () => {
       { state: 'SUCCESS' },
       { state: 'FAILURE' },
     ])).toBe('failure');
+  });
+});
+
+describe('parseGhJson', () => {
+  it('a failed gh call throws gh\'s own error text, never a JSON.parse syntax error', () => {
+    // The exact shape a failing `gh pr view` produces: a non-zero exit whose combined
+    // output is GitHub's GraphQL error text, not JSON -- reproduces the queue tick's
+    // repeating "Unexpected token 'G', "GraphQL: A"... is not valid JSON" failure.
+    const failed = { ok: false, tail: 'GraphQL: A pull request must be open to be merged (pullRequest)' };
+    expect(() => parseGhJson(failed, 'pr view')).toThrow(
+      /gh pr view failed: GraphQL: A pull request must be open/,
+    );
+  });
+
+  it('an ok result with unparseable output throws a labeled error, not a bare syntax error', () => {
+    const oddball = { ok: true, tail: 'not json at all' };
+    expect(() => parseGhJson(oddball, 'pr view')).toThrow(
+      /gh pr view returned output that is not JSON: not json at all/,
+    );
+  });
+
+  it('an ok result with valid JSON parses through untouched', () => {
+    const ok = { ok: true, tail: JSON.stringify({ headRefOid: 'abc123' }) };
+    expect(parseGhJson<{ headRefOid: string }>(ok, 'pr view')).toEqual({ headRefOid: 'abc123' });
+  });
+
+  it('prefers full over tail, same as every other gh JSON reader in this codebase', () => {
+    const ok = { ok: true, tail: '{truncated', full: JSON.stringify({ headRefOid: 'full-value' }) };
+    expect(parseGhJson<{ headRefOid: string }>(ok, 'pr view')).toEqual({ headRefOid: 'full-value' });
   });
 });

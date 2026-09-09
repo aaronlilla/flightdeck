@@ -86,6 +86,27 @@ export function countAddDel(diffText: string): { add: number; del: number } {
   return { add, del };
 }
 
+/**
+ * Turns `gh`'s combined output into typed JSON, treating a failed or unparseable call as
+ * the failure it is instead of handing whatever `gh` printed straight to `JSON.parse`.
+ *
+ * A `gh pr view` that fails writes its GraphQL error text to the same stream `--json`
+ * would have used, and still exits non-zero. Parsing that unconditionally turned a real,
+ * repeating `gh` failure into a generic "Unexpected token" syntax error on every queue
+ * tick. `queue-wire.ts`'s own `prMerged` already checks `result.ok` before parsing; this
+ * gives `viewPr` and `viewPrState` the same guard, plus a label so the two call sites
+ * don't produce identical error text.
+ */
+export function parseGhJson<T>(result: { ok: boolean; full?: string; tail: string }, label: string): T {
+  const output = (result.full ?? result.tail).trim();
+  if (!result.ok) throw new Error(`gh ${label} failed: ${output}`);
+  try {
+    return JSON.parse(output) as T;
+  } catch {
+    throw new Error(`gh ${label} returned output that is not JSON: ${output}`);
+  }
+}
+
 interface RawStatusCheck {
   conclusion?: string | null;
   status?: string | null;
@@ -139,7 +160,7 @@ export const REAL_GH: GhReader & GhWriter = {
       ],
       cwd: process.cwd(), owner: 'council', cls: 'script', fullOutput: true,
     });
-    const parsed = JSON.parse(view.full ?? view.tail) as RawPrView;
+    const parsed = parseGhJson<RawPrView>(view, 'pr view');
     const diff = await execRun({
       argv: ['gh', 'pr', 'diff', String(pr), '--repo', repo],
       cwd: process.cwd(), owner: 'council', cls: 'script', fullOutput: true,
@@ -203,7 +224,7 @@ export const REAL_GH: GhReader & GhWriter = {
       argv: ['gh', 'pr', 'view', String(pr), '--repo', repo, '--json', 'state,mergeCommit'],
       cwd: process.cwd(), owner: 'council', cls: 'script', fullOutput: true,
     });
-    const parsed = JSON.parse(view.full ?? view.tail) as { state?: string; mergeCommit?: { oid?: string } | null };
+    const parsed = parseGhJson<{ state?: string; mergeCommit?: { oid?: string } | null }>(view, 'pr view --json state,mergeCommit');
     const prState = parsed.state === 'MERGED' ? 'MERGED' : parsed.state === 'CLOSED' ? 'CLOSED' : 'OPEN';
     return { prState, ...(parsed.mergeCommit?.oid ? { mergeCommitOid: parsed.mergeCommit.oid } : {}) };
   },

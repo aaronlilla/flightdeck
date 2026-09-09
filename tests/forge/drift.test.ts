@@ -6,7 +6,9 @@ import { describe, expect, it } from 'vitest';
 
 import type { DriftClock, Mergeable } from '../../src/forge/drift.js';
 import {
-  classifyDrift, classifyUnknown, driftBlocker, readMergeableDetailed, resolveMergeable,
+  classifyDrift, classifyDriftRead, classifyUnknown, credentialBlocker, driftBlocker,
+  readMergeableDetailed,
+  resolveMergeable, resolveMergeableRead,
 } from '../../src/forge/drift.js';
 
 /** Advances its own virtual clock on `sleep` rather than waiting for real -- the
@@ -65,9 +67,14 @@ describe('B.5: gh UNKNOWN classification', () => {
   });
 
   it('readMergeableDetailed only carries a reason when there is one to classify', () => {
-    expect(readMergeableDetailed('{"mergeable":"MERGEABLE"}')).toEqual({ state: 'MERGEABLE' });
-    expect(readMergeableDetailed('gh auth login required')).toEqual({ state: 'UNKNOWN', reason: 'auth' });
-    expect(readMergeableDetailed('garbage')).toEqual({ state: 'UNKNOWN' });
+    // `reason` is asserted by presence rather than by an exhaustive object match: the
+    // read also carries `output` (and `base`, when the call reported one) for the caller
+    // that has to quote the failure, and this test is about the reason alone.
+    expect(readMergeableDetailed('{"mergeable":"MERGEABLE"}')).toMatchObject({ state: 'MERGEABLE' });
+    expect(readMergeableDetailed('{"mergeable":"MERGEABLE"}').reason).toBeUndefined();
+    expect(readMergeableDetailed('gh auth login required')).toMatchObject({ state: 'UNKNOWN', reason: 'auth' });
+    expect(readMergeableDetailed('garbage')).toMatchObject({ state: 'UNKNOWN' });
+    expect(readMergeableDetailed('garbage').reason).toBeUndefined();
   });
 
   it('classifyDrift: MERGEABLE clears', () => {
@@ -75,13 +82,103 @@ describe('B.5: gh UNKNOWN classification', () => {
   });
 
   it('classifyDrift: an auth or rate-limit UNKNOWN is a credential lapse, never a blocker', () => {
-    expect(classifyDrift('r1', 'gh auth login required')).toEqual({ kind: 'credential-lapse', account: 'gh' });
+    expect(classifyDrift('r1', 'gh auth login required'))
+      .toEqual({ kind: 'credential-lapse', account: 'gh', reason: 'auth' });
     expect(classifyDrift('r1', 'API rate limit exceeded', 'the base branch', 'gh-bot'))
-      .toEqual({ kind: 'credential-lapse', account: 'gh-bot' });
+      .toEqual({ kind: 'credential-lapse', account: 'gh-bot', reason: 'rate-limit' });
   });
 
   it('classifyDrift: CONFLICTING and a plain unreadable UNKNOWN both stay a blocker', () => {
     expect(classifyDrift('r1', '{"mergeable":"CONFLICTING"}').kind).toBe('blocker');
     expect(classifyDrift('r1', 'garbage').kind).toBe('blocker');
+  });
+});
+
+describe('W1: the reason survives the read and the retry window', () => {
+  const AUTH_SPECIMEN = 'gh: To get started with GitHub CLI, please run:  gh auth login\n'
+    + 'Alternatively, populate the GH_TOKEN environment variable with a GitHub API '
+    + 'authentication token.\nnot logged into any GitHub hosts';
+  const RATE_LIMIT_SPECIMEN = 'gh: API rate limit exceeded for user ID 1234567. '
+    + 'If you reach out to GitHub Support for help, please include the request ID.';
+
+  it('readMergeableDetailed carries the raw output back, so a caller can classify and quote it', () => {
+    const read = readMergeableDetailed(AUTH_SPECIMEN);
+    expect(read.state).toBe('UNKNOWN');
+    expect(read.reason).toBe('auth');
+    expect(read.output).toBe(AUTH_SPECIMEN);
+  });
+
+  it('readMergeableDetailed reads baseRefName off the same gh call', () => {
+    const read = readMergeableDetailed(JSON.stringify({ mergeable: 'CONFLICTING', baseRefName: 'develop' }));
+    expect(read.state).toBe('CONFLICTING');
+    expect(read.base).toBe('develop');
+  });
+
+  it('classifyDriftRead names the base the read itself reported', () => {
+    const read = readMergeableDetailed(JSON.stringify({ mergeable: 'CONFLICTING', baseRefName: 'develop' }));
+    const outcome = classifyDriftRead('r1', read);
+    expect(outcome.kind).toBe('blocker');
+    if (outcome.kind !== 'blocker') throw new Error('expected a blocker');
+    expect(outcome.ask.question).toContain('develop');
+    expect(outcome.ask.question).not.toContain('the base branch');
+  });
+
+  it('classifyDriftRead routes an auth read and a rate-limit read to a credential lapse', () => {
+    for (const specimen of [AUTH_SPECIMEN, RATE_LIMIT_SPECIMEN]) {
+      const outcome = classifyDriftRead('r1', readMergeableDetailed(specimen), 'github');
+      expect(outcome).toEqual({
+        kind: 'credential-lapse', account: 'github',
+        reason: specimen === AUTH_SPECIMEN ? 'auth' : 'rate-limit',
+      });
+    }
+  });
+
+  it('resolveMergeableRead stops retrying the moment the read explains itself', async () => {
+    let calls = 0;
+    const read = await resolveMergeableRead(async () => {
+      calls++;
+      return readMergeableDetailed(AUTH_SPECIMEN);
+    }, fakeClock());
+    expect(calls).toBe(1);
+    expect(read.reason).toBe('auth');
+  });
+
+  it('resolveMergeableRead still retries a plain still-computing UNKNOWN across the window', async () => {
+    let calls = 0;
+    const read = await resolveMergeableRead(async () => {
+      calls++;
+      return readMergeableDetailed('');
+    }, fakeClock());
+    expect(calls).toBe(10);
+    expect(read.state).toBe('UNKNOWN');
+    expect(read.reason).toBeUndefined();
+  });
+});
+
+describe('the reason is only read off output that is not a mergeable answer', () => {
+  it('a still-computing UNKNOWN is not a credential lapse because its base branch is named 403', () => {
+    // `gh` answered. The state is genuinely undecided, and `baseRefName` is just a
+    // branch name. Matching AUTH_PATTERNS or RATE_LIMIT_PATTERNS against a successful
+    // JSON answer reads the payload as if it were an error message.
+    for (const base of ['release/403-hotfix', 'fix-401', 'ticket-401-403']) {
+      const read = readMergeableDetailed(JSON.stringify({ mergeable: 'UNKNOWN', baseRefName: base }));
+      expect(read.state).toBe('UNKNOWN');
+      expect(read.reason).toBeUndefined();
+      expect(read.base).toBe(base);
+    }
+  });
+
+  it('output that is not a mergeable answer at all is still classified', () => {
+    expect(readMergeableDetailed('HTTP 403: API rate limit exceeded').reason).toBe('rate-limit');
+    expect(readMergeableDetailed('HTTP 401: Bad credentials').reason).toBe('auth');
+    expect(readMergeableDetailed('not logged into any GitHub hosts').reason).toBe('auth');
+  });
+
+  it('a credential lapse asks for the thing that would actually fix it', () => {
+    const ask = credentialBlocker('r1', 'github', 'auth');
+    expect(ask.kind).toBe('blocker');
+    expect(ask.question).toContain('github');
+    expect(ask.question).not.toMatch(/rebase/i);
+    expect(ask.question).not.toMatch(/base drift/i);
   });
 });

@@ -6,7 +6,8 @@
  * cheap and deterministic, the same choice `tests/forge/console/proposals.test.ts` makes
  * for the fleet journal).
  */
-import { mkdtempSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -19,6 +20,7 @@ import {
   type QueuePlanner, type QueueRuntimeDeps, type QueueTicketSearch,
 } from '../../../src/forge/intake/queue.js';
 import { QueueStore } from '../../../src/forge/intake/queueStore.js';
+import { gitSquashMergeToBase, type GitRunFn } from '../../../src/forge/intake/gitMerge.js';
 
 function tempStore(): QueueStore {
   const dir = mkdtempSync(join(tmpdir(), 'queue-'));
@@ -36,6 +38,8 @@ interface FixtureOverrides {
   paused?: () => boolean;
   maxInFlight?: () => number;
   launchGoal?: QueueRuntimeDeps['launchGoal'];
+  mergeAllowed?: QueueRuntimeDeps['mergeAllowed'];
+  postMergeVerify?: QueueRuntimeDeps['postMergeVerify'];
 }
 
 function buildDeps(store: QueueStore, overrides: FixtureOverrides = {}): { deps: QueueRuntimeDeps; events: Record<string, unknown>[] } {
@@ -75,6 +79,8 @@ function buildDeps(store: QueueStore, overrides: FixtureOverrides = {}): { deps:
     },
     store,
     ...(overrides.launchGoal ? { launchGoal: overrides.launchGoal } : {}),
+    ...(overrides.mergeAllowed ? { mergeAllowed: overrides.mergeAllowed } : {}),
+    ...(overrides.postMergeVerify ? { postMergeVerify: overrides.postMergeVerify } : {}),
   };
   return { deps, events };
 }
@@ -91,6 +97,54 @@ describe('addTicketItem / addBriefItem', () => {
     const store = tempStore();
     const item = addBriefItem(store, '# Goal: fix the thing', 1000);
     expect(item).toMatchObject({ source: 'brief', input: '# Goal: fix the thing', ticket: null, state: 'queued' });
+  });
+
+  describe('addBriefItem: R-02 guard #1', () => {
+    const ROADMAP = [
+      '| id | delivers | serves | status | pr | proof |',
+      '| --- | --- | --- | --- | --- | --- |',
+      '| R-01 | thing one | queue | done | owner/repo#1 | link |',
+      '| R-02 | thing two | queue | planned |  |  |',
+    ].join('\n');
+
+    it('refuses a self-repo brief with no roadmap line', () => {
+      const store = tempStore();
+      const brief = ['repo: aaronlilla/flightdeck', 'do the thing'].join('\n');
+      expect(() => addBriefItem(store, brief, 1000, { selfRepo: 'aaronlilla/flightdeck', roadmapText: ROADMAP }))
+        .toThrow(/missing a "roadmap: R-nn" line/);
+    });
+
+    it('refuses a self-repo brief naming an unknown or already-done roadmap id', () => {
+      const store = tempStore();
+      const doneBrief = ['repo: aaronlilla/flightdeck', 'roadmap: R-01', 'do the thing'].join('\n');
+      expect(() => addBriefItem(store, doneBrief, 1000, { selfRepo: 'aaronlilla/flightdeck', roadmapText: ROADMAP }))
+        .toThrow(/unknown or already-done roadmap id R-01/);
+
+      const unknownBrief = ['repo: aaronlilla/flightdeck', 'roadmap: R-99', 'do the thing'].join('\n');
+      expect(() => addBriefItem(store, unknownBrief, 1000, { selfRepo: 'aaronlilla/flightdeck', roadmapText: ROADMAP }))
+        .toThrow(/unknown or already-done roadmap id R-99/);
+    });
+
+    it('accepts a self-repo brief naming an open roadmap id and records it on the item', () => {
+      const store = tempStore();
+      const brief = ['repo: aaronlilla/flightdeck', 'roadmap: R-02', 'do the thing'].join('\n');
+      const item = addBriefItem(store, brief, 1000, { selfRepo: 'aaronlilla/flightdeck', roadmapText: ROADMAP });
+      expect(item).toMatchObject({ source: 'brief', roadmap: 'R-02', state: 'queued' });
+    });
+
+    it('leaves a brief for a different repo unaffected even with no roadmap line', () => {
+      const store = tempStore();
+      const brief = ['repo: aaronlilla/other-repo', 'do the thing'].join('\n');
+      const item = addBriefItem(store, brief, 1000, { selfRepo: 'aaronlilla/flightdeck', roadmapText: ROADMAP });
+      expect(item).toMatchObject({ source: 'brief', state: 'queued' });
+    });
+
+    it('leaves a brief unaffected with no guard at all, same as the existing call form', () => {
+      const store = tempStore();
+      const brief = ['repo: aaronlilla/flightdeck', 'do the thing'].join('\n');
+      const item = addBriefItem(store, brief, 1000);
+      expect(item).toMatchObject({ source: 'brief', state: 'queued' });
+    });
   });
 
   it('A.6: adds a queued item for a typed hotfix with no ticket yet', () => {
@@ -188,19 +242,77 @@ describe('advanceItem: goal source', () => {
     expect(runKeysSeen[1]).toContain(itemB.id);
   });
 
-  it('fails when the run finishes with a non-done verdict', async () => {
+  // 2026-09-08 live incident: Q-17bb4283 hit the implement-class context ceiling and
+  // handed off to a successor session the same way a brief-source item does. The
+  // handoff itself never surfaces here: `deps.launcher.status` keeps answering
+  // `finished: false` for as long as a successor is still running, mid-handoff, via
+  // the same shared `runOutcome` reader both source types use (`chain-wire.ts`). So
+  // reproducing "the goal item takes the successor path" means simulating what its
+  // status reports once every successor is done: a terminal, non-`done` verdict such
+  // as `exhausted`. That used to fail the item outright with the bare word `exhausted`
+  // (or `parked`) as its reason. It now parks instead, exactly like a brief-source item
+  // on the same verdict, and stays reachable by retry rather than getting abandoned.
+  it('parks, not fails, when the run finishes with a non-done verdict after exhausting its handoff chain', async () => {
     const store = tempStore();
     const item = addGoalItem(store, '/w/.claude/goals/2026-09-08-thing.md', '/goal Work the thing.', 1000);
     const { deps } = buildDeps(store, { launchGoal: async () => ({ runKey: 'goal-run-3' }) });
     const launched = await advanceItem(item, deps);
+    expect(launched.state).toBe('running');
+    expect(launched.runKey).toBe('goal-run-3');
 
-    const { deps: deps2 } = buildDeps(store, {
-      launcher: { status: async () => ({ finished: true, verdict: 'blocked' }) },
+    const { deps: deps2, events } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'exhausted' }) },
     });
     const finished = await advanceItem(launched, deps2);
 
-    expect(finished.state).toBe('failed');
-    expect(finished.reason).toBe('blocked');
+    expect(finished.state).toBe('parked');
+    expect(finished.reason).toBe('exhausted');
+    expect(finished.runKey).toBe('goal-run-3');
+    expect(events.map((e) => e['event'])).toContain('queue.parked');
+  });
+
+  // Mid-handoff (a successor still running), there is no terminal state at all: the
+  // shared `runOutcome` reader answers `finished: false` for exactly as long as a
+  // successor is in flight. The item takes neither the `done` branch nor the park
+  // branch. It comes back unchanged, still `running` on its original run key, and
+  // gets picked up again on the next tick.
+  it('stays running on its own run key while a handoff to a successor session is still in flight', async () => {
+    const store = tempStore();
+    const item = addGoalItem(store, '/w/.claude/goals/2026-09-08-thing.md', '/goal Work the thing.', 1000);
+    const { deps } = buildDeps(store, { launchGoal: async () => ({ runKey: 'goal-run-5' }) });
+    const launched = await advanceItem(item, deps);
+
+    const { deps: deps2 } = buildDeps(store, { launcher: { status: async () => ({ finished: false }) } });
+    const stillRunning = await advanceItem(launched, deps2);
+
+    expect(stillRunning.state).toBe('running');
+    expect(stillRunning.runKey).toBe('goal-run-5');
+  });
+
+  it('an operator retry relaunches a parked goal item on a fresh run key via launchGoal', async () => {
+    const store = tempStore();
+    const item = addGoalItem(store, '/w/.claude/goals/2026-09-08-thing.md', '/goal Work the thing.', 1000);
+    let launchCalls = 0;
+    const { deps } = buildDeps(store, {
+      launchGoal: async (input) => { launchCalls += 1; return { runKey: `${input.runKey}-${launchCalls}` }; },
+    });
+    const launched = await advanceItem(item, deps);
+
+    const { deps: deps2 } = buildDeps(store, {
+      launchGoal: deps.launchGoal,
+      launcher: { status: async () => ({ finished: true, verdict: 'exhausted' }) },
+    });
+    const parked = await advanceItem(launched, deps2);
+    expect(parked.state).toBe('parked');
+
+    const retried = retryItem(store, parked.id, 5000)!;
+    expect(retried.state).toBe('running');
+    expect(retried.runKey).toBe(parked.runKey);
+
+    const relaunched = await advanceItem(retried, deps2);
+    expect(relaunched.state).toBe('running');
+    expect(relaunched.runKey).not.toBe(launched.runKey);
+    expect(launchCalls).toBe(2);
   });
 });
 
@@ -388,6 +500,55 @@ describe('advanceItem', () => {
     await advanceItem(current, deps); // gate
 
     expect(gateInput?.merge).toBe(false);
+  });
+
+  it('BBZ: an item whose repo is on the operator\'s autoMerge allow-list reaches done with the merge recorded', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let gateInput: { repo: string; pr: number; merge: boolean } | undefined;
+    const { deps, events } = buildDeps(store, {
+      launcher: {
+        status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/9' }),
+      },
+      gate: async (input) => { gateInput = input; return { merged: true, mergeSha: 'deadbeef' }; },
+      mergeAllowed: (repo) => repo === 'owner/name',
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps); // plan
+    current = await advanceItem(current, deps); // launch
+    const result = await advanceItem(current, deps); // gate + merge
+
+    expect(gateInput?.merge).toBe(true);
+    expect(result.state).toBe('done');
+    expect(result.mergedBy).toBe('queue');
+    expect(result.mergedAt).toBeDefined();
+    expect(events.map((e) => e['event'])).toContain('queue.done');
+  });
+
+  it('BBZ: a repo absent from the autoMerge allow-list still stops at review with a draft PR', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let gateInput: { repo: string; pr: number; merge: boolean } | undefined;
+    const { deps } = buildDeps(store, {
+      launcher: {
+        status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/9' }),
+      },
+      gate: async (input) => { gateInput = input; return { merged: false }; },
+      // Configured, but for a different repo -- the allow-list itself is what gates this,
+      // not merely whether `mergeAllowed` is wired at all.
+      mergeAllowed: (repo) => repo === 'some/other-repo',
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps); // plan
+    current = await advanceItem(current, deps); // launch
+    const result = await advanceItem(current, deps); // gate
+
+    expect(gateInput?.merge).toBe(false);
+    expect(result.state).toBe('review');
+    expect(result.pr).toMatchObject({ no: 9, draft: true });
+    expect(result.mergedBy).toBeUndefined();
   });
 
   it('parks an item whose repo does not route, without touching the launcher', async () => {
@@ -1259,6 +1420,58 @@ describe('a branch must sit on the latest base before anyone reviews it', () => 
     expect(parked?.reason).toContain('conflicts with develop');
     expect(councilCalls).toBe(0);
   });
+
+  // 2026-09-08: Q-0fb06912 and Q-56440c7b both parked on "You have unstaged changes"
+  // because a worker left a test-isolation edit uncommitted. The rebase itself now
+  // commits those leftovers before replaying (chain-wire.ts) -- this proves the queue
+  // side journals that and tells a reviewer, rather than the item silently sailing on
+  // as if nothing happened.
+  it('journals a leftover commit and notes it on the PR, without parking the item', async () => {
+    const store = tempStore();
+    store.append({
+      id: 'q-abc-3', at: 1000, source: 'ticket', input: 'ABC-3', ticket: 'ABC-3', repo: 'owner/name',
+      briefPath: 'C:/briefs/abc-3.md', branch: 'feature/abc-3', worktreePath: 'C:/worktrees/repo--abc-3',
+      base: 'develop', state: 'running', runKey: 'abc-3', reason: null, pr: null, journalIds: [],
+      createdAt: 1000, updatedAt: 1000,
+    });
+    const { deps, events } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/9' }) },
+      rebaseOnBase: async () => ({ ok: true, behind: 2, committedLeftover: ['tests/setup.ts'] }),
+      council: async () => ({ verdict: 'PASS' as const }),
+    });
+    const commented: { repo: string; pr: number; body: string }[] = [];
+    deps.commentOnPr = async (input) => { commented.push(input); };
+
+    await runQueueTick(deps, store.all());
+
+    expect(store.all()[0]?.state).toBe('review');
+    const leftoverEvent = events.find((e) => e['event'] === 'queue.leftover-committed');
+    expect(leftoverEvent).toMatchObject({ itemId: 'q-abc-3', files: ['tests/setup.ts'] });
+    const leftoverComment = commented.find((c) => c.body.includes('tests/setup.ts'));
+    expect(leftoverComment?.repo).toBe('owner/name');
+    expect(leftoverComment?.pr).toBe(9);
+  });
+
+  it('a failing PR comment about the leftover commit never parks the item', async () => {
+    const store = tempStore();
+    store.append({
+      id: 'q-abc-4', at: 1000, source: 'ticket', input: 'ABC-4', ticket: 'ABC-4', repo: 'owner/name',
+      briefPath: 'C:/briefs/abc-4.md', branch: 'feature/abc-4', worktreePath: 'C:/worktrees/repo--abc-4',
+      base: 'develop', state: 'running', runKey: 'abc-4', reason: null, pr: null, journalIds: [],
+      createdAt: 1000, updatedAt: 1000,
+    });
+    const { deps, events } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/9' }) },
+      rebaseOnBase: async () => ({ ok: true, behind: 2, committedLeftover: ['tests/setup.ts'] }),
+      council: async () => ({ verdict: 'PASS' as const }),
+    });
+    deps.commentOnPr = async () => { throw new Error('gh: rate limited'); };
+
+    await runQueueTick(deps, store.all());
+
+    expect(store.all()[0]?.state).toBe('review');
+    expect(events.some((e) => e['event'] === 'queue.leftover-committed')).toBe(true);
+  });
 });
 
 
@@ -1474,6 +1687,72 @@ describe('mergeItem: A.7', () => {
         store: { append: () => {} } as never,
       });
       expect(rows.filter((row) => row['event'] === 'queue.recouncil')).toHaveLength(1);
+    });
+  });
+
+  describe('R-22: merge lands through git when deps.gitMerge is wired', () => {
+    function sh(cwd: string, ...argv: string[]): string {
+      return execFileSync('git', argv, { cwd, encoding: 'utf8' });
+    }
+    const realGit: GitRunFn = (argv, cwd) =>
+      new Promise((resolve) => {
+        try {
+          const stdout = execFileSync('git', argv, { cwd, encoding: 'utf8' });
+          resolve({ ok: true, stdout });
+        } catch (error) {
+          const stdout = error && typeof error === 'object' && 'stdout' in error ? String((error as { stdout: unknown }).stdout ?? '') : '';
+          resolve({ ok: false, stdout });
+        }
+      });
+
+    it('reaches done with mergedBy: queue and advances the real base ref, without ever calling gate', { timeout: 20000 }, async () => {
+      const root = mkdtempSync(join(tmpdir(), 'queue-gitmerge-'));
+      const bareDir = join(root, 'origin.git');
+      const seedDir = join(root, 'seed');
+      const checkoutDir = join(root, 'checkout');
+
+      sh(root, 'init', '--bare', bareDir);
+      sh(root, 'clone', bareDir, seedDir);
+      sh(seedDir, 'config', 'user.email', 'test@example.com');
+      sh(seedDir, 'config', 'user.name', 'Test');
+      sh(seedDir, 'commit', '--allow-empty', '-m', 'base commit');
+      sh(seedDir, 'branch', '-M', 'develop');
+      sh(seedDir, 'push', 'origin', 'develop');
+      sh(seedDir, 'checkout', '-b', 'feature/abc-1');
+      writeFileSync(join(seedDir, 'feature.txt'), 'feature content\n');
+      sh(seedDir, 'add', 'feature.txt');
+      sh(seedDir, 'commit', '-m', 'feature commit');
+      sh(seedDir, 'push', 'origin', 'feature/abc-1');
+
+      sh(root, 'clone', bareDir, checkoutDir);
+      sh(checkoutDir, 'config', 'user.email', 'test@example.com');
+      sh(checkoutDir, 'config', 'user.name', 'Test');
+
+      const store = tempStore();
+      const added = addTicketItem(store, 'ABC-1', 1000);
+      store.append({
+        id: added.id, at: 2000, state: 'review', repo: 'owner/name', branch: 'feature/abc-1', base: 'develop',
+        pr: { no: 9, url: 'https://github.com/owner/name/pull/9', files: 1, add: 1, del: 0, draft: true },
+      });
+      const item = store.get(added.id)!;
+
+      let gateCalls = 0;
+      const result = await mergeItem(item, {
+        mergeAllowed: () => true,
+        gate: async () => { gateCalls += 1; return { merged: true }; },
+        gitMerge: async ({ base, branch, subject, body }) => gitSquashMergeToBase({ checkoutDir, base, branch, subject, body }, realGit),
+        clock: () => 3000,
+        store: { append: () => {} } as never,
+      });
+
+      expect(gateCalls).toBe(0);
+      expect(result.ok).toBe(true);
+      expect(result.item?.state).toBe('done');
+      expect(result.item?.mergedBy).toBe('queue');
+
+      sh(seedDir, 'fetch', 'origin', 'develop');
+      const log = sh(seedDir, 'log', 'origin/develop', '-1', '--format=%s').trim();
+      expect(log).toBe('Merge feature/abc-1 (#9)');
     });
   });
 });

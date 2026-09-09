@@ -263,6 +263,15 @@ export const FORGE_EVENT_NAMES = [
   // `queue.tick-error` for a worker tick that threw before any item advanced.
   'queue.planning', 'queue.planned', 'queue.launched', 'queue.parked', 'queue.failed',
   'queue.review', 'queue.tick-error',
+  // R-11 part 2: the Jira watcher bridge's own tick row (`intake/watcherWire.ts`) --
+  // `watcher.poll` once per poll that added, sent, or closed at least one item, and
+  // `watcher.tick-error` for a tick that threw before any of those.
+  'watcher.poll', 'watcher.tick-error',
+  // 2026-09-08: the pre-gate rebase commits whatever a worker left uncommitted in its
+  // worktree before replaying onto the base, rather than parking on "You have unstaged
+  // changes" for a person to clean up by hand -- one row per item this happened to,
+  // carrying the file list (`chainRebase`, `chain-wire.ts`).
+  'queue.leftover-committed',
   // The self-heal stream (B). `queue.paused`: the queue tick backs off to a 10 minute
   // drip after three identical consecutive `queue.tick-error`s in a row (B.1).
   // `run.relaunched`: a worker that died mid-tool gets resumed once on the same
@@ -1081,7 +1090,7 @@ export type CliExitCode = (typeof CLI_EXIT_CODES)[keyof typeof CLI_EXIT_CODES];
  * on purpose, the same reasoning as `FORGE_EVENT_NAMES`: a caller that wants a sixth
  * source adds it here first.
  */
-export const POLL_SOURCE_NAMES = ['jira', 'sentry', 'cloudwatch', 'slack', 'github'] as const;
+export const POLL_SOURCE_NAMES = ['jira', 'sentry', 'cloudwatch', 'slack', 'github', 'jira-watch'] as const;
 
 export type PollSourceName = (typeof POLL_SOURCE_NAMES)[number];
 
@@ -1315,12 +1324,21 @@ export interface HaipingHandoff {
   notVisuallyVerified: string[];
 }
 
+/** A worker who copies `haipingHandoffExample()` and never overwrites a value still
+ *  has a schema-valid, non-empty string on their hands -- that's what let PRs #79 and
+ *  #83 through with the placeholders untouched. */
+const REPLACE_PREFIX = 'REPLACE:';
+const notAPlaceholder = (value: string) => !value.startsWith(REPLACE_PREFIX);
+
 export const HaipingHandoffSchema = z.object({
   ticket: z.string().min(1),
   pr: z.string().min(1),
   deployKind: z.enum(['ota', 'rebuild']),
-  perPlatform: z.object({ android: z.string().min(1), ios: z.string().min(1) }),
-  steps: z.array(z.string().min(1)).min(1),
+  perPlatform: z.object({
+    android: z.string().min(1).refine(notAPlaceholder, { message: 'still a REPLACE: placeholder' }),
+    ios: z.string().min(1).refine(notAPlaceholder, { message: 'still a REPLACE: placeholder' }),
+  }),
+  steps: z.array(z.string().min(1).refine(notAPlaceholder, { message: 'still a REPLACE: placeholder' })).min(1),
   notVisuallyVerified: z.array(z.string()),
 });
 
@@ -1329,9 +1347,14 @@ export const HaipingHandoffSchema = z.object({
  * `HaipingHandoffSchema` above, so naming it in the brief left one worker inventing its
  * own fields. This builds the fenced example straight from a `HaipingHandoff` object
  * literal -- typechecked against the same interface the schema validates -- rather than
- * a second hand-written copy of the shape that could drift from it. Every value is an
- * obvious placeholder a worker overwrites, and it still parses as complete on its own:
- * `checkHandoff('haiping', JSON.parse(haipingHandoffExample()))` is `{ complete: true }`.
+ * a second hand-written copy of the shape that could drift from it.
+ *
+ * PRs #79/#83, 2026-09-08: every value here is an obvious placeholder, but a worker who
+ * pasted this verbatim still cleared the gate, because the schema only checked for a
+ * non-empty string. `HaipingHandoffSchema` now rejects any `perPlatform`/`steps` value
+ * still carrying the `REPLACE:` prefix, so `checkHandoff('haiping',
+ * JSON.parse(haipingHandoffExample()))` is `{ complete: false }` until a worker
+ * overwrites every one of them.
  */
 export function haipingHandoffExample(): string {
   const example: HaipingHandoff = {

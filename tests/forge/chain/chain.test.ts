@@ -377,13 +377,16 @@ describe('completeBriefWithVerification', () => {
     expect(completed).toContain('```json');
     const example = /```json\n([\s\S]*?)\n```/.exec(completed)?.[1];
     expect(example).toBeDefined();
-    expect(checkHandoff('haiping', JSON.parse(example!)).complete).toBe(true);
+    // PRs #79/#83: the example's own REPLACE: values must stay incomplete, or a worker
+    // who pastes it verbatim clears the gate with nothing a QA person can act on.
+    expect(checkHandoff('haiping', JSON.parse(example!)).complete).toBe(false);
     expect(completed).toContain('rebuild');
     expect(completed).toContain('android/');
     expect(completed).toContain('notVisuallyVerified');
     expect(completed).toContain('no agent looks at a screen');
 
-    expect(findHaipingHandoff(completed)).toBeDefined();
+    // Untouched, the appended example is not a handoff a scan should ever accept.
+    expect(findHaipingHandoff(completed)).toBeUndefined();
   });
 
   it('leaves a brief that already carries a Verification block unchanged', () => {

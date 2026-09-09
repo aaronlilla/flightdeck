@@ -21,7 +21,7 @@ import type {
   QueueAddResponse, QueueItem, QueueSource, ReauditResponse, Rule,
 } from '../shared/console-model.js';
 import { fmtTokens } from '../shared/format-tokens.js';
-import { shortenShas } from '../shared/humanize.js';
+import { commandEcho, shortenShas } from '../shared/humanize.js';
 import { tokenAmount } from '../forge/console/command.js';
 import { sliceEventsFor } from '../shared/console-events.js';
 import { seedCaps } from './fixtures/caps.js';
@@ -30,9 +30,10 @@ import { seedJournal } from './fixtures/journal.js';
 import { seedLanes } from './fixtures/lanes.js';
 import { seedRules } from './fixtures/proposals.js';
 import {
-  askRecommendedLanes, askRecommendedThread, bigLanes, emptyLanes, emptyRules, galleryThread, healthyIntegrations,
-  humanBoardLanes, matrixQueue, raceThread, refusalLanes, resumedRaceLanes, statesLanes, UNBUILT_REPO, longThread } from './fixtures/scenarios.js';
+  bigLanes, emptyLanes, emptyRules, galleryThread, healthyIntegrations, humanBoardLanes, matrixQueue, raceThread,
+  refusalLanes, resumedRaceLanes, statesLanes, UNBUILT_REPO, longThread } from './fixtures/scenarios.js';
 import { seedThread } from './fixtures/thread.js';
+import { parityBlockers, parityLanes, parityQueue, parityThread } from './fixtures/design-parity.js';
 
 // `import.meta.url` is not always a `file:` URL under every test environment
 // (jsdom's module graph rewrites it); this only ever needs to resolve when
@@ -245,15 +246,17 @@ const FIXTURES: Record<string, () => Db> = {
   'summary-stale': () => ({ ...seedDb(), staleAuditLane: 'FLT-193' }),
   // Iteration 4: the Blockers view's own three-step chain (billing -> checks -> question).
   'blockers-chain': () => ({ ...seedDb(), blockers: seedBlockersChain() }),
-  // W5 (ask-cards-and-type-scale): a parked lane whose question already carries four
-  // options and a recommendation, for the e2e coverage that picking the recommended
-  // option and sending clears the ask from Needs You.
-  'ask-recommended': () => ({ ...seedDb(), lanes: askRecommendedLanes(), thread: askRecommendedThread() }),
+  // The board scripts/design-parity.ts photographs against the design's artboards.
+  'design-parity': () => ({ ...seedDb(), lanes: parityLanes(), blockers: parityBlockers(), queue: parityQueue(), thread: parityThread(), queueMaxInFlight: 8 }),
 };
 
 function resetToFixture(name: string): void {
   const build = FIXTURES[name] ?? FIXTURES['default'];
   db = (build as () => Db)();
+  if (name === 'design-parity') {
+    // The decision card's own buttons: Fine dismisses it, Change it opens the lane.
+    pendingConfirms.set('parity-decision', () => [{ k: `r-${Date.now()}`, type: 'receipt', text: 'Noted. NWR-119 keeps the five-attempt backoff.', ts: Date.now(), source: 'conductor', resolved: 'ran' }]);
+  }
 }
 
 function nextJid(): string {
@@ -691,7 +694,8 @@ function runCommand(text: string, run?: string): Message[] {
     }
     return [
       { k: `r-${now}`, type: 'receipt', text: `sent to ${label}`, ts: now, source: 'conductor', resolved: 'ran', path: 'agent' },
-      { k: `c-${now}`, type: 'reply', text: `Told ${label}: ${t}`, ts: now, source: 'conductor', path: 'agent' },
+      { k: `c-${now}`, type: 'reply', text: `Got it. I will work from what is in the repo and put the caveat in the PR description; about 15 minutes to a draft PR.`, ts: now, source: lane.id, lane: lane.id, path: 'agent' },
+      { k: `a-${now}`, type: 'activity', text: '2 tool calls', tools: ['Read config/sentry.ts on main', 'Read git log for config/sentry.ts'], ts: now, source: lane.id, lane: lane.id },
     ];
   }
   if (/^kill\b/i.test(t) && laneRef) {
@@ -771,6 +775,11 @@ function runCommand(text: string, run?: string): Message[] {
     appendEvent(`${parked.id} resumed`, parked.id);
     return [{ k: `r-${now}`, type: 'receipt', text: `${parked.id} resumed: ${answerText}`, ts: now, source: 'conductor', jid, undoable: false }];
   }
+  const nudgeMatch = /^(?:ask|nudge)\s+([A-Z][a-z]+)\b/.exec(t);
+  if (nudgeMatch) {
+    const jid = journal('conductor.nudge', `asked ${nudgeMatch[1]}`, null, true);
+    return [{ k: `r-${now}`, type: 'receipt', text: `Asked ${nudgeMatch[1]} in the team channel. The blocker stays open until they answer.`, ts: now, source: 'conductor', jid, undoable: true, path: 'agent' }];
+  }
   if (/what's stuck|whats stuck/i.test(t)) {
     const stuck = db.lanes.filter((l) => l.state === 'blocked' || l.state === 'parked');
     return [{ k: `c-${now}`, type: 'reply', text: stuck.length ? stuck.map((l) => l.id).join(', ') : 'nothing is stuck.', ts: now, source: 'conductor' }];
@@ -838,7 +847,7 @@ export function createStubServer() {
       // D2.4: the one field of the real server's own `/state` the web console needs.
       // Not in `CONSOLE_ROUTES` (same as the real server: `/state` carries no token).
       if (urlPath === '/state' && method === 'GET') {
-        json(response, 200, { queue_on: db.queueOn, build: stubBuild, conductor: { enabled: true, timeoutMs: 120_000, open: false } });
+        json(response, 200, { queue_on: db.queueOn, build: stubBuild, conductor: { enabled: true, timeoutMs: 120_000, open: false }, project: { key: 'NWR', name: 'Northwind Rewards' } });
         return;
       }
 
@@ -885,7 +894,12 @@ export function createStubServer() {
       }
       if (urlPath === '/proposals' && method === 'GET') {
         const mergedToday = db.lanes.filter((l) => l.state === 'merged').length;
-        const metrics = { mergedToday, humanWaitMin: 8, tokensPerMerge: mergedToday > 0 ? db.caps.tokensToday / mergedToday : null, tokensWasted: 2_480_000 };
+        const metrics = {
+          mergedToday, humanWaitMin: 8, tokensPerMerge: mergedToday > 0 ? db.caps.tokensToday / mergedToday : null, tokensWasted: 2_480_000,
+          ticketsIn: db.lanes.length, handedToQa: db.queue.filter((q) => q.handoffAt !== undefined).length,
+          blockersCleared: db.blockers.filter((b) => b.state === 'resolved').length,
+          slowestHop: { name: 'Waiting for your answers', minutes: 47 },
+        };
         json(response, 200, { rules: db.rules, metrics, computedAt: Date.now() });
         return;
       }
@@ -1236,7 +1250,7 @@ export function createStubServer() {
         const body = await readJson<{ text?: string; run?: string }>(request);
         const text = body.text ?? '';
         // The real route echoes the operator's own bubble first (`ConsoleWrites.command`).
-        const operator: Message = { k: `op-${Date.now()}-${Math.random()}`, type: 'operator', text, ts: Date.now(), source: 'operator' };
+        const operator: Message = { k: `op-${Date.now()}-${Math.random()}`, type: 'operator', text: commandEcho(text), ts: Date.now(), source: 'operator', ...(body.run ? { lane: body.run } : {}) };
         const cards = [operator, ...runCommand(text, body.run)];
         db.thread = [...db.thread, ...cards];
         json(response, 200, { cards });

@@ -116,6 +116,24 @@ export function repoFromBrief(text: string): string | null {
 }
 
 /**
+ * R-02 guard #1: a brief for the self repo names which still-open roadmap item it is
+ * doing, so the queue can refuse work `doctrine/ROADMAP.md` does not name. Matches a
+ * `roadmap: R-nn` line anywhere in the first twenty lines, the word case-insensitive but
+ * the id itself exactly `R-` plus two digits -- `roadmap: r-02` or `roadmap: R-2` both
+ * return null, the same "no line" answer as a brief that never mentions a roadmap id.
+ */
+export function roadmapFromBrief(text: string): string | null {
+  const head = text.split(/\r?\n/, 20);
+  for (const line of head) {
+    const match = /^\s*roadmap\s*:\s*(.+?)\s*$/i.exec(line);
+    if (!match) continue;
+    const value = match[1]!;
+    if (/^R-\d{2}$/.test(value)) return value;
+  }
+  return null;
+}
+
+/**
  * A brief written by hand for a real ticket carries no packet id the planner can hand
  * to Jira. Without this, the synthetic `queue-brief-<timestamp>`/`hotfix-<timestamp>` id
  * is all `routeRepo`, branch naming and `jiraHandoff` ever see, so a hand-written brief

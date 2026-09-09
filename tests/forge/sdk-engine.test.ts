@@ -6,7 +6,7 @@
  * captures every call `SdkEngine` makes into it, and answers each pushed prompt with a
  * scripted sequence of assistant messages followed by a `result`.
  */
-import { mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -24,6 +24,9 @@ import {
 } from '../../src/forge/sdkengine.js';
 import { Journal } from '../../src/forge/journal.js';
 import { Gotchas } from '../../src/forge/gotcha.js';
+import { BlockerBoard } from '../../src/forge/blockers.js';
+import { CredentialHorizon } from '../../src/forge/credential-horizon.js';
+import { readMergeableDetailed } from '../../src/forge/drift.js';
 
 let home: string;
 let journalPath: string;
@@ -1668,5 +1671,385 @@ describe('P4.7/I10: the prose rules never judge source code', () => {
     // a rule deny asks it to try something else on its next tool call, so it must never
     // carry that same instruction.
     expect(verdict.additionalContext).toBeUndefined();
+  });
+});
+
+describe('W1: an auth or rate-limit gh failure is a credential lapse, never a rebase prompt', () => {
+  /** Advances its own virtual clock on `sleep` instead of waiting for real. */
+  function fakeDriftClock(): { now: () => number; sleep: (ms: number) => Promise<void> } {
+    let now = 0;
+    return { now: () => now, sleep: async (ms) => { now += ms; } };
+  }
+
+  /** Real `gh` output, not a paraphrase: this is what the binary prints with no token. */
+  const AUTH_SPECIMEN = 'gh: To get started with GitHub CLI, please run:  gh auth login\n'
+    + 'Alternatively, populate the GH_TOKEN environment variable with a GitHub API '
+    + 'authentication token.\nnot logged into any GitHub hosts';
+  const RATE_LIMIT_SPECIMEN = 'gh: API rate limit exceeded for user ID 1234567. '
+    + 'If you reach out to GitHub Support for help, please include the request ID.';
+
+  function pushOnce() {
+    return fakeQuery([[{
+      text: 'pushed', usage: { input: 10, cacheRead: 0, cacheCreation: 0, output: 1 },
+      toolUse: { name: 'Bash', input: { command: 'git push' } },
+    }]]);
+  }
+
+  const SPECIMENS = [
+    ['an auth failure', 'auth', AUTH_SPECIMEN],
+    ['a rate limit', 'rate', RATE_LIMIT_SPECIMEN],
+  ] as const;
+
+  for (const [label, slug, specimen] of SPECIMENS) {
+    it(`${label} records a credential lapse on the gh account and raises no base-drift ask`, async () => {
+      const { fn } = pushOnce();
+      const lapses: Array<{ account: string; run: string; pid: number }> = [];
+      const engine = new SdkEngine({
+        journalPath,
+        inboxDir: join(home, `inbox-w1-${slug}`),
+        gotchasDir: join(home, `gotchas-w1-${slug}`),
+        queryFn: fn,
+        checkDrift: async () => readMergeableDetailed(specimen),
+        driftClock: fakeDriftClock(),
+        credentialHorizon: {
+          onLapse: async (account, run, incarnation) => {
+            lapses.push({ account, run, pid: incarnation.pid });
+            return 'started';
+          },
+        },
+      });
+      await engine.run({ ...REQUEST, run: `w1-${slug}`, env: { PATH: '/usr/bin' } });
+      await new Promise((resolve) => setImmediate(resolve));
+
+      // Positively: the lapse was recorded, with the gh account and this run's name.
+      // Asserting only "no ask was raised" would also pass if the check simply threw.
+      // The login flow is for an expired token only. A rate limit is told to Aaron and
+      // waited out; taking the login lock for one starves a real auth lapse.
+      expect(lapses).toEqual(slug === 'auth'
+        ? [{ account: 'github', run: 'w1-auth', pid: process.pid }]
+        : []);
+      // No base-drift ask. The one entry raised names the credential and never a rebase.
+      const open = new Inbox(join(home, `inbox-w1-${slug}`)).open();
+      expect(open).toHaveLength(1);
+      expect(open[0]?.question).not.toMatch(/rebase/i);
+      expect(open[0]?.question).not.toMatch(/base drift/i);
+      expect(open[0]?.question).toContain('github');
+      // The journal line a person reads. The live probe printed "hit a auth failure"
+      // before this assertion existed.
+      const note = replay(journalPath).events.find(
+        (e) => e.event === 'note' && e.run === `w1-${slug}` && String(e['note']).includes('drift check hit'),
+      );
+      expect(note?.['note']).toBe(
+        `drift check hit ${slug === 'auth' ? 'an auth' : 'a rate-limit'} failure on github; `
+        + 'recorded as a credential lapse rather than base drift',
+      );
+    });
+  }
+
+  it('the retry window is not spent on a failure that already explained itself', async () => {
+    const { fn } = pushOnce();
+    let calls = 0;
+    const engine = new SdkEngine({
+      journalPath, inboxDir: join(home, 'inbox-w1-nowait'), gotchasDir: join(home, 'gotchas-w1-nowait'),
+      queryFn: fn,
+      checkDrift: async () => { calls++; return readMergeableDetailed(AUTH_SPECIMEN); },
+      driftClock: fakeDriftClock(),
+      credentialHorizon: { onLapse: async () => 'started' },
+    });
+    await engine.run({ ...REQUEST, run: 'w1-nowait', env: { PATH: '/usr/bin' } });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(calls).toBe(1);
+  });
+
+  it('a genuinely still-computing UNKNOWN still raises the blocker after the whole window', async () => {
+    const { fn } = pushOnce();
+    let calls = 0;
+    let lapsed = false;
+    const engine = new SdkEngine({
+      journalPath, inboxDir: join(home, 'inbox-w1-window'), gotchasDir: join(home, 'gotchas-w1-window'),
+      queryFn: fn,
+      // Unreadable, unclassifiable output: GitHub has not finished computing the state.
+      checkDrift: async () => { calls++; return readMergeableDetailed(''); },
+      driftClock: fakeDriftClock(),
+      credentialHorizon: { onLapse: async () => { lapsed = true; return 'started'; } },
+    });
+    await engine.run({ ...REQUEST, run: 'w1-window', env: { PATH: '/usr/bin' } });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(calls).toBe(10);
+    expect(lapsed).toBe(false);
+    const inbox = new Inbox(join(home, 'inbox-w1-window'));
+    expect(inbox.open()).toHaveLength(1);
+    expect(inbox.open()[0]?.question).toMatch(/could not be read, and unknown is not passing/);
+  });
+
+  it('the park lands under credential:<account>, the key the warden tick clears', async () => {
+    // A live holder already owns the login lock, so `onLapse` parks rather than starting
+    // a second flow -- the branch that reaches the BlockerBoard, and so the branch where
+    // the key convention is observable.
+    mkdirSync(join(home, 'logins'), { recursive: true });
+    writeFileSync(
+      join(home, 'logins', 'github.lock'),
+      JSON.stringify({ pid: process.pid, startedAt: Date.now() }),
+      'utf8',
+    );
+    const raised: Array<{ key: string; run: string }> = [];
+    const horizonJournal = new Journal(join(home, 'horizon.jsonl'));
+    const blockers = new BlockerBoard({
+      journal: horizonJournal,
+      actuator: { park: async () => true, resume: async () => {} },
+    });
+    const watched = {
+      raise: async (key: string, what: string, run: string) => {
+        raised.push({ key, run });
+        await blockers.raise(key, what, run);
+      },
+      clear: (key: string, message?: string) => blockers.clear(key, message),
+      runsFor: (key: string) => blockers.runsFor(key),
+    } as unknown as BlockerBoard;
+    const horizon = new CredentialHorizon({
+      journal: horizonJournal,
+      blockers: watched,
+      notifyAaron: () => {},
+      startFlow: async () => ({ page: 'https://example.test/authorize' }),
+      isAlive: () => true,
+    });
+
+    const { fn } = pushOnce();
+    const engine = new SdkEngine({
+      journalPath, inboxDir: join(home, 'inbox-w1-key'), gotchasDir: join(home, 'gotchas-w1-key'),
+      queryFn: fn,
+      checkDrift: async () => readMergeableDetailed(AUTH_SPECIMEN),
+      driftClock: fakeDriftClock(),
+      credentialHorizon: horizon,
+    });
+    await engine.run({ ...REQUEST, run: 'w1-key', env: { PATH: '/usr/bin' } });
+    await new Promise((resolve) => setImmediate(resolve));
+    horizonJournal.close();
+
+    expect(raised).toEqual([{ key: 'credential:github', run: 'w1-key' }]);
+    const openKey = new Inbox(join(home, 'inbox-w1-key')).open();
+    expect(openKey).toHaveLength(1);
+    expect(openKey[0]?.question).not.toMatch(/rebase/i);
+  });
+});
+
+describe('W2: the base-drift question names the base branch it is talking about', () => {
+  function fakeDriftClock(): { now: () => number; sleep: (ms: number) => Promise<void> } {
+    let now = 0;
+    return { now: () => now, sleep: async (ms) => { now += ms; } };
+  }
+
+  function pushOnce() {
+    return fakeQuery([[{
+      text: 'pushed', usage: { input: 10, cacheRead: 0, cacheCreation: 0, output: 1 },
+      toolUse: { name: 'Bash', input: { command: 'git push' } },
+    }]]);
+  }
+
+  it('names the real base for a repo whose base is not main', async () => {
+    const { fn } = pushOnce();
+    const engine = new SdkEngine({
+      journalPath, inboxDir: join(home, 'inbox-w2-base'), gotchasDir: join(home, 'gotchas-w2-base'),
+      queryFn: fn,
+      checkDrift: async () => readMergeableDetailed(
+        JSON.stringify({ mergeable: 'CONFLICTING', baseRefName: 'release/1.3.0' }),
+      ),
+      driftClock: fakeDriftClock(),
+    });
+    await engine.run({ ...REQUEST, run: 'w2-base', env: { PATH: '/usr/bin' } });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const open = new Inbox(join(home, 'inbox-w2-base')).open();
+    expect(open).toHaveLength(1);
+    expect(open[0]?.question).toContain('release/1.3.0');
+    expect(open[0]?.question).not.toContain('the base branch');
+  });
+
+  it('an unreadable base names no branch and never guesses main', async () => {
+    const { fn } = pushOnce();
+    const engine = new SdkEngine({
+      journalPath, inboxDir: join(home, 'inbox-w2-nobase'), gotchasDir: join(home, 'gotchas-w2-nobase'),
+      queryFn: fn,
+      checkDrift: async () => readMergeableDetailed('{"mergeable":"CONFLICTING"}'),
+      driftClock: fakeDriftClock(),
+    });
+    await engine.run({ ...REQUEST, run: 'w2-nobase', env: { PATH: '/usr/bin' } });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const open = new Inbox(join(home, 'inbox-w2-nobase')).open();
+    expect(open).toHaveLength(1);
+    expect(open[0]?.question).toContain('the base branch');
+    expect(open[0]?.question).not.toMatch(/\bmain\b/);
+  });
+
+  it('a later mergeable read clears the blocker raised under the real base name', async () => {
+    const conflicting = JSON.stringify({ mergeable: 'CONFLICTING', baseRefName: 'release/1.3.0' });
+    const mergeable = JSON.stringify({ mergeable: 'MERGEABLE', baseRefName: 'release/1.3.0' });
+    const inboxDir = join(home, 'inbox-w2-clear');
+    const gotchasDir = join(home, 'gotchas-w2-clear');
+
+    const { fn } = pushOnce();
+    await new SdkEngine({
+      journalPath, inboxDir, gotchasDir, queryFn: fn,
+      checkDrift: async () => readMergeableDetailed(conflicting),
+      driftClock: fakeDriftClock(),
+    }).run({ ...REQUEST, run: 'w2-clear', env: { PATH: '/usr/bin' } });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(new Inbox(inboxDir).open()).toHaveLength(1);
+
+    const { fn: fn2 } = pushOnce();
+    await new SdkEngine({
+      journalPath, inboxDir, gotchasDir, queryFn: fn2,
+      checkDrift: async () => readMergeableDetailed(mergeable),
+      driftClock: fakeDriftClock(),
+    }).run({ ...REQUEST, run: 'w2-clear', env: { PATH: '/usr/bin' } });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(new Inbox(inboxDir).open()).toHaveLength(0);
+  });
+});
+
+describe('findings from the design critique, held as regressions', () => {
+  function fakeDriftClock(): { now: () => number; sleep: (ms: number) => Promise<void> } {
+    let now = 0;
+    return { now: () => now, sleep: async (ms) => { now += ms; } };
+  }
+
+  function pushOnce() {
+    return fakeQuery([[{
+      text: 'pushed', usage: { input: 10, cacheRead: 0, cacheCreation: 0, output: 1 },
+      toolUse: { name: 'Bash', input: { command: 'git push' } },
+    }]]);
+  }
+
+  it('a pull request retargeted between two reads still clears the blocker it raised', async () => {
+    const inboxDir = join(home, 'inbox-retarget');
+    const gotchasDir = join(home, 'gotchas-retarget');
+
+    const { fn } = pushOnce();
+    await new SdkEngine({
+      journalPath, inboxDir, gotchasDir, queryFn: fn,
+      checkDrift: async () => readMergeableDetailed(
+        JSON.stringify({ mergeable: 'CONFLICTING', baseRefName: 'develop' }),
+      ),
+      driftClock: fakeDriftClock(),
+    }).run({ ...REQUEST, run: 'retarget', env: { PATH: '/usr/bin' } });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(new Inbox(inboxDir).open()).toHaveLength(1);
+
+    // The pull request is retargeted from develop to main, so the next read names a
+    // different base. The open ask still describes develop, and its key is a hash of
+    // that wording, so reconstructing this read's wording never finds it.
+    const { fn: fn2 } = pushOnce();
+    await new SdkEngine({
+      journalPath, inboxDir, gotchasDir, queryFn: fn2,
+      checkDrift: async () => readMergeableDetailed(
+        JSON.stringify({ mergeable: 'MERGEABLE', baseRefName: 'main' }),
+      ),
+      driftClock: fakeDriftClock(),
+    }).run({ ...REQUEST, run: 'retarget', env: { PATH: '/usr/bin' } });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(new Inbox(inboxDir).open()).toHaveLength(0);
+  });
+
+  it('a credential lapse leaves a question a person can answer, not only a journal note', async () => {
+    const inboxDir = join(home, 'inbox-lapse-ask');
+    const { fn } = pushOnce();
+    await new SdkEngine({
+      journalPath, inboxDir, gotchasDir: join(home, 'gotchas-lapse-ask'), queryFn: fn,
+      checkDrift: async () => readMergeableDetailed('not logged into any GitHub hosts'),
+      driftClock: fakeDriftClock(),
+      credentialHorizon: { onLapse: async () => 'started' },
+    }).run({ ...REQUEST, run: 'lapse-ask', env: { PATH: '/usr/bin' } });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // Nothing in the shipped binary calls CredentialHorizon.tick(), so a park under
+    // credential:github has no automatic way back. The board entry is the way back.
+    const open = new Inbox(inboxDir).open();
+    expect(open).toHaveLength(1);
+    expect(open[0]?.question).toContain('github');
+    expect(open[0]?.question).not.toMatch(/rebase/i);
+  });
+});
+
+describe('cross-model review findings, held as regressions', () => {
+  function fakeDriftClock(): { now: () => number; sleep: (ms: number) => Promise<void> } {
+    let now = 0;
+    return { now: () => now, sleep: async (ms) => { now += ms; } };
+  }
+
+  function pushOnce() {
+    return fakeQuery([[{
+      text: 'pushed', usage: { input: 10, cacheRead: 0, cacheCreation: 0, output: 1 },
+      toolUse: { name: 'Bash', input: { command: 'git push' } },
+    }]]);
+  }
+
+  it('a credential ask parks the run it asks about, so "answer this to carry on" is true', async () => {
+    const inboxDir = join(home, 'inbox-park');
+    const parked = new Map<string, string>();
+    const { fn } = pushOnce();
+    await new SdkEngine({
+      journalPath, inboxDir, gotchasDir: join(home, 'gotchas-park'), queryFn: fn, parked,
+      checkDrift: async () => readMergeableDetailed('not logged into any GitHub hosts'),
+      driftClock: fakeDriftClock(),
+      credentialHorizon: { onLapse: async () => 'started' },
+    }).run({ ...REQUEST, run: 'park-run', env: { PATH: '/usr/bin' } });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const open = new Inbox(inboxDir).open();
+    expect(open).toHaveLength(1);
+    // Without this the board says the run is waiting for an answer while the run keeps
+    // taking tool calls with a credential that cannot work.
+    expect(parked.get('park-run')).toBe(open[0]?.key);
+  });
+
+  it('a successor session clears the blocker its predecessor raised for the same goal', async () => {
+    const inboxDir = join(home, 'inbox-handoff');
+    const gotchasDir = join(home, 'gotchas-handoff');
+
+    const { fn } = pushOnce();
+    await new SdkEngine({
+      journalPath, inboxDir, gotchasDir, queryFn: fn,
+      checkDrift: async () => readMergeableDetailed(
+        JSON.stringify({ mergeable: 'CONFLICTING', baseRefName: 'develop' }),
+      ),
+      driftClock: fakeDriftClock(),
+    }).run({ ...REQUEST, run: 'handoff-goal', goal: 'handoff-goal', env: { PATH: '/usr/bin' } });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(new Inbox(inboxDir).open()).toHaveLength(1);
+
+    // The run hit its ceiling and handed off. The successor carries a new segment name
+    // and the same stable goal, rebases, and pushes something mergeable.
+    const { fn: fn2 } = pushOnce();
+    await new SdkEngine({
+      journalPath, inboxDir, gotchasDir, queryFn: fn2,
+      checkDrift: async () => readMergeableDetailed(
+        JSON.stringify({ mergeable: 'MERGEABLE', baseRefName: 'develop' }),
+      ),
+      driftClock: fakeDriftClock(),
+    }).run({ ...REQUEST, run: 'handoff-goal-2', goal: 'handoff-goal', env: { PATH: '/usr/bin' } });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(new Inbox(inboxDir).open()).toHaveLength(0);
+  });
+
+  it('an ask carries the stable goal, so an answer reaches the session that is live', async () => {
+    const inboxDir = join(home, 'inbox-goal-id');
+    const { fn } = pushOnce();
+    await new SdkEngine({
+      journalPath, inboxDir, gotchasDir: join(home, 'gotchas-goal-id'), queryFn: fn,
+      checkDrift: async () => readMergeableDetailed('not logged into any GitHub hosts'),
+      driftClock: fakeDriftClock(),
+      credentialHorizon: { onLapse: async () => 'started' },
+    }).run({ ...REQUEST, run: 'goal-id-2', goal: 'goal-id', env: { PATH: '/usr/bin' } });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const open = new Inbox(inboxDir).open();
+    expect(open).toHaveLength(1);
+    expect(open[0]?.goals).toContain('goal-id');
   });
 });

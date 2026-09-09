@@ -17,10 +17,12 @@ import { join } from 'node:path';
 import { chainCouncil, chainGate, chainGh, chainRebase, chainLauncher, chainLaunchGoal } from './chain-wire.js';
 import { checkoutFor, repoKindFor as repoKindForEnv, type ChainEnv } from './chain-env.js';
 import type { CliResult, ForgeDeps } from './cli.js';
+import { autoMergeAllowed } from './council/risk.js';
 import { countAddDel, REAL_GH } from './council/gh.js';
 import type { Packet, PollSourceName, Watermark } from './contracts.js';
 import { run as execRun } from './exec.js';
 import type { QueueMergeDeps, QueuePlannedBrief, QueuePlanner, QueuePromoteDeps, QueueRuntimeDeps, QueueTicketSearch } from './intake/queue.js';
+import { gitSquashMergeToBase, type GitRunFn } from './intake/gitMerge.js';
 import { developDeployVerifier } from './intake/otaVerify.js';
 import { appendRoutinesSection, loadRoutines, matchRoutines } from './self/routines.js';
 import { routinesDir } from './paths.js';
@@ -321,6 +323,23 @@ export function queueBranchMerged(chainEnv: ChainEnv): NonNullable<QueueRuntimeD
   };
 }
 
+/** R-22: routes the Merge click's actual merge through git instead of `gh pr merge`,
+ *  against the repo's own `FORGE_REPO_CHECKOUTS` entry on the base branch. A repo with no
+ *  checkout configured refuses rather than guessing at a path. Wraps `execRun` as a
+ *  `GitRunFn` so `gitSquashMergeToBase` runs through the same budgeted git call every
+ *  other queue-wire function already uses. */
+export function queueGitMerge(chainEnv: ChainEnv): NonNullable<QueueMergeDeps['gitMerge']> {
+  const runGit: GitRunFn = async (argv, cwd) => {
+    const result = await execRun({ argv: ['git', ...argv], cwd, owner: 'queue', cls: 'script' });
+    return { ok: result.ok, stdout: result.tail };
+  };
+  return async ({ repo, base, branch, subject, body }) => {
+    const checkoutDir = checkoutFor(chainEnv, repo);
+    if (!checkoutDir) return { ok: false, reason: `no checkout configured for ${repo}` };
+    return gitSquashMergeToBase({ checkoutDir, base, branch, subject, body }, runGit);
+  };
+}
+
 /**
  * A.7: builds the Merge click's own dependencies -- ready for a caller with a
  * `ForgeDeps` in hand (`forge up`'s own wiring, `cli.ts`'s `up` case) to hand to
@@ -346,7 +365,7 @@ export function queueMergeDeps(deps: ForgeDeps, store: QueueRuntimeDeps['store']
     },
     clock: () => Date.now(),
     store,
-    ...(chainEnv ? { postMergeVerify: queuePostMergeVerify(chainEnv) } : {}),
+    ...(chainEnv ? { postMergeVerify: queuePostMergeVerify(chainEnv), gitMerge: queueGitMerge(chainEnv) } : {}),
   };
 }
 
@@ -418,6 +437,12 @@ export function buildQueueRuntimeDeps(
     backendHandoff: queueBackendHandoff(),
     jiraHandoff: queueJiraHandoff(),
     prSnapshot: queuePrSnapshot(),
+    // BBZ, 2026-09-08: read fresh every tick (`autoMergeAllowed` re-reads
+    // `FORGE_COUNCIL_AUTOMERGE` off `councilPolicy()` on each call), the same allow-list
+    // `forge gate --merge` already refuses against for a person -- this is the queue's
+    // own worker asking for the identical decision instead of waiting on a click.
+    mergeAllowed: (repo) => autoMergeAllowed(repo),
+    postMergeVerify: queuePostMergeVerify(chainEnv),
     prMerged: async (repo, pr) => {
       const result = await execRun({
         argv: ['gh', 'pr', 'view', String(pr), '--repo', repo, '--json', 'mergedAt'],
