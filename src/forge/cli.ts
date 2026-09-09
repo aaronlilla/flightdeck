@@ -9,13 +9,17 @@
  *   forge answer KEY ANSWER   answer a question a worker parked on
  *   forge decide RUN kill R   the only way a kill decision id gets made
  *   forge stop --all          park every run with a handoff and end all spend
+ *   forge queue add INPUT     queue a ticket, brief path or hotfix against the running server
+ *   forge queue ls            list what is on the queue, filtered or as JSON
+ *   forge inbox               Jira tickets waiting on a reply, an answer, or a status fix
+ *   forge rounds [--apply]    the Conductor's walk around the board: what is stale and why; --apply acts
  *
  * `stop --all` is the control that has to work when nothing else does, so it takes no
  * arguments it could get wrong, is safe to run twice, and says plainly when there was
  * nothing to stop. It parks rather than kills: the work survives and `forge up` continues
  * it. A stop that lost an afternoon is a stop nobody dares press.
  */
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 import type { QueryFn } from '../adapter/engine.js';
@@ -31,8 +35,9 @@ import { autoMergeAllowed, councilPolicy, repoAllowedForCouncil } from './counci
 import { redactPrBody } from './council/redact-sinks.js';
 import { SEVERITY_RANK } from './council/synthesis.js';
 import { runCutover } from './cutover.js';
-import { readLoginLock } from './credential-horizon.js';
-import { buildBurnLedger, checkBudget } from './governor.js';
+import { CredentialHorizon, readLoginLock } from './credential-horizon.js';
+import { accountFor, buildBurnLedger, checkBudget, WindowGate } from './governor.js';
+import { accountsRegistryPath, addAccount, checkAddCandidate, liveRunsByAccount, loadAccounts, removeAccount } from './accounts.js';
 import { reconcileBurnOnce } from './burn-reconcile.js';
 import { planIntakeWrites } from './intake/dryRun.js';
 import { createJiraFeed, createJiraWriteClient, probeJira, type JiraWriteClient } from './intake/jira.js';
@@ -42,15 +47,18 @@ import type { FakePollFeed } from './intake/poller.js';
 import { planFromPacket } from './intake/planner.js';
 import { parseRepoMap } from './intake/repoRoute.js';
 import { resolvePlanProvider } from './intake/reasoner.js';
-import { readWatermark, writeWatermark } from './intake/watermarkStore.js';
+import { readWatermark, writeWatermark, fileWatermarkStore } from './intake/watermarkStore.js';
+import { fetchInboxIssues, classifyInbox } from './intake/inbox.js';
+import { serverRequest } from './server-request.js';
 import { readProcessList, watchedProcesses, probeProcessListCached } from './fleetwatch.js';
 import { Gotchas } from './gotcha.js';
 import { Inbox, isAskStale } from './inbox.js';
 import { replay, Journal, JournalCache } from './journal.js';
-import { addAccount, checkAddCandidate, launchAccountId, loadAccounts, removeAccount } from './accounts.js';
 import { probeAccounts, readProbeEnv } from './accounts-probe.js';
 import { checkLaunch, launchEnv, loginInFlight, pinnedRuntime, runtimeHead, runtimeVersion } from './launcher.js';
 import { assess, LivenessSupervisor } from './liveness.js';
+import { loadConsoleEnv } from './console-env.js';
+import { titleFromHeading } from './console/lanes.js';
 import {
   ensureHome, fleetConfigDirChoice, forgeHome, gotchasDir, inboxDir, intakeBriefsDir, journalPath,
   killSwitchPath, lanesDir, queuePath, registryDir, runsDir,
@@ -58,7 +66,8 @@ import {
 import { runQueueTick } from './intake/queue.js';
 import { acquireQueueLock } from './intake/queueLock.js';
 import { QueueStore } from './intake/queueStore.js';
-import { buildQueueRuntimeDeps, queueMergeDeps, queuePromoteDeps } from './queue-wire.js';
+import { buildQueueRuntimeDeps, queueMergeDeps, queuePromoteDeps, jiraConfigFromEnv } from './queue-wire.js';
+import { readWatcherPollSeconds, watcherFeed, watcherTick } from './intake/watcherWire.js';
 import { buildSelfLoop } from './self-wire.js';
 import { QueueTickBackoff } from './queue-backoff.js';
 import { loadPolicy, modelFor, modelIdFor, tierOfBrief } from './policy.js';
@@ -74,12 +83,24 @@ import { FORGE_PORT, ForgeServer } from './server.js';
 import { Breaker, clearKillSwitch, Fleet, Lanes, readKillSwitch } from './supervisor.js';
 import { WardenActuator } from './warden.js';
 import { DriftCadenceTracker, WardenTick, type WardenTickRun } from './warden-tick.js';
+import { renderToolCall } from './tool-target.js';
 import { Worker, type EngineLike, type WorkerConfig } from './worker.js';
 import {
   chainStatusLines, foldChainState, runChainTick, runKeyForBrief,
 } from './chain.js';
-import { readChainEnv } from './chain-env.js';
+import { readChainEnv, repoKindFor } from './chain-env.js';
 import { buildChainDeps, hasRunRegistered } from './chain-wire.js';
+import { isGoalFile } from './intake/goalFile.js';
+
+
+/** The port the console is actually served on: `FORGE_PORT` when a second `forge up` was
+ *  started on one, else the default. A link that names the wrong port sends a person to a
+ *  page that is not there. */
+function consolePort(): number {
+  const raw = process.env['FORGE_PORT'];
+  const parsed = raw ? Number(raw) : NaN;
+  return Number.isFinite(parsed) ? parsed : FORGE_PORT;
+}
 
 export interface CliResult {
   code: number;
@@ -244,17 +265,34 @@ function briefUnderRealGoalsDir(briefPath: string): boolean {
  */
 function parseRunArgs(rest: string[]): {
   dryRun: boolean; maxContext?: number; maxTurns?: number; condition: string; invalid?: string;
-  autoAnswer?: string;
+  autoAnswer?: string; goal: boolean; runKey?: string;
 } {
   let dryRun = false;
+  let goal = false;
   let maxContext: number | undefined;
   let maxTurns: number | undefined;
   let invalid: string | undefined;
   let autoAnswer: string | undefined;
+  let runKey: string | undefined;
   const words: string[] = [];
   for (let index = 0; index < rest.length; index += 1) {
     const token = rest[index]!;
     if (token === '--dry-run') { dryRun = true; continue; }
+    // 2026-09-08: a `goal` queue item's launch -- the argument past the goal path is
+    // the resolved /goal condition itself, never file contents, and this flag is what
+    // tells `forge run` so, the same way `chainLaunchGoalArgv` builds its argv.
+    if (token === '--goal') { goal = true; continue; }
+    // 2026-09-08 (BBZ collision fix): names this run's own key instead of letting it
+    // fall back to `runKeyForBrief`'s bare basename -- two queue items launched off
+    // the same goal file otherwise collide on both the run directory and the
+    // registry row the second launch's `waitForLaunchToRegister` would then read as
+    // already-registered from the first.
+    if (token === '--run-key') {
+      const raw = rest[index += 1];
+      if (!raw) invalid ??= '--run-key needs a value';
+      runKey = raw;
+      continue;
+    }
     if (token === '--max-context') {
       const raw = rest[index += 1];
       const value = Number(raw);
@@ -278,16 +316,29 @@ function parseRunArgs(rest: string[]): {
     words.push(token);
   }
   return {
-    dryRun, condition: words.join(' '),
+    dryRun, goal, condition: words.join(' '),
     ...(maxContext !== undefined ? { maxContext } : {}),
     ...(maxTurns !== undefined ? { maxTurns } : {}),
     ...(autoAnswer !== undefined ? { autoAnswer } : {}),
+    ...(runKey !== undefined ? { runKey } : {}),
     ...(invalid ? { invalid } : {}),
   };
 }
 
 function money(amount: number): string {
   return `$${amount.toFixed(2)}`;
+}
+
+/** Same shape `queue-route.ts` checks a ticket source's input against: a project
+ *  prefix, a dash, a number. */
+const TICKET_KEY_RE = /^[A-Z][A-Z0-9_]*-\d+$/;
+
+function isExistingFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -298,6 +349,11 @@ function money(amount: number): string {
  */
 export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliResult> {
   const [command, ...rest] = argv;
+  // A terminal run of `forge` otherwise sees none of the console's FORGE_* variables:
+  // see console-env.ts. FORGE_NO_CONSOLE_ENV=1 opts out.
+  if (process.env['FORGE_NO_CONSOLE_ENV'] !== '1') {
+    loadConsoleEnv(join(forgeHome(), 'console.env.cmd'), process.env);
+  }
   ensureHome();
   const lanes = new Lanes(lanesDir());
   const inbox = new Inbox(inboxDir());
@@ -364,6 +420,20 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
     }
 
     case 'up': {
+      // A supervisor of paid workers never dies on one stray promise. Node's default
+      // for an unhandled rejection is to exit, and on 2026-09-08 one failed `gh` spawn
+      // inside a background PR read took the console down four times in seven minutes,
+      // stranding every worker it had launched. Journal it, print it, carry on.
+      const guardJournal = new Journal(journalPath());
+      process.on('unhandledRejection', (reason) => {
+        const message = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
+        console.error(`unhandled rejection (console stays up): ${message}`);
+        try {
+          guardJournal.append({ event: 'console.unhandled', actor: 'console', kind: 'rejection', message: message.slice(0, 2000) });
+        } catch {
+          // The journal itself failing must not turn a survived rejection into an exit.
+        }
+      });
       const state = replay(journalPath());
 
       // Before anything else starts: pick up whatever the registry says crashed. A row
@@ -415,6 +485,15 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       // an add from the console and an advance from the worker are never reading two
       // different views of the same file mid-tick.
       const queueStore = new QueueStore(queuePath());
+      // Queue-throughput W2: FORGE_QUEUE_MAX_IN_FLIGHT seeds the on-disk width for this
+      // `forge up` -- an out-of-range or non-integer value is the same as not setting it
+      // at all, since ForgeServer's own `?? 4` default is the honest fallback, not a
+      // half-applied env value.
+      const envQueueMaxInFlight = Number(process.env['FORGE_QUEUE_MAX_IN_FLIGHT']);
+      const queueMaxInFlight = Number.isInteger(envQueueMaxInFlight)
+        && envQueueMaxInFlight >= 1 && envQueueMaxInFlight <= 12
+        ? envQueueMaxInFlight
+        : undefined;
       const server = new ForgeServer({
         lanes, inbox, journalPath: journalPath(), journalCache: sharedJournalCache, registry,
         stuck: () => liveness.stuck(),
@@ -424,6 +503,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           return Array.isArray(read) ? read.map((proc) => ({ ...proc })) : read;
         },
         queueStore,
+        ...(queueMaxInFlight !== undefined ? { queueMaxInFlight } : {}),
         // A.7: Merge and Promote are clicks. Merge reuses the gate with `merge: true` for
         // repos on FORGE_QUEUE_MERGE_REPOS and then reads the develop deploy's outcome per
         // platform; Promote reports whether the production workflow exists and refuses
@@ -492,8 +572,11 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
               }
               const recentToolCalls = fleetState.events
                 .filter((event) => event.run === run.run && event.event === 'tool.start')
-                .slice(-5)
-                .map((event) => String(event['tool'] ?? ''));
+                .slice(-8)
+                .map((event) => renderToolCall(
+                  String(event['tool'] ?? ''),
+                  typeof event['target'] === 'string' ? event['target'] : undefined,
+                ));
               return {
                 run: run.run,
                 ...(brief !== undefined ? { brief } : {}),
@@ -587,6 +670,36 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         queueLine = `queue on, polling every ${pollSeconds}s`;
       }
 
+      // R-11 part 2: the Jira watcher bridge -- FORGE_BACKLOG_PROJECT names the project it
+      // watches, the same variable buildBacklogJql already reads for a backlog add. Its own
+      // timer at FORGE_CHAIN_POLL_S seconds (default 30, not the chain's 300s default),
+      // since a comment or a status move on an owned ticket should reach the queue fast.
+      let watcherLine = '';
+      const watcherProject = process.env['FORGE_BACKLOG_PROJECT'];
+      const watcherJiraConfig = jiraConfigFromEnv();
+      if (!watcherProject) {
+        watcherLine = 'jira watcher NOT started: no FORGE_BACKLOG_PROJECT';
+      } else if (!watcherJiraConfig) {
+        watcherLine = 'jira watcher NOT started: no Jira credentials';
+      } else {
+        const watcherJournal = new Journal(journalPath());
+        const watcherPollSeconds = readWatcherPollSeconds();
+        const watermarks = fileWatermarkStore();
+        const feed = watcherFeed(watcherProject, watcherJiraConfig);
+        const watcherTickTimer = setInterval(() => {
+          void watcherTick({
+            feed, watermarks, store: queueStore, journal: watcherJournal,
+          }).catch((error: unknown) => {
+            watcherJournal.append({
+              event: 'watcher.tick-error', actor: 'watcher',
+              message: error instanceof Error ? error.message : String(error),
+            } as never);
+          });
+        }, watcherPollSeconds * 1000);
+        watcherTickTimer.unref();
+        watcherLine = `jira watcher on for ${watcherProject}, every ${watcherPollSeconds}s`;
+      }
+
       // The self loop (`self-wire.ts`): findings about the fleet become queue items on
       // FORGE_SELF_REPO, a self item whose gate cleared merges, and once trunk has moved
       // this process asks its launcher for a restart by exiting 75 -- only while nothing
@@ -630,7 +743,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         const probeOnce = () => {
           if (probing) return;
           probing = true;
-          void probeAccounts({ accounts: loadAccounts().accounts, journal: probeJournal, cwd: process.cwd() })
+          void probeAccounts({ accounts: loadAccounts(), journal: probeJournal, cwd: process.cwd() })
             .catch((error) => {
               probeJournal.append({ event: 'account.probe', actor: 'probe', account: '*', ok: false, message: error instanceof Error ? error.message : String(error) });
             })
@@ -639,7 +752,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         const probeTick = setInterval(probeOnce, probeEnv.everySeconds * 1000);
         probeTick.unref();
         setTimeout(probeOnce, 5_000).unref();
-        accountsLine = `accounts probe on for ${loadAccounts().accounts.filter((a) => a.provider === 'claude').length} Claude account(s), every ${probeEnv.everySeconds}s`;
+        accountsLine = `accounts probe on for ${loadAccounts().length} Claude account(s), every ${probeEnv.everySeconds}s`;
       }
 
       return {
@@ -652,6 +765,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           `inbox: ${inbox.open().length} waiting`,
           chainLine,
           queueLine,
+          watcherLine,
           selfLine,
           accountsLine,
         ].filter(Boolean),
@@ -667,11 +781,19 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       } catch (error) {
         return { code: 2, lines: [`cannot read ${briefPath}: ${(error as Error).message}`] };
       }
-      const { dryRun, maxContext, maxTurns, condition, invalid, autoAnswer } = parseRunArgs(rest.slice(1));
+      const { dryRun, goal, maxContext, maxTurns, condition, invalid, autoAnswer, runKey: runKeyArg } = parseRunArgs(rest.slice(1));
       if (invalid) {
         // Refused before checkLaunch and before any lane is written: a NaN ceiling never
         // fires, which is the exact silent-unbounded-run this check exists to close.
         return { code: 2, lines: [`refusing to start: ${invalid}`] };
+      }
+      // 2026-09-08: `--goal` -- `briefPath` was still read above (so a bad path fails
+      // the same way for both, and the file's own text still reaches the log and
+      // `tierOfBrief`/`checkLaunch`'s scan), but the Worker's actual first prompt is
+      // the resolved /goal condition, never that file's contents.
+      if (goal) {
+        if (!condition) return { code: 2, lines: ['forge run --goal needs the /goal condition as its second argument'] };
+        brief = condition;
       }
       // Item 8, 2026-09-05: --auto-answer is for a probe or smoke run only -- a brief
       // that opens under a real goals directory (`.claude/goals/`, outside its own
@@ -694,7 +816,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       if (!verdict.ok) {
         return { code: 1, lines: ['refusing to start:', ...verdict.refusals.map((r) => `  ${r}`)] };
       }
-      const slug = runKeyForBrief(briefPath);
+      const slug = runKeyArg ?? runKeyForBrief(briefPath);
       const pin = pinnedRuntime(slug);
       const breaker = new Breaker(lanes);
       const configDir = fleetConfigDirChoice();
@@ -768,18 +890,13 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       lanes.put(slug, {
         column: 'forge', started: Date.now(), owner: 'forge',
         className: plannedClassName, model: plannedModel,
-        account: launchAccountId(),
       });
-      const engine = deps.engine ?? new SdkEngine({
-        journalPath: journalPath(), inboxDir: inboxDir(), gotchasDir: gotchasDir(),
-        killSwitch: () => readKillSwitch(killSwitchPath()).engaged,
-        // I12: written the moment the SDK's init message names the session, not after
-        // the first turn resolves -- a process killed mid-segment still leaves a
-        // registry row and a lane `reconcileRegistry` can resume.
-        onSessionStarted: (_run, sessionId, model) => {
-          registry.setSession(slug, sessionId, model);
-          lanes.put(slug, { session_id: sessionId });
-        },
+      // W1: the reasoner that pads a short forge_ask before it ever reaches the inbox.
+      // Every other reasoner seam this process opens (the router in `up`, the Warden
+      // tick's drift check, council) builds its own the same way; this one is `run`'s
+      // own, since a single `forge run` process has no router-level reasoner to share.
+      const askReasoner = reasonerFor('claude', {
+        journal: new Journal(journalPath()), queryFn: deps.reasonerQueryFn,
       });
       // P4.7/I9: the real actuator, so a model-mismatch turn actually parks (writes the
       // park record the PreToolUse hook checks on this run's own next tool call) rather
@@ -789,6 +906,60 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       const actuatorJournal = new Journal(journalPath());
       const actuator = new WardenActuator({
         journal: actuatorJournal, journalPath: journalPath(), registry, lanes,
+      });
+      // P4.8: picks the least-utilized, unpaused Claude account for this launch instead
+      // of every run piling onto `fleetConfigDir()`'s account. `accountFor` and
+      // `WindowGate` (governor.ts) were built and unit-tested but never wired into the
+      // one production call site that actually launches a worker: this is that wiring.
+      // A registry with no connected accounts yet, or one where every account is paused
+      // or over its ceiling, resolves to `undefined`, and `Worker` falls back to
+      // `fleetConfigDir()` exactly as before, so an empty registry never blocks a launch.
+      const registeredAccounts = loadAccounts(accountsRegistryPath())
+        .map((record) => ({ id: record.id, configDir: record.configDir }));
+      const liveGoalsForAccounts = registry.all()
+        .filter((row) => processAlive(row.pid))
+        .map((row) => row.goal);
+      const liveRunsPerAccount = liveRunsByAccount(replay(journalPath()).events, liveGoalsForAccounts);
+      const selectedAccount = registeredAccounts.length > 0
+        ? accountFor(launchClass, registeredAccounts, new WindowGate(), liveRunsPerAccount, Date.now())
+        : undefined;
+      // Where a `gh` credential lapse from the drift check lands. An expired token
+      // reads as an unknown mergeable state, and answering that with "rebase onto the
+      // base branch" asks for something no rebase can deliver. The park goes under
+      // `credential:github`, the id the console's own GitHub integration row uses, so the
+      // two name one credential rather than two. `warden-tick.ts:359-365` is written to
+      // clear that key, but it is gated on deps `forge up` does not pass, so nothing
+      // calls `tick()` yet: the run's way back is the ask the drift path raises on the
+      // board, not this park.
+      const credentialHorizon = new CredentialHorizon({
+        journal: actuatorJournal,
+        blockers: new BlockerBoard({ journal: actuatorJournal, actuator }),
+        // The one message Aaron gets, on a surface he already watches.
+        // `CredentialHorizon` redacts before calling this, so nothing here re-reads a
+        // secret.
+        notifyAaron: (message) => {
+          actuatorJournal.append({ event: 'note', run: slug, actor: 'warden', note: message });
+        },
+        // A worker runs unattended, so it never opens an interactive login itself:
+        // that hangs on a prompt nobody is there to answer. It points at the console's
+        // GitHub row instead, where Reconnect runs `gh auth login --web` with a person
+        // present.
+        startFlow: async () => ({ page: `http://127.0.0.1:${consolePort()}/#integrations` }),
+        isAlive: processAlive,
+      });
+      const engine = deps.engine ?? new SdkEngine({
+        journalPath: journalPath(), inboxDir: inboxDir(), gotchasDir: gotchasDir(),
+        killSwitch: () => readKillSwitch(killSwitchPath()).engaged,
+        credentialHorizon,
+        reasoner: askReasoner,
+        briefTitle: titleFromHeading(brief, slug) ?? undefined,
+        // I12: written the moment the SDK's init message names the session, not after
+        // the first turn resolves -- a process killed mid-segment still leaves a
+        // registry row and a lane `reconcileRegistry` can resume.
+        onSessionStarted: (_run, sessionId, model) => {
+          registry.setSession(slug, sessionId, model);
+          lanes.put(slug, { session_id: sessionId });
+        },
       });
       const worker = new Worker({
         run: slug,
@@ -807,6 +978,8 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         ...(maxContext !== undefined ? { maxContext } : {}),
         ...(maxTurns !== undefined ? { maxTurns } : {}),
         ...(autoAnswer !== undefined ? { autoAnswer } : {}),
+        ...(goal ? { goalLoop: true } : {}),
+        ...(selectedAccount ? { account: selectedAccount } : {}),
       });
       let result: Awaited<ReturnType<Worker['run']>>;
       try {
@@ -921,18 +1094,14 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
 
     case 'accounts': {
       const sub = rest[0] ?? 'list';
-      const registry = loadAccounts();
+      const registryPath = accountsRegistryPath();
+      const accounts = loadAccounts(registryPath);
       if (sub === 'list') {
-        const launch = launchAccountId(registry);
-        const lines = registry.accounts.map((account) => {
-          const where = account.provider === 'claude' ? account.configDir : 'the harness tool login';
-          const cap = account.provider === 'claude' && account.maxConcurrent ? `, up to ${account.maxConcurrent} at once` : '';
-          return `${account.id.padEnd(12)} ${account.provider.padEnd(7)} ${where}${cap}${account.id === launch ? '  (every launch goes here today)' : ''}`;
+        const lines = accounts.map((account) => {
+          const cap = account.maxConcurrent ? `, up to ${account.maxConcurrent} at once` : '';
+          return `${account.id.padEnd(12)} ${account.configDir}${cap}`;
         });
-        const origin = registry.source === 'file' ? `from ${registry.path}`
-          : registry.source === 'invalid' ? `built in; ${registry.path} was ignored: ${registry.error}`
-          : `built in; no ${registry.path} yet`;
-        return { code: registry.source === 'invalid' ? 1 : 0, lines: [...lines, origin] };
+        return { code: 0, lines: [...lines, accounts.length ? `from ${registryPath}` : `no accounts yet; ${registryPath} does not exist`] };
       }
       if (sub === 'add') {
         const [id, dir, capRaw] = [rest[1], rest[2], rest[3]];
@@ -942,7 +1111,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         const resolved = resolve(dir);
         // Refusals first, before anything touches the dir: the operator's own config dir
         // must never be probed, and a duplicate never asked twice.
-        const candidate = checkAddCandidate(registry, { id, configDir: resolved, ...(cap !== undefined ? { maxConcurrent: cap } : {}) });
+        const candidate = checkAddCandidate(accounts, { id, configDir: resolved, ...(cap !== undefined ? { maxConcurrent: cap } : {}) });
         if (!candidate.ok) return { code: 1, lines: [`refusing: ${candidate.reason}`] };
         if (!existsSync(resolved)) return { code: 1, lines: [`refusing: ${resolved} does not exist; log in there first (CLAUDE_CONFIG_DIR=${resolved} claude, then /login)`] };
         // Verified through the SDK's usage call under that dir, never by opening a
@@ -950,21 +1119,25 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         const journal = new Journal(journalPath());
         let verified: Awaited<ReturnType<typeof probeAccounts>>[number] | undefined;
         try {
-          [verified] = await probeAccounts({ accounts: [{ id, provider: 'claude', configDir: resolved }], journal, cwd: process.cwd() });
+          [verified] = await probeAccounts({ accounts: [{ id, label: id, configDir: resolved, connectedAt: 0 }], journal, cwd: process.cwd() });
         } finally {
           journal.close();
         }
         if (!verified?.ok) return { code: 1, lines: [`refusing: ${resolved} did not answer the usage call: ${verified?.error ?? 'no result'}`, 'Log in there first, then add it again.'] };
-        const added = addAccount(registry, { id, configDir: resolved, ...(cap !== undefined ? { maxConcurrent: cap } : {}) });
-        if (!added.ok) return { code: 1, lines: [`refusing: ${added.reason}`] };
+        try {
+          addAccount({ id, label: id, configDir: resolved, connectedAt: Date.now(), ...(cap !== undefined ? { maxConcurrent: cap } : {}) }, registryPath);
+        } catch (error) {
+          return { code: 1, lines: [`refusing: ${error instanceof Error ? error.message : String(error)}`] };
+        }
         const windows = verified.readings.map((r) => `${r.window.replace('_', ' ')} ${r.utilization === null ? 'unavailable' : `${r.utilization}%`}`).join(', ');
-        return { code: 0, lines: [`added ${id} at ${resolved} (${verified.subscription ?? 'unknown plan'}; ${windows})`, `written to ${registry.path}`] };
+        return { code: 0, lines: [`added ${id} at ${resolved} (${verified.subscription ?? 'unknown plan'}; ${windows})`, `written to ${registryPath}`] };
       }
       if (sub === 'remove') {
         const id = rest[1];
         if (!id) return { code: 2, lines: ['forge accounts remove <id>'] };
-        const removed = removeAccount(registry, id);
-        return removed.ok ? { code: 0, lines: [`removed ${id} from ${registry.path}`] } : { code: 1, lines: [`refusing: ${removed.reason}`] };
+        if (!accounts.some((account) => account.id === id)) return { code: 1, lines: [`refusing: no account '${id}' in ${registryPath}`] };
+        removeAccount(id, registryPath);
+        return { code: 0, lines: [`removed ${id} from ${registryPath}`] };
       }
       return { code: 2, lines: ['forge accounts [list|add <id> <config-dir> [max-concurrent]|remove <id>]'] };
     }
@@ -1219,6 +1392,125 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       return { code: 0, lines: planIntakeWrites([]) };
     }
 
+    case 'queue': {
+      const sub = rest[0];
+      if (sub === 'add') {
+        const input = rest[1];
+        if (!input) return { code: 2, lines: ['forge queue add INPUT [--source ticket|brief|hotfix|goal]'] };
+        const sourceFlag = rest.indexOf('--source');
+        const explicitSource = sourceFlag >= 0 ? rest[sourceFlag + 1] : undefined;
+        // 2026-09-08: an existing .md file that carries a sibling .block.txt, an
+        // inline /goal line, or a fenced goal-spec block auto-detects as `goal`
+        // before falling to the plain `brief` file-read source.
+        const source = explicitSource
+          ?? (TICKET_KEY_RE.test(input)
+            ? 'ticket'
+            : /\.md$/i.test(input) && isExistingFile(input) && isGoalFile(input)
+              ? 'goal'
+              : isExistingFile(input) ? 'brief' : undefined);
+        if (!source) {
+          return {
+            code: 1,
+            lines: [`refusing to queue "${input.slice(0, 60)}": it is not a ticket key like `
+              + 'ABC-123, and not a path to an existing file. Pass --source to force one.'],
+          };
+        }
+        const added = await serverRequest('/queue', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ source, input }),
+        }, deps.fetchFn);
+        if (added.down) return { code: 1, lines: [added.error!] };
+        const body = added.body as { ok: boolean; items?: Array<{ id: string; state: string }>; error?: string } | undefined;
+        if (!added.ok || !body?.ok) {
+          return { code: 1, lines: [body?.error ?? `queue add failed: HTTP ${added.status}`] };
+        }
+        return {
+          code: 0,
+          lines: (body.items ?? []).map((item) => `${item.id} ${item.state}`),
+        };
+      }
+      if (sub === 'ls') {
+        const stateFlag = rest.indexOf('--state');
+        const stateFilter = stateFlag >= 0 ? rest[stateFlag + 1] : undefined;
+        const wantsJson = rest.includes('--json');
+        const wantsAll = rest.includes('--all');
+        const listed = await serverRequest('/queue', {}, deps.fetchFn);
+        if (listed.down) return { code: 1, lines: [listed.error!] };
+        const body = listed.body as {
+          items?: Array<{
+            id: string; source: string; ticket: string | null; input: string; state: string;
+            branch: string | null; pr: { url: string } | null; reason: string | null;
+            title?: string | null;
+          }>;
+        } | undefined;
+        if (!listed.ok || !body) return { code: 1, lines: [`queue ls failed: HTTP ${listed.status}`] };
+        let items = body.items ?? [];
+        if (stateFilter) items = items.filter((item) => item.state === stateFilter);
+        else if (!wantsAll) items = items.filter((item) => item.state !== 'done');
+        if (wantsJson) return { code: 0, lines: [JSON.stringify(items)] };
+        if (!items.length) return { code: 0, lines: ['nothing queued'] };
+        return {
+          code: 0,
+          lines: items.map((item) => [
+            item.id,
+            item.source.padEnd(6),
+            // `input` is a brief's whole markdown text: naming the item beats printing
+            // the first 40 characters of its front matter.
+            (item.title ?? item.ticket ?? item.id).slice(0, 40).padEnd(40),
+            item.state.padEnd(9),
+            (item.branch ?? '-').padEnd(20),
+            item.pr?.url ?? '-',
+            (item.reason ?? '').slice(0, 120),
+          ].join(' ')),
+        };
+      }
+      return { code: 2, lines: ['forge queue add INPUT | forge queue ls [--state S] [--json] [--all]'] };
+    }
+
+    case 'rounds': {
+      const ROUNDS_TIMEOUT_MS = 60_000;
+      const apply = rest.includes('--apply');
+      const wantsJson = rest.includes('--json');
+      // A walk reads the blocker board, which shells out to gh per repo; the default
+      // ten-second ceiling is for routes that answer from memory.
+      const result = await serverRequest(apply ? '/rounds/apply' : '/rounds', apply ? { method: 'POST' } : {}, deps.fetchFn, ROUNDS_TIMEOUT_MS);
+      if (result.down) return { code: 1, lines: [result.error!] };
+      const body = result.body as { lines?: string[]; error?: string } | undefined;
+      if (!result.ok || !body) return { code: 1, lines: [body?.error ?? `rounds failed: HTTP ${result.status}`] };
+      if (wantsJson) return { code: 0, lines: [JSON.stringify(result.body)] };
+      return { code: 0, lines: body.lines ?? [] };
+    }
+    case 'inbox': {
+      const missing = JIRA_ENV_VARS.filter((name) => !process.env[name]);
+      if (missing.length) return { code: 1, lines: [`inbox failed: missing ${missing.join(', ')}`] };
+      const daysFlag = rest.indexOf('--days');
+      const days = daysFlag >= 0 ? Number(rest[daysFlag + 1]) : 7;
+      const wantsJson = rest.includes('--json');
+      const fetched = await fetchInboxIssues({
+        site: process.env['FORGE_JIRA_SITE']!, email: process.env['FORGE_JIRA_EMAIL']!,
+        token: process.env['FORGE_JIRA_TOKEN']!, days, fetchFn: deps.fetchFn,
+      });
+      const probe = await probeJira({
+        site: process.env['FORGE_JIRA_SITE']!, email: process.env['FORGE_JIRA_EMAIL']!,
+        token: process.env['FORGE_JIRA_TOKEN']!, fetchFn: deps.fetchFn,
+      });
+      if (!probe.ok) return { code: 1, lines: [`inbox failed: could not identify the current user (HTTP ${probe.status})`] };
+      const buckets = classifyInbox(fetched, { accountId: probe.accountId ?? '' }, Date.now());
+      if (wantsJson) return { code: 0, lines: [JSON.stringify(buckets)] };
+      const lines: string[] = [];
+      const section = (title: string, rows: typeof buckets.needsReply) => {
+        lines.push(`${title} (${rows.length})`);
+        for (const row of rows) {
+          lines.push(`  ${row.key.padEnd(10)} ${row.status.padEnd(14)} ${(row.assignee ?? '-').padEnd(18)} `
+            + `${(row.lastCommenter ?? '-').padEnd(18)} ${String(row.ageDays).padStart(3)}d  ${row.summary.slice(0, 60)}`);
+        }
+      };
+      section('needs reply', buckets.needsReply);
+      section('awaiting others', buckets.awaitingOthers);
+      section('status drift', buckets.statusDrift);
+      return { code: 0, lines };
+    }
+
     case 'council': {
       const repoFlag = rest.indexOf('--repo');
       const prFlag = rest.indexOf('--pr');
@@ -1246,10 +1538,15 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       const snapshot = await gh.viewPr(repo, pr);
 
       if (snapshot.checks.conclusion !== 'success') {
+        // BBZ-60/62/74/202, 2026-09-08: `pending` is "not yet", never "no" -- a queued or
+        // in-progress check almost always turns green on its own. Marking it on `data`
+        // lets `chainCouncil` and the queue's `advanceItem` retry instead of parking,
+        // without either of them string-matching this line.
         return {
           code: 2,
           lines: [`refused: checks are ${snapshot.checks.conclusion} on head `
             + `${snapshot.headSha}, not green`],
+          ...(snapshot.checks.conclusion === 'pending' ? { data: { pending: true } } : {}),
         };
       }
 
@@ -1376,14 +1673,25 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           verdict: round.verdict, path: attPath,
         });
 
+        // BBZ-123: the terminal once printed `round.verdict` while the attestation on
+        // disk carried a different one (PR #123, 2026-09-08 -- an operator watching the
+        // console would have believed the council failed while it had actually cleared
+        // and the gate went on to merge). Reading the just-written file back is the one
+        // way the printed line can never diverge from what `forge gate` will later read:
+        // there is no second copy of the verdict left to drift.
+        const attested = readAttestation(repo, pr, snapshot.headSha) ?? attestation;
+        const attestedFindingLines = [...attested.decidingFindings]
+          .sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity])
+          .map((f) => `  [${f.severity}/${f.confidence}] ${f.file}:${f.line} -- ${f.claim}`);
+
         return {
           code: 0,
           lines: [
-            `verdict: ${round.verdict}`,
-            ...(findingLines.length ? findingLines : ['no deciding findings']),
+            `verdict: ${attested.verdict}`,
+            ...(attestedFindingLines.length ? attestedFindingLines : ['no deciding findings']),
             `attestation: ${attPath}`,
           ],
-          data: { verdict: round.verdict, attestationPath: attPath, ...(coverageNote ? { coverageNote } : {}) },
+          data: { verdict: attested.verdict, attestationPath: attPath, ...(coverageNote ? { coverageNote } : {}) },
         };
       } finally {
         councilJournal.close();
@@ -1427,27 +1735,38 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         return {
           code: 1,
           lines: [`refused: checks are ${snapshot.checks.conclusion} on head ${snapshot.checks.headSha}`],
+          ...(snapshot.checks.conclusion === 'pending' ? { data: { pending: true } } : {}),
         };
       }
+
+      // Haiping (QA) only ever looks at a `frontend`-kind repo. A backend repo or the
+      // self repo has nobody to hand a visual plan to, so demanding one here bought
+      // nothing but a `REPLACE:`-riddled block pasted to satisfy the schema (PRs
+      // #79/#83) or a merge stuck on review with no handoff to write (PR #82).
+      const chainEnv = readChainEnv();
+      const isSelf = (process.env['FORGE_SELF_REPO'] ?? '').trim() === repo;
+      const needsHaipingHandoff = !isSelf && repoKindFor(chainEnv, repo) === 'frontend';
 
       let haiping: HaipingHandoff | undefined;
-      const handoffFile = handoffFlag >= 0 ? rest[handoffFlag + 1] : undefined;
-      if (handoffFile) {
-        try {
-          const parsed = JSON.parse(readFileSync(handoffFile, 'utf8'));
-          haiping = checkHandoff('haiping', parsed).complete ? (parsed as HaipingHandoff) : undefined;
-        } catch {
-          haiping = undefined;
+      if (needsHaipingHandoff) {
+        const handoffFile = handoffFlag >= 0 ? rest[handoffFlag + 1] : undefined;
+        if (handoffFile) {
+          try {
+            const parsed = JSON.parse(readFileSync(handoffFile, 'utf8'));
+            haiping = checkHandoff('haiping', parsed).complete ? (parsed as HaipingHandoff) : undefined;
+          } catch {
+            haiping = undefined;
+          }
+        } else {
+          haiping = findHaipingHandoff(snapshot.body);
         }
-      } else {
-        haiping = findHaipingHandoff(snapshot.body);
-      }
 
-      if (!haiping) {
-        return {
-          code: 1,
-          lines: ['refused: no complete Haiping handoff found in the PR body or --handoff file'],
-        };
+        if (!haiping) {
+          return {
+            code: 1,
+            lines: ['refused: no complete Haiping handoff found in the PR body or --handoff file'],
+          };
+        }
       }
 
       if (!merge) {
@@ -1542,7 +1861,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         // the QA handoff to Jira. A Jira failure never fails the merge -- the row above
         // already stands as `complete` -- so every branch here only ever adds lines and
         // journal rows, never changes `code`.
-        if (write.state === 'complete' && haiping.ticket) {
+        if (write.state === 'complete' && haiping?.ticket) {
           const missingJira = JIRA_ENV_VARS.filter((name) => !process.env[name]);
           if (missingJira.length) {
             gateJournal.append({

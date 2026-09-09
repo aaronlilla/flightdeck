@@ -33,12 +33,16 @@ test('resolving step 1 enables step 2, and the resolved chain collapses', async 
   await expect(buttons.nth(1)).toBeDisabled();
   await expect(buttons.nth(2)).toBeDisabled();
 
-  // "Checking…" is real (`tests/console/blockers-view.test.tsx` proves it renders
-  // against a controlled promise) but the stub's own confirmation settles fast enough
-  // that waiting on it here would be racing the click against the assertion -- this
-  // waits for the settled state instead, which the click is guaranteed to reach.
+  // "Checking…" and the step's own "Resolved HH:MM" line are real
+  // (`tests/console/blockers-view.test.tsx` proves both against a controlled promise)
+  // but neither survives here: the action refetches the blockers slice the moment the
+  // server answers, and the resolved step leaves the open chain for "Resolved today"
+  // in the same tick. So this waits for where the step actually lands.
   await buttons.nth(0).click();
-  await expect(page.getByText(/Resolved \d/)).toBeVisible({ timeout: 10_000 });
+  const resolvedToday = page.getByTestId('blockers-resolved-today');
+  await expect(resolvedToday).toBeVisible({ timeout: 10_000 });
+  await expect(resolvedToday.getByText('GitHub Actions billing is off', { exact: false }))
+    .toBeVisible({ timeout: 10_000 });
 
   // Step 2 (now the chain's own new first open step, `checks`) is enabled once
   // billing clears; a `question` step still sits behind it, disabled.

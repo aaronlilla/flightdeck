@@ -93,6 +93,11 @@ export interface WardenTickDeps {
    *  engaging stays visible without this tick ever clearing it itself -- clearing stays a
    *  person's call, per Aaron's 2026-09-04 rule. */
   killSwitch?: () => { engaged: boolean; reason?: string };
+
+  /** R-02 guard #3: every currently-running queue item whose repo is the self repo, with
+   *  its own roadmap id (or null/undefined if it has none). Absent means this tick never
+   *  checks for an off-roadmap lane, the same opt-in default every other dep here uses. */
+  selfRepoBriefLanes?: () => Array<{ run: string; roadmap?: string | null }>;
 }
 
 /** Signals `assess()` can raise that name a run and are safe for a generic actuator park.
@@ -131,6 +136,19 @@ export class WardenTick {
    *  in here means the relaunch itself died mid-tool too, and this time it parks. */
   private readonly relaunchedGoals = new Set<string>();
 
+  /** B.2: goals whose `relaunchAbandoned()` call has been sent but has not resolved
+   *  yet -- `engine.run()` inside it only returns when the relaunched run itself ends,
+   *  minutes later, and the same registry row keeps tripping `registry-abandoned` on
+   *  every 30s tick in between (the row is deliberately left with the dead pid; see the
+   *  doc comment on `relaunchAbandonedGoal`). A goal in here is skipped outright, not
+   *  parked and not relaunched again, until that call settles. Cleared once the call
+   *  resolves either way. */
+  private readonly relaunchInFlight = new Set<string>();
+
+  /** B.2: when each goal's relaunch was sent, for telling a live relaunched run apart
+   *  from a genuine second death (see `handleAbandoned`). */
+  private readonly relaunchedAt = new Map<string, number>();
+
   /** B.6: the last time the kill switch got its visibility line, so it repeats on a
    *  cadence rather than every 30 seconds this tick runs. */
   private lastKillSwitchNoticeAt: number | undefined;
@@ -159,6 +177,7 @@ export class WardenTick {
     await this.checkConformance(onError);
     await this.resumeClearedCredentials(onError);
     await this.noteKillSwitch(onError);
+    await this.parkOffRoadmap(onError);
   }
 
   /** B.2: one relaunch per goal, ever, then a park. */
@@ -168,9 +187,26 @@ export class WardenTick {
       const id = `${trip.key}:${trip.signal}`;
       if (this.parkedTrips.has(id)) continue;
 
+      // A trip whose `since` is newer than the goal's own relaunch time is the resumed
+      // run still producing events, not a second death -- the registry row stays stale
+      // by design (see `relaunchAbandonedGoal`'s doc comment), so the row alone can
+      // never be the judge here; the run's own activity is.
+      const relaunchedAt = this.relaunchedAt.get(trip.key);
+      if (relaunchedAt !== undefined && trip.since > relaunchedAt) continue;
+
+      // A relaunch sent on an earlier tick and not yet resolved: `engine.run()` only
+      // returns when the relaunched run ends, so every tick until then sees the same
+      // open trip. Wait for it rather than sending a second one.
+      if (this.relaunchInFlight.has(trip.key)) continue;
+
       await guarded(`relaunch:${id}`, async () => {
-        if (this.relaunchedGoals.has(trip.key) || !this.deps.relaunchAbandoned) {
-          const parked = await this.deps.actuator.park(trip.key, trip.hint);
+        const alreadyRelaunched = this.relaunchedGoals.has(trip.key);
+        if (alreadyRelaunched || !this.deps.relaunchAbandoned) {
+          const hint = alreadyRelaunched
+            ? `run ${trip.key} was relaunched once already and died again; parking it `
+              + 'rather than relaunching a second time'
+            : trip.hint;
+          const parked = await this.deps.actuator.park(trip.key, hint);
           if (!parked) return;
           this.deps.journal.append({
             event: 'warden.parked', run: trip.key, actor: 'warden', signal: trip.signal, evidence: trip,
@@ -179,9 +215,16 @@ export class WardenTick {
           return;
         }
 
-        const outcome = await this.deps.relaunchAbandoned(trip.key);
+        this.relaunchInFlight.add(trip.key);
+        let outcome: RelaunchOutcome;
+        try {
+          outcome = await this.deps.relaunchAbandoned(trip.key);
+        } finally {
+          this.relaunchInFlight.delete(trip.key);
+        }
         if (outcome === 'relaunched') {
           this.relaunchedGoals.add(trip.key);
+          this.relaunchedAt.set(trip.key, this.deps.now());
           this.deps.journal.append({
             event: 'run.relaunched', run: trip.key, actor: 'warden', reason: trip.hint,
           });
@@ -225,6 +268,18 @@ export class WardenTick {
         event: 'warden.health', actor: 'warden', key: 'kill-switch', signal: 'kill-switch',
         evidence: state,
       });
+    }, onError);
+  }
+
+  /** R-02 guard #3: parks any self-repo lane whose item names no roadmap id, through the
+   *  same blockers path every other wall on a run goes through. */
+  private async parkOffRoadmap(onError?: (label: string, error: unknown) => void): Promise<void> {
+    if (!this.deps.selfRepoBriefLanes) return;
+    await guarded('offRoadmap', async () => {
+      for (const lane of this.deps.selfRepoBriefLanes!()) {
+        if (lane.roadmap) continue;
+        await this.deps.blockers.raise('off-roadmap', 'off-roadmap: no R-id on the brief', lane.run);
+      }
     }, onError);
   }
 

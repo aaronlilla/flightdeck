@@ -22,6 +22,11 @@ test('adding and then removing a queue item toasts on the Queue tab itself', asy
   const card = page.locator('.lane', { hasText: 'TOAST-1' });
   await expect(card).toBeVisible();
   await card.getByText('Remove', { exact: true }).click();
+  // Remove is irreversible: the server's confirm card shows on the card itself, and
+  // nothing runs (and no toast) until that token goes back.
+  const confirmYes = card.locator('[data-testid^="action-confirm-yes-removeQueueItem-"]');
+  await expect(confirmYes).toBeVisible();
+  await confirmYes.click();
   await expect(page.getByTestId('toast')).toContainText(/remov/i);
   await expect(card).toHaveCount(0);
 });

@@ -18,8 +18,9 @@ import { forgeHome, inboxDir, lanesDir, queuePath as defaultQueuePath, registryD
 import { foldChainState, type ChainPacketState } from '../chain.js';
 import { classFor, classNames, governorBudget, policyPath } from '../policy.js';
 import { QueueStore } from '../intake/queueStore.js';
-import { Registry } from '../registry.js';
+import { processAlive, Registry } from '../registry.js';
 import type { StuckSignal } from '../liveness.js';
+import { computeLive } from './live.js';
 import { Lanes, type LaneRecord } from '../supervisor.js';
 import { RunInbox } from '../runinbox.js';
 import type {
@@ -35,7 +36,7 @@ import { computeJournalNarrative } from './journal-narrative.js';
 import { readAttestation } from '../council/attest.js';
 import { queueMergeAllowed } from '../queue-wire.js';
 import {
-  chainLinks, computeLanes, labelFor as laneLabelFor, mergeableFor, mergeReadyReportFrom, tokensToday, titleFor,
+  chainLinks, computeLanes, firstBodyParagraph, labelFor as laneLabelFor, mergeableFor, mergeReadyReportFrom, tokensToday, titleFor,
   titleFromHeading, windowLanes, type LanesInput,
 } from './lanes.js';
 import { computeLaneStory, type GitCommit } from './story.js';
@@ -79,6 +80,9 @@ export interface ConsoleReadsOptions {
   /** Overrides the fleet-process probe `stuck` reads for `blockedBy` context. Defaults
    *  to reporting nothing stuck, the same conservative default `ForgeServer` uses. */
   stuck?: () => StuckSignal[];
+  /** Overrides `GET /lanes`'s own `live.alive` process probe (`processAlive` by
+   *  default). A specimen only -- production always asks the real process table. */
+  isAlive?: (pid: number) => boolean;
   /** Overrides where `GET /caps` reads the Governor's budget from, and where
    *  `ensureHardTokens` writes a missing `hardTokens` back to. Defaults to `policyPath()`,
    *  which (unlike every other Forge path) does not follow `FORGE_HOME` -- a specimen
@@ -298,6 +302,8 @@ export class ConsoleReads {
 
   private readonly stuckFn: () => StuckSignal[];
 
+  private readonly isAliveFn: (pid: number) => boolean;
+
   private readonly modelPolicyPath: string;
 
   private readonly queueStore: QueueStore;
@@ -369,6 +375,7 @@ export class ConsoleReads {
     this.ghBranchLookup = options.ghBranchLookup ?? defaultGhBranchLookup();
     this.attestationReader = options.attestationReader ?? defaultAttestationReader();
     this.stuckFn = options.stuck ?? (() => []);
+    this.isAliveFn = options.isAlive ?? processAlive;
     this.modelPolicyPath = options.modelPolicyPath ?? policyPath();
     this.queueStore = options.queueStore ?? new QueueStore(defaultQueuePath());
     this.jiraSite = options.jiraSite !== undefined ? options.jiraSite : (process.env['FORGE_JIRA_SITE'] ?? null);
@@ -401,6 +408,12 @@ export class ConsoleReads {
           run, repo, basic, cache, Date.now(), this.ghDetailLookup, this.attestationReader,
         );
         writePrCache(cachePath, nextCache);
+      } catch (error) {
+        // A failed `gh` read (a spawn refused under load, a network blip) leaves the
+        // lane reading what it already had; the next poll tries again. Never a rejection:
+        // this task has no awaiter in production, and an unhandled one killed the
+        // console four times on 2026-09-08.
+        console.error(`pr refresh for ${run} failed: ${error instanceof Error ? error.message : String(error)}`);
       } finally {
         this.prRefreshInFlight.delete(run);
       }
@@ -408,12 +421,14 @@ export class ConsoleReads {
     this.pendingPrRefreshes.push(task);
   }
 
-  /** Item 11: a queue-sourced lane with a known branch and no PR on record at all --
-   *  the worker's own ask already names one, but nothing ever wrote its number back
-   *  onto the queue item. Looks it up once by branch, in the background, and writes
-   *  the answer into the same `run`-keyed cache `scheduleQueuePrRefresh` and every
-   *  other PR read here share, so the tile and the sheet both see it from the next
-   *  poll. Only fires when nothing else has already found a PR for this run. */
+  /** Item 11: a lane with a known repo and branch but no PR on record at all -- for a
+   *  queue-sourced lane, the worker's own ask already names one but nothing ever wrote
+   *  its number back onto the queue item; for a chain-only lane, the chain gate finds
+   *  it by branch at gate time but never folds it onto the chain row either. Looks it
+   *  up once by branch, in the background, and writes the answer into the same
+   *  `run`-keyed cache `scheduleQueuePrRefresh` and every other PR read here share, so
+   *  the tile and the sheet both see it from the next poll. Only fires when nothing
+   *  else has already found a PR for this run. */
   private scheduleBranchPrDiscovery(run: string, repo: string, branch: string): void {
     if (this.branchPrDiscoveryInFlight.has(run)) return;
     this.branchPrDiscoveryInFlight.add(run);
@@ -423,6 +438,11 @@ export class ConsoleReads {
         const cache = readPrCache(cachePath);
         const { cache: nextCache } = await computeBranchPr(run, repo, branch, cache, Date.now(), this.ghBranchLookup);
         writePrCache(cachePath, nextCache);
+      } catch (error) {
+        // Same rule as scheduleQueuePrRefresh: log, keep the lane's last answer, retry
+        // on the next poll. The 2026-09-08 crash loop was exactly this task rejecting
+        // on a `gh` spawn that failed with errno -4094.
+        console.error(`branch pr discovery for ${run} failed: ${error instanceof Error ? error.message : String(error)}`);
       } finally {
         this.branchPrDiscoveryInFlight.delete(run);
       }
@@ -568,7 +588,14 @@ export class ConsoleReads {
     const lanes = response.lanes
       .map((lane) => this.withHumanFields(lane, chain, prCache, now))
       .map((lane) => ({ ...lane, retiredAt: retired.get(lane.id) ?? null }))
-      .filter((lane) => archived || lane.retiredAt === null);
+      .filter((lane) => archived || lane.retiredAt === null)
+      // The fresh "is the worker actually there" check, kept independent of `state`
+      // (the warden's own journal fold): a lane still reading `running` with a dead
+      // pid gets `live.alive: false` here without anyone touching its `state`.
+      .map((lane) => ({
+        ...lane,
+        live: computeLive(lane.id, { fleet, registryGet: (run) => this.registry.get(run), isAlive: this.isAliveFn }, now),
+      }));
     // 2026-09-08: what `Linkify` needs to turn a Jira key or a PR mention into a link
     // anywhere on the board -- `defaultRepo` is the first repo this response's own
     // lanes name, since a PR mention with no repo of its own falls back to it.
@@ -603,6 +630,21 @@ export class ConsoleReads {
     } else if (lane.kind === 'chain') {
       const packet = packetForRun(chain, lane.id);
       briefPath = packet?.briefPath ?? null;
+      // The chain gate finds a packet's PR by asking `gh` for it on the packet's own
+      // branch at gate time (`chain.ts`'s `deps.gh.findPrByHead`), but nothing folds
+      // that PR number back onto the chain row itself -- `chain.gated` only ever
+      // carries a verdict and an attestation path. Without this, a chain-only lane
+      // (no queue item, just a Jira/chain packet) kept reading "no PR is open yet"
+      // even once a PR was open, because nothing here had ever looked one up by
+      // branch the way item 11 already does for a queue-sourced lane. Same
+      // background discovery, same cache, same TTL check before firing it again.
+      const chainBranch = packet?.provisioned?.branch;
+      if (packet?.repo && chainBranch && !pr?.no) {
+        const cached = prCache[lane.id];
+        if (!cached || now - cached.at >= PR_CACHE_TTL_MS) {
+          this.scheduleBranchPrDiscovery(lane.id, packet.repo, chainBranch);
+        }
+      }
     } else if (lane.kind === 'manual') {
       briefPath = this.registry.get(lane.id)?.briefPath ?? null;
     }
@@ -779,9 +821,19 @@ export class ConsoleReads {
     return computeProposals(fleet.events, now, tokensByRun, existingRules);
   }
 
+  /** The Conductor agent's `lane_detail` reads (2026-09-08): the same thread and story
+   *  `GET /run/:id/thread` and `GET /run/:id/story` serve, without the HTTP layer. */
+  runThread(run: string, verbose = false): RunThreadResponse {
+    return this.runThreadResponse(run, verbose);
+  }
+
+  runStory(run: string, verbose = false): Promise<LaneStory> {
+    return this.runStoryResponse(run, verbose);
+  }
+
   private runThreadResponse(run: string, verbose = false): RunThreadResponse {
     const fleet = this.journalCache.read(this.journalPath);
-    const result = computeRunThread(run, fleet.events, new RunInbox(run).all(), { verbose });
+    const result = computeRunThread(run, fleet.events, new RunInbox(run).all(), { verbose, openAsks: this.inbox.open() });
     return verbose ? { ...result, verbose: true } : result;
   }
 
@@ -1005,7 +1057,8 @@ export class ConsoleReads {
 function readBriefHeading(path: string, ticket: string | null): string | null {
   if (!existsSync(path)) return null;
   try {
-    return titleFromHeading(readFileSync(path, 'utf8'), ticket);
+    const text = readFileSync(path, 'utf8');
+    return titleFromHeading(text, ticket) ?? firstBodyParagraph(text);
   } catch {
     return null;
   }

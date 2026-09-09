@@ -14,13 +14,15 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { chainCouncil, chainGate, chainGh, chainRebase, chainLauncher } from './chain-wire.js';
+import { chainCouncil, chainGate, chainGh, chainRebase, chainLauncher, chainLaunchGoal } from './chain-wire.js';
 import { checkoutFor, repoKindFor as repoKindForEnv, type ChainEnv } from './chain-env.js';
 import type { CliResult, ForgeDeps } from './cli.js';
+import { autoMergeAllowed } from './council/risk.js';
 import { countAddDel, REAL_GH } from './council/gh.js';
 import type { Packet, PollSourceName, Watermark } from './contracts.js';
 import { run as execRun } from './exec.js';
 import type { QueueMergeDeps, QueuePlannedBrief, QueuePlanner, QueuePromoteDeps, QueueRuntimeDeps, QueueTicketSearch } from './intake/queue.js';
+import { gitSquashMergeToBase, type GitRunFn } from './intake/gitMerge.js';
 import { developDeployVerifier } from './intake/otaVerify.js';
 import { appendRoutinesSection, loadRoutines, matchRoutines } from './self/routines.js';
 import { routinesDir } from './paths.js';
@@ -29,13 +31,19 @@ import { runQueueHandoff } from './intake/queueHandoff.js';
 import type { PollItemDetail } from './intake/poller.js';
 import { planFromPacket } from './intake/planner.js';
 import { resolvePlanProvider } from './intake/reasoner.js';
-import { parseRepoMap, routeRepo, repoFromBrief } from './intake/repoRoute.js';
+import { parseRepoMap, routeRepo, repoFromBrief, ticketFromBrief } from './intake/repoRoute.js';
 import { Journal } from './journal.js';
 import { loadPolicy } from './policy.js';
 import { queueBriefsDir, journalPath, killSwitchPath } from './paths.js';
 import { reasonerFor } from './reasoner-claude.js';
 import { readKillSwitch } from './supervisor.js';
 import { readQueuePaused } from './console/queue-pause.js';
+import { readQueueWidth } from './console/queue-width.js';
+
+// `queue-route.ts` reads the live width through this re-export, mirroring the inline
+// `readPaused: () => readQueuePaused()` field `buildQueueRuntimeDeps` already builds
+// below -- the same live-off-disk pattern, just not tied to a `QueueRuntimeDeps` field.
+export { readQueueWidth, writeQueueWidth } from './console/queue-width.js';
 
 const JIRA_ENV_VARS = ['FORGE_JIRA_SITE', 'FORGE_JIRA_EMAIL', 'FORGE_JIRA_TOKEN'] as const;
 
@@ -91,6 +99,15 @@ export function queueSearch(configFn: () => JiraConfig | undefined = jiraConfigF
   };
 }
 
+/** The brief file id `planTicket` writes under, and therefore the run key
+ *  `chain-wire.ts#runKeyForBrief` derives from its basename: the packet id (`queue-
+ *  <ticket>`) joined to the queue item's own id, so a re-queued ticket never lands on
+ *  the same brief file, and therefore never the same run key, as an earlier item for
+ *  that ticket. See the 2026-09-08 13:35 BBZ-233 specimen in `planTicket` below. */
+export function briefIdFor(packetId: string, itemId: string): string {
+  return `${packetId}-${itemId}`;
+}
+
 function packetFor(ticket: string, repo: string, detail: PollItemDetail | undefined): Packet {
   return {
     id: `queue-${ticket}`,
@@ -133,7 +150,7 @@ export function queuePlanner(configFn: () => JiraConfig | undefined = jiraConfig
   }
 
   return {
-    async planTicket(ticket): Promise<QueuePlannedBrief> {
+    async planTicket(ticket, itemId): Promise<QueuePlannedBrief> {
       const config = configFn();
       let repo = routeRepo(repoRules, { ticket, labels: [], components: [], issuetype: '' });
       let detail: PollItemDetail | undefined;
@@ -152,7 +169,7 @@ export function queuePlanner(configFn: () => JiraConfig | undefined = jiraConfig
       try {
         const reasoner = reasonerFor(resolvePlanProvider(loadPolicy().reasoner), { journal });
         const planned = await planFromPacket(packet, reasoner);
-        const briefPath = await writeBrief(planned.packetId, planned.text);
+        const briefPath = await writeBrief(briefIdFor(planned.packetId, itemId), planned.text);
         return { ticket, repo, briefPath };
       } finally {
         journal.close();
@@ -160,26 +177,35 @@ export function queuePlanner(configFn: () => JiraConfig | undefined = jiraConfig
     },
 
     // A pasted brief has no ticket for the rules to match, so a `repo: owner/name` line
-    // in the brief wins; without one the map's default applies as before.
+    // in the brief wins; without one the map's default applies as before. A `ticket:
+    // KEY-123` line names the real Jira key: the brief file's own id stays a unique
+    // synthetic string, but the item's `ticket` field (branch naming, jiraHandoff, routing)
+    // takes the real key, so a hand-written brief reaches its own ticket's Jira handoff
+    // instead of a synthetic `queue-brief-<timestamp>` one.
     async planBrief(text): Promise<QueuePlannedBrief> {
       const id = `queue-brief-${Date.now()}`;
-      const repo = repoFromBrief(text) ?? routeRepo(repoRules, { ticket: id, labels: [], components: [], issuetype: '' });
+      const ticket = ticketFromBrief(text) ?? id;
+      const repo = repoFromBrief(text)
+        ?? routeRepo(repoRules, { ticket, labels: [], components: [], issuetype: '' });
       const briefPath = await writeBrief(id, text);
-      return { ticket: id, repo, briefPath };
+      return { ticket, repo, briefPath };
     },
 
-    // A.6: the `hotfix-` prefix is load-bearing -- `chain-env.ts#branchFor` reads it off
-    // the ticket string to route this item onto `hotfix/<slug>` instead of an ordinary
-    // feature branch.
+    // A.6: the `hotfix-` prefix is load-bearing: `chain-env.ts#branchFor` reads it off the
+    // ticket string to route this item onto `hotfix/<slug>` instead of an ordinary feature
+    // branch. A `ticket: KEY-123` line still wins for routing and handoff, same as
+    // planBrief, while the brief file's own id keeps the `hotfix-` prefix branchFor needs.
     async planHotfix(text): Promise<QueuePlannedBrief> {
       const id = `hotfix-${Date.now()}`;
-      const repo = repoFromBrief(text) ?? routeRepo(repoRules, { ticket: id, labels: [], components: [], issuetype: '' });
+      const ticket = ticketFromBrief(text) ?? id;
+      const repo = repoFromBrief(text)
+        ?? routeRepo(repoRules, { ticket, labels: [], components: [], issuetype: '' });
       const briefPath = await writeBrief(
         id,
         `${text}\n\nThis is a hotfix: it ships to dev on Merge and to production only on a `
           + 'separate Promote click.',
       );
-      return { ticket: id, repo, briefPath };
+      return { ticket, repo, briefPath };
     },
   };
 }
@@ -276,6 +302,44 @@ export function queueProductionWorkflowExists(chainEnv: ChainEnv): (repo: string
   };
 }
 
+/** Whether `feature/<branch>` is already merged into `origin/main` on the repo's
+ *  checkout -- backs an `after: <slug>` entry naming no queue item. Fetches first so a
+ *  merge that landed since the checkout was last touched still counts; a repo with no
+ *  checkout configured, or a fetch that fails, answers `false` rather than guessing. */
+export function queueBranchMerged(chainEnv: ChainEnv): NonNullable<QueueRuntimeDeps['branchMerged']> {
+  return async (repo, branch) => {
+    const checkout = checkoutFor(chainEnv, repo);
+    if (!checkout) return false;
+    const fetch = await execRun({
+      argv: ['git', '-C', checkout, 'fetch', '--prune', 'origin'],
+      cwd: checkout, owner: 'queue', cls: 'script',
+    });
+    if (!fetch.ok) return false;
+    const result = await execRun({
+      argv: ['git', '-C', checkout, 'merge-base', '--is-ancestor', `origin/${branch}`, 'origin/main'],
+      cwd: checkout, owner: 'queue', cls: 'script',
+    });
+    return result.ok;
+  };
+}
+
+/** R-22: routes the Merge click's actual merge through git instead of `gh pr merge`,
+ *  against the repo's own `FORGE_REPO_CHECKOUTS` entry on the base branch. A repo with no
+ *  checkout configured refuses rather than guessing at a path. Wraps `execRun` as a
+ *  `GitRunFn` so `gitSquashMergeToBase` runs through the same budgeted git call every
+ *  other queue-wire function already uses. */
+export function queueGitMerge(chainEnv: ChainEnv): NonNullable<QueueMergeDeps['gitMerge']> {
+  const runGit: GitRunFn = async (argv, cwd) => {
+    const result = await execRun({ argv: ['git', ...argv], cwd, owner: 'queue', cls: 'script' });
+    return { ok: result.ok, stdout: result.tail };
+  };
+  return async ({ repo, base, branch, subject, body }) => {
+    const checkoutDir = checkoutFor(chainEnv, repo);
+    if (!checkoutDir) return { ok: false, reason: `no checkout configured for ${repo}` };
+    return gitSquashMergeToBase({ checkoutDir, base, branch, subject, body }, runGit);
+  };
+}
+
 /**
  * A.7: builds the Merge click's own dependencies -- ready for a caller with a
  * `ForgeDeps` in hand (`forge up`'s own wiring, `cli.ts`'s `up` case) to hand to
@@ -288,9 +352,20 @@ export function queueMergeDeps(deps: ForgeDeps, store: QueueRuntimeDeps['store']
   return {
     mergeAllowed: queueMergeAllowed(),
     gate: chainGate(deps),
+    // B: the same council `advanceItem` already calls, so a moved head at Merge time
+    // re-councils through the same real path a first gate round does.
+    council: chainCouncil(deps),
+    append: (event) => {
+      const journal = new Journal(journalPath());
+      try {
+        return journal.append(event);
+      } finally {
+        journal.close();
+      }
+    },
     clock: () => Date.now(),
     store,
-    ...(chainEnv ? { postMergeVerify: queuePostMergeVerify(chainEnv) } : {}),
+    ...(chainEnv ? { postMergeVerify: queuePostMergeVerify(chainEnv), gitMerge: queueGitMerge(chainEnv) } : {}),
   };
 }
 
@@ -301,7 +376,7 @@ export function queueMergeDeps(deps: ForgeDeps, store: QueueRuntimeDeps['store']
  *  15 min -- a deploy that builds instead of publishing runs longer than that, and its
  *  `build` action is already the answer once the decide job has spoken. */
 export function queuePostMergeVerify(chainEnv: ChainEnv): NonNullable<QueueMergeDeps['postMergeVerify']> {
-  return async ({ repo, branch }) => {
+  return async ({ repo, branch, mergeSha }) => {
     const checkout = checkoutFor(chainEnv, repo);
     if (!checkout) return undefined;
     const verify = developDeployVerifier({
@@ -312,7 +387,7 @@ export function queuePostMergeVerify(chainEnv: ChainEnv): NonNullable<QueueMerge
         return result.full ?? result.tail ?? '';
       },
     });
-    return verify({ repo, branch, mergedAt: Date.now() });
+    return verify({ repo, branch, mergedAt: Date.now(), ...(mergeSha ? { mergeSha } : {}) });
   };
 }
 
@@ -324,11 +399,13 @@ export function queuePromoteDeps(chainEnv: ChainEnv): QueuePromoteDeps {
 }
 
 export function buildQueueRuntimeDeps(
-  chainEnv: ChainEnv, fleetConfigDir: string, deps: ForgeDeps, store: QueueRuntimeDeps['store'], maxInFlight = 2,
+  chainEnv: ChainEnv, fleetConfigDir: string, deps: ForgeDeps, store: QueueRuntimeDeps['store'],
+  maxInFlight: () => number = readQueueWidth,
 ): QueueRuntimeDeps {
   return {
     planner: queuePlanner(),
     launcher: chainLauncher(chainEnv, fleetConfigDir),
+    launchGoal: chainLaunchGoal(fleetConfigDir),
     gh: chainGh(),
     rebaseOnBase: chainRebase(),
     council: chainCouncil(deps),
@@ -336,6 +413,9 @@ export function buildQueueRuntimeDeps(
     clock: () => Date.now(),
     killSwitch: () => readKillSwitch(killSwitchPath()).engaged,
     paused: () => readQueuePaused(),
+    // Called fresh on every tick, same as `paused` above -- `readQueueWidth` (default)
+    // re-reads `queueWidthPath()` off disk each time, so a `POST /queue/width` takes
+    // effect on the next tick with no restart and no rebuilt deps object.
     maxInFlight,
     append: (event) => {
       const journal = new Journal(journalPath());
@@ -348,9 +428,21 @@ export function buildQueueRuntimeDeps(
     store,
     commentOnPr: queueCommentOnPr(),
     repoKindFor: (repo) => repoKindForEnv(chainEnv, repo),
+    branchMerged: queueBranchMerged(chainEnv),
+    // A queued item's own `repo` is null until it is planned, which happens after the
+    // after: gate runs -- see `mergedOnKnownRepo` in `intake/queue.ts` for why this
+    // fallback list, not `item.repo`, is what a real item actually resolves a
+    // merged-branch after: entry against.
+    mergeCheckRepos: chainEnv.checkouts.map((entry) => entry.repo),
     backendHandoff: queueBackendHandoff(),
     jiraHandoff: queueJiraHandoff(),
     prSnapshot: queuePrSnapshot(),
+    // BBZ, 2026-09-08: read fresh every tick (`autoMergeAllowed` re-reads
+    // `FORGE_COUNCIL_AUTOMERGE` off `councilPolicy()` on each call), the same allow-list
+    // `forge gate --merge` already refuses against for a person -- this is the queue's
+    // own worker asking for the identical decision instead of waiting on a click.
+    mergeAllowed: (repo) => autoMergeAllowed(repo),
+    postMergeVerify: queuePostMergeVerify(chainEnv),
     prMerged: async (repo, pr) => {
       const result = await execRun({
         argv: ['gh', 'pr', 'view', String(pr), '--repo', repo, '--json', 'mergedAt'],

@@ -18,6 +18,7 @@ export function statusPageHtml(): string {
   #message { font-size: 14px; margin-bottom: 10px; }
   #log { flex: 1; overflow-y: auto; background: #05060a; border: 1px solid #1c2030; border-radius: 6px; padding: 8px; white-space: pre-wrap; font: 12px/1.4 Consolas, monospace; color: #9aa4c0; }
   #picker { display: none; margin-top: 10px; }
+  #retry { display: none; margin-top: 10px; }
   button { background: #1c2030; color: #e6e8ef; border: 1px solid #2c3150; border-radius: 4px; padding: 6px 12px; cursor: pointer; }
   button:hover { background: #262c47; }
   #queue-banner { display: none; margin-bottom: 10px; padding: 6px 10px; border-radius: 4px; background: #3a2d10; color: #f0c674; font-size: 12px; }
@@ -30,11 +31,13 @@ export function statusPageHtml(): string {
   <div id="message">Starting Forge…</div>
   <div id="log"></div>
   <div id="picker"><button id="pick-folder">Choose the Forge checkout…</button></div>
+  <div id="retry"><button id="retry-console">Retry</button></div>
 </div>
 <script>
   const messageEl = document.getElementById('message');
   const logEl = document.getElementById('log');
   const pickerEl = document.getElementById('picker');
+  const retryEl = document.getElementById('retry');
   const queueBannerEl = document.getElementById('queue-banner');
   window.statusBridge.onStatus((text) => { messageEl.textContent = text; });
   window.statusBridge.onLog((line) => {
@@ -42,6 +45,10 @@ export function statusPageHtml(): string {
     logEl.scrollTop = logEl.scrollHeight;
   });
   window.statusBridge.onNeedFolder(() => { pickerEl.style.display = 'block'; });
+  // Shown whenever a bring-up attempt fails to answer -- the first launch
+  // and a watchdog-triggered revive both land here through the same status
+  // window, and Retry just asks for another attempt.
+  window.statusBridge.onReviveFailed(() => { retryEl.style.display = 'block'; });
   // C.3: persistent, unlike the status/log lines above -- it stays up for the whole
   // time this window is open, not just until the next status message overwrites it.
   window.statusBridge.onQueueState((queueOn) => {
@@ -49,6 +56,10 @@ export function statusPageHtml(): string {
   });
   document.getElementById('pick-folder').addEventListener('click', () => {
     window.statusBridge.pickFolder();
+  });
+  document.getElementById('retry-console').addEventListener('click', () => {
+    retryEl.style.display = 'none';
+    window.statusBridge.retryConsole();
   });
 </script>
 </body>

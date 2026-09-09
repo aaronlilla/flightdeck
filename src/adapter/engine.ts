@@ -25,6 +25,28 @@ import { z } from 'zod';
 import type { EngineEvent, EngineListener } from './events.ts';
 import { PushStream } from './stream.ts';
 
+/**
+ * The one shape `forge_ask` accepts, on both sides of the process boundary.
+ *
+ * `contracts.ts` builds `ForgeAskInputSchema` straight out of this constant rather than
+ * re-typing it, and `buildForgeMcpServer` below registers that same schema object with the
+ * MCP server. A change here reaches both the worker-facing tool and every caller that reads
+ * `ForgeAskInputSchema` with nothing to keep in sync by hand.
+ *
+ * Declared here, in the adapter layer the rest of forge depends on, rather than in
+ * `contracts.ts`, because `contracts.ts` already imports `buildForgeMcpServer` from this
+ * file; the schema living in the other direction would be a cycle.
+ */
+export const FORGE_ASK_SHAPE = {
+  question: z.string().min(1),
+  options: z.array(z.string()).optional(),
+  /** Index into the combined `options` list (worker-supplied plus any drafted) the
+   *  worker itself thinks best, if it has an opinion. Optional: most calls leave this
+   *  for `completeAskOptions` to fill in. */
+  recommended: z.number().int().min(0).optional(),
+  kind: z.enum(['question', 'blocker']).optional(),
+};
+
 export interface EngineConfig {
   cwd: string;
   /** Model to open the session on. */
@@ -215,6 +237,14 @@ export class Engine {
 
   private sessionId: string | null = null;
   private lastServingModel: string | null = null;
+  /**
+   * The SDK delivers one `assistant` message per content block (text, tool_use, ...),
+   * and every one of those messages for a given turn carries the same `message.id`
+   * and the same `usage` object — the totals for the whole turn, repeated verbatim on
+   * each block. Tracking the last message id we already counted lets a turn with
+   * several blocks emit its `usage` event exactly once.
+   */
+  private lastUsageMessageId: string | null = null;
   private readonly queryFn: QueryFn;
 
   /**
@@ -304,7 +334,13 @@ export class Engine {
         const model = message.message.model;
         if (model) this.lastServingModel = model;
         const usage = message.message.usage;
-        if (usage) {
+        // The SDK repeats the same message.id and the same usage totals on every
+        // content-block message that makes up one turn. Only the first block of a
+        // given message.id should turn into a usage event, or a turn with a text
+        // block plus a tool call double-counts its tokens.
+        const messageId = (message.message as { id?: string }).id ?? null;
+        if (usage && (messageId === null || messageId !== this.lastUsageMessageId)) {
+          if (messageId !== null) this.lastUsageMessageId = messageId;
           this.emit({
             type: 'usage',
             model: model ?? '',
@@ -493,6 +529,7 @@ export interface ForgeToolHandlers {
   onAsk: (input: {
     question: string;
     options?: string[];
+    recommended?: number;
     kind?: 'question' | 'blocker';
   }) => void | Promise<void>;
   onGotcha: (input: {
@@ -533,11 +570,7 @@ export function buildForgeMcpServer(handlers: ForgeToolHandlers): McpSdkServerCo
         { packet: z.string() },
         async (args) => { await handlers.onHandoff(args); return ACK; }),
       tool('forge_ask', 'Ask a question that parks this run for a person to answer.',
-        {
-          question: z.string(),
-          options: z.array(z.string()).optional(),
-          kind: z.enum(['question', 'blocker']).optional(),
-        },
+        FORGE_ASK_SHAPE,
         async (args) => { await handlers.onAsk(args); return ACK; }),
       tool('forge_gotcha', 'File a trap the moment it is hit, and keep working.',
         {

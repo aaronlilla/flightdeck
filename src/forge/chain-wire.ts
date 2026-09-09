@@ -32,6 +32,7 @@ import { createJiraFeed } from './intake/jira.js';
 import {
   intakeBriefsDir, journalPath, killSwitchPath, forgeHome, registryDir, runDir,
 } from './paths.js';
+import { runtimeVersion } from './launcher.js';
 import { Registry } from './registry.js';
 import { readWatermark, writeWatermark } from './intake/watermarkStore.js';
 import { planFromPacket } from './intake/planner.js';
@@ -132,6 +133,20 @@ export function chainLaunchArgv(execArgv: readonly string[], argv1: string, brie
 }
 
 /**
+ * 2026-09-08: the argv a `goal` queue item's launch spawns -- `goalPath` for logging
+ * and `checkLaunch`, `block` as the actual first prompt (`cli.ts`'s `--goal` flag
+ * reads it that way instead of the file's own contents), and `--goal` itself so `forge
+ * run` knows which of the two the second argument is. Built the same way
+ * `chainLaunchArgv` is: one function both the production launcher and a specimen
+ * asserting its shape read, so the spawned argv never drifts between the two.
+ */
+export function chainLaunchGoalArgv(
+  execArgv: readonly string[], argv1: string, goalPath: string, block: string, runKey: string,
+): string[] {
+  return [...execArgv, argv1, 'run', goalPath, block, '--goal', '--run-key', runKey];
+}
+
+/**
  * E2/E3: whether a run has actually started, read from the two places that would show
  * it: the registry row `forge run` admits before anything else, and the `run.started`
  * row the worker journals once it has a brief loaded. Either one is enough, and neither
@@ -189,9 +204,11 @@ export function runOutcome(
   }
   const finishedEvent = [...input.events].reverse()
     .find((event) => event['event'] === 'run.finished' && event['run'] === key);
+  const lastText = finishedEvent?.['lastText'] as string | undefined;
   return {
     finished: true,
     verdict: run.verdict ?? (finishedEvent?.['verdict'] as string | undefined) ?? run.state,
+    ...(lastText ? { lastText } : {}),
   };
 }
 
@@ -643,11 +660,105 @@ export function chainLauncher(chainEnv: ChainEnv, fleetConfigDir: string): Chain
   };
 }
 
+/**
+ * 2026-09-08: the production `launchGoal` for a `goal` queue item -- the same detached
+ * spawn the brief launcher's `launch()` runs, minus everything that only makes sense
+ * for a brief: no file read, no `completeBriefWithVerification` (a goal brief already
+ * carries its own guardrails and verification in its `/goal` condition), no worktree
+ * argument (the goal already claimed its own via `/workon`; `cwd` is the workspace
+ * root instead). `runKey` is the caller's own -- `queue.ts` makes it unique per queue
+ * item (`runKeyForBrief(goalPath)-<item id>`, never the bare basename alone), and it
+ * is passed straight through to `forge run --run-key` so both sides agree on the same
+ * name the status poller (`ChainLauncher.status`, reused unchanged) reads back.
+ */
+export function chainLaunchGoal(fleetConfigDir: string): NonNullable<QueueRuntimeDeps['launchGoal']> {
+  return async ({ goalPath, block, cwd, runKey }) => {
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    for (const name of WORKER_ENV_STRIP) delete env[name];
+    env['CLAUDE_CONFIG_DIR'] = fleetConfigDir;
+    env['FORGE_HOME'] = forgeHome();
+    env['FORGE_RUNTIME'] = runtimeVersion();
+
+    const logPath = join(runDir(runKey), 'launch.log');
+    mkdirSync(dirname(logPath), { recursive: true });
+    const logFd = openSync(logPath, 'a');
+    let child: ChildProcess;
+    try {
+      child = spawn(
+        process.execPath,
+        chainLaunchGoalArgv(process.execArgv, process.argv[1] ?? '', goalPath, block, runKey),
+        { cwd, env, detached: true, stdio: ['ignore', logFd, logFd] },
+      );
+    } finally {
+      closeSync(logFd);
+    }
+    child.unref();
+
+    await waitForLaunchToRegister({
+      runKey,
+      registry: new Registry(registryDir()),
+      readEvents: () => journalCache.read(journalPath()).events,
+      child,
+      readLogTail: () => readLogTailFile(logPath),
+      waitMs: launchWaitMs(),
+    });
+
+    return { runKey };
+  };
+}
+
+/** Parses `git status --porcelain` into the paths it touched -- the rename form
+ *  (`R  old -> new`) reports the new path, since that is what actually exists in the
+ *  tree afterwards. */
+function leftoverPaths(porcelain: string): string[] {
+  return porcelain
+    .split('\n')
+    .map((line) => line.replace(/\r$/, ''))
+    .filter((line) => line.length > 3)
+    .map((line) => {
+      const path = line.slice(3);
+      const arrow = path.indexOf(' -> ');
+      return arrow === -1 ? path : path.slice(arrow + 4);
+    });
+}
+
+/** Commits whatever a worker left modified or untracked in its own worktree, as one
+ *  commit naming every file, so a rebase right after never meets a dirty tree. Twice on
+ *  2026-09-08 (Q-0fb06912, Q-56440c7b) a worker committed its own work but left a
+ *  test-isolation edit unstaged, and the rebase below refused with "You have unstaged
+ *  changes" -- parking a finished item for a person to commit by hand. Never stashes:
+ *  the stash stack is shared across every worktree on this machine, and another session
+ *  popping it would hand a worker back someone else's leftovers. Returns the file list,
+ *  or `[]` when the tree was already clean. */
+async function commitLeftovers(
+  git: (argv: string[], raw?: boolean) => Promise<RunResult>,
+): Promise<string[]> {
+  const status = await git(['status', '--porcelain'], true);
+  const files = status.ok ? leftoverPaths(status.tail) : [];
+  if (!files.length) return [];
+
+  await git(['add', '-A']);
+  const message = [
+    'queue: commit files the worker left uncommitted',
+    '',
+    ...files.map((file) => `- ${file}`),
+    '',
+    'The worker committed its own work but left these modified or untracked in the',
+    'worktree. The queue committed them here, on the worker\'s own branch, so the',
+    'pre-gate rebase has a clean tree to replay onto the base branch.',
+  ].join('\n');
+  await git(['commit', '-m', message]);
+  return files;
+}
+
 /** Brings a worktree's branch onto the current tip of its base, so nothing reaches a
  *  review or a merge sitting on a base it never saw. Fetches first, because the whole
- *  point is the tip as it is now rather than as it was when the work started. A rebase
- *  that cannot replay cleanly is aborted, never forced and never left half-applied: the
- *  caller parks the item and a person resolves it.
+ *  point is the tip as it is now rather than as it was when the work started. Before
+ *  replaying, any leftover uncommitted work in the worktree is committed onto the
+ *  worker's own branch (`commitLeftovers` above) so a dirty tree never parks an
+ *  otherwise-finished item. A rebase that still cannot replay cleanly -- a real content
+ *  conflict -- is aborted, never forced and never left half-applied: the caller parks
+ *  the item and a person resolves it.
  *
  *  `raw` on the count, because its output is parsed as a number here, not shown. */
 export function chainRebase(): NonNullable<QueueRuntimeDeps['rebaseOnBase']> {
@@ -664,13 +775,16 @@ export function chainRebase(): NonNullable<QueueRuntimeDeps['rebaseOnBase']> {
     const behind = counted.ok ? Number.parseInt(counted.tail.trim(), 10) || 0 : 0;
     if (behind === 0) return { ok: true, behind: 0 };
 
+    const committedLeftover = await commitLeftovers(git);
+    const leftoverPatch = committedLeftover.length ? { committedLeftover } : {};
+
     const rebased = await git(['rebase', `origin/${base}`]);
-    if (rebased.ok) return { ok: true, behind };
+    if (rebased.ok) return { ok: true, behind, ...leftoverPatch };
 
     // Leave the worktree exactly as it was found. A half-finished rebase would make the
     // next read of this branch meaningless, including the gate's own.
     await git(['rebase', '--abort']);
-    return { ok: false, behind, reason: tailOfCommand(rebased.tail) };
+    return { ok: false, behind, reason: tailOfCommand(rebased.tail), ...leftoverPatch };
   };
 }
 
@@ -723,6 +837,9 @@ export function chainCouncil(deps: ForgeDeps): ChainCouncilFn {
       ...(attestationPath ? { attestationPath } : {}),
       ...(result.data?.['coverageNote'] ? { coverageNote: result.data['coverageNote'] as string } : {}),
       ...(findingsText ? { findingsText } : {}),
+      // BBZ-60/62/74/202, 2026-09-08: carries `forge council`'s own `data.pending`
+      // through unchanged, so the queue's `advanceItem` can retry instead of parking.
+      ...(result.data?.['pending'] ? { pending: true } : {}),
     };
   };
 }
@@ -738,6 +855,7 @@ export function chainGate(deps: ForgeDeps): ChainGateFn {
       merged,
       ...(result.data?.['mergeSha'] ? { mergeSha: result.data['mergeSha'] as string } : {}),
       ...(!merged && result.lines.length ? { reason: result.lines } : {}),
+      ...(result.data?.['pending'] ? { pending: true } : {}),
     };
   };
 }

@@ -13,7 +13,8 @@
     "dist": "npm run build:app && electron-builder --win --x64 --publish never",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "dev:shortcut": "node scripts/make-dev-shortcut.js"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",

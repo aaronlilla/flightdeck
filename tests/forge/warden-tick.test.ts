@@ -353,6 +353,101 @@ describe('WardenTick.run', () => {
       expect(state.events.some((e) => e.event === 'run.relaunched')).toBe(false);
       expect(state.events.some((e) => e.event === 'warden.parked' && e.run === 'r1')).toBe(true);
     });
+
+    it('a relaunch still in flight is not relaunched again on the next tick', async () => {
+      let calls = 0;
+      let resolveRelaunch: ((outcome: RelaunchOutcome) => void) | undefined;
+      const tick = new WardenTick({
+        journal, actuator, blockers: new BlockerBoard({ journal, actuator }),
+        now: () => Date.now(),
+        stuck: () => [makeStuck({
+          key: 'r1', signal: 'registry-abandoned',
+          hint: 'run r1 has a registry row from a process that is no longer alive',
+        })],
+        liveRuns: () => [],
+        reportFleetHealth: () => 0,
+        relaunchAbandoned: async (): Promise<RelaunchOutcome> => {
+          calls += 1;
+          return new Promise((resolve) => { resolveRelaunch = resolve; });
+        },
+      });
+
+      const first = tick.run();
+      await tick.run(); // fires while the first relaunch's engine.run() is still pending
+
+      expect(calls).toBe(1);
+      const midState = replay(journalPath);
+      expect(midState.events.some((e) => e.event === 'warden.parked')).toBe(false);
+
+      resolveRelaunch?.('relaunched');
+      await first;
+
+      expect(calls).toBe(1);
+      const finalState = replay(journalPath);
+      expect(finalState.events.some((e) => e.event === 'warden.parked')).toBe(false);
+      expect(finalState.events.filter((e) => e.event === 'run.relaunched')).toHaveLength(1);
+    });
+
+    it('a second death after one relaunch parks with an honest hint', async () => {
+      const parkHints: string[] = [];
+      const originalPark = actuator.park.bind(actuator);
+      actuator.park = async (run: string, reason: string): Promise<boolean> => {
+        parkHints.push(reason);
+        return originalPark(run, reason);
+      };
+      const tick = new WardenTick({
+        journal, actuator, blockers: new BlockerBoard({ journal, actuator }),
+        now: () => Date.now(),
+        stuck: () => [makeStuck({
+          key: 'r1', signal: 'registry-abandoned',
+          hint: 'run r1 has a registry row from a process that is no longer alive; '
+            + 'its dangling tool call is history, never a reason to refuse the next launch',
+        })],
+        liveRuns: () => [],
+        reportFleetHealth: () => 0,
+        relaunchAbandoned: async (): Promise<RelaunchOutcome> => 'relaunched',
+      });
+
+      await tick.run(); // first death: relaunches
+      await tick.run(); // second death under the same goal: parks
+
+      expect(parkHints).toHaveLength(1);
+      expect(parkHints[0]).toContain('relaunched once');
+      expect(parkHints[0]).not.toContain('never a reason to refuse');
+    });
+
+    it('a second death is judged by activity, not by the stale registry row', async () => {
+      let now = 1_000_000;
+      let relaunchedAt: number | undefined;
+      const tick = new WardenTick({
+        journal, actuator, blockers: new BlockerBoard({ journal, actuator }),
+        now: () => now,
+        stuck: () => [makeStuck({
+          key: 'r1', signal: 'registry-abandoned',
+          since: relaunchedAt !== undefined ? relaunchedAt + 60_000 : 900_000,
+          hint: 'run r1 has a registry row from a process that is no longer alive',
+        })],
+        liveRuns: () => [],
+        reportFleetHealth: () => 0,
+        relaunchAbandoned: async (): Promise<RelaunchOutcome> => {
+          relaunchedAt = now;
+          return 'relaunched';
+        },
+      });
+
+      await tick.run(); // first death: relaunches, records relaunchedAt
+      now += 30_000;
+      // The relaunched run produced a fresh journal event after the relaunch -- the
+      // registry row is still the stale one (per the doc comment on
+      // relaunchAbandonedGoal), but the trip's own `since` now sits after relaunchedAt,
+      // which is the live signal that this is the resumed run still working, not a
+      // second death.
+      await tick.run();
+
+      const state = replay(journalPath);
+      expect(state.events.some((e) => e.event === 'warden.parked')).toBe(false);
+      expect(state.events.filter((e) => e.event === 'run.relaunched')).toHaveLength(1);
+    });
   });
 
   describe('B.3: reap the provably dead', () => {
@@ -444,6 +539,46 @@ describe('WardenTick.run', () => {
 
       const state = replay(journalPath);
       expect(state.events.some((e) => e.event === 'warden.health' && e['key'] === 'kill-switch')).toBe(false);
+    });
+  });
+
+  describe('R-02 guard #3: off-roadmap lanes park', () => {
+    it('parks a self-repo lane with no roadmap id and leaves an id-bearing lane alone', async () => {
+      const tick = new WardenTick({
+        journal, actuator, blockers: new BlockerBoard({ journal, actuator }),
+        now: () => Date.now(),
+        stuck: () => [],
+        liveRuns: () => [],
+        reportFleetHealth: () => 0,
+        selfRepoBriefLanes: () => [
+          { run: 'lane-only', roadmap: null },
+          { run: 'good', roadmap: 'R-04' },
+        ],
+      });
+
+      await tick.run();
+
+      const state = replay(journalPath);
+      const raised = state.events.find((e) => e.event === 'blocker.raised' && e['key'] === 'off-roadmap');
+      expect(raised).toBeDefined();
+      expect(raised?.['runs']).toEqual(['lane-only']);
+      const parked = readParkRecord('lane-only');
+      expect(parked?.reason).toContain('off-roadmap: no R-id on the brief');
+    });
+
+    it('does nothing when selfRepoBriefLanes is not supplied', async () => {
+      const tick = new WardenTick({
+        journal, actuator, blockers: new BlockerBoard({ journal, actuator }),
+        now: () => Date.now(),
+        stuck: () => [],
+        liveRuns: () => [],
+        reportFleetHealth: () => 0,
+      });
+
+      await tick.run();
+
+      const state = replay(journalPath);
+      expect(state.events.some((e) => e.event === 'blocker.raised')).toBe(false);
     });
   });
 });

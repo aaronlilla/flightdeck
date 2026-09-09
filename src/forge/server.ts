@@ -23,6 +23,10 @@ import { fileURLToPath } from 'node:url';
 
 import { ConsoleReads } from './console/reads.js';
 import { HEARTBEAT_MS, type BlockerKind } from '../shared/console-model.js';
+import { sliceEvent, sliceEventsFor } from '../shared/console-events.js';
+
+/** How often the fleet journal's size is compared against the last look. */
+const JOURNAL_WATCH_MS = 1000;
 import { appendThread, ConsoleWrites, plainReceiptCard } from './console/command.js';
 import { QueueRoutes } from './console/queue-route.js';
 import { BlockersRoutes, type Confirmer, type Restarter } from './console/blockers-route.js';
@@ -33,6 +37,7 @@ import { buildRestarters } from './console/blockers-restart.js';
 import { resumeRun } from './console/run-actions.js';
 import { runtimeVersion } from './launcher.js';
 import { readQueuePaused, writeQueuePaused } from './console/queue-pause.js';
+import { writeQueueWidth } from './console/queue-width.js';
 import type { Actuator, Reasoner } from './contracts.js';
 import { isAskStale, projectStaleness, type Inbox } from './inbox.js';
 import { appendOnce, Journal, JournalCache, type RangeReader } from './journal.js';
@@ -45,12 +50,19 @@ import {
   registryDir, serverTokenPath,
 } from './paths.js';
 import { routerEnabled } from './policy.js';
-import { retireEligible, retireFinished, retirePreview, retiredPath, retireRun, unretireRun } from './console/retire.js';
+import { retireFinished, retireLane, retirePreview, retiredPath, type RetireLaneDeps } from './console/retire.js';
 import { mergeReadyReportFrom } from './console/lanes.js';
 import { chainStatusRows, foldChainState } from './chain.js';
-import { Registry } from './registry.js';
+import { processAlive, Registry } from './registry.js';
 import { route as routeMessage } from './router.js';
 import { RunInbox, deliverAnswer } from './runinbox.js';
+import { assertRunListening } from './console/listening.js';
+import { amendRunBrief, type AmendDeps } from './console/amend.js';
+import { ConductorAgent } from './console/agent.js';
+import { RoundsRoutes } from './console/rounds-route.js';
+import type { QueryFn } from '../adapter/engine.js';
+import { conductorAgentEnabled, reasonerTimeoutMsFor } from './policy.js';
+import { CONDUCTOR_CLASS } from './console/agent.js';
 import { Breaker, clearKillSwitch, Fleet, type LaneRecord, type Lanes } from './supervisor.js';
 
 /** Reads the server's own bearer token, minting one on first use. */
@@ -61,37 +73,7 @@ export function ensureServerToken(path: string = serverTokenPath()): string {
   return token;
 }
 
-/**
- * Same two regexes `conformance-drift.ts` uses to find and bound a brief's own
- * `## Definition of Done` section (duplicated rather than imported, since that module
- * belongs to the drift checker and this one only needs the same shape). `appendAmendment`
- * folds an amendment's text into that section -- the section the drift checker re-reads
- * every tick -- and also appends a dated `## Amendment` section so a later reader can see
- * the brief was corrected after the fact, rather than only see a Definition of Done that
- * quietly grew.
- */
-const DOD_HEADING = /^##[ \t]+Definition of Done[ \t]*\r?\n/im;
-const NEXT_HEADING = /^##[ \t]+\S/m;
-
-/** Exported for its own specimen; used by `/amend`. */
-export function appendAmendment(brief: string, text: string): string {
-  const stamp = new Date().toISOString();
-  const start = DOD_HEADING.exec(brief);
-  let withDoD = brief;
-  if (start) {
-    const bodyStart = start.index + start[0].length;
-    const rest = brief.slice(bodyStart);
-    NEXT_HEADING.lastIndex = 0;
-    const next = NEXT_HEADING.exec(rest);
-    const insertAt = bodyStart + (next ? next.index : rest.length);
-    const before = brief.slice(0, insertAt);
-    const after = brief.slice(insertAt);
-    const needsBlankLine = !before.endsWith('\n\n') && !before.endsWith('\n');
-    withDoD = `${before}${needsBlankLine ? '\n' : ''}- Amendment (${stamp}): ${text}\n${after}`;
-  }
-  const separator = withDoD.endsWith('\n') ? '\n' : '\n\n';
-  return `${withDoD}${separator}## Amendment (${stamp})\n\n${text}\n`;
-}
+export { appendAmendment } from './console/amend.js';
 
 /** The maximum a request body may be before it is refused outright. */
 export const MAX_BODY_BYTES = 64 * 1024;
@@ -215,6 +197,11 @@ export interface ForgeServerOptions {
    *  (`blockers-gather.ts`) wired against this server's own inbox, integrations, lane
    *  view, registry and queue store. A specimen only. */
   blockersGather?: () => Promise<DetectionInputs>;
+  /** The Conductor agent's SDK `query`, or a fake. A specimen always sets this;
+   *  production leaves it unset and the agent opens a real session on the fleet
+   *  account. `conductorIdleMs` overrides the five-minute idle close. */
+  conductorQueryFn?: QueryFn;
+  conductorIdleMs?: number;
   /** Overrides the Blockers view's own confirmers. Defaults to `buildConfirmers`
    *  (`blockers-confirm.ts`). A specimen only. */
   blockersConfirmers?: Partial<Record<BlockerKind, Confirmer>>;
@@ -224,6 +211,13 @@ export interface ForgeServerOptions {
   /** Overrides where the Blockers view's own durable ledger lives. Defaults to
    *  `blockersLedgerPath()`, which follows `FORGE_HOME`. A specimen only. */
   blockersLedgerPath?: string;
+  /** Overrides the liveness ticker's own process probe (`processAlive` by default). A
+   *  specimen only -- production always asks the real process table. */
+  isAlive?: (pid: number) => boolean;
+  /** How often the liveness ticker re-checks a lane it last saw alive, in ms. Defaults
+   *  to 2000 (the "very live" board's own cadence). A specimen sets this low with fake
+   *  timers rather than waiting on the real interval. */
+  liveTickMs?: number;
 }
 
 export class ForgeServer {
@@ -251,6 +245,8 @@ export class ForgeServer {
 
   private readonly forgeHomeDir: string;
 
+  private readonly modelPolicyPathOpt: string | undefined;
+
   private readonly reasoner: Reasoner | undefined;
 
   private readonly consoleReads: ConsoleReads;
@@ -260,6 +256,21 @@ export class ForgeServer {
   private http: Server | undefined;
 
   private heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+
+  private journalWatchTimer: ReturnType<typeof setInterval> | undefined;
+
+  private journalSizeSeen = -1;
+  private liveTimer: ReturnType<typeof setInterval> | undefined;
+
+  private readonly isAliveFn: (pid: number) => boolean;
+
+  private readonly liveTickMs: number;
+
+  /** Every run this ticker has last seen alive or dead, so a re-check only fires the
+   *  cheap pid probe for a lane it already believed was live, and a flip publishes
+   *  exactly once instead of every tick. Undefined (never checked yet) is neither: the
+   *  first tick over a row establishes its baseline silently. */
+  private readonly liveKnown = new Map<string, boolean>();
 
   private sockets = new Set<Duplex>();
 
@@ -286,6 +297,15 @@ export class ForgeServer {
 
   private readonly blockersRoutes: BlockersRoutes;
 
+  /** The Conductor's rounds behind `GET /rounds` / `POST /rounds/apply` and its ticker. */
+  readonly rounds: RoundsRoutes;
+
+  /** The Conductor agent behind `POST /command` (`console/agent.ts`). */
+  readonly conductor: ConductorAgent;
+  /** The Jira project's own name, read once from `/rest/api/3/project/<key>` when the
+   *  Jira credentials are set; `null` until then and when they are not. */
+  private projectName: string | null = null;
+
   private readonly queueStoreForMerge: QueueStore;
 
   private readonly queueMergeDepsOpt: QueueMergeDeps | undefined;
@@ -304,9 +324,12 @@ export class ForgeServer {
     this.token = options.token ?? ensureServerToken();
     this.killSwitchFile = options.killSwitchFile ?? defaultKillSwitchPath();
     this.registry = options.registry ?? new Registry(registryDir());
+    this.isAliveFn = options.isAlive ?? processAlive;
+    this.liveTickMs = options.liveTickMs ?? 2_000;
     this.consoleDistDir = options.consoleDistDir ?? defaultConsoleDistDir();
     this.packetsDirPath = options.packetsDir ?? defaultPacketsDir();
     this.forgeHomeDir = options.forgeHomeDir ?? forgeHome();
+    this.modelPolicyPathOpt = options.modelPolicyPath;
     this.reasoner = options.reasoner;
     this.consoleReads = options.consoleReads
       ?? new ConsoleReads(options.modelPolicyPath ? { modelPolicyPath: options.modelPolicyPath } : {});
@@ -323,10 +346,18 @@ export class ForgeServer {
       authorized: (request, response) => this.authorized(request, response),
       stuck: this.stuckFn,
       lanesView: () => this.consoleReads.lanesResponse(),
+      lanesViewAll: () => this.consoleReads.lanesResponse(true, true),
+      forgeHomeDir: this.forgeHomeDir,
       queueStore: this.queueStoreForMerge,
       ...(options.modelPolicyPath ? { modelPolicyPath: options.modelPolicyPath } : {}),
     });
     this.queueMergeDepsOpt = options.queueMergeDeps;
+    // Queue-throughput W2: an explicit `queueMaxInFlight` (from `FORGE_QUEUE_MAX_IN_FLIGHT`
+    // via cli.ts, or a test's own option) seeds the on-disk width every time this server
+    // starts, the same "options.foo ?? default" precedence every other option here follows.
+    // A later `POST /queue/width` still wins for the rest of this process's life --
+    // `response()` and the ticker both read the file fresh, never this captured option.
+    if (options.queueMaxInFlight !== undefined) writeQueueWidth(options.queueMaxInFlight);
     this.queueRoutes = new QueueRoutes({
       store: this.queueStoreForMerge,
       search: options.queueSearch ?? {
@@ -337,9 +368,33 @@ export class ForgeServer {
       authorized: (request, response) => this.authorized(request, response),
       readPaused: () => readQueuePaused(),
       writePaused: (paused) => writeQueuePaused(paused),
-      maxInFlight: options.queueMaxInFlight ?? 2,
+      maxInFlight: options.queueMaxInFlight ?? 4,
+      publish: (event) => this.publish(event),
+      confirmGate: (body, source, blast, act) => this.consoleWrites.confirmGate(body, source, blast, act),
       ...(options.queueMergeDeps ? { mergeDeps: options.queueMergeDeps } : {}),
       ...(options.queuePromoteDeps ? { promoteDeps: options.queuePromoteDeps } : {}),
+    });
+    this.conductor = new ConductorAgent({
+      writes: this.consoleWrites, reads: this.consoleReads, queue: this.queueRoutes,
+      amend: this.amendDeps(), inbox: this.inbox, journalPath: this.journalPath,
+      publish: (event) => this.publish(event),
+      rounds: { sheet: () => this.rounds.sheet(), apply: () => this.rounds.apply() },
+      ...(options.conductorQueryFn ? { queryFn: options.conductorQueryFn } : {}),
+      ...(options.modelPolicyPath ? { policyPath: options.modelPolicyPath } : {}),
+      ...(options.conductorIdleMs !== undefined ? { idleMs: options.conductorIdleMs } : {}),
+    });
+    this.consoleWrites.attachAgent(this.conductor);
+    this.rounds = new RoundsRoutes({
+      store: this.queueStoreForMerge,
+      lanesAll: () => this.consoleReads.lanesResponse(true, true).lanes,
+      blockers: async () => (await this.blockersRoutes.list()).blockers,
+      retireDeps: () => this.retireLaneDeps(),
+      journalPath: this.journalPath,
+      authorized: (request, response) => this.authorized(request, response),
+      publish: (event) => this.publish(event),
+      appendThread: (message) => appendThread(message),
+      askConductor: (text) => this.conductor.handle(text),
+      ...(options.modelPolicyPath ? { policyPath: options.modelPolicyPath } : {}),
     });
     this.blockersRoutes = new BlockersRoutes({
       journalPath: this.journalPath,
@@ -369,7 +424,28 @@ export class ForgeServer {
     return this.sockets.size;
   }
 
+  /** `FORGE_BACKLOG_PROJECT`'s name off Jira, once; a failed read leaves `null`. */
+  private async readProjectName(): Promise<void> {
+    const key = process.env['FORGE_BACKLOG_PROJECT'];
+    const site = process.env['FORGE_JIRA_SITE'];
+    const email = process.env['FORGE_JIRA_EMAIL'];
+    const token = process.env['FORGE_JIRA_TOKEN'];
+    if (!key || !site || !email || !token) return;
+    try {
+      const base = /^https?:\/\//.test(site) ? site : `https://${site}`;
+      const response = await fetch(`${base.replace(/\/$/, '')}/rest/api/3/project/${encodeURIComponent(key)}`, {
+        headers: { authorization: `Basic ${Buffer.from(`${email}:${token}`).toString('base64')}`, accept: 'application/json' },
+      });
+      if (!response.ok) return;
+      const body = await response.json() as { name?: unknown };
+      if (typeof body.name === 'string') this.projectName = body.name;
+    } catch {
+      // Unreachable Jira leaves the name unknown; the chrome shows the key alone.
+    }
+  }
+
   async listen(): Promise<number> {
+    void this.readProjectName();
     const server = createServer((request, response) => { void this.route(request, response); });
     server.on('connection', (socket) => {
       this.accepted.add(socket as unknown as Duplex);
@@ -391,16 +467,65 @@ export class ForgeServer {
     // to know the feed itself is alive, distinct from any one lane going quiet.
     this.heartbeatTimer = setInterval(() => this.publish({ type: 'heartbeat', at: Date.now() }), HEARTBEAT_MS);
     this.heartbeatTimer.unref?.();
+    // A run starting, ending or parking is written to the fleet journal by whichever
+    // process runs it (a chain ticker, a queue worker, the warden), never through a
+    // route here. The journal's size is the one signal that covers them all: when it
+    // grows, the lanes and journal slices are stale and every listener hears so.
+    this.journalSizeSeen = this.journalSize();
+    this.journalWatchTimer = setInterval(() => {
+      const size = this.journalSize();
+      if (size === this.journalSizeSeen) return;
+      this.journalSizeSeen = size;
+      this.publish(sliceEvent('lanes', 'the fleet journal grew'));
+      this.publish(sliceEvent('journal', 'the fleet journal grew'));
+    }, JOURNAL_WATCH_MS);
+    this.journalWatchTimer.unref?.();
+    // The "very live" board's own cadence (Aaron: "the second there's nothing working
+    // it should stop"): every registry row this ticker last saw alive gets a fresh,
+    // cheap pid check -- no journal replay -- and a flip publishes `lane.live` so the
+    // console refreshes inside 2s instead of waiting on the 5s poll.
+    this.liveTimer = setInterval(() => this.tickLiveness(), this.liveTickMs);
+    this.liveTimer.unref?.();
+    this.rounds.start();
     this.consoleWrites.start();
     return this.port;
   }
 
+  /** The liveness ticker's own body, pulled out so a test can fire one tick directly
+   *  under fake timers rather than waiting on the real interval. Production never
+   *  calls this itself. */
+  private tickLiveness(): void {
+    for (const row of this.registry.all()) {
+      const was = this.liveKnown.get(row.goal);
+      const alive = this.isAliveFn(row.pid);
+      this.liveKnown.set(row.goal, alive);
+      if (was === undefined) continue; // first sighting: establish the baseline, no flip to report
+      if (was !== alive) this.publish({ event: 'lane.live', run: row.goal, alive, at: Date.now() });
+    }
+  }
+
+  /** Test seam only: fires one liveness tick synchronously. Production relies on the
+   *  real `setInterval` from `listen()`. */
+  tickLivenessForTest(): void {
+    this.tickLiveness();
+  }
+
   async close(): Promise<void> {
+    this.rounds.stop();
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = undefined;
     }
+    if (this.journalWatchTimer) {
+      clearInterval(this.journalWatchTimer);
+      this.journalWatchTimer = undefined;
+    }
+    if (this.liveTimer) {
+      clearInterval(this.liveTimer);
+      this.liveTimer = undefined;
+    }
     this.consoleWrites.stop();
+    await this.conductor.stop();
     for (const socket of this.sockets) socket.destroy();
     this.sockets.clear();
     const server = this.http;
@@ -529,11 +654,22 @@ export class ForgeServer {
       // `router.enabled` in the policy file takes effect on the console's next poll
       // without restarting the server.
       router_enabled: routerEnabled(),
+      // The Conductor agent (2026-09-08): whether the rail routes to it, and the class
+      // timeout the client shows a "did not answer" row after. Read fresh, like
+      // `router_enabled`, so a policy edit takes effect on the next poll.
+      conductor: {
+        enabled: conductorAgentEnabled(this.modelPolicyPathOpt),
+        timeoutMs: reasonerTimeoutMsFor(CONDUCTOR_CLASS, this.modelPolicyPathOpt),
+        open: this.conductor.open,
+      },
       // C.3: read fresh on every call, same as router_enabled -- the desktop status
       // window and the console's top bar both need to say when the queue subsystem is
       // not running at all, distinct from a running queue that is merely paused.
       queue_on: process.env['FORGE_QUEUE'] === '1',
       build: runtimeVersion(),
+      // The chrome's project label: the key this fleet works and, once Jira has answered
+      // for it, its name. Absent when no project is configured.
+      ...(process.env['FORGE_BACKLOG_PROJECT'] ? { project: { key: process.env['FORGE_BACKLOG_PROJECT'], name: this.projectName } } : {}),
       // The self loop's own count of what it found, queued and merged about this fleet
       // (`self-wire.ts`); absent when FORGE_SELF_REPO is unset.
       self: this.selfStatus?.() ?? null,
@@ -542,6 +678,14 @@ export class ForgeServer {
       // in flight still belongs on the console.
       chain: { value: chainStatusRows(foldChainState(fleet.events)), verified_at: journalMtime },
     };
+  }
+
+  private journalSize(): number {
+    try {
+      return statSync(this.journalPath).size;
+    } catch {
+      return 0;
+    }
   }
 
   /** Send an event to every listener. A socket that has gone is dropped, never thrown on. */
@@ -559,6 +703,15 @@ export class ForgeServer {
 
   private async route(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const path = (request.url ?? '/').split('?')[0] ?? '/';
+    // The live spine: once a console write has been answered, every listener hears
+    // which slices it touched and refetches those alone. One hook on the response
+    // rather than a line in every handler, so a route added later cannot forget it;
+    // `tests/forge/server-events.test.ts` walks every write and checks for the frame.
+    response.once('finish', () => {
+      const events = sliceEventsFor(request.method, path, response.statusCode);
+      if (!events) return;
+      for (const event of events) this.publish(event);
+    });
 
     // The console's read routes (`/lanes`, `/thread`, `/journal`, `/caps`,
     // `/proposals`, `/run/:id/{thread,pr,sandbox}`): all of them require the token like
@@ -653,6 +806,7 @@ export class ForgeServer {
     if (await this.consoleWrites.handle(path, request, response)) return;
     if (await this.queueRoutes.handle(path, request, response)) return;
     if (await this.blockersRoutes.handle(path, request, response)) return;
+    if (await this.rounds.handle(path, request, response)) return;
     if (request.method === 'GET') {
       return this.serveStatic(path, response);
     }
@@ -753,13 +907,20 @@ export class ForgeServer {
     this.readJson<{ reason?: string }>(request, response, (parsed) => {
       void (async () => {
         const reason = parsed?.reason || 'stopped from the console';
-        const { stopped, stale } = await new Fleet(
-          this.lanes, this.registry, this.journalPath, this.killSwitchFile,
-        ).stopAll(reason);
-        for (const outcome of stopped) {
-          this.publish({ event: 'run.parked', run: outcome.slug, actor: 'console', reached: outcome.reached });
-        }
-        json(response, 200, { stopped: stopped.map((outcome) => outcome.slug), stale });
+        const outcome = await this.consoleWrites.confirmGate(parsed as Record<string, unknown> | null, 'console',
+          'stops every running lane with a handoff request and engages the kill switch.',
+          async () => {
+            const { stopped, stale } = await new Fleet(
+              this.lanes, this.registry, this.journalPath, this.killSwitchFile,
+            ).stopAll(reason);
+            for (const row of stopped) {
+              this.publish({ event: 'run.parked', run: row.slug, actor: 'console', reached: row.reached });
+            }
+            const names = stopped.map((row) => row.slug);
+            const message = `stopped ${names.length} lane${names.length === 1 ? '' : 's'}`;
+            return { status: 200, body: { ok: true, jid: null, message, undoable: false, stopped: names, stale } };
+          });
+        json(response, outcome.status, outcome.body);
       })();
     });
   }
@@ -767,12 +928,23 @@ export class ForgeServer {
   /**
    * `POST /send`: queues a message into a run's own inbox, the same `RunInbox.send` that
    * `forge send RUN TEXT` calls. Delivered by the run's next tool call, per `runinbox.ts`.
+   *
+   * W1: refuses outright when nothing is listening -- no record on the board at all, or
+   * a record with `heart: false` -- rather than writing a file nobody will ever read and
+   * answering 200 as if it had. `assertRunListening` is the one check both this route
+   * and the Conductor agent's `send_to_run` tool call, so a message routed through the
+   * agent gets the same refusal a typed `/send` does.
    */
   private send(request: IncomingMessage, response: ServerResponse): void {
     if (!this.authorized(request, response)) return;
     this.readJson<{ run?: string; text?: string }>(request, response, (parsed) => {
       if (!parsed || !parsed.run || !parsed.text) {
         json(response, 400, { error: 'a send needs a run and text' });
+        return;
+      }
+      const verdict = assertRunListening(parsed.run, () => this.consoleReads.lanesResponse(true, true));
+      if (!verdict.listening) {
+        json(response, 409, { error: verdict.reason });
         return;
       }
       new RunInbox(parsed.run).send(parsed.text, 'console');
@@ -796,20 +968,15 @@ export class ForgeServer {
         json(response, 400, { error: 'an amendment needs a run and text' });
         return;
       }
-      const record = this.registry.get(parsed.run);
-      if (!record) {
-        json(response, 404, { error: `nothing runs ${parsed.run}` });
-        return;
-      }
-      const brief = readFileSync(record.briefPath, 'utf8');
-      writeFileSync(record.briefPath, appendAmendment(brief, parsed.text), 'utf8');
-      new RunInbox(parsed.run).send(`Amendment: ${parsed.text}`, 'console');
-      appendOnce(this.journalPath, {
-        event: 'brief.amended', run: parsed.run, actor: 'console', text: parsed.text,
-      });
-      this.publish({ event: 'brief.amended', run: parsed.run });
-      json(response, 200, { ok: true });
+      const outcome = amendRunBrief(parsed.run, parsed.text, this.amendDeps());
+      json(response, outcome.status, outcome.body);
     });
+  }
+
+  /** The one amend implementation (`amend.ts#amendRunBrief`) this route and the
+   *  Conductor agent's `amend_run` tool share. */
+  private amendDeps(): AmendDeps {
+    return { registry: this.registry, journalPath: this.journalPath, publish: (event) => this.publish(event) };
   }
 
   /**
@@ -818,28 +985,9 @@ export class ForgeServer {
    */
   private clearLane(request: IncomingMessage, response: ServerResponse): void {
     if (!this.authorized(request, response)) return;
-    this.readJson<{ lane?: string; all?: boolean; inboxKey?: string }>(request, response, (parsed) => {
+    this.readJson<{ lane?: string; all?: boolean; inboxKey?: string; confirm?: string }>(request, response, (parsed) => {
       if (parsed?.inboxKey) {
-        // F3: retire one stale ask from the console's own Clear button. The client's say-
-        // so is not proof -- staleness is checked again here, against the registry as it
-        // is right now, before anything is moved.
-        const entry = this.inbox.entry(parsed.inboxKey);
-        if (!entry) {
-          json(response, 404, { error: `nothing asked ${parsed.inboxKey}` });
-          return;
-        }
-        if (!isAskStale(entry, (run) => Boolean(this.registry.get(run)))) {
-          json(response, 400, { error: `${parsed.inboxKey} still has a live run; it is not stale` });
-          return;
-        }
-        this.inbox.retire(parsed.inboxKey);
-        const retired = appendOnce(this.journalPath, {
-          event: 'inbox.retired', actor: 'console', key: parsed.inboxKey, runs: entry.runs,
-        });
-        // The console reads success off a non-null `jid` (`receiptCard`'s
-        // `type: jid ? 'receipt' : 'refusal'`) -- with none here, a genuine dismiss
-        // rendered as a red Refused card.
-        json(response, 200, { ok: true, jid: retired.id });
+        void this.clearAsk(parsed, response);
         return;
       }
       if (parsed?.all === true) {
@@ -857,6 +1005,32 @@ export class ForgeServer {
   }
 
   /**
+   * `POST /clear { inboxKey }` (F3): retires one stale ask from the console's own
+   * Dismiss button. The client's say-so is not proof: staleness is checked again here,
+   * against the registry as it is right now, before anything is moved. Dismissing loses
+   * the question for good, so it runs behind the confirm gate.
+   */
+  private async clearAsk(parsed: { inboxKey?: string; confirm?: string }, response: ServerResponse): Promise<void> {
+    const key = parsed.inboxKey as string;
+    const outcome = await this.consoleWrites.confirmGate(parsed as Record<string, unknown>, 'console',
+      `dismisses the question ${key}: the ask leaves the inbox and nothing answers it.`,
+      async () => {
+        const entry = this.inbox.entry(key);
+        if (!entry) return { status: 404, body: { error: `nothing asked ${key}` } };
+        if (!isAskStale(entry, (run) => Boolean(this.registry.get(run)))) {
+          return { status: 400, body: { error: `${key} still has a live run; it is not stale` } };
+        }
+        this.inbox.retire(key);
+        const retired = appendOnce(this.journalPath, {
+          event: 'inbox.retired', actor: 'console', key, runs: entry.runs,
+        });
+        // The console reads success off a non-null `jid`, so the row's own id goes back.
+        return { status: 200, body: { ok: true, jid: retired.id, message: `dismissed ${key}`, undoable: false } };
+      });
+    json(response, outcome.status, outcome.body);
+  }
+
+  /**
    * `POST /run/:id/retire` and `POST /run/:id/unretire` (H1.7): moves one lane off, or
    * back onto, the board's default view. Retiring an ineligible lane (still running, an
    * open unmerged PR, a live process behind it) is refused outright rather than quietly
@@ -865,22 +1039,31 @@ export class ForgeServer {
    */
   private retireOne(request: IncomingMessage, response: ServerResponse, id: string, retiring: boolean): void {
     if (!this.authorized(request, response)) return;
-    if (retiring) {
-      const lane = this.consoleReads.lanesResponse(true, true).lanes.find((row) => row.id === id);
-      if (!lane) {
-        json(response, 404, { error: `${id} is not a registered run` });
-        return;
-      }
-      if (!retireEligible(lane)) {
-        json(response, 409, { error: `${id} is still open -- retiring only removes a finished lane from the board` });
-        return;
-      }
+    // Unretiring puts a lane back and is undone by retiring it again, so it runs
+    // straight through; retiring takes the lane off the default board and goes behind
+    // the same server-issued confirm as every other irreversible route.
+    if (!retiring) {
+      const outcome = retireLane(id, false, this.retireLaneDeps());
+      json(response, outcome.status, outcome.body);
+      return;
     }
-    const at = Date.now();
-    if (retiring) retireRun(retiredPath(this.forgeHomeDir), id, at);
-    else unretireRun(retiredPath(this.forgeHomeDir), id, at);
-    appendOnce(this.journalPath, { event: 'lane.retired', run: id, actor: 'console', retired: retiring });
-    json(response, 200, { ok: true, jid: null, message: `${retiring ? 'retired' : 'unretired'} ${id}`, undoable: retiring });
+    this.readJson<{ confirm?: string }>(request, response, (parsed) => {
+      void (async () => {
+        const outcome = await this.consoleWrites.confirmGate(parsed as Record<string, unknown> | null, 'console',
+          `retires ${id}: the lane leaves the board's default view.`,
+          async () => retireLane(id, true, this.retireLaneDeps()));
+        json(response, outcome.status, outcome.body);
+      })();
+    });
+  }
+
+  /** The one retire implementation (`retire.ts#retireLane`) this route, the rail's
+   *  typed `remove <lane>` and the Conductor agent's `retire` tool all share. */
+  private retireLaneDeps(): RetireLaneDeps {
+    return {
+      forgeHomeDir: this.forgeHomeDir, journalPath: this.journalPath,
+      lanesAll: () => this.consoleReads.lanesResponse(true, true).lanes,
+    };
   }
 
   /**
@@ -890,12 +1073,23 @@ export class ForgeServer {
    */
   private retireFinishedRoute(request: IncomingMessage, response: ServerResponse): void {
     if (!this.authorized(request, response)) return;
-    const lanes = this.consoleReads.lanesResponse(true, true).lanes;
-    const retired = retireFinished(retiredPath(this.forgeHomeDir), lanes, Date.now());
-    for (const id of retired) {
-      appendOnce(this.journalPath, { event: 'lane.retired', run: id, actor: 'console', retired: true });
-    }
-    json(response, 200, { ok: true, jid: null, message: `retired ${retired.length} lane(s)`, undoable: false, retired });
+    this.readJson<{ confirm?: string }>(request, response, (parsed) => {
+      void (async () => {
+        const preview = retirePreview(retiredPath(this.forgeHomeDir), this.consoleReads.lanesResponse(true, true).lanes);
+        const titles = preview.map((item) => item.title ?? item.id).join(', ') || 'nothing';
+        const outcome = await this.consoleWrites.confirmGate(parsed as Record<string, unknown> | null, 'console',
+          `retires ${preview.length} finished lane${preview.length === 1 ? '' : 's'}: ${titles}`,
+          async () => {
+            const lanes = this.consoleReads.lanesResponse(true, true).lanes;
+            const retired = retireFinished(retiredPath(this.forgeHomeDir), lanes, Date.now());
+            for (const id of retired) {
+              appendOnce(this.journalPath, { event: 'lane.retired', run: id, actor: 'console', retired: true });
+            }
+            return { status: 200, body: { ok: true, jid: null, message: `retired ${retired.length} lane(s)`, undoable: false, retired } };
+          });
+        json(response, outcome.status, outcome.body);
+      })();
+    });
   }
 
   /** `GET /retire-finished` (H1.7): a read-only preview of what a bulk retire would
@@ -927,7 +1121,21 @@ export class ForgeServer {
    */
   private mergeReadyPost(request: IncomingMessage, response: ServerResponse): void {
     if (!this.authorized(request, response)) return;
-    void (async () => {
+    this.readJson<{ confirm?: string }>(request, response, (parsed) => {
+      void (async () => {
+        const { ready } = mergeReadyReportFrom(this.consoleReads.lanesResponse(true).lanes);
+        const names = ready.map((lane) => lane.title ?? lane.id).join(', ') || 'nothing';
+        const outcome = await this.consoleWrites.confirmGate(parsed as Record<string, unknown> | null, 'console',
+          `merges ${ready.length} ready lane${ready.length === 1 ? '' : 's'}: ${names}`,
+          async () => this.mergeReadyRun());
+        json(response, outcome.status, outcome.body);
+      })();
+    });
+  }
+
+  /** The merge itself, once confirmed: one outcome row per lane a merge was attempted on. */
+  private async mergeReadyRun(): Promise<{ status: number; body: unknown }> {
+    {
       const { ready } = mergeReadyReportFrom(this.consoleReads.lanesResponse(true).lanes);
       const outcomes: Array<{ id: string; ok: boolean; message: string }> = [];
       for (const lane of ready) {
@@ -946,8 +1154,11 @@ export class ForgeServer {
         });
         outcomes.push({ id: lane.id, ok: outcome.ok, message: outcome.message });
       }
-      json(response, 200, { ok: outcomes.every((row) => row.ok), outcomes });
-    })();
+      const merged = outcomes.filter((row) => row.ok).length;
+      const failed = outcomes.length - merged;
+      const message = `merged ${merged} lane${merged === 1 ? '' : 's'}${failed > 0 ? `, ${failed} could not merge` : ''}`;
+      return { status: 200, body: { ok: outcomes.every((row) => row.ok), jid: null, message, undoable: false, outcomes } };
+    }
   }
 
   /**

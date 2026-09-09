@@ -20,7 +20,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
-import { buildForgeMcpServer, type ForgeToolHandlers } from '../adapter/engine.js';
+import { buildForgeMcpServer, FORGE_ASK_SHAPE, type ForgeToolHandlers } from '../adapter/engine.js';
 import type { GotchaInput } from './gotcha.js';
 import { CLASS_BUDGETS, DEFAULT_CLASS } from './exec.js';
 import type { FleetProcess, LivenessSignal, StuckSignal } from './liveness.js';
@@ -160,7 +160,7 @@ export const FORGE_EVENT_NAMES = [
   // Written today, confirmed by the scan specimen below over src/forge/**. Includes
   // B.3's own rows (`run.resumed`, `inbox.acknowledged`, `warden.parked`), which are on
   // `main` as of PR #3 (5385179) and are no longer merely proposed.
-  'ask.answered', 'ask.raised', 'cutover.completed', 'cutover.moved', 'engine.error',
+  'ask.answered', 'ask.raised', 'console.unhandled', 'cutover.completed', 'cutover.moved', 'engine.error',
   'forge.ask', 'forge.done', 'forge.handoff', 'forge.report', 'gotcha', 'inbox.acknowledged',
   'inbox.delivered', 'liveness.cleared', 'liveness.stuck', 'note', 'permission.denied',
   'run.blocked', 'run.finished', 'run.handoff', 'run.parked', 'run.paused', 'run.resumed',
@@ -181,6 +181,10 @@ export const FORGE_EVENT_NAMES = [
   // it answer, or what it threw); `account.window` is one plan window's state for one
   // account, from the probe or from a live worker's `rate_limit_event`.
   'account.probe', 'account.window',
+  // The console's own liveness ticker (`server.ts`): a websocket-only push, never
+  // journaled, telling a connected board that one lane's own process just flipped
+  // alive or dead between polls.
+  'lane.live',
   // The Governor stream's own (roadmap P4.2, `src/forge/governor.ts`): `result.usage`
   // carries the SDK result message's own `modelUsage` map, journaled by the engine on a
   // segment's end row; `burn.mismatch` is the reconciliation between that sum and B.3.6's
@@ -263,6 +267,15 @@ export const FORGE_EVENT_NAMES = [
   // `queue.tick-error` for a worker tick that threw before any item advanced.
   'queue.planning', 'queue.planned', 'queue.launched', 'queue.parked', 'queue.failed',
   'queue.review', 'queue.tick-error',
+  // R-11 part 2: the Jira watcher bridge's own tick row (`intake/watcherWire.ts`) --
+  // `watcher.poll` once per poll that added, sent, or closed at least one item, and
+  // `watcher.tick-error` for a tick that threw before any of those.
+  'watcher.poll', 'watcher.tick-error',
+  // 2026-09-08: the pre-gate rebase commits whatever a worker left uncommitted in its
+  // worktree before replaying onto the base, rather than parking on "You have unstaged
+  // changes" for a person to clean up by hand -- one row per item this happened to,
+  // carrying the file list (`chainRebase`, `chain-wire.ts`).
+  'queue.leftover-committed',
   // The self-heal stream (B). `queue.paused`: the queue tick backs off to a 10 minute
   // drip after three identical consecutive `queue.tick-error`s in a row (B.1).
   // `run.relaunched`: a worker that died mid-tool gets resumed once on the same
@@ -286,9 +299,22 @@ export const FORGE_EVENT_NAMES = [
   // Retire/Unretire click or the bulk `POST /retire-finished` -- never written by any
   // worker or automation.
   'lane.retired',
+  // The Conductor agent (2026-09-08): one usage row per model turn on the rail, and one
+  // live-feed frame per tool receipt so the console refetches the thread mid-turn.
+  'conductor.usage', 'conductor.receipt',
+  // The Conductor's rounds (2026-09-08, `console/rounds-route.ts`): one sheet row per
+  // walk whose findings changed (dry run) or per walk that acted, and one row per action
+  // it applied through the queue's own functions.
+  'rounds.sheet', 'rounds.applied',
   // H1.8: one lane's own outcome from the bulk `POST /merge-ready` -- always an
   // operator's own click, never a worker acting on its own.
   'merge-ready.merged',
+  // W1, 2026-09-08: `completeAskOptions` (`console/ask-options.ts`) padding a
+  // `forge_ask` call's options out to four or more before the ask reaches the inbox --
+  // `source: 'worker'` when the worker already supplied enough, `source: 'drafted'`
+  // when a reasoner call filled the gap, and the same row on any reasoner failure
+  // (worker's own options kept, `recommended: null`).
+  'forge.ask.options',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];
@@ -615,11 +641,7 @@ export const FORGE_TOOLS: string[] = FORGE_TOOL_NAMES.map((name) => `mcp__forge_
 
 export const ForgeDoneInputSchema = z.object({ evidence: z.string().min(1) });
 export const ForgeHandoffInputSchema = z.object({ packet: z.string().min(1) });
-export const ForgeAskInputSchema = z.object({
-  question: z.string().min(1),
-  options: z.array(z.string()).optional(),
-  kind: z.enum(['question', 'blocker']).optional(),
-});
+export const ForgeAskInputSchema = z.object(FORGE_ASK_SHAPE);
 export const ForgeGotchaInputSchema = z.object({
   run: z.string().min(1),
   what: z.string().min(1),
@@ -1072,7 +1094,7 @@ export type CliExitCode = (typeof CLI_EXIT_CODES)[keyof typeof CLI_EXIT_CODES];
  * on purpose, the same reasoning as `FORGE_EVENT_NAMES`: a caller that wants a sixth
  * source adds it here first.
  */
-export const POLL_SOURCE_NAMES = ['jira', 'sentry', 'cloudwatch', 'slack', 'github'] as const;
+export const POLL_SOURCE_NAMES = ['jira', 'sentry', 'cloudwatch', 'slack', 'github', 'jira-watch'] as const;
 
 export type PollSourceName = (typeof POLL_SOURCE_NAMES)[number];
 
@@ -1306,14 +1328,49 @@ export interface HaipingHandoff {
   notVisuallyVerified: string[];
 }
 
+/** A worker who copies `haipingHandoffExample()` and never overwrites a value still
+ *  has a schema-valid, non-empty string on their hands -- that's what let PRs #79 and
+ *  #83 through with the placeholders untouched. */
+const REPLACE_PREFIX = 'REPLACE:';
+const notAPlaceholder = (value: string) => !value.startsWith(REPLACE_PREFIX);
+
 export const HaipingHandoffSchema = z.object({
   ticket: z.string().min(1),
   pr: z.string().min(1),
   deployKind: z.enum(['ota', 'rebuild']),
-  perPlatform: z.object({ android: z.string().min(1), ios: z.string().min(1) }),
-  steps: z.array(z.string().min(1)).min(1),
+  perPlatform: z.object({
+    android: z.string().min(1).refine(notAPlaceholder, { message: 'still a REPLACE: placeholder' }),
+    ios: z.string().min(1).refine(notAPlaceholder, { message: 'still a REPLACE: placeholder' }),
+  }),
+  steps: z.array(z.string().min(1).refine(notAPlaceholder, { message: 'still a REPLACE: placeholder' })).min(1),
   notVisuallyVerified: z.array(z.string()),
 });
+
+/**
+ * Q-56a42646 / PR #121: a worker with no access to flightdeck's own source cannot see
+ * `HaipingHandoffSchema` above, so naming it in the brief left one worker inventing its
+ * own fields. This builds the fenced example straight from a `HaipingHandoff` object
+ * literal -- typechecked against the same interface the schema validates -- rather than
+ * a second hand-written copy of the shape that could drift from it.
+ *
+ * PRs #79/#83, 2026-09-08: every value here is an obvious placeholder, but a worker who
+ * pasted this verbatim still cleared the gate, because the schema only checked for a
+ * non-empty string. `HaipingHandoffSchema` now rejects any `perPlatform`/`steps` value
+ * still carrying the `REPLACE:` prefix, so `checkHandoff('haiping',
+ * JSON.parse(haipingHandoffExample()))` is `{ complete: false }` until a worker
+ * overwrites every one of them.
+ */
+export function haipingHandoffExample(): string {
+  const example: HaipingHandoff = {
+    ticket: 'BBZ-000',
+    pr: 'owner/repo#0',
+    deployKind: 'ota',
+    perPlatform: { android: 'REPLACE: android fingerprint or build number', ios: 'REPLACE: ios fingerprint or build number' },
+    steps: ['REPLACE: first thing Haiping should do', 'REPLACE: what he should see happen'],
+    notVisuallyVerified: ['REPLACE: a step nobody looked at on a screen'],
+  };
+  return JSON.stringify(example, null, 2);
+}
 
 /** Joe: the backend draft-PR ping, since the gitflow guard makes a merge impossible. */
 export interface JoeHandoff {

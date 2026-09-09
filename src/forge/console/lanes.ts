@@ -112,7 +112,7 @@ function capitalizeFirst(text: string): string {
  *  heading -- a self finding's summary sentence, on an already-written brief whose
  *  heading is nothing but the finding's bare kind. Trimmed to 120 characters at a word
  *  boundary and capitalised, so it reads as a title rather than a quoted line. */
-function firstBodyParagraph(brief: string): string | null {
+export function firstBodyParagraph(brief: string): string | null {
   const lines = brief.split(/\r?\n/);
   const headingIndex = lines.findIndex((line) => /^#[ \t]+/.test(line));
   const rest = headingIndex >= 0 ? lines.slice(headingIndex + 1) : lines;
@@ -512,7 +512,10 @@ export interface LaneBuildInput {
 function questionFor(id: string, openAsks: InboxEntry[]): LaneQuestion | null {
   const entry = openAsks.find((ask) => ask.runs.includes(id));
   if (!entry) return null;
-  return { key: entry.key, text: entry.question, opts: entry.options, askedAt: entry.at };
+  return {
+    key: entry.key, text: entry.question, opts: entry.options, askedAt: entry.at,
+    recommended: entry.recommended, optionSource: entry.optionSource,
+  };
 }
 
 function sandboxFor(packet: ChainPacketState | undefined, registryRow: RegistryRecord | undefined, id: string): LaneSandbox | null {
@@ -683,6 +686,10 @@ export function buildLane(input: LaneBuildInput): Lane {
     did: computeDid(runEvents, input.prFor(id)),
     now: '',
     you: null,
+    // `reads.ts#lanesResponse` overwrites this with the real process-alive check
+    // (`live.ts#computeLive`) -- this fold alone has no `isAlive` probe to run, so it
+    // reads as not-alive/not-checked rather than guessing.
+    live: { alive: false, pid: null, lastEventAt: null, checkedAt: now },
   };
   built.plain = plainStatus(built, { now });
   built.now = built.plain;

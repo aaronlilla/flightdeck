@@ -80,8 +80,10 @@ test('kill shows a confirm card before anything happens', async ({ page }) => {
   await page.getByTestId('lane-FLT-201').click();
   await expect(page.getByTestId('ticket-sheet')).toBeVisible();
   await page.getByTestId('ticket-sheet').getByText('Kill', { exact: true }).click();
-  await expect(page.getByText('Confirm — irreversible')).toBeVisible();
-  await page.getByText('Not now').click();
+  const confirm = page.getByTestId('action-confirm-killRun-FLT-201');
+  await expect(confirm).toBeVisible();
+  await expect(confirm).toContainText('Confirm, irreversible');
+  await page.getByTestId('action-confirm-no-killRun-FLT-201').click();
   await expect(page.getByTestId('lane-FLT-201')).toHaveAttribute('data-state', 'running');
 });
 

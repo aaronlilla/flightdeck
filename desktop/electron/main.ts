@@ -11,6 +11,7 @@ import {
   mergeForgeEnv, readSettings, updateSettings, type SettingsFs, type WindowBounds,
 } from './settings';
 import { bringUpConsole, type Spawned, type SupervisorDeps } from './console-supervisor';
+import { createConsoleWatchdog, type ConsoleWatchdog, type ReviveResult } from './console-watchdog';
 import { probeConsole, waitUntilReachable } from './probe';
 import { decideQuitAction } from './quit-rule';
 import { hasLiveRun } from './fleet-state';
@@ -112,6 +113,8 @@ let tray: Tray | undefined;
 let startedByThisApp = false;
 let spawnedProcess: Spawned | undefined;
 let currentLabel = 'Forge';
+let resolvedCheckoutDir: string | undefined;
+let watchdog: ConsoleWatchdog | undefined;
 
 function showStatus(text: string): void {
   statusWindow?.webContents.send('status', text);
@@ -288,21 +291,15 @@ async function bootstrap(): Promise<void> {
   const queueOn = queueIsOn(mergedEnv);
   statusWindow?.webContents.send('queue-state', queueOn);
 
-  const deps: SupervisorDeps = {
-    probe: probeConsole,
-    spawn: (command, args, cwd, env) => spawnChild(command, args, cwd, { ...env, ...forgeEnv }),
-    fs: fsAdapter,
-    join,
-    nodeExecPath: process.execPath,
-    waitUntilReachable,
-    onLog: logToStatus,
-  };
+  resolvedCheckoutDir = checkoutDir;
+  const deps = buildSupervisorDeps(forgeEnv);
 
   showStatus('Bringing up the console…');
   const outcome = await bringUpConsole(checkoutDir, deps);
 
   if (outcome.mode === 'start-failed') {
     showStatus(outcome.reason);
+    statusWindow?.webContents.send('revive-failed');
     return;
   }
 
@@ -322,6 +319,79 @@ async function bootstrap(): Promise<void> {
   tray?.setToolTip(currentLabel);
   statusWindow?.close();
   statusWindow = undefined;
+
+  watchdog?.stop();
+  watchdog = createConsoleWatchdog(buildWatchdogDeps());
+  watchdog.start();
+}
+
+/** The same probe/spawn/launcher plumbing `bootstrap()` hands `bringUpConsole`,
+ *  built as its own function so the watchdog's revive can run the identical
+ *  bring-up attempt later. */
+function buildSupervisorDeps(forgeEnv: Record<string, string> | undefined): SupervisorDeps {
+  return {
+    probe: probeConsole,
+    spawn: (command, args, cwd, env) => spawnChild(command, args, cwd, { ...env, ...forgeEnv }),
+    fs: fsAdapter,
+    join,
+    nodeExecPath: process.execPath,
+    homeDir: app.getPath('home'),
+    waitUntilReachable,
+    onLog: logToStatus,
+  };
+}
+
+/** Runs the same bring-up attempt bootstrap used, for the watchdog to call
+ *  once the console has been declared gone. On success it also reloads the
+ *  board window and puts the head-and-mode label back on the title bar. */
+async function reviveConsole(): Promise<ReviveResult> {
+  if (!resolvedCheckoutDir) {
+    return { ok: false, reason: 'no Forge checkout is known, so the console cannot be brought back on its own' };
+  }
+  const forgeEnv = readSettings(fsAdapter, settingsPath()).forgeEnv;
+  const deps = buildSupervisorDeps(forgeEnv);
+  const outcome = await bringUpConsole(resolvedCheckoutDir, deps);
+  if (outcome.mode === 'start-failed') {
+    return { ok: false, reason: outcome.reason };
+  }
+
+  startedByThisApp = outcome.mode === 'start';
+  spawnedProcess = startedByThisApp ? (outcome as { process: Spawned }).process : undefined;
+
+  const head = startedByThisApp ? readGitHead(git(), resolvedCheckoutDir) : undefined;
+  currentLabel = consoleLabel(startedByThisApp ? 'started' : 'attached', head);
+  tray?.setToolTip(currentLabel);
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    await mainWindow.loadURL(`${CONSOLE_ORIGIN}/`);
+    mainWindow.setTitle(currentLabel);
+  }
+  return { ok: true };
+}
+
+function buildWatchdogDeps() {
+  return {
+    probe: probeConsole,
+    revive: reviveConsole,
+    onLog: logToStatus,
+    onGone: (label: string) => {
+      if (!statusWindow) statusWindow = createStatusWindow();
+      showStatus(`the console went away at ${label}; bringing it back`);
+    },
+    onRevived: () => {
+      statusWindow?.close();
+      statusWindow = undefined;
+    },
+    onFailed: (reason: string) => {
+      showStatus(reason);
+      statusWindow?.webContents.send('revive-failed');
+    },
+    now: () => Date.now(),
+    setInterval: (handler: () => void, ms: number) => setInterval(handler, ms),
+    clearInterval: (handle: unknown) => clearInterval(handle as ReturnType<typeof setInterval>),
+    setTimeout: (handler: () => void, ms: number) => setTimeout(handler, ms),
+    clearTimeout: (handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  };
 }
 
 function buildTray(): Tray {
@@ -415,6 +485,17 @@ if (!app.requestSingleInstanceLock()) {
 } else {
   app.on('second-instance', focusExisting);
 
+  // The Retry button on the status window: while the watchdog is running,
+  // this asks it to try again right now (bypassing its backoff); before the
+  // board has ever loaded, there is no watchdog yet, so it re-runs bootstrap.
+  ipcMain.on('retry-console', () => {
+    if (watchdog) {
+      watchdog.retryNow();
+    } else {
+      void bootstrap();
+    }
+  });
+
   app.whenReady().then(() => {
     buildAppMenu();
     tray = buildTray();
@@ -431,5 +512,6 @@ if (!app.requestSingleInstanceLock()) {
 
   app.on('before-quit', () => {
     isQuitting = true;
+    watchdog?.stop();
   });
 }

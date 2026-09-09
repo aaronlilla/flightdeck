@@ -19,16 +19,21 @@ import { dirname, join } from 'node:path';
 
 import type { Actuator } from '../contracts.js';
 import { foldChainState } from '../chain.js';
-import type { Inbox } from '../inbox.js';
+import type { Inbox, InboxEntry } from '../inbox.js';
 import { deliverAnswer } from '../runinbox.js';
 import { appendOnce, replay } from '../journal.js';
 import type { StuckSignal } from '../liveness.js';
-import type { Registry } from '../registry.js';
+import { processAlive, type Registry } from '../registry.js';
 import type { RunRequest } from '../exec.js';
+import {
+  accountsRegistryPath, addAccount, liveRunsByAccount, loadAccounts, removeAccount,
+} from '../accounts.js';
+import { AccountsConnect, realLogout, realProbeStatus, realSpawnLogin } from '../accounts-connect.js';
 import type { Lanes } from '../supervisor.js';
 import type { QueueStore } from '../intake/queueStore.js';
-import { governorBudget } from '../policy.js';
+import { conductorAgentEnabled, governorBudget } from '../policy.js';
 import { forgeHome } from '../paths.js';
+import { retireLane } from './retire.js';
 import { consoleDir, recordAction, ActionsLedger, actionsLedgerPath } from './actions-ledger.js';
 import {
   compactRun, killRun, mergeRun, pauseRun, reauditRun, reopenRun, restoreRunCap,
@@ -44,9 +49,13 @@ import {
   applyRule, dismissRule, restoreRule, rulesPath, setRuleStatus, startEnforcementTick,
   type RulesDeps,
 } from './rules.js';
-import type { ActionResult, LanesResponse, Message, PlanItem } from '../../shared/console-model.js';
+import type {
+  AccountsResponse, ActionResult, ConnectAttemptResponse, ConnectStartResponse, DisconnectResponse,
+  LanesResponse, Message, PlanItem,
+} from '../../shared/console-model.js';
 import { fmtTokens } from '../../shared/format-tokens.js';
 import { stripMachineIds } from '../../shared/humanize.js';
+import type { ConductorAgent, ConductorContext } from './agent.js';
 
 const REASON_LIMIT = 140;
 
@@ -112,6 +121,13 @@ export function plainReceiptCard(text: string): Message {
   return { k: randomUUID(), type: 'receipt', text, ts: Date.now(), source: 'blockers', resolved: 'ran' };
 }
 
+/** The one sentence a failed run action has to say: `message` (an `ActionResult`),
+ *  else `reason` (a 501 "not wired"), else `error` (a state refusal), else the fallback. */
+export function actionFailureText(body: unknown, fallback: string): string {
+  const row = (body ?? {}) as { message?: string; reason?: string; error?: string };
+  return row.message ?? row.reason ?? row.error ?? fallback;
+}
+
 function receiptCard(source: string, result: ActionResult): Message {
   return {
     k: randomUUID(), type: 'receipt', text: result.message, ts: Date.now(), source,
@@ -155,6 +171,9 @@ export type Intent =
   | { kind: 'pause'; repo?: string }
   | { kind: 'resume'; lane?: string }
   | { kind: 'kill'; lane: string }
+  | { kind: 'retire'; lane: string }
+  | { kind: 'reopen'; lane: string }
+  | { kind: 'verify'; lane: string }
   | { kind: 'merge-ready' }
   | { kind: 'set-daily-cap'; amount: number }
   | { kind: 'set-run-cap'; lane: string; amount: number }
@@ -163,6 +182,7 @@ export type Intent =
   | { kind: 'spend-today' }
   | { kind: 'status' }
   | { kind: 'answer'; askKey: string | null; text: string }
+  | { kind: 'answer-by-number'; askKey: string | null; optionNumber: number }
   | { kind: 'confirm'; token: string }
   | { kind: 'run-plan'; token: string }
   | { kind: 'dismiss'; token: string }
@@ -199,6 +219,9 @@ export function parseIntent(raw: string): Intent {
   if ((match = text.match(/^resume\s+(\S+)$/i))) return { kind: 'resume', lane: match[1]! };
   if (/^resume$/i.test(text)) return { kind: 'resume' };
   if ((match = text.match(/^kill\s+(\S+)$/i))) return { kind: 'kill', lane: match[1]! };
+  if ((match = text.match(/^(?:remove|archive|retire)\s+(\S+)$/i))) return { kind: 'retire', lane: match[1]! };
+  if ((match = text.match(/^reopen\s+(\S+)$/i))) return { kind: 'reopen', lane: match[1]! };
+  if ((match = text.match(/^verify\s+(\S+)$/i))) return { kind: 'verify', lane: match[1]! };
   if (/^merge\s+ready\s+lanes?$/i.test(text)) return { kind: 'merge-ready' };
   if ((match = text.match(/^(?:raise|set)\s+daily\s+cap\s+to\s+(\d+(?:\.\d+)?)([km])?$/i))) {
     return { kind: 'set-daily-cap', amount: tokenAmount(match[1]!, match[2]) };
@@ -217,6 +240,16 @@ export function parseIntent(raw: string): Intent {
   // it here, ahead of the plain free-text form below, is what stops the whole tail
   // ("f92af4249f6a27ae Restart the forge MCP connection") from being delivered to the
   // run as if the operator had typed the key as part of their answer.
+  // `answer <askKey> <n>` and bare `answer <n>` (W4): a person picking an option by its
+  // list position rather than retyping its text. Checked ahead of the generic keyed and
+  // free-text forms below so a purely numeric answer resolves against the ask's own
+  // options instead of being delivered as the literal digit string.
+  if ((match = text.match(/^answer\s+([0-9a-f]{8,})\s+(\d+)$/i))) {
+    return { kind: 'answer-by-number', askKey: match[1]!, optionNumber: Number(match[2]) };
+  }
+  if ((match = text.match(/^answer\s+(\d+)$/i))) {
+    return { kind: 'answer-by-number', askKey: null, optionNumber: Number(match[1]) };
+  }
   if ((match = text.match(/^answer\s+([0-9a-f]{8,})\s+(.+)$/i))) {
     return { kind: 'answer', askKey: match[1]!, text: match[2]! };
   }
@@ -250,6 +283,15 @@ export interface ConsoleWritesDeps {
    *  repo/PR/base/worktree (`POST /run/:id/reaudit`). Defaults to `RunActionsDeps`'s own
    *  default (`defaultQueuePath()`, which follows `FORGE_HOME`) when unset. */
   queueStore?: QueueStore;
+  /** What `remove | archive | retire <lane>` retires against: the archived-inclusive
+   *  lanes view (`lanesResponse(true, true)`) the retire rule reads heart and PR off.
+   *  Falls back to `lanesView` when unset. */
+  lanesViewAll?: () => LanesResponse;
+  /** Where `retired.jsonl` lives. Defaults to `forgeHome()`. A specimen only. */
+  forgeHomeDir?: string;
+  /** Overrides where the account registry lives. A specimen only; production reads
+   *  `accounts.ts`'s own default under `forgeHome()`. */
+  accountsRegistryPath?: string;
 }
 
 function readBody<T>(request: IncomingMessage): Promise<T | null> {
@@ -278,6 +320,37 @@ function respond(response: ServerResponse, status: number, body: unknown): void 
 interface PendingConfirm {
   blast: string;
   run: () => Promise<Message[]>;
+  /** Set by a route-registered pending once it has run: the HTTP outcome the route
+   *  answers with when the confirm arrives as `{ confirm: token }` in a body. */
+  outcome?: RouteOutcome;
+}
+
+/** What a route handler answers with: the status and the JSON body. */
+export interface RouteOutcome {
+  status: number;
+  body: unknown;
+}
+
+/** The body an irreversible route answers with (status 202) until the operator
+ *  confirms. `card` is the same confirm card the typed grammar produces, so the rail
+ *  and an inline control render one shape. */
+export interface ConfirmPendingBody {
+  ok: false;
+  pending: true;
+  token: string;
+  blast: string;
+  card: Message;
+}
+
+/** The one card a route-registered pending produces when it runs: a receipt for a
+ *  200 carrying an `ActionResult`, a refusal with the server's sentence otherwise. */
+function outcomeCard(source: string, outcome: RouteOutcome): Message {
+  const body = (outcome.body ?? {}) as Partial<ActionResult> & { error?: string; reason?: string };
+  if (outcome.status === 200 && typeof body.message === 'string') {
+    return receiptCard(source, { ok: body.ok ?? true, jid: body.jid ?? null, message: body.message, undoable: body.undoable ?? false });
+  }
+  if (outcome.status === 200) return receiptCard(source, { ok: true, jid: null, message: 'done', undoable: false });
+  return refusalCard(source, actionFailureText(outcome.body, `answered ${outcome.status}`));
 }
 
 interface PendingPlan {
@@ -290,11 +363,19 @@ export class ConsoleWrites {
 
   private readonly integrations: IntegrationsRegistry;
 
+  private readonly accountsConnect: AccountsConnect;
+
+  private readonly accountsPath: string;
+
   private readonly pendingConfirms = new Map<string, PendingConfirm>();
 
   private readonly pendingPlans = new Map<string, PendingPlan>();
 
   private enforcement: { stop(): void } | undefined;
+
+  /** The Conductor agent `command()` hands a message to when policy has it on. Attached
+   *  by `server.ts` after construction, since the agent's tools need this instance. */
+  private agent: ConductorAgent | undefined;
 
   constructor(private readonly deps: ConsoleWritesDeps) {
     this.ledger = new ActionsLedger(deps.ledgerPath ?? actionsLedgerPath());
@@ -303,6 +384,17 @@ export class ConsoleWrites {
       ...(deps.integrationsConfigPath ? { configPath: deps.integrationsConfigPath } : {}),
       ...(deps.spawnFn ? { spawnFn: deps.spawnFn } : {}),
       ...(deps.lanesView ? { lanesView: deps.lanesView } : {}),
+    });
+    this.accountsPath = deps.accountsRegistryPath ?? accountsRegistryPath();
+    const registryPath = this.accountsPath;
+    this.accountsConnect = new AccountsConnect({
+      loadAccounts: () => loadAccounts(registryPath),
+      addAccount: (record) => addAccount(record, registryPath),
+      removeAccount: (id) => removeAccount(id, registryPath),
+      liveRunCount: (accountId) => this.liveRunsByAccount()[accountId] ?? 0,
+      spawnLogin: realSpawnLogin(deps.spawnFn),
+      probeStatus: realProbeStatus(deps.spawnFn),
+      logout: realLogout(deps.spawnFn),
     });
     // Not started here: `server.ts` starts it from `listen()` and stops it in `close()`,
     // the same lifecycle the heartbeat timer already has. Starting it the moment a
@@ -316,6 +408,10 @@ export class ConsoleWrites {
    *  over the same config file. */
   integrationsRegistry(): IntegrationsRegistry {
     return this.integrations;
+  }
+
+  attachAgent(agent: ConductorAgent): void {
+    this.agent = agent;
   }
 
   /** Starts the 10-second rule-enforcement tick. Called once by `server.ts#listen()`;
@@ -357,7 +453,7 @@ export class ConsoleWrites {
     };
   }
 
-  private capsWriteDeps(): CapsWriteDeps {
+  capsWriteDeps(): CapsWriteDeps {
     return {
       journalPath: this.deps.journalPath, ledger: this.ledger,
       overridesPath: this.overridesPath(),
@@ -378,6 +474,17 @@ export class ConsoleWrites {
 
   private spendToday(): number {
     return tokensToday(replay(this.deps.journalPath).runs, Date.now());
+  }
+
+  /** Fresh every call, per the disconnect refusal's own rule: never a cached count. A
+   *  goal is "live" the same way `Registry.admit` decides it -- a row on disk whose pid
+   *  is still alive -- rather than reading it off a lane, which the run being counted
+   *  could itself have just rewritten. */
+  private liveRunsByAccount(): Record<string, number> {
+    const liveGoals = this.deps.registry.all()
+      .filter((row) => processAlive(row.pid))
+      .map((row) => row.goal);
+    return liveRunsByAccount(replay(this.deps.journalPath).events, liveGoals);
   }
 
   /**
@@ -470,6 +577,95 @@ export class ConsoleWrites {
     }
   }
 
+  /** The retire implementation shared with `server.ts`'s route and the agent's tool. */
+  retireDeps() {
+    return {
+      forgeHomeDir: this.deps.forgeHomeDir ?? forgeHome(), journalPath: this.deps.journalPath,
+      lanesAll: () => (this.deps.lanesViewAll ?? this.deps.lanesView)?.().lanes ?? [],
+    };
+  }
+
+  /**
+   * Registers a server-side confirm for an irreversible action and returns the token
+   * and the card. The grammar's kill/retire and every irreversible Conductor-agent tool
+   * (W2) go through this one map, so a typed or clicked `confirm <token>` finds the
+   * pending action wherever it was proposed.
+   */
+  propose(source: string, blast: string, run: () => Promise<Message[]>): { token: string; card: Message } {
+    const token = randomUUID();
+    this.pendingConfirms.set(token, { blast, run });
+    return { token, card: confirmCard(source, blast, token) };
+  }
+
+  /** Whether `confirm <token>` would still find something to run. */
+  hasPending(token: string): boolean {
+    return this.pendingConfirms.has(token);
+  }
+
+  /**
+   * The confirm gate every irreversible route runs behind. Without a `confirm` token
+   * in the body it registers the action in the same pending map the grammar's own
+   * `kill <lane>` uses and answers 202 with the token and the card; with a token it
+   * runs that pending action, writes its card to the rail's thread and answers with the
+   * action's own outcome. A typed `confirm <token>` in the rail reaches the same
+   * pending entry, so the two paths never disagree about what is waiting.
+   */
+  async confirmGate(
+    body: Record<string, unknown> | null | undefined, source: string, blast: string,
+    act: () => Promise<RouteOutcome>,
+  ): Promise<RouteOutcome> {
+    const token = body?.['confirm'];
+    if (typeof token === 'string') {
+      const pending = this.pendingConfirms.get(token);
+      if (!pending) return { status: 409, body: { error: `nothing pending for ${token}` } };
+      this.pendingConfirms.delete(token);
+      const cards = await pending.run();
+      for (const card of cards) appendThread(card);
+      return pending.outcome ?? { status: 200, body: { ok: true, jid: null, message: cards[0]?.text ?? 'done', undoable: false } };
+    }
+    const pending: PendingConfirm = {
+      blast,
+      run: async () => {
+        const outcome = await act();
+        pending.outcome = outcome;
+        return [outcomeCard(source, outcome)];
+      },
+    };
+    const fresh = randomUUID();
+    this.pendingConfirms.set(fresh, pending);
+    const reply: ConfirmPendingBody = { ok: false, pending: true, token: fresh, blast, card: confirmCard(source, blast, fresh) };
+    return { status: 202, body: reply };
+  }
+
+  /** One grammar intent, run and answered as cards, with nothing written to the thread:
+   *  the Conductor agent's tools go through this for the intents the grammar already
+   *  implements (pause-all, resume-all, merge-ready, caps, stuck, spend, answer). */
+  runIntent(intent: Intent, source: string): Promise<Message[]> {
+    return this.executeIntent(intent, source);
+  }
+
+  /** The whole grammar on one message, cards only, nothing written to the thread. The
+   *  agent's fallback path. */
+  runGrammar(text: string, source: string): Promise<Message[]> {
+    return this.executeIntent(parseIntent(text), source);
+  }
+
+  /** Delivers an answer's text to a matched ask and returns its receipt (or refusal) --
+   *  shared by both the free-text `answer` intent and `answer-by-number` (W4), which
+   *  resolve to the same option text a person could have typed by hand. */
+  private async deliverAnswerCard(source: string, match: InboxEntry, text: string): Promise<Message[]> {
+    const answered = this.deps.inbox.answer(match.key, text);
+    if (!answered) return [refusalCard(source, `could not answer ${match.key}`)];
+    await deliverAnswer(answered, match.key, text);
+    const { jid } = recordAction(this.deps.journalPath, this.ledger, {
+      kind: 'answer', text: `answered ${match.key}: ${text}`, undo: null, extra: { askKey: match.key },
+    });
+    const questionHead = match.question.length > 70 ? `${match.question.slice(0, 70)}…` : match.question;
+    return [receiptCard(source, {
+      ok: true, jid, message: `Answered "${questionHead}": ${text}`, undoable: false,
+    })];
+  }
+
   private async executeIntent(intent: Intent, source: string): Promise<Message[]> {
     switch (intent.kind) {
       case 'cancel':
@@ -540,17 +736,46 @@ export class ConsoleWrites {
         const view = this.deps.lanesView?.();
         const label = labelFor(view, laneId);
         const blast = `${label} stops now; its worktree and process are gone.`;
-        const token = randomUUID();
-        this.pendingConfirms.set(token, {
-          blast,
-          run: async () => {
-            const outcome = await killRun(laneId, 'killed from the console', this.runActionsDeps());
-            return [outcome.status === 200
-              ? receiptCard(source, outcome.body as ActionResult)
-              : refusalCard(source, (outcome.body as { message?: string }).message ?? `could not kill ${label}`)];
-          },
+        const { card } = this.propose(source, blast, async () => {
+          const outcome = await killRun(laneId, 'killed from the console', this.runActionsDeps());
+          return [outcome.status === 200
+            ? receiptCard(source, outcome.body as ActionResult)
+            : refusalCard(source, (outcome.body as { message?: string }).message ?? `could not kill ${label}`)];
         });
-        return [confirmCard(source, blast, token)];
+        return [card];
+      }
+
+      case 'retire': {
+        const resolved = this.resolveLaneId(intent.lane);
+        if (typeof resolved !== 'string') return [refusalCard(source, resolved.refusal)];
+        const laneId = resolved;
+        const label = labelFor(this.deps.lanesView?.(), laneId);
+        const blast = `${label} leaves the board; it stays under Archived and can be brought back.`;
+        const { card } = this.propose(source, blast, async () => {
+          const outcome = retireLane(laneId, true, this.retireDeps());
+          return [outcome.status === 200
+            ? receiptCard(source, outcome.body)
+            : refusalCard(source, outcome.body.error)];
+        });
+        return [card];
+      }
+
+      case 'reopen': {
+        const resolved = this.resolveLaneId(intent.lane);
+        if (typeof resolved !== 'string') return [refusalCard(source, resolved.refusal)];
+        const outcome = await reopenRun(resolved, this.runActionsDeps());
+        return [outcome.status === 200
+          ? receiptCard(source, outcome.body as ActionResult)
+          : refusalCard(source, actionFailureText(outcome.body, `could not reopen ${resolved}`))];
+      }
+
+      case 'verify': {
+        const resolved = this.resolveLaneId(intent.lane);
+        if (typeof resolved !== 'string') return [refusalCard(source, resolved.refusal)];
+        const outcome = await verifyRun(resolved, this.runActionsDeps());
+        return [outcome.status === 200
+          ? receiptCard(source, outcome.body as ActionResult)
+          : refusalCard(source, actionFailureText(outcome.body, `could not verify ${resolved}`))];
       }
 
       case 'merge-ready': {
@@ -641,29 +866,60 @@ export class ConsoleWrites {
           ?? open.find((ask) => ask.question.toLowerCase().includes(intent.text.toLowerCase()))
           ?? (!intent.askKey && open.length === 1 ? open[0] : undefined);
         if (!match) return [refusalCard(source, `no open question matches "${intent.askKey ?? intent.text}"`)];
-        const answered = this.deps.inbox.answer(match.key, intent.text);
-        if (!answered) return [refusalCard(source, `could not answer ${match.key}`)];
-        await deliverAnswer(answered, match.key, intent.text);
-        const { jid } = recordAction(this.deps.journalPath, this.ledger, {
-          kind: 'answer', text: `answered ${match.key}: ${intent.text}`, undo: null, extra: { askKey: match.key },
-        });
-        const questionHead = match.question.length > 70 ? `${match.question.slice(0, 70)}…` : match.question;
-        return [receiptCard(source, {
-          ok: true, jid, message: `Answered "${questionHead}": ${intent.text}`, undoable: false,
-        })];
+        return this.deliverAnswerCard(source, match, intent.text);
+      }
+
+      // `answer <key> <n>` / bare `answer <n>` (W4): `n` is a 1-based position into the
+      // matched ask's own options, resolved to that option's text before delivery -- the
+      // run never sees the bare digit as if it were typed as the answer itself.
+      case 'answer-by-number': {
+        const open = this.deps.inbox.open();
+        if (intent.askKey) {
+          const match = open.find((ask) => ask.key === intent.askKey);
+          if (!match) return [refusalCard(source, `no open question matches "${intent.askKey}"`)];
+          const optionText = match.options[intent.optionNumber - 1];
+          if (optionText === undefined) {
+            return [refusalCard(source, `${match.key} has no option ${intent.optionNumber} (it has ${match.options.length})`)];
+          }
+          return this.deliverAnswerCard(source, match, optionText);
+        }
+        if (open.length === 0) return [refusalCard(source, `no open question matches "${intent.optionNumber}"`)];
+        if (open.length > 1) {
+          return [refusalCard(source, `${open.length} questions are open; answer with the key, e.g. "answer <key> ${intent.optionNumber}"`)];
+        }
+        const match = open[0]!;
+        const optionText = match.options[intent.optionNumber - 1];
+        if (optionText === undefined) {
+          return [refusalCard(source, `${match.key} has no option ${intent.optionNumber} (it has ${match.options.length})`)];
+        }
+        return this.deliverAnswerCard(source, match, optionText);
       }
 
       case 'unknown':
       default:
-        return [replyCard(source, 'I did not understand that. Try one of: pause, resume, kill <ticket>, merge ready lanes, '
-          + "raise daily cap to <n>, cap <ticket> at <n>, why is <ticket> stuck, what's stuck, spend today, status, answer <text>.")];
+        return [replyCard(source, 'I did not understand that. Try one of: pause, resume, kill <ticket>, remove <ticket>, reopen <ticket>, '
+          + "verify <ticket>, merge ready lanes, raise daily cap to <n>, cap <ticket> at <n>, why is <ticket> stuck, what's stuck, spend today, status, answer <text>.")];
     }
   }
 
-  async command(text: string): Promise<Message[]> {
+  /**
+   * One operator message. A card's own button (`confirm`, `dismiss`, `run`, `cancel`)
+   * is answered by the grammar before the agent is consulted, so a click never costs a
+   * model call and a token never reaches the model. Everything else goes to the
+   * Conductor agent when `conductor.agent.enabled` is on (the shipped default) and it
+   * is attached; the grammar answers otherwise, and every reply row says which path did.
+   */
+  async command(text: string, context: ConductorContext = {}): Promise<Message[]> {
     const operatorCard: Message = { k: randomUUID(), type: 'operator', text, ts: Date.now(), source: 'operator' };
     appendThread(operatorCard);
-    const cards = await this.executeIntent(parseIntent(text), 'conductor');
+    const intent = parseIntent(text);
+    const isCardButton = intent.kind === 'confirm' || intent.kind === 'dismiss' || intent.kind === 'run-plan' || intent.kind === 'cancel';
+    if (!isCardButton && this.agent && conductorAgentEnabled(this.deps.modelPolicyPath)) {
+      const reply = await this.agent.handle(text, context);
+      return [operatorCard, ...reply.cards];
+    }
+    const cards = (await this.executeIntent(intent, 'conductor'))
+      .map((card) => (isCardButton ? card : { ...card, path: 'grammar' as const }));
     for (const card of cards) appendThread(card);
     return [operatorCard, ...cards];
   }
@@ -682,7 +938,56 @@ export class ConsoleWrites {
       return true;
     }
 
+    if (path === '/accounts' && method === 'GET') {
+      if (!this.deps.authorized(request, response)) return true;
+      const live = this.liveRunsByAccount();
+      const items = loadAccounts(this.accountsPath).map((account) => ({
+        id: account.id, label: account.label, connectedAt: account.connectedAt,
+        liveRuns: live[account.id] ?? 0,
+      }));
+      respond(response, 200, { items } satisfies AccountsResponse);
+      return true;
+    }
+
     let match: RegExpMatchArray | null;
+
+    if (path === '/accounts/connect' && method === 'POST') {
+      if (!this.deps.authorized(request, response)) return true;
+      const body = await readBody<{ label?: string }>(request);
+      const label = body?.label?.trim();
+      if (!label) {
+        respond(response, 400, { ok: false, error: 'a connect attempt needs a label' } satisfies ConnectStartResponse);
+        return true;
+      }
+      const result = this.accountsConnect.startConnect(label);
+      respond(response, result.ok ? 200 : 409, result.ok
+        ? { ok: true, attemptId: result.attemptId } satisfies ConnectStartResponse
+        : { ok: false, error: result.error } satisfies ConnectStartResponse);
+      return true;
+    }
+
+    if ((match = path.match(/^\/accounts\/connect\/([^/]+)$/)) && method === 'GET') {
+      if (!this.deps.authorized(request, response)) return true;
+      const attempt = this.accountsConnect.getAttempt(decodeURIComponent(match[1]!));
+      if (!attempt) {
+        respond(response, 404, { error: `no connect attempt ${decodeURIComponent(match[1]!)}` });
+        return true;
+      }
+      respond(response, 200, {
+        id: attempt.id, label: attempt.label, state: attempt.state,
+        ...(attempt.link !== undefined ? { link: attempt.link } : {}),
+        ...(attempt.error !== undefined ? { error: attempt.error } : {}),
+        ...(attempt.accountId !== undefined ? { accountId: attempt.accountId } : {}),
+      } satisfies ConnectAttemptResponse);
+      return true;
+    }
+
+    if ((match = path.match(/^\/accounts\/([^/]+)\/disconnect$/)) && method === 'POST') {
+      if (!this.deps.authorized(request, response)) return true;
+      const result = await this.accountsConnect.disconnect(decodeURIComponent(match[1]!));
+      respond(response, result.ok ? 200 : 409, result satisfies DisconnectResponse);
+      return true;
+    }
 
     if ((match = path.match(/^\/integrations\/([^/]+)\/check$/)) && method === 'POST') {
       if (!this.deps.authorized(request, response)) return true;
@@ -702,9 +1007,11 @@ export class ConsoleWrites {
       const body = await readBody<Record<string, unknown>>(request);
       const deps = this.runActionsDeps();
       let outcome: { status: number; body: unknown };
+      const label = labelFor(this.deps.lanesViewAll?.() ?? this.deps.lanesView?.(), run);
       switch (action) {
         case 'kill':
-          outcome = await killRun(run, String(body?.['reason'] ?? 'killed from the console'), deps);
+          outcome = await this.confirmGate(body, 'console', `kills ${label}: discards the working diff and stops the sandbox.`,
+            () => killRun(run, String(body?.['reason'] ?? 'killed from the console'), deps));
           break;
         case 'pause':
           outcome = await pauseRun(run, String(body?.['reason'] ?? 'paused from the console'), deps);
@@ -713,7 +1020,8 @@ export class ConsoleWrites {
           outcome = await resumeRun(run, deps);
           break;
         case 'merge':
-          outcome = await mergeRun(run, deps);
+          outcome = await this.confirmGate(body, 'console', `merges ${label}: merges the PR and closes the ticket.`,
+            () => mergeRun(run, deps));
           break;
         case 'reopen':
           outcome = await reopenRun(run, deps);
@@ -741,20 +1049,26 @@ export class ConsoleWrites {
 
     if (path === '/caps' && method === 'POST') {
       if (!this.deps.authorized(request, response)) return true;
-      const body = await readBody<{ dailyTokens?: number; runTokens?: number }>(request);
-      const outcome = await writeCaps(body, this.capsWriteDeps());
+      const body = await readBody<{ dailyTokens?: number; runTokens?: number; confirm?: string }>(request);
+      const wanted = [
+        body?.dailyTokens !== undefined ? `daily ${fmtTokens(body.dailyTokens)}` : null,
+        body?.runTokens !== undefined ? `per run ${fmtTokens(body.runTokens)}` : null,
+      ].filter(Boolean).join(', ') || 'no change';
+      const outcome = await this.confirmGate(body as Record<string, unknown> | null, 'console',
+        `sets the token caps to ${wanted}: every running lane is governed by the new numbers at once.`,
+        () => writeCaps({ ...(body?.dailyTokens !== undefined ? { dailyTokens: body.dailyTokens } : {}), ...(body?.runTokens !== undefined ? { runTokens: body.runTokens } : {}) }, this.capsWriteDeps()));
       respond(response, outcome.status, outcome.body);
       return true;
     }
 
     if (path === '/command' && method === 'POST') {
       if (!this.deps.authorized(request, response)) return true;
-      const body = await readBody<{ text?: string }>(request);
+      const body = await readBody<{ text?: string; run?: string }>(request);
       if (!body?.text) {
         respond(response, 400, { error: 'a command needs text' });
         return true;
       }
-      const cards = await this.command(body.text);
+      const cards = await this.command(body.text, body.run ? { run: body.run } : {});
       respond(response, 200, { cards });
       return true;
     }

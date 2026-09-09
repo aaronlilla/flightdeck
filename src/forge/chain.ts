@@ -12,6 +12,8 @@
  * own -- the packet then sits there for a person, same as everything else in this file.
  */
 
+import { haipingHandoffExample } from './contracts.ts';
+
 export type ChainHop = 'unrouted' | 'provision' | 'launch' | 'gate';
 
 /**
@@ -56,7 +58,14 @@ export function completeBriefWithVerification(brief: string, input: {
     '',
     'Open a draft PR whose title carries the ticket key. Once checks are green, put the',
     'typed Haiping handoff (`HaipingHandoffSchema`) in the PR body as a fenced JSON block,',
-    'and name this PR\'s URL in the `forge_done` evidence.',
+    'and name this PR\'s URL in the `forge_done` evidence. Below is that shape filled with',
+    'placeholders that still validate -- copy it and replace every value, do not invent',
+    'fields of your own:',
+    '',
+    `\`\`\`json\n${haipingHandoffExample()}\n\`\`\``,
+    '',
+    'deployKind is `rebuild` when this change touched android/, ios/, patches/ or a native dependency, and `ota` otherwise.',
+    'notVisuallyVerified lists every step above -- no agent looks at a screen, so every step counts as not visually verified.',
     '',
     '## How this run ends',
     '',
@@ -103,6 +112,12 @@ export interface ChainRunStatus {
   /** The run's last handoff text, carried into `chain.blocked` when the verdict is not
    *  `done` so a person reads why without opening the run's own journal. */
   lastHandoff?: string;
+  /** 2026-09-08: the goal loop's own last assistant turn, up to 160 characters,
+   *  carried off the `run.finished` row a goal-mode worker journals -- so `queue.ts`'s
+   *  goal branch can show "Goal met ..." or "stopped after N turns ..." without a
+   *  second read of the run's own journal. Absent for every non-goal run and for a
+   *  goal run whose last turn had no text. */
+  lastText?: string;
 }
 
 /**
@@ -142,6 +157,11 @@ export interface ChainCouncilResult {
    *  board rather than only recoverable from an attestation file (which a coverage-
    *  caused FIX FIRST never even writes). */
   coverageNote?: string;
+  /** BBZ-60/62/74/202, 2026-09-08: set when `forge council` refused because the PR's
+   *  checks are still queued/in-progress, never for an actual failing check. `verdict`
+   *  carries no meaning on a pending result -- callers must check this field first, never
+   *  match on the English refusal text, which is what silently parked all four tickets. */
+  pending?: boolean;
 }
 
 export type ChainCouncilFn = (input: {
@@ -160,6 +180,9 @@ export interface ChainGateResult {
    *  words instead of sending a reader to dig the journal out by hand. Absent when the
    *  gate merged, or when nothing more specific than "did not merge" is on record. */
   reason?: string[];
+  /** Symmetry with `ChainCouncilResult.pending`: set when the gate itself refused because
+   *  checks are still pending on the current head. */
+  pending?: boolean;
 }
 
 export type ChainGateFn = (input: { repo: string; pr: number; merge: boolean }) => Promise<ChainGateResult>;

@@ -15,14 +15,13 @@
  * The engine is injected. Every specimen runs against a fake stream, so the suite spends
  * nothing and still exercises the loop that decides the money.
  */
-import { launchAccountId } from './accounts.js';
 import { tierOfBrief, contextFor, effortFor, modelFor, modelIdFor, turnsFor } from './policy.js';
 import { Journal, replay } from './journal.js';
 import { run as execRun, type RunRequest, type RunResult } from './exec.js';
 import { parseShellPrefix } from './chain-env.js';
 import type { Inbox } from './inbox.js';
 import { asRunId, type Actuator } from './contracts.js';
-import { checkConformance, isRateLimitMessage, WindowGate } from './governor.js';
+import { checkConformance, isRateLimitMessage, WindowGate, type Account } from './governor.js';
 import { clearParkRecord } from './parkrecord.js';
 
 /**
@@ -84,6 +83,12 @@ export interface SessionRequest {
   env: NodeJS.ProcessEnv;
   cwd: string;
   resume?: string;
+  /** The Claude account this session opens under, when the launcher picked one via
+   *  `accountFor` (P4.8). Threaded through to `env['CLAUDE_CONFIG_DIR']` and to
+   *  `SdkEngine`'s own pinning call site as `configDir`, so two different accounts'
+   *  sessions never share a config directory. Undefined keeps every existing caller's
+   *  behaviour: the fleet's single hardcoded account, pinned downstream as before. */
+  configDir?: string;
   /** Omitted for the implement classes (B.3.8, the 2026-09-04 12:58 decision): the class
    *  ceiling and the stuck rule are what bound an implement run, not a turn count. */
   maxTurns?: number;
@@ -186,6 +191,19 @@ export interface WorkerConfig {
    *  in-memory and per-process -- a pause never crosses a `forge run` process boundary,
    *  which is this wiring's own named limitation. */
   windowGate?: WindowGate;
+  /** P4.8: the account this run was assigned to, from `accountFor` at the one
+   *  `new Worker(...)` construction site -- picking among more than the fleet's single
+   *  hardcoded account is that call site's job, not this class's; this only threads
+   *  what it was handed through to the session's env, the window gate's pause key, and
+   *  `run.started`'s own journal row (for live-run-count attribution on a later
+   *  disconnect). Undefined behaves exactly as every caller before this item did. */
+  account?: Account;
+  /** 2026-09-08: set by `cli.ts`'s `--goal` -- a session that ends with no `forge_done`
+   *  is this loop's ordinary shape (the `/goal` command's own Haiku evaluator, not this
+   *  worker, decided the session was done), so the no-`## Verification`-block path
+   *  earns `done` instead of `unverified` when this is set. Exhausted, parked and
+   *  stopped are unaffected -- only the "nothing to verify" shape changes meaning. */
+  goalLoop?: boolean;
 }
 
 export interface WorkerResult {
@@ -346,6 +364,11 @@ export class Worker {
       ?? (isImplementClass ? undefined : turnsFor(className));
     const maxSessions = this.config.maxSessions ?? (isImplementClass ? Number.POSITIVE_INFINITY : 10);
     const env = workerEnv(this.config.parentEnv ?? process.env);
+    // P4.8: an assigned account pins this session's config dir here, at the one place
+    // every session this chain opens shares -- a handoff's successor session reuses the
+    // same `env` object, so it inherits the same account rather than picking a fresh one.
+    const accountId = this.config.account?.id;
+    if (this.config.account) env['CLAUDE_CONFIG_DIR'] = this.config.account.configDir;
 
     const journal = new Journal(this.config.journalPath);
     const sessions: string[] = [];
@@ -356,7 +379,6 @@ export class Worker {
     let runName = this.config.run;
     let prompt = this.config.brief;
     let predecessor: string | undefined;
-    const account = launchAccountId();
     // The stuck rule, replacing a bare session cap (B.3.8): a chain that keeps handing
     // off or stopping without ever committing is going nowhere, whatever its budget says.
     let sessionsSinceCommit = 0;
@@ -381,10 +403,7 @@ export class Worker {
           maxContext: ceiling,
           ...(this.config.ticket ? { ticket: this.config.ticket } : {}),
           ...(predecessor ? { predecessor } : {}),
-          // The same account for every session of this worker, so a handoff successor
-          // inherits it: `--resume` cannot cross a config dir, and the row that says which
-          // login a run is on has to agree with the row before it.
-          account,
+          ...(accountId ? { account: accountId } : {}),
         });
 
         let session: SessionResult;
@@ -392,6 +411,7 @@ export class Worker {
           session = await this.engine.run({
             run: runName, goal: this.config.run, model, prompt, env, cwd: this.config.cwd,
             ...(maxTurns !== undefined ? { maxTurns } : {}),
+            ...(this.config.account ? { configDir: this.config.account.configDir } : {}),
             ceiling, effort,
           });
         } catch (error) {
@@ -407,7 +427,7 @@ export class Worker {
           // engine error. Undefined `windowGate` (no scheduler wired one up) pauses this
           // run with a plain reason and no resumeAt, exactly as it did before this item.
           const resumeAt = isRateLimitMessage(message)
-            ? this.windowGate.onRateLimitEvent(className, message, Date.now()).resumeAt
+            ? this.windowGate.onRateLimitEvent(accountId ?? className, 'five_hour', message, Date.now()).resumeAt
             : undefined;
           journal.append({
             event: 'run.paused', run: runName, actor: 'runner', reason: message,
@@ -651,6 +671,14 @@ export class Worker {
     const commands = verificationCommands(this.config.brief);
     if (!commands) {
       clearParkRecord(runName);
+      if (this.config.goalLoop) {
+        const lastText = session.turns[session.turns.length - 1]?.text;
+        journal.append({
+          event: 'run.finished', run: runName, actor: 'runner', verdict: 'done', goalLoop: true,
+          ...(lastText ? { lastText: lastText.slice(0, 160) } : {}),
+        });
+        return 'done';
+      }
       journal.append({ event: 'run.finished', run: runName, actor: 'runner', verdict: 'unverified' });
       return 'unverified';
     }

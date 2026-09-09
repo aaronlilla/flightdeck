@@ -48,6 +48,31 @@ const CHIP_EVENTS = new Set([
   'warden.parked', 'external.complete',
 ]);
 
+/** A `blocker.raised` row (`src/forge/blockers.ts`) is the rail's blocker card: what
+ *  stopped, which lanes wait, and the two things the operator can do about it. */
+export function blockerCardFor(row: ForgeEvent, titleFor: TitleForFn): Message {
+  const runs = Array.isArray(row.runs) ? (row.runs as string[]) : [];
+  const what = stripMachineIds(String(row.what ?? 'something the agents need is missing'), { labelFor: titleFor });
+  const labels = runs.map((run) => titleFor(run) ?? 'an agent');
+  const first = runs[0];
+  return {
+    k: `blocker-${row.id}`,
+    type: 'blocker',
+    text: what,
+    kicker: `Blocked · ${labels[0] ?? 'the fleet'}${runs.length > 1 ? ` and ${runs.length - 1} more` : ''}`,
+    title: `${labels.length ? labels.join(', ') : 'An agent'} cannot go on: ${what}`,
+    body: runs.length > 1 ? `${runs.length} agents are parked on it.` : 'The agent is parked until it clears.',
+    ts: row.at,
+    source: first ?? 'system',
+    ...(first ? { lane: first } : {}),
+    btns: [
+      { label: 'Open Blockers and clear it', cmd: 'open blockers', cls: 'answer' },
+      ...(first ? [{ label: 'Tell the agent what to do instead', cmd: `open lane ${first}` }] : []),
+    ],
+    verifiedAt: row.at,
+  };
+}
+
 /** `liveness.stuck`/`warden.parked` chips go through `collapseWardenChips` instead of
  *  the ordinary one-row-one-chip mapping below (H1.9) -- a stuck-session trip re-fires
  *  the same row on every liveness tick, and the rail used to render every one of them. */
@@ -84,7 +109,7 @@ function wardenChipMessages(events: ForgeEvent[], titleFor: TitleForFn): Message
  *  otherwise a live parked run's question reached the needs-you plate (which reads
  *  `lane.question` straight off `/lanes`) and nowhere else, leaving an operator with no
  *  click-to-answer path at all, only the composer's `answer <key> <text>` typed by hand. */
-function questionMessageFor(entry: InboxEntry): Message {
+export function questionMessageFor(entry: InboxEntry): Message {
   return {
     k: `question-${entry.key}`,
     type: 'question',
@@ -93,6 +118,8 @@ function questionMessageFor(entry: InboxEntry): Message {
     source: entry.runs[0] ?? 'system',
     askKey: entry.key,
     opts: entry.options,
+    recommended: entry.recommended,
+    optionSource: entry.optionSource,
     verifiedAt: entry.at,
   };
 }
@@ -151,7 +178,8 @@ export function computeThread(
   const ordinaryChips = windowed
     .filter((row) => CHIP_EVENTS.has(row.event) && !WARDEN_CHIP_EVENTS.has(row.event))
     .map((row) => chipFor(row, titleFor));
-  const chips = [...ordinaryChips, ...wardenChipMessages(windowed.filter((row) => WARDEN_CHIP_EVENTS.has(row.event)), titleFor)];
+  const blockerCards = windowed.filter((row) => row.event === 'blocker.raised').map((row) => blockerCardFor(row, titleFor));
+  const chips = [...ordinaryChips, ...blockerCards, ...wardenChipMessages(windowed.filter((row) => WARDEN_CHIP_EVENTS.has(row.event)), titleFor)];
   const persistedKeys = new Set(persisted.map((message) => message.k));
   let questions = openAsks
     .map(questionMessageFor)
@@ -191,8 +219,24 @@ function forgeReportText(row: ForgeEvent): string {
  *  jid is what `POST /journal/:jid/undo` needs back. Everything else keeps the plain
  *  event rendering the board already uses everywhere.
  */
+/** A Conductor exchange recorded against this run (2026-09-08): the operator's own
+ *  words from a sheet composer, the agent's reply, or a tool receipt, rendered as the
+ *  same card the rail shows so the sheet carries the whole exchange. */
+function conductorRowToMessage(k: string, row: ForgeEvent): Message {
+  const kind = typeof row.kind === 'string' ? row.kind : 'reply';
+  const type: Message['type'] = kind === 'receipt' || kind === 'refusal' || kind === 'operator' || kind === 'confirm' || kind === 'plan' ? kind : 'reply';
+  const path = row.path === 'agent' || row.path === 'grammar' ? row.path : undefined;
+  return {
+    k, type, text: String(row.text ?? ''), ts: row.at,
+    source: kind === 'operator' ? 'operator' : 'conductor',
+    ...(type === 'receipt' ? { resolved: 'ran' as const } : {}),
+    ...(path ? { path } : {}),
+  };
+}
+
 function runRowToMessage(run: string, row: ForgeEvent): Message {
   const k = `run-${run}-${row.id}`;
+  if (row.event === 'conductor.receipt') return conductorRowToMessage(k, row);
   if (row.event === 'forge.report') {
     return { k, type: 'reply', text: forgeReportText(row), ts: row.at, source: run };
   }
@@ -342,6 +386,8 @@ function plainMessageFor(run: string, row: ForgeEvent): Message | null {
         k, type: 'reply', text: stripMachineIds(typeof row.evidence === 'string' ? row.evidence : 'done'),
         ts: row.at, source: run,
       };
+    case 'conductor.receipt':
+      return conductorRowToMessage(k, row);
     case 'decision.made':
       return { k, type: 'receipt', text: stripMachineIds(textFor(row)), ts: row.at, source: run, jid: jidFor(row) };
     case 'forge.ask':
@@ -484,13 +530,20 @@ export interface ComputeRunThreadOptions {
    *  plain mode -- tool-call bursts fold into one `activity` sentence, every event
    *  reads as a clause a person can act on, and no message carries a machine id. */
   verbose?: boolean;
+  /** 2026-09-08: the board-wide rail (`computeThread`) already turns a still-open
+   *  inbox ask into an answerable `question` card; the sheet's own per-run thread read
+   *  only the journal and never merged the ask in, so a lane that had one answerable
+   *  question on the rail had none on its own sheet -- only the composer's
+   *  `answer <key> <text>` typed by hand. Filtered to entries naming this run; an ask
+   *  for a different run is never shown here. */
+  openAsks?: InboxEntry[];
 }
 
 /**
- * `GET /run/:id/thread`: one run's own journal rows rendered as messages, plus whatever
+ * `GET /run/:id/thread`: one run's own journal rows rendered as messages, whatever
  * `RunInbox` has queued for it -- read, never consumed, so the console showing this
  * thread never marks a message delivered before the run's own next tool call actually
- * does.
+ * does -- plus one answerable question card for each of this run's still-open asks.
  */
 export function computeRunThread(
   run: string, events: ForgeEvent[], runInboxMessages: RunMessage[], options: ComputeRunThreadOptions = {},
@@ -502,5 +555,11 @@ export function computeRunThread(
   const inbox = runInboxMessages.map(runMessageToMessage).map((message) => (
     options.verbose ? message : { ...message, text: stripMachineIds(message.text) }
   ));
-  return { messages: [...rendered, ...inbox].sort((a, b) => a.ts - b.ts) };
+  const openAsks = (options.openAsks ?? []).filter((entry) => entry.runs.includes(run));
+  let questions = openAsks.map(questionMessageFor);
+  if (!options.verbose) {
+    const questionFor = (key: string): string | null => openAsks.find((ask) => ask.key === key)?.question ?? null;
+    questions = questions.map((message) => humanizeMessage(message, () => null, questionFor));
+  }
+  return { messages: [...rendered, ...inbox, ...questions].sort((a, b) => a.ts - b.ts) };
 }

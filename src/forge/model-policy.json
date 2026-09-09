@@ -64,8 +64,8 @@
     "implement": {"model": "sonnet", "effort": "medium", "maxContext": 150000, "maxTurns": 120, "provider": "claude"},
     "implement-hard": {"model": "opus", "effort": "high", "maxContext": 150000, "maxTurns": 120, "provider": "claude"},
     "verify": {"model": "sonnet", "effort": "medium", "maxContext": 120000, "maxTurns": 40, "provider": "claude"},
-    "audit-lens": {"model": "sonnet", "effort": "medium", "maxContext": 120000, "maxTurns": 40, "provider": "claude", "timeoutMs": 480000},
-    "audit-judge": {"model": "opus", "effort": "high", "maxContext": 150000, "maxTurns": 30, "provider": "claude"},
+    "audit-lens": {"model": "sonnet", "effort": "medium", "maxContext": 120000, "maxTurns": 40, "provider": "codex", "timeoutMs": 480000},
+    "audit-judge": {"model": "opus", "effort": "high", "maxContext": 150000, "maxTurns": 30, "provider": "codex"},
     "research": {"model": "sonnet", "effort": "medium", "maxContext": 150000, "maxTurns": 40, "provider": "claude"},
     "evaluate": {"model": "haiku", "effort": "low", "maxContext": 30000, "maxTurns": 6, "provider": "claude"},
     "sweep": {"model": "sonnet", "effort": "low", "maxContext": 80000, "maxTurns": 20, "provider": "claude"}
@@ -148,5 +148,24 @@
     "allowedRepos": [],
     "autoMerge": []
   },
-  "router": {"enabled": false}
+  "router": {"enabled": false},
+  "_conductor_comment": [
+    "The Conductor agent behind the console rail (2026-09-08): one Sonnet session on the",
+    "implement class holding the console tools. enabled: true routes every typed message",
+    "to it, with the regex grammar as the fallback when the session cannot open or does",
+    "not answer inside reasoner.timeoutMs; false keeps every message on the grammar."
+  ],
+  "_rounds_comment": [
+    "The Conductor's rounds (2026-09-08): every everyMinutes it walks the queue, the lanes",
+    "and the blocker board. apply: false only journals a rounds.sheet row and posts one rail",
+    "card when the findings change; apply: true clears rows whose PR merged, relaunches",
+    "workers with no process (at most maxRelaunches per item), restarts parked rows nothing",
+    "holds, archives finished lanes older than orphanHours with no queue row, and hands open",
+    "asks to the Conductor to answer or leave. silentMinutes is how long a running lane may",
+    "go without a process or an event before it counts as dead."
+  ],
+  "conductor": {
+    "agent": {"enabled": true},
+    "rounds": {"enabled": true, "apply": true, "everyMinutes": 10, "silentMinutes": 30, "orphanHours": 24, "maxRelaunches": 2}
+  }
 }

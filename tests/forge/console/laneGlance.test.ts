@@ -20,7 +20,7 @@ function lane(extra: Partial<Lane> = {}): Lane {
     fails: 0, hop: 0, hopStatus: 'live', observedAt: 0, verifiedAt: 0, heart: true, since: 0,
     startedAt: 0, endedAt: null, question: null, pr: null, sandbox: null, blockedBy: null, account: null, runaway: false,
     needsAaron: null, did: null, now: '',
-    you: null,
+    you: null, live: { alive: false, pid: null, lastEventAt: null, checkedAt: 0 },
     ...extra,
   };
 }

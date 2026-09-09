@@ -1,62 +1,62 @@
 /**
- * The accounts registry: every login Forge may put work on.
+ * The account registry: which Claude accounts a run can launch under, and which config
+ * directory each one authenticates through.
  *
- * A Claude account is a config directory (`CLAUDE_CONFIG_DIR`) with its own login in
- * it. A Codex account is the one `~/.codex` login the harness tool uses; Codex has no
- * per-directory login and no quota API, so its row carries no directory.
+ * `~/.forge/accounts/registry.json` (or the equivalent under `FORGE_HOME`), a plain
+ * array written whole on every change -- the same shape `queue-wire.ts` and
+ * `integrations.ts` already use for their own small JSON stores. Nothing here spawns a
+ * process or reads a credential file: this module only ever writes what a completed
+ * connect attempt (`accounts-connect.ts`) already proved works, or what `forge accounts
+ * add` was told about a directory the operator already logged in by hand, and reads it
+ * back for `accountFor` (`governor.ts`), the accounts probe, and the console routes.
  *
- * The registry lives at `~/.forge/accounts.json` (`accountsPath()`), untracked. With no
- * file, the registry is exactly what every worker launches with today: one Claude
- * account on `fleetConfigDir()` plus the Codex lane. This module decides nothing about
- * routing. Every launch still goes through `fleetConfigDir()`; the registry only names
- * accounts so runs and window rows can be attributed to one.
- *
- * Two refusals, both on add and on load: a `configDir` equal to the operator's own
- * `~/.claude`, which a worker must never share, and duplicate ids or directories.
- * Credential files under a config dir are never opened here or anywhere in Forge; the
- * only way a dir is checked is the SDK usage call the probe makes under it.
+ * Two refusals, on every write: a `configDir` equal to the operator's own `~/.claude`,
+ * which a worker must never share, and a duplicate id or a duplicate dir. Credential
+ * files under a config dir are never opened here or anywhere in Forge; the only way a
+ * dir is checked is the SDK usage call the probe (`accounts-probe.ts`) makes under it.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
-import { accountsPath, fleetConfigDir } from './paths.js';
+import type { ForgeEvent } from './journal.js';
+import { forgeHome } from './paths.js';
 
-export interface ClaudeAccount {
+export interface AccountRecord {
   id: string;
-  provider: 'claude';
+  label: string;
   configDir: string;
-  /** Concurrency ceiling for slice 2's admission. Read, shown, not yet enforced. */
+  connectedAt: number;
+  /** Concurrency ceiling for this account's admission. Read, shown, not yet enforced
+   *  by the governor. */
   maxConcurrent?: number;
-}
-
-export interface CodexAccount {
-  id: string;
-  provider: 'codex';
-}
-
-export type Account = ClaudeAccount | CodexAccount;
-
-export interface AccountsRegistry {
-  accounts: Account[];
-  path: string;
-  /** `default` for no file, `file` for a valid one, `invalid` for a file that would not
-   *  parse or validate. An invalid file falls back to the default set so the fleet keeps
-   *  running, and the reason is carried so the view can say so. */
-  source: 'default' | 'file' | 'invalid';
-  error?: string;
 }
 
 export type Verdict = { ok: true } | { ok: false; reason: string };
 
-export const DEFAULT_CLAUDE_ID = 'fleet';
-export const DEFAULT_CODEX_ID = 'codex';
+export function accountsRegistryPath(): string {
+  return join(forgeHome(), 'accounts', 'registry.json');
+}
 
-export function defaultAccounts(fleetDir: string = fleetConfigDir()): Account[] {
-  return [
-    { id: DEFAULT_CLAUDE_ID, provider: 'claude', configDir: fleetDir },
-    { id: DEFAULT_CODEX_ID, provider: 'codex' },
-  ];
+interface StoredFile {
+  accounts: AccountRecord[];
+}
+
+function readStored(path: string): StoredFile {
+  if (!existsSync(path)) return { accounts: [] };
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<StoredFile>;
+    return { accounts: Array.isArray(parsed.accounts) ? parsed.accounts : [] };
+  } catch {
+    // A torn write (a crash mid-save) reads as empty rather than throwing -- the same
+    // tolerance every other small JSON store in this codebase gives a half-written file.
+    return { accounts: [] };
+  }
+}
+
+function writeStored(path: string, value: StoredFile): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(value, null, 2), 'utf8');
 }
 
 /** One comparable form for a directory: absolute, forward slashes, no trailing slash,
@@ -69,7 +69,13 @@ export function normalizeDir(dir: string): string {
 
 const ID_SHAPE = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
 
-export function validateAccounts(accounts: Account[], ownDir: string = join(homedir(), '.claude')): Verdict {
+/**
+ * The registry's own refusals, checked against a candidate full list of accounts (the
+ * existing set plus whatever is being added). Used both to gate a write here and, via
+ * `checkAddCandidate`, to gate a candidate before anything -- a probe included -- is
+ * even attempted for it.
+ */
+export function validateAccounts(accounts: AccountRecord[], ownDir: string = join(homedir(), '.claude')): Verdict {
   const own = normalizeDir(ownDir);
   const ids = new Set<string>();
   const dirs = new Set<string>();
@@ -77,10 +83,6 @@ export function validateAccounts(accounts: Account[], ownDir: string = join(home
     if (!ID_SHAPE.test(account.id)) return { ok: false, reason: `account id '${account.id}' must be letters, digits, dots, dashes or underscores` };
     if (ids.has(account.id)) return { ok: false, reason: `duplicate account id '${account.id}'` };
     ids.add(account.id);
-    if (account.provider === 'codex') continue;
-    if ((account as { provider: string }).provider !== 'claude') {
-      return { ok: false, reason: `account '${account.id}' has an unknown provider` };
-    }
     if (typeof account.configDir !== 'string' || !account.configDir.trim()) {
       return { ok: false, reason: `account '${account.id}' has no configDir` };
     }
@@ -95,94 +97,66 @@ export function validateAccounts(accounts: Account[], ownDir: string = join(home
   return { ok: true };
 }
 
-function parseFile(text: string): Account[] {
-  const parsed = JSON.parse(text) as unknown;
-  if (!parsed || typeof parsed !== 'object' || !Array.isArray((parsed as { accounts?: unknown }).accounts)) {
-    throw new Error('accounts.json must be an object with an "accounts" array');
-  }
-  return ((parsed as { accounts: unknown[] }).accounts).map((raw) => {
-    const row = (raw ?? {}) as Record<string, unknown>;
-    const id = typeof row['id'] === 'string' ? row['id'] : '';
-    if (row['provider'] === 'codex') return { id, provider: 'codex' } as CodexAccount;
-    const account: ClaudeAccount = {
-      id, provider: 'claude', configDir: typeof row['configDir'] === 'string' ? row['configDir'] : '',
-    };
-    if (typeof row['maxConcurrent'] === 'number') account.maxConcurrent = row['maxConcurrent'];
-    return account;
-  });
-}
-
-export function loadAccounts(path: string = accountsPath(), fleetDir: string = fleetConfigDir()): AccountsRegistry {
-  if (!existsSync(path)) return { accounts: defaultAccounts(fleetDir), path, source: 'default' };
-  let accounts: Account[];
-  try {
-    accounts = parseFile(readFileSync(path, 'utf8'));
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return { accounts: defaultAccounts(fleetDir), path, source: 'invalid', error: `could not parse ${path}: ${message}` };
-  }
-  const verdict = validateAccounts(accounts);
-  if (!verdict.ok) return { accounts: defaultAccounts(fleetDir), path, source: 'invalid', error: verdict.reason };
-  return { accounts, path, source: 'file' };
-}
-
-export function saveAccounts(path: string, accounts: Account[]): void {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify({ accounts }, null, 2)}\n`, 'utf8');
-}
-
-/** The same refusals `addAccount` applies, without the write. `forge accounts add`
- *  runs this before its probe, so a dir the registry would refuse (the operator's own
- *  `~/.claude` above all) is never even asked for its usage. */
+/** The same refusals a write applies, without performing one. `forge accounts add` and
+ *  a browser connect attempt both run this before doing anything else, so a dir the
+ *  registry would refuse (the operator's own `~/.claude` above all) is never even
+ *  probed or logged into. */
 export function checkAddCandidate(
-  registry: AccountsRegistry,
-  input: { id: string; configDir: string; maxConcurrent?: number },
+  existing: AccountRecord[],
+  candidate: { id: string; configDir: string; maxConcurrent?: number },
 ): Verdict {
-  if (registry.source === 'invalid') return { ok: false, reason: registry.error ?? 'the registry file is invalid; fix or remove it first' };
-  const account: ClaudeAccount = { id: input.id, provider: 'claude', configDir: input.configDir };
-  if (input.maxConcurrent !== undefined) account.maxConcurrent = input.maxConcurrent;
-  return validateAccounts([...registry.accounts, account]);
+  const account: AccountRecord = { id: candidate.id, label: candidate.id, configDir: candidate.configDir, connectedAt: 0 };
+  if (candidate.maxConcurrent !== undefined) account.maxConcurrent = candidate.maxConcurrent;
+  return validateAccounts([...existing, account]);
 }
 
-export function addAccount(
-  registry: AccountsRegistry,
-  input: { id: string; configDir: string; maxConcurrent?: number },
-): Verdict {
-  if (registry.source === 'invalid') return { ok: false, reason: registry.error ?? 'the registry file is invalid; fix or remove it first' };
-  const account: ClaudeAccount = { id: input.id, provider: 'claude', configDir: input.configDir };
-  if (input.maxConcurrent !== undefined) account.maxConcurrent = input.maxConcurrent;
-  const next = [...registry.accounts, account];
-  const verdict = validateAccounts(next);
-  if (!verdict.ok) return verdict;
-  saveAccounts(registry.path, next);
-  return { ok: true };
+/** Every connected account, in the order they were added. */
+export function loadAccounts(path: string = accountsRegistryPath()): AccountRecord[] {
+  return readStored(path).accounts;
 }
 
-export function removeAccount(registry: AccountsRegistry, id: string): Verdict {
-  if (registry.source === 'invalid') return { ok: false, reason: registry.error ?? 'the registry file is invalid; fix or remove it first' };
-  if (!registry.accounts.some((account) => account.id === id)) return { ok: false, reason: `no account '${id}' in ${registry.path}` };
-  saveAccounts(registry.path, registry.accounts.filter((account) => account.id !== id));
-  return { ok: true };
+/** Appends one account, after the same refusals `validateAccounts` applies to every
+ *  write. The caller (a completed connect attempt, or `forge accounts add`) is what
+ *  already proved the account works; this both persists it and holds the line on
+ *  shape, duplicates and the operator's own dir. Throws rather than silently refusing,
+ *  since both callers are already inside a try/catch that turns a thrown reason into a
+ *  reported failure. */
+export function addAccount(record: AccountRecord, path: string = accountsRegistryPath()): void {
+  const stored = readStored(path);
+  const verdict = validateAccounts([...stored.accounts, record]);
+  if (!verdict.ok) throw new Error(verdict.reason);
+  stored.accounts.push(record);
+  writeStored(path, stored);
 }
 
-export function claudeAccounts(accounts: Account[]): ClaudeAccount[] {
-  return accounts.filter((account): account is ClaudeAccount => account.provider === 'claude');
+/** Drops one account by id. A no-op, not a throw, when the id is not there -- the same
+ *  tolerance `Registry.remove` gives a goal that already left. */
+export function removeAccount(id: string, path: string = accountsRegistryPath()): void {
+  const stored = readStored(path);
+  stored.accounts = stored.accounts.filter((account) => account.id !== id);
+  writeStored(path, stored);
 }
 
 /**
- * The registry id a config dir belongs to. A dir no account names is attributed by its
- * basename rather than dropped, so a run launched under a stranger still says where it
- * ran and the board can show the row as unregistered.
+ * How many currently-live runs are attributed to each account, re-derived from the
+ * journal's own `run.started` rows and the caller's own list of goals still live right
+ * now (a registry read with a liveness check, the same shape `Registry.all()` plus
+ * `processAlive` already gives every other caller). Never cached: a disconnect that
+ * asks this twice in the same request gets two fresh answers, which is what lets it
+ * catch a run that started or ended between the two checks.
  */
-export function accountIdForConfigDir(accounts: Account[], configDir: string): string {
-  const wanted = normalizeDir(configDir);
-  for (const account of claudeAccounts(accounts)) {
-    if (normalizeDir(account.configDir) === wanted) return account.id;
+export function liveRunsByAccount(events: ForgeEvent[], liveGoals: string[]): Record<string, number> {
+  const accountByRun = new Map<string, string>();
+  for (const row of events) {
+    if (row.event === 'run.started' && row.run && typeof row['account'] === 'string') {
+      accountByRun.set(row.run, row['account'] as string);
+    }
   }
-  return basename(configDir.replace(/[\\/]+$/, '')) || configDir;
-}
-
-/** The id every launch is attributed to today: the account on `fleetConfigDir()`. */
-export function launchAccountId(registry: AccountsRegistry = loadAccounts(), fleetDir: string = fleetConfigDir()): string {
-  return accountIdForConfigDir(registry.accounts, fleetDir);
+  const counts: Record<string, number> = {};
+  for (const goal of liveGoals) {
+    const account = accountByRun.get(goal);
+    if (!account) continue;
+    counts[account] = (counts[account] ?? 0) + 1;
+  }
+  return counts;
 }

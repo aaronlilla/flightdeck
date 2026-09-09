@@ -149,6 +149,30 @@ export interface LaneQuestion {
   text: string;
   opts: string[];
   askedAt: number;
+  /** Index into `opts` the pipeline recommends, or `null` when nothing was picked
+   *  (`completeAskOptions`, W1). */
+  recommended?: number | null;
+  /** Whether `opts` came from the worker's `forge_ask` call as-is, or got padded out
+   *  by the reasoner (`completeAskOptions`, W1). */
+  optionSource?: 'worker' | 'drafted';
+}
+
+/**
+ * Whether a lane's own worker is actually there right now, as distinct from `state`
+ * (a claim folded from the journal, owned by the warden). `alive` is true only when the
+ * registry's own pid for this run both exists and answers a live-process probe this
+ * instant -- a `running` lane whose worker already died reads `state: 'running'`,
+ * `live.alive: false`, and the board renders that as a stalled claim rather than as
+ * live work. `lastEventAt` is the newest journal event across this run and any run
+ * sharing its handoff-attempt base (`queue-BBZ-182` and `queue-BBZ-182-2` are the same
+ * lane's two attempts); `checkedAt` is when the server actually ran this check, so a
+ * client can age it the same way it ages every other observed value.
+ */
+export interface LaneLive {
+  alive: boolean;
+  pid: number | null;
+  lastEventAt: number | null;
+  checkedAt: number;
 }
 
 export interface LaneSandbox {
@@ -216,9 +240,6 @@ export interface Lane {
   sandbox: LaneSandbox | null;
   /** Integration id this lane is blocked on, when it is. */
   blockedBy: string | null;
-  /** The registry id of the account this run launched under (`~/.forge/accounts.json`),
-   *  from its `run.started` row. Null for a run journaled before attribution existed. */
-  account: string | null;
   runaway: boolean;
   needsAaron: string | null;
   /** What a person needs to recognise this lane without decoding its run id
@@ -249,6 +270,9 @@ export interface Lane {
   did: string | null;
   now: string;
   you: string | null;
+  /** Whether this lane's own worker is alive right now, checked fresh every 2s
+   *  (`ForgeServer`'s liveness ticker) as well as on every `GET /lanes` read. */
+  live: LaneLive;
 }
 
 /** Where a lane came from: a queued Jira ticket, a typed hotfix, a pasted brief, a
@@ -292,7 +316,11 @@ export type MessageType =
   | 'receipt'
   | 'refusal'
   | 'pr'
-  | 'thinking';
+  | 'thinking'
+  /** A blocker that offers a choice, drawn as a card in the rail (`blocker.raised`). */
+  | 'blocker'
+  /** A decision the agent made on its own and is telling the operator about. */
+  | 'decision';
 
 export interface MessageButton {
   label: string;
@@ -317,6 +345,12 @@ export interface Message {
   jid?: string;
   askKey?: string;
   opts?: string[];
+  /** Index into `opts` the pipeline recommends, or `null` when nothing was picked
+   *  (`completeAskOptions`, W1). */
+  recommended?: number | null;
+  /** Whether `opts` came from the worker's `forge_ask` call as-is, or got padded out
+   *  by the reasoner (`completeAskOptions`, W1). */
+  optionSource?: 'worker' | 'drafted';
   answer?: string;
   btns?: MessageButton[];
   items?: PlanItem[];
@@ -328,6 +362,20 @@ export interface Message {
   undone?: boolean;
   /** Freshness of the fact behind an event chip. */
   verifiedAt?: number | null;
+  /** Which path answered a rail message: the Conductor agent, or the regex grammar it
+   *  falls back to. Absent on every row older than the agent. */
+  path?: 'agent' | 'grammar';
+  /** The rail card fields (`FD Rail.dc.html`, kind `card`): the kicker line, the
+   *  headline, one or two sentences, and a small key/value table. A `confirm`, `plan`,
+   *  `blocker` or `decision` renders as that card; `text` stays the headline when
+   *  `title` is absent. */
+  kicker?: string;
+  title?: string;
+  body?: string;
+  meta?: { k: string; v: string }[];
+  /** The tool calls behind an `activity` digest, one line each, for the rail's
+   *  "N tool calls" disclosure. Absent when the digest has no per-call detail. */
+  tools?: string[];
 }
 
 export interface ThreadResponse {
@@ -351,6 +399,32 @@ export interface JournalResponse {
 }
 
 export type IntegrationStatus = 'ok' | 'down' | 'degraded' | 'off' | 'busy' | 'checking';
+
+/** The fine-grained connection state that `claude mcp list`/`get` reports for an MCP
+ *  server. Kept separate from `IntegrationStatus`, which every `conn`-kind row also
+ *  uses and which stays untouched: a `mcp`-kind row's `status` still only ever reads
+ *  `ok`/`off`, mapped coarsely from this value. See the mcp-live-state goal brief's
+ *  Contract-gaps section and its logged Status resolution for why. */
+export type McpConnState =
+  | 'connected'
+  | 'needs-login'
+  | 'pending-approval'
+  | 'failed'
+  | 'unknown'
+  | 'connecting';
+
+/** Runtime-enumerable form of `McpConnState`, for coverage tests and any renderer that
+ *  needs to iterate every state rather than just type-check against it. Keep in sync
+ *  with the union above by construction: this is the source a coverage test checks
+ *  against, not a second, driftable list. */
+export const MCP_CONN_STATES: McpConnState[] = [
+  'connected',
+  'needs-login',
+  'pending-approval',
+  'failed',
+  'unknown',
+  'connecting',
+];
 
 export interface Integration {
   id: string;
@@ -376,7 +450,18 @@ export interface Integration {
   dependents: string[];
   /** Reconnect progress 0..3 while a reconnect runs. */
   step: number | null;
+  /** Whether this row has a connect action behind it at all. A row with none shows no
+   *  connect control: a button that can only answer "not wired" is worse than no
+   *  button, because the operator cannot tell a refusal from a failure. */
+  canConnect: boolean;
   links: { tools?: string; logs?: string; manage?: string };
+  /** The real connection state `claude mcp list`/`get` reported for a `mcp`-kind row.
+   *  Null for a `conn`-kind row, which never sets it, and for an `mcp` row before its
+   *  first probe. */
+  mcpState: McpConnState | null;
+  /** The MCP CLI's own error text for a `mcp`-kind row, verbatim rather than a generic
+   *  sentence. Null for a `conn`-kind row, and for an `mcp` row with no error to show. */
+  lastError: string | null;
 }
 
 export interface IntegrationsResponse {
@@ -394,58 +479,44 @@ export interface ReconnectResponse {
   jid: string | null;
 }
 
-export type AccountWindowStatus = 'allowed' | 'allowed_warning' | 'rejected' | 'unavailable' | 'unknown';
-
-export interface AccountWindow {
-  /** Percent of the window used, 0 to 100, from the newest row that carried one. Null
-   *  until any row has. */
-  utilization: number | null;
-  /** Milliseconds since the epoch, or null when the newest row named no reset. */
-  resetsAt: number | null;
-  /** `unknown` until a row exists; `unavailable` when the newest row is a probe that
-   *  could not see plan windows (the utilization shown is then the last known one). */
-  status: AccountWindowStatus;
-  observedAt: number | null;
-}
-
-export interface AccountRow {
+/** One connected Claude account, for the Accounts panel's list. Never carries
+ *  `configDir`: a filesystem path on the machine running the fleet is not something the
+ *  console needs to render, and keeping it off the wire keeps it off every client. */
+export interface AccountItem {
   id: string;
-  provider: 'claude' | 'codex';
-  /** The config dir for a Claude account, null for Codex. */
-  configDir: string | null;
-  maxConcurrent: number | null;
-  /** `yes` once a probe answered or a live run reported under this account, `no` when
-   *  the newest probe failed, `unknown` before either. */
-  connected: 'yes' | 'no' | 'unknown';
-  connectedReason: string | null;
-  subscription: string | null;
-  fiveHour: AccountWindow;
-  sevenDay: AccountWindow;
-  /** Tokens across every run attributed to this account that had an event today. */
-  tokensToday: number;
+  label: string;
+  connectedAt: number;
+  /** Runs currently attributed to this account, re-derived fresh on every request. */
   liveRuns: number;
-  lastEvent: { at: number; window: string | null; status: string; actor: string } | null;
-  /** Set while the newest window row is `rejected` and its reset is still ahead. */
-  paused: { until: number; window: string } | null;
-  /** True for the account every launch goes to today. Slice 2 replaces this with a
-   *  per-run choice; until then it is `fleetConfigDir()`'s account. */
-  isLaunchAccount: boolean;
-  /** Codex has no window API. Its row folds the harness tool's own ledger instead. */
-  codex: { callsToday: number; durationTodayMs: number; lastError: string | null; lastCallAt: number | null; lastOkAt: number | null } | null;
 }
 
 export interface AccountsResponse {
-  accounts: AccountRow[];
-  registryPath: string;
-  registrySource: 'default' | 'file' | 'invalid';
-  registryError: string | null;
-  /** The operator's home directory, so the Connect panel can print a real path for
-   *  the next config dir without the client guessing one. */
-  homeDir: string;
-  probe: { on: boolean; everySeconds: number; lastAt: number | null };
-  /** Tokens today from runs whose `run.started` row carried no account. */
-  unattributedTokensToday: number;
-  checkedAt: number;
+  items: AccountItem[];
+}
+
+export type ConnectState = 'connecting' | 'waiting-in-browser' | 'probing' | 'connected' | 'failed';
+
+/** `GET /accounts/connect/:attempt`'s body. `link` and `error` reach the browser that
+ *  is polling this one attempt, and nowhere else -- no journal row, no slice-event
+ *  payload, no broadcast to any other open console tab. */
+export interface ConnectAttemptResponse {
+  id: string;
+  label: string;
+  state: ConnectState;
+  link?: string;
+  error?: string;
+  accountId?: string;
+}
+
+export interface ConnectStartResponse {
+  ok: boolean;
+  attemptId?: string;
+  error?: string;
+}
+
+export interface DisconnectResponse {
+  ok: boolean;
+  error?: string;
 }
 
 export interface Caps {
@@ -490,6 +561,13 @@ export interface ReviewMetrics {
   /** Tokens spent on runs whose last state today is killed, blocked or exhausted --
    *  never a dollar figure. */
   tokensWasted: number;
+  /** The flight review's other tiles (2026-09-09): tickets picked up today, tickets
+   *  handed to QA today, blockers cleared today, and the slowest step of the day named
+   *  with its longest wait. Absent on a response older than these fields. */
+  ticketsIn?: number;
+  handedToQa?: number;
+  blockersCleared?: number;
+  slowestHop?: { name: string; minutes: number } | null;
 }
 
 export interface ProposalsResponse {
@@ -507,7 +585,7 @@ export interface ProposalsResponse {
  *  (A.6) -- no Jira ticket at all, branching off the repo's hotfix base rather than its
  *  ordinary one. A hotfix ships to dev on Merge and to production on a separate Promote
  *  click (A.7); it is never merged straight to production. */
-export type QueueSource = 'ticket' | 'brief' | 'query' | 'backlog' | 'hotfix';
+export type QueueSource = 'ticket' | 'brief' | 'query' | 'backlog' | 'hotfix' | 'goal';
 
 /** `queued` waits for a slot; `planning` and `running` are the two the worker keeps
  *  in flight; `parked` is a question, a refusal, or a gate that did not pass -- always a
@@ -546,6 +624,14 @@ export interface QueueItem {
   /** A.1: how many times this item has been relaunched on a FIX FIRST round -- 0 or
    *  absent means the fix round hasn't been used yet, and it's capped at one. */
   fixRoundsUsed?: number;
+  /** B (2026-09-08): set by `retryItem` alongside `state: 'running'`, when the retried
+   *  item already carries a `runKey` -- marks that this pass through `advanceItem` is a
+   *  retry of an in-flight run, not the tick that first launched it. `advanceItem` reads
+   *  it only when a finished run's status comes back with no PR anywhere: instead of
+   *  parking the retry right back where it started (the old run's stale verdict), it
+   *  clears `runKey` and this field together and launches a fresh run. Cleared the moment
+   *  that relaunch happens; absent or null means an ordinary first pass. */
+  retriedAt?: number | null;
   /** A.3: when the Jira write-back at review ran for this item -- absent means it
    *  hasn't fired yet. Set once, alongside the transition into `review`. */
   handoffAt?: number;
@@ -556,6 +642,13 @@ export interface QueueItem {
   /** D2.3: the council's own findings against this item's draft PR, one line each --
    *  absent or empty means the council hasn't posted a note (or none is due) yet. */
   councilNotes?: string[] | null;
+  /** 2026-09-08 (BBZ-178 escape): set alongside `state: 'done'` the moment `mergeItem`'s
+   *  own gate call reports `merged: true`. It is the only mark that the queue performed
+   *  the merge itself. The merged-elsewhere sweep in `runQueueTick` reads this fresh off
+   *  the store, never off its own possibly-stale item snapshot, before writing "merged
+   *  outside the queue" -- a queue-performed merge never gets relabeled as one. */
+  mergedBy?: 'queue';
+  mergedAt?: number;
   /** H1.2 fix: the attestation file the gate wrote for this item's own review round,
    *  carried on the item the moment it lands so `plain` can read the council's real
    *  verdict and coverage straight off disk -- no PR head sha needed to find it, since
@@ -568,6 +661,41 @@ export interface QueueItem {
    *  "promoted <version>" instead of the Promote button. */
   promotedAt?: number | null;
   promotedVersion?: string | null;
+  /** goal source only (2026-09-08): the resolved `/goal ...` condition this item was
+   *  added with -- the worker's own first prompt, carried on the item rather than
+   *  re-resolved off disk every tick, since a long-running item should launch on the
+   *  block it was queued with even if the goal file changes under it. */
+  goalBlock?: string;
+  /** 2026-09-08: the one line a person reads on the card -- a brief's own heading, or
+   *  its first sentence when the heading is a bare slug, or the heading of the brief a
+   *  ticket item routed to. Filled by `GET /queue` at read time (never at add time), so
+   *  an item written before this field existed still answers with one; `null` when
+   *  nothing on the item can name it and the card falls back to the ticket key or id.
+   *  Optional because every construction site in the repo predates it and this file is
+   *  append-only for the streams sharing it: the read path is the one that fills it. */
+  title?: string | null;
+  /** Every `after: <slug>` line parsed off this item's own brief text
+   *  (`repoRoute.ts#parseAfterLines`). Absent or empty starts as soon as a slot is
+   *  free, same as before this field existed. A slug resolves once every queue item
+   *  matching it (by `input`, `briefPath` basename or `branch`) is `done`, or a
+   *  `feature/<slug>` branch is already merged into `origin/main`. */
+  after?: string[];
+  /** R-02: the `R-nn` id from roadmap.md's Items table that this item's brief named,
+   *  recorded when the item's repo is the self repo and the brief carried a
+   *  `roadmap: R-nn` line. */
+  roadmap?: string | null;
+  /** BBZ-60/62/74/202, 2026-09-08: how many consecutive ticks `advanceItem` has found
+   *  the gate's checks still pending on this item's PR -- 0 or absent means the checks
+   *  have never come back pending. Reset the moment a tick's council result is no longer
+   *  pending (cleared or an actual failure), so it counts a streak, not a lifetime total.
+   *  Once it reaches `PENDING_CHECKS_POLL_CAP` (`intake/queue.ts`), the item parks instead
+   *  of retrying again, so a check that never finishes cannot hold an item forever. */
+  pendingGatePolls?: number;
+  /** The Queue view's two columns (2026-09-09, `Flightdeck Console.dc.html` 1c), filled by
+   *  `GET /queue` at read time like `title`: why this item sits where it does in the
+   *  order, and when it starts, in words. Absent on a response older than this field. */
+  whyNext?: string;
+  startsIn?: string;
 }
 
 export interface QueueResponse {
@@ -675,11 +803,17 @@ export interface RunJournalResponse {
  */
 export interface ConsoleStateSummary {
   queue_on: boolean;
+  /** The Conductor agent behind the rail (2026-09-08): whether the rail routes to it
+   *  and the class timeout after which the client says it did not answer. */
+  conductor?: { enabled: boolean; timeoutMs: number; open?: boolean };
   /** The revision the server is running, so an open board can notice the server moved
    *  on underneath it (a self cutover, a restart onto a new head) and reload itself
    *  instead of rendering new data with stale components (2026-09-07: a window open
    *  since the morning showed the old tiles over the new sentences). */
   build?: string;
+  /** The Jira project this fleet works, off `FORGE_BACKLOG_PROJECT`, with its name once
+   *  Jira has answered for it. Absent when no project is configured. */
+  project?: { key: string; name: string | null };
 }
 
 /**
@@ -783,6 +917,12 @@ export interface Blocker {
   thenWhat: string;
   /** The last confirmation attempt's outcome, in words, when one ran. */
   lastCheck: string | null;
+  /** Who can clear it, as the Blockers view names them: "You", the repo owner a
+   *  merge waits on, or the outside vendor. Absent on a row written before this field
+   *  existed; the view then reads `youCanResolve`. */
+  who?: string;
+  /** One short line under the name: "owns the repo", "outside vendor". */
+  whoNote?: string;
 }
 
 export interface BlockersResponse {

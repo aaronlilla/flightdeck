@@ -7,13 +7,47 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { forge } from '../../src/forge/cli.ts';
 import { attestationPath } from '../../src/forge/council/attest.ts';
+import type { CouncilAttestation } from '../../src/forge/contracts.ts';
 import type { GhReader, GhWriter, PrSnapshot } from '../../src/forge/council/gh.ts';
 import { modelIdFor } from '../../src/forge/policy.ts';
 import { replay } from '../../src/forge/journal.ts';
+
+// PR #123, 2026-09-08: the terminal printed `verdict: FIX FIRST` while the attestation
+// written in the same breath said `PASS WITH NOTES`, and `forge gate` merged on that
+// attestation -- an operator reading only the terminal would have believed the council
+// had failed. `forge council`'s success path must print whatever it just wrote, never a
+// value it computed before the write. This mock stands in for exactly that divergence:
+// `writeAttestation` records what the round produced, but the file `readAttestation`
+// hands back names a different verdict and finding set, the way a stale or concurrently
+// overwritten attestation file would. A CLI that still prints from the in-memory `round`
+// object passes this mock unnoticed; one that reads the write back does not.
+const STALE_VERDICT: CouncilAttestation['verdict'] = 'PASS WITH NOTES';
+const staleFinding = {
+  member: 'council', file: '(stale)', line: 0, claim: 'this is the attested finding, not the round finding',
+  failureScenario: 'proves the printed line came from the attestation on disk', severity: 'low' as const,
+  confidence: 'high' as const,
+};
+// Off by default so every other test in this file reads the real file back untouched --
+// only the one specimen below turns it on.
+let simulateDivergentReadback = false;
+
+vi.mock('../../src/forge/council/attest.ts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/forge/council/attest.ts')>();
+  return {
+    ...actual,
+    readAttestation: (repo: string, pr: number, head: string) => {
+      const onDisk = actual.readAttestation(repo, pr, head);
+      if (!onDisk || !simulateDivergentReadback) return onDisk;
+      // Hand back a verdict/finding set that differs from whatever `writeAttestation`
+      // actually recorded, standing in for the file having diverged after the write.
+      return { ...onDisk, verdict: STALE_VERDICT, decidingFindings: [staleFinding] };
+    },
+  };
+});
 
 let home: string;
 
@@ -26,6 +60,9 @@ beforeEach(() => {
   for (const name of ['FORGE_JIRA_SITE', 'FORGE_JIRA_EMAIL', 'FORGE_JIRA_TOKEN', 'FORGE_JIRA_QA_ACCOUNT', 'FORGE_JIRA_QA_TRANSITION']) {
     delete process.env[name];
   }
+  delete process.env['FORGE_REPO_KIND'];
+  delete process.env['FORGE_SELF_REPO'];
+  simulateDivergentReadback = false;
 });
 
 const REPO = 'acme/widgets';
@@ -127,6 +164,34 @@ describe('forge council', () => {
     expect(state.events.some((e) => e.event === 'council.lens')).toBe(true);
     expect(state.events.some((e) => e.event === 'council.judge')).toBe(true);
     expect(state.events.some((e) => e.event === 'council.attested')).toBe(true);
+  });
+
+  // PR #123, 2026-09-08: the round itself resolved PASS WITH NOTES and wrote it to the
+  // attestation, but the terminal printed FIX FIRST -- a different value than the one
+  // `forge gate` went on to read and merge on. The printed line has to come from the
+  // attestation that was just written, not from a value the CLI computed before the
+  // write, or a diverged file (a stale one, or one another process overwrote) fools the
+  // operator watching the terminal while the gate merges on the real one anyway.
+  it('prints whatever the attestation on disk says, not whatever the round computed before the write', async () => {
+    process.env['FORGE_COUNCIL_REPOS'] = REPO;
+    const reasonerQueryFn = fakeQueryByModel({
+      [LENS_MODEL]: JSON.stringify({ findings: [] }),
+      [JUDGE_MODEL]: JSON.stringify({ verdict: 'PASS', decidingFindings: [] }),
+    });
+
+    simulateDivergentReadback = true;
+    const result = await forge(['council', '--repo', REPO, '--pr', String(PR)], {
+      councilGh: fakeGh([smallSnapshot(), smallSnapshot()]),
+      reasonerQueryFn,
+    });
+
+    expect(result.code).toBe(0);
+    expect(result.lines.join(' ')).toMatch(new RegExp(`verdict: ${STALE_VERDICT}`));
+    expect(result.data?.['verdict']).toBe(STALE_VERDICT);
+    expect(result.lines.join(' ')).toMatch(/this is the attested finding, not the round finding/);
+    // The round's own verdict (PASS) never reaches the terminal once the readback
+    // disagrees with it.
+    expect(result.lines.join(' ')).not.toMatch(/verdict: PASS$/m);
   });
 
   it('accepts --cwd (and --base) alongside --repo/--pr without breaking a passing round', async () => {
@@ -292,6 +357,21 @@ describe('forge council', () => {
     });
     expect(result.code).toBe(2);
     expect(result.lines.join(' ')).toMatch(/not green/);
+    expect(result.data?.['pending']).toBeUndefined();
+  });
+
+  // BBZ-60/62/74/202, 2026-09-08: a `pending` conclusion is "not yet", never "no" -- the
+  // gate must give a caller (`chainCouncil`, then the queue's `advanceItem`) a
+  // machine-readable way to tell it apart from an actual failure, instead of forcing
+  // everyone downstream to string-match the English refusal line.
+  it('checks that are pending refuse the same way but mark data.pending, exit 2', async () => {
+    process.env['FORGE_COUNCIL_REPOS'] = REPO;
+    const result = await forge(['council', '--repo', REPO, '--pr', String(PR)], {
+      councilGh: fakeGh([smallSnapshot({ checks: { runId: 'r', headSha: 'head-1', conclusion: 'pending' } })]),
+    });
+    expect(result.code).toBe(2);
+    expect(result.lines.join(' ')).toMatch(/pending/);
+    expect(result.data?.['pending']).toBe(true);
   });
 
   // Rival account 3, this plan: a bare hand-typed `forge council` never read
@@ -370,15 +450,44 @@ describe('forge gate', () => {
     });
     expect(result.code).toBe(1);
     expect(result.lines.join(' ')).toMatch(/checks are failure/);
+    expect(result.data?.['pending']).toBeUndefined();
   });
 
-  it('refuses when the Haiping handoff is missing from the PR body', async () => {
+  // Symmetry with `forge council`: a `pending` check on the gate hop is also "not yet",
+  // never "no" -- marked on `data` rather than left for a caller to string-match.
+  it('refuses when a check is pending on the current head, but marks data.pending', async () => {
+    await attestPass();
+    const result = await forge(['gate', '--repo', REPO, '--pr', String(PR)], {
+      councilGh: fakeGh([
+        smallSnapshot({ body: bodyWithHandoff(), checks: { runId: 'r', headSha: 'head-1', conclusion: 'pending' } }),
+      ]),
+    });
+    expect(result.code).toBe(1);
+    expect(result.lines.join(' ')).toMatch(/checks are pending/);
+    expect(result.data?.['pending']).toBe(true);
+  });
+
+  it('refuses when the Haiping handoff is missing from the PR body on a frontend repo', async () => {
     await attestPass({ body: 'no handoff at all' });
     const result = await forge(['gate', '--repo', REPO, '--pr', String(PR)], {
       councilGh: fakeGh([smallSnapshot({ body: 'no handoff at all' })]),
     });
     expect(result.code).toBe(1);
     expect(result.lines.join(' ')).toMatch(/Haiping handoff/);
+  });
+
+  // Haiping only ever looks at a `frontend`-kind repo. Applying his handoff requirement
+  // to a backend repo (or the self repo's own PRs) produced no QA plan a human would
+  // use -- just a `REPLACE:`-riddled block a worker pasted to satisfy the schema
+  // (PRs #79/#83), or a merge stuck on review because nobody had one to paste (PR #82).
+  it('does not require a Haiping handoff for a repo whose kind is not frontend', async () => {
+    process.env['FORGE_REPO_KIND'] = `${REPO}=backend`;
+    await attestPass({ body: 'no handoff at all' });
+    const result = await forge(['gate', '--repo', REPO, '--pr', String(PR)], {
+      councilGh: fakeGh([smallSnapshot({ body: 'no handoff at all' })]),
+    });
+    expect(result.code).toBe(0);
+    expect(result.lines.join(' ')).not.toMatch(/Haiping handoff/);
   });
 
   it('passes without --merge and says so, without touching gh.mergePr', async () => {

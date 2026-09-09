@@ -10,6 +10,7 @@ import {
   CouncilAttestationSchema,
   checkHandoff,
   HaipingHandoffSchema,
+  haipingHandoffExample,
   JoeHandoffSchema,
   HarrisonHandoffSchema,
   verified,
@@ -79,6 +80,14 @@ describe('typed handoffs: an incomplete one fails the gate', () => {
     expect(result.complete).toBe(true);
   });
 
+  // PRs #79 and #83, 2026-09-08: the schema checked only that strings were non-empty, so
+  // a worker who pasted `haipingHandoffExample()` verbatim -- every `REPLACE:` value
+  // still in place -- passed the gate with no real QA plan behind it.
+  it('a Haiping handoff still carrying the example\'s REPLACE: placeholders fails the gate', () => {
+    const result = checkHandoff('haiping', JSON.parse(haipingHandoffExample()));
+    expect(result.complete).toBe(false);
+  });
+
   it('a Haiping handoff missing perPlatform fails the gate and names the field', () => {
     const result = checkHandoff('haiping', {
       ticket: 'BBZ-100',
@@ -130,5 +139,29 @@ describe('typed handoffs: an incomplete one fails the gate', () => {
   it('schemas themselves reject the same incomplete shapes directly', () => {
     expect(HaipingHandoffSchema.safeParse({ ticket: 'x' }).success).toBe(false);
     expect(HarrisonHandoffSchema.safeParse({}).success).toBe(false);
+  });
+});
+
+describe('haipingHandoffExample: the placeholder a worker copies into the PR body', () => {
+  // Untouched, the example must fail completeness -- that's what stops a worker from
+  // pasting it verbatim and having the gate wave it through (PRs #79/#83).
+  it('is well-typed against the real schema but incomplete until its REPLACE: values are overwritten', () => {
+    const parsed = JSON.parse(haipingHandoffExample());
+    expect(checkHandoff('haiping', parsed).complete).toBe(false);
+  });
+
+  it('becomes complete once every REPLACE: value is overwritten', () => {
+    const example = JSON.parse(haipingHandoffExample());
+    const filled = {
+      ...example,
+      perPlatform: { android: 'build 42', ios: 'build 42' },
+      steps: ['open the app', 'confirm the balance updated'],
+    };
+    expect(checkHandoff('haiping', filled).complete).toBe(true);
+  });
+
+  it('is plain JSON text -- the caller fences it, so this stays reusable outside a fence', () => {
+    expect(haipingHandoffExample().trim().startsWith('```')).toBe(false);
+    expect(() => JSON.parse(haipingHandoffExample())).not.toThrow();
   });
 });

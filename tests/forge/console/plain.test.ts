@@ -14,8 +14,8 @@ function lane(extra: Partial<Lane> = {}): Lane {
     repo: 'flightdeck-api', attempt: 1, state: 'running', reason: null, stepN: 43, stepTotal: 120, stepText: 'Bash',
     ctxTokens: 1_000, ctxCeiling: 200_000, ctxCompactAt: 180_000, tokens: 1, tokenCap: 10, tokensPerMin: 0,
     fails: 0, hop: 0, hopStatus: 'live', observedAt: 0, verifiedAt: 0, heart: true, since: 44_640_000,
-    startedAt: 0, endedAt: null, question: null, pr: null, sandbox: null, blockedBy: null, account: null, runaway: false,
-    needsAaron: null, did: null, now: '', you: null,
+    startedAt: 0, endedAt: null, question: null, pr: null, sandbox: null, blockedBy: null, runaway: false,
+    needsAaron: null, live: { alive: false, pid: null, lastEventAt: null, checkedAt: 0 }, did: null, now: '', you: null,
     ...extra,
   };
 }
@@ -50,8 +50,13 @@ describe('plainStatus', () => {
   it('parked on a question: leads with the question, trimmed to 90 characters', () => {
     const longQuestion = 'staging or dev, and should the migration run before or after the deploy window closes tonight?';
     const text = plainStatus(lane({ state: 'parked', question: { key: 'k1', text: longQuestion, opts: ['a', 'b'], askedAt: 1 } }), context);
-    expect(text.startsWith('Waiting for your answer: ')).toBe(true);
-    expect(text.length).toBeLessThanOrEqual('Waiting for your answer: '.length + 90);
+    expect(text.startsWith('Asking: ')).toBe(true);
+    expect(text.length).toBeLessThanOrEqual('Asking: '.length + 90);
+  });
+
+  it('parked on an ask with no readable question: names it rather than printing a bare colon', () => {
+    const text = plainStatus(lane({ state: 'parked', question: { key: 'k1', text: '', opts: [], askedAt: 1 } }), context);
+    expect(text).toBe('Asked with no question; dismiss or resume');
   });
 
   it('parked by the warden: names the reason and offers Resume', () => {

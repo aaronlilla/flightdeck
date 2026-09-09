@@ -114,3 +114,51 @@ export function repoFromBrief(text: string): string | null {
   }
   return null;
 }
+
+/**
+ * R-02 guard #1: a brief for the self repo names which still-open roadmap item it is
+ * doing, so the queue can refuse work `doctrine/ROADMAP.md` does not name. Matches a
+ * `roadmap: R-nn` line anywhere in the first twenty lines, the word case-insensitive but
+ * the id itself exactly `R-` plus two digits -- `roadmap: r-02` or `roadmap: R-2` both
+ * return null, the same "no line" answer as a brief that never mentions a roadmap id.
+ */
+export function roadmapFromBrief(text: string): string | null {
+  const head = text.split(/\r?\n/, 20);
+  for (const line of head) {
+    const match = /^\s*roadmap\s*:\s*(.+?)\s*$/i.exec(line);
+    if (!match) continue;
+    const value = match[1]!;
+    if (/^R-\d{2}$/.test(value)) return value;
+  }
+  return null;
+}
+
+/**
+ * A brief written by hand for a real ticket carries no packet id the planner can hand
+ * to Jira. Without this, the synthetic `queue-brief-<timestamp>`/`hotfix-<timestamp>` id
+ * is all `routeRepo`, branch naming and `jiraHandoff` ever see, so a hand-written brief
+ * never reaches its own ticket's Jira handoff. A `ticket: KEY-123` line anywhere in the
+ * brief names that key; the brief file's own id stays synthetic and unique, only the
+ * item's `ticket` field (routing, branch name, handoff) takes the real key. Returns
+ * null without such a line, or when the value is not a Jira-shaped `PROJECT-123` key.
+ */
+export function ticketFromBrief(text: string): string | null {
+  const match = /^ticket:\s*([A-Z][A-Z0-9_]*-\d+)\s*$/m.exec(text);
+  return match ? match[1]! : null;
+}
+
+/**
+ * Queue-throughput W1: every `after: <slug>` line in a brief, one per line, in the
+ * order they appear. A queued item carrying these does not start until each slug
+ * resolves -- see `runQueueTick` in `../intake/queue.ts` for how a slug is matched
+ * and cleared. No such lines returns an empty array, the same as a brief with no
+ * ordering requirement at all.
+ */
+export function parseAfterLines(text: string): string[] {
+  const out: string[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const match = /^\s*after\s*:\s*(.+?)\s*$/i.exec(line);
+    if (match) out.push(match[1]!);
+  }
+  return out;
+}

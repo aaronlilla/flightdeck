@@ -6,7 +6,6 @@
 import { createContext, useContext, useReducer } from 'react';
 import type { Dispatch } from 'react';
 import type {
-  AccountsResponse,
   BlockersResponse,
   Caps,
   Feed,
@@ -18,7 +17,7 @@ import type {
   QueueItem,
 } from '../shared/console-model.js';
 
-export type View = 'board' | 'settings' | 'review' | 'queue' | 'blockers' | 'accounts';
+export type View = 'board' | 'settings' | 'review' | 'queue' | 'blockers';
 export type Filter = 'all' | 'needs-me' | 'running' | 'finished' | string;
 export type Sort = 'cost' | 'age' | 'state';
 
@@ -38,6 +37,9 @@ export interface TipSpec {
   color?: string;
 }
 
+/** How long a card this page appended itself outlives a `/thread` replace. */
+export const LOCAL_CARD_TTL_MS = 30_000;
+
 export interface ToastSpec {
   glyph: string;
   title: string;
@@ -46,8 +48,37 @@ export interface ToastSpec {
   color?: string;
 }
 
+/** Where a control's own action stands: in flight, or finished with a result. Keyed
+ *  in `State.actions` by the action id and the thing it was about, so the control that
+ *  was clicked, and only that control, renders its pending state and its result. */
+export interface ActionState {
+  pending: boolean;
+  startedAt: number;
+  result: ActionOutcome | null;
+}
+
+/** What a control shows after its action answered: the server's own message or the
+ *  verbatim error, a journal id when the server minted one, a link to the effect, or
+ *  a server-side confirm still waiting on the operator. */
+export type ActionOutcome =
+  | { kind: 'done'; ok: boolean; text: string; jid: string | null; at: number; link: ActionLink | null }
+  | { kind: 'confirm'; token: string; blast: string; at: number };
+
+export type ActionLink =
+  | { kind: 'lane'; id: string; label: string }
+  | { kind: 'view'; view: View; label: string }
+  | { kind: 'url'; href: string; label: string }
+  | { kind: 'journal'; jid: string; label: string };
+
 export interface State {
   lanes: Lane[];
+  /** Per-control action state, see `ActionState`. */
+  actions: Record<string, ActionState>;
+  /** Cards this page appended itself (receipts, refusals, operator bubbles) that the
+   *  server's own `/thread` never echoes back. A `thread` replace re-attaches any
+   *  younger than `LOCAL_CARD_TTL_MS`, so a receipt survives the refetch that lands
+   *  right behind the action that produced it. */
+  localCards: Message[];
   feed: Feed;
   thread: Message[];
   journal: JournalEntry[];
@@ -56,13 +87,15 @@ export interface State {
   proposals: ProposalsResponse | null;
   queue: QueueItem[];
   blockers: BlockersResponse | null;
-  accounts: AccountsResponse | null;
   queuePaused: boolean;
   queuePauseReason: string | null;
   queueMaxInFlight: number;
   /** D2.4: `/state`'s own `queue_on` flag. Starts `true` so the "Queue is off" banner
    *  never flashes before the console's first `/state` fetch lands. */
   queueOn: boolean;
+  /** How long the rail waits for the Conductor before its working row says it did not
+   *  answer; `/state`'s own `conductor.timeoutMs`. */
+  conductorTimeoutMs: number;
   /** H2.2: probe lanes hide behind this toggle on every filter but Archived. */
   showProbes: boolean;
   /** H2.2: the Archived filter's own fetch (`GET /lanes?archived=1`) -- retired
@@ -84,27 +117,54 @@ export interface State {
   paletteQuery: string;
   tip: TipSpec | null;
   toast: ToastSpec | null;
-  theme: 'thD' | 'thL';
+  /** The design's two themes. Light by default; dark when the operator flipped it or
+   *  the OS asks for it and nothing was flipped. */
+  theme: 'light' | 'dark';
   composer: string;
+  /** The rail's topic: the lane a typed message is about, and whether it goes to the
+   *  Conductor or to the agent working that lane. */
+  topic: string | null;
+  recipient: 'conductor' | 'agent';
+  /** `/state`'s own project: the key and Jira name the chrome shows. */
+  project: { key: string; name: string | null } | null;
   laneComposer: Record<string, string>;
   /** 2026-09-08: plain by default -- every route answers human sentences, machine
    *  ids stripped. Verbose asks every read for `?verbose=1` instead: raw rows, ids
    *  intact. Remembered in `localStorage` the same way `theme` is. */
   verbose: boolean;
+  /** 2026-09-08: one entry per action in flight, keyed by whatever `useAction` (or
+   *  a hand-rolled equivalent, e.g. the reaudit poll) was given as its own key --
+   *  the single source every busy button and the top bar's "Working: ..." line
+   *  read from. A run/lane action's key is conventionally `${cmd}:${id}`. */
+  pending: Record<string, { label: string; since: number }>;
 }
 
 export type Action =
   | { type: 'lanes'; lanes: Lane[]; tokensToday?: number; links?: State['links'] }
   | { type: 'thread'; thread: Message[] }
-  | { type: 'thread-append'; messages: Message[] }
+  | { type: 'thread-append'; messages: Message[]; local?: boolean }
+  /** Drops a card the page put up itself, from the thread and from the local list
+   *  both. Filtering the thread alone puts it straight back: the `thread` case
+   *  re-attaches every local card the server's copy does not carry, which is the
+   *  whole point of that list and the reason a working row would not come down. */
+  | { type: 'local-card-drop'; k: string }
+  /** Rewrites one local card in place, keeping its key so nothing re-attaches a
+   *  stale copy of it on the next refetch. */
+  | { type: 'local-card-text'; k: string; text: string }
+  /** Marks a card the page put up itself (a confirm off a board click) as answered, in
+   *  the thread and in the local list both, so the next refetch keeps it answered. */
+  | { type: 'local-card-resolve'; k: string; resolved: 'confirmed' | 'declined' }
+  | { type: 'action-pending'; key: string }
+  | { type: 'action-result'; key: string; result: ActionOutcome }
+  | { type: 'action-clear'; key: string }
   | { type: 'journal'; journal: JournalEntry[] }
   | { type: 'integrations'; integrations: Integration[] }
   | { type: 'caps'; caps: Caps }
   | { type: 'proposals'; proposals: ProposalsResponse }
   | { type: 'queue'; items: QueueItem[]; paused: boolean; maxInFlight: number; pauseReason?: string | null }
   | { type: 'blockers'; blockers: BlockersResponse }
-  | { type: 'accounts'; accounts: AccountsResponse }
   | { type: 'queue-on'; on: boolean }
+  | { type: 'conductor-timeout'; timeoutMs: number }
   | { type: 'toggle-probes' }
   | { type: 'archived-lanes'; lanes: Lane[] }
   | { type: 'loaded' }
@@ -121,10 +181,28 @@ export type Action =
   | { type: 'palette-query'; query: string }
   | { type: 'tip'; tip: TipSpec | null }
   | { type: 'toast'; toast: ToastSpec | null }
-  | { type: 'theme'; theme: 'thD' | 'thL' }
+  | { type: 'theme'; theme: 'light' | 'dark' }
+  | { type: 'topic'; topic: string | null; recipient?: 'conductor' | 'agent' }
+  | { type: 'recipient'; recipient: 'conductor' | 'agent' }
+  | { type: 'project'; project: { key: string; name: string | null } | null }
   | { type: 'composer'; text: string }
   | { type: 'lane-composer'; run: string; text: string }
-  | { type: 'verbose'; verbose: boolean };
+  | { type: 'verbose'; verbose: boolean }
+  | { type: 'pending-set'; key: string; label: string }
+  | { type: 'pending-clear'; key: string };
+
+function readStoredTheme(): 'light' | 'dark' {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const stored = localStorage.getItem('fd.theme');
+      if (stored === 'light' || stored === 'dark') return stored;
+    }
+    if (typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(prefers-color-scheme: dark)').matches) return 'dark';
+  } catch {
+    // No storage or no media query support: light, the design's default.
+  }
+  return 'light';
+}
 
 function readStoredVerbose(): boolean {
   try {
@@ -145,13 +223,15 @@ export function initialState(): State {
     proposals: null,
     queue: [],
     blockers: null,
-    accounts: null,
     queuePaused: false,
     queuePauseReason: null,
     queueMaxInFlight: 2,
     queueOn: true,
+    conductorTimeoutMs: 120_000,
     showProbes: false,
     archivedLanes: [],
+    actions: {},
+    localCards: [],
     loaded: false,
     now: Date.now(),
     links: { jiraSite: null, defaultRepo: null },
@@ -164,10 +244,14 @@ export function initialState(): State {
     paletteQuery: '',
     tip: null,
     toast: null,
-    theme: (typeof localStorage !== 'undefined' && localStorage.getItem('fd.theme') === 'thL') ? 'thL' : 'thD',
+    theme: readStoredTheme(),
     composer: '',
+    topic: null,
+    recipient: 'conductor',
+    project: null,
     laneComposer: {},
     verbose: readStoredVerbose(),
+    pending: {},
   };
 }
 
@@ -175,10 +259,55 @@ export function reducer(state: State, action: Action): State {
   switch (action.type) {
     case 'lanes':
       return { ...state, lanes: action.lanes, loaded: true, links: action.links ?? state.links };
-    case 'thread':
-      return { ...state, thread: action.thread };
+    case 'thread': {
+      const cutoff = Date.now() - LOCAL_CARD_TTL_MS;
+      const localCards = state.localCards.filter((card) => card.ts >= cutoff);
+      let thread = action.thread;
+      for (const card of localCards) {
+        if (thread.some((m) => m.k === card.k)) continue;
+        // The server persists the operator's own card too (`ConsoleWrites.command`),
+        // under its own key: once that copy arrives, the local bubble for the same
+        // words sent moments before is the same message and must not show twice.
+        if (card.type === 'operator' && thread.some((m) => m.type === 'operator' && m.text === card.text && Math.abs(m.ts - card.ts) < LOCAL_CARD_TTL_MS)) continue;
+        thread = [...thread, card];
+      }
+      return { ...state, thread, localCards };
+    }
+    case 'local-card-drop':
+      return {
+        ...state,
+        thread: state.thread.filter((m) => m.k !== action.k),
+        localCards: state.localCards.filter((m) => m.k !== action.k),
+      };
+    case 'local-card-text':
+      return {
+        ...state,
+        thread: state.thread.map((m) => (m.k === action.k ? { ...m, text: action.text } : m)),
+        localCards: state.localCards.map((m) => (m.k === action.k ? { ...m, text: action.text } : m)),
+      };
+    case 'local-card-resolve':
+      return {
+        ...state,
+        thread: state.thread.map((m) => (m.k === action.k ? { ...m, resolved: action.resolved } : m)),
+        localCards: state.localCards.map((m) => (m.k === action.k ? { ...m, resolved: action.resolved } : m)),
+      };
     case 'thread-append':
-      return { ...state, thread: [...state.thread, ...action.messages] };
+      return {
+        ...state,
+        thread: [...state.thread, ...action.messages],
+        localCards: action.local ? [...state.localCards, ...action.messages] : state.localCards,
+      };
+    case 'action-pending':
+      return { ...state, actions: { ...state.actions, [action.key]: { pending: true, startedAt: Date.now(), result: null } } };
+    case 'action-result':
+      return {
+        ...state,
+        actions: { ...state.actions, [action.key]: { pending: false, startedAt: state.actions[action.key]?.startedAt ?? Date.now(), result: action.result } },
+      };
+    case 'action-clear': {
+      const { [action.key]: _dropped, ...rest } = state.actions;
+      return { ...state, actions: rest };
+    }
     case 'journal':
       return { ...state, journal: action.journal };
     case 'integrations':
@@ -194,8 +323,8 @@ export function reducer(state: State, action: Action): State {
       };
     case 'blockers':
       return { ...state, blockers: action.blockers };
-    case 'accounts':
-      return { ...state, accounts: action.accounts };
+    case 'conductor-timeout':
+      return { ...state, conductorTimeoutMs: action.timeoutMs };
     case 'queue-on':
       return { ...state, queueOn: action.on };
     case 'toggle-probes':
@@ -242,8 +371,18 @@ export function reducer(state: State, action: Action): State {
     case 'toast':
       return { ...state, toast: action.toast };
     case 'theme':
-      if (typeof localStorage !== 'undefined') localStorage.setItem('fd.theme', action.theme);
+      try {
+        if (typeof localStorage !== 'undefined') localStorage.setItem('fd.theme', action.theme);
+      } catch {
+        // Not remembered without storage; the flip still applies to this page.
+      }
       return { ...state, theme: action.theme };
+    case 'topic':
+      return { ...state, topic: action.topic, recipient: action.topic === null ? 'conductor' : (action.recipient ?? state.recipient) };
+    case 'recipient':
+      return { ...state, recipient: action.recipient };
+    case 'project':
+      return { ...state, project: action.project };
     case 'composer':
       return { ...state, composer: action.text };
     case 'lane-composer':
@@ -256,6 +395,14 @@ export function reducer(state: State, action: Action): State {
         // still works for this session, it just won't be remembered.
       }
       return { ...state, verbose: action.verbose };
+    case 'pending-set':
+      return { ...state, pending: { ...state.pending, [action.key]: { label: action.label, since: Date.now() } } };
+    case 'pending-clear': {
+      if (!(action.key in state.pending)) return state;
+      const rest = { ...state.pending };
+      delete rest[action.key];
+      return { ...state, pending: rest };
+    }
     default:
       return state;
   }

@@ -30,6 +30,15 @@ export interface Ask {
   actionTarget?: string;
   question: string;
   options?: string[];
+  /** Index into `options` the worker itself recommends, if it has an opinion. `null`
+   *  once `completeAskOptions` has run and found no usable recommendation (a reasoner
+   *  failure, most often) -- distinct from `undefined`, which means nobody has looked
+   *  at this ask's options at all yet. */
+  recommended?: number | null;
+  /** Whether `options` is exactly what the worker sent (`'worker'`) or was padded out
+   *  by `completeAskOptions` (`'drafted'`). Set by the caller before `raise()`, never
+   *  computed here -- the inbox does not know how an ask's options came to be. */
+  optionSource?: 'worker' | 'drafted';
   /** What kind of wall this is. A `blocker` propagates to every run sharing its key. */
   kind?: 'question' | 'blocker';
   ticket?: string;
@@ -39,6 +48,10 @@ export interface InboxEntry {
   key: string;
   question: string;
   options: string[];
+  /** See `Ask.recommended`: absent means nobody has looked yet, `null` means
+   *  `completeAskOptions` looked and found nothing to recommend. */
+  recommended?: number | null;
+  optionSource?: 'worker' | 'drafted';
   kind: 'question' | 'blocker';
   /** Every run that hit this wall, in the order they hit it. */
   runs: string[];
@@ -219,6 +232,8 @@ export class Inbox {
       };
     }
     if (ask.ticket) entry.ticket = ask.ticket;
+    if (ask.recommended !== undefined) entry.recommended = ask.recommended;
+    if (ask.optionSource !== undefined) entry.optionSource = ask.optionSource;
     this.write(entry);
     return entry;
   }

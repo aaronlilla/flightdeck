@@ -42,6 +42,12 @@ test('a queue card\'s Remove button fires on Enter', async ({ page }) => {
   await expect(removeButton).toHaveAttribute('role', 'button');
   await removeButton.focus();
   await page.keyboard.press('Enter');
+  // Remove is irreversible: the server answers with a confirm card, and the
+  // keyboard alone has to drive that second step too before anything runs.
+  const confirmYes = card.locator('[data-testid^="action-confirm-yes-removeQueueItem-"]');
+  await expect(confirmYes).toBeVisible();
+  await confirmYes.focus();
+  await page.keyboard.press('Enter');
   await expect(card).toHaveCount(0);
 });
 

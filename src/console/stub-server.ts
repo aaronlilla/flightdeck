@@ -21,9 +21,9 @@ import type {
   QueueAddResponse, QueueItem, QueueSource, ReauditResponse, Rule,
 } from '../shared/console-model.js';
 import { fmtTokens } from '../shared/format-tokens.js';
-import { shortenShas } from '../shared/humanize.js';
+import { commandEcho, shortenShas } from '../shared/humanize.js';
 import { tokenAmount } from '../forge/console/command.js';
-import { seedAccounts } from './fixtures/accounts.js';
+import { sliceEventsFor } from '../shared/console-events.js';
 import { seedCaps } from './fixtures/caps.js';
 import { seedIntegrations } from './fixtures/integrations.js';
 import { seedJournal } from './fixtures/journal.js';
@@ -33,6 +33,7 @@ import {
   bigLanes, emptyLanes, emptyRules, galleryThread, healthyIntegrations, humanBoardLanes, matrixQueue, raceThread,
   refusalLanes, resumedRaceLanes, statesLanes, UNBUILT_REPO, longThread } from './fixtures/scenarios.js';
 import { seedThread } from './fixtures/thread.js';
+import { parityBlockers, parityLanes, parityQueue, parityThread } from './fixtures/design-parity.js';
 
 // `import.meta.url` is not always a `file:` URL under every test environment
 // (jsdom's module graph rewrites it); this only ever needs to resolve when
@@ -72,6 +73,10 @@ interface Db {
   /** D2.3: set alongside `queuePaused` only when the (simulated) worker itself paused
    *  the queue, never an operator's own Pause click -- null the rest of the time. */
   queuePauseReason: string | null;
+  /** Queue-throughput W2/W3: the width `POST /queue/width` changes and `GET /queue`
+   *  reports back, so the console's own stepper has something real to talk to against
+   *  this stub. Defaults to 4, matching the production default in `queue-wire.ts`. */
+  queueMaxInFlight: number;
   qn: number;
   /** D2.4: `/state`'s own `queue_on` flag. Defaults `true` so every existing scenario
    *  and spec, none of which cares about this field, never sees the "Queue is off"
@@ -136,6 +141,7 @@ function seedDb(): Db {
     queue: [],
     queuePaused: false,
     queuePauseReason: null,
+    queueMaxInFlight: 4,
     qn: 0,
     queueOn: true,
     staleAuditLane: null,
@@ -153,6 +159,51 @@ let db = seedDb();
 // that comes back.
 const pendingConfirms = new Map<string, () => Message[]>();
 const pendingPlans = new Map<string, () => Message[]>();
+
+/** The action a route-registered confirm runs once its token comes back, and the
+ *  answer that route gives when it has. Mirrors `ConsoleWrites.confirmGate`. */
+const pendingOutcomes = new Map<string, { status: number; body: unknown }>();
+
+/**
+ * The stub's copy of the real server's confirm gate: an irreversible route answers
+ * 202 with a token and the same confirm card the grammar produces, and runs nothing
+ * until the request comes back with `confirm: token`. A typed `confirm <token>` in
+ * the rail resolves the same map entry.
+ */
+function gate(
+  body: Record<string, unknown> | null | undefined, blast: string,
+  act: () => { status: number; body: unknown },
+): { status: number; body: unknown } {
+  const token = body?.['confirm'];
+  if (typeof token === 'string') {
+    const pending = pendingConfirms.get(token);
+    if (!pending) return { status: 409, body: { error: `nothing pending for ${token}` } };
+    pendingConfirms.delete(token);
+    const cards = pending();
+    db.thread = [...db.thread, ...cards];
+    const outcome = pendingOutcomes.get(token) ?? { status: 200, body: { ok: true, jid: null, message: cards[0]?.text ?? 'done', undoable: false } };
+    pendingOutcomes.delete(token);
+    return outcome;
+  }
+  const fresh = randomUUID();
+  pendingConfirms.set(fresh, () => {
+    const outcome = act();
+    pendingOutcomes.set(fresh, outcome);
+    const row = (outcome.body ?? {}) as { message?: string; error?: string; jid?: string | null; undoable?: boolean };
+    const text = row.message ?? row.error ?? `answered ${outcome.status}`;
+    return [outcome.status === 200
+      ? { k: `r-${Date.now()}-${Math.random()}`, type: 'receipt', text, ts: Date.now(), source: 'console', jid: row.jid ?? undefined, undoable: row.undoable ?? false, resolved: 'ran' }
+      : { k: `r-${Date.now()}-${Math.random()}`, type: 'refusal', text, ts: Date.now(), source: 'console' }];
+  });
+  const card: Message = {
+    k: `confirm-${Date.now()}`, type: 'confirm', text: 'confirm?', ts: Date.now(), source: 'console', blast,
+    btns: [
+      { label: 'Confirm', cmd: `confirm ${fresh}`, cls: 'destroy' },
+      { label: 'Not now', cmd: `dismiss ${fresh}` },
+    ],
+  };
+  return { status: 202, body: { ok: false, pending: true, token: fresh, blast, card } };
+}
 
 /**
  * Named e2e scenarios, keyed the way `POST /__test/fixture?name=<id>` looks
@@ -195,11 +246,17 @@ const FIXTURES: Record<string, () => Db> = {
   'summary-stale': () => ({ ...seedDb(), staleAuditLane: 'FLT-193' }),
   // Iteration 4: the Blockers view's own three-step chain (billing -> checks -> question).
   'blockers-chain': () => ({ ...seedDb(), blockers: seedBlockersChain() }),
+  // The board scripts/design-parity.ts photographs against the design's artboards.
+  'design-parity': () => ({ ...seedDb(), lanes: parityLanes(), blockers: parityBlockers(), queue: parityQueue(), thread: parityThread(), queueMaxInFlight: 8 }),
 };
 
 function resetToFixture(name: string): void {
   const build = FIXTURES[name] ?? FIXTURES['default'];
   db = (build as () => Db)();
+  if (name === 'design-parity') {
+    // The decision card's own buttons: Fine dismisses it, Change it opens the lane.
+    pendingConfirms.set('parity-decision', () => [{ k: `r-${Date.now()}`, type: 'receipt', text: 'Noted. NWR-119 keeps the five-attempt backoff.', ts: Date.now(), source: 'conductor', resolved: 'ran' }]);
+  }
 }
 
 function nextJid(): string {
@@ -568,11 +625,41 @@ function publish(event: Record<string, unknown>): void {
   }
 }
 
-function runCommand(text: string): Message[] {
+function runCommand(text: string, run?: string): Message[] {
   const t = text.trim();
   const now = Date.now();
   const laneRefMatch = /\b([a-z]{2,4}-\d{2,4})\b/i.exec(t);
   const laneRef = laneRefMatch ? (laneRefMatch[1] as string).toUpperCase() : null;
+
+  // The Conductor agent's shape (2026-09-08), as the stub plays it: `remove | archive |
+  // retire <lane>` answers with a tool receipt first, then a confirm card, the way the
+  // real agent streams a receipt per tool call before its reply; Confirm retires the
+  // lane and it leaves the board. Rows the agent answers carry `path: 'agent'`.
+  const removeMatch = /^(?:remove|archive|retire)\s+(\S+)$/i.exec(t);
+  if (removeMatch) {
+    const ref = (removeMatch[1] as string).toUpperCase();
+    const lane = findLane(ref);
+    if (!lane) return [{ k: `c-${now}`, type: 'reply', text: `No lane matches "${ref}". Pick one from the board.`, ts: now, source: 'conductor', path: 'agent' }];
+    const token = randomUUID();
+    pendingConfirms.set(token, () => {
+      lane.retiredAt = Date.now();
+      const jid = journal('lane.retired', `retired ${ref}`, ref, true);
+      publish({ event: 'lane.retired', run: lane.id });
+      return [{ k: `r-${Date.now()}`, type: 'receipt', text: `retired ${ref}`, ts: Date.now(), source: 'conductor', jid, undoable: true, path: 'agent' }];
+    });
+    return [
+      { k: `r-${now}`, type: 'receipt', text: `remove proposed for ${ref}, waiting on Confirm`, ts: now, source: 'conductor', resolved: 'ran', path: 'agent' },
+      { k: `c-${now}`, type: 'reply', text: `Proposed taking ${ref} off the board; it stays under Archived. The Confirm card is waiting for you.`, ts: now, source: 'conductor', path: 'agent' },
+      {
+        k: `confirm-${now}`, type: 'confirm', text: 'confirm?', ts: now, source: 'conductor', path: 'agent',
+        blast: `${ref} leaves the board; it stays under Archived and can be brought back.`,
+        btns: [
+          { label: 'Confirm', cmd: `confirm ${token}`, cls: 'destroy' },
+          { label: 'Not now', cmd: `dismiss ${token}` },
+        ],
+      },
+    ];
+  }
 
   // A stale token (the pending confirm/plan already ran, or the fixture reset
   // underneath it) reads the same as a token that was never valid.
@@ -596,6 +683,20 @@ function runCommand(text: string): Message[] {
     if (!pending) return [{ k: `c-${now}`, type: 'refusal', text: `nothing pending for ${token}`, ts: now, source: 'conductor' }];
     pendingPlans.delete(token);
     return pending();
+  }
+  // Typed into a ticket sheet: the stub's agent tells that run, the way the old
+  // composer delivered straight to its inbox, and says so.
+  if (run) {
+    const lane = db.lanes.find((l) => l.id === run);
+    const label = lane?.ticket ?? run;
+    if (!lane || !lane.heart) {
+      return [{ k: `c-${now}`, type: 'reply', text: `${label} has no live session, so there is nobody to tell. Kill, verify or archive it instead.`, ts: now, source: 'conductor', path: 'agent' }];
+    }
+    return [
+      { k: `r-${now}`, type: 'receipt', text: `sent to ${label}`, ts: now, source: 'conductor', resolved: 'ran', path: 'agent' },
+      { k: `c-${now}`, type: 'reply', text: `Got it. I will work from what is in the repo and put the caveat in the PR description; about 15 minutes to a draft PR.`, ts: now, source: lane.id, lane: lane.id, path: 'agent' },
+      { k: `a-${now}`, type: 'activity', text: '2 tool calls', tools: ['Read config/sentry.ts on main', 'Read git log for config/sentry.ts'], ts: now, source: lane.id, lane: lane.id },
+    ];
   }
   if (/^kill\b/i.test(t) && laneRef) {
     const lane = findLane(laneRef);
@@ -674,6 +775,11 @@ function runCommand(text: string): Message[] {
     appendEvent(`${parked.id} resumed`, parked.id);
     return [{ k: `r-${now}`, type: 'receipt', text: `${parked.id} resumed: ${answerText}`, ts: now, source: 'conductor', jid, undoable: false }];
   }
+  const nudgeMatch = /^(?:ask|nudge)\s+([A-Z][a-z]+)\b/.exec(t);
+  if (nudgeMatch) {
+    const jid = journal('conductor.nudge', `asked ${nudgeMatch[1]}`, null, true);
+    return [{ k: `r-${now}`, type: 'receipt', text: `Asked ${nudgeMatch[1]} in the team channel. The blocker stays open until they answer.`, ts: now, source: 'conductor', jid, undoable: true, path: 'agent' }];
+  }
   if (/what's stuck|whats stuck/i.test(t)) {
     const stuck = db.lanes.filter((l) => l.state === 'blocked' || l.state === 'parked');
     return [{ k: `c-${now}`, type: 'reply', text: stuck.length ? stuck.map((l) => l.id).join(', ') : 'nothing is stuck.', ts: now, source: 'conductor' }];
@@ -700,6 +806,11 @@ export function createStubServer() {
       const urlPath = (request.url ?? '/').split('?')[0] ?? '/';
       const query = new URLSearchParams((request.url ?? '').split('?')[1] ?? '');
       const method = request.method ?? 'GET';
+      // The live spine, the same way the real server does it (`server.ts#route`).
+      response.once('finish', () => {
+        const events = sliceEventsFor(method, urlPath, response.statusCode);
+        if (events) for (const event of events) publish(event);
+      });
 
       // Test-only: an e2e spec selects its own isolated board before it navigates,
       // rather than mutating (or depending on) whatever the default seed or another
@@ -736,7 +847,7 @@ export function createStubServer() {
       // D2.4: the one field of the real server's own `/state` the web console needs.
       // Not in `CONSOLE_ROUTES` (same as the real server: `/state` carries no token).
       if (urlPath === '/state' && method === 'GET') {
-        json(response, 200, { queue_on: db.queueOn, build: stubBuild });
+        json(response, 200, { queue_on: db.queueOn, build: stubBuild, conductor: { enabled: true, timeoutMs: 120_000, open: false }, project: { key: 'NWR', name: 'Northwind Rewards' } });
         return;
       }
 
@@ -781,13 +892,14 @@ export function createStubServer() {
         json(response, 200, db.caps);
         return;
       }
-      if (urlPath === '/accounts' && method === 'GET') {
-        json(response, 200, seedAccounts());
-        return;
-      }
       if (urlPath === '/proposals' && method === 'GET') {
         const mergedToday = db.lanes.filter((l) => l.state === 'merged').length;
-        const metrics = { mergedToday, humanWaitMin: 8, tokensPerMerge: mergedToday > 0 ? db.caps.tokensToday / mergedToday : null, tokensWasted: 2_480_000 };
+        const metrics = {
+          mergedToday, humanWaitMin: 8, tokensPerMerge: mergedToday > 0 ? db.caps.tokensToday / mergedToday : null, tokensWasted: 2_480_000,
+          ticketsIn: db.lanes.length, handedToQa: db.queue.filter((q) => q.handoffAt !== undefined).length,
+          blockersCleared: db.blockers.filter((b) => b.state === 'resolved').length,
+          slowestHop: { name: 'Waiting for your answers', minutes: 47 },
+        };
         json(response, 200, { rules: db.rules, metrics, computedAt: Date.now() });
         return;
       }
@@ -802,10 +914,15 @@ export function createStubServer() {
         return;
       }
       if (urlPath === '/retire-finished' && method === 'POST') {
-        const targets = retirable();
-        const now = Date.now();
-        for (const l of targets) l.retiredAt = now;
-        json(response, 200, { ok: true, retired: targets.map((l) => l.id) });
+        const retireBody = await readJson<Record<string, unknown>>(request);
+        const preview = retirable();
+        const gated = gate(retireBody, `retires ${preview.length} finished lane${preview.length === 1 ? '' : 's'}: ${preview.map((l) => l.title ?? l.id).join(', ') || 'nothing'}`, () => {
+          const targets = retirable();
+          const now = Date.now();
+          for (const l of targets) l.retiredAt = now;
+          return { status: 200, body: { ok: true, jid: null, message: `retired ${targets.length} lane(s)`, undoable: false, retired: targets.map((l) => l.id) } };
+        });
+        json(response, gated.status, gated.body);
         return;
       }
       // H2.3: `/merge-ready` -- a `done` lane is ready when it carries no `mergeable`
@@ -830,17 +947,21 @@ export function createStubServer() {
       }
       if (urlPath === '/merge-ready' && method === 'POST') {
         // Matches the real server's POST /merge-ready shape (src/forge/server.ts
-        // mergeReadyPost): {ok, outcomes: [{id, ok, message}]}, one entry per ready
-        // lane actually attempted -- a not-ready lane never had a merge attempted on
-        // it, so it carries no outcome, same as the real server.
-        const { ready } = mergeSplit();
-        const outcomes: { id: string; ok: boolean; message: string }[] = [];
-        for (const l of ready) {
-          l.state = 'merged'; l.hop = 5; l.hopStatus = 'done';
-          journal('chain.merged', `${l.id} merged`, l.id, false);
-          outcomes.push({ id: l.id, ok: true, message: `merged ${l.id}` });
-        }
-        json(response, 200, { ok: outcomes.every((row) => row.ok), outcomes });
+        // mergeReadyPost): an ActionResult plus {outcomes: [{id, ok, message}]}, one
+        // entry per ready lane actually attempted, behind the same confirm gate.
+        const mergeReadyBody = await readJson<Record<string, unknown>>(request);
+        const readyNow = mergeSplit().ready;
+        const gated = gate(mergeReadyBody, `merges ${readyNow.length} ready lane${readyNow.length === 1 ? '' : 's'}: ${readyNow.map((l) => l.title ?? l.id).join(', ') || 'nothing'}`, () => {
+          const { ready } = mergeSplit();
+          const outcomes: { id: string; ok: boolean; message: string }[] = [];
+          for (const l of ready) {
+            l.state = 'merged'; l.hop = 5; l.hopStatus = 'done';
+            journal('chain.merged', `${l.id} merged`, l.id, false);
+            outcomes.push({ id: l.id, ok: true, message: `merged ${l.id}` });
+          }
+          return { status: 200, body: { ok: outcomes.every((row) => row.ok), jid: null, message: `merged ${outcomes.length} lane${outcomes.length === 1 ? '' : 's'}`, undoable: false, outcomes } };
+        });
+        json(response, gated.status, gated.body);
         return;
       }
 
@@ -860,7 +981,7 @@ export function createStubServer() {
       }
 
       if (urlPath === '/queue' && method === 'GET') {
-        json(response, 200, { items: db.queue, paused: db.queuePaused, maxInFlight: 2, pauseReason: db.queuePauseReason });
+        json(response, 200, { items: db.queue, paused: db.queuePaused, maxInFlight: db.queueMaxInFlight, pauseReason: db.queuePauseReason });
         return;
       }
 
@@ -920,11 +1041,15 @@ export function createStubServer() {
         const id = decodeURIComponent(runKillMatch[1] as string);
         const lane = findLane(id);
         if (!lane) { json(response, 404, { error: `no lane named ${id}` }); return; }
-        lane.state = 'killed'; lane.heart = false; lane.tokensPerMin = 0; lane.hopStatus = 'blocked';
-        const jid = journal('run.killed', `${id} killed`, id, false);
-        appendEvent(`${id} killed`, id);
-        publish({ type: 'run.killed', run: id });
-        json(response, 200, ok(jid, `${id} killed`, false, lane));
+        const killBody = await readJson<Record<string, unknown>>(request);
+        const gated = gate(killBody, `kills ${id}: discards the working diff and stops the sandbox.`, () => {
+          lane.state = 'killed'; lane.heart = false; lane.tokensPerMin = 0; lane.hopStatus = 'blocked';
+          const jid = journal('run.killed', `${id} killed`, id, false);
+          appendEvent(`${id} killed`, id);
+          publish({ type: 'run.killed', run: id });
+          return { status: 200, body: ok(jid, `${id} killed`, false, lane) };
+        });
+        json(response, gated.status, gated.body);
         return;
       }
       const runPauseMatch = /^\/run\/([^/]+)\/pause$/.exec(urlPath);
@@ -952,11 +1077,15 @@ export function createStubServer() {
         const id = decodeURIComponent(runMergeMatch[1] as string);
         const lane = findLane(id);
         if (!lane) { json(response, 404, { error: `no lane named ${id}` }); return; }
-        lane.state = 'merged'; lane.hop = 5; lane.hopStatus = 'done';
-        const jid = journal('chain.merged', `${id} merged`, id, false);
-        appendEvent(`${id} merged`, id);
-        publish({ type: 'chain.merged', run: id });
-        json(response, 200, ok(jid, `${id} merged`, false, lane));
+        const mergeBody = await readJson<Record<string, unknown>>(request);
+        const gated = gate(mergeBody, `merges ${id}: merges the PR and closes the ticket.`, () => {
+          lane.state = 'merged'; lane.hop = 5; lane.hopStatus = 'done';
+          const jid = journal('chain.merged', `${id} merged`, id, false);
+          appendEvent(`${id} merged`, id);
+          publish({ type: 'chain.merged', run: id });
+          return { status: 200, body: ok(jid, `${id} merged`, false, lane) };
+        });
+        json(response, gated.status, gated.body);
         return;
       }
       // H2.2/H2.3: a per-lane undo of a retire -- not in the frozen contract (only
@@ -1058,14 +1187,16 @@ export function createStubServer() {
       }
 
       if (urlPath === '/caps' && method === 'POST') {
-        const body = await readJson<{ dailyTokens?: number; runTokens?: number }>(request);
-        if ((body.dailyTokens !== undefined && body.dailyTokens > db.caps.hardTokens) || (body.runTokens !== undefined && body.runTokens > db.caps.hardTokens)) {
-          json(response, 422, { error: 'above the org hard limit', hardTokens: db.caps.hardTokens });
-          return;
-        }
-        db.caps = { ...db.caps, dailyTokens: body.dailyTokens ?? db.caps.dailyTokens, runTokens: body.runTokens ?? db.caps.runTokens };
-        journal('caps.set', `caps updated: daily ${fmtTokens(db.caps.dailyTokens)} tokens, per-run ${fmtTokens(db.caps.runTokens)} tokens`, null, true);
-        json(response, 200, db.caps);
+        const body = await readJson<{ dailyTokens?: number; runTokens?: number; confirm?: string }>(request);
+        const gated = gate(body as Record<string, unknown>, `sets the token caps to daily ${body.dailyTokens !== undefined ? fmtTokens(body.dailyTokens) : 'unchanged'}, per run ${body.runTokens !== undefined ? fmtTokens(body.runTokens) : 'unchanged'}.`, () => {
+          if ((body.dailyTokens !== undefined && body.dailyTokens > db.caps.hardTokens) || (body.runTokens !== undefined && body.runTokens > db.caps.hardTokens)) {
+            return { status: 422, body: { error: 'above the org hard limit', hardTokens: db.caps.hardTokens } };
+          }
+          db.caps = { ...db.caps, dailyTokens: body.dailyTokens ?? db.caps.dailyTokens, runTokens: body.runTokens ?? db.caps.runTokens };
+          journal('caps.set', `caps updated: daily ${fmtTokens(db.caps.dailyTokens)} tokens, per-run ${fmtTokens(db.caps.runTokens)} tokens`, null, true);
+          return { status: 200, body: db.caps };
+        });
+        json(response, gated.status, gated.body);
         return;
       }
 
@@ -1074,20 +1205,53 @@ export function createStubServer() {
       // finds the lane still carrying that question and retires it, the stub's own
       // stand-in for `Inbox.retire` + the `inbox.retired` journal event.
       if (urlPath === '/clear' && method === 'POST') {
-        const body = await readJson<{ inboxKey?: string }>(request);
+        const body = await readJson<{ inboxKey?: string; confirm?: string }>(request);
         const key = body.inboxKey;
         if (!key) { json(response, 400, { error: 'a clear needs an inboxKey' }); return; }
-        const lane = db.lanes.find((l) => l.question?.key === key);
-        if (!lane) { json(response, 404, { error: `nothing asked ${key}` }); return; }
-        lane.question = null;
-        const jid = journal('inbox.retired', `stale ask retired (${key})`, lane.id, false);
-        json(response, 200, { ok: true, jid });
+        const gated = gate(body as Record<string, unknown>, `dismisses the question ${key}: the ask leaves the inbox and nothing answers it.`, () => {
+          const lane = db.lanes.find((l) => l.question?.key === key);
+          if (!lane) return { status: 404, body: { error: `nothing asked ${key}` } };
+          lane.question = null;
+          const jid = journal('inbox.retired', `stale ask retired (${key})`, lane.id, false);
+          return { status: 200, body: { ok: true, jid, message: `dismissed ${key}`, undoable: false } };
+        });
+        json(response, gated.status, gated.body);
+        return;
+      }
+
+      if (urlPath === '/stop' && method === 'POST') {
+        const stopBody = await readJson<Record<string, unknown>>(request);
+        const gated = gate(stopBody, 'stops every running lane with a handoff request and engages the kill switch.', () => {
+          const running = db.lanes.filter((l) => l.state === 'running');
+          for (const l of running) { l.state = 'parked'; l.heart = false; l.tokensPerMin = 0; l.reason = 'stopped from the console'; }
+          journal('fleet.stopped', `stopped ${running.length} lanes`, null, false);
+          return { status: 200, body: { ok: true, jid: null, message: `stopped ${running.length} lane${running.length === 1 ? '' : 's'}`, undoable: false, stopped: running.map((l) => l.id), stale: [] } };
+        });
+        json(response, gated.status, gated.body);
+        return;
+      }
+      const runRetireMatch = /^\/run\/([^/]+)\/retire$/.exec(urlPath);
+      if (runRetireMatch && method === 'POST') {
+        const id = decodeURIComponent(runRetireMatch[1] as string);
+        const lane = findLane(id);
+        if (!lane) { json(response, 404, { error: `no lane named ${id}` }); return; }
+        const retireBody = await readJson<Record<string, unknown>>(request);
+        const gated = gate(retireBody, `retires ${id}: the lane leaves the board's default view.`, () => {
+          if (lane.state === 'running') return { status: 409, body: { error: `${id} is still running` } };
+          lane.retiredAt = Date.now();
+          const jid = journal('lane.retired', `${id} retired`, id, false);
+          return { status: 200, body: ok(jid, `${id} retired`, false, lane) };
+        });
+        json(response, gated.status, gated.body);
         return;
       }
 
       if (urlPath === '/command' && method === 'POST') {
-        const body = await readJson<{ text?: string }>(request);
-        const cards = runCommand(body.text ?? '');
+        const body = await readJson<{ text?: string; run?: string }>(request);
+        const text = body.text ?? '';
+        // The real route echoes the operator's own bubble first (`ConsoleWrites.command`).
+        const operator: Message = { k: `op-${Date.now()}-${Math.random()}`, type: 'operator', text: commandEcho(text), ts: Date.now(), source: 'operator', ...(body.run ? { lane: body.run } : {}) };
+        const cards = [operator, ...runCommand(text, body.run)];
         db.thread = [...db.thread, ...cards];
         json(response, 200, { cards });
         return;
@@ -1118,6 +1282,17 @@ export function createStubServer() {
         json(response, 200, { ok: true, jid: null, message: 'queue resumed', undoable: false });
         return;
       }
+      if (urlPath === '/queue/width' && method === 'POST') {
+        const body = await readJson<{ maxInFlight: number }>(request);
+        const value = body?.maxInFlight;
+        if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 12) {
+          json(response, 400, { ok: false, jid: null, message: 'maxInFlight must be an integer between 1 and 12', undoable: false });
+          return;
+        }
+        db.queueMaxInFlight = value;
+        json(response, 200, { ok: true, jid: null, message: `queue width set to ${value}`, undoable: false });
+        return;
+      }
       const queueItemMatch = /^\/queue\/([^/]+)\/(remove|retry|merge|promote)$/.exec(urlPath);
       if (queueItemMatch && method === 'POST') {
         const id = decodeURIComponent(queueItemMatch[1] as string);
@@ -1125,8 +1300,12 @@ export function createStubServer() {
         const item = db.queue.find((q) => q.id === id);
         if (action === 'remove') {
           if (!item) { json(response, 404, { ok: false, jid: null, message: `no queue item ${id}`, undoable: false }); return; }
-          db.queue = db.queue.filter((q) => q.id !== id);
-          json(response, 200, { ok: true, jid: null, message: `removed ${id}`, undoable: false });
+          const removeBody = await readJson<Record<string, unknown>>(request);
+          const gated = gate(removeBody, `removes ${id} from the queue: it will not run.`, () => {
+            db.queue = db.queue.filter((q) => q.id !== id);
+            return { status: 200, body: { ok: true, jid: null, message: `removed ${id}`, undoable: false } };
+          });
+          json(response, gated.status, gated.body);
           return;
         }
         if (action === 'retry') {
@@ -1148,24 +1327,32 @@ export function createStubServer() {
             json(response, 409, { ok: false, jid: null, message: `${id} is not in review`, undoable: false });
             return;
           }
-          item.state = 'done';
-          item.updatedAt = Date.now();
-          json(response, 200, { ok: true, jid: null, message: `${id} merged`, undoable: false });
+          const mergeItemBody = await readJson<Record<string, unknown>>(request);
+          const gated = gate(mergeItemBody, `merges ${id}: merges its pull request and closes the ticket.`, () => {
+            item.state = 'done';
+            item.updatedAt = Date.now();
+            return { status: 200, body: { ok: true, jid: null, message: `${id} merged`, undoable: false } };
+          });
+          json(response, gated.status, gated.body);
           return;
         }
         if (!item || item.state !== 'done' || item.source !== 'hotfix') {
           json(response, 409, { ok: false, jid: null, message: `${id} is not a merged hotfix`, undoable: false });
           return;
         }
-        const promoteBody = await readJson<{ version?: string; message?: string }>(request);
+        const promoteBody = await readJson<{ version?: string; message?: string; confirm?: string }>(request);
         if (!promoteBody.version || !promoteBody.message) {
           json(response, 400, { ok: false, jid: null, message: 'a promote needs a version and a message', undoable: false });
           return;
         }
-        item.updatedAt = Date.now();
-        item.promotedAt = Date.now();
-        item.promotedVersion = promoteBody.version;
-        json(response, 200, { ok: true, jid: null, message: `production publish dispatched for ${promoteBody.version}`, undoable: false });
+        const version = promoteBody.version;
+        const gated = gate(promoteBody as Record<string, unknown>, `publishes ${version} to production for ${id}: every installed app takes the update.`, () => {
+          item.updatedAt = Date.now();
+          item.promotedAt = Date.now();
+          item.promotedVersion = version;
+          return { status: 200, body: { ok: true, jid: null, message: `production publish dispatched for ${version}`, undoable: false } };
+        });
+        json(response, gated.status, gated.body);
         return;
       }
 

@@ -1,5 +1,7 @@
+import type { ChildProcess, SpawnOptions } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -11,6 +13,7 @@ import { Inbox } from '../../../src/forge/inbox.js';
 import { Registry } from '../../../src/forge/registry.js';
 import { ConsoleWrites, parseIntent } from '../../../src/forge/console/command.js';
 import { tokensToday } from '../../../src/forge/console/lanes.js';
+import { readRetired, retiredPath } from '../../../src/forge/console/retire.js';
 import { fmtTokens } from '../../../src/shared/format-tokens.js';
 
 class FakeActuator implements Actuator {
@@ -94,6 +97,19 @@ describe('parseIntent', () => {
     expect(parseIntent('dismiss abc123')).toEqual({ kind: 'dismiss', token: 'abc123' });
     expect(parseIntent('gibberish')).toEqual({ kind: 'unknown', text: 'gibberish' });
   });
+
+  // W1: the mission lane was unverified with no PR and no heart, and the operator typed
+  // "remove 2026-09-04-forge-c2-rn" three times and got "I did not understand that"
+  // each time -- remove/archive/retire are three spellings of the same intent, and
+  // reopen/verify complete the set of actions a lane's own REST route already supports
+  // but the grammar never offered a person typing plain text.
+  it('parses remove/archive/retire as one retire intent, and reopen/verify', () => {
+    expect(parseIntent('remove 2026-09-04-forge-c2-rn')).toEqual({ kind: 'retire', lane: '2026-09-04-forge-c2-rn' });
+    expect(parseIntent('archive 2026-09-04-forge-c2-rn')).toEqual({ kind: 'retire', lane: '2026-09-04-forge-c2-rn' });
+    expect(parseIntent('retire 2026-09-04-forge-c2-rn')).toEqual({ kind: 'retire', lane: '2026-09-04-forge-c2-rn' });
+    expect(parseIntent('reopen FLT-204')).toEqual({ kind: 'reopen', lane: 'FLT-204' });
+    expect(parseIntent('verify FLT-204')).toEqual({ kind: 'verify', lane: 'FLT-204' });
+  });
 });
 
 let dir: string;
@@ -138,9 +154,28 @@ describe('ConsoleWrites.handle', () => {
     const handled = await writes.handle('/run/alpha/kill', fakeRequest('POST', { reason: 'stop' }), response);
 
     expect(handled).toBe(true);
-    const outcome = await result;
+    // Kill is irreversible: the first call registers a server-side confirm and answers
+    // 202 with the token; nothing is killed until that token comes back.
+    const pending = await result;
+    expect(pending.status).toBe(202);
+    expect(actuator.killed).toEqual([]);
+    const token = (pending.body as { token: string }).token;
+    expect(writes.hasPending(token)).toBe(true);
+
+    const second = fakeResponse();
+    await writes.handle('/run/alpha/kill', fakeRequest('POST', { reason: 'stop', confirm: token }), second.response);
+    const outcome = await second.result;
     expect(outcome.status).toBe(200);
     expect(actuator.killed).toEqual(['alpha']);
+    expect(writes.hasPending(token)).toBe(false);
+  });
+
+  it('a stale confirm token is refused with 409 and kills nothing', async () => {
+    registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+    const { response, result } = fakeResponse();
+    await writes.handle('/run/alpha/kill', fakeRequest('POST', { reason: 'stop', confirm: 'never-issued' }), response);
+    expect((await result).status).toBe(409);
+    expect(actuator.killed).toEqual([]);
   });
 
   it('refuses a run cap above the hard limit with 422', async () => {
@@ -369,6 +404,49 @@ describe('ConsoleWrites.command / kill confirm flow', () => {
     const receipt = cards.find((card) => card.type === 'receipt')!;
     expect(receipt.text).toBe('Answered "Restart the forge MCP connection?": Restart');
   });
+
+  it('W4: "answer <n>" resolves the option by number against the one open ask', async () => {
+    inbox.raise({ run: 'alpha', question: 'NOT NULL or nullable?', options: ['NOT NULL', 'nullable + backfill'] });
+
+    const cards = await writes.command('answer 2');
+
+    expect(inbox.open()).toHaveLength(0);
+    const receipt = cards.find((card) => card.type === 'receipt')!;
+    expect(receipt.text).toBe('Answered "NOT NULL or nullable?": nullable + backfill');
+  });
+
+  it('W4: "answer <key> <n>" resolves the option by number against that key', async () => {
+    const raised = inbox.raise({ run: 'alpha', question: 'NOT NULL or nullable?', options: ['NOT NULL', 'nullable + backfill'] });
+
+    const cards = await writes.command(`answer ${raised.key} 1`);
+
+    const answered = inbox.entry(raised.key);
+    expect(answered?.answer).toBe('NOT NULL');
+    const receipt = cards.find((card) => card.type === 'receipt')!;
+    expect(receipt.text).toBe('Answered "NOT NULL or nullable?": NOT NULL');
+  });
+
+  it('W4: "answer <n>" refuses with the ambiguity reply when two asks are open', async () => {
+    inbox.raise({ run: 'alpha', question: 'NOT NULL or nullable?', options: ['NOT NULL', 'nullable + backfill'] });
+    inbox.raise({ run: 'beta', question: 'staging or dev?', options: ['staging', 'dev'] });
+
+    const cards = await writes.command('answer 1');
+
+    const refusal = cards.find((card) => card.type === 'refusal')!;
+    expect(refusal).toBeDefined();
+    expect(refusal.text).toContain('2 questions are open');
+    expect(inbox.open()).toHaveLength(2);
+  });
+
+  it('W4: "answer <key> <n>" refuses when the key has no such option', async () => {
+    const raised = inbox.raise({ run: 'alpha', question: 'NOT NULL or nullable?', options: ['NOT NULL', 'nullable + backfill'] });
+
+    const cards = await writes.command(`answer ${raised.key} 5`);
+
+    const refusal = cards.find((card) => card.type === 'refusal')!;
+    expect(refusal).toBeDefined();
+    expect(inbox.open()).toHaveLength(1);
+  });
 });
 
 describe('ConsoleWrites: lane addressing by ticket key or title (deliverable 4)', () => {
@@ -544,8 +622,192 @@ describe('ConsoleWrites: replies in words, multi-line (deliverable 5)', () => {
     const cards = await writes.command('do a barrel roll');
     const reply = cards.find((card) => card.type === 'reply')!;
     expect(reply.text).toBe(
-      'I did not understand that. Try one of: pause, resume, kill <ticket>, merge ready lanes, '
-      + 'raise daily cap to <n>, cap <ticket> at <n>, why is <ticket> stuck, what\'s stuck, spend today, status, answer <text>.',
+      'I did not understand that. Try one of: pause, resume, kill <ticket>, remove <ticket>, reopen <ticket>, '
+      + "verify <ticket>, merge ready lanes, raise daily cap to <n>, cap <ticket> at <n>, why is <ticket> stuck, what's stuck, spend today, status, answer <text>.",
     );
+  });
+});
+
+// W1 follow-up (2026-09-08): `parseIntent` learned remove/archive/retire, reopen and verify,
+// but `executeIntent` had no case for any of them, so a typed "remove <lane>" still
+// answered "I did not understand that" -- the exact reply from the mission. These prove
+// each verb reaches its real function: retire through a confirm card into the retired
+// log and the journal, reopen and verify straight into `run-actions.ts` (whose own
+// refusal text is the proof the call was made).
+describe('grammar verbs remove/archive/retire, reopen, verify actually execute', () => {
+  function writesWithBoard(lanes: unknown[]): ConsoleWrites {
+    return new ConsoleWrites({
+      journalPath, registry, inbox, actuator,
+      authorized: () => true,
+      ledgerPath: join(dir, `actions-${Math.random()}.jsonl`),
+      capsOverridesPath: join(dir, `caps-${Math.random()}.json`),
+      rulesConfigPath: join(dir, `rules-${Math.random()}.json`),
+      integrationsConfigPath: join(dir, `integrations-${Math.random()}.json`),
+      forgeHomeDir: dir,
+      lanesView: () => ({ at: Date.now(), lanes: lanes as never, tokensToday: 0, tokensPerMin: 0, links: { jiraSite: null, defaultRepo: null } }),
+      lanesViewAll: () => ({ at: Date.now(), lanes: lanes as never, tokensToday: 0, tokensPerMin: 0, links: { jiraSite: null, defaultRepo: null } }),
+    });
+  }
+
+  it('"remove <lane>" proposes a retire behind a confirm card and writes nothing until confirm', async () => {
+    const withBoard = writesWithBoard([
+      { id: '2026-09-04-acme-c2', ticket: null, title: 'a dead lane', state: 'unverified', heart: false, pr: null, kind: 'manual', startedAt: 1 },
+    ]);
+    const cards = await withBoard.command('remove 2026-09-04-acme-c2');
+    const confirm = cards.find((card) => card.type === 'confirm');
+    expect(confirm, `expected a confirm card, got ${JSON.stringify(cards.map((c) => [c.type, c.text]))}`).toBeDefined();
+    expect(confirm!.blast).toMatch(/leaves the board/);
+    expect(existsSync(retiredPath(dir))).toBe(false);
+    expect(replay(journalPath).events.some((e) => e.event === 'lane.retired')).toBe(false);
+
+    const token = confirm!.btns!.find((btn) => btn.cmd.startsWith('confirm '))!.cmd.split(' ')[1]!;
+    const after = await withBoard.command(`confirm ${token}`);
+    expect(after.find((card) => card.type === 'receipt')?.text).toMatch(/retired/);
+    expect([...readRetired(retiredPath(dir)).keys()]).toEqual(['2026-09-04-acme-c2']);
+    expect(replay(journalPath).events.some((e) => e.event === 'lane.retired' && e['run'] === '2026-09-04-acme-c2')).toBe(true);
+    withBoard.stop();
+  });
+
+  it('"archive <lane>" on a lane with a live heart refuses at confirm time with the retire rule, and retires nothing', async () => {
+    const withBoard = writesWithBoard([
+      { id: 'live-1', ticket: 'ACME-7', title: 'still running', state: 'running', heart: true, pr: null, kind: 'queue', startedAt: 1 },
+    ]);
+    const cards = await withBoard.command('archive ACME-7');
+    const confirm = cards.find((card) => card.type === 'confirm')!;
+    const token = confirm.btns!.find((btn) => btn.cmd.startsWith('confirm '))!.cmd.split(' ')[1]!;
+    const after = await withBoard.command(`confirm ${token}`);
+    expect(after.find((card) => card.type === 'refusal')?.text).toMatch(/still open/);
+    expect(existsSync(retiredPath(dir))).toBe(false);
+    withBoard.stop();
+  });
+
+  it('"reopen <lane>" reaches reopenRun (its own state rule answers, not the grammar\'s "did not understand")', async () => {
+    registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'alpha', actor: 'runner' });
+    const cards = await writes.command('reopen alpha');
+    const refusal = cards.find((card) => card.type === 'refusal');
+    expect(refusal?.text).toMatch(/reopen needs killed\/blocked\/exhausted, not running/);
+  });
+
+  it('"verify <lane>" reaches verifyRun (its own "no chain packet" reason answers)', async () => {
+    registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'alpha', actor: 'runner' });
+    const cards = await writes.command('verify alpha');
+    const refusal = cards.find((card) => card.type === 'refusal');
+    expect(refusal?.text).toMatch(/no chain packet names a repo for run alpha/);
+  });
+});
+
+describe('accounts: POST /accounts/connect, GET /accounts/connect/:attempt, POST /accounts/:id/disconnect', () => {
+  /** A fake `child_process.spawn` a `claude login`/`claude auth status` call runs
+   *  through, so this describe block never opens a real process. `queueClose` lets each
+   *  test script what a `claude` invocation prints and exits with, in call order. */
+  function fakeSpawn(queue: Array<{ stdout?: string; code: number }>) {
+    let index = 0;
+    return (_command: string, _args: string[] = [], _options: SpawnOptions = {}): ChildProcess => {
+      const script = queue[index] ?? { code: 0 };
+      index += 1;
+      const child = new EventEmitter() as unknown as ChildProcess;
+      (child as unknown as { pid: number }).pid = 5000 + index;
+      const stdout = new EventEmitter();
+      const stderr = new EventEmitter();
+      (child as unknown as { stdout: EventEmitter }).stdout = stdout;
+      (child as unknown as { stderr: EventEmitter }).stderr = stderr;
+      setImmediate(() => {
+        if (script.stdout) stdout.emit('data', Buffer.from(script.stdout));
+        child.emit('close', script.code);
+      });
+      return child;
+    };
+  }
+
+  function accountsWrites(queue: Array<{ stdout?: string; code: number }>): ConsoleWrites {
+    return new ConsoleWrites({
+      journalPath, registry, inbox, actuator, authorized: () => true,
+      ledgerPath: join(dir, 'accounts-actions.jsonl'),
+      accountsRegistryPath: join(dir, 'accounts-registry.json'),
+      spawnFn: fakeSpawn(queue),
+    });
+  }
+
+  it('connects an account end to end: connecting through to connected, then lists it', async () => {
+    const withAccounts = accountsWrites([
+      { code: 0, stdout: 'open this link to continue: https://example.test/authorize/abc\n' },
+      { code: 0, stdout: '{"authenticated":true}\n' },
+    ]);
+    const { response, result } = fakeResponse();
+    const handled = await withAccounts.handle('/accounts/connect', fakeRequest('POST', { label: 'work' }), response);
+    expect(handled).toBe(true);
+    const started = (await result).body as { ok: boolean; attemptId: string };
+    expect(started.ok).toBe(true);
+
+    let attempt: { state: string; link?: string } | undefined;
+    for (let i = 0; i < 50 && attempt?.state !== 'connected' && attempt?.state !== 'failed'; i += 1) {
+      const poll = fakeResponse();
+      await withAccounts.handle(`/accounts/connect/${started.attemptId}`, fakeRequest('GET'), poll.response);
+      attempt = (await poll.result).body as { state: string; link?: string };
+      if (attempt.state !== 'connected' && attempt.state !== 'failed') await new Promise((r) => setTimeout(r, 0));
+    }
+    expect(attempt?.state).toBe('connected');
+    expect(attempt?.link).toBe('https://example.test/authorize/abc');
+
+    const list = fakeResponse();
+    await withAccounts.handle('/accounts', fakeRequest('GET'), list.response);
+    const body = (await list.result).body as { items: Array<{ label: string }> };
+    expect(body.items.map((item) => item.label)).toEqual(['work']);
+  });
+
+  it('a failed probe answers "failed" with the probe\'s own error, and adds nothing', async () => {
+    const withAccounts = accountsWrites([
+      { code: 0, stdout: 'https://example.test/authorize/xyz\n' },
+      { code: 1, stdout: '{"error":"not authenticated"}\n' },
+    ]);
+    const { response, result } = fakeResponse();
+    await withAccounts.handle('/accounts/connect', fakeRequest('POST', { label: 'work' }), response);
+    const started = (await result).body as { attemptId: string };
+
+    let attempt: { state: string } | undefined;
+    for (let i = 0; i < 50 && attempt?.state !== 'failed'; i += 1) {
+      const poll = fakeResponse();
+      await withAccounts.handle(`/accounts/connect/${started.attemptId}`, fakeRequest('GET'), poll.response);
+      attempt = (await poll.result).body as { state: string };
+      if (attempt.state !== 'failed') await new Promise((r) => setTimeout(r, 0));
+    }
+    expect(attempt?.state).toBe('failed');
+
+    const list = fakeResponse();
+    await withAccounts.handle('/accounts', fakeRequest('GET'), list.response);
+    const body = (await list.result).body as { items: unknown[] };
+    expect(body.items).toHaveLength(0);
+  });
+
+  it('refuses to disconnect the sole remaining account, and refuses one with a live run', async () => {
+    const withAccounts = accountsWrites([]);
+    // Seed two accounts directly through the registry file this instance reads, rather
+    // than running two live connects through the fake process queue.
+    writeFileSync(join(dir, 'accounts-registry.json'), JSON.stringify({
+      accounts: [
+        { id: 'test-a', label: 'one', configDir: join(dir, 'a'), connectedAt: 1 },
+        { id: 'test-b', label: 'two', configDir: join(dir, 'b'), connectedAt: 2 },
+      ],
+    }), 'utf8');
+    registry.admit({ goal: 'goal-a', cwd: join(dir, 'wt-a'), briefPath: join(dir, 'a.md'), pid: process.pid });
+    appendOnce(journalPath, { event: 'run.started', run: 'goal-a', actor: 'runner', account: 'test-a' });
+
+    const liveRun = fakeResponse();
+    await withAccounts.handle('/accounts/test-a/disconnect', fakeRequest('POST'), liveRun.response);
+    const liveRunBody = (await liveRun.result).body as { ok: boolean; error?: string };
+    expect(liveRunBody.ok).toBe(false);
+    expect(liveRunBody.error).toMatch(/run/i);
+
+    const removed = fakeResponse();
+    await withAccounts.handle('/accounts/test-b/disconnect', fakeRequest('POST'), removed.response);
+    expect((await removed.result).body as { ok: boolean }).toEqual({ ok: true });
+
+    const last = fakeResponse();
+    await withAccounts.handle('/accounts/test-a/disconnect', fakeRequest('POST'), last.response);
+    const lastBody = (await last.result).body as { ok: boolean; error?: string };
+    expect(lastBody.ok).toBe(false);
+    expect(lastBody.error).toMatch(/last/i);
   });
 });

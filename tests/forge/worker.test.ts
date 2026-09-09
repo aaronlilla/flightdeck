@@ -377,6 +377,21 @@ describe('B.3.4: done is verified', () => {
     expect(finished?.['verdict']).toBe('unverified');
   });
 
+  it('2026-09-08: yields done, not unverified, for a goal-loop run with no Verification block', async () => {
+    const worker = makeWorker(
+      [[{ text: 'Goal met: probe file written.', context: 10, done: true }]],
+      { goalLoop: true },
+    );
+    const result = await worker.run();
+
+    expect(result.verdict).toBe('done');
+    const finished = replay(journalPath).events
+      .find((e) => e.event === 'run.finished' && e.run === 'alpha');
+    expect(finished?.['verdict']).toBe('done');
+    expect(finished?.['goalLoop']).toBe(true);
+    expect(finished?.['lastText']).toBe('Goal met: probe file written.');
+  });
+
   it('runs the declared verification command and only marks done once it passes', async () => {
     const brief = '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnode -e process.exit(0)\n```\n';
     const calls: string[] = [];
@@ -996,6 +1011,43 @@ describe('P4.7/I3: the Governor checks a run does not drift on every turn', () =
 
     await worker.run();
     expect(parked).toHaveLength(0);
+  });
+});
+
+describe('P4.8: the account a run launches under comes from accountFor, not a hardcoded value', () => {
+  it('pins CLAUDE_CONFIG_DIR to the account\'s own configDir when one is assigned', async () => {
+    const accounts = [
+      { id: 'test-a', configDir: '/accounts/test-a', utilization: { five_hour: 0.9 } },
+      { id: 'test-b', configDir: '/accounts/test-b', utilization: { five_hour: 0.1 } },
+    ];
+    const { accountFor, WindowGate } = await import('../../src/forge/governor.js');
+    const picked = accountFor('implement', accounts, new WindowGate(), {}, Date.now());
+    expect(picked?.id).toBe('test-b');
+
+    const worker = makeWorker([[{ text: 'done', context: 10, done: true }]], { account: picked });
+    await worker.run();
+
+    expect(worker.engine.started[0]?.env['CLAUDE_CONFIG_DIR']).toBe('/accounts/test-b');
+  });
+
+  it('journals which account a run started under', async () => {
+    const account = { id: 'test-a', configDir: '/accounts/test-a' };
+    const worker = makeWorker([[{ text: 'done', context: 10, done: true }]], { account });
+    await worker.run();
+
+    const state = replay(journalPath);
+    const started = state.events.find((event) => event.event === 'run.started' && event.run === 'alpha');
+    expect(started?.['account']).toBe('test-a');
+  });
+
+  it('leaves CLAUDE_CONFIG_DIR untouched when no account is assigned, exactly as before', async () => {
+    // A clean parentEnv, deliberately: this machine's own shell may already carry a
+    // real CLAUDE_CONFIG_DIR, and the property under test is that Worker itself adds
+    // nothing when config.account is absent -- not what happened to be inherited.
+    const worker = makeWorker([[{ text: 'done', context: 10, done: true }]], { parentEnv: {} });
+    await worker.run();
+
+    expect(worker.engine.started[0]?.env['CLAUDE_CONFIG_DIR']).toBeUndefined();
   });
 });
 

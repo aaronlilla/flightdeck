@@ -82,6 +82,15 @@ const EXEMPT: Array<{ prefix: string; why: string }> = [
     prefix: 'doctrine/skills/ui-ux-pro-max/data/',
     why: 'vendored reference tables with illustrative paths',
   },
+  // Static design-spec mockups (#89) that render the console UI with invented sample
+  // data -- a fictional teammate roster and integration names -- to show what a real
+  // board looks like. The same illustrative-content trade the ui-ux-pro-max entry above
+  // already makes, for the same reason: rewriting the mockup's sample data to be
+  // generic would make it a worse design reference for no gain in what actually ships.
+  {
+    prefix: 'doctrine/design/',
+    why: 'static design mockups with invented illustrative sample data, never live config',
+  },
 ];
 
 const BINARY_EXT = new Set([

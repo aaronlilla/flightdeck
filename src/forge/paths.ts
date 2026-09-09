@@ -10,11 +10,20 @@
 import { fileURLToPath } from 'node:url';
 import { existsSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 /** The root of Forge's state: journal, runs, lanes, inbox, packets. */
 export function forgeHome(): string {
   return process.env['FORGE_HOME'] ?? join(homedir(), '.forge');
+}
+
+/** The workspace a `goal` queue item's worker runs from -- the parent of whatever
+ *  checkout `forge up` itself is running from, since a goal brief claims its own
+ *  worktree under that same parent via `/workon` rather than this one. `FORGE_WORKSPACE_ROOT`
+ *  overrides it for a specimen or a machine laid out differently; no path is hardcoded
+ *  here, per this file's own rule. */
+export function workspaceRoot(): string {
+  return process.env['FORGE_WORKSPACE_ROOT'] ?? dirname(process.cwd());
 }
 
 export function journalPath(): string {
@@ -86,6 +95,14 @@ export function queuePath(): string {
  *  this stops only the queue from starting new work. */
 export function queuePausedPath(): string {
   return join(consoleDir(), 'queue-paused.json');
+}
+
+/** The queue's own width setting: `{ maxInFlight: N }` or absent. Separate from
+ *  `queuePausedPath()`: pausing stops every start, this only caps how many run at once.
+ *  Read fresh on every tick and every `GET /queue`, never cached, so `POST /queue/width`
+ *  takes effect without a restart. */
+export function queueWidthPath(): string {
+  return join(consoleDir(), 'queue.json');
 }
 
 /** Where a queue item's own planned brief lands, when its source is a pasted brief or a

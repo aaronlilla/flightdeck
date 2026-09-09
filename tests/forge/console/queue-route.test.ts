@@ -4,6 +4,7 @@
  * way `tests/forge/console/auth.test.ts` proves every other console route.
  */
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { fetchConfirmed } from '../../helpers/confirmed.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -88,6 +89,56 @@ describe('POST /queue', () => {
     expect(body.items[0]).toMatchObject({ source: 'brief', ticket: null });
   });
 
+  it('reads a pasted brief from a path when the input is a .md file on disk', async () => {
+    const briefPath = join(dir, 'a-brief.md');
+    writeFileSync(briefPath, ['# Goal: from a file', 'repo: owner/tools', ''].join('\n'), 'utf8');
+    const response = await fetch(`${base}/queue`, authed({
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ source: 'brief', input: `  ${briefPath}  ` }),
+    }));
+    const body = await response.json() as QueueAddResponse;
+    expect(body.items[0]).toMatchObject({ source: 'brief', ticket: null });
+    expect(body.items[0]!.input).toContain('# Goal: from a file');
+  });
+
+  it('2026-09-08: adds one item for a goal file carrying an inline /goal line', async () => {
+    const goalPath = join(dir, 'a-goal.md');
+    writeFileSync(goalPath, '/goal Work the thing to completion.\n', 'utf8');
+    const response = await fetch(`${base}/queue`, authed({
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ source: 'goal', input: goalPath }),
+    }));
+    const body = await response.json() as QueueAddResponse;
+    expect(body.ok).toBe(true);
+    expect(body.items[0]).toMatchObject({
+      source: 'goal', briefPath: goalPath, goalBlock: '/goal Work the thing to completion.',
+    });
+  });
+
+  it('2026-09-08: 400s a goal input naming a file that does not exist', async () => {
+    const response = await fetch(`${base}/queue`, authed({
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ source: 'goal', input: join(dir, 'no-such-goal.md') }),
+    }));
+    expect(response.status).toBe(200);
+    const body = await response.json() as QueueAddResponse;
+    expect(body.ok).toBe(false);
+    expect(body.items).toEqual([]);
+    expect(body.error).toMatch(/not found/);
+  });
+
+  it('refuses a ticket input that is not a key, without asking Jira', async () => {
+    const response = await fetch(`${base}/queue`, authed({
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ source: 'ticket', input: 'C:/somewhere/brief.md' }),
+    }));
+    const body = await response.json() as QueueAddResponse;
+    expect(body.ok).toBe(false);
+    expect(body.items).toEqual([]);
+    expect(body.error).toMatch(/ticket key/);
+    expect(body.error).toMatch(/brief/);
+  });
+
   it('adds one item per ticket a query resolves', async () => {
     const response = await fetch(`${base}/queue`, authed({
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -156,10 +207,10 @@ describe('POST /queue/:id/remove and /retry', () => {
     }))).json() as QueueAddResponse;
     const id = added.items[0]!.id;
 
-    const removed = await fetch(`${base}/queue/${id}/remove`, authed({ method: 'POST' }));
+    const removed = await fetchConfirmed(`${base}/queue/${id}/remove`, authed({ method: 'POST' }));
     expect(removed.status).toBe(200);
 
-    const again = await fetch(`${base}/queue/${id}/remove`, authed({ method: 'POST' }));
+    const again = await fetchConfirmed(`${base}/queue/${id}/remove`, authed({ method: 'POST' }));
     expect(again.status).toBe(404);
   });
 
@@ -257,7 +308,7 @@ describe('POST /queue/:id/promote with wiring configured: sweep #4', () => {
 
   it('records promotedAt/promotedVersion on a successful promote', async () => {
     const id = await addDoneHotfix();
-    const promote = await fetch(`${wiredBase}/queue/${id}/promote`, authed({
+    const promote = await fetchConfirmed(`${wiredBase}/queue/${id}/promote`, authed({
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ version: '1.4.2', message: 'hotfix release' }),
     }));
     expect(promote.status).toBe(200);

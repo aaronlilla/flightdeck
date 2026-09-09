@@ -34,9 +34,20 @@ beforeEach(() => {
   process.env['FORGE_CONFIG_DIR'] = join(home, 'claude');
   // Forge Jira stream: every specimen starts from "nothing configured" and opts in
   // explicitly, so a developer's own shell (or a prior specimen) never leaks a value in.
+  // FORGE_WORKTREE_SHELL joins this list for the same reason: worker.ts's own verifyDone
+  // reads it to decide whether a brief's verification command runs through a shell or a
+  // direct exec, and a launching shell that exports it (the queue orchestrator's own
+  // launch env does, e.g. a bash path plus `-c`) routes a specimen's unquoted verification
+  // command like `node -e process.exit(0)` through that shell, where the parens are a
+  // syntax error bash never gets a chance to explain -- the exec just reports the command
+  // failed and the run parks. Every specimen in this file that runs a real verification
+  // command already writes an argv-safe one, and depends on the direct-exec path this
+  // module's own doc comment calls the default; an ambient shell prefix must not silently
+  // switch that path out from under it.
   for (const name of [
     'FORGE_JIRA_SITE', 'FORGE_JIRA_EMAIL', 'FORGE_JIRA_TOKEN', 'FORGE_JIRA_JQL',
     'FORGE_JIRA_QA_ACCOUNT', 'FORGE_JIRA_QA_TRANSITION', 'FORGE_INTAKE_REPO_MAP',
+    'FORGE_WORKTREE_SHELL',
   ]) {
     delete process.env[name];
   }
@@ -314,6 +325,26 @@ describe('forge run', () => {
     expect(result.lines.join(' ')).toMatch(/CLAUDE_CONFIG_DIR=/);
   }, 20_000);
 
+  it('2026-09-08: --goal accepts the /goal condition as a bare argument and still dry-runs', async () => {
+    const goalFile = join(home, 'a-goal.md');
+    writeFileSync(goalFile, '# not read as the prompt under --goal\n', 'utf8');
+
+    const result = await forge(['run', goalFile, '/goal Work the thing to completion.', '--goal', '--dry-run']);
+
+    expect(result.code).toBe(0);
+    expect(result.lines[0]).toMatch(/pinned to forge /);
+  }, 20_000);
+
+  it('2026-09-08: --goal with no condition argument refuses before checkLaunch', async () => {
+    const goalFile = join(home, 'a-goal.md');
+    writeFileSync(goalFile, '# irrelevant\n', 'utf8');
+
+    const result = await forge(['run', goalFile, '--goal']);
+
+    expect(result.code).toBe(2);
+    expect(result.lines.join(' ')).toMatch(/--goal needs the \/goal condition/);
+  }, 20_000);
+
   it('says which config directory it chose and why', async () => {
     const brief = join(home, 'ok.md');
     writeFileSync(brief, '# Goal\n\nDo the thing.\n', 'utf8');
@@ -321,7 +352,7 @@ describe('forge run', () => {
     const result = await forge(['run', brief, '--dry-run']);
 
     expect(result.lines.join(' ')).toMatch(/config dir: .+ \((override|fleet|forge)\)/);
-  });
+  }, 20_000);
 
   it('item 8, 2026-09-05: refuses --auto-answer for a brief under a real goals directory', async () => {
     const goalsDir = join(home, 'goals');

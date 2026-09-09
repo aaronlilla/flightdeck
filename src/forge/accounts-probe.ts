@@ -22,7 +22,7 @@ import { query as sdkQuery, type Options, type Query } from '@anthropic-ai/claud
 
 import { PushStream } from '../adapter/stream.js';
 import type { QueryFn } from '../adapter/engine.js';
-import { claudeAccounts, type Account } from './accounts.js';
+import type { AccountRecord } from './accounts.js';
 import type { Journal } from './journal.js';
 import { workerEnv } from './worker.js';
 
@@ -71,7 +71,7 @@ export function windowsFromUsage(usage: UsageLike): WindowReading[] {
 }
 
 export interface ProbeDeps {
-  accounts: Account[];
+  accounts: AccountRecord[];
   journal: Journal;
   /** A working directory for the probe's query; nothing is read or written there. */
   cwd: string;
@@ -174,10 +174,10 @@ export function readProbeEnv(env: NodeJS.ProcessEnv = process.env): ProbeEnv {
   };
 }
 
-/** Probes every Claude account in turn, one query at a time, and never the Codex row. */
+/** Probes every registered Claude account in turn, one query at a time. */
 export async function probeAccounts(deps: ProbeDeps): Promise<ProbeResult[]> {
   const results: ProbeResult[] = [];
-  for (const account of claudeAccounts(deps.accounts)) {
+  for (const account of deps.accounts) {
     results.push(await probeOne(account, deps));
   }
   return results;

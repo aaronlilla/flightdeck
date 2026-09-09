@@ -1,9 +1,9 @@
 /**
- * Accounts: the registry, the two window signals (live event and probe), the fold behind
- * `GET /accounts`, and run attribution. No live SDK call anywhere here: every query is a
+ * Accounts: the registry, its validation refusals, the two window signals (live event
+ * and probe), and run attribution. No live SDK call anywhere here: every query is a
  * fake generator, so this file spends nothing on any account.
  */
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -14,18 +14,16 @@ import type { Query } from '@anthropic-ai/claude-agent-sdk';
 import { Engine, type QueryFn } from '../../src/adapter/engine.js';
 import type { EngineEvent } from '../../src/adapter/events.js';
 import {
-  accountIdForConfigDir, addAccount, checkAddCandidate, defaultAccounts, loadAccounts, removeAccount, validateAccounts,
+  accountsRegistryPath, addAccount, checkAddCandidate, liveRunsByAccount, loadAccounts, normalizeDir, removeAccount, validateAccounts,
 } from '../../src/forge/accounts.js';
-import { buildAccountsBoard } from '../../src/forge/accounts-board.js';
 import { probeAccounts, windowsFromUsage } from '../../src/forge/accounts-probe.js';
 import { Journal, replay } from '../../src/forge/journal.js';
-import { accountsPath } from '../../src/forge/paths.js';
-import { SdkEngine } from '../../src/forge/sdkengine.js';
 import { forge } from '../../src/forge/cli.js';
 
 let home: string;
 let journalPath: string;
 let fleetDir: string;
+let registryPath: string;
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'forge-accounts-'));
@@ -33,6 +31,7 @@ beforeEach(() => {
   fleetDir = join(home, 'fleet-a');
   process.env['FORGE_HOME'] = home;
   process.env['FORGE_CONFIG_DIR'] = fleetDir;
+  registryPath = accountsRegistryPath();
 });
 
 // ---------------------------------------------------------------------------------------
@@ -88,85 +87,134 @@ describe('the adapter surfaces rate_limit_event as a typed rate-limit event', ()
 // Registry
 // ---------------------------------------------------------------------------------------
 
-describe('the accounts registry', () => {
-  it('absent file: one Claude account on the fleet dir plus the Codex lane, exactly today', () => {
-    const registry = loadAccounts(accountsPath(), fleetDir);
-    expect(registry.source).toBe('default');
-    expect(registry.accounts).toEqual(defaultAccounts(fleetDir));
-    expect(registry.accounts.map((a) => a.provider)).toEqual(['claude', 'codex']);
-    expect(registry.accounts[0]).toMatchObject({ id: 'fleet', configDir: fleetDir });
+describe('the account registry file', () => {
+  it('reads an empty list when no registry file exists yet', () => {
+    expect(loadAccounts(registryPath)).toEqual([]);
+  });
+
+  it('adds an account and reads it back', () => {
+    addAccount({ id: 'test-a', label: 'work', configDir: join(home, 'accounts', 'test-a'), connectedAt: 1000 }, registryPath);
+    const accounts = loadAccounts(registryPath);
+    expect(accounts).toHaveLength(1);
+    expect(accounts[0]).toMatchObject({ id: 'test-a', label: 'work', connectedAt: 1000 });
+  });
+
+  it('adds a second account alongside the first, rather than overwriting it', () => {
+    addAccount({ id: 'test-a', label: 'work', configDir: join(home, 'accounts', 'test-a'), connectedAt: 1000 }, registryPath);
+    addAccount({ id: 'test-b', label: 'personal', configDir: join(home, 'accounts', 'test-b'), connectedAt: 2000 }, registryPath);
+    expect(loadAccounts(registryPath).map((a) => a.id)).toEqual(['test-a', 'test-b']);
+  });
+
+  it('removes an account by id, leaving the rest untouched', () => {
+    addAccount({ id: 'test-a', label: 'work', configDir: join(home, 'accounts', 'test-a'), connectedAt: 1000 }, registryPath);
+    addAccount({ id: 'test-b', label: 'personal', configDir: join(home, 'accounts', 'test-b'), connectedAt: 2000 }, registryPath);
+    removeAccount('test-a', registryPath);
+    expect(loadAccounts(registryPath).map((a) => a.id)).toEqual(['test-b']);
+  });
+
+  it('removing an id that is not there is a no-op, not a throw', () => {
+    addAccount({ id: 'test-a', label: 'work', configDir: join(home, 'accounts', 'test-a'), connectedAt: 1000 }, registryPath);
+    expect(() => removeAccount('test-nope', registryPath)).not.toThrow();
+    expect(loadAccounts(registryPath)).toHaveLength(1);
+  });
+
+  it('tolerates a torn or missing registry file by reading an empty list', () => {
+    expect(loadAccounts(join(home, 'nowhere', 'registry.json'))).toEqual([]);
+  });
+});
+
+describe('validateAccounts: the registry\'s own refusals', () => {
+  it('refuses an id that is not letters, digits, dots, dashes or underscores', () => {
+    const verdict = validateAccounts([{ id: 'has a space', label: 'x', configDir: join(home, 'x'), connectedAt: 0 }]);
+    expect(verdict.ok).toBe(false);
   });
 
   it('refuses a configDir equal to the operator\'s own ~/.claude, in either separator', () => {
     const own = join(homedir(), '.claude');
-    const verdict = validateAccounts([{ id: 'me', provider: 'claude', configDir: own.replace(/\\/g, '/') }]);
+    const verdict = validateAccounts([{ id: 'me', label: 'me', configDir: own.replace(/\\/g, '/'), connectedAt: 0 }]);
     expect(verdict.ok).toBe(false);
     if (!verdict.ok) expect(verdict.reason).toMatch(/own/);
   });
 
   it('refuses duplicate ids and duplicate config dirs', () => {
     const twoIds = validateAccounts([
-      { id: 'a', provider: 'claude', configDir: join(home, 'x') },
-      { id: 'a', provider: 'claude', configDir: join(home, 'y') },
+      { id: 'a', label: 'a', configDir: join(home, 'x'), connectedAt: 0 },
+      { id: 'a', label: 'a2', configDir: join(home, 'y'), connectedAt: 0 },
     ]);
     expect(twoIds.ok).toBe(false);
     const twoDirs = validateAccounts([
-      { id: 'a', provider: 'claude', configDir: join(home, 'x') },
-      { id: 'b', provider: 'claude', configDir: join(home, 'X').replace(/\\/g, '/') + '/' },
+      { id: 'a', label: 'a', configDir: join(home, 'x'), connectedAt: 0 },
+      { id: 'b', label: 'b', configDir: join(home, 'X').replace(/\\/g, '/') + '/', connectedAt: 0 },
     ]);
     expect(twoDirs.ok).toBe(process.platform === 'win32' ? false : true);
   });
 
-  it('add writes the file with the defaults kept, remove takes one out, and an unknown id is refused', () => {
-    const path = accountsPath();
-    expect(existsSync(path)).toBe(false);
-    const added = addAccount(loadAccounts(path, fleetDir), { id: 'fleet-b', configDir: join(home, 'fleet-b'), maxConcurrent: 3 });
-    expect(added.ok).toBe(true);
-    const onDisk = JSON.parse(readFileSync(path, 'utf8')) as { accounts: Array<{ id: string }> };
-    expect(onDisk.accounts.map((a) => a.id)).toEqual(['fleet', 'codex', 'fleet-b']);
-    const reloaded = loadAccounts(path, fleetDir);
-    expect(reloaded.source).toBe('file');
-    const removed = removeAccount(reloaded, 'fleet-b');
-    expect(removed.ok).toBe(true);
-    expect(loadAccounts(path, fleetDir).accounts.map((a) => a.id)).toEqual(['fleet', 'codex']);
-    expect(removeAccount(loadAccounts(path, fleetDir), 'nope').ok).toBe(false);
+  it('refuses a maxConcurrent that is not a positive integer', () => {
+    const verdict = validateAccounts([{ id: 'a', label: 'a', configDir: join(home, 'x'), connectedAt: 0, maxConcurrent: 0 }]);
+    expect(verdict.ok).toBe(false);
+  });
+
+  it('normalizeDir folds separators and trailing slashes, and case on Windows', () => {
+    const a = normalizeDir(join(home, 'X') + '/');
+    const b = normalizeDir(join(home, 'x'));
+    expect(a).toBe(process.platform === 'win32' ? b : a);
+  });
+
+  it('addAccount refuses via validateAccounts and never writes on a refusal', () => {
+    expect(() => addAccount({ id: 'me', label: 'me', configDir: join(homedir(), '.claude'), connectedAt: 0 }, registryPath))
+      .toThrow(/own config dir/);
+    expect(existsSync(registryPath)).toBe(false);
   });
 
   it('checkAddCandidate refuses the operator own dir and a duplicate without writing, so a probe never runs on either', () => {
-    const registry = loadAccounts(accountsPath(), fleetDir);
-    const own = checkAddCandidate(registry, { id: 'me', configDir: join(homedir(), '.claude') });
+    addAccount({ id: 'fleet-a', label: 'fleet-a', configDir: fleetDir, connectedAt: 0 }, registryPath);
+    const existing = loadAccounts(registryPath);
+    const own = checkAddCandidate(existing, { id: 'me', configDir: join(homedir(), '.claude') });
     expect(own.ok).toBe(false);
-    const dup = checkAddCandidate(registry, { id: 'again', configDir: fleetDir });
+    const dup = checkAddCandidate(existing, { id: 'again', configDir: fleetDir });
     expect(dup.ok).toBe(false);
-    const fresh = checkAddCandidate(registry, { id: 'fleet-b', configDir: join(home, 'fleet-b') });
+    const fresh = checkAddCandidate(existing, { id: 'fleet-b', configDir: join(home, 'fleet-b') });
     expect(fresh.ok).toBe(true);
-    expect(existsSync(accountsPath())).toBe(false);
+  });
+});
+
+describe('liveRunsByAccount: counted fresh from events and the currently live goals', () => {
+  it('counts a run against the account its run.started row named', () => {
+    const events = [
+      { event: 'run.started', run: 'goal-1', actor: 'runner', account: 'test-a' },
+      { event: 'run.started', run: 'goal-2', actor: 'runner', account: 'test-b' },
+    ] as never[];
+    expect(liveRunsByAccount(events, ['goal-1', 'goal-2'])).toEqual({ 'test-a': 1, 'test-b': 1 });
   });
 
-  it('a corrupt or invalid file is reported, never silently replaced by the default', () => {
-    const path = accountsPath();
-    writeFileSync(path, '{ not json', 'utf8');
-    const registry = loadAccounts(path, fleetDir);
-    expect(registry.source).toBe('invalid');
-    expect(registry.error).toMatch(/JSON|parse/i);
-    expect(registry.accounts).toEqual(defaultAccounts(fleetDir));
+  it('never counts a goal that is no longer live, even if it once ran on this account', () => {
+    const events = [
+      { event: 'run.started', run: 'goal-1', actor: 'runner', account: 'test-a' },
+    ] as never[];
+    expect(liveRunsByAccount(events, [])).toEqual({});
   });
 
-  it('attributes a config dir to the registered id, and falls back to the basename for a stranger', () => {
-    const accounts = defaultAccounts(fleetDir);
-    expect(accountIdForConfigDir(accounts, fleetDir)).toBe('fleet');
-    expect(accountIdForConfigDir(accounts, fleetDir.replace(/\\/g, '/') + '/')).toBe('fleet');
-    expect(accountIdForConfigDir(accounts, join(home, '.claude-other'))).toBe('.claude-other');
+  it('sums more than one live run on the same account', () => {
+    const events = [
+      { event: 'run.started', run: 'goal-1', actor: 'runner', account: 'test-a' },
+      { event: 'run.started', run: 'goal-2', actor: 'runner', account: 'test-a' },
+    ] as never[];
+    expect(liveRunsByAccount(events, ['goal-1', 'goal-2'])).toEqual({ 'test-a': 2 });
   });
 });
 
 describe('forge accounts', () => {
-  it('list names the built-in account and where the registry would be', async () => {
+  it('list says there are none yet with an empty registry', async () => {
+    const result = await forge(['accounts', 'list']);
+    expect(result.code).toBe(0);
+    expect(result.lines.join(' ')).toMatch(/no accounts yet/);
+  });
+
+  it('list names a registered account and its config dir', async () => {
+    addAccount({ id: 'fleet-a', label: 'fleet-a', configDir: fleetDir, connectedAt: 0 }, registryPath);
     const result = await forge(['accounts', 'list']);
     expect(result.code).toBe(0);
     expect(result.lines.join(' ')).toContain(fleetDir);
-    expect(result.lines.join(' ')).toContain('every launch goes here today');
-    expect(result.lines.at(-1)).toContain('built in');
   });
 
   it('add refuses the operator own dir before any probe runs, and journals nothing', async () => {
@@ -174,7 +222,7 @@ describe('forge accounts', () => {
     expect(result.code).toBe(1);
     expect(result.lines[0]).toMatch(/own config dir/);
     expect(existsSync(journalPath) ? replay(journalPath).events.filter((e) => e.event === 'account.probe') : []).toEqual([]);
-    expect(existsSync(accountsPath())).toBe(false);
+    expect(existsSync(registryPath)).toBe(false);
   });
 
   it('add refuses a dir that does not exist without probing it', async () => {
@@ -227,7 +275,7 @@ describe('windowsFromUsage', () => {
 // ---------------------------------------------------------------------------------------
 
 describe('probeAccounts', () => {
-  it('journals account.probe and one account.window per window under each Claude account, and never yields a turn', async () => {
+  it('journals account.probe and one account.window per window under each account, and never yields a turn', async () => {
     const dirsSeen: string[] = [];
     let interrupted = 0;
     let pulled = 0;
@@ -252,9 +300,8 @@ describe('probeAccounts', () => {
     const journal = new Journal(journalPath);
     const results = await probeAccounts({
       accounts: [
-        { id: 'fleet', provider: 'claude', configDir: fleetDir },
-        { id: 'fleet-b', provider: 'claude', configDir: join(home, 'fleet-b') },
-        { id: 'codex', provider: 'codex' },
+        { id: 'fleet', label: 'fleet', configDir: fleetDir, connectedAt: 0 },
+        { id: 'fleet-b', label: 'fleet-b', configDir: join(home, 'fleet-b'), connectedAt: 0 },
       ],
       journal, queryFn: fn, cwd: home, timeoutMs: 2000,
     });
@@ -289,8 +336,8 @@ describe('probeAccounts', () => {
     const journal = new Journal(journalPath);
     const results = await probeAccounts({
       accounts: [
-        { id: 'a', provider: 'claude', configDir: join(home, 'a') },
-        { id: 'b', provider: 'claude', configDir: join(home, 'b') },
+        { id: 'a', label: 'a', configDir: join(home, 'a'), connectedAt: 0 },
+        { id: 'b', label: 'b', configDir: join(home, 'b'), connectedAt: 0 },
       ],
       journal, queryFn: fn, cwd: home, timeoutMs: 2000,
     });
@@ -304,122 +351,3 @@ describe('probeAccounts', () => {
   });
 });
 
-// ---------------------------------------------------------------------------------------
-// Attribution: run.started carries the account, and the worker's engine journals the
-// live rate-limit event under it
-// ---------------------------------------------------------------------------------------
-
-describe('a live worker journals account.window under its account', () => {
-  it('rate_limit_event on a turn lands as account.window tagged with the launch account', async () => {
-    let asked = false;
-    const fn = (() => {
-      async function* generate() {
-        yield { type: 'system', subtype: 'init', session_id: 's1', model: 'claude-sonnet-5', cwd: '/', tools: [], slash_commands: [] };
-        for await (const _pushed of [1] as unknown as AsyncIterable<unknown>) {
-          if (asked) return;
-          asked = true;
-          yield {
-            type: 'assistant', session_id: 's1',
-            message: { model: 'claude-sonnet-5', content: [{ type: 'text', text: 'ok' }], usage: { input_tokens: 10, output_tokens: 1 } },
-          };
-          yield { type: 'rate_limit_event', session_id: 's1', uuid: 'u', rate_limit_info: { status: 'allowed', rateLimitType: 'five_hour', resetsAt: 1788907200 } };
-          yield { type: 'result', subtype: 'success', is_error: false, duration_ms: 1 };
-        }
-      }
-      return generate() as unknown as Query;
-    }) as unknown as QueryFn;
-
-    const engine = new SdkEngine({ journalPath, inboxDir: join(home, 'inbox'), gotchasDir: join(home, 'gotchas'), queryFn: fn });
-    await engine.run({ run: 'r1', model: 'claude-sonnet-5', prompt: '# Goal\n\ndo it\n', cwd: join(home, 'ws'), maxTurns: 10, env: {} });
-    await engine.close();
-
-    const state = replay(journalPath);
-    const row = state.events.find((e) => e.event === 'account.window');
-    expect(row).toMatchObject({ run: 'r1', actor: 'worker', account: 'fleet', window: 'five_hour', status: 'allowed', resetsAt: 1788907200_000 });
-  });
-});
-
-// ---------------------------------------------------------------------------------------
-// Board fold
-// ---------------------------------------------------------------------------------------
-
-describe('buildAccountsBoard', () => {
-  it('one row per account: windows from the latest row, tokens today by attribution, live runs, connected state', () => {
-    const now = Date.parse('2026-09-08T18:00:00Z');
-    const journal = new Journal(journalPath);
-    journal.append({ event: 'run.started', run: 'r1', actor: 'runner', model: 'claude-sonnet-5', account: 'fleet' });
-    journal.append({ event: 'turn.end', run: 'r1', actor: 'worker', usage: { input: 100, cacheRead: 0, cacheCreation: 0, output: 50 }, model: 'claude-sonnet-5' });
-    journal.append({ event: 'run.started', run: 'r2', actor: 'runner', model: 'claude-sonnet-5', account: 'fleet-b' });
-    journal.append({ event: 'run.finished', run: 'r2', actor: 'runner' });
-    journal.append({ event: 'run.started', run: 'r0', actor: 'runner', model: 'claude-sonnet-5' });
-    journal.append({ event: 'turn.end', run: 'r0', actor: 'worker', usage: { input: 7, cacheRead: 0, cacheCreation: 0, output: 0 }, model: 'claude-sonnet-5' });
-    journal.append({ event: 'account.probe', actor: 'probe', account: 'fleet', ok: true });
-    journal.append({ event: 'account.window', actor: 'probe', account: 'fleet', window: 'five_hour', status: 'allowed', utilization: 20, resetsAt: now + 1000 });
-    journal.append({ event: 'account.window', actor: 'probe', account: 'fleet', window: 'seven_day', status: 'allowed', utilization: 61, resetsAt: null });
-    journal.append({ event: 'account.window', actor: 'worker', run: 'r1', account: 'fleet', window: 'five_hour', status: 'allowed_warning', utilization: 85, resetsAt: now + 2000 });
-    journal.append({ event: 'account.probe', actor: 'probe', account: 'fleet-b', ok: false, error: 'not logged in' });
-    journal.close();
-
-    const board = buildAccountsBoard({
-      accounts: [
-        { id: 'fleet', provider: 'claude', configDir: fleetDir, maxConcurrent: 4 },
-        { id: 'fleet-b', provider: 'claude', configDir: join(home, 'fleet-b') },
-        { id: 'codex', provider: 'codex' },
-      ],
-      fleet: replay(journalPath),
-      codexLedgerLines: [
-        JSON.stringify({ ok: true, duration_s: 100, at: new Date(now - 60_000).toISOString() }),
-        JSON.stringify({ ok: false, error: 'codex failed (exit 1)', duration_s: 5, at: new Date(now - 30_000).toISOString() }),
-        JSON.stringify({ ok: true, duration_s: 999, at: '2026-09-01T00:00:00Z' }),
-      ],
-      now, launchAccount: 'fleet',
-    });
-
-    const fleet = board.accounts.find((a) => a.id === 'fleet');
-    expect(fleet).toMatchObject({
-      provider: 'claude', connected: 'yes', liveRuns: 1, tokensToday: 150, isLaunchAccount: true, maxConcurrent: 4,
-      fiveHour: { utilization: 85, status: 'allowed_warning', resetsAt: now + 2000 },
-      sevenDay: { utilization: 61, status: 'allowed', resetsAt: null },
-    });
-    expect(fleet?.lastEvent).toMatchObject({ window: 'five_hour', status: 'allowed_warning', actor: 'worker' });
-    const b = board.accounts.find((a) => a.id === 'fleet-b');
-    expect(b).toMatchObject({ connected: 'no', connectedReason: 'not logged in', liveRuns: 0, tokensToday: 0, isLaunchAccount: false });
-    expect(b?.fiveHour).toMatchObject({ utilization: null, status: 'unknown' });
-    const codex = board.accounts.find((a) => a.id === 'codex');
-    expect(codex).toMatchObject({
-      provider: 'codex', connected: 'yes', connectedReason: null,
-      codex: { callsToday: 2, durationTodayMs: 105_000, lastError: 'codex failed (exit 1)', lastOkAt: now - 60_000 },
-    });
-    expect(board.unattributedTokensToday).toBe(7);
-  });
-
-  it('an unavailable probe row keeps the last known utilization but says so', () => {
-    const now = Date.now();
-    const journal = new Journal(journalPath);
-    journal.append({ event: 'account.window', actor: 'probe', account: 'fleet', window: 'five_hour', status: 'allowed', utilization: 40, resetsAt: now + 1000 });
-    journal.append({ event: 'account.window', actor: 'probe', account: 'fleet', window: 'five_hour', status: 'unavailable', utilization: null, resetsAt: null });
-    journal.close();
-    const board = buildAccountsBoard({
-      accounts: [{ id: 'fleet', provider: 'claude', configDir: fleetDir }],
-      fleet: replay(journalPath), codexLedgerLines: [], now, launchAccount: 'fleet',
-    });
-    expect(board.accounts[0]?.fiveHour).toMatchObject({ utilization: 40, status: 'unavailable', resetsAt: now + 1000 });
-  });
-
-  it('a rejected window reads as paused until its reset', () => {
-    const now = Date.now();
-    const journal = new Journal(journalPath);
-    journal.append({ event: 'account.window', actor: 'worker', run: 'r1', account: 'fleet', window: 'five_hour', status: 'rejected', utilization: 100, resetsAt: now + 60_000 });
-    journal.close();
-    const board = buildAccountsBoard({
-      accounts: [{ id: 'fleet', provider: 'claude', configDir: fleetDir }],
-      fleet: replay(journalPath), codexLedgerLines: [], now, launchAccount: 'fleet',
-    });
-    expect(board.accounts[0]?.paused).toEqual({ until: now + 60_000, window: 'five_hour' });
-    const later = buildAccountsBoard({
-      accounts: [{ id: 'fleet', provider: 'claude', configDir: fleetDir }],
-      fleet: replay(journalPath), codexLedgerLines: [], now: now + 61_000, launchAccount: 'fleet',
-    });
-    expect(later.accounts[0]?.paused).toBeNull();
-  });
-});

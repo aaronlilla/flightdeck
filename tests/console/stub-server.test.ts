@@ -29,6 +29,17 @@ async function post<T>(path: string, body: unknown = {}): Promise<{ status: numb
   return { status: response.status, body: (await response.json()) as T };
 }
 
+/** The irreversible routes answer 202 with a confirm token and run nothing until the
+ *  token comes back (`confirmGate` in the stub, mirroring `ConsoleWrites`). Every
+ *  caller here goes through both passes, and asserts the gate held on the first. */
+async function postConfirmed<T>(path: string, body: Record<string, unknown> = {}): Promise<{ status: number; body: T }> {
+  const gate = await post<{ ok: boolean; pending?: boolean; token?: string }>(path, body);
+  expect(gate.status).toBe(202);
+  expect(gate.body.pending).toBe(true);
+  expect(gate.body.token).toBeTruthy();
+  return post<T>(path, { ...body, confirm: gate.body.token });
+}
+
 describe('stub server', () => {
   it('serves the 15-lane board with one lane per state (plus a third-repo lane)', async () => {
     const { lanes } = await get<{ lanes: { state: string }[] }>('/lanes');
@@ -47,7 +58,7 @@ describe('stub server', () => {
   });
 
   it('kills a run and journals it', async () => {
-    const { status, body } = await post<{ ok: boolean; jid: string }>('/run/FLT-201/kill', { reason: 'operator' });
+    const { status, body } = await postConfirmed<{ ok: boolean; jid: string }>('/run/FLT-201/kill', { reason: 'operator' });
     expect(status).toBe(200);
     expect(body.ok).toBe(true);
     const { lanes } = await get<{ lanes: { id: string; state: string }[] }>('/lanes');
@@ -98,14 +109,14 @@ describe('stub server', () => {
   it('previews and then performs a bulk retire of finished lanes', async () => {
     const preview = await get<{ items: { id: string }[] }>('/retire-finished');
     expect(preview.items.map((i) => i.id).sort()).toEqual(['FLT-190', 'FLT-193']);
-    const { body } = await post<{ ok: boolean; retired: string[] }>('/retire-finished');
+    const { body } = await postConfirmed<{ ok: boolean; retired: string[] }>('/retire-finished');
     expect(body.retired.sort()).toEqual(['FLT-190', 'FLT-193']);
     const archived = await get<{ lanes: { id: string }[] }>('/lanes?archived=1');
     expect(archived.lanes.map((l) => l.id).sort()).toEqual(['FLT-190', 'FLT-193']);
   });
 
   it('a retired lane comes back on unretire', async () => {
-    await post('/retire-finished');
+    await postConfirmed('/retire-finished');
     const jid = (await post<{ jid: string }>('/run/FLT-193/unretire')).body.jid;
     expect(jid).toBeTruthy();
     const archived = await get<{ lanes: { id: string }[] }>('/lanes?archived=1');
@@ -118,7 +129,7 @@ describe('stub server', () => {
     expect(preview.notReady).toEqual([]);
     // Matches the real POST /merge-ready shape (src/forge/server.ts mergeReadyPost):
     // {ok, outcomes: [{id, ok, message}]} -- never the older {merged, failed} shape.
-    const { body } = await post<{ ok: boolean; outcomes: { id: string; ok: boolean; message: string }[] }>('/merge-ready');
+    const { body } = await postConfirmed<{ ok: boolean; outcomes: { id: string; ok: boolean; message: string }[] }>('/merge-ready');
     expect(body.outcomes).toEqual([{ id: 'FLT-193', ok: true, message: expect.any(String) }]);
     const { lanes } = await get<{ lanes: { id: string; state: string }[] }>('/lanes');
     expect(lanes.find((l) => l.id === 'FLT-193')?.state).toBe('merged');
@@ -168,8 +179,30 @@ describe('stub server', () => {
   // Sweep #6: the console reads success off a non-null jid (`receiptCard`'s
   // `type: jid ? 'receipt' : 'refusal'`); a dismiss with no jid rendered as a red
   // Refused card even though it succeeded.
+  // Queue-throughput W2/W3: /queue/width persists the width the console posts and
+  // GET /queue reflects it back, so the stepper in QueueView isn't posting into a void.
+  it('POST /queue/width changes the width GET /queue reports back', async () => {
+    const before = await get<{ maxInFlight: number }>('/queue');
+    expect(before.maxInFlight).toBe(4);
+    const { status, body } = await post<{ ok: boolean; message: string }>('/queue/width', { maxInFlight: 7 });
+    expect(status).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.message).toContain('7');
+    const after = await get<{ maxInFlight: number }>('/queue');
+    expect(after.maxInFlight).toBe(7);
+  });
+
+  it('POST /queue/width refuses an out-of-range value with the exact message', async () => {
+    const { status, body } = await post<{ ok: boolean; message: string }>('/queue/width', { maxInFlight: 13 });
+    expect(status).toBe(400);
+    expect(body.ok).toBe(false);
+    expect(body.message).toBe('maxInFlight must be an integer between 1 and 12');
+    const after = await get<{ maxInFlight: number }>('/queue');
+    expect(after.maxInFlight).toBe(4);
+  });
+
   it('POST /clear returns a jid on a successful dismiss, and clears the lane\'s question', async () => {
-    const cleared = await post<{ ok: boolean; jid: string | null }>('/clear', { inboxKey: 'ask-bbz-118' });
+    const cleared = await postConfirmed<{ ok: boolean; jid: string | null }>('/clear', { inboxKey: 'ask-bbz-118' });
     expect(cleared.status).toBe(200);
     expect(cleared.body.ok).toBe(true);
     expect(cleared.body.jid).toBeTruthy();

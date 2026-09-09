@@ -22,7 +22,12 @@ test('the epic chip selects the KEY placeholder, and Add refuses while it remain
   const selected = await input.evaluate((el: any) => el.value.slice(el.selectionStart ?? 0, el.selectionEnd ?? 0)) as string;
   expect(selected).toBe('KEY');
 
-  await page.getByText('Add ⏎', { exact: true }).click();
+  const addButton = page.getByText('Add ⏎', { exact: true });
+  await expect(addButton).toHaveAttribute('aria-disabled', 'true');
+  // The control renders aria-disabled while the placeholder remains, which Playwright
+  // itself now refuses to click -- force it through to prove the guard is in submit(),
+  // not merely in the disabled styling.
+  await addButton.click({ force: true });
   // Still on the placeholder text -- nothing was added.
   await expect(input).toHaveValue('parent = KEY');
 
