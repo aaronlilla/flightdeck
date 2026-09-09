@@ -378,7 +378,13 @@ export type IntegrationStatus = 'ok' | 'down' | 'degraded' | 'off' | 'busy' | 'c
  *  uses and which stays untouched: a `mcp`-kind row's `status` still only ever reads
  *  `ok`/`off`, mapped coarsely from this value. See the mcp-live-state goal brief's
  *  Contract-gaps section and its logged Status resolution for why. */
-export type McpConnState = 'connected' | 'needs-login' | 'pending-approval' | 'failed' | 'unknown';
+export type McpConnState =
+  | 'connected'
+  | 'needs-login'
+  | 'pending-approval'
+  | 'failed'
+  | 'unknown'
+  | 'connecting';
 
 export interface Integration {
   id: string;

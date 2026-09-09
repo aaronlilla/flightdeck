@@ -47,6 +47,9 @@ export interface ProbeResult {
   /** The real MCP connection state this probe found, for an `mcp`-kind row only.
    *  Undefined for every `conn`-kind probe, which has no such state to report. */
   mcpState?: McpConnState;
+  /** The MCP CLI's own error text, verbatim, for an `mcp`-kind row whose `mcpState` is
+   *  `failed`. Undefined for every other probe and every other `mcpState`. */
+  lastError?: string;
 }
 
 /** The `{ok, detail}` shape a boolean-probe body returns to `timed`, which turns it into
@@ -56,12 +59,13 @@ interface ProbeOutcome {
   detail?: string;
   scope?: string;
   mcpState?: McpConnState;
+  lastError?: string;
 }
 
 export type Probe = () => Promise<ProbeResult>;
 export type Reconnect = () => Promise<void>;
 
-interface IntegrationDecl {
+export interface IntegrationDecl {
   id: string;
   kind: 'conn' | 'mcp';
   name: string;
@@ -83,6 +87,7 @@ async function timed(fn: () => Promise<ProbeOutcome>, spawnFn?: RunRequest['spaw
       ...(outcome.detail !== undefined ? { detail: outcome.detail } : {}),
       ...(outcome.scope !== undefined ? { scope: outcome.scope } : {}),
       ...(outcome.mcpState !== undefined ? { mcpState: outcome.mcpState } : {}),
+      ...(outcome.lastError !== undefined ? { lastError: outcome.lastError } : {}),
     };
   } catch (error) {
     return { status: 'off', latencyMs: null, detail: error instanceof Error ? error.message : 'probe threw' };
@@ -251,14 +256,21 @@ function mcpServerSpecs(): Record<string, { url?: string; command?: string }> {
  *  `off` with the CLI's own status text carried in `detail`, matching how this probe
  *  already treated any non-`ok` MCP result before this change. W2 widens
  *  `IntegrationStatus` itself so these states stop being collapsed into `off`. */
-function mcpConnStateDetail(name: string, row: McpRow | undefined): { ok: boolean; detail?: string } {
-  if (!row) return { ok: false, detail: `${name} is not in claude mcp list's own server table` };
-  if (row.state === 'connected') return { ok: true };
+/** Exported for the W2 round-trip specimen only; every runtime caller reaches this
+ *  through `mcpProbes`. */
+export function mcpConnStateDetail(name: string, row: McpRow | undefined): { ok: boolean; detail?: string; mcpState: McpConnState; lastError?: string } {
+  if (!row) {
+    return { ok: false, detail: `${name} is not in claude mcp list's own server table`, mcpState: 'unknown' };
+  }
+  if (row.state === 'connected') return { ok: true, mcpState: 'connected' };
   const label = row.state === 'needs-login' ? 'needs authentication'
     : row.state === 'pending-approval' ? 'pending approval'
     : row.state === 'failed' ? (row.lastError ?? 'failed')
     : 'connection state unknown';
-  return { ok: false, detail: label };
+  return {
+    ok: false, detail: label, mcpState: row.state,
+    ...(row.state === 'failed' ? { lastError: row.lastError ?? label } : {}),
+  };
 }
 
 function mcpProbes(spawnFn?: RunRequest['spawnFn']): Record<string, { decl: IntegrationDecl; probe: Probe }> {
@@ -335,7 +347,7 @@ const DEFAULT_RECONNECTS: Record<string, string[]> = {
   github: ['gh', 'auth', 'login', '--web'],
 };
 
-interface StoredRow {
+export interface StoredRow {
   id: string;
   latencyMs: number | null;
   status: IntegrationStatus;
@@ -354,6 +366,12 @@ interface StoredRow {
   lastHealthyAt: number | null;
   /** Consecutive non-`ok` probe results since the last `ok` one; reset to 0 on recovery. */
   retryCount: number;
+  /** The real `claude mcp list`/`get` connection state for an `mcp`-kind row. Absent for
+   *  every `conn`-kind row, which never sets it. */
+  mcpState?: McpConnState;
+  /** The MCP CLI's own error text for a `mcp`-kind row, verbatim. Absent for a `conn`-kind
+   *  row, and for an `mcp` row with nothing to report. */
+  lastError?: string;
 }
 
 interface StoredFile {
@@ -389,7 +407,9 @@ function downCopy(decl: IntegrationDecl, row: StoredRow | undefined, dependents:
   return { cause, effect, fix };
 }
 
-function toIntegration(decl: IntegrationDecl, row: StoredRow | undefined, dependents: string[], canConnect: boolean): Integration {
+/** Exported for the W2 round-trip specimen only; every runtime caller reaches this
+ *  through `IntegrationsRegistry`. */
+export function toIntegration(decl: IntegrationDecl, row: StoredRow | undefined, dependents: string[], canConnect: boolean): Integration {
   const status = row?.status ?? 'checking';
   const down = status === 'down';
   const copy = down ? downCopy(decl, row, dependents) : null;
@@ -413,6 +433,8 @@ function toIntegration(decl: IntegrationDecl, row: StoredRow | undefined, depend
     step: null,
     canConnect,
     links: {},
+    mcpState: row?.mcpState ?? null,
+    lastError: row?.lastError ?? null,
   };
 }
 
@@ -536,6 +558,8 @@ export class IntegrationsRegistry {
             ...(result.desc !== undefined ? { desc: result.desc } : {}),
             ...(result.detail !== undefined ? { detail: result.detail } : {}),
             ...(result.scope !== undefined ? { scope: result.scope } : {}),
+            ...(result.mcpState !== undefined ? { mcpState: result.mcpState } : {}),
+            ...(result.lastError !== undefined ? { lastError: result.lastError } : {}),
           };
         }
       }
@@ -562,6 +586,8 @@ export class IntegrationsRegistry {
         ...(result.desc !== undefined ? { desc: result.desc } : {}),
         ...(result.detail !== undefined ? { detail: result.detail } : {}),
         ...(result.scope !== undefined ? { scope: result.scope } : {}),
+        ...(result.mcpState !== undefined ? { mcpState: result.mcpState } : {}),
+        ...(result.lastError !== undefined ? { lastError: result.lastError } : {}),
       };
       writeStored(this.configPath, stored);
     }
