@@ -74,7 +74,7 @@ export function TicketSheet({ lane, now, onClose, onCommand, onSendLane }: Ticke
           <div style={{ position: 'relative', border: '1px solid var(--warn)', background: 'var(--warnTint)', padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 6 }}>
             <Marks />
             <span className="kick" style={{ color: 'var(--warn)', fontWeight: 700 }}>It asked · {hm(question.askedAt)}</span>
-            <p className="hd" style={{ margin: 0, fontSize: 'var(--fs-heading)', lineHeight: 1.2 }}>{question.text}</p>
+            <p className="hd" dir="auto" style={{ margin: 0, fontSize: 'var(--fs-heading)', lineHeight: 1.2, overflowWrap: 'anywhere' }}>{question.text.trim() || 'The agent asked a question but sent no text; answer below.'}</p>
           </div>
         ) : null}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>

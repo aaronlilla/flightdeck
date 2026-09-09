@@ -35,7 +35,7 @@ export function LaneTile({ lane, now, blocker = null, onOpen, onCommand }: LaneT
     <div
       data-testid={`lane-${lane.id}`}
       style={{
-        position: 'relative', border: `1px solid ${word.border}`, borderStyle: word.borderStyle, padding: '12px 14px',
+        position: 'relative', minWidth: 0, border: `1px solid ${word.border}`, borderStyle: word.borderStyle, padding: '12px 14px',
         display: 'flex', flexDirection: 'column', gap: 5, minHeight: 112, background: word.background, cursor: 'pointer',
       }}
       onClick={() => onOpen(lane.id)}

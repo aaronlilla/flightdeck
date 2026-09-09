@@ -32,7 +32,7 @@ export function buildNeeds(
     if (!lane.question || lane.retiredAt !== null) continue;
     const head = laneHeadline(lane);
     needs.push({
-      kind: 'lane', id: lane.id, key: lane.ticket ?? '', title: lane.title ?? head.main, line: lane.question.text,
+      kind: 'lane', id: lane.id, key: lane.ticket ?? '', title: lane.title?.trim() || head.main, line: lane.question.text,
       options: lane.question.opts, askKey: lane.question.key, askedAt: lane.question.askedAt,
       cta: { label: 'Answer', run: () => onOpen('lane', lane.id) },
     });
@@ -53,11 +53,11 @@ export function NeedsYou({ items, now, onCommand }: NeedsYouProps): JSX.Element 
   return (
     <section data-testid="needs-you" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       <h6 className="sec" style={{ color: 'var(--warn)' }}>Needs you <span className="n">{items.length} {items.length === 1 ? 'question' : 'questions'}</span></h6>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr)', gap: 14 }}>
         {items.map((need) => (
           <QuestionCard
             key={need.askKey}
-            head={need.key ? `${need.key} · ${need.title}` : need.title}
+            head={need.key && need.title !== need.key ? `${need.key} · ${need.title}` : need.title}
             stamp={`asked ${durationWords(now - need.askedAt)} ago`}
             text={need.line}
             options={need.options}

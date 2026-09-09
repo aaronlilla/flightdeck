@@ -60,7 +60,7 @@ export function LanesGrid(props: LanesGridProps): JSX.Element {
 
   return (
     <main data-testid="board" className="scroll" style={{ flex: 1, minWidth: 0, height: '100%', overflow: 'auto', padding: '22px 24px 28px', display: 'flex', flexDirection: 'column', gap: 24, background: 'var(--bg)', color: 'var(--ink)', fontSize: 'var(--fs-body)', lineHeight: 1.45 }}>
-      <div data-testid="lanes-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+      <div data-testid="lanes-grid" style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr)', gap: 14 }}>
         {groups.map((group) => (
           <LaneGroupTile key={group.key} group={group} now={now} blocker={blockerFor(group.lanes[0]!, blockers)} onOpen={onOpen} onCommand={onCommand} />
         ))}

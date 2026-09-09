@@ -69,7 +69,7 @@ export function Chrome({ view, badges, feed, project, queueOn = true, now, onNav
           })}
         </nav>
         <div style={{ marginLeft: 'auto', minWidth: 0, display: 'flex', alignItems: 'center', gap: 14, fontSize: 'var(--fs-ui)', color: 'var(--ink2)', whiteSpace: 'nowrap' }}>
-          <span data-testid="feed-state" title={feed.reason ?? undefined} style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          <span data-testid="feed-state" title={feed.reason ?? undefined} style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 'none', maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis' }}>
             <i style={{ width: 8, height: 8, background: feed.live ? 'var(--acc)' : 'var(--warn)', display: 'block' }} />
             {feed.live ? 'Feed live' : `Feed lost${feed.reason ? `: ${feed.reason}` : ''}`}
           </span>
