@@ -400,6 +400,32 @@ export interface JournalResponse {
 
 export type IntegrationStatus = 'ok' | 'down' | 'degraded' | 'off' | 'busy' | 'checking';
 
+/** The fine-grained connection state that `claude mcp list`/`get` reports for an MCP
+ *  server. Kept separate from `IntegrationStatus`, which every `conn`-kind row also
+ *  uses and which stays untouched: a `mcp`-kind row's `status` still only ever reads
+ *  `ok`/`off`, mapped coarsely from this value. See the mcp-live-state goal brief's
+ *  Contract-gaps section and its logged Status resolution for why. */
+export type McpConnState =
+  | 'connected'
+  | 'needs-login'
+  | 'pending-approval'
+  | 'failed'
+  | 'unknown'
+  | 'connecting';
+
+/** Runtime-enumerable form of `McpConnState`, for coverage tests and any renderer that
+ *  needs to iterate every state rather than just type-check against it. Keep in sync
+ *  with the union above by construction: this is the source a coverage test checks
+ *  against, not a second, driftable list. */
+export const MCP_CONN_STATES: McpConnState[] = [
+  'connected',
+  'needs-login',
+  'pending-approval',
+  'failed',
+  'unknown',
+  'connecting',
+];
+
 export interface Integration {
   id: string;
   kind: 'conn' | 'mcp';
@@ -429,6 +455,13 @@ export interface Integration {
    *  button, because the operator cannot tell a refusal from a failure. */
   canConnect: boolean;
   links: { tools?: string; logs?: string; manage?: string };
+  /** The real connection state `claude mcp list`/`get` reported for a `mcp`-kind row.
+   *  Null for a `conn`-kind row, which never sets it, and for an `mcp` row before its
+   *  first probe. */
+  mcpState: McpConnState | null;
+  /** The MCP CLI's own error text for a `mcp`-kind row, verbatim rather than a generic
+   *  sentence. Null for a `conn`-kind row, and for an `mcp` row with no error to show. */
+  lastError: string | null;
 }
 
 export interface IntegrationsResponse {

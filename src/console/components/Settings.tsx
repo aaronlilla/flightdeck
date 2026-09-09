@@ -6,6 +6,7 @@ import { durationWords } from '../laneVM.js';
 import type { Caps, Integration } from '../../shared/console-model.js';
 import { fmtTokens } from '../../shared/format-tokens.js';
 import { Marks } from './QuestionCard.js';
+import { IntegrationsPanel } from './IntegrationsPanel.js';
 
 /**
  * `Flightdeck Console.dc.html` 1e: data sources with live reachability, the width
@@ -94,7 +95,11 @@ export function Settings({ integrations, caps, now, maxInFlight, theme, onTheme 
     <main data-testid="settings" className="scroll" style={{ flex: 1, minWidth: 0, overflow: 'auto', padding: '26px 28px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 28, alignContent: 'start', maxWidth: 1000 }}>
       <section style={{ display: 'flex', flexDirection: 'column', gap: 10, gridColumn: '1/-1' }}>
         <h6 className="sec">Data sources</h6>
-        {integrations.map((row) => <SourceRow key={row.id} row={row} now={now} />)}
+        {integrations.filter((row) => row.kind !== 'mcp').map((row) => <SourceRow key={row.id} row={row} now={now} />)}
+      </section>
+      <section style={{ display: 'flex', flexDirection: 'column', gap: 10, gridColumn: '1/-1' }}>
+        <h6 className="sec">MCP servers</h6>
+        <IntegrationsPanel items={integrations.filter((row) => row.kind === 'mcp')} now={now} />
       </section>
       <section style={{ position: 'relative', border: '1px solid var(--line)', padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
         <Marks />

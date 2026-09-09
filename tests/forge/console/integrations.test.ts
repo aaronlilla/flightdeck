@@ -8,10 +8,10 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { ActionsLedger } from '../../../src/forge/console/actions-ledger.js';
 import {
-  commandOnPath, IntegrationsRegistry, modelProviderProbeResult, stdioMcpProbe, type Probe,
-  type ProbeResult,
+  commandOnPath, IntegrationsRegistry, mcpConnStateDetail, modelProviderProbeResult, stdioMcpProbe,
+  toIntegration, type IntegrationDecl, type Probe, type ProbeResult, type StoredRow,
 } from '../../../src/forge/console/integrations.js';
-import type { Lane, LanesResponse } from '../../../src/shared/console-model.js';
+import type { Lane, LanesResponse, McpConnState } from '../../../src/shared/console-model.js';
 
 function fakeSpawn(returncode: number, stdout: string) {
   return () => {
@@ -257,6 +257,59 @@ describe('IntegrationsRegistry.reconnect', () => {
 
     expect(items.find((i) => i.id === 'aws')?.canConnect).toBe(true);
     expect(items.find((i) => i.id === 'jira')?.canConnect).toBe(false);
+  });
+});
+
+describe('W2: the mcpState/lastError state machine', () => {
+  const mcpDecl: IntegrationDecl = { id: 'mcp-slack', kind: 'mcp', name: 'slack', desc: 'MCP server slack', reconnectLabel: null };
+  const connDecl: IntegrationDecl = { id: 'github', kind: 'conn', name: 'GitHub', desc: 'gh CLI auth + rate limit', reconnectLabel: 'Reconnect via SSO' };
+
+  function mcpStoredRow(mcpState: McpConnState, lastError?: string): StoredRow {
+    return {
+      id: 'mcp-slack', latencyMs: null, status: mcpState === 'connected' ? 'ok' : 'off',
+      checkedAt: Date.now(), since: null, lastHealthyAt: null, retryCount: 0,
+      mcpState, ...(lastError !== undefined ? { lastError } : {}),
+    };
+  }
+
+  it('round-trips every one of the five McpConnState values onto Integration.mcpState/lastError', () => {
+    const cases: Array<[McpConnState, string | undefined]> = [
+      ['connected', undefined],
+      ['needs-login', undefined],
+      ['pending-approval', undefined],
+      ['failed', 'the CLI\'s own verbatim failure line'],
+      ['unknown', undefined],
+    ];
+    for (const [state, lastError] of cases) {
+      const integration = toIntegration(mcpDecl, mcpStoredRow(state, lastError), [], false);
+      expect(integration.mcpState).toBe(state);
+      expect(integration.lastError).toBe(lastError ?? null);
+      // The coarse status stays untouched by the hybrid resolution: only `connected`
+      // reads `ok`, every other mcpState reads `off`, never a new IntegrationStatus value.
+      expect(integration.status).toBe(state === 'connected' ? 'ok' : 'off');
+    }
+  });
+
+  it('leaves every existing conn-kind status value, and mcpState/lastError, exactly as before', () => {
+    const connValues = ['ok', 'down', 'degraded', 'off', 'busy', 'checking'] as const;
+    for (const status of connValues) {
+      const row: StoredRow = {
+        id: 'github', latencyMs: 5, status, checkedAt: Date.now(), since: null,
+        lastHealthyAt: null, retryCount: 0,
+      };
+      const integration = toIntegration(connDecl, row, [], true);
+      expect(integration.status).toBe(status);
+      expect(integration.mcpState).toBeNull();
+      expect(integration.lastError).toBeNull();
+    }
+  });
+
+  it('mcpConnStateDetail carries the CLI\'s verbatim failed-state text as lastError, not a generic sentence', () => {
+    const result = mcpConnStateDetail('slack', {
+      name: 'slack', target: 'https://mcp.slack.com/mcp', state: 'failed', lastError: 'exit 1: no such server',
+    });
+    expect(result.mcpState).toBe('failed');
+    expect(result.lastError).toBe('exit 1: no such server');
   });
 });
 
