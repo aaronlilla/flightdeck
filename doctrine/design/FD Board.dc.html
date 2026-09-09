@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;700&family=Barlow+Condensed:wght@400;600&display=swap"></helmet>
+<main style="flex:1;min-width:0;height:100%;overflow:auto;padding:22px 24px 28px;display:flex;flex-direction:column;gap:24px;box-sizing:border-box;background:var(--bg);color:var(--ink);font-family:Barlow,system-ui,sans-serif;font-size:14px;line-height:1.45">
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+    <sc-for list="{{ lanes }}" as="l" hint-placeholder-count="8">
+      <div style="position:relative;border:1px solid {{ l.border }};border-style:{{ l.bs }};padding:12px 14px;display:flex;flex-direction:column;gap:5px;min-height:112px;box-sizing:border-box;background:{{ l.bg }}">
+        <i style="position:absolute;width:11px;height:11px;background:var(--mk);top:-6px;left:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);top:-6px;right:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);bottom:-6px;left:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);bottom:-6px;right:-6px"></i>
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px"><span style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:15px;letter-spacing:.05em;color:var(--ink2)">{{ l.key }}</span><span style="font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:{{ l.stateColor }}">{{ l.state }}</span></div>
+        <div style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:19px;line-height:1.1;flex:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ l.title }}</div>
+        <p style="margin:0;flex:none;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ l.now }}</p>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:auto"><span style="font-size:12px;color:var(--ink3);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-right:8px">{{ l.since }}</span><button style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:14px;letter-spacing:.04em;padding:5px 14px;border-radius:0;cursor:pointer;white-space:nowrap;flex:none;background:{{ l.bBg }};color:{{ l.bInk }};border:1px solid {{ l.bBd }}">{{ l.btn }}</button></div>
+      </div>
+    </sc-for>
+  </div>
+
+  <section style="display:flex;flex-direction:column;gap:10px">
+    <h6 style="margin:0;font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:var(--warn);display:flex;gap:10px;align-items:baseline">Needs you <span style="color:var(--ink3);font-weight:400">2 questions</span></h6>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+      <sc-for list="{{ questions }}" as="q" hint-placeholder-count="2">
+        <div style="position:relative;border:1px solid var(--warn);padding:12px 14px;display:flex;flex-direction:column;gap:8px">
+          <i style="position:absolute;width:11px;height:11px;background:var(--mk);top:-6px;left:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);top:-6px;right:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);bottom:-6px;left:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);bottom:-6px;right:-6px"></i>
+          <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px"><span style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:15px;letter-spacing:.05em;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ q.key }} · {{ q.title }}</span><span style="font-size:12px;color:var(--ink3);white-space:nowrap;flex:none">asked {{ q.ago }}</span></div>
+          <p style="margin:0;font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:17px;line-height:1.25">{{ q.text }}</p>
+          <div style="display:flex;flex-direction:column;gap:6px">
+            <sc-for list="{{ q.opts }}" as="o" hint-placeholder-count="3"><button style="font:inherit;font-size:14px;line-height:1.35;text-align:left;padding:9px 12px;min-height:40px;width:100%;background:transparent;border:1px solid var(--line2);color:var(--ink);border-radius:0;cursor:pointer;display:flex;gap:10px;align-items:flex-start" style-hover="border-color:var(--warn);background:var(--warnTint)"><i style="width:12px;height:12px;flex:none;margin-top:3px;border:1px solid var(--line2);display:block"></i><span>{{ o }}</span></button></sc-for>
+          </div>
+          <div style="display:flex;gap:8px;align-items:stretch"><input placeholder="Or type your own answer…" style="flex:1;min-width:0;min-height:40px;padding:6px 10px;font:inherit;font-size:14px;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:0;outline:none" style-focus="border-color:var(--warn)"><button style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:15px;letter-spacing:.04em;padding:6px 18px;background:var(--warn);color:var(--warnInk);border:1px solid var(--warn);border-radius:0;cursor:pointer">Answer</button></div>
+        </div>
+      </sc-for>
+    </div>
+  </section>
+
+  <section style="display:flex;flex-direction:column;gap:10px">
+    <h6 style="margin:0;font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink2);display:flex;gap:10px;align-items:baseline">Waiting for merge <span style="color:var(--ink3);font-weight:400">1</span></h6>
+    <div style="position:relative;border:1px solid var(--line);padding:10px 14px;display:grid;grid-template-columns:90px 1fr auto auto;gap:16px;align-items:center">
+      <i style="position:absolute;width:11px;height:11px;background:var(--mk);top:-6px;left:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);top:-6px;right:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);bottom:-6px;left:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);bottom:-6px;right:-6px"></i>
+      <span style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:15px;letter-spacing:.05em;color:var(--ink2)">BBZ-96</span>
+      <span><span style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:17px">Fix duplicate deposit rows after retry</span><span style="color:var(--ink2)"> — PR #412, checks passed, council approved 3 minutes ago.</span></span>
+      <span style="font-size:12px;color:var(--ink3)">ready 3m</span>
+      <button style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:14px;letter-spacing:.04em;padding:5px 14px;background:var(--acc);color:var(--accInk);border:1px solid var(--acc);border-radius:0;cursor:pointer">Merge</button>
+    </div>
+  </section>
+
+  <section style="display:flex;flex-direction:column;gap:10px">
+    <h6 style="margin:0;font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink2);display:flex;gap:10px;align-items:baseline">Blocked or parked <span style="color:var(--ink3);font-weight:400">3</span></h6>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <sc-for list="{{ blocked }}" as="b" hint-placeholder-count="3">
+        <div style="border:1px solid var(--line);padding:9px 14px;display:grid;grid-template-columns:90px 1fr 150px auto;gap:16px;align-items:center">
+          <span style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:15px;letter-spacing:.05em;color:var(--ink2)">{{ b.key }}</span>
+          <span><span style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:17px">{{ b.title }}</span><span style="color:var(--ink2)"> — {{ b.reason }}</span></span>
+          <span style="font-size:12px;color:var(--ink3)">{{ b.who }} · {{ b.since }}</span>
+          <button style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:14px;letter-spacing:.04em;padding:5px 14px;background:transparent;color:var(--ink);border:1px solid var(--line2);border-radius:0;cursor:pointer;white-space:nowrap" style-hover="border-color:var(--ink)">{{ b.btn }}</button>
+        </div>
+      </sc-for>
+    </div>
+  </section>
+
+  <details style="border-top:1px solid var(--line);padding-top:12px">
+    <summary style="cursor:pointer;list-style:none;display:flex;gap:10px;align-items:baseline;font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink3)"><span style="display:inline-block;width:0;height:0;border-left:5px solid var(--ink3);border-top:3px solid transparent;border-bottom:3px solid transparent;align-self:center"></span>Finished today <span style="font-weight:400">6 handed to QA · 7 merged</span></summary>
+    <ul style="margin:10px 0 0;padding:0;list-style:none;display:flex;flex-direction:column;gap:6px;color:var(--ink2)">
+      <sc-for list="{{ finished }}" as="f" hint-placeholder-count="3"><li style="display:grid;grid-template-columns:90px 1fr auto;gap:16px"><span style="font-family:'Barlow Condensed',sans-serif;font-weight:600;letter-spacing:.05em">{{ f.key }}</span><span>{{ f.title }}</span><span style="font-size:12px;color:var(--ink3)">{{ f.at }}</span></li></sc-for>
+    </ul>
+  </details>
+</main>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1080,&quot;height&quot;:820}}">
+class Component extends DCLogic {
+  renderVals() {
+    const B = {
+      primary: { bBg: 'var(--acc)', bInk: 'var(--accInk)', bBd: 'var(--acc)' },
+      warn: { bBg: 'var(--warn)', bInk: 'var(--warnInk)', bBd: 'var(--warn)' },
+      secondary: { bBg: 'transparent', bInk: 'var(--ink)', bBd: 'var(--line2)' },
+    };
+    const S = {
+      working: { state: 'Working', stateColor: 'var(--ink3)', border: 'var(--line)', bs: 'solid', bg: 'transparent' },
+      you: { state: 'Needs you', stateColor: 'var(--warn)', border: 'var(--warn)', bs: 'solid', bg: 'var(--warnTint)' },
+      ready: { state: 'Ready to merge', stateColor: 'var(--acc)', border: 'var(--acc)', bs: 'solid', bg: 'transparent' },
+      blocked: { state: 'Blocked', stateColor: 'var(--warn)', border: 'var(--line2)', bs: 'solid', bg: 'transparent' },
+      idle: { state: 'Idle', stateColor: 'var(--ink3)', border: 'var(--line2)', bs: 'dashed', bg: 'transparent' },
+    };
+    const L = (key, title, now, since, btn, kind, st) => ({ key, title, now, since, btn, ...B[kind], ...S[st] });
+    return {
+      lanes: [
+        L('BBZ-182', 'Show pending withdrawals on the ledger', 'Writing the ledger query and its test.', '14 min working', 'Watch', 'secondary', 'working'),
+        L('BBZ-226', 'Rate-limit the odds refresh endpoint', 'Asked you: limit per user or per IP? Paused until you answer.', '9 min waiting', 'Answer', 'warn', 'you'),
+        L('BBZ-96', 'Fix duplicate deposit rows after retry', 'Checks passed and the council approved PR #412.', '3 min ready', 'Merge', 'primary', 'ready'),
+        L('BBZ-178', 'Add Sentry breadcrumbs to the bet slip', 'Cannot read the Sentry project; the token expired.', '41 min blocked', 'Fix in Settings', 'warn', 'blocked'),
+        L('BBZ-60', 'Migrate sessions table to Postgres 16', 'Asked you: run the 40-second table lock on dev now?', '2 min waiting', 'Answer', 'warn', 'you'),
+        L('BBZ-202', 'Export monthly statement as CSV', 'Waiting on CI; GitHub Actions minutes are used up.', '6 min blocked', 'Open billing', 'secondary', 'blocked'),
+        L('BBZ-141', 'Nightly reconciliation job times out', 'Parked until Marcus grants CloudWatch read access.', '1 h 12 min parked', 'Nudge Marcus', 'secondary', 'blocked'),
+        L('Slot 8', 'Idle', 'Waiting for a Ready ticket; nothing in the queue is startable while BBZ-155 waits on Sentry.', 'idle 15 min', 'Open queue', 'secondary', 'idle'),
+      ],
+      questions: [
+        { key: 'BBZ-226', title: 'Rate-limit the odds refresh endpoint', ago: '9 min ago', text: 'Should I limit the odds refresh per user or per IP address?', opts: ['Per user, the way bet placement and deposits already work', 'Per IP address, so anonymous callers are covered too', 'Both: per user when logged in, per IP otherwise'] },
+        { key: 'BBZ-60', title: 'Migrate sessions table', ago: '2 min ago', text: 'The migration locks the sessions table for about 40 seconds on dev. Run it now?', opts: ['Run it now; dev is quiet and QA is not testing', 'Run it after 18:00 when the QA session ends', 'Avoid the lock: build the index concurrently and migrate in two steps'] },
+      ],
+      blocked: [
+        { key: 'BBZ-178', title: 'Add Sentry breadcrumbs to the bet slip', reason: 'Sentry token expired, so the agent cannot read the project.', who: 'You', since: '41 min', btn: 'Fix in Settings' },
+        { key: 'BBZ-202', title: 'Export monthly statement as CSV', reason: 'CI cannot run; the GitHub Actions minutes for the month are used up.', who: 'GitHub billing', since: '6 min', btn: 'Open billing' },
+        { key: 'BBZ-141', title: 'Nightly reconciliation job times out', reason: 'Needs CloudWatch read access on the reconciliation log group.', who: 'Marcus', since: '1 h 12 min', btn: 'Nudge Marcus' },
+      ],
+      finished: [
+        { key: 'BBZ-77', title: 'Dark mode for the bankroll chart — merged, handed to QA', at: '10:31' },
+        { key: 'BBZ-133', title: 'Round stake to two decimals in the slip — merged, handed to QA', at: '09:58' },
+        { key: 'BBZ-88', title: 'Remove legacy odds cache — merged, handed to QA', at: '09:12' },
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>
