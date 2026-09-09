@@ -122,6 +122,39 @@ export function raceThread(): Message[] {
   }];
 }
 
+/** W5 (ask-cards-and-type-scale): a parked lane whose question already carries four
+ *  options and a recommendation (W1's `completeAskOptions` shape), for the e2e
+ *  coverage that picking the recommended option and sending clears the ask from
+ *  Needs You. */
+export function askRecommendedLanes(): Lane[] {
+  const now = Date.now() - 90_000;
+  return [
+    lane({
+      id: 'FLT-410', state: 'parked', stepText: 'blocked on a question',
+      question: {
+        key: 'ask-410', text: 'the retry backoff should cap at 30s or keep doubling forever?',
+        opts: ['Cap at 30s', 'Keep doubling forever', 'Cap at 60s', 'Something else, I will type it'],
+        askedAt: now, recommended: 0, optionSource: 'drafted',
+      },
+    }),
+  ];
+}
+
+/** Paired thread for `askRecommendedLanes`. Carries a persisted `type: 'question'`
+ *  message that matches the lane's `question` field, so `runThreadPlain` and
+ *  `runThreadVerbose` use this real card instead of synthesizing a plain event line
+ *  (plain mode) or a card with no recommendation (verbose mode). Same pattern as
+ *  `raceThread`. */
+export function askRecommendedThread(): Message[] {
+  const now = Date.now() - 90_000;
+  return [{
+    k: 'ask-410-q', type: 'question', text: 'the retry backoff should cap at 30s or keep doubling forever?',
+    ts: now, source: 'FLT-410', lane: 'FLT-410', askKey: 'ask-410',
+    opts: ['Cap at 30s', 'Keep doubling forever', 'Cap at 60s', 'Something else, I will type it'],
+    recommended: 0,
+  }];
+}
+
 /** Cut-line #2: one lane per `MessageType` the rail's `MessageCard` switch
  *  renders, so the whole gallery is exercised rather than the seed thread's
  *  three types. */

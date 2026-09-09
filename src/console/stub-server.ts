@@ -30,8 +30,8 @@ import { seedJournal } from './fixtures/journal.js';
 import { seedLanes } from './fixtures/lanes.js';
 import { seedRules } from './fixtures/proposals.js';
 import {
-  bigLanes, emptyLanes, emptyRules, galleryThread, healthyIntegrations, humanBoardLanes, matrixQueue, raceThread,
-  refusalLanes, resumedRaceLanes, statesLanes, UNBUILT_REPO, longThread } from './fixtures/scenarios.js';
+  askRecommendedLanes, askRecommendedThread, bigLanes, emptyLanes, emptyRules, galleryThread, healthyIntegrations,
+  humanBoardLanes, matrixQueue, raceThread, refusalLanes, resumedRaceLanes, statesLanes, UNBUILT_REPO, longThread } from './fixtures/scenarios.js';
 import { seedThread } from './fixtures/thread.js';
 
 // `import.meta.url` is not always a `file:` URL under every test environment
@@ -245,6 +245,10 @@ const FIXTURES: Record<string, () => Db> = {
   'summary-stale': () => ({ ...seedDb(), staleAuditLane: 'FLT-193' }),
   // Iteration 4: the Blockers view's own three-step chain (billing -> checks -> question).
   'blockers-chain': () => ({ ...seedDb(), blockers: seedBlockersChain() }),
+  // W5 (ask-cards-and-type-scale): a parked lane whose question already carries four
+  // options and a recommendation, for the e2e coverage that picking the recommended
+  // option and sending clears the ask from Needs You.
+  'ask-recommended': () => ({ ...seedDb(), lanes: askRecommendedLanes(), thread: askRecommendedThread() }),
 };
 
 function resetToFixture(name: string): void {
