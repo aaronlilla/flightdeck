@@ -107,7 +107,9 @@ describe('UX rule 3: one primary action per Lane state, named as the plan names 
       />,
     );
     const title = screen.getByTestId('queue-card-title');
-    const card = title.closest('.lane') as HTMLElement;
+    // `.queue-row` is the row element, and it is a class the stylesheet defines --
+    // this selector used to name `.lane`, which styled nothing (tests/console/class-coverage.test.ts).
+    const card = title.closest('.queue-row') as HTMLElement;
     // Today: the "Open PR #42 ->" link and the "Merge" button both render at once
     // on a review card that already carries a PR -- two primary actions, not one.
     const actions = [...within(card).queryAllByRole('link'), ...within(card).queryAllByRole('button')];
