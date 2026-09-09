@@ -35,7 +35,7 @@ import { computeJournalNarrative } from './journal-narrative.js';
 import { readAttestation } from '../council/attest.js';
 import { queueMergeAllowed } from '../queue-wire.js';
 import {
-  chainLinks, computeLanes, labelFor as laneLabelFor, mergeableFor, mergeReadyReportFrom, tokensToday, titleFor,
+  chainLinks, computeLanes, firstBodyParagraph, labelFor as laneLabelFor, mergeableFor, mergeReadyReportFrom, tokensToday, titleFor,
   titleFromHeading, windowLanes, type LanesInput,
 } from './lanes.js';
 import { computeLaneStory, type GitCommit } from './story.js';
@@ -1052,7 +1052,8 @@ export class ConsoleReads {
 function readBriefHeading(path: string, ticket: string | null): string | null {
   if (!existsSync(path)) return null;
   try {
-    return titleFromHeading(readFileSync(path, 'utf8'), ticket);
+    const text = readFileSync(path, 'utf8');
+    return titleFromHeading(text, ticket) ?? firstBodyParagraph(text);
   } catch {
     return null;
   }
