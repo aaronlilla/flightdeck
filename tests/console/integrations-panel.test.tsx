@@ -11,6 +11,7 @@ function integration(extra: Partial<Integration> = {}): Integration {
     status: 'ok', checkedAt: Date.now(), since: null, cause: null, effect: null, fix: null, fixLabel: null,
     scope: null, lastHealthyAt: null, retryCount: 0, dependents: [], step: null, canConnect: false, links: {},
     mcpState: 'connected', lastError: null,
+    words: { status: 'Connected.', note: 'Nothing is waiting on it.' },
     ...extra,
   };
 }

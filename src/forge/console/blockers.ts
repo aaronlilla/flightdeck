@@ -9,7 +9,7 @@
  */
 import { stripMachineIds } from '../../shared/humanize.js';
 import { labelFor as sharedLabelFor } from './lanes.js';
-import type { Blocker, BlockerKind } from '../../shared/console-model.js';
+import type { Blocker, BlockerKind, NarrationFacts } from '../../shared/console-model.js';
 
 /** What `detectBlockers` returns per blocker before the route layer folds in
  *  persisted state (`state`, `checkedAt`, `resolvedAt`, `lastCheck`). */
@@ -327,4 +327,28 @@ export function orderChains(blockers: BlockerSnapshot[]): string[][] {
     }
   }
   return chains;
+}
+
+/**
+ * The facts behind one narrated blocker line.
+ *
+ * Deliberately small. A blocker sentence is mostly repo names, owner names and the shape
+ * of the fix, all of which the template already carries verbatim -- what the checker has
+ * to protect is the handful of values a nicer sentence could quietly move: the pull
+ * request number, the state word the row is built on, and the person a merge waits for.
+ * Anything the template says and the facts do not is still allowed through, because the
+ * template is a fact of its own; anything in neither is an invention and is refused.
+ */
+export function blockerFactsFor(
+  blocker: Pick<Blocker, 'kind' | 'state' | 'who'>,
+  surface: string,
+  text: string | null,
+): NarrationFacts | null {
+  if (!text) return null;
+  const facts: Record<string, string | number | boolean | null> = {};
+  if (text.toLowerCase().includes(blocker.state.toLowerCase())) facts['state'] = blocker.state;
+  const pr = /#(\d+)/.exec(text);
+  if (pr) facts['pr'] = Number(pr[1]);
+  if (blocker.who && blocker.who !== 'You' && text.includes(blocker.who)) facts['who'] = blocker.who;
+  return { surface, facts: facts as NarrationFacts['facts'], template: text };
 }

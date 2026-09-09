@@ -5,6 +5,7 @@ import { hm } from '../freshness.js';
 import { useStore } from '../store.js';
 import type { Feed, Message, MessageButton } from '../../shared/console-model.js';
 import { Marks, QuestionCard } from './QuestionCard.js';
+import { NarratedLine } from './Narrated.js';
 
 /**
  * `FD Rail.dc.html`: the Conductor rail. Rows by kind (status, receipt with Undo,
@@ -116,9 +117,11 @@ function ActionCard({ message, tone, kicker, title, body, onCommand, onTopic, co
   );
 }
 
-export function MessageCard({ message, labelFor, onCommand, onUndo, onTopic, composerId }: {
+export function MessageCard({ message, labelFor, onCommand, onUndo, onTopic, composerId, verbose }: {
   message: Message; labelFor?: (id: string) => string | null; onCommand: (text: string) => void;
   onUndo: (jid: string) => void; onTopic?: (laneId: string) => void; composerId: string;
+  /** `?verbose=1`: the fact record under a narrated row, identifiers intact. */
+  verbose?: boolean;
 }): JSX.Element | null {
   const label = (id: string): string | null => labelFor?.(id) ?? null;
   const from = message.lane ?? message.source;
@@ -153,7 +156,7 @@ export function MessageCard({ message, labelFor, onCommand, onUndo, onTopic, com
       return (
         <Row ts={message.ts}>
           <div>
-            <p data-testid="status-row" style={{ margin: 0, color: 'var(--ink)', whiteSpace: 'pre-wrap' }}>{message.text}</p>
+            <p data-testid="status-row" style={{ margin: 0, color: 'var(--ink)', whiteSpace: 'pre-wrap' }}><NarratedLine bag={message.narration} field="text" glance={message.text} testid="rail" {...(verbose === undefined ? {} : { verbose })} /></p>
             {message.btns && message.btns.length > 0 && !message.resolved ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 6 }}>
                 {message.btns.map((button) => <button key={button.label} type="button" className={buttonClass(button)} style={{ textAlign: 'left', whiteSpace: 'normal' }} onClick={() => onCommand(button.cmd)}>{button.label}</button>)}
@@ -165,7 +168,15 @@ export function MessageCard({ message, labelFor, onCommand, onUndo, onTopic, com
     case 'event':
     case 'thinking':
     case 'pr':
-      return <Row ts={message.ts}><p data-testid="status-row" style={{ margin: 0, color: 'var(--ink)' }}>{message.type === 'pr' && message.pr ? `Draft PR #${message.pr.no}: ${message.text}` : message.text}</p></Row>;
+      return (
+        <Row ts={message.ts}>
+          <p data-testid="status-row" style={{ margin: 0, color: 'var(--ink)' }}>
+            {message.type === 'pr' && message.pr ? `Draft PR #${message.pr.no}: ${message.text}` : (
+              <NarratedLine bag={message.narration} field="text" glance={message.text} testid="rail" {...(verbose === undefined ? {} : { verbose })} />
+            )}
+          </p>
+        </Row>
+      );
     case 'activity':
       if (message.tools && message.tools.length > 0) {
         return (
@@ -175,12 +186,12 @@ export function MessageCard({ message, labelFor, onCommand, onUndo, onTopic, com
           </details>
         );
       }
-      return <div style={{ marginLeft: 48, fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>{message.text}</div>;
+      return <div style={{ marginLeft: 48, fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}><NarratedLine bag={message.narration} field="text" glance={message.text} testid="rail" {...(verbose === undefined ? {} : { verbose })} /></div>;
     case 'receipt':
       return (
         <Row ts={message.ts}>
           <p style={{ margin: 0, color: 'var(--ink)', paddingLeft: 10, borderLeft: '2px solid var(--acc)', textDecoration: message.undone ? 'line-through' : 'none' }}>
-            {message.text}
+            <NarratedLine bag={message.narration} field="text" glance={message.text} testid="rail" {...(verbose === undefined ? {} : { verbose })} />
             {message.undoable && !message.undone && message.jid ? <> <a href="#" data-testid="receipt-undo" style={{ color: 'var(--acc)', fontSize: 'var(--fs-meta)' }} onClick={(e) => { e.preventDefault(); onUndo(message.jid as string); }}>Undo</a></> : null}
           </p>
         </Row>
@@ -224,17 +235,22 @@ function isObservation(message: Message): boolean {
   return message.type === 'event' || message.type === 'activity';
 }
 
-function groupObservations(observations: Message[]): { text: string; count: number }[] {
+function groupObservations(observations: Message[]): { text: string; count: number; first: Message }[] {
   const order: string[] = [];
   const counts = new Map<string, number>();
+  // The first row of a group carries the group's narration bag. Rows group by their
+  // glance, and two rows with one glance were narrated from one fact record, so they
+  // hold the same detail and the same raw record; the first is not a sample, it is the
+  // only answer there is.
+  const first = new Map<string, Message>();
   for (const message of observations) {
-    if (!counts.has(message.text)) order.push(message.text);
+    if (!counts.has(message.text)) { order.push(message.text); first.set(message.text, message); }
     counts.set(message.text, (counts.get(message.text) ?? 0) + 1);
   }
-  return order.map((text) => ({ text, count: counts.get(text) ?? 0 }));
+  return order.map((text) => ({ text, count: counts.get(text) ?? 0, first: first.get(text)! }));
 }
 
-function ActivityDrawer({ observations }: { observations: Message[] }): JSX.Element | null {
+function ActivityDrawer({ observations, verbose }: { observations: Message[]; verbose?: boolean }): JSX.Element | null {
   const [open, setOpen] = useState(false);
   if (observations.length === 0) return null;
   const groups = groupObservations(observations);
@@ -250,7 +266,10 @@ function ActivityDrawer({ observations }: { observations: Message[] }): JSX.Elem
       {open ? (
         <div data-testid="activity-drawer-body" style={{ padding: '0 16px 10px', display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 200, overflowY: 'auto' }}>
           {groups.map((group) => (
-            <div key={group.text} style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>{`${group.text} · ${group.count}`}</div>
+            <div key={group.text} data-testid="activity-row" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>
+              <NarratedLine bag={group.first.narration} field="text" glance={group.text} testid="rail" {...(verbose === undefined ? {} : { verbose })} />
+              {` · ${group.count}`}
+            </div>
           ))}
         </div>
       ) : null}
@@ -259,7 +278,7 @@ function ActivityDrawer({ observations }: { observations: Message[] }): JSX.Elem
 }
 
 export function ConductorRail(props: ConductorRailProps): JSX.Element {
-  const { thread, feed, now, composer, onComposerChange, onSend, onCommand, onUndo, labelFor, agentCount, topic = null, recipient = 'conductor', onRecipient, onTopic, commands = DEFAULT_COMMANDS, onStop } = props;
+  const { thread, feed, now, composer, onComposerChange, onSend, onCommand, onUndo, labelFor, agentCount, topic = null, recipient = 'conductor', onRecipient, onTopic, commands = DEFAULT_COMMANDS, onStop, verbose } = props;
   const composerAction = useStore().state.actions['sendCommand:rail'];
   const busy = composerAction?.pending ?? false;
   const conversation = thread.filter((message) => !isObservation(message));
@@ -320,7 +339,7 @@ export function ConductorRail(props: ConductorRailProps): JSX.Element {
         <div ref={listRef} onScroll={onScroll} data-testid="rail-thread" className="scroll" style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
           {conversation.map((message) => (
             <div key={message.k} id={`rail-msg-${message.k}`}>
-              <MessageCard message={message} labelFor={labelFor} onCommand={onCommand} onUndo={onUndo} onTopic={onTopic} composerId={composerId} />
+              <MessageCard message={message} labelFor={labelFor} onCommand={onCommand} onUndo={onUndo} onTopic={onTopic} composerId={composerId} {...(verbose === undefined ? {} : { verbose })} />
             </div>
           ))}
         </div>
@@ -328,7 +347,7 @@ export function ConductorRail(props: ConductorRailProps): JSX.Element {
           <button type="button" className="btn primary" data-testid="rail-jump" style={{ position: 'absolute', left: '50%', bottom: 10, transform: 'translateX(-50%)', fontSize: 'var(--fs-meta)', padding: '4px 10px' }} onClick={jump}>{unread} new below</button>
         ) : null}
       </div>
-      <ActivityDrawer observations={observations} />
+      <ActivityDrawer observations={observations} {...(verbose === undefined ? {} : { verbose })} />
       <div style={{ padding: '12px 16px 16px', borderTop: '1px solid var(--line)', display: 'flex', flexDirection: 'column', gap: 10 }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
           {commands.map((command) => (

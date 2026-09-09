@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { ACTIONS, useAction } from '../actions.js';
 import { hm } from '../freshness.js';
 import type { Blocker } from '../../shared/console-model.js';
+import { narratedField } from '../../shared/console-model.js';
 import { Marks } from './QuestionCard.js';
 
 /**
@@ -14,6 +15,8 @@ import { Marks } from './QuestionCard.js';
  */
 export interface BlockersViewProps {
   blockers: Blocker[];
+  /** `?verbose=1`: the fact record behind each narrated line, identifiers intact. */
+  verbose?: boolean;
   chains: string[][];
   jiraSite?: string;
   onOpenSettings?: () => void;
@@ -28,7 +31,36 @@ function whoOf(blocker: Blocker): { who: string; note: string; color: string } {
   return { who, note: blocker.whoNote ?? '', color: who === 'You' ? 'var(--warn)' : 'var(--ink)' };
 }
 
-function BlockerCard({ blocker, onOpenSettings, onSendToLane, laneTitle }: { blocker: Blocker; onOpenSettings?: () => void; onSendToLane?: (laneId: string, text: string) => void; laneTitle?: (laneId: string) => string | null }): JSX.Element {
+/**
+ * The card's one `more`: the `detail` register of every narrated line on it, and under
+ * `?verbose=1` the fact record each was written from. A card the narrator never saw has
+ * `detail === glance` on every line and renders no disclosure at all, which is exactly
+ * right -- there is nothing more to say than the sentence already on screen.
+ */
+function BlockerMore({ blocker, verbose }: { blocker: Blocker; verbose?: boolean }): JSX.Element | null {
+  const fields: Array<[string, string | null]> = [
+    ['title', blocker.title], ['detail', blocker.detail],
+    ['howToResolve', blocker.howToResolve], ['thenWhat', blocker.thenWhat],
+    ['whoNote', blocker.whoNote ?? null],
+  ];
+  const lines = fields
+    .map(([name, glance]) => [name, narratedField(blocker.narration, name, glance)] as const)
+    .filter(([, n]) => n.detail !== n.glance || (verbose === true && n.raw !== n.glance));
+  if (lines.length === 0) return null;
+  return (
+    <details data-testid={`blocker-more-${blocker.id}`} style={{ margin: '2px 0 0' }}>
+      <summary style={{ cursor: 'pointer', color: 'var(--ink2)', fontSize: 'var(--fs-meta)' }}>more</summary>
+      {lines.map(([name, n]) => (
+        <div key={name} style={{ marginTop: 4 }}>
+          <span data-testid={`blocker-${name}-detail`} style={{ color: 'var(--ink2)' }}>{n.detail}</span>
+          {verbose ? <pre data-testid={`blocker-${name}-raw`} style={{ margin: '2px 0 0', color: 'var(--ink3)', whiteSpace: 'pre-wrap' }}>{n.raw}</pre> : null}
+        </div>
+      ))}
+    </details>
+  );
+}
+
+function BlockerCard({ blocker, onOpenSettings, onSendToLane, laneTitle, verbose }: { blocker: Blocker; onOpenSettings?: () => void; onSendToLane?: (laneId: string, text: string) => void; laneTitle?: (laneId: string) => string | null; verbose?: boolean }): JSX.Element {
   const resolve = useAction(ACTIONS.resolveBlocker, blocker.id);
   const check = useAction(ACTIONS.checkBlocker, blocker.id);
   const [note, setNote] = useState('');
@@ -65,6 +97,7 @@ function BlockerCard({ blocker, onOpenSettings, onSendToLane, laneTitle }: { blo
           {blocker.blocks.map((lane) => { const title = laneTitle?.(lane.laneId); return <li key={lane.laneId}><span className="hd" style={{ letterSpacing: '.05em', color: 'var(--ink)' }}>{lane.label}</span>{title && title !== lane.label ? ` ${title}` : ''}</li>; })}
         </ul>
         <p style={{ margin: '2px 0 0' }}><span className="kick" style={{ marginRight: 8 }}>Clears when</span>{blocker.howToResolve} {blocker.thenWhat}</p>
+        <BlockerMore blocker={blocker} {...(verbose === undefined ? {} : { verbose })} />
         {result ? <span style={{ fontSize: 'var(--fs-meta)', color: result.ok ? 'var(--acc)' : 'var(--warn)' }}>{result.text}</span> : blocker.lastCheck ? <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>Last check: {blocker.lastCheck}</span> : null}
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', gap: 12 }}>
@@ -95,7 +128,7 @@ function startOfToday(now: number): number {
   return date.getTime();
 }
 
-export function BlockersView({ blockers, chains, onOpenSettings, onSendToLane, laneTitle }: BlockersViewProps): JSX.Element {
+export function BlockersView({ blockers, chains, onOpenSettings, onSendToLane, laneTitle, verbose }: BlockersViewProps): JSX.Element {
   const byId = new Map(blockers.map((blocker) => [blocker.id, blocker]));
   const chained = chains.flat().map((id) => byId.get(id)).filter((blocker): blocker is Blocker => Boolean(blocker) && blocker!.state !== 'resolved');
   const open = [...chained, ...blockers.filter((blocker) => blocker.state !== 'resolved' && !chained.includes(blocker))]
@@ -104,7 +137,7 @@ export function BlockersView({ blockers, chains, onOpenSettings, onSendToLane, l
   const cleared = blockers.filter((blocker) => blocker.state === 'resolved' && (blocker.resolvedAt ?? 0) >= today);
   return (
     <main data-testid="blockers-view" className="scroll" style={{ flex: 1, minWidth: 0, overflow: 'auto', padding: '26px 28px', display: 'flex', flexDirection: 'column', gap: 18 }}>
-      {open.map((blocker) => <BlockerCard key={blocker.id} blocker={blocker} onOpenSettings={onOpenSettings} onSendToLane={onSendToLane} laneTitle={laneTitle} />)}
+      {open.map((blocker) => <BlockerCard key={blocker.id} blocker={blocker} onOpenSettings={onOpenSettings} onSendToLane={onSendToLane} laneTitle={laneTitle} {...(verbose === undefined ? {} : { verbose })} />)}
       <details style={{ maxWidth: 860, borderTop: '1px solid var(--line)', paddingTop: 12, marginTop: 6 }}>
         <summary className="disc" style={{ alignItems: 'center' }}><span className="tri" />Cleared today <span style={{ fontWeight: 400 }}>{cleared.length}</span></summary>
         <ul style={{ margin: '10px 0 0', padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 6, color: 'var(--ink2)' }}>

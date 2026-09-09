@@ -7,7 +7,7 @@
  * one-line ask and the sheet's longer one can never point a person two different ways.
  */
 import type { ForgeEvent } from '../journal.js';
-import type { Lane, LanePr } from '../../shared/console-model.js';
+import type { Lane, LanePr, NarrationFacts } from '../../shared/console-model.js';
 import { shortenShas, stripMachineIds } from '../../shared/humanize.js';
 
 const DID_LIMIT = 110;
@@ -70,22 +70,41 @@ function prDidSentence(pr: LanePr): string {
   return `Opened ${label} #${pr.no}${title}${stats}`;
 }
 
+/** Where a `did` sentence came from. `report` is the agent's own free text; the other
+ *  two are composed here out of the lane's own machine-readable rows. */
+export type DidSource = 'report' | 'pr' | 'digest';
+
 /**
  * `did`: one sentence on what the agent did, sourced in order from the newest
  * `forge.report`'s own `done` field, the lane's own PR, a whole-run tool digest, or
  * `null`. Every source passes through `stripMachineIds` and `shortenShas`.
+ *
+ * The source comes back with the sentence because it decides who is allowed to rewrite
+ * it. A `report` sentence is the agent's own account of its work, and the rail already
+ * treats it that way -- `forge.report` renders as a `reply`, which is not in
+ * `thread-narrate.ts`'s `NARRATED_TYPES`, so the rail shows the agent's words. Without
+ * the source the lane tile narrated the same substring, and one report reached the
+ * operator in two voices, one of them the model's. `pr` and `digest` are sentences this
+ * file composed out of counts and ids, so the narrator may rewrite those.
  */
-export function computeDid(runEvents: ForgeEvent[], pr: LanePr | null): string | null {
+export function didFrom(
+  runEvents: ForgeEvent[], pr: LanePr | null,
+): { text: string | null; source: DidSource | null } {
   for (let index = runEvents.length - 1; index >= 0; index -= 1) {
     const row = runEvents[index]!;
     if (row.event === 'forge.report' && typeof row.done === 'string' && row.done.trim()) {
-      return clean(firstSentence(row.done));
+      return { text: clean(firstSentence(row.done)), source: 'report' };
     }
   }
-  if (pr) return clean(prDidSentence(pr));
+  if (pr) return { text: clean(prDidSentence(pr)), source: 'pr' };
   const digest = toolDigest(runEvents);
-  if (digest) return clean(digest);
-  return null;
+  if (digest) return { text: clean(digest), source: 'digest' };
+  return { text: null, source: null };
+}
+
+/** The sentence alone, for every caller that does not have to decide who may rewrite it. */
+export function computeDid(runEvents: ForgeEvent[], pr: LanePr | null): string | null {
+  return didFrom(runEvents, pr).text;
 }
 
 /**
@@ -179,4 +198,46 @@ export function computeYou(lane: Lane): string | null {
     default:
       return null;
   }
+}
+
+/** A state word is only a protected fact when the sentence being narrated is actually
+ *  built on it. `Working since 09:15` is a running lane, but demanding the word
+ *  `running` back out of the narration would force a sentence no person would write. */
+function carriesState(template: string, state: string): boolean {
+  return template.toLowerCase().includes(state.toLowerCase());
+}
+
+/**
+ * The fact record behind `did`. The sentence `computeDid` produced is the template; the
+ * facts are the few things the narration is not allowed to lose or invent. The PR number
+ * is only a fact when the template actually reports it -- a lane whose `did` came from a
+ * tool digest has no business being made to mention a pull request.
+ */
+export function didFactsFor(lane: Lane, did: string | null): NarrationFacts | null {
+  if (!did) return null;
+  const facts: Record<string, string | number | boolean | null> = {};
+  if (carriesState(did, lane.state)) facts['state'] = lane.state;
+  if (lane.ticket) facts['lane'] = lane.ticket;
+  const pr = lane.pr;
+  if (pr && did.includes(`#${pr.no}`)) {
+    facts['pr'] = pr.no;
+    if (pr.checks) facts['checks'] = pr.checks;
+    if (pr.verdict) facts['verdict'] = pr.verdict;
+  }
+  return { surface: 'lane.did', facts: facts as NarrationFacts['facts'], template: did };
+}
+
+/**
+ * The fact record behind `you`. Returns `null` for the one category whose sentence
+ * quotes a person -- `answer` carries the operator's own question, which is routed
+ * through `Binder.verbatim` and never sent to the model.
+ */
+export function youFactsFor(lane: Lane, you: string | null): NarrationFacts | null {
+  if (!you) return null;
+  if (nextCategoryFor(lane, lane.mergeable?.ok === true) === 'answer') return null;
+  const facts: Record<string, string | number | boolean | null> = {};
+  if (carriesState(you, lane.state)) facts['state'] = lane.state;
+  if (lane.ticket) facts['lane'] = lane.ticket;
+  if (lane.pr && you.includes(`#${lane.pr.no}`)) facts['pr'] = lane.pr.no;
+  return { surface: 'lane.you', facts: facts as NarrationFacts['facts'], template: you };
 }

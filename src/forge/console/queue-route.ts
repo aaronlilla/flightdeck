@@ -22,14 +22,20 @@ import { buildBacklogJql as defaultBuildBacklogJql, readQueueWidth, writeQueueWi
 import { queueTitleFor } from './queue-title.js';
 import type { QueueStore } from '../intake/queueStore.js';
 import type {
-  ActionResult, QueueAddRequest, QueueAddResponse, QueueItem, QueueResponse, QueueSource,
+  ActionResult, NarrationBag, NarrationFacts, QueueAddRequest, QueueAddResponse, QueueItem,
+  QueueResponse, QueueSource,
 } from '../../shared/console-model.js';
+import { Binder } from './narrate-bind.js';
+import type { Narrator } from './narrate-store.js';
 
 const QUEUE_SOURCES: readonly QueueSource[] = ['ticket', 'brief', 'query', 'backlog', 'hotfix', 'goal'];
 
 const ITEM_ROUTE = /^\/queue\/([^/]+)\/(remove|retry|merge|promote)$/;
 
 export interface QueueRoutesOptions {
+  /** The narration layer. Absent means every card serves its own template sentence in
+   *  all three registers -- never blank, never a model call. */
+  narrator?: Narrator | null;
   store: QueueStore;
   search: QueueTicketSearch;
   /** A.7: the Merge click's own dependencies. Absent means `/queue/:id/merge` refuses
@@ -216,9 +222,45 @@ export class QueueRoutes {
     const maxInFlight = readQueueWidth();
     const ctx = queueOrderContext(items, { paused, maxInFlight });
     return {
-      items: items.map((item) => ({ ...item, title: queueTitleFor(item), ...queueOrderWordsWith(item, ctx) })),
+      items: items.map((item) => this.narrateItem({
+        ...item, title: queueTitleFor(item), ...queueOrderWordsWith(item, ctx),
+      })),
       paused, maxInFlight,
     };
+  }
+
+  /**
+   * A queue card's three sentences.
+   *
+   * `title` is never narrated. It is a heading a person wrote in a brief, or a summary
+   * a person typed into a ticket, so it goes through `Binder.verbatim`: no model call,
+   * no cache key, and the three registers come back byte-identical. `whyNext` and
+   * `startsIn` are the queue's own arithmetic and are narrated from their facts.
+   */
+  private narrateItem(item: QueueItem): QueueItem {
+    const bag: NarrationBag = {};
+    const binder = new Binder(this.opts.narrator ?? null, 'queue');
+    binder.verbatim(bag, 'title', item.title ?? null);
+
+    if (item.whyNext) {
+      const position = item.whyNext.startsWith('First') ? 1
+        : item.whyNext.startsWith('Second') ? 2 : item.whyNext.startsWith('Third') ? 3 : null;
+      const facts: Record<string, string | number | boolean | null> = { source: item.source };
+      if (position !== null) facts['position'] = position;
+      const why = binder.field(bag, 'whyNext', {
+        surface: 'queue.whyNext', facts: facts as NarrationFacts['facts'], template: item.whyNext,
+      }, item.id);
+      if (why !== null) item = { ...item, whyNext: why };
+    }
+    if (item.startsIn) {
+      const startsIn = binder.field(bag, 'startsIn', {
+        surface: 'queue.startsIn',
+        facts: { state: item.state } as NarrationFacts['facts'],
+        template: item.startsIn,
+      }, item.id);
+      if (startsIn !== null) item = { ...item, startsIn };
+    }
+    return Object.keys(bag).length > 0 ? { ...item, narration: bag } : item;
   }
 
   /** `POST /queue`: the one route all four sources share. `ticket`/`brief` never touch

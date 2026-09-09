@@ -14,7 +14,7 @@ import type { ClassSpec } from '../policy.js';
 import type { Hop, Lane, LaneKind, LanePr, LaneQuestion, LaneSandbox, LaneState, LanesResponse, MergeReadyReport } from '../../shared/console-model.js';
 import { textFor } from './journal-route.js';
 import { plainStatus } from './plain.js';
-import { computeDid } from './laneGlance.js';
+import { didFrom } from './laneGlance.js';
 import { shortenShas, stripMachineIds, ticketInId } from '../../shared/humanize.js';
 
 /** Journal rows that carry no narrative on their own: burn accounting, per-tool
@@ -615,6 +615,8 @@ export function buildLane(input: LaneBuildInput): Lane {
   const heart = state === 'running' || (state === 'handed-off' && chainLive);
   const since = sinceFor(state, runEvents, lastEventAt);
 
+  const did = didFrom(runEvents, input.prFor(id));
+
   const stuckHint = stuck.find((signal) => signal.key === id);
   const blockedByIntegration = state === 'blocked' && reason
     ? /\b(github|jira|aws|codex|model-provider)\b/i.exec(reason)?.[1]?.toLowerCase() ?? null
@@ -682,7 +684,10 @@ export function buildLane(input: LaneBuildInput): Lane {
     // `you` is filled in by `withHumanFields` (reads.ts), once `mergeable` exists to
     // read the merge override off. `did`/`now` need only this fold's own `runEvents`
     // and `pr`, so they are set here, and `now` is patched to match `plain` below.
-    did: computeDid(runEvents, input.prFor(id)),
+    did: did.text,
+    // The narrator may rewrite a sentence this file composed; it may not rewrite the
+    // agent's own report. See `didFrom`.
+    didVerbatim: did.source === 'report',
     now: '',
     you: null,
     // `reads.ts#lanesResponse` overwrites this with the real process-alive check

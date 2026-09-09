@@ -6,6 +6,7 @@ import { durationWords } from '../laneVM.js';
 import type { AccountItem, Caps, Integration } from '../../shared/console-model.js';
 import { fmtTokens } from '../../shared/format-tokens.js';
 import { Accounts } from './Accounts.js';
+import { NarratedLine } from './Narrated.js';
 import { Marks } from './QuestionCard.js';
 import { IntegrationsPanel } from './IntegrationsPanel.js';
 
@@ -26,42 +27,50 @@ export interface SettingsProps {
   maxInFlight: number;
   theme: 'light' | 'dark';
   onTheme: (theme: 'light' | 'dark') => void;
+  /** `?verbose=1`: every row's fact record under its sentence. */
+  verbose?: boolean;
 }
 
-function statusWords(row: Integration, now: number): { status: string; note: string; color: string; dot: string; down: boolean } {
-  const checked = `checked ${durationWords(now - row.checkedAt)} ago`;
-  const scope = row.scope ? `${row.scope} · ` : '';
+/**
+ * The colours and the freshness suffix -- everything about a row that is not a sentence.
+ * The two sentences themselves come from the server as `row.words`, narrated, so the tile
+ * and the model can never end up describing the same row from two different copies of
+ * this switch. The "checked X ago" phrase is composed here on purpose: it is the clock,
+ * and a clock inside a narration fact would move the cache key once a second.
+ */
+function statusLook(row: Integration, now: number): { color: string; dot: string; down: boolean; freshness: string } {
+  const checked = ` · checked ${durationWords(now - row.checkedAt)} ago`;
   switch (row.status) {
     case 'ok':
-      return { status: 'Connected', note: `${scope}${row.desc} · ${checked}`, color: 'var(--ink)', dot: 'var(--acc)', down: false };
+      return { color: 'var(--ink)', dot: 'var(--acc)', down: false, freshness: checked };
     case 'down':
-      return { status: `Not connected${row.cause ? ` — ${row.cause}` : ''}`, note: row.effect ?? (row.dependents.length ? `Stops ${row.dependents.length} agent${row.dependents.length === 1 ? '' : 's'}.` : row.desc), color: 'var(--warn)', dot: 'var(--warn)', down: true };
+      return { color: 'var(--warn)', dot: 'var(--warn)', down: true, freshness: '' };
     case 'degraded':
-      return { status: 'Slow', note: `${row.desc} · ${checked}`, color: 'var(--warn)', dot: 'var(--warn)', down: false };
+      return { color: 'var(--warn)', dot: 'var(--warn)', down: false, freshness: checked };
     case 'off':
-      return { status: 'Off', note: row.desc, color: 'var(--ink3)', dot: 'var(--ink3)', down: false };
+      return { color: 'var(--ink3)', dot: 'var(--ink3)', down: false, freshness: '' };
     case 'checking':
     case 'busy':
-      return { status: 'Checking…', note: row.desc, color: 'var(--ink2)', dot: 'var(--ink3)', down: false };
+      return { color: 'var(--ink2)', dot: 'var(--ink3)', down: false, freshness: '' };
     default:
-      return { status: row.status, note: row.desc, color: 'var(--ink2)', dot: 'var(--ink3)', down: false };
+      return { color: 'var(--ink2)', dot: 'var(--ink3)', down: false, freshness: '' };
   }
 }
 
-function SourceRow({ row, now }: { row: Integration; now: number }): JSX.Element {
+function SourceRow({ row, now, verbose }: { row: Integration; now: number; verbose?: boolean }): JSX.Element {
   const check = useAction(ACTIONS.checkIntegration, row.id);
   const reconnect = useAction(ACTIONS.reconnectIntegration, row.id);
-  const words = statusWords(row, now);
-  const fixable = words.down && row.canConnect;
+  const look = statusLook(row, now);
+  const fixable = look.down && row.canConnect;
   const busy = check.pending || reconnect.pending;
   const result = reconnect.result?.kind === 'done' ? reconnect.result : check.result?.kind === 'done' ? check.result : null;
   return (
-    <div data-testid={`source-${row.id}`} style={{ position: 'relative', border: `1px solid ${words.down ? 'var(--warn)' : 'var(--line)'}`, padding: '14px 18px', display: 'grid', gridTemplateColumns: '150px 1fr auto', gap: 18, alignItems: 'center', background: words.down ? 'var(--warnTint)' : 'transparent' }}>
+    <div data-testid={`source-${row.id}`} style={{ position: 'relative', border: `1px solid ${look.down ? 'var(--warn)' : 'var(--line)'}`, padding: '14px 18px', display: 'grid', gridTemplateColumns: '150px 1fr auto', gap: 18, alignItems: 'center', background: look.down ? 'var(--warnTint)' : 'transparent' }}>
       <Marks />
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}><i style={{ width: 10, height: 10, background: words.dot, display: 'block', flex: 'none' }} /><span className="hd" style={{ fontSize: 'var(--fs-heading)' }}>{row.name}</span></div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}><i style={{ width: 10, height: 10, background: look.dot, display: 'block', flex: 'none' }} /><span className="hd" style={{ fontSize: 'var(--fs-heading)' }}>{row.name}</span></div>
       <div>
-        <div style={{ color: words.color, fontWeight: 500 }}>{words.status}</div>
-        <div style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>{result ? result.text : words.note}</div>
+        <div style={{ color: look.color, fontWeight: 500 }}><NarratedLine bag={row.narration} field="status" glance={row.words.status} testid="source-status" {...(verbose === undefined ? {} : { verbose })} /></div>
+        <div style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>{result ? result.text : <><NarratedLine bag={row.narration} field="note" glance={row.words.note} testid="source-note" {...(verbose === undefined ? {} : { verbose })} />{look.freshness}</>}</div>
       </div>
       <button type="button" className={`btn ${fixable ? 'warn' : ''}`} aria-busy={busy} style={{ padding: '6px 14px' }} onClick={() => void (fixable ? reconnect.run(row.id) : check.run(row.id))}>
         {busy ? 'Checking…' : fixable ? (row.fixLabel ?? 'Reconnect') : 'Check now'}
@@ -74,7 +83,7 @@ function capInput(value: number): string {
   return Number.isFinite(value) ? fmtTokens(value) : '';
 }
 
-export function Settings({ integrations, accounts, onAccountsChanged, caps, now, maxInFlight, theme, onTheme }: SettingsProps): JSX.Element {
+export function Settings({ integrations, accounts, onAccountsChanged, caps, now, maxInFlight, theme, onTheme, verbose }: SettingsProps): JSX.Element {
   const width = useAction(ACTIONS.postQueueWidth);
   const save = useAction(ACTIONS.setCaps);
   const [daily, setDaily] = useState<string | null>(null);
@@ -100,7 +109,7 @@ export function Settings({ integrations, accounts, onAccountsChanged, caps, now,
     <main data-testid="settings" className="scroll" style={{ flex: 1, minWidth: 0, overflow: 'auto', padding: '26px 28px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 28, alignContent: 'start', maxWidth: 1000 }}>
       <section style={{ display: 'flex', flexDirection: 'column', gap: 10, gridColumn: '1/-1' }}>
         <h6 className="sec">Data sources</h6>
-        {integrations.filter((row) => row.kind !== 'mcp').map((row) => <SourceRow key={row.id} row={row} now={now} />)}
+        {integrations.filter((row) => row.kind !== 'mcp').map((row) => <SourceRow key={row.id} row={row} now={now} {...(verbose === undefined ? {} : { verbose })} />)}
       </section>
       <section style={{ display: 'flex', flexDirection: 'column', gap: 10, gridColumn: '1/-1' }}>
         <h6 className="sec">MCP servers</h6>

@@ -19,8 +19,10 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import { consoleDir } from './actions-ledger.js';
 import { appendOnce } from '../journal.js';
-import { detectBlockers, orderChains, type BlockerSnapshot, type DetectionInputs } from './blockers.js';
-import type { Blocker, BlockerKind, BlockersActionResult, BlockersResponse } from '../../shared/console-model.js';
+import { blockerFactsFor, detectBlockers, orderChains, type BlockerSnapshot, type DetectionInputs } from './blockers.js';
+import { Binder } from './narrate-bind.js';
+import type { Narrator } from './narrate-store.js';
+import type { Blocker, BlockerKind, BlockersActionResult, BlockersResponse, NarrationBag } from '../../shared/console-model.js';
 
 export function blockersLedgerPath(): string {
   return join(consoleDir(), 'blockers.jsonl');
@@ -69,6 +71,9 @@ export type Confirmer = (blocker: Blocker) => Promise<Confirmation>;
 export type Restarter = (blocker: Blocker, laneIds: string[]) => Promise<string[]>;
 
 export interface BlockersRoutesOptions {
+  /** Absent (a specimen, or `FORGE_NARRATE=off`) means every card serves its own
+   *  template in all three registers -- never a blank card and never a model call. */
+  narrator?: Narrator | null;
   ledgerPath?: string;
   journalPath: string;
   authorized: (request: IncomingMessage, response: ServerResponse) => boolean;
@@ -172,7 +177,46 @@ export class BlockersRoutes {
     const inputs = await this.opts.gather();
     const live = detectBlockers(inputs);
     const { open, resolvedToday } = this.reconcile(live, inputs.now);
-    return { blockers: [...open, ...resolvedToday], chains: orderChains(open) };
+    const blockers = [...open, ...resolvedToday].map((b) => this.narrate(b));
+    return { blockers, chains: orderChains(open) };
+  }
+
+  /**
+   * The three registers for one blocker card.
+   *
+   * `question` is the one kind whose title and detail are a person's own words -- the
+   * operator typed the question into the run and the card is quoting it back. Those go
+   * through `Binder.verbatim`, which cannot reach the model and writes no cache key, so
+   * the guardrail is structural rather than a rule someone has to remember. Everything
+   * else on the card (how to resolve it, what happens next, the note under the owner's
+   * name) is a sentence this repo wrote about its own state, and is narrated.
+   */
+  private narrate(blocker: Blocker): Blocker {
+    const bag: NarrationBag = {};
+    const binder = new Binder(this.opts.narrator ?? null, 'blockers');
+    const out: Blocker = { ...blocker };
+
+    if (blocker.kind === 'question') {
+      binder.verbatim(bag, 'title', blocker.title);
+      binder.verbatim(bag, 'detail', blocker.detail);
+    } else {
+      const title = binder.field(bag, 'title', blockerFactsFor(blocker, 'blocker.title', blocker.title), blocker.id);
+      if (title !== null) out.title = title;
+      const detail = binder.field(bag, 'detail', blockerFactsFor(blocker, 'blocker.detail', blocker.detail), blocker.id);
+      if (detail !== null) out.detail = detail;
+    }
+
+    const how = binder.field(bag, 'howToResolve', blockerFactsFor(blocker, 'blocker.howToResolve', blocker.howToResolve), blocker.id);
+    if (how !== null) out.howToResolve = how;
+    const then = binder.field(bag, 'thenWhat', blockerFactsFor(blocker, 'blocker.thenWhat', blocker.thenWhat), blocker.id);
+    if (then !== null) out.thenWhat = then;
+    if (blocker.whoNote) {
+      const note = binder.field(bag, 'whoNote', blockerFactsFor(blocker, 'blocker.whoNote', blocker.whoNote), blocker.id);
+      if (note !== null) out.whoNote = note;
+    }
+
+    if (Object.keys(bag).length > 0) out.narration = bag;
+    return out;
   }
 
   /** `POST /blockers/:id/resolve`: a person says "I did it". Moves the blocker to

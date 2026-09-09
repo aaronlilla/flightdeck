@@ -16,7 +16,7 @@ function lane(partial: Partial<Lane> & Pick<Lane, 'id' | 'state'>): Lane {
   const built: Lane = {
     ticket: null,
     title: null, kind: 'manual', sourceUrl: null, plain: '', mergeable: null, attempts: 1, retiredAt: null,
-    did: null, now: '', you: null,
+    did: null, didVerbatim: false, now: '', you: null,
     model: 'sonnet-5',
     modelId: 'claude-sonnet-5',
     className: 'implement',

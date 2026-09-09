@@ -13,7 +13,7 @@ function lane(state: LaneState, extra: Partial<Lane> = {}): Lane {
     reason: null, stepN: 1, stepTotal: 6, stepText: 'working', ctxTokens: 0, ctxCeiling: 1, ctxCompactAt: 1, tokens: 0, tokenCap: null,
     tokensPerMin: 0, fails: 0, hop: 0, hopStatus: 'live', observedAt: 0, verifiedAt: null, heart: false, since: 0, startedAt: 0,
     endedAt: null, question: null, pr: null, sandbox: null, blockedBy: null, runaway: false, needsAaron: null,
-    live: { alive: false, pid: null, lastEventAt: null, checkedAt: 0 }, did: null, now: '', you: null, ...extra,
+    live: { alive: false, pid: null, lastEventAt: null, checkedAt: 0 }, did: null, didVerbatim: false, now: '', you: null, ...extra,
   };
 }
 

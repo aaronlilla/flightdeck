@@ -40,7 +40,7 @@ describe('the policy file', () => {
   it('declares every class the Spine names', () => {
     const wanted = [
       'triage', 'plan', 'master', 'implement', 'implement-hard', 'verify',
-      'audit-lens', 'audit-judge', 'research', 'evaluate', 'sweep',
+      'audit-lens', 'audit-judge', 'research', 'evaluate', 'sweep', 'narrate',
     ];
     expect(classNames().sort()).toEqual(wanted.sort());
   });

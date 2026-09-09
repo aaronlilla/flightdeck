@@ -124,6 +124,9 @@ export interface LaneReadiness {
  * ones to hit a target count.
  */
 export interface LaneSummary {
+  /** `detail` and `raw` for `what`, `status` and `next`; the `glance` register is the
+   *  field itself. Read through `narratedField`. */
+  narration?: NarrationBag;
   what: string[];
   status: string;
   /** The one thing to do next, in the operator's own terms: "Answer the question
@@ -197,6 +200,11 @@ export interface SandboxLogLine {
 }
 
 export interface Lane {
+  /** The `detail` and `raw` registers for this lane's narrated fields, keyed by field
+   *  name (`did`, `now`, `you`). The `glance` register is the field itself. Read it
+   *  through `narratedField`, never directly, so a lane the narrator never saw still
+   *  answers with three registers. */
+  narration?: NarrationBag;
   /** The run name (registry slug). */
   id: string;
   ticket: string | null;
@@ -268,6 +276,11 @@ export interface Lane {
    *  `computeNext` in `summary.ts` builds its longer sentence from, so the two never
    *  disagree about what to do next. */
   did: string | null;
+  /** True when `did` is the agent's own words out of its `forge.report`, rather than a
+   *  sentence the server composed from the PR or the tool digest. The narrator rewrites
+   *  the composed ones and leaves this one alone, so the same report reads the same on
+   *  the tile as it does on the rail. */
+  didVerbatim: boolean;
   now: string;
   you: string | null;
   /** Whether this lane's own worker is alive right now, checked fresh every 2s
@@ -335,6 +348,9 @@ export interface PlanItem {
 }
 
 export interface Message {
+  /** `detail` and `raw` for `text`; the `glance` register is `text` itself. A row that
+   *  quotes a person or the agent carries three identical registers and no cache key. */
+  narration?: NarrationBag;
   k: string;
   type: MessageType;
   text: string;
@@ -461,7 +477,12 @@ export interface Integration {
   mcpState: McpConnState | null;
   /** The MCP CLI's own error text for a `mcp`-kind row, verbatim rather than a generic
    *  sentence. Null for a `conn`-kind row, and for an `mcp` row with no error to show. */
-  lastError: string | null;
+  lastError: string | null;  /** The two sentences this row shows -- its state, and what that state means for the
+   *  work. Composed on the server (`integrations-narrate.ts`) so the narrator can reach
+   *  them; the "checked four minutes ago" suffix is added by the client, because it is
+   *  the clock and the clock is never a narration fact. */
+  words: { status: string; note: string };
+  narration?: NarrationBag;
 }
 
 export interface IntegrationsResponse {
@@ -584,6 +605,11 @@ export interface ReviewMetrics {
   handedToQa?: number;
   blockersCleared?: number;
   slowestHop?: { name: string; minutes: number } | null;
+  /** The sentence under each tile, keyed by tile, composed on the server so it can be
+   *  narrated (`review-notes.ts`). Absent on a response older than this field, in which
+   *  case the screen composes them itself from the same function. */
+  notes?: Record<string, string>;
+  narration?: NarrationBag;
 }
 
 export interface ProposalsResponse {
@@ -611,6 +637,9 @@ export type QueueSource = 'ticket' | 'brief' | 'query' | 'backlog' | 'hotfix' | 
 export type QueueItemState = 'queued' | 'planning' | 'running' | 'parked' | 'review' | 'failed' | 'done';
 
 export interface QueueItem {
+  /** `detail` and `raw` for `title`, `whyNext` and `startsIn`. A person-authored title
+   *  carries three identical registers. */
+  narration?: NarrationBag;
   id: string;
   source: QueueSource;
   /** The raw input the item was added with: the ticket key, the pasted brief text, the
@@ -910,6 +939,10 @@ export type BlockerKind = 'question' | 'integration' | 'checks' | 'billing' | 'o
 export type BlockerState = 'open' | 'checking' | 'resolved';
 
 export interface Blocker {
+  /** `detail` and `raw` for `title`, `detail`, `howToResolve`, `thenWhat` and `whoNote`;
+   *  the `glance` register is the field itself. A `question` blocker quotes the operator,
+   *  so its `title` and `detail` carry three identical registers and no model call. */
+  narration?: NarrationBag;
   /** Stable: `question:<askKey>`, `integration:<id>`, `checks:<repo>#<pr>`,
    *  `billing:<owner-or-repo>`, `owner:<repo>#<pr>`, `process:<laneId>`. */
   id: string;
@@ -955,4 +988,90 @@ export interface BlockersActionResult {
   state: BlockerState;
   lastCheck: string | null;
   started: string[];
+}
+
+// ---------------------------------------------------------------------------------------
+// Narration (R-23)
+// ---------------------------------------------------------------------------------------
+
+/**
+ * One human-facing string in three registers.
+ *
+ * The rule (Aaron, 2026-09-09): internals stay machine readable, and every sentence a
+ * person reads is produced from those internals by one narration layer. `glance` is what
+ * a card or a row shows; `detail` is what the disclosure under it opens; `raw` is the
+ * facts themselves, ids intact, which `?verbose=1` answers. `narratedAt` is null while
+ * the template is standing in -- a miss never blocks the route, so the first read of a
+ * new fact set is always the template and the narrated text lands on a later poll.
+ */
+export interface Narrated {
+  glance: string;
+  detail: string;
+  raw: string;
+  narratedAt: number | null;
+}
+
+/**
+ * What a fact may be worth.
+ *
+ * `boolean` was here and is deliberately gone. A boolean fact is a fact the checker cannot
+ * hold on to: `true` yields no protected token (no digits, no word the key rules recognise)
+ * and `false` was skipped outright, so `draft: true` would let a narration say "ready for
+ * review" with nothing to refuse it. A caller with a yes/no fact writes the word it means
+ * -- `draft: 'draft'`, `mergeable: 'blocked'` -- which `WORD_KEY_RE` then protects
+ * verbatim. Narrowing the type is the enforcement: no builder can pass a boolean at all.
+ * (Found 2026-09-09 by a critique of `narrate-checker.ts`; no builder passed one.)
+ */
+export type NarrationFactValue = string | number | null;
+
+/**
+ * Fact keys the narration cache may never be keyed on, refused at the type as well as at
+ * runtime (`assertNarrationFacts`). A clock value in the key means every poll is a fresh
+ * key and every poll costs a model call, which is the failure mode that makes "cached"
+ * read Met while nothing is cached.
+ */
+export type VolatileFactKey =
+  | 'since' | 'now' | 'at' | 'elapsed' | 'elapsedMs' | 'ageMs' | 'age'
+  | 'updatedAt' | 'observedAt' | 'verifiedAt' | 'polledAt' | 'renderedAt' | 'ts' | 'uptime';
+
+/** Any fact record, minus the volatile keys above. */
+export type NarrationFactMap =
+  { [key: string]: NarrationFactValue | undefined } & { [K in VolatileFactKey]?: never };
+
+/**
+ * What the narrator is given: which surface asked, the facts behind the sentence, and the
+ * template sentence the server would have shown on its own. The template is what serves
+ * on a miss, on a rejection and past the hourly cap, so it is never a placeholder -- it is
+ * the shipped fallback.
+ */
+export interface NarrationFacts {
+  surface: string;
+  facts: NarrationFactMap;
+  template: string;
+  detailTemplate?: string;
+}
+
+/**
+ * The extra two registers, carried beside the field the surface already had.
+ *
+ * The glance register stays where it always was -- `lane.did`, `queueItem.whyNext`,
+ * `blocker.title` -- so every consumer that only ever wanted one sentence keeps reading
+ * one string, and so the tile is physically incapable of showing anything but the
+ * narrator's own glance. `detail` and `raw` live here, keyed by the field's own name, for
+ * the disclosure and for `?verbose=1`. A field with no entry was never narrated: the
+ * helper below hands back the glance string in all three registers, which is exactly the
+ * right answer for person-authored text.
+ */
+export type NarrationBag = { [field: string]: Narrated };
+
+/** The three registers of one field, whether or not it was ever narrated. Person-authored
+ *  text and un-narrated fields come back with `glance === detail === raw`, which is the
+ *  contract the rail's pass-through rests on. */
+export function narratedField(
+  bag: NarrationBag | undefined, field: string, glance: string | null,
+): Narrated {
+  const entry = bag?.[field];
+  if (entry) return entry;
+  const text = glance ?? '';
+  return { glance: text, detail: text, raw: text, narratedAt: null };
 }

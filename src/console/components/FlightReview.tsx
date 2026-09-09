@@ -3,6 +3,8 @@ import type { JSX } from 'react';
 import { ACTIONS, useAction } from '../actions.js';
 import type { ProposalsResponse, ReviewMetrics } from '../../shared/console-model.js';
 import { fmtTokens } from '../../shared/format-tokens.js';
+import { reviewNotesFor, type ReviewTile } from '../../shared/review-notes.js';
+import { NarratedLine } from './Narrated.js';
 import { Marks } from './QuestionCard.js';
 
 /**
@@ -12,35 +14,40 @@ import { Marks } from './QuestionCard.js';
  */
 export interface FlightReviewProps {
   proposals: ProposalsResponse | null;
+  /** `?verbose=1`: each tile's fact record under its sentence. */
+  verbose?: boolean;
   now: number;
   tokensToday?: number;
   dailyTokens?: number;
 }
 
-interface Tile { label: string; value: string; note: string; color: string; border: string }
+interface Tile { key: ReviewTile; label: string; value: string; note: string; color: string; border: string }
 
 function tiles(metrics: ReviewMetrics, tokensToday: number | undefined, dailyTokens: number | undefined): Tile[] {
   const count = (value: number | undefined): string => (value === undefined ? 'not measured' : String(value));
   const tokens = tokensToday ?? 0;
-  const capNote = dailyTokens && Number.isFinite(dailyTokens) ? `${Math.round((tokens / dailyTokens) * 100)}% of cap` : '';
-  const perMerge = metrics.tokensPerMerge !== null ? `${fmtTokens(metrics.tokensPerMerge)} per merge` : '';
+  // The route composes these sentences so the narrator can reach them; an older response
+  // that predates the field is composed here from the same shared function, so the screen
+  // never falls back to a second wording of its own.
+  const notes = metrics.notes ?? reviewNotesFor(metrics, tokens, dailyTokens ?? null);
   const slowest = metrics.slowestHop;
   return [
-    { label: 'Tickets in', value: count(metrics.ticketsIn), note: '', color: 'var(--ink)', border: 'var(--line)' },
-    { label: 'PRs merged', value: String(metrics.mergedToday), note: '', color: 'var(--acc)', border: 'var(--acc)' },
-    { label: 'Handed to QA', value: count(metrics.handedToQa), note: '', color: 'var(--ink)', border: 'var(--line)' },
-    { label: 'Blockers cleared', value: count(metrics.blockersCleared), note: '', color: 'var(--ink)', border: 'var(--line)' },
-    { label: 'Tokens spent', value: fmtTokens(tokens), note: [capNote, perMerge].filter(Boolean).join(' · '), color: 'var(--ink)', border: 'var(--line)' },
+    { key: 'ticketsIn', label: 'Tickets in', value: count(metrics.ticketsIn), note: notes['ticketsIn'] ?? '', color: 'var(--ink)', border: 'var(--line)' },
+    { key: 'mergedToday', label: 'PRs merged', value: String(metrics.mergedToday), note: notes['mergedToday'] ?? '', color: 'var(--acc)', border: 'var(--acc)' },
+    { key: 'handedToQa', label: 'Handed to QA', value: count(metrics.handedToQa), note: notes['handedToQa'] ?? '', color: 'var(--ink)', border: 'var(--line)' },
+    { key: 'blockersCleared', label: 'Blockers cleared', value: count(metrics.blockersCleared), note: notes['blockersCleared'] ?? '', color: 'var(--ink)', border: 'var(--line)' },
+    { key: 'tokensToday', label: 'Tokens spent', value: fmtTokens(tokens), note: notes['tokensToday'] ?? '', color: 'var(--ink)', border: 'var(--line)' },
     {
+      key: 'slowestHop',
       label: 'Slowest step',
       value: slowest ? `${slowest.minutes} min` : metrics.humanWaitMin > 0 ? `${metrics.humanWaitMin} min` : 'none',
-      note: slowest ? slowest.name : '',
+      note: notes['slowestHop'] ?? '',
       color: slowest || metrics.humanWaitMin > 0 ? 'var(--warn)' : 'var(--ink)', border: slowest || metrics.humanWaitMin > 0 ? 'var(--warn)' : 'var(--line)',
     },
   ];
 }
 
-export function FlightReview({ proposals, tokensToday, dailyTokens }: FlightReviewProps): JSX.Element {
+export function FlightReview({ proposals, now, tokensToday, dailyTokens, verbose }: FlightReviewProps): JSX.Element {
   const top = proposals?.rules.find((rule) => rule.status === 'open') ?? null;
   const apply = useAction(ACTIONS.applyProposal, top?.id);
   const dismiss = useAction(ACTIONS.dismissProposal, top?.id);
@@ -54,7 +61,9 @@ export function FlightReview({ proposals, tokensToday, dailyTokens }: FlightRevi
             <Marks />
             <span className="kick" style={{ letterSpacing: '.12em' }}>{tile.label}</span>
             <span className="hd" style={{ fontSize: 'var(--fs-metric)', lineHeight: 1, color: tile.color, fontVariantNumeric: 'tabular-nums', overflowWrap: 'anywhere', minWidth: 0 }}>{tile.value}</span>
-            {tile.note ? <p style={{ margin: 'auto 0 0', color: 'var(--ink2)' }}>{tile.note}</p> : null}
+            {tile.note || proposals?.metrics.narration?.[tile.key]
+              ? <p style={{ margin: 'auto 0 0', color: 'var(--ink2)' }}><NarratedLine bag={proposals?.metrics.narration} field={tile.key} glance={tile.note} testid={`review-${tile.key}`} {...(verbose === undefined ? {} : { verbose })} /></p>
+              : null}
           </div>
         ))}
       </div>

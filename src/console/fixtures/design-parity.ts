@@ -7,13 +7,14 @@
  * `POST /__test/fixture?name=design-parity`.
  */
 import type { Blocker, Lane, Message, QueueItem } from '../../shared/console-model.js';
+import { registers, verbatim } from './narrated.js';
 import { computeYou } from '../../forge/console/laneGlance.js';
 
 function lane(partial: Partial<Lane> & Pick<Lane, 'id' | 'state' | 'since'>): Lane {
   const now = Date.now();
   const built: Lane = {
     ticket: partial.id, title: null, kind: 'ticket', sourceUrl: null, plain: '', mergeable: null, attempts: 1, retiredAt: null,
-    did: null, now: '', you: null, model: 'sonnet-5', modelId: 'claude-sonnet-5', className: 'implement', repo: 'northwind/rewards',
+    did: null, didVerbatim: false, now: '', you: null, model: 'sonnet-5', modelId: 'claude-sonnet-5', className: 'implement', repo: 'northwind/rewards',
     attempt: 1, reason: null, stepN: 2, stepTotal: 6, stepText: 'working', ctxTokens: 40_000, ctxCeiling: 200_000, ctxCompactAt: 180_000,
     tokens: 240_000, tokenCap: 4_000_000, tokensPerMin: 0, fails: 0, hop: 2, hopStatus: 'live', observedAt: now, verifiedAt: now,
     heart: true, startedAt: partial.since, endedAt: null, question: null, pr: null, sandbox: null, blockedBy: null, runaway: false,
@@ -44,15 +45,37 @@ export function parityLanes(): Lane[] {
   ];
 }
 
+/** A parity blocker's registers: the card's own sentences at a glance, a fuller reading
+ *  of each behind the card's one `more`, and the record each was written from. The title
+ *  is verbatim -- it names the thing that broke and no rewording improves it. */
+function blockerRegisters(blocker: Blocker): Blocker {
+  return {
+    ...blocker,
+    narration: {
+      title: verbatim(blocker.title),
+      detail: registers(blocker.detail, `${blocker.detail} ${blocker.blocks.length === 1 ? 'One agent is stopped on it.' : `${blocker.blocks.length} agents are stopped on it.`}`,
+        'blocker.detail', { kind: blocker.kind, blocks: blocker.blocks.length }),
+      howToResolve: registers(blocker.howToResolve, `${blocker.howToResolve} ${blocker.youCanResolve ? 'You can do it yourself, now.' : 'It is not yours to do.'}`,
+        'blocker.howToResolve', { kind: blocker.kind, you: blocker.youCanResolve }),
+      thenWhat: registers(blocker.thenWhat, `${blocker.thenWhat} Nothing else has to be restarted by hand.`,
+        'blocker.thenWhat', { kind: blocker.kind, blocks: blocker.blocks.length }),
+      ...(blocker.whoNote ? { whoNote: verbatim(blocker.whoNote) } : {}),
+    },
+  };
+}
+
 export function parityBlockers(): Blocker[] {
   const now = Date.now();
   const m = (minutes: number): number => now - minutes * 60_000;
-  return [
+  // Annotated rather than inferred: an array literal widens `kind` to `string`, and these
+  // rows have to be `Blocker`s before `blockerRegisters` can narrate them.
+  const rows: Blocker[] = [
     { id: 'integration:sentry', kind: 'integration', title: 'The Sentry token expired', detail: 'Sentry stopped answering at the last health check; the token expired.', youCanResolve: true, howToResolve: 'Paste a new token in Settings.', who: 'You', whoNote: 'about a minute', links: [], blocks: [{ laneId: 'NWR-178', label: 'NWR-178' }, { laneId: 'NWR-155', label: 'NWR-155' }], blockedBy: [], state: 'open', since: m(44), checkedAt: null, resolvedAt: null, thenWhat: 'Both tickets resume on their own.', lastCheck: null },
     { id: 'billing:northwind/rewards', kind: 'billing', title: 'GitHub Actions minutes are used up for the month', detail: 'The checks on PR #418 were refused: the spending limit is reached.', youCanResolve: false, howToResolve: 'Someone buys more minutes or raises the plan.', who: 'GitHub billing', whoNote: 'outside vendor; you hold the card', links: [{ label: 'GitHub billing settings', url: 'https://github.com/settings/billing' }], blocks: [{ laneId: 'NWR-202', label: 'NWR-202' }], blockedBy: [], state: 'open', since: m(9), checkedAt: null, resolvedAt: null, thenWhat: 'Checks re-run automatically.', lastCheck: null },
     { id: 'owner:cloudwatch', kind: 'owner', title: 'CloudWatch will not let the agent read the reconciliation logs', detail: 'Needs CloudWatch read access on the reconciliation log group.', youCanResolve: false, howToResolve: 'Dana grants read access on the log group.', who: 'Dana', whoNote: 'owns the AWS account', links: [], blocks: [{ laneId: 'NWR-141', label: 'NWR-141' }], blockedBy: [], state: 'open', since: m(135), checkedAt: null, resolvedAt: null, thenWhat: 'The lane resumes once access lands.', lastCheck: null },
     { id: 'integration:jira', kind: 'integration', title: 'Jira rate limit', detail: 'Jira answered 429 for ten minutes.', youCanResolve: true, howToResolve: 'Wait it out.', who: 'You', links: [], blocks: [{ laneId: 'NWR-77', label: 'NWR-77' }], blockedBy: [], state: 'resolved', since: m(170), checkedAt: m(160), resolvedAt: m(160), thenWhat: 'Restarted NWR-77.', lastCheck: 'lifted; restarted NWR-77' },
   ];
+  return rows.map(blockerRegisters);
 }
 
 export function parityQueue(): QueueItem[] {
@@ -60,6 +83,13 @@ export function parityQueue(): QueueItem[] {
   const q = (id: string, title: string, extra: Partial<QueueItem> = {}): QueueItem => ({
     id: `Q-${id}`, source: 'ticket', input: id, ticket: id, repo: 'northwind/rewards', briefPath: null, branch: null, worktreePath: null, base: null,
     state: 'queued', reason: null, runKey: null, pr: null, journalIds: [], createdAt: now - 30 * 60_000, updatedAt: now, title, ...extra,
+    narration: {
+      // The title came off a ticket somebody wrote, so it is verbatim: three identical
+      // registers and no disclosure, exactly as the real queue route serves it.
+      title: verbatim(title),
+      ...(extra.whyNext ? { whyNext: registers(extra.whyNext, `${extra.whyNext} Nothing ahead of it is waiting on you.`, 'queue.whyNext', { source: 'ticket' }) } : {}),
+      ...(extra.startsIn ? { startsIn: registers(extra.startsIn, `${extra.startsIn}; no one has to start it by hand.`, 'queue.startsIn', { state: extra.state ?? 'queued' }) } : {}),
+    },
   });
   return [
     q('NWR-155', 'Alert on failed payouts', { whyNext: 'First in the queue, from a ticket in Ready for Dev; part of the Payouts epic.', startsIn: 'Blocked by Sentry until you fix the token' }),
@@ -76,7 +106,8 @@ export function parityThread(): Message[] {
   const m = (minutes: number): number => now - minutes * 60_000;
   return [
     { k: 'p1', type: 'reply', text: 'NWR-96 passed checks and the council approved PR #412. It is ready for you to merge.', ts: m(16), source: 'conductor' },
-    { k: 'p2', type: 'activity', text: '3 tool calls', tools: ['Read PR #412 checks', 'Read council attestation', 'Read Jira NWR-96'], ts: m(16), source: 'conductor' },
+    { k: 'p2', type: 'activity', text: '3 tool calls', tools: ['Read PR #412 checks', 'Read council attestation', 'Read Jira NWR-96'], ts: m(16), source: 'conductor',
+      narration: { text: registers('3 tool calls', 'Three tool calls: the checks on PR #412, the council attestation, and the ticket.', 'rail.activity', { calls: 3 }) } },
     { k: 'p3', type: 'question', text: 'Should I limit the odds refresh per user or per IP address?', ts: m(9), source: 'NWR-226', lane: 'NWR-226', askKey: 'ask-nwr-226', opts: ['Per user, the way bet placement and deposits already work', 'Per IP address, so anonymous callers are covered too', 'Both: per user when logged in, per IP otherwise'] },
     { k: 'p4', type: 'blocker', text: 'the Sentry token expired', ts: m(5), source: 'NWR-178', lane: 'NWR-178', kicker: 'Blocked · NWR-178 · 41 min', title: 'NWR-178 cannot reach Sentry. What should it do?', body: 'The breadcrumbs step needs to read the Sentry project. Everything else in the ticket is done and tested. NWR-155, next in the queue, needs Sentry too.', btns: [{ label: 'Open Blockers and clear it', cmd: 'open blockers', cls: 'answer' }, { label: 'Tell the agent what to do instead', cmd: 'open lane NWR-178' }] },
     { k: 'p6', type: 'decision', text: 'Webhook retries back off exponentially and stop after five attempts.', ts: m(1), source: 'NWR-119', lane: 'NWR-119', kicker: 'Decided for you · NWR-119 · no reply needed', body: 'The ticket said to retry delivery but not how often. It chose 1, 2, 4, 8 and 16 seconds because the payout provider asks for under a minute in total. One line to change.', btns: [{ label: 'Fine', cmd: 'dismiss parity-decision', cls: 'go' }, { label: 'Change it', cmd: 'open lane NWR-119' }] },

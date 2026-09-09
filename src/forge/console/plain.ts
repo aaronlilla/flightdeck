@@ -7,7 +7,7 @@
  * either names a person-facing fact (a PR number, a model's own name, a turn count, a
  * clock time) or a full clause a person can act on.
  */
-import type { Lane, QueueItem } from '../../shared/console-model.js';
+import type { Lane, NarrationFacts, QueueItem } from '../../shared/console-model.js';
 import { clock } from '../../shared/humanize.js';
 
 export interface PlainContext {
@@ -176,4 +176,39 @@ export function plainForQueueItem(item: QueueItem, verdict: QueueVerdict | null,
     default:
       return null;
   }
+}
+
+/**
+ * The fact record behind `now`.
+ *
+ * Two things are deliberately absent from the narrated sentence for a running lane: the
+ * turn count and the step text. Both tick on every poll, and a cache keyed on either
+ * would buy a fresh model call for every lane every few seconds while saying nothing new.
+ * They are already their own fields (`stepN`, `stepTotal`, `stepText`) and the verbose
+ * register keeps them verbatim, so nothing is hidden -- the narrated sentence just stops
+ * re-stating a number the tile is already showing.
+ *
+ * `null` means "do not narrate this one": a parked lane quoting the operator's own
+ * question is person-authored text, and the route passes it through untouched.
+ */
+export function plainFactsFor(lane: Lane, plain: string | null, context: PlainContext): NarrationFacts | null {
+  if (!plain) return null;
+  if (lane.question && (lane.state === 'parked' || lane.state === 'blocked')) return null;
+  const facts: Record<string, string | number | boolean | null> = {};
+  if (lane.ticket) facts['lane'] = lane.ticket;
+  if (lane.pr && plain.includes(`#${lane.pr.no}`)) facts['pr'] = lane.pr.no;
+
+  if (lane.state === 'running' || lane.state === 'handed-off') {
+    const model = modelName(lane.model);
+    facts['model'] = model;
+    facts['started'] = clockTime(lane.since);
+    return {
+      surface: 'lane.now',
+      facts: facts as NarrationFacts['facts'],
+      template: `Working since ${clockTime(lane.since)} on a ${model} session.`,
+    };
+  }
+  if (plain.toLowerCase().includes(lane.state.toLowerCase())) facts['state'] = lane.state;
+  void context;
+  return { surface: 'lane.now', facts: facts as NarrationFacts['facts'], template: plain };
 }

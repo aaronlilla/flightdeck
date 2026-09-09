@@ -24,6 +24,8 @@ import { fileURLToPath } from 'node:url';
 import { ConsoleReads } from './console/reads.js';
 import { HEARTBEAT_MS, type BlockerKind } from '../shared/console-model.js';
 import { sliceEvent, sliceEventsFor } from '../shared/console-events.js';
+import { Narrator } from './console/narrate-store.js';
+import { reasonerFor } from './reasoner-claude.js';
 
 /** How often the fleet journal's size is compared against the last look. */
 const JOURNAL_WATCH_MS = 1000;
@@ -250,6 +252,8 @@ export class ForgeServer {
 
   private readonly reasoner: Reasoner | undefined;
 
+  private readonly narrator: Narrator;
+
   private readonly consoleReads: ConsoleReads;
 
   private readonly wanted: number;
@@ -337,8 +341,26 @@ export class ForgeServer {
     this.forgeHomeDir = options.forgeHomeDir ?? forgeHome();
     this.modelPolicyPathOpt = options.modelPolicyPath;
     this.reasoner = options.reasoner;
+    // The narrator is the server's own, not the router's: it runs on the `narrate`
+    // class, its cap is its own, and a console with no router still narrates. Nothing
+    // here is awaited by a route -- `Narrator.get` answers from cache or serves the
+    // template and queues the call behind the response.
+    this.narrator = new Narrator({
+      reasoner: reasonerFor('claude', {
+        journal: new Journal(this.journalPath),
+        cwd: process.cwd(),
+        ...(options.modelPolicyPath ? { policyPath: options.modelPolicyPath } : {}),
+      }),
+      journal: new Journal(this.journalPath),
+      home: this.forgeHomeDir,
+      ...(options.modelPolicyPath ? { policyPath: options.modelPolicyPath } : {}),
+      publish: (slice, reason, ref) => { this.publish(sliceEvent(slice, reason, ref)); },
+    });
     this.consoleReads = options.consoleReads
-      ?? new ConsoleReads(options.modelPolicyPath ? { modelPolicyPath: options.modelPolicyPath } : {});
+      ?? new ConsoleReads({
+        narrator: this.narrator,
+        ...(options.modelPolicyPath ? { modelPolicyPath: options.modelPolicyPath } : {}),
+      });
     this.queueStoreForMerge = options.queueStore ?? new QueueStore(defaultQueuePath());
     this.consoleWrites = new ConsoleWrites({
       journalPath: this.journalPath,
@@ -365,6 +387,7 @@ export class ForgeServer {
     // `response()` and the ticker both read the file fresh, never this captured option.
     if (options.queueMaxInFlight !== undefined) writeQueueWidth(options.queueMaxInFlight);
     this.queueRoutes = new QueueRoutes({
+      narrator: this.narrator,
       store: this.queueStoreForMerge,
       search: options.queueSearch ?? {
         searchKeys: async () => {
@@ -408,6 +431,7 @@ export class ForgeServer {
       publish: (event) => this.publish(event),
     });
     this.blockersRoutes = new BlockersRoutes({
+      narrator: this.narrator,
       journalPath: this.journalPath,
       authorized: (request, response) => this.authorized(request, response),
       ...(options.blockersLedgerPath ? { ledgerPath: options.blockersLedgerPath } : {}),
