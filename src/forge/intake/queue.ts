@@ -496,12 +496,23 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
     }
     const status = await deps.launcher.status(item.runKey);
     if (!status.finished) return item;
-    return status.verdict === 'done'
-      ? writeTransition(
+    if (status.verdict === 'done') {
+      return writeTransition(
         item, { state: 'done', reason: status.lastText ? `goal loop ended: ${status.lastText}` : 'goal loop ended' },
         deps, 'queue.done', {},
-      )
-      : writeTransition(item, { state: 'failed', reason: status.verdict ?? 'unknown' }, deps, 'queue.failed', { hop: 'run' });
+      );
+    }
+    // 2026-09-08: a goal item that finishes on anything other than `done`, most often
+    // `exhausted` after a chain of context-ceiling handoffs used up its session budget,
+    // parks exactly like a brief-source item does (`relaunchOnRetryOrPark`, shared with
+    // the hop below) instead of failing outright. Live incident: Q-17bb4283 reached the
+    // implement-class ceiling, handed off the way a brief does, and still landed on
+    // `failed` with the bare word `parked` as its reason. A goal item has no gate hop of
+    // its own to route a non-`done` verdict through, so this branch was the only one left
+    // and it always failed. An operator's retry (`item.retriedAt`) still clears `runKey`
+    // and relaunches on the same goal path via `launchGoal`, the same way a retried brief
+    // relaunches via `launcher.launch`.
+    return relaunchOnRetryOrPark(item, deps, status.verdict ?? 'unknown', { hop: 'run' });
   }
 
   if (!item.briefPath) {
