@@ -9,7 +9,7 @@
 import {
   existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -1271,5 +1271,51 @@ describe('F3: stale inbox asks', () => {
     const result = await forge(['clear', '--all']);
     expect(result.lines.join('\n')).toMatch(/no stale inbox asks found/);
     expect(inbox.open()).toHaveLength(1);
+  });
+});
+
+describe('forge accounts: list, add, remove', () => {
+  it('reports no accounts yet when the registry does not exist', async () => {
+    const result = await forge(['accounts']);
+    expect(result.code).toBe(0);
+    expect(result.lines.join('\n')).toMatch(/no accounts yet/);
+  });
+
+  it('adds an account and lists it back', async () => {
+    const dir = join(home, 'account-a');
+    const added = await forge(['accounts', 'add', 'work', dir]);
+    expect(added.code).toBe(0);
+    const listed = await forge(['accounts', 'list']);
+    expect(listed.lines.join('\n')).toMatch(/work/);
+  });
+
+  it('refuses to add a second account with a duplicate id', async () => {
+    const dirA = join(home, 'account-a');
+    const dirB = join(home, 'account-b');
+    await forge(['accounts', 'add', 'work', dirA]);
+    const result = await forge(['accounts', 'add', 'work', dirB]);
+    expect(result.code).toBe(1);
+    expect(result.lines.join('\n')).toMatch(/refusing/);
+  });
+
+  it('refuses to add an account whose configDir is the operator\'s own ~/.claude', async () => {
+    const own = join(homedir(), '.claude');
+    const result = await forge(['accounts', 'add', 'work', own]);
+    expect(result.code).toBe(1);
+    expect(result.lines.join('\n')).toMatch(/refusing/);
+  });
+
+  it('removes an account by id', async () => {
+    const dir = join(home, 'account-a');
+    await forge(['accounts', 'add', 'work', dir]);
+    const result = await forge(['accounts', 'remove', 'work']);
+    expect(result.code).toBe(0);
+    const listed = await forge(['accounts', 'list']);
+    expect(listed.lines.join('\n')).toMatch(/no accounts yet/);
+  });
+
+  it('refuses to remove an id that is not in the registry', async () => {
+    const result = await forge(['accounts', 'remove', 'nope']);
+    expect(result.code).toBe(1);
   });
 });
