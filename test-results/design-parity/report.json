@@ -40,7 +40,7 @@
     "theme": "dark",
     "console": "test-results/design-parity/1e-settings-dark-console.png",
     "design": "test-results/design-parity/1e-settings-dark-design.png",
-    "diffPercent": 5.9,
+    "diffPercent": 6.3,
     "sizes": "console 1440x900 · design 1442x903",
     "note": "full page"
   },
@@ -175,7 +175,7 @@
     "theme": "light",
     "console": "test-results/design-parity/1e-settings-light-console.png",
     "design": "test-results/design-parity/1e-settings-light-design.png",
-    "diffPercent": 5.3,
+    "diffPercent": 5.5,
     "sizes": "console 1440x900 · design 1442x903",
     "note": "full page"
   },

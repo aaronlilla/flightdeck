@@ -884,6 +884,17 @@ export function createStubServer() {
         json(response, 200, { rows, total });
         return;
       }
+      // The accounts the Settings section shows: one ready, one inside a rate limit,
+      // so both states of the row are visible without waiting for a real limit.
+      if (urlPath === '/accounts' && method === 'GET') {
+        const now = Date.now();
+        json(response, 200, { items: [
+          { id: 'acct-a', label: 'aaron', connectedAt: now - 86_400_000, liveRuns: 2, plan: 'max', selected: true },
+          { id: 'acct-b', label: 'spare', connectedAt: now - 3_600_000, liveRuns: 0, plan: 'pro', limitedUntil: now + 42 * 60_000, limitedWindow: 'five_hour' },
+        ] });
+        return;
+      }
+
       if (urlPath === '/integrations' && method === 'GET') {
         json(response, 200, { items: db.integrations, checkedAt: Date.now(), everyS: 30 });
         return;
