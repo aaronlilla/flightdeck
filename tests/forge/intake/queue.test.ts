@@ -101,10 +101,10 @@ describe('addTicketItem / addBriefItem', () => {
 
   it('2026-09-08: adds a queued goal item carrying its resolved /goal block and the goal path as briefPath', () => {
     const store = tempStore();
-    const item = addGoalItem(store, 'C:/dev/.claude/goals/2026-09-08-thing.md', '/goal Work the thing.', 1000);
+    const item = addGoalItem(store, '/work/goals/2026-09-08-thing.md', '/goal Work the thing.', 1000);
     expect(item).toMatchObject({
-      source: 'goal', input: 'C:/dev/.claude/goals/2026-09-08-thing.md',
-      briefPath: 'C:/dev/.claude/goals/2026-09-08-thing.md', goalBlock: '/goal Work the thing.',
+      source: 'goal', input: '/work/goals/2026-09-08-thing.md',
+      briefPath: '/work/goals/2026-09-08-thing.md', goalBlock: '/goal Work the thing.',
       ticket: null, repo: null, state: 'queued',
     });
     expect(store.all()).toEqual([item]);
@@ -114,7 +114,7 @@ describe('addTicketItem / addBriefItem', () => {
 describe('advanceItem: goal source', () => {
   it('skips the planner and provisioning, launching directly on the resolved block', async () => {
     const store = tempStore();
-    const item = addGoalItem(store, 'C:/dev/.claude/goals/2026-09-08-thing.md', '/goal Work the thing.', 1000);
+    const item = addGoalItem(store, '/work/goals/2026-09-08-thing.md', '/goal Work the thing.', 1000);
     let launchedWith: { goalPath: string; block: string; cwd: string } | undefined;
     const { deps } = buildDeps(store, {
       launchGoal: async (input) => { launchedWith = input; return { runKey: 'goal-run-1' }; },
@@ -125,12 +125,12 @@ describe('advanceItem: goal source', () => {
     expect(advanced.state).toBe('running');
     expect(advanced.runKey).toBe('goal-run-1');
     expect(launchedWith?.block).toBe('/goal Work the thing.');
-    expect(launchedWith?.goalPath).toBe('C:/dev/.claude/goals/2026-09-08-thing.md');
+    expect(launchedWith?.goalPath).toBe('/work/goals/2026-09-08-thing.md');
   });
 
   it('fails outright with no launchGoal dependency wired', async () => {
     const store = tempStore();
-    const item = addGoalItem(store, 'C:/dev/.claude/goals/2026-09-08-thing.md', '/goal Work the thing.', 1000);
+    const item = addGoalItem(store, '/work/goals/2026-09-08-thing.md', '/goal Work the thing.', 1000);
     const { deps } = buildDeps(store);
 
     const advanced = await advanceItem(item, deps);
@@ -140,7 +140,7 @@ describe('advanceItem: goal source', () => {
 
   it('reaches done once the run finishes with verdict done, skipping review entirely', async () => {
     const store = tempStore();
-    const item = addGoalItem(store, 'C:/dev/.claude/goals/2026-09-08-thing.md', '/goal Work the thing.', 1000);
+    const item = addGoalItem(store, '/work/goals/2026-09-08-thing.md', '/goal Work the thing.', 1000);
     const { deps } = buildDeps(store, {
       launchGoal: async () => ({ runKey: 'goal-run-2' }),
       launcher: { status: async () => ({ finished: false }) },
@@ -158,7 +158,7 @@ describe('advanceItem: goal source', () => {
 
   it('2026-09-08: appends the run\'s last-turn text to the done reason when the status carries one', async () => {
     const store = tempStore();
-    const item = addGoalItem(store, 'C:/dev/.claude/goals/2026-09-08-thing.md', '/goal Work the thing.', 1000);
+    const item = addGoalItem(store, '/work/goals/2026-09-08-thing.md', '/goal Work the thing.', 1000);
     const { deps } = buildDeps(store, { launchGoal: async () => ({ runKey: 'goal-run-4' }) });
     const launched = await advanceItem(item, deps);
 
@@ -172,8 +172,8 @@ describe('advanceItem: goal source', () => {
 
   it('2026-09-08: passes launchGoal a run key unique to this item, never the bare goal-path basename', async () => {
     const store = tempStore();
-    const itemA = addGoalItem(store, 'C:/dev/.claude/goals/same-file.md', '/goal Work the thing.', 1000);
-    const itemB = addGoalItem(store, 'C:/dev/.claude/goals/same-file.md', '/goal Work the thing.', 1001);
+    const itemA = addGoalItem(store, '/work/goals/same-file.md', '/goal Work the thing.', 1000);
+    const itemB = addGoalItem(store, '/work/goals/same-file.md', '/goal Work the thing.', 1001);
     const runKeysSeen: string[] = [];
     const { deps } = buildDeps(store, {
       launchGoal: async (input) => { runKeysSeen.push(input.runKey); return { runKey: input.runKey }; },
@@ -190,7 +190,7 @@ describe('advanceItem: goal source', () => {
 
   it('fails when the run finishes with a non-done verdict', async () => {
     const store = tempStore();
-    const item = addGoalItem(store, 'C:/dev/.claude/goals/2026-09-08-thing.md', '/goal Work the thing.', 1000);
+    const item = addGoalItem(store, '/work/goals/2026-09-08-thing.md', '/goal Work the thing.', 1000);
     const { deps } = buildDeps(store, { launchGoal: async () => ({ runKey: 'goal-run-3' }) });
     const launched = await advanceItem(item, deps);
 
