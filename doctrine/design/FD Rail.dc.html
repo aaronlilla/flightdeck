@@ -35,7 +35,7 @@
           <div style="display:flex;flex-direction:column;gap:6px">
             <sc-for list="{{ m.opts }}" as="o" hint-placeholder-count="2"><button style="font:inherit;font-size:14px;line-height:1.35;text-align:left;padding:10px 12px;min-height:44px;width:100%;background:transparent;border:1px solid var(--line2);color:var(--ink);border-radius:0;cursor:pointer;display:flex;gap:10px;align-items:flex-start" style-hover="border-color:var(--warn);background:var(--warnTint)"><i style="width:12px;height:12px;flex:none;margin-top:3px;border:1px solid var(--line2);display:block"></i><span>{{ o }}</span></button></sc-for>
           </div>
-          <span style="font-size:12px;color:var(--ink3)">Pick one, or type a longer answer below and press Send.</span>
+          <span style="font-size:12px;color:var(--ink3)">Or type below</span>
         </div>
       </sc-if>
       <sc-if value="{{ m.isCard }}" hint-placeholder-val="{{ false }}">
@@ -47,7 +47,7 @@
           <sc-if value="{{ m.hasMeta }}" hint-placeholder-val="{{ false }}"><div style="border:1px solid var(--line);padding:6px 10px;display:grid;grid-template-columns:auto 1fr;gap:2px 12px;font-size:12px;color:var(--ink2)"><sc-for list="{{ m.meta }}" as="r" hint-placeholder-count="2"><span style="color:var(--ink3)">{{ r.k }}</span><span>{{ r.v }}</span></sc-for></div></sc-if>
           <div style="display:flex;flex-direction:column;gap:6px;margin-top:2px">
             <sc-for list="{{ m.btns }}" as="b" hint-placeholder-count="2"><button style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:15px;letter-spacing:.03em;line-height:1.3;text-align:left;padding:10px 14px;min-height:44px;width:100%;border-radius:0;cursor:pointer;background:{{ b.bBg }};color:{{ b.bInk }};border:1px solid {{ b.bBd }}">{{ b.label }}</button></sc-for>
-            <span style="font-size:12px;color:var(--ink3)">Or reply below; a typed answer goes to this card.</span>
+            <span style="font-size:12px;color:var(--ink3)">Or type below</span>
           </div>
         </div>
       </sc-if>
@@ -61,7 +61,7 @@
     <div style="display:flex;flex-wrap:wrap;gap:6px">
       <sc-for list="{{ cmds }}" as="c" hint-placeholder-count="4"><button style="font-family:Barlow,sans-serif;font-size:12px;padding:4px 9px;white-space:nowrap;background:transparent;border:1px solid var(--line2);color:var(--ink2);border-radius:0;cursor:pointer" style-hover="color:var(--ink);border-color:var(--ink)">{{ c }}</button></sc-for>
     </div>
-    <sc-if value="{{ topic }}" hint-placeholder-val="{{ false }}"><div style="display:flex;flex-direction:column;gap:6px;font-size:12px;color:var(--ink3)"><div style="display:flex;justify-content:space-between;gap:8px"><span>About <span style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:13px;color:var(--ink2);letter-spacing:.05em">{{ topic }}</span> · send to</span><a href="#" style="color:var(--acc)">Clear</a></div>
+    <sc-if value="{{ topic }}" hint-placeholder-val="{{ false }}"><div style="display:flex;flex-direction:column;gap:6px;font-size:12px;color:var(--ink3)"><div style="display:flex;justify-content:space-between;gap:8px"><span>About <span style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:13px;color:var(--ink2);letter-spacing:.05em">{{ topic }}</span></span><a href="#" style="color:var(--acc)">Clear</a></div>
       <div style="display:flex;border:1px solid var(--line2)">
         <button style="flex:1;font:inherit;font-size:12px;padding:5px 10px;min-height:30px;border:0;cursor:pointer;white-space:nowrap;background:{{ segC.bg }};color:{{ segC.ink }}">Conductor</button>
         <button style="flex:1;font:inherit;font-size:12px;padding:5px 10px;min-height:30px;border:0;border-left:1px solid var(--line2);cursor:pointer;white-space:nowrap;background:{{ segA.bg }};color:{{ segA.ink }}">The agent on {{ topic }}</button>
@@ -103,7 +103,7 @@ class Component extends DCLogic {
       topic: this.props.topic ?? null,
       segC: toAgent ? { bg: 'transparent', ink: 'var(--ink2)' } : { bg: 'var(--acc)', ink: 'var(--accInk)' },
       segA: toAgent ? { bg: 'var(--acc)', ink: 'var(--accInk)' } : { bg: 'transparent', ink: 'var(--ink2)' },
-      placeholder: !this.props.topic ? 'Tell the conductor…' : toAgent ? `Talk to the agent working ${this.props.topic}: tell it what to do instead, ask what it tried, or give it what it needs.` : `Answer or ask about ${this.props.topic}. Long answers are fine; Shift+Enter for a new line.`,
+      placeholder: !this.props.topic ? 'Conductor…' : toAgent ? `The agent on ${this.props.topic}…` : `About ${this.props.topic}…`,
       cmds: this.props.commands ?? ["What's stuck?", "Merge what's ready", 'Pause everything', 'Answer all'],
     };
   }
