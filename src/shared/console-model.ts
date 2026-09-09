@@ -149,6 +149,12 @@ export interface LaneQuestion {
   text: string;
   opts: string[];
   askedAt: number;
+  /** Index into `opts` the pipeline recommends, or `null` when nothing was picked
+   *  (`completeAskOptions`, W1). */
+  recommended?: number | null;
+  /** Whether `opts` came from the worker's `forge_ask` call as-is, or got padded out
+   *  by the reasoner (`completeAskOptions`, W1). */
+  optionSource?: 'worker' | 'drafted';
 }
 
 /**
@@ -335,6 +341,12 @@ export interface Message {
   jid?: string;
   askKey?: string;
   opts?: string[];
+  /** Index into `opts` the pipeline recommends, or `null` when nothing was picked
+   *  (`completeAskOptions`, W1). */
+  recommended?: number | null;
+  /** Whether `opts` came from the worker's `forge_ask` call as-is, or got padded out
+   *  by the reasoner (`completeAskOptions`, W1). */
+  optionSource?: 'worker' | 'drafted';
   answer?: string;
   btns?: MessageButton[];
   items?: PlanItem[];

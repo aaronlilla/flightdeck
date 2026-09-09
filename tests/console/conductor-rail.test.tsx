@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -119,6 +119,49 @@ describe('ConductorRail', () => {
       askKey: 'ask-1', opts: ['NOT NULL'], answer: 'NOT NULL',
     }]);
     expect(screen.getByText('answered: NOT NULL')).toBeInTheDocument();
+  });
+
+  // W2: an ask carrying `recommended` (W1's schema, `sdkengine.ts` `completeAskOptions`)
+  // marks that option distinctly, so a person scanning four-plus choices sees which one
+  // the pipeline already picked, instead of four identical-looking rows.
+  it('W2: labels the recommended option and still sends its text on click', async () => {
+    const { onCommand } = renderRail([{
+      k: 'q3', type: 'question', text: 'Which env?', ts: Date.now(), source: 'FLT-3',
+      askKey: 'ask-3', opts: ['dev', 'staging', 'prod', 'something else'], recommended: 1,
+    }]);
+    const list = screen.getByTestId('question-options');
+    const recommendedOption = within(list).getByText('staging').closest('[data-recommended]');
+    expect(recommendedOption).toHaveAttribute('data-recommended', 'true');
+    expect(within(list).getByText('Recommended')).toBeInTheDocument();
+    await userEvent.click(screen.getByText('staging'));
+    expect(onCommand).toHaveBeenCalledWith('answer ask-3 staging');
+  });
+
+  it('W2: with no recommended index, no option is marked and no "Recommended" label renders', () => {
+    renderRail([{
+      k: 'q4', type: 'question', text: 'Which env?', ts: Date.now(), source: 'FLT-4',
+      askKey: 'ask-4', opts: ['dev', 'staging'],
+    }]);
+    expect(screen.queryByText('Recommended')).not.toBeInTheDocument();
+  });
+
+  // W2/W5: a legacy or malformed ask can carry no readable question text at all -- there
+  // is nothing there for a person to answer, and rendering an empty answer box under a
+  // blank header (Aaron's original complaint) is worse than admitting it.
+  it('W2: an empty-text question renders the no-question copy with Dismiss/Resume, never an answer box', async () => {
+    const onCommand = vi.fn();
+    renderRail([{
+      k: 'q5', type: 'question', text: '', ts: Date.now(), source: 'FLT-5',
+      askKey: 'ask-5', opts: ['a', 'b'],
+    }], feedUp, { onCommand });
+    expect(screen.getByText('This run asked for something but sent no question')).toBeInTheDocument();
+    expect(screen.queryByTestId('question-options')).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(/or type an answer/)).not.toBeInTheDocument();
+    await userEvent.click(screen.getByText('Dismiss'));
+    expect(onCommand).toHaveBeenCalledWith('dismiss ask-5');
+    onCommand.mockClear();
+    await userEvent.click(screen.getByText('Resume'));
+    expect(onCommand).toHaveBeenCalledWith('resume FLT-5');
   });
 
   it('disables the composer and shows the reason banner when the feed is down', () => {

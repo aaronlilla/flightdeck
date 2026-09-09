@@ -280,20 +280,32 @@ export function MessageCard({
             <span className={freshnessClass(fresh)}>{compactFreshnessStamp(fresh)}</span>
           </div>
           <div style={{ padding: '10px 12px', font: 'var(--fs-body)/1.5 "IBM Plex Sans",sans-serif', overflowWrap: 'anywhere' }}><Linkify text={message.text} repo={repo} /></div>
-          {message.answer === undefined ? (
+          {!message.text.trim() ? (
+            <>
+              <div className="m" style={{ padding: '0 12px 10px', fontSize: 'var(--fs-meta)', color: 'var(--ink2)' }}>This run asked for something but sent no question</div>
+              <div style={{ display: 'flex', gap: 8, padding: '0 12px 10px' }}>
+                <span className="btnS" {...actionable(() => onCommand(`dismiss ${message.askKey ?? ''}`))}>Dismiss</span>
+                <span className="btnS" {...actionable(() => onCommand(`resume ${message.lane ?? message.source}`))}>Resume</span>
+              </div>
+            </>
+          ) : message.answer === undefined ? (
             <>
               {/* One option per row, full width, text wrapping: an option is a sentence a
                  worker wrote, and a no-wrap pill ran off the rail (2026-09-08). */}
               <div data-testid="question-options" style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '0 12px 10px' }}>
-                {message.opts?.map((o) => (
-                  <span
-                    key={o} className="btnA"
-                    style={{ padding: '7px 10px', fontSize: 'var(--fs-ui)', whiteSpace: 'normal', textAlign: 'left', justifyContent: 'flex-start', overflowWrap: 'anywhere', width: '100%', lineHeight: 1.35, letterSpacing: 0.3, textTransform: 'none' }}
-                    {...actionable(() => onCommand(`answer ${message.askKey ?? ''} ${o}`))}
-                  >
-                    {o}
-                  </span>
-                ))}
+                {message.opts?.map((o, i) => {
+                  const recommended = message.recommended === i;
+                  return (
+                    <span
+                      key={o} className="btnA" data-recommended={recommended || undefined}
+                      style={{ padding: '7px 10px', fontSize: 'var(--fs-ui)', textAlign: 'left', justifyContent: 'flex-start', lineHeight: 1.35, letterSpacing: 0.3, textTransform: 'none', display: 'flex', gap: 8, alignItems: 'baseline' }}
+                      {...actionable(() => onCommand(`answer ${message.askKey ?? ''} ${o}`))}
+                    >
+                      <span style={{ whiteSpace: 'normal', overflowWrap: 'anywhere', width: '100%' }}>{o}</span>
+                      {recommended ? <span className="stO" style={{ color: 'var(--run)' }}>Recommended</span> : null}
+                    </span>
+                  );
+                })}
               </div>
               <div style={{ margin: '0 12px 12px', background: 'var(--well)', boxShadow: 'inset 0 2px 5px rgba(0,0,0,.6)', borderRadius: 3, padding: '7px 10px', display: 'flex' }}>
                 <input
