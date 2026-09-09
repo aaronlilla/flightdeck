@@ -15,6 +15,9 @@ export interface ChromeProps {
   /** `FORGE_BACKLOG_PROJECT` and its Jira name, off `/state`; absent means the label is
    *  left out rather than a sample project shown. */
   project: { key: string; name: string | null } | null;
+  /** `/state`'s `queue_on`: false means the queue subsystem is not running at all, so
+   *  nothing starts however many slots are free. Shown beside the feed state. */
+  queueOn?: boolean;
   now: number;
   onNav: (view: View) => void;
 }
@@ -27,7 +30,7 @@ const TABS: { view: View; label: string }[] = [
   { view: 'settings', label: 'Settings' },
 ];
 
-export function Chrome({ view, badges, feed, project, now, onNav }: ChromeProps): JSX.Element {
+export function Chrome({ view, badges, feed, project, queueOn = true, now, onNav }: ChromeProps): JSX.Element {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 'none', fontFamily: 'Barlow,system-ui,sans-serif', color: 'var(--ink)', background: 'var(--bg)' }}>
       <div style={{ height: 32, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 0 0 10px', background: 'var(--panel)', borderBottom: '1px solid var(--line)', fontSize: 'var(--fs-meta)', color: 'var(--ink2)' }}>
@@ -70,6 +73,7 @@ export function Chrome({ view, badges, feed, project, now, onNav }: ChromeProps)
             <i style={{ width: 8, height: 8, background: feed.live ? 'var(--acc)' : 'var(--warn)', display: 'block' }} />
             {feed.live ? 'Feed live' : `Feed lost${feed.reason ? `: ${feed.reason}` : ''}`}
           </span>
+          {!queueOn ? <span data-testid="queue-off" style={{ color: 'var(--warn)' }}>Queue off: nothing starts</span> : null}
           {project ? <span data-testid="project-label">{project.name ? `${project.key} · ${project.name}` : project.key}</span> : null}
           <span style={{ fontVariantNumeric: 'tabular-nums', color: 'var(--ink)' }}>{hm(now)}</span>
         </div>

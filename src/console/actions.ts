@@ -246,7 +246,8 @@ export const ACTIONS = {
   undoJournal: spec<[string], ActionResult>({
     id: 'undoJournal', label: 'Undo', reversible: true, effect: 'journal',
     call: ([jid]) => api.undoJournal(jid), text: fromActionResult, ok: okOf, jid: jidOf,
-    link: ([jid]) => ({ kind: 'journal', jid, label: 'journal' }),
+    // The undo's receipt is its own evidence; the design has no journal surface to open.
+    link: () => null,
   }),
   dismissAsk: spec<[string], Gated<ActionResult>>({
     id: 'dismissAsk', label: 'Dismiss', reversible: false, effect: 'lane',

@@ -5,7 +5,8 @@
  *
  *   npx tsx scripts/design-parity.ts            build the console, then shoot
  *   npx tsx scripts/design-parity.ts --no-build  reuse dist/console
- *   npx tsx scripts/design-parity.ts --boards=1a,1b  a subset of the artboards
+ *   npx tsx scripts/design-parity.ts --boards=1a,1b  a subset of the artboards (merged into report.json)
+ *   npx tsx scripts/design-parity.ts --max-diff=10   exit 1 when any pair's diff is above 10%
  *
  * The console side is the built console served by the stub server on
  * `FORGE_E2E_PORT` (default 4121) with the `design-parity` fixture loaded. The design
@@ -262,9 +263,20 @@ async function main(): Promise<void> {
     design.close();
     stub.close();
   }
-  writeFileSync(join(OUT, 'report.json'), JSON.stringify(report, null, 2));
-  console.log(`${report.filter((r) => r.diffPercent >= 0).length} pairs under ${OUT}`);
-  process.exit(failed > 0 ? 1 : 0);
+  const reportPath = join(OUT, 'report.json');
+  type Row = typeof report[number];
+  let previous: Row[] = [];
+  try { previous = JSON.parse(readFileSync(reportPath, 'utf8')) as Row[]; } catch { previous = []; }
+  const rel = (path: string): string => (path ? path.slice(ROOT.length + 1).split('\\').join('/') : '');
+  const fresh = report.map((row) => ({ ...row, console: rel(row.console), design: rel(row.design) }));
+  const merged = [...previous.filter((row) => !fresh.some((f) => f.board === row.board && f.theme === row.theme)), ...fresh]
+    .sort((a, b) => (a.theme === b.theme ? a.board.localeCompare(b.board) : a.theme === 'dark' ? -1 : 1));
+  writeFileSync(reportPath, JSON.stringify(merged, null, 2));
+  const maxDiff = Number(process.argv.find((arg) => arg.startsWith('--max-diff='))?.slice('--max-diff='.length) ?? 'NaN');
+  const over = Number.isFinite(maxDiff) ? fresh.filter((row) => row.diffPercent > maxDiff) : [];
+  for (const row of over) console.error(`${row.board} ${row.theme}: diff ${row.diffPercent}% is above ${maxDiff}%`);
+  console.log(`${fresh.filter((r) => r.diffPercent >= 0).length} pairs under ${OUT}`);
+  process.exit(failed > 0 || over.length > 0 ? 1 : 0);
 }
 
 void main();

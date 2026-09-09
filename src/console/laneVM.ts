@@ -236,10 +236,13 @@ export function idleReason(queue: { items: QueueItem[]; paused: boolean; pauseRe
   if (queue.paused) return `Waiting for a Ready ticket; the queue is paused${queue.pauseReason ? ` (${queue.pauseReason})` : ''}.`;
   const queued = queue.items.filter((item) => item.state === 'queued');
   if (queued.length === 0) return 'Waiting for a Ready ticket; nothing is in the queue.';
-  const held = queued.filter((item) => item.after && item.after.length > 0);
+  const done = queue.items.filter((item) => item.state === 'done');
+  const satisfied = (slug: string): boolean => done.some((row) => [row.input, row.ticket, row.branch, row.branch?.replace(/^(feature|hotfix)\//, '')].some((name) => name?.toLowerCase() === slug.toLowerCase()));
+  const holding = (item: QueueItem): string[] => (item.after ?? []).filter((slug) => !satisfied(slug));
+  const held = queued.filter((item) => holding(item).length > 0);
   if (held.length === queued.length) {
     const first = held[0]!;
-    return `Waiting for a Ready ticket; ${first.ticket ?? first.title ?? 'the next item'} waits for ${first.after!.join(', ')}.`;
+    return `Waiting for a Ready ticket; ${first.ticket ?? first.title ?? 'the next item'} waits for ${holding(first).join(', ')}.`;
   }
   return `Waiting for a Ready ticket; ${queued.length} queued, the next starts on the queue's next tick.`;
 }

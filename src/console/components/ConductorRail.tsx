@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { useLayoutEffect, useRef } from 'react';
+import { Fragment, useLayoutEffect, useRef, useState } from 'react';
 
 import { hm } from '../freshness.js';
 import { useStore } from '../store.js';
@@ -93,7 +93,7 @@ function ActionCard({ message, tone, kicker, title, body, onCommand, onTopic, co
       {body ? <p style={{ margin: 0, color: 'var(--ink2)', fontSize: 'var(--fs-ui)', whiteSpace: 'pre-wrap' }}>{body}</p> : null}
       {message.meta && message.meta.length > 0 ? (
         <div style={{ border: '1px solid var(--line)', padding: '6px 10px', display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '2px 12px', fontSize: 'var(--fs-meta)', color: 'var(--ink2)' }}>
-          {message.meta.map((row) => <><span key={`${row.k}-k`} style={{ color: 'var(--ink3)' }}>{row.k}</span><span key={`${row.k}-v`}>{row.v}</span></>)}
+          {message.meta.map((row) => <Fragment key={row.k}><span style={{ color: 'var(--ink3)' }}>{row.k}</span><span>{row.v}</span></Fragment>)}
         </div>
       ) : null}
       {resolved ? (
@@ -220,15 +220,37 @@ export function ConductorRail(props: ConductorRailProps): JSX.Element {
   const { thread, feed, now, composer, onComposerChange, onSend, onCommand, onUndo, labelFor, agentCount, topic = null, recipient = 'conductor', onRecipient, onTopic, commands = DEFAULT_COMMANDS, onStop } = props;
   const composerAction = useStore().state.actions['sendCommand:rail'];
   const busy = composerAction?.pending ?? false;
-  // The list opens at the top (the design's 1a); it follows the newest message once
-  // the conversation moves (the design's 2a to 2d, `stickToEnd`).
+  // The list opens at the top (the design's 1a). Once the conversation moves (2a to
+  // 2d, `stickToEnd`) it follows the newest message, but only while the reader is
+  // already at the bottom; a reader who scrolled up keeps their place and gets a
+  // count of what arrived below.
   const listRef = useRef<HTMLDivElement | null>(null);
   const seen = useRef<number | null>(null);
+  const pinned = useRef(true);
+  const [unread, setUnread] = useState(0);
+  const atBottom = (el: HTMLDivElement): boolean => el.scrollHeight - el.scrollTop - el.clientHeight <= 24;
   useLayoutEffect(() => {
     const el = listRef.current;
-    if (seen.current !== null && seen.current > 0 && thread.length > seen.current && el) el.scrollTop = el.scrollHeight;
+    const grew = seen.current !== null && seen.current > 0 && thread.length > seen.current;
+    if (grew && el) {
+      if (pinned.current) el.scrollTop = el.scrollHeight;
+      else setUnread((n) => n + (thread.length - (seen.current ?? 0)));
+    }
     if (thread.length > 0 || seen.current === null) seen.current = thread.length;
   }, [thread.length]);
+  const onScroll = (): void => {
+    const el = listRef.current;
+    if (!el) return;
+    pinned.current = atBottom(el);
+    if (pinned.current) setUnread(0);
+  };
+  const jump = (): void => {
+    const el = listRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    pinned.current = true;
+    setUnread(0);
+  };
   const toAgent = recipient === 'agent' && topic !== null;
   const composerId = 'rail-composer';
   const send = (): void => {
@@ -250,12 +272,17 @@ export function ConductorRail(props: ConductorRailProps): JSX.Element {
         </div>
         <button type="button" className="btn" data-testid="rail-stop" style={{ fontSize: 'var(--fs-ui)', letterSpacing: '.06em', textTransform: 'uppercase', padding: '5px 12px', color: 'var(--warn)', borderColor: 'var(--warn)' }} onClick={() => (onStop ? onStop() : onSend('pause everything'))}>Stop</button>
       </div>
-      <div ref={listRef} data-testid="rail-thread" className="scroll" style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
-        {thread.map((message) => (
-          <div key={message.k} id={`rail-msg-${message.k}`}>
-            <MessageCard message={message} labelFor={labelFor} onCommand={onCommand} onUndo={onUndo} onTopic={onTopic} composerId={composerId} />
-          </div>
-        ))}
+      <div style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex', flexDirection: 'column' }}>
+        <div ref={listRef} onScroll={onScroll} data-testid="rail-thread" className="scroll" style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {thread.map((message) => (
+            <div key={message.k} id={`rail-msg-${message.k}`}>
+              <MessageCard message={message} labelFor={labelFor} onCommand={onCommand} onUndo={onUndo} onTopic={onTopic} composerId={composerId} />
+            </div>
+          ))}
+        </div>
+        {unread > 0 ? (
+          <button type="button" className="btn primary" data-testid="rail-jump" style={{ position: 'absolute', left: '50%', bottom: 10, transform: 'translateX(-50%)', fontSize: 'var(--fs-meta)', padding: '4px 10px' }} onClick={jump}>{unread} new below</button>
+        ) : null}
       </div>
       <div style={{ padding: '12px 16px 16px', borderTop: '1px solid var(--line)', display: 'flex', flexDirection: 'column', gap: 10 }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>

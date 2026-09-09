@@ -65,6 +65,9 @@ describe('a queued item says why it is next and when it starts', () => {
     expect(held.whyNext).toContain('wait for flt-2');
     expect(held.startsIn).toBe('After flt-2 finishes');
     expect(queueOrderWords(all[0]!, all, { paused: true, maxInFlight: 2, inFlight: 0 }).startsIn).toBe('When the queue resumes');
+    // A done predecessor clears the hold the way the scheduler reads it: any case, by ticket or branch.
+    const cleared = [item({ id: 'ABC-1', after: ['flt-2'] }), item({ id: 'FLT-2', state: 'done', branch: 'feature/FLT-2' })];
+    expect(queueOrderWords(cleared[0]!, cleared, { paused: false, maxInFlight: 2, inFlight: 0 }).startsIn).toBe('Takes a free slot on the next tick');
     expect(queueOrderWords(item({ id: 'X', state: 'review' }), all, { paused: false, maxInFlight: 2, inFlight: 0 })).toEqual({});
   });
 });

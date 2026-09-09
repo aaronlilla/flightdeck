@@ -74,11 +74,6 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
           if (mounted.current) dispatch({ type: 'thread', thread: applyResolved(thread.messages) });
           break;
         }
-        case 'journal': {
-          const journal = await api.getJournal();
-          if (mounted.current) dispatch({ type: 'journal', journal: journal.rows });
-          break;
-        }
         case 'integrations': {
           const integrations = await api.getIntegrations();
           if (mounted.current) dispatch({ type: 'integrations', integrations: integrations.items });
@@ -116,8 +111,8 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     if (refreshing.current) return;
     refreshing.current = true;
     try {
-      const [lanesR, threadR, journalR, integrationsR, capsR, proposalsR, queueR, consoleStateR, blockersR] = await Promise.allSettled([
-        api.getLanes({ all: true }), api.getThread(), api.getJournal(), api.getIntegrations(), api.getCaps(),
+      const [lanesR, threadR, integrationsR, capsR, proposalsR, queueR, consoleStateR, blockersR] = await Promise.allSettled([
+        api.getLanes({ all: true }), api.getThread(), api.getIntegrations(), api.getCaps(),
         api.getProposals(), api.getQueue(), api.getState(), api.getBlockers(),
       ]);
       if (!mounted.current) return;
@@ -129,7 +124,6 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       };
       const lanes = settled(lanesR, 'lanes');
       const thread = settled(threadR, 'thread');
-      const journal = settled(journalR, 'journal');
       const integrations = settled(integrationsR, 'integrations');
       const caps = settled(capsR, 'caps');
       const proposals = settled(proposalsR, 'proposals');
@@ -139,7 +133,6 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       failCount.current = failedSlices.length > 0 ? failCount.current + 1 : 0;
       if (lanes) dispatch({ type: 'lanes', lanes: lanes.lanes, links: lanes.links, tokensToday: lanes.tokensToday });
       if (thread) dispatch({ type: 'thread', thread: applyResolved(thread.messages) });
-      if (journal) dispatch({ type: 'journal', journal: journal.rows });
       if (integrations) dispatch({ type: 'integrations', integrations: integrations.items });
       if (caps) dispatch({ type: 'caps', caps });
       if (proposals) dispatch({ type: 'proposals', proposals });
@@ -425,7 +418,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     <StoreContext.Provider value={{ state, dispatch }}>
       <ActionsContext.Provider value={actionsHost}>
         <div className="app" data-theme={state.theme} data-testid="app">
-          <Chrome view={state.view} badges={badges} feed={state.feed} project={state.project} now={state.now} onNav={(view) => dispatch({ type: 'view', view })} />
+          <Chrome view={state.view} badges={badges} feed={state.feed} project={state.project} queueOn={state.queueOn} now={state.now} onNav={(view) => dispatch({ type: 'view', view })} />
           <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
             {state.view === 'board' ? (
               <div style={{ flex: 1, minWidth: 0, position: 'relative', display: 'flex' }}>

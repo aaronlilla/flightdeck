@@ -15,7 +15,7 @@ import { resolve } from 'node:path';
 
 import {
   addBacklogItems, addBriefItem, addGoalItem, addHotfixItem, addQueryItems, addTicketItem, mergeItem, promoteItem,
-  removeItem, retryItem, type QueueMergeDeps, type QueuePromoteDeps, type QueueTicketSearch,
+  QUEUE_IN_FLIGHT_STATES, removeItem, retryItem, slugMatches, type QueueMergeDeps, type QueuePromoteDeps, type QueueTicketSearch,
 } from '../intake/queue.js';
 import { resolveGoalBlock } from '../intake/goalFile.js';
 import { buildBacklogJql as defaultBuildBacklogJql, readQueueWidth, writeQueueWidth } from '../queue-wire.js';
@@ -116,33 +116,62 @@ const SOURCE_WORDS: Record<QueueSource, string> = {
   goal: 'a goal file',
 };
 
+/** What every queued item's words are read against, built once per `GET /queue`. */
+export interface QueueOrderContext {
+  queued: QueueItem[];
+  done: QueueItem[];
+  paused: boolean;
+  maxInFlight: number;
+  inFlight: number;
+}
+
+export function queueOrderContext(all: QueueItem[], queue: { paused: boolean; maxInFlight: number }): QueueOrderContext {
+  return {
+    queued: all.filter((row) => row.state === 'queued'),
+    done: all.filter((row) => row.state === 'done'),
+    paused: queue.paused,
+    maxInFlight: queue.maxInFlight,
+    inFlight: all.filter((row) => QUEUE_IN_FLIGHT_STATES.includes(row.state)).length,
+  };
+}
+
+/** The `after:` slugs no done item satisfies, by the scheduler's own `slugMatches`. */
+function unresolvedAfter(item: QueueItem, ctx: QueueOrderContext): string[] {
+  return (item.after ?? []).filter((slug) => !ctx.done.some((row) => slugMatches(row, slug)));
+}
+
 /**
  * The Queue view's two sentences for a queued item (`Flightdeck Console.dc.html` 1c):
  * why it sits where it does, and when it starts. Both come from the queue's own facts:
- * position in the order, the source it was added from, its `after:` lines, the width
- * and what is in flight, and whether the queue is paused. Items already past `queued`
- * get neither.
+ * position in the order, the source it was added from, its unresolved `after:` lines,
+ * the width and what is in flight, and whether the queue is paused. Items already past
+ * `queued` get neither.
  */
-export function queueOrderWords(
-  item: QueueItem, all: QueueItem[], queue: { paused: boolean; maxInFlight: number; inFlight: number },
-): { whyNext?: string; startsIn?: string } {
+export function queueOrderWordsWith(item: QueueItem, ctx: QueueOrderContext): { whyNext?: string; startsIn?: string } {
   if (item.state !== 'queued') return {};
-  const queued = all.filter((row) => row.state === 'queued');
-  const position = queued.findIndex((row) => row.id === item.id);
+  const position = ctx.queued.findIndex((row) => row.id === item.id);
   const ordinal = position === 0 ? 'First' : position === 1 ? 'Second' : position === 2 ? 'Third' : `${position + 1}th`;
-  const waitsFor = (item.after ?? []).filter((slug) => !all.some((row) => row.state === 'done' && (row.input === slug || row.branch === `feature/${slug}`)));
+  const waitsFor = unresolvedAfter(item, ctx);
   const why = waitsFor.length > 0
     ? `${ordinal} in the queue, from ${SOURCE_WORDS[item.source]}. Its brief says to wait for ${waitsFor.join(', ')}.`
     : `${ordinal} in the queue, from ${SOURCE_WORDS[item.source]}; queued ${new Date(item.createdAt).toISOString().slice(11, 16)} UTC.`;
   let starts: string;
-  if (queue.paused) starts = 'When the queue resumes';
+  if (ctx.paused) starts = 'When the queue resumes';
   else if (waitsFor.length > 0) starts = `After ${waitsFor.join(', ')} finishes`;
   else {
-    const free = Math.max(0, queue.maxInFlight - queue.inFlight);
-    const ahead = queued.slice(0, position).filter((row) => !(row.after && row.after.length > 0)).length;
+    const free = Math.max(0, ctx.maxInFlight - ctx.inFlight);
+    const ahead = ctx.queued.slice(0, position).filter((row) => unresolvedAfter(row, ctx).length === 0).length;
     starts = ahead < free ? 'Takes a free slot on the next tick' : ahead === free ? 'When the next slot frees' : `After ${ahead - free + 1} more finish`;
   }
   return { whyNext: why, startsIn: starts };
+}
+
+/** One item's words against the whole list; `queueOrderWordsWith` is the per-read form. */
+export function queueOrderWords(
+  item: QueueItem, all: QueueItem[], queue: { paused: boolean; maxInFlight: number; inFlight?: number },
+): { whyNext?: string; startsIn?: string } {
+  const ctx = queueOrderContext(all, queue);
+  return queueOrderWordsWith(item, queue.inFlight === undefined ? ctx : { ...ctx, inFlight: queue.inFlight });
 }
 
 export class QueueRoutes {
@@ -185,9 +214,9 @@ export class QueueRoutes {
     const items = this.opts.store.all();
     const paused = this.opts.readPaused();
     const maxInFlight = readQueueWidth();
-    const inFlight = items.filter((item) => item.state === 'planning' || item.state === 'running').length;
+    const ctx = queueOrderContext(items, { paused, maxInFlight });
     return {
-      items: items.map((item) => ({ ...item, title: queueTitleFor(item), ...queueOrderWords(item, items, { paused, maxInFlight, inFlight }) })),
+      items: items.map((item) => ({ ...item, title: queueTitleFor(item), ...queueOrderWordsWith(item, ctx) })),
       paused, maxInFlight,
     };
   }
