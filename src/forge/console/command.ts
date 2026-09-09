@@ -19,7 +19,7 @@ import { dirname, join } from 'node:path';
 
 import type { Actuator } from '../contracts.js';
 import { foldChainState } from '../chain.js';
-import type { Inbox } from '../inbox.js';
+import type { Inbox, InboxEntry } from '../inbox.js';
 import { deliverAnswer } from '../runinbox.js';
 import { appendOnce, replay } from '../journal.js';
 import type { StuckSignal } from '../liveness.js';
@@ -175,6 +175,7 @@ export type Intent =
   | { kind: 'spend-today' }
   | { kind: 'status' }
   | { kind: 'answer'; askKey: string | null; text: string }
+  | { kind: 'answer-by-number'; askKey: string | null; optionNumber: number }
   | { kind: 'confirm'; token: string }
   | { kind: 'run-plan'; token: string }
   | { kind: 'dismiss'; token: string }
@@ -232,6 +233,16 @@ export function parseIntent(raw: string): Intent {
   // it here, ahead of the plain free-text form below, is what stops the whole tail
   // ("f92af4249f6a27ae Restart the forge MCP connection") from being delivered to the
   // run as if the operator had typed the key as part of their answer.
+  // `answer <askKey> <n>` and bare `answer <n>` (W4): a person picking an option by its
+  // list position rather than retyping its text. Checked ahead of the generic keyed and
+  // free-text forms below so a purely numeric answer resolves against the ask's own
+  // options instead of being delivered as the literal digit string.
+  if ((match = text.match(/^answer\s+([0-9a-f]{8,})\s+(\d+)$/i))) {
+    return { kind: 'answer-by-number', askKey: match[1]!, optionNumber: Number(match[2]) };
+  }
+  if ((match = text.match(/^answer\s+(\d+)$/i))) {
+    return { kind: 'answer-by-number', askKey: null, optionNumber: Number(match[1]) };
+  }
   if ((match = text.match(/^answer\s+([0-9a-f]{8,})\s+(.+)$/i))) {
     return { kind: 'answer', askKey: match[1]!, text: match[2]! };
   }
@@ -603,6 +614,22 @@ export class ConsoleWrites {
     return this.executeIntent(parseIntent(text), source);
   }
 
+  /** Delivers an answer's text to a matched ask and returns its receipt (or refusal) --
+   *  shared by both the free-text `answer` intent and `answer-by-number` (W4), which
+   *  resolve to the same option text a person could have typed by hand. */
+  private async deliverAnswerCard(source: string, match: InboxEntry, text: string): Promise<Message[]> {
+    const answered = this.deps.inbox.answer(match.key, text);
+    if (!answered) return [refusalCard(source, `could not answer ${match.key}`)];
+    await deliverAnswer(answered, match.key, text);
+    const { jid } = recordAction(this.deps.journalPath, this.ledger, {
+      kind: 'answer', text: `answered ${match.key}: ${text}`, undo: null, extra: { askKey: match.key },
+    });
+    const questionHead = match.question.length > 70 ? `${match.question.slice(0, 70)}…` : match.question;
+    return [receiptCard(source, {
+      ok: true, jid, message: `Answered "${questionHead}": ${text}`, undoable: false,
+    })];
+  }
+
   private async executeIntent(intent: Intent, source: string): Promise<Message[]> {
     switch (intent.kind) {
       case 'cancel':
@@ -803,16 +830,33 @@ export class ConsoleWrites {
           ?? open.find((ask) => ask.question.toLowerCase().includes(intent.text.toLowerCase()))
           ?? (!intent.askKey && open.length === 1 ? open[0] : undefined);
         if (!match) return [refusalCard(source, `no open question matches "${intent.askKey ?? intent.text}"`)];
-        const answered = this.deps.inbox.answer(match.key, intent.text);
-        if (!answered) return [refusalCard(source, `could not answer ${match.key}`)];
-        await deliverAnswer(answered, match.key, intent.text);
-        const { jid } = recordAction(this.deps.journalPath, this.ledger, {
-          kind: 'answer', text: `answered ${match.key}: ${intent.text}`, undo: null, extra: { askKey: match.key },
-        });
-        const questionHead = match.question.length > 70 ? `${match.question.slice(0, 70)}…` : match.question;
-        return [receiptCard(source, {
-          ok: true, jid, message: `Answered "${questionHead}": ${intent.text}`, undoable: false,
-        })];
+        return this.deliverAnswerCard(source, match, intent.text);
+      }
+
+      // `answer <key> <n>` / bare `answer <n>` (W4): `n` is a 1-based position into the
+      // matched ask's own options, resolved to that option's text before delivery -- the
+      // run never sees the bare digit as if it were typed as the answer itself.
+      case 'answer-by-number': {
+        const open = this.deps.inbox.open();
+        if (intent.askKey) {
+          const match = open.find((ask) => ask.key === intent.askKey);
+          if (!match) return [refusalCard(source, `no open question matches "${intent.askKey}"`)];
+          const optionText = match.options[intent.optionNumber - 1];
+          if (optionText === undefined) {
+            return [refusalCard(source, `${match.key} has no option ${intent.optionNumber} (it has ${match.options.length})`)];
+          }
+          return this.deliverAnswerCard(source, match, optionText);
+        }
+        if (open.length === 0) return [refusalCard(source, `no open question matches "${intent.optionNumber}"`)];
+        if (open.length > 1) {
+          return [refusalCard(source, `${open.length} questions are open; answer with the key, e.g. "answer <key> ${intent.optionNumber}"`)];
+        }
+        const match = open[0]!;
+        const optionText = match.options[intent.optionNumber - 1];
+        if (optionText === undefined) {
+          return [refusalCard(source, `${match.key} has no option ${intent.optionNumber} (it has ${match.options.length})`)];
+        }
+        return this.deliverAnswerCard(source, match, optionText);
       }
 
       case 'unknown':

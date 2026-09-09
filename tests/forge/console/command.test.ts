@@ -402,6 +402,49 @@ describe('ConsoleWrites.command / kill confirm flow', () => {
     const receipt = cards.find((card) => card.type === 'receipt')!;
     expect(receipt.text).toBe('Answered "Restart the forge MCP connection?": Restart');
   });
+
+  it('W4: "answer <n>" resolves the option by number against the one open ask', async () => {
+    inbox.raise({ run: 'alpha', question: 'NOT NULL or nullable?', options: ['NOT NULL', 'nullable + backfill'] });
+
+    const cards = await writes.command('answer 2');
+
+    expect(inbox.open()).toHaveLength(0);
+    const receipt = cards.find((card) => card.type === 'receipt')!;
+    expect(receipt.text).toBe('Answered "NOT NULL or nullable?": nullable + backfill');
+  });
+
+  it('W4: "answer <key> <n>" resolves the option by number against that key', async () => {
+    const raised = inbox.raise({ run: 'alpha', question: 'NOT NULL or nullable?', options: ['NOT NULL', 'nullable + backfill'] });
+
+    const cards = await writes.command(`answer ${raised.key} 1`);
+
+    const answered = inbox.entry(raised.key);
+    expect(answered?.answer).toBe('NOT NULL');
+    const receipt = cards.find((card) => card.type === 'receipt')!;
+    expect(receipt.text).toBe('Answered "NOT NULL or nullable?": NOT NULL');
+  });
+
+  it('W4: "answer <n>" refuses with the ambiguity reply when two asks are open', async () => {
+    inbox.raise({ run: 'alpha', question: 'NOT NULL or nullable?', options: ['NOT NULL', 'nullable + backfill'] });
+    inbox.raise({ run: 'beta', question: 'staging or dev?', options: ['staging', 'dev'] });
+
+    const cards = await writes.command('answer 1');
+
+    const refusal = cards.find((card) => card.type === 'refusal')!;
+    expect(refusal).toBeDefined();
+    expect(refusal.text).toContain('2 questions are open');
+    expect(inbox.open()).toHaveLength(2);
+  });
+
+  it('W4: "answer <key> <n>" refuses when the key has no such option', async () => {
+    const raised = inbox.raise({ run: 'alpha', question: 'NOT NULL or nullable?', options: ['NOT NULL', 'nullable + backfill'] });
+
+    const cards = await writes.command(`answer ${raised.key} 5`);
+
+    const refusal = cards.find((card) => card.type === 'refusal')!;
+    expect(refusal).toBeDefined();
+    expect(inbox.open()).toHaveLength(1);
+  });
 });
 
 describe('ConsoleWrites: lane addressing by ticket key or title (deliverable 4)', () => {
