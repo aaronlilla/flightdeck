@@ -118,7 +118,7 @@ export function Accounts({ accounts, now, onChanged, pollMs = DEFAULT_POLL_MS }:
       <h6 className="sec">AI accounts <span className="n">{accounts.length}</span></h6>
 
       {accounts.length === 0 ? (
-        <p style={{ margin: 0, color: 'var(--ink2)' }}>None. Runs use the fleet login.</p>
+        <p style={{ margin: 0, color: 'var(--ink2)' }}>None · fleet login</p>
       ) : null}
 
       {accounts.map((account) => {
