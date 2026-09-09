@@ -60,6 +60,8 @@ beforeEach(() => {
   for (const name of ['FORGE_JIRA_SITE', 'FORGE_JIRA_EMAIL', 'FORGE_JIRA_TOKEN', 'FORGE_JIRA_QA_ACCOUNT', 'FORGE_JIRA_QA_TRANSITION']) {
     delete process.env[name];
   }
+  delete process.env['FORGE_REPO_KIND'];
+  delete process.env['FORGE_SELF_REPO'];
   simulateDivergentReadback = false;
 });
 
@@ -465,13 +467,27 @@ describe('forge gate', () => {
     expect(result.data?.['pending']).toBe(true);
   });
 
-  it('refuses when the Haiping handoff is missing from the PR body', async () => {
+  it('refuses when the Haiping handoff is missing from the PR body on a frontend repo', async () => {
     await attestPass({ body: 'no handoff at all' });
     const result = await forge(['gate', '--repo', REPO, '--pr', String(PR)], {
       councilGh: fakeGh([smallSnapshot({ body: 'no handoff at all' })]),
     });
     expect(result.code).toBe(1);
     expect(result.lines.join(' ')).toMatch(/Haiping handoff/);
+  });
+
+  // Haiping only ever looks at a `frontend`-kind repo. Applying his handoff requirement
+  // to a backend repo (or the self repo's own PRs) produced no QA plan a human would
+  // use -- just a `REPLACE:`-riddled block a worker pasted to satisfy the schema
+  // (PRs #79/#83), or a merge stuck on review because nobody had one to paste (PR #82).
+  it('does not require a Haiping handoff for a repo whose kind is not frontend', async () => {
+    process.env['FORGE_REPO_KIND'] = `${REPO}=backend`;
+    await attestPass({ body: 'no handoff at all' });
+    const result = await forge(['gate', '--repo', REPO, '--pr', String(PR)], {
+      councilGh: fakeGh([smallSnapshot({ body: 'no handoff at all' })]),
+    });
+    expect(result.code).toBe(0);
+    expect(result.lines.join(' ')).not.toMatch(/Haiping handoff/);
   });
 
   it('passes without --merge and says so, without touching gh.mergePr', async () => {

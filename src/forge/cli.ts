@@ -84,7 +84,7 @@ import { Worker, type EngineLike, type WorkerConfig } from './worker.js';
 import {
   chainStatusLines, foldChainState, runChainTick, runKeyForBrief,
 } from './chain.js';
-import { readChainEnv } from './chain-env.js';
+import { readChainEnv, repoKindFor } from './chain-env.js';
 import { buildChainDeps, hasRunRegistered } from './chain-wire.js';
 import { isGoalFile } from './intake/goalFile.js';
 
@@ -1567,24 +1567,34 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         };
       }
 
-      let haiping: HaipingHandoff | undefined;
-      const handoffFile = handoffFlag >= 0 ? rest[handoffFlag + 1] : undefined;
-      if (handoffFile) {
-        try {
-          const parsed = JSON.parse(readFileSync(handoffFile, 'utf8'));
-          haiping = checkHandoff('haiping', parsed).complete ? (parsed as HaipingHandoff) : undefined;
-        } catch {
-          haiping = undefined;
-        }
-      } else {
-        haiping = findHaipingHandoff(snapshot.body);
-      }
+      // Haiping (QA) only ever looks at a `frontend`-kind repo. A backend repo or the
+      // self repo has nobody to hand a visual plan to, so demanding one here bought
+      // nothing but a `REPLACE:`-riddled block pasted to satisfy the schema (PRs
+      // #79/#83) or a merge stuck on review with no handoff to write (PR #82).
+      const chainEnv = readChainEnv();
+      const isSelf = (process.env['FORGE_SELF_REPO'] ?? '').trim() === repo;
+      const needsHaipingHandoff = !isSelf && repoKindFor(chainEnv, repo) === 'frontend';
 
-      if (!haiping) {
-        return {
-          code: 1,
-          lines: ['refused: no complete Haiping handoff found in the PR body or --handoff file'],
-        };
+      let haiping: HaipingHandoff | undefined;
+      if (needsHaipingHandoff) {
+        const handoffFile = handoffFlag >= 0 ? rest[handoffFlag + 1] : undefined;
+        if (handoffFile) {
+          try {
+            const parsed = JSON.parse(readFileSync(handoffFile, 'utf8'));
+            haiping = checkHandoff('haiping', parsed).complete ? (parsed as HaipingHandoff) : undefined;
+          } catch {
+            haiping = undefined;
+          }
+        } else {
+          haiping = findHaipingHandoff(snapshot.body);
+        }
+
+        if (!haiping) {
+          return {
+            code: 1,
+            lines: ['refused: no complete Haiping handoff found in the PR body or --handoff file'],
+          };
+        }
       }
 
       if (!merge) {
@@ -1679,7 +1689,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         // the QA handoff to Jira. A Jira failure never fails the merge -- the row above
         // already stands as `complete` -- so every branch here only ever adds lines and
         // journal rows, never changes `code`.
-        if (write.state === 'complete' && haiping.ticket) {
+        if (write.state === 'complete' && haiping?.ticket) {
           const missingJira = JIRA_ENV_VARS.filter((name) => !process.env[name]);
           if (missingJira.length) {
             gateJournal.append({
