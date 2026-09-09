@@ -24,7 +24,8 @@ import { computeLive } from './live.js';
 import { Lanes, type LaneRecord } from '../supervisor.js';
 import { RunInbox } from '../runinbox.js';
 import type {
-  Caps, JournalResponse, Lane, LanePr, LaneStory, LanesResponse, LaneSummary, ProposalsResponse, QueueItem,
+  Caps, JournalResponse, Lane, LanePr, LaneStory, LanesResponse, LaneSummary, NarrationBag, NarrationFacts,
+  ProposalsResponse, QueueItem,
   RunCostResponse, RunJournalResponse, RunPrResponse, RunSandboxResponse, RunThreadResponse, ThreadResponse,
 } from '../../shared/console-model.js';
 import { capsOverridesPath, computeCaps, readCapsOverrides } from './caps-read.js';
@@ -40,8 +41,10 @@ import {
 } from './lanes.js';
 import { computeLaneStory, type GitCommit } from './story.js';
 import { readRetired, retiredPath } from './retire.js';
-import { plainForQueueItem, plainStatus, prMergedSentence, type QueueVerdict } from './plain.js';
-import { computeYou } from './laneGlance.js';
+import { plainFactsFor, plainForQueueItem, plainStatus, prMergedSentence, type QueueVerdict } from './plain.js';
+import { Binder } from './narrate-bind.js';
+import type { Narrator } from './narrate-store.js';
+import { computeYou, didFactsFor, youFactsFor } from './laneGlance.js';
 import { readAttestationAtPath } from '../council/attest.js';
 import {
   computeBranchPr, computeQueuePr, computeRunPr, PR_CACHE_TTL_MS, prCachePath, readPrCache, writePrCache,
@@ -58,6 +61,10 @@ import { readChainEnv } from '../chain-env.js';
 import { shortenShas, stripMachineIds } from '../../shared/humanize.js';
 
 export interface ConsoleReadsOptions {
+  /** The narration layer. Absent (a specimen, or `FORGE_NARRATE=off`) means every
+   *  narrated field serves its own template in all three registers -- never a blank
+   *  screen and never a model call. */
+  narrator?: Narrator | null;
   lanes?: Lanes;
   registry?: Registry;
   inbox?: Inbox;
@@ -342,6 +349,8 @@ export class ConsoleReads {
    *  repo, PR number and the head sha the drift check actually ran against. */
   private readonly driftCache = new Map<string, { drift: DriftFacts; at: number }>();
 
+  private readonly narrator: Narrator | null;
+
   private async cachedDetail(repo: string, pr: number): Promise<GhPrDetail | undefined> {
     const key = `${repo}#${pr}`;
     const now = Date.now();
@@ -363,6 +372,7 @@ export class ConsoleReads {
   }
 
   constructor(options: ConsoleReadsOptions = {}) {
+    this.narrator = options.narrator ?? null;
     this.forgeHomeDir = options.forgeHomeDir ?? forgeHome();
     this.lanes = options.lanes ?? new Lanes(lanesDir());
     this.registry = options.registry ?? new Registry(registryDir());
@@ -723,7 +733,85 @@ export class ConsoleReads {
     // `mergeable`, which only exists once this function has computed it.
     patched.now = patched.plain;
     patched.you = computeYou(patched);
+    this.narrateLane(patched);
     return patched;
+  }
+
+  /**
+   * The three board-tile sentences, through the narrator.
+   *
+   * `did`, `now` and `you` keep their own string type -- what changes is who wrote the
+   * string, which is now always the narrator's `glance` register. The other two
+   * registers go into the lane's own `narration` bag, so the sheet can show `detail`
+   * and `?verbose=1` can show `raw` without either one being able to reach the tile.
+   *
+   * A lane parked on the operator's own question, and a `you` line that quotes it, go
+   * through `Binder.verbatim`: no model call, no cache key, three identical registers.
+   */
+  private narrateLane(lane: Lane): void {
+    const bag: NarrationBag = {};
+    const binder = new Binder(this.narrator, 'lanes');
+    const ref = lane.ticket ?? lane.id;
+
+    const did = binder.field(bag, 'did', didFactsFor(lane, lane.did), ref);
+    if (did !== null) lane.did = did;
+
+    const plainFacts = plainFactsFor(lane, lane.plain, { now: Date.now() });
+    const now = plainFacts
+      ? binder.field(bag, 'now', plainFacts, ref)
+      : binder.verbatim(bag, 'now', lane.plain);
+    if (now !== null) {
+      lane.now = now;
+      // The brief's own alias: `plain` is `now.glance` and nothing else, so no consumer
+      // can end up reading a sentence the narrator never wrote.
+      lane.plain = now;
+    }
+
+    const youFacts = youFactsFor(lane, lane.you);
+    const you = youFacts
+      ? binder.field(bag, 'you', youFacts, ref)
+      : binder.verbatim(bag, 'you', lane.you);
+    if (you !== null) lane.you = you;
+
+    if (Object.keys(bag).length > 0) lane.narration = bag;
+  }
+
+  /**
+   * The sheet's own three sentences (`what happened`, `where it is`, `what's next`).
+   *
+   * `status` is not narrated a second time: it is the lane's own `now`, already
+   * narrated on the board, so the tile and the sheet can never end up describing the
+   * same lane from two different model calls. `what` and `next` are this surface's own,
+   * and `next` falls back to verbatim for the one category that quotes the operator's
+   * question.
+   */
+  private narrateSummary(lane: Lane, summary: LaneSummary): void {
+    const bag: NarrationBag = {};
+    const binder = new Binder(this.narrator, 'lanes');
+    const ref = lane.ticket ?? lane.id;
+
+    const whatTemplate = summary.what.join(' ').trim();
+    if (whatTemplate) {
+      const facts: Record<string, string | number | boolean | null> = {};
+      if (lane.ticket) facts['lane'] = lane.ticket;
+      if (lane.pr && whatTemplate.includes(`#${lane.pr.no}`)) facts['pr'] = lane.pr.no;
+      const what = binder.field(bag, 'what', {
+        surface: 'summary.what', facts: facts as NarrationFacts['facts'], template: whatTemplate,
+      }, ref);
+      if (what !== null) summary.what = [what];
+    }
+
+    const now = lane.narration?.['now'];
+    if (now) bag['status'] = now;
+    summary.status = now ? now.glance : summary.status;
+
+    const nextFacts = youFactsFor(lane, summary.next);
+    const next = nextFacts
+      ? binder.field(bag, 'next', { ...nextFacts, surface: 'summary.next' }, ref)
+      : binder.verbatim(bag, 'next', summary.next);
+    if (next !== null) summary.next = next;
+
+    if (Object.keys(bag).length > 0) summary.narration = bag;
   }
 
   /** The council's verdict and coverage for a queue item's own review round, off the
@@ -989,7 +1077,9 @@ export class ConsoleReads {
       ? await this.cachedDrift({ repo, base, pr: prNo, headSha, attestationHead: attestation?.head ?? null })
       : { behindBase: null, headMoved: false };
 
-    return computeLaneSummary({ lane, story, pr, attestation: attestation ?? null, drift, mergeable });
+    const summary = computeLaneSummary({ lane, story, pr, attestation: attestation ?? null, drift, mergeable });
+    this.narrateSummary(lane, summary);
+    return summary;
   }
 
   /** `GET /merge-ready` (2026-09-07 addition): the same per-PR readiness (checks, the

@@ -124,6 +124,9 @@ export interface LaneReadiness {
  * ones to hit a target count.
  */
 export interface LaneSummary {
+  /** `detail` and `raw` for `what`, `status` and `next`; the `glance` register is the
+   *  field itself. Read through `narratedField`. */
+  narration?: NarrationBag;
   what: string[];
   status: string;
   /** The one thing to do next, in the operator's own terms: "Answer the question
@@ -197,6 +200,11 @@ export interface SandboxLogLine {
 }
 
 export interface Lane {
+  /** The `detail` and `raw` registers for this lane's narrated fields, keyed by field
+   *  name (`did`, `now`, `you`). The `glance` register is the field itself. Read it
+   *  through `narratedField`, never directly, so a lane the narrator never saw still
+   *  answers with three registers. */
+  narration?: NarrationBag;
   /** The run name (registry slug). */
   id: string;
   ticket: string | null;
@@ -611,6 +619,9 @@ export type QueueSource = 'ticket' | 'brief' | 'query' | 'backlog' | 'hotfix' | 
 export type QueueItemState = 'queued' | 'planning' | 'running' | 'parked' | 'review' | 'failed' | 'done';
 
 export interface QueueItem {
+  /** `detail` and `raw` for `title`, `whyNext` and `startsIn`. A person-authored title
+   *  carries three identical registers. */
+  narration?: NarrationBag;
   id: string;
   source: QueueSource;
   /** The raw input the item was added with: the ticket key, the pasted brief text, the
@@ -910,6 +921,10 @@ export type BlockerKind = 'question' | 'integration' | 'checks' | 'billing' | 'o
 export type BlockerState = 'open' | 'checking' | 'resolved';
 
 export interface Blocker {
+  /** `detail` and `raw` for `title`, `detail`, `howToResolve`, `thenWhat` and `whoNote`;
+   *  the `glance` register is the field itself. A `question` blocker quotes the operator,
+   *  so its `title` and `detail` carry three identical registers and no model call. */
+  narration?: NarrationBag;
   /** Stable: `question:<askKey>`, `integration:<id>`, `checks:<repo>#<pr>`,
    *  `billing:<owner-or-repo>`, `owner:<repo>#<pr>`, `process:<laneId>`. */
   id: string;
@@ -1005,4 +1020,29 @@ export interface NarrationFacts {
   facts: NarrationFactMap;
   template: string;
   detailTemplate?: string;
+}
+
+/**
+ * The extra two registers, carried beside the field the surface already had.
+ *
+ * The glance register stays where it always was -- `lane.did`, `queueItem.whyNext`,
+ * `blocker.title` -- so every consumer that only ever wanted one sentence keeps reading
+ * one string, and so the tile is physically incapable of showing anything but the
+ * narrator's own glance. `detail` and `raw` live here, keyed by the field's own name, for
+ * the disclosure and for `?verbose=1`. A field with no entry was never narrated: the
+ * helper below hands back the glance string in all three registers, which is exactly the
+ * right answer for person-authored text.
+ */
+export type NarrationBag = { [field: string]: Narrated };
+
+/** The three registers of one field, whether or not it was ever narrated. Person-authored
+ *  text and un-narrated fields come back with `glance === detail === raw`, which is the
+ *  contract the rail's pass-through rests on. */
+export function narratedField(
+  bag: NarrationBag | undefined, field: string, glance: string | null,
+): Narrated {
+  const entry = bag?.[field];
+  if (entry) return entry;
+  const text = glance ?? '';
+  return { glance: text, detail: text, raw: text, narratedAt: null };
 }

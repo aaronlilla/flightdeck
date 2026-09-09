@@ -6,6 +6,7 @@ import { hm } from '../freshness.js';
 import { boardStateWord, durationWords, laneHeadline } from '../laneVM.js';
 import type { Lane, LaneStory, LaneSummary } from '../../shared/console-model.js';
 import { Marks } from './QuestionCard.js';
+import { NarratedLine } from './Narrated.js';
 
 /**
  * `Flightdeck Console.dc.html` 1d: the lane sheet over the board. Its title and state,
@@ -22,9 +23,11 @@ export interface TicketSheetProps {
   onCommand: (id: string, cmd: string) => void;
   /** A note to the agent while it works (`POST /command` with the run as context). */
   onSendLane: (id: string, text: string) => void | Promise<unknown>;
+  /** `?verbose=1`: every narrated sentence also shows its own fact record. */
+  verbose?: boolean;
 }
 
-export function TicketSheet({ lane, now, onClose, onCommand, onSendLane }: TicketSheetProps): JSX.Element {
+export function TicketSheet({ lane, now, onClose, onCommand, onSendLane, verbose }: TicketSheetProps): JSX.Element {
   const [summary, setSummary] = useState<LaneSummary | null>(null);
   const [story, setStory] = useState<LaneStory | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
@@ -66,9 +69,9 @@ export function TicketSheet({ lane, now, onClose, onCommand, onSendLane }: Ticke
       </div>
       <div className="scroll sheet-body" style={{ flex: 1, overflow: 'auto', padding: '18px 24px', display: 'flex', flexDirection: 'column', gap: 20 }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 'var(--fs-key)' }}>
-          <p style={{ margin: 0 }}><span className="kick" style={{ display: 'inline-block', width: 54 }}>Did</span>{failed ? `The summary did not load: ${failed}` : summary ? (summary.what.join(' ') || lane.did || 'Nothing yet') : 'Loading…'}</p>
-          <p style={{ margin: 0 }}><span className="kick" style={{ display: 'inline-block', width: 54 }}>Now</span>{summary?.status ?? lane.now ?? ''}</p>
-          <p style={{ margin: 0 }}><span className="kick" style={{ display: 'inline-block', width: 54 }}>Next</span>{summary?.next ?? lane.you ?? ''}</p>
+          <p style={{ margin: 0 }}><span className="kick" style={{ display: 'inline-block', width: 54 }}>Did</span>{failed ? `The summary did not load: ${failed}` : summary ? <NarratedLine bag={summary.narration ?? lane.narration} field={summary.narration?.['what'] ? 'what' : 'did'} glance={summary.what.join(' ') || lane.did || 'Nothing yet'} verbose={verbose} testid="sheet-what" /> : 'Loading…'}</p>
+          <p style={{ margin: 0 }}><span className="kick" style={{ display: 'inline-block', width: 54 }}>Now</span><NarratedLine bag={summary?.narration ?? lane.narration} field={summary?.narration?.['status'] ? 'status' : 'now'} glance={summary?.status ?? lane.now ?? ''} verbose={verbose} testid="sheet-status" /></p>
+          <p style={{ margin: 0 }}><span className="kick" style={{ display: 'inline-block', width: 54 }}>Next</span><NarratedLine bag={summary?.narration ?? lane.narration} field={summary?.narration?.['next'] ? 'next' : 'you'} glance={summary?.next ?? lane.you ?? ''} verbose={verbose} testid="sheet-next" /></p>
         </div>
         {question ? (
           <div style={{ position: 'relative', border: '1px solid var(--warn)', background: 'var(--warnTint)', padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 6 }}>

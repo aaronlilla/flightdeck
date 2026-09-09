@@ -7,7 +7,7 @@
  * one-line ask and the sheet's longer one can never point a person two different ways.
  */
 import type { ForgeEvent } from '../journal.js';
-import type { Lane, LanePr } from '../../shared/console-model.js';
+import type { Lane, LanePr, NarrationFacts } from '../../shared/console-model.js';
 import { shortenShas, stripMachineIds } from '../../shared/humanize.js';
 
 const DID_LIMIT = 110;
@@ -179,4 +179,46 @@ export function computeYou(lane: Lane): string | null {
     default:
       return null;
   }
+}
+
+/** A state word is only a protected fact when the sentence being narrated is actually
+ *  built on it. `Working since 09:15` is a running lane, but demanding the word
+ *  `running` back out of the narration would force a sentence no person would write. */
+function carriesState(template: string, state: string): boolean {
+  return template.toLowerCase().includes(state.toLowerCase());
+}
+
+/**
+ * The fact record behind `did`. The sentence `computeDid` produced is the template; the
+ * facts are the few things the narration is not allowed to lose or invent. The PR number
+ * is only a fact when the template actually reports it -- a lane whose `did` came from a
+ * tool digest has no business being made to mention a pull request.
+ */
+export function didFactsFor(lane: Lane, did: string | null): NarrationFacts | null {
+  if (!did) return null;
+  const facts: Record<string, string | number | boolean | null> = {};
+  if (carriesState(did, lane.state)) facts['state'] = lane.state;
+  if (lane.ticket) facts['lane'] = lane.ticket;
+  const pr = lane.pr;
+  if (pr && did.includes(`#${pr.no}`)) {
+    facts['pr'] = pr.no;
+    if (pr.checks) facts['checks'] = pr.checks;
+    if (pr.verdict) facts['verdict'] = pr.verdict;
+  }
+  return { surface: 'lane.did', facts: facts as NarrationFacts['facts'], template: did };
+}
+
+/**
+ * The fact record behind `you`. Returns `null` for the one category whose sentence
+ * quotes a person -- `answer` carries the operator's own question, which is routed
+ * through `Binder.verbatim` and never sent to the model.
+ */
+export function youFactsFor(lane: Lane, you: string | null): NarrationFacts | null {
+  if (!you) return null;
+  if (nextCategoryFor(lane, lane.mergeable?.ok === true) === 'answer') return null;
+  const facts: Record<string, string | number | boolean | null> = {};
+  if (carriesState(you, lane.state)) facts['state'] = lane.state;
+  if (lane.ticket) facts['lane'] = lane.ticket;
+  if (lane.pr && you.includes(`#${lane.pr.no}`)) facts['pr'] = lane.pr.no;
+  return { surface: 'lane.you', facts: facts as NarrationFacts['facts'], template: you };
 }
