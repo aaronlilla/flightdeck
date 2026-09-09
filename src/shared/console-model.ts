@@ -434,6 +434,46 @@ export interface ReconnectResponse {
   jid: string | null;
 }
 
+/** One connected Claude account, for the Accounts panel's list. Never carries
+ *  `configDir`: a filesystem path on the machine running the fleet is not something the
+ *  console needs to render, and keeping it off the wire keeps it off every client. */
+export interface AccountItem {
+  id: string;
+  label: string;
+  connectedAt: number;
+  /** Runs currently attributed to this account, re-derived fresh on every request. */
+  liveRuns: number;
+}
+
+export interface AccountsResponse {
+  items: AccountItem[];
+}
+
+export type ConnectState = 'connecting' | 'waiting-in-browser' | 'probing' | 'connected' | 'failed';
+
+/** `GET /accounts/connect/:attempt`'s body. `link` and `error` reach the browser that
+ *  is polling this one attempt, and nowhere else -- no journal row, no slice-event
+ *  payload, no broadcast to any other open console tab. */
+export interface ConnectAttemptResponse {
+  id: string;
+  label: string;
+  state: ConnectState;
+  link?: string;
+  error?: string;
+  accountId?: string;
+}
+
+export interface ConnectStartResponse {
+  ok: boolean;
+  attemptId?: string;
+  error?: string;
+}
+
+export interface DisconnectResponse {
+  ok: boolean;
+  error?: string;
+}
+
 export interface Caps {
   /** Every field here is a token count, not a dollar figure -- this fleet runs on a
    *  flat subscription, so a `$` cap here was always fiction wearing a number's shape.

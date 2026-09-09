@@ -150,9 +150,9 @@ describe('provider, read from the policy file rather than hardcoded', () => {
     expect(providerFor('master')).toBe('codex');
   });
 
-  it('defaults every other declared class to claude', () => {
+  it('defaults every other declared, non-audit class to claude', () => {
     for (const name of classNames()) {
-      if (name === 'plan' || name === 'master') continue;
+      if (name === 'plan' || name === 'master' || /^audit-/.test(name)) continue;
       expect(providerFor(name)).toBe('claude');
     }
   });
@@ -304,5 +304,20 @@ describe('maxDiffLinesFor: the per-hunk cap a lens\'s diff is read at', () => {
     const fixture = join(dir, 'model-policy.json');
     writeFileSync(fixture, JSON.stringify(loadPolicy()));
     expect(maxDiffLinesFor('audit-judge', fixture)).toBe(DEFAULT_MAX_DIFF_LINES);
+  });
+});
+
+// accounts-connect-routing, Contract gap 3: the two audit classes reason on Codex, never
+// Claude, so a claude-account rate limit never stalls a review. Every key matching
+// `/^audit-/` is checked, not a hand-typed pair, so a third audit class added later is
+// covered automatically rather than silently defaulting to `claude`.
+describe('every audit-* class reasons on codex', () => {
+  it('checked-in model-policy.json names codex for every audit-* class', () => {
+    const policy = loadPolicy();
+    const auditClassNames = Object.keys(policy.classes).filter((name) => /^audit-/.test(name));
+    expect(auditClassNames.length).toBeGreaterThan(0);
+    for (const name of auditClassNames) {
+      expect(providerFor(name)).toBe('codex');
+    }
   });
 });

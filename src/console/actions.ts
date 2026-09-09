@@ -231,6 +231,20 @@ export const ACTIONS = {
     jid: (response) => response.jid,
     link: () => viewLink('settings', 'integrations'),
   }),
+  connectAccount: spec<[string], Awaited<ReturnType<typeof api.connectAccount>>>({
+    id: 'connectAccount', label: 'Connect', reversible: true, effect: 'account',
+    call: ([label]) => api.connectAccount(label),
+    text: (response) => (response.ok ? 'connect attempt started' : response.error ?? 'could not start the connect attempt'),
+    ok: (response) => response.ok,
+    link: () => viewLink('settings', 'accounts'),
+  }),
+  disconnectAccount: spec<[string], Awaited<ReturnType<typeof api.disconnectAccount>>>({
+    id: 'disconnectAccount', label: 'Disconnect', reversible: true, effect: 'account',
+    call: ([id]) => api.disconnectAccount(id),
+    text: (response) => (response.ok ? 'account disconnected' : response.error ?? 'could not disconnect this account'),
+    ok: (response) => response.ok,
+    link: () => viewLink('settings', 'accounts'),
+  }),
   applyProposal: spec<[string], ActionResult>({
     id: 'applyProposal', label: 'Apply rule', reversible: true, effect: 'proposal',
     call: ([id]) => api.applyProposal(id), text: fromActionResult, ok: okOf, jid: jidOf, link: () => viewLink('review', 'review'),

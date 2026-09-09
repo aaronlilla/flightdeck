@@ -36,7 +36,8 @@ import { redactPrBody } from './council/redact-sinks.js';
 import { SEVERITY_RANK } from './council/synthesis.js';
 import { runCutover } from './cutover.js';
 import { CredentialHorizon, readLoginLock } from './credential-horizon.js';
-import { buildBurnLedger, checkBudget } from './governor.js';
+import { accountFor, buildBurnLedger, checkBudget, WindowGate } from './governor.js';
+import { accountsRegistryPath, liveRunsByAccount, loadAccounts } from './accounts.js';
 import { reconcileBurnOnce } from './burn-reconcile.js';
 import { planIntakeWrites } from './intake/dryRun.js';
 import { createJiraFeed, createJiraWriteClient, probeJira, type JiraWriteClient } from './intake/jira.js';
@@ -871,6 +872,22 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       const actuator = new WardenActuator({
         journal: actuatorJournal, journalPath: journalPath(), registry, lanes,
       });
+      // P4.8: picks the least-utilized, unpaused Claude account for this launch instead
+      // of every run piling onto `fleetConfigDir()`'s account. `accountFor` and
+      // `WindowGate` (governor.ts) were built and unit-tested but never wired into the
+      // one production call site that actually launches a worker: this is that wiring.
+      // A registry with no connected accounts yet, or one where every account is paused
+      // or over its ceiling, resolves to `undefined`, and `Worker` falls back to
+      // `fleetConfigDir()` exactly as before, so an empty registry never blocks a launch.
+      const registeredAccounts = loadAccounts(accountsRegistryPath())
+        .map((record) => ({ id: record.id, configDir: record.configDir }));
+      const liveGoalsForAccounts = registry.all()
+        .filter((row) => processAlive(row.pid))
+        .map((row) => row.goal);
+      const liveRunsPerAccount = liveRunsByAccount(replay(journalPath()).events, liveGoalsForAccounts);
+      const selectedAccount = registeredAccounts.length > 0
+        ? accountFor(launchClass, registeredAccounts, new WindowGate(), liveRunsPerAccount, Date.now())
+        : undefined;
       // Where a `gh` credential lapse from the drift check lands. An expired token
       // reads as an unknown mergeable state, and answering that with "rebase onto the
       // base branch" asks for something no rebase can deliver. The park goes under
@@ -925,6 +942,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         ...(maxTurns !== undefined ? { maxTurns } : {}),
         ...(autoAnswer !== undefined ? { autoAnswer } : {}),
         ...(goal ? { goalLoop: true } : {}),
+        ...(selectedAccount ? { account: selectedAccount } : {}),
       });
       let result: Awaited<ReturnType<Worker['run']>>;
       try {

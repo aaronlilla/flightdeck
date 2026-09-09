@@ -170,38 +170,134 @@ export interface QueueEntry {
 }
 
 /**
- * Soft ceilings per window: a limit event pauses every queued run of the tier it hit,
- * until the resolved reset time, and never earlier. Cheap classes on a different tier
- * are unaffected -- a pause is per tier, not fleet-wide, because a fleet-wide pause would
- * queue work a rate limit never actually touched.
+ * The two rate-limit horizons a Claude account carries. A five-hour pause and a
+ * seven-day (weekly) pause are two different budgets that reset on two different
+ * clocks -- hitting one says nothing about the other, so they are tracked as two keys
+ * rather than one.
+ */
+export type RateLimitWindow = 'five_hour' | 'seven_day';
+
+/**
+ * Soft ceilings per (account, window): a limit event pauses every queued run of the
+ * tier it hit, until the resolved reset time, and never earlier. Cheap classes on a
+ * different tier are unaffected -- a pause is per tier, not fleet-wide, because a
+ * fleet-wide pause would queue work a rate limit never actually touched.
+ *
+ * P4.8: keyed by `account::window` rather than by tier alone (its shape before this
+ * item), so two different Claude accounts' rate-limit pauses never bleed into each
+ * other, and an account's five-hour pause never silently pauses its own seven-day
+ * window. `tier` on `QueueEntry` still names which class of work an entry is, for the
+ * caller's own bookkeeping; `admit()` itself only ever asks about the account/window
+ * pair a caller passes it.
  */
 export class WindowGate {
   private pausedUntil = new Map<string, number>();
 
-  onRateLimitEvent(tier: string, message: string, now: number): { resumeAt: number } {
+  private key(account: string, window: RateLimitWindow): string {
+    return `${account}::${window}`;
+  }
+
+  onRateLimitEvent(
+    account: string, window: RateLimitWindow, message: string, now: number,
+  ): { resumeAt: number } {
     const resumeAt = resolveResetTime(message, now);
-    this.pausedUntil.set(tier, resumeAt);
+    this.pausedUntil.set(this.key(account, window), resumeAt);
     return { resumeAt };
   }
 
-  isPaused(tier: string, now: number): boolean {
-    const until = this.pausedUntil.get(tier);
+  isPaused(account: string, window: RateLimitWindow, now: number): boolean {
+    const key = this.key(account, window);
+    const until = this.pausedUntil.get(key);
     if (until === undefined) return false;
     if (now >= until) {
-      this.pausedUntil.delete(tier);
+      this.pausedUntil.delete(key);
       return false;
     }
     return true;
   }
 
-  admit(entries: QueueEntry[], now: number): { admitted: QueueEntry[]; queued: QueueEntry[] } {
+  /** Whether `account` is paused on either window right now -- what a caller choosing
+   *  an account to launch under actually needs to know, since a run cannot be split
+   *  across windows. */
+  isAccountPaused(account: string, now: number): boolean {
+    return this.isPaused(account, 'five_hour', now) || this.isPaused(account, 'seven_day', now);
+  }
+
+  admit(
+    entries: QueueEntry[], now: number, window: RateLimitWindow = 'five_hour',
+  ): { admitted: QueueEntry[]; queued: QueueEntry[] } {
     const admitted: QueueEntry[] = [];
     const queued: QueueEntry[] = [];
     for (const entry of entries) {
-      (this.isPaused(entry.tier, now) ? queued : admitted).push(entry);
+      (this.isPaused(entry.tier, window, now) ? queued : admitted).push(entry);
     }
     return { admitted, queued };
   }
+}
+
+// ---------------------------------------------------------------------------------------
+// Account selection
+// ---------------------------------------------------------------------------------------
+
+/** One Claude account a run can launch under. */
+export interface Account {
+  id: string;
+  configDir: string;
+  /** An operator-level pause (mid-disconnect, deliberately taken out of rotation) --
+   *  never auto-inferred from rate-limit state, which `windows` already covers. */
+  paused?: boolean;
+  /** Fraction of each window's own budget already used, from the last
+   *  `claude auth status --json` probe (0 = fresh, 1 = exhausted). A window this
+   *  account has never been probed for is treated as 0, not as unusable -- an account
+   *  with no data yet is exactly the one that should be tried first. */
+  utilization?: Partial<Record<RateLimitWindow, number>>;
+}
+
+function maxUtilization(account: Account): number {
+  const usage = account.utilization ?? {};
+  return Math.max(usage.five_hour ?? 0, usage.seven_day ?? 0);
+}
+
+/**
+ * Picks the account a run should launch under: the least-utilized account that is
+ * neither explicitly paused nor rate-limit-paused on either window right now, ties
+ * broken by fewest live runs. Returns `undefined` when every account is unusable, so
+ * the caller queues the run rather than launching it onto an account this would only
+ * push further past its limit.
+ *
+ * `className` is accepted (and not yet read) so a future per-class account policy --
+ * routing a class to only the accounts it is entitled to -- has a place to hang without
+ * changing every call site again; today every account is eligible for every class.
+ */
+export function accountFor(
+  className: string,
+  accounts: Account[],
+  windows: WindowGate,
+  live: Record<string, number>,
+  now: number,
+): Account | undefined {
+  void className;
+  const usable = accounts.filter((account) => (
+    !account.paused && !windows.isAccountPaused(account.id, now)
+  ));
+  if (usable.length === 0) return undefined;
+
+  let best: Account | undefined;
+  let bestUtilization = Number.POSITIVE_INFINITY;
+  let bestLive = Number.POSITIVE_INFINITY;
+  for (const account of usable) {
+    const utilization = maxUtilization(account);
+    const liveRuns = live[account.id] ?? 0;
+    const better = !best
+      || utilization < bestUtilization
+      || (utilization === bestUtilization && liveRuns < bestLive);
+    if (better) {
+      best = account;
+      bestUtilization = utilization;
+      bestLive = liveRuns;
+    }
+  }
+  return best;
 }
 
 // ---------------------------------------------------------------------------------------

@@ -51,6 +51,10 @@ export interface WorkerRequest {
   resume?: string;
   /** The class's own effort, from model-policy.json. */
   effort?: string;
+  /** P4.8: the account this run was assigned to (`accountFor`, `governor.ts`), pinned
+   *  here instead of the fleet's single hardcoded directory. Undefined keeps this
+   *  request pinning `fleetConfigDir()` exactly as it always has. */
+  configDir?: string;
 }
 
 export interface McpServerSpec {
@@ -102,8 +106,10 @@ export function buildWorkerOptions(
 ): WorkerOptions {
   const env = workerEnv(request.env);
   // Pinned, never inherited. This is the line that keeps the fleet's login separate from
-  // the one Aaron is using interactively.
-  env['CLAUDE_CONFIG_DIR'] = fleetConfigDir(existsConfigDir);
+  // the one Aaron is using interactively. `request.configDir`, when a caller assigned
+  // this run an account (P4.8's `accountFor`), pins to that account's own directory
+  // instead of falling back to the single hardcoded fleet directory.
+  env['CLAUDE_CONFIG_DIR'] = request.configDir ?? fleetConfigDir(existsConfigDir);
 
   const options: WorkerOptions = {
     model: request.model,
@@ -845,6 +851,7 @@ export class SdkEngine implements EngineLike {
       env: request.env,
       ...(request.resume ? { resume: request.resume } : {}),
       ...(request.effort ? { effort: request.effort } : {}),
+      ...(request.configDir ? { configDir: request.configDir } : {}),
     });
 
     const journal = this.journal;
