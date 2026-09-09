@@ -30,27 +30,27 @@ describe('the account registry file', () => {
   });
 
   it('adds an account and reads it back', () => {
-    addAccount({ id: 'test-a', label: 'work', configDir: '/accounts/test-a', connectedAt: 1000 }, path);
+    addAccount({ id: 'test-a', provider: 'claude' as const, label: 'work', configDir: '/accounts/test-a', connectedAt: 1000 }, path);
     const accounts = loadAccounts(path);
     expect(accounts).toHaveLength(1);
-    expect(accounts[0]).toEqual({ id: 'test-a', label: 'work', configDir: '/accounts/test-a', connectedAt: 1000 });
+    expect(accounts[0]).toEqual({ id: 'test-a', provider: 'claude' as const, label: 'work', configDir: '/accounts/test-a', connectedAt: 1000 });
   });
 
   it('adds a second account alongside the first, rather than overwriting it', () => {
-    addAccount({ id: 'test-a', label: 'work', configDir: '/accounts/test-a', connectedAt: 1000 }, path);
-    addAccount({ id: 'test-b', label: 'personal', configDir: '/accounts/test-b', connectedAt: 2000 }, path);
+    addAccount({ id: 'test-a', provider: 'claude' as const, label: 'work', configDir: '/accounts/test-a', connectedAt: 1000 }, path);
+    addAccount({ id: 'test-b', provider: 'claude' as const, label: 'personal', configDir: '/accounts/test-b', connectedAt: 2000 }, path);
     expect(loadAccounts(path).map((a) => a.id)).toEqual(['test-a', 'test-b']);
   });
 
   it('removes an account by id, leaving the rest untouched', () => {
-    addAccount({ id: 'test-a', label: 'work', configDir: '/accounts/test-a', connectedAt: 1000 }, path);
-    addAccount({ id: 'test-b', label: 'personal', configDir: '/accounts/test-b', connectedAt: 2000 }, path);
+    addAccount({ id: 'test-a', provider: 'claude' as const, label: 'work', configDir: '/accounts/test-a', connectedAt: 1000 }, path);
+    addAccount({ id: 'test-b', provider: 'claude' as const, label: 'personal', configDir: '/accounts/test-b', connectedAt: 2000 }, path);
     removeAccount('test-a', path);
     expect(loadAccounts(path).map((a) => a.id)).toEqual(['test-b']);
   });
 
   it('removing an id that is not there is a no-op, not a throw', () => {
-    addAccount({ id: 'test-a', label: 'work', configDir: '/accounts/test-a', connectedAt: 1000 }, path);
+    addAccount({ id: 'test-a', provider: 'claude' as const, label: 'work', configDir: '/accounts/test-a', connectedAt: 1000 }, path);
     expect(() => removeAccount('test-nope', path)).not.toThrow();
     expect(loadAccounts(path)).toHaveLength(1);
   });
@@ -109,34 +109,34 @@ describe('validateAccounts: the registry refuses a shape the rest of the codebas
   });
 
   it('refuses an account whose id is not letters, digits, dots, dashes or underscores', () => {
-    const verdict = validateAccounts([{ id: 'bad id!', label: 'x', configDir: join(dir, 'a'), connectedAt: 1 }], own);
+    const verdict = validateAccounts([{ id: 'bad id!', provider: 'claude' as const, label: 'x', configDir: join(dir, 'a'), connectedAt: 1 }], own);
     expect(verdict.ok).toBe(false);
   });
 
   it('refuses a duplicate id', () => {
     const accounts = [
-      { id: 'a', label: 'a', configDir: join(dir, 'a'), connectedAt: 1 },
-      { id: 'a', label: 'a2', configDir: join(dir, 'b'), connectedAt: 2 },
+      { id: 'a', provider: 'claude' as const, label: 'a', configDir: join(dir, 'a'), connectedAt: 1 },
+      { id: 'a', provider: 'claude' as const, label: 'a2', configDir: join(dir, 'b'), connectedAt: 2 },
     ];
     expect(validateAccounts(accounts, own).ok).toBe(false);
   });
 
   it('refuses a duplicate configDir under two different ids', () => {
     const accounts = [
-      { id: 'a', label: 'a', configDir: join(dir, 'shared'), connectedAt: 1 },
-      { id: 'b', label: 'b', configDir: join(dir, 'shared'), connectedAt: 2 },
+      { id: 'a', provider: 'claude' as const, label: 'a', configDir: join(dir, 'shared'), connectedAt: 1 },
+      { id: 'b', provider: 'claude' as const, label: 'b', configDir: join(dir, 'shared'), connectedAt: 2 },
     ];
     expect(validateAccounts(accounts, own).ok).toBe(false);
   });
 
   it('refuses a configDir equal to the operator\'s own config dir', () => {
-    const verdict = validateAccounts([{ id: 'a', label: 'a', configDir: own, connectedAt: 1 }], own);
+    const verdict = validateAccounts([{ id: 'a', provider: 'claude' as const, label: 'a', configDir: own, connectedAt: 1 }], own);
     expect(verdict.ok).toBe(false);
   });
 
   it('refuses a maxConcurrent that is not a positive integer', () => {
     const verdict = validateAccounts(
-      [{ id: 'a', label: 'a', configDir: join(dir, 'a'), connectedAt: 1, maxConcurrent: 0 }],
+      [{ id: 'a', provider: 'claude' as const, label: 'a', configDir: join(dir, 'a'), connectedAt: 1, maxConcurrent: 0 }],
       own,
     );
     expect(verdict.ok).toBe(false);
@@ -144,7 +144,7 @@ describe('validateAccounts: the registry refuses a shape the rest of the codebas
 
   it('accepts a valid maxConcurrent', () => {
     const verdict = validateAccounts(
-      [{ id: 'a', label: 'a', configDir: join(dir, 'a'), connectedAt: 1, maxConcurrent: 3 }],
+      [{ id: 'a', provider: 'claude' as const, label: 'a', configDir: join(dir, 'a'), connectedAt: 1, maxConcurrent: 3 }],
       own,
     );
     expect(verdict.ok).toBe(true);
@@ -153,13 +153,13 @@ describe('validateAccounts: the registry refuses a shape the rest of the codebas
 
 describe('checkAddCandidate: the same refusals, before anything is attempted', () => {
   it('refuses a candidate that would collide with an existing account\'s dir', () => {
-    const existing = [{ id: 'a', label: 'a', configDir: join(dir, 'shared'), connectedAt: 1 }];
+    const existing = [{ id: 'a', provider: 'claude' as const, label: 'a', configDir: join(dir, 'shared'), connectedAt: 1 }];
     const verdict = checkAddCandidate(existing, { id: 'b', configDir: join(dir, 'shared') });
     expect(verdict.ok).toBe(false);
   });
 
   it('accepts a candidate with a fresh id and dir', () => {
-    const existing = [{ id: 'a', label: 'a', configDir: join(dir, 'a'), connectedAt: 1 }];
+    const existing = [{ id: 'a', provider: 'claude' as const, label: 'a', configDir: join(dir, 'a'), connectedAt: 1 }];
     const verdict = checkAddCandidate(existing, { id: 'b', configDir: join(dir, 'b') });
     expect(verdict.ok).toBe(true);
   });
@@ -167,8 +167,8 @@ describe('checkAddCandidate: the same refusals, before anything is attempted', (
 
 describe('addAccount: validates before writing', () => {
   it('refuses to write a duplicate id, and the registry file is unchanged', () => {
-    addAccount({ id: 'a', label: 'a', configDir: join(dir, 'a'), connectedAt: 1 }, path);
-    expect(() => addAccount({ id: 'a', label: 'a2', configDir: join(dir, 'b'), connectedAt: 2 }, path)).toThrow();
+    addAccount({ id: 'a', provider: 'claude' as const, label: 'a', configDir: join(dir, 'a'), connectedAt: 1 }, path);
+    expect(() => addAccount({ id: 'a', provider: 'claude' as const, label: 'a2', configDir: join(dir, 'b'), connectedAt: 2 }, path)).toThrow();
     expect(loadAccounts(path)).toHaveLength(1);
   });
 
@@ -176,7 +176,7 @@ describe('addAccount: validates before writing', () => {
     process.env['HOME'] = dir;
     process.env['USERPROFILE'] = dir;
     const ownClaude = join(dir, '.claude');
-    expect(() => addAccount({ id: 'a', label: 'a', configDir: ownClaude, connectedAt: 1 }, path)).toThrow();
+    expect(() => addAccount({ id: 'a', provider: 'claude' as const, label: 'a', configDir: ownClaude, connectedAt: 1 }, path)).toThrow();
     expect(loadAccounts(path)).toHaveLength(0);
   });
 });

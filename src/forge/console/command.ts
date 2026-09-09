@@ -25,13 +25,14 @@ import { appendOnce, replay } from '../journal.js';
 import type { StuckSignal } from '../liveness.js';
 import { processAlive, type Registry } from '../registry.js';
 import type { RunRequest } from '../exec.js';
-import { accountsRegistryPath, addAccount, liveRunsByAccount, loadAccounts, removeAccount, pickAccount } from '../accounts.js';
-import { limitedUntil, readAccountUsage, recordPlan } from '../accounts-usage.js';
+import { accountsRegistryPath, addAccount, liveRunsByAccount, loadAccounts, removeAccount } from '../accounts.js';
+import { AccountsService, diskWriters, fleetLoginDir, realProbe, type AccountsServiceDeps } from '../accounts-service.js';
+import { readAccountUsage, recordPlan } from '../accounts-usage.js';
 import { AccountsConnect, realLogout, realProbeStatus, realSpawnLogin } from '../accounts-connect.js';
 import type { Lanes } from '../supervisor.js';
 import type { QueueStore } from '../intake/queueStore.js';
 import { conductorAgentEnabled, governorBudget } from '../policy.js';
-import { forgeHome } from '../paths.js';
+import { fleetConfigDir, forgeHome } from '../paths.js';
 import { retireLane } from './retire.js';
 import { consoleDir, recordAction, ActionsLedger, actionsLedgerPath } from './actions-ledger.js';
 import {
@@ -273,6 +274,11 @@ export interface ConsoleWritesDeps {
    *  only cares about the write side never has to build a whole lanes view). */
   lanesView?: () => LanesResponse;
   spawnFn?: RunRequest['spawnFn'];
+  /** The account limits probe. A specimen passes a fake so no test reaches a provider. */
+  accountsProbe?: AccountsServiceDeps['probe'];
+  /** The machine's own Claude login directory, or null for none. Overridable so a
+   *  specimen's account list is not shaped by whatever login this machine holds. */
+  fleetLoginDir?: () => string | null;
   ledgerPath?: string;
   capsOverridesPath?: string;
   rulesConfigPath?: string;
@@ -364,6 +370,8 @@ export class ConsoleWrites {
 
   private readonly accountsConnect: AccountsConnect;
 
+  private readonly accountsService: AccountsService;
+
   private readonly accountsPath: string;
 
   private readonly pendingConfirms = new Map<string, PendingConfirm>();
@@ -386,6 +394,15 @@ export class ConsoleWrites {
     });
     this.accountsPath = deps.accountsRegistryPath ?? accountsRegistryPath();
     const registryPath = this.accountsPath;
+    this.accountsService = new AccountsService({
+      loadAccounts: () => loadAccounts(this.accountsPath),
+      readUsage: () => readAccountUsage(),
+      recordReading: diskWriters.recordReading,
+      recordReadError: diskWriters.recordReadError,
+      liveRuns: () => this.liveRunsByAccount(),
+      fleetConfigDir: deps.fleetLoginDir ?? fleetLoginDir(() => fleetConfigDir()),
+      probe: deps.accountsProbe ?? realProbe(),
+    });
     this.accountsConnect = new AccountsConnect({
       loadAccounts: () => loadAccounts(registryPath),
       addAccount: (record) => addAccount(record, registryPath),
@@ -940,22 +957,7 @@ export class ConsoleWrites {
 
     if (path === '/accounts' && method === 'GET') {
       if (!this.deps.authorized(request, response)) return true;
-      const live = this.liveRunsByAccount();
-      const usage = readAccountUsage();
-      const now = Date.now();
-      const records = loadAccounts(this.accountsPath);
-      const chosen = pickAccount(records, usage, live, now);
-      const items = records.map((account) => {
-        const limit = limitedUntil(account.id, now, usage);
-        return {
-          id: account.id, label: account.label, connectedAt: account.connectedAt,
-          liveRuns: live[account.id] ?? 0,
-          ...(usage[account.id]?.plan ? { plan: usage[account.id]!.plan } : {}),
-          ...(limit ? { limitedUntil: limit.until, limitedWindow: limit.window } : {}),
-          selected: chosen?.id === account.id,
-        };
-      });
-      respond(response, 200, { items } satisfies AccountsResponse);
+      respond(response, 200, { items: this.accountsService.list() } satisfies AccountsResponse);
       return true;
     }
 
@@ -963,13 +965,13 @@ export class ConsoleWrites {
 
     if (path === '/accounts/connect' && method === 'POST') {
       if (!this.deps.authorized(request, response)) return true;
-      const body = await readBody<{ label?: string }>(request);
-      const label = body?.label?.trim();
-      if (!label) {
-        respond(response, 400, { ok: false, error: 'a connect attempt needs a label' } satisfies ConnectStartResponse);
+      const body = await readBody<{ provider?: string }>(request);
+      const provider = body?.provider;
+      if (provider !== 'claude' && provider !== 'codex') {
+        respond(response, 400, { ok: false, error: 'provider must be claude or codex' } satisfies ConnectStartResponse);
         return true;
       }
-      const result = this.accountsConnect.startConnect(label);
+      const result = this.accountsConnect.startConnect(provider);
       respond(response, result.ok ? 200 : 409, result.ok
         ? { ok: true, attemptId: result.attemptId } satisfies ConnectStartResponse
         : { ok: false, error: result.error } satisfies ConnectStartResponse);
@@ -984,7 +986,7 @@ export class ConsoleWrites {
         return true;
       }
       respond(response, 200, {
-        id: attempt.id, label: attempt.label, state: attempt.state,
+        id: attempt.id, provider: attempt.provider, state: attempt.state,
         ...(attempt.link !== undefined ? { link: attempt.link } : {}),
         ...(attempt.error !== undefined ? { error: attempt.error } : {}),
         ...(attempt.accountId !== undefined ? { accountId: attempt.accountId } : {}),

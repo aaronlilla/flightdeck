@@ -28,7 +28,7 @@ import type { Inbox } from '../inbox.js';
 import { appendOnce } from '../journal.js';
 import { loadAccounts, configDirForSession } from '../accounts.js';
 import { readAccountUsage } from '../accounts-usage.js';
-import { forgeHome } from '../paths.js';
+import { fleetConfigDir, forgeHome } from '../paths.js';
 import {
   contextFor, effortFor, modelFor, modelIdFor, reasonerTimeoutMsFor,
 } from '../policy.js';
@@ -511,7 +511,7 @@ export class ConductorAgent {
   private sessionConfigDir(): string {
     return configDirForSession(
       loadAccounts(), readAccountUsage(), {}, this.now(), this.deps.existsConfigDir,
-    ).configDir;
+    ).configDir ?? fleetConfigDir(this.deps.existsConfigDir);
   }
 
   private env(): NodeJS.ProcessEnv {

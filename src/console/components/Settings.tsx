@@ -11,10 +11,9 @@ import { Marks } from './QuestionCard.js';
 import { IntegrationsPanel } from './IntegrationsPanel.js';
 
 /**
- * `Flightdeck Console.dc.html` 1e: data sources with live reachability, the width
- * stepper, the daily cap, and the theme. Every control is labelled in words; no
- * environment variable name appears. The design's "AI accounts" section has no route
- * behind it in this server yet, so it is not drawn rather than drawn with sample data.
+ * `Flightdeck Console.dc.html` 1e: AI accounts, data sources with live reachability,
+ * MCP servers, the width stepper, the daily cap, and the theme. Every control is
+ * labelled in words; no environment variable name appears.
  */
 export interface SettingsProps {
   integrations: Integration[];
@@ -106,7 +105,9 @@ export function Settings({ integrations, accounts, onAccountsChanged, caps, now,
   const cap = caps && Number.isFinite(caps.dailyTokens) ? caps.dailyTokens : null;
   const pct = cap ? Math.min(100, Math.round((used / cap) * 100)) : 0;
   return (
-    <main data-testid="settings" className="scroll" style={{ flex: 1, minWidth: 0, overflow: 'auto', padding: '26px 28px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 28, alignContent: 'start', maxWidth: 1000 }}>
+    <main data-testid="settings" className="scroll" style={{ flex: 1, minWidth: 0, overflow: 'auto', padding: '26px 28px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 28, alignContent: 'start' }}>
+      <Accounts accounts={accounts} now={now} onChanged={onAccountsChanged} />
+
       <section style={{ display: 'flex', flexDirection: 'column', gap: 10, gridColumn: '1/-1' }}>
         <h6 className="sec">Data sources</h6>
         {integrations.filter((row) => row.kind !== 'mcp').map((row) => <SourceRow key={row.id} row={row} now={now} {...(verbose === undefined ? {} : { verbose })} />)}
@@ -115,49 +116,50 @@ export function Settings({ integrations, accounts, onAccountsChanged, caps, now,
         <h6 className="sec">MCP servers</h6>
         <IntegrationsPanel items={integrations.filter((row) => row.kind === 'mcp')} now={now} />
       </section>
-      <Accounts accounts={accounts} now={now} onChanged={onAccountsChanged} />
 
-      <section style={{ position: 'relative', border: '1px solid var(--line)', padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
-        <Marks />
-        <h6 className="sec">Agents</h6>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
-          <label style={{ fontSize: 'var(--fs-body)' }}>At once</label>
-          <div className="step" data-testid="settings-width">
-            <button type="button" aria-label="one fewer" onClick={() => setWidth(maxInFlight - 1)}>−</button>
-            <span>{maxInFlight}</span>
-            <button type="button" aria-label="one more" onClick={() => setWidth(maxInFlight + 1)}>+</button>
-          </div>
-        </div>
-        {width.result?.kind === 'done' ? <span style={{ fontSize: 'var(--fs-meta)', color: width.result.ok ? 'var(--ink3)' : 'var(--warn)' }}>{width.result.text}</span> : null}
-      </section>
-      <section style={{ position: 'relative', border: '1px solid var(--line)', padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
-        <Marks />
-        <h6 className="sec">Daily spend cap</h6>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <label htmlFor="daily-cap" style={{ fontSize: 'var(--fs-body)' }}>Tokens</label>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <input id="daily-cap" className="inp hd" style={{ width: 120, flex: 'none', minHeight: 36, fontSize: 'var(--fs-title)' }} value={shown} onChange={(e) => setDaily(e.target.value)} onBlur={saveCap} onKeyDown={(e) => { if (e.key === 'Enter') saveCap(); }} />
-            <div className="seg" aria-label="What happens at the cap" data-testid="cap-enforcement">
-              <span style={{ padding: '7px 12px', fontSize: 'var(--fs-ui)', ...(caps?.enforcement === 'on' ? { background: 'var(--acc)', color: 'var(--accInk)' } : { color: 'var(--ink2)' }) }}>Stop new work at the cap</span>
-              <span style={{ padding: '7px 12px', fontSize: 'var(--fs-ui)', borderLeft: '1px solid var(--line2)', ...(caps?.enforcement === 'off' ? { background: 'var(--acc)', color: 'var(--accInk)' } : { color: 'var(--ink2)' }) }}>Warn only</span>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0,1fr))', gap: 28, gridColumn: '1/-1' }}>
+        <section style={{ position: 'relative', border: '1px solid var(--line)', padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <Marks />
+          <h6 className="sec">Agents</h6>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
+            <label style={{ fontSize: 'var(--fs-body)' }}>At once</label>
+            <div className="step" data-testid="settings-width">
+              <button type="button" aria-label="one fewer" onClick={() => setWidth(maxInFlight - 1)}>−</button>
+              <span>{maxInFlight}</span>
+              <button type="button" aria-label="one more" onClick={() => setWidth(maxInFlight + 1)}>+</button>
             </div>
           </div>
-          {capError ? <span data-testid="cap-error" style={{ fontSize: 'var(--fs-meta)', color: 'var(--warn)' }}>{capError}</span> : null}
-          {save.result?.kind === 'done' ? <span style={{ fontSize: 'var(--fs-meta)', color: save.result.ok ? 'var(--ink3)' : 'var(--warn)' }}>{save.result.text}</span> : null}
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{fmtTokens(used)} used today</span><span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>resets at midnight</span></div>
-          <div style={{ height: 6, border: '1px solid var(--line2)', position: 'relative' }}><div style={{ position: 'absolute', top: 0, bottom: 0, left: 0, width: `${pct}%`, background: 'var(--acc)' }} /></div>
-        </div>
-      </section>
-      <section style={{ position: 'relative', border: '1px solid var(--line)', padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
-        <Marks />
-        <h6 className="sec">Theme</h6>
-        <div className="seg" role="group" aria-label="Theme">
-          <button type="button" data-testid="theme-light" aria-pressed={theme === 'light'} onClick={() => onTheme('light')}>Light</button>
-          <button type="button" data-testid="theme-dark" aria-pressed={theme === 'dark'} onClick={() => onTheme('dark')}>Dark</button>
-        </div>
-      </section>
+          {width.result?.kind === 'done' ? <span style={{ fontSize: 'var(--fs-meta)', color: width.result.ok ? 'var(--ink3)' : 'var(--warn)' }}>{width.result.text}</span> : null}
+        </section>
+        <section style={{ position: 'relative', border: '1px solid var(--line)', padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <Marks />
+          <h6 className="sec">Daily spend cap</h6>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <label htmlFor="daily-cap" style={{ fontSize: 'var(--fs-body)' }}>Tokens</label>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input id="daily-cap" className="inp hd" style={{ width: 120, flex: 'none', minHeight: 36, fontSize: 'var(--fs-title)' }} value={shown} onChange={(e) => setDaily(e.target.value)} onBlur={saveCap} onKeyDown={(e) => { if (e.key === 'Enter') saveCap(); }} />
+              <div className="seg" aria-label="What happens at the cap" data-testid="cap-enforcement">
+                <span style={{ padding: '7px 12px', fontSize: 'var(--fs-ui)', ...(caps?.enforcement === 'on' ? { background: 'var(--acc)', color: 'var(--accInk)' } : { color: 'var(--ink2)' }) }}>Stop new work at the cap</span>
+                <span style={{ padding: '7px 12px', fontSize: 'var(--fs-ui)', borderLeft: '1px solid var(--line2)', ...(caps?.enforcement === 'off' ? { background: 'var(--acc)', color: 'var(--accInk)' } : { color: 'var(--ink2)' }) }}>Warn only</span>
+              </div>
+            </div>
+            {capError ? <span data-testid="cap-error" style={{ fontSize: 'var(--fs-meta)', color: 'var(--warn)' }}>{capError}</span> : null}
+            {save.result?.kind === 'done' ? <span style={{ fontSize: 'var(--fs-meta)', color: save.result.ok ? 'var(--ink3)' : 'var(--warn)' }}>{save.result.text}</span> : null}
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{fmtTokens(used)} used today</span><span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>resets at midnight</span></div>
+            <div style={{ height: 6, border: '1px solid var(--line2)', position: 'relative' }}><div style={{ position: 'absolute', top: 0, bottom: 0, left: 0, width: `${pct}%`, background: 'var(--acc)' }} /></div>
+          </div>
+        </section>
+        <section style={{ position: 'relative', border: '1px solid var(--line)', padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <Marks />
+          <h6 className="sec">Theme</h6>
+          <div className="seg" role="group" aria-label="Theme">
+            <button type="button" data-testid="theme-light" aria-pressed={theme === 'light'} onClick={() => onTheme('light')}>Light</button>
+            <button type="button" data-testid="theme-dark" aria-pressed={theme === 'dark'} onClick={() => onTheme('dark')}>Dark</button>
+          </div>
+        </section>
+      </div>
     </main>
   );
 }

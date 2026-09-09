@@ -6,6 +6,7 @@
  */
 import { redactErrorBody } from './redact.js';
 import type {
+  AccountProvider,
   AccountsResponse,
   ActionResult,
   BlockersActionResult,
@@ -372,8 +373,8 @@ export function getAccounts(): Promise<AccountsResponse> {
   return call<AccountsResponse>('/accounts');
 }
 
-export function connectAccount(label: string): Promise<ConnectStartResponse> {
-  return post<ConnectStartResponse>('/accounts/connect', { label });
+export function connectAccount(provider: AccountProvider): Promise<ConnectStartResponse> {
+  return post<ConnectStartResponse>('/accounts/connect', { provider });
 }
 
 export function getConnectAttempt(attemptId: string): Promise<ConnectAttemptResponse> {

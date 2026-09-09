@@ -183,7 +183,29 @@
 <div class="dv-card" data-theme="dark" data-screen-label="Settings" style="width:1440px;height:900px;display:flex;flex-direction:column;background:var(--bg);color:var(--ink);font-family:Barlow,system-ui,sans-serif;font-size:14px;line-height:1.45">
   <dc-import name="FD Chrome" active="Settings" hint-size="1440px,80px"></dc-import>
   <div style="flex:1;display:flex;min-height:0">
-    <main style="flex:1;min-width:0;overflow:auto;padding:26px 28px;display:grid;grid-template-columns:1fr 1fr;gap:28px;align-content:start;max-width:1000px">
+    <main style="flex:1;min-width:0;overflow:auto;padding:26px 28px;display:grid;grid-template-columns:1fr 1fr;gap:28px;align-content:start">
+      <section style="display:flex;flex-direction:column;gap:10px;grid-column:1/-1">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+          <h6 style="margin:0;font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink2)">AI accounts</h6>
+          <div style="display:flex;gap:8px">
+            <button style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:14px;letter-spacing:.04em;padding:5px 14px;background:transparent;color:var(--ink);border:1px solid var(--line2);border-radius:0;cursor:pointer" style-hover="border-color:var(--ink)">Link Claude</button>
+            <button style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:14px;letter-spacing:.04em;padding:5px 14px;background:transparent;color:var(--ink);border:1px solid var(--line2);border-radius:0;cursor:pointer" style-hover="border-color:var(--ink)">Link ChatGPT</button>
+          </div>
+        </div>
+        <sc-for list="{{ accounts }}" as="a" hint-placeholder-count="3">
+          <div style="position:relative;border:1px solid var(--line);padding:14px 18px;display:grid;grid-template-columns:170px minmax(0,1fr) 110px auto;gap:18px;align-items:center">
+            <i style="position:absolute;width:11px;height:11px;background:var(--mk);top:-6px;left:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);top:-6px;right:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);bottom:-6px;left:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);bottom:-6px;right:-6px"></i>
+            <div><div style="display:flex;align-items:center;gap:6px"><i style="width:8px;height:8px;background:var(--ink3);display:block;flex:none"></i><span style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink3)">{{ a.provider }}</span></div><div style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:20px;overflow-wrap:anywhere">{{ a.email }}</div><div style="font-size:12px;color:var(--ink3)">{{ a.meta }}</div></div>
+            <div style="min-width:0">
+              <sc-for list="{{ a.windows }}" as="w" hint-placeholder-count="2">
+                <div style="margin-bottom:6px"><div style="display:flex;justify-content:space-between;font-size:12px"><span>{{ w.label }}</span><span style="color:var(--ink3)">{{ w.used }}% used · resets {{ w.resets }}</span></div><div style="height:6px;border:1px solid var(--line2);position:relative"><div style="position:absolute;top:0;bottom:0;left:0;width:{{ w.used }}%;background:{{ w.color }}"></div></div></div>
+              </sc-for>
+            </div>
+            <span style="font-size:12px;color:var(--ink3)">{{ a.liveRuns }} live run(s)</span>
+            <button style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:14px;letter-spacing:.04em;padding:6px 14px;background:transparent;color:var(--ink);border:1px solid var(--line2);border-radius:0;cursor:pointer" style-hover="border-color:var(--ink)">{{ a.unlink }}</button>
+          </div>
+        </sc-for>
+      </section>
       <section style="display:flex;flex-direction:column;gap:10px;grid-column:1/-1">
         <h6 style="margin:0;font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink2)">Data sources</h6>
         <sc-for list="{{ sources }}" as="s" hint-placeholder-count="3">
@@ -194,18 +216,6 @@
             <button style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:14px;letter-spacing:.04em;padding:6px 14px;border-radius:0;cursor:pointer;background:{{ s.bBg }};color:{{ s.bInk }};border:1px solid {{ s.bBd }};white-space:nowrap">{{ s.btn }}</button>
           </div>
         </sc-for>
-      </section>
-      <section style="display:flex;flex-direction:column;gap:10px;grid-column:1/-1">
-        <h6 style="margin:0;font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink2)">AI accounts</h6>
-        <sc-for list="{{ accounts }}" as="a" hint-placeholder-count="2">
-          <div style="position:relative;border:1px solid var(--line);padding:14px 18px;display:grid;grid-template-columns:150px 1fr 200px;gap:18px;align-items:center">
-            <i style="position:absolute;width:11px;height:11px;background:var(--mk);top:-6px;left:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);top:-6px;right:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);bottom:-6px;left:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);bottom:-6px;right:-6px"></i>
-            <div><div style="font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:20px">{{ a.name }}</div><div style="font-size:12px;color:var(--ink3)">{{ a.plan }}</div></div>
-            <div style="display:flex;flex-direction:column;gap:6px"><div style="display:flex;justify-content:space-between"><span>{{ a.headroom }}</span><span style="font-size:12px;color:var(--ink3)">{{ a.resets }}</span></div><div style="height:6px;border:1px solid var(--line2);position:relative"><div style="position:absolute;top:0;bottom:0;left:0;width:{{ a.pct }};background:var(--acc)"></div></div></div>
-            <span style="font-size:12px;color:var(--ink3);text-align:right">{{ a.used }}</span>
-          </div>
-        </sc-for>
-        <button style="align-self:flex-start;font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:14px;letter-spacing:.04em;padding:6px 14px;background:transparent;color:var(--ink);border:1px solid var(--line2);border-radius:0;cursor:pointer" style-hover="border-color:var(--ink)">Add an account</button>
       </section>
       <section style="position:relative;border:1px solid var(--line);padding:18px 20px;display:flex;flex-direction:column;gap:12px">
         <i style="position:absolute;width:11px;height:11px;background:var(--mk);top:-6px;left:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);top:-6px;right:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);bottom:-6px;left:-6px"></i><i style="position:absolute;width:11px;height:11px;background:var(--mk);bottom:-6px;right:-6px"></i>
@@ -419,8 +429,19 @@ class Component extends DCLogic {
         { name: 'CloudWatch', status: 'Connected', note: 'acme-prod profile · checked 12 seconds ago · read access missing on one log group', dot: 'var(--acc)', statusColor: 'var(--ink)', btn: 'Check now', ...S, border: 'var(--line)', bg: 'transparent' },
       ],
       accounts: [
-        { name: 'Anthropic', plan: 'Team plan · primary', headroom: '62% of the 5-hour window left', resets: 'window resets 13:40', pct: '62%', used: 'used by all 8 agents' },
-        { name: 'Anthropic', plan: 'Team plan · backup', headroom: '100% left', resets: 'takes over if the primary runs out', pct: '100%', used: 'idle' },
+        { provider: 'Claude', email: 'aaron@example.com', meta: 'max plan · default login', liveRuns: 0, unlink: '', windows: [
+          { label: 'Session', used: 30, resets: '15:00', color: 'var(--acc)' },
+          { label: 'Weekly', used: 80, resets: 'Mon 09:00', color: 'var(--warn)' },
+          { label: 'Weekly · Fable', used: 72, resets: 'Mon 09:00', color: 'var(--acc)' },
+        ] },
+        { provider: 'Claude', email: 'ops@example.com', meta: 'max plan · in use', liveRuns: 2, unlink: 'Unlink', windows: [
+          { label: 'Session', used: 12, resets: '15:00', color: 'var(--acc)' },
+          { label: 'Weekly', used: 41, resets: 'Mon 09:00', color: 'var(--acc)' },
+          { label: 'Weekly · Fable', used: 20, resets: 'Mon 09:00', color: 'var(--acc)' },
+        ] },
+        { provider: 'ChatGPT', email: 'aaron@example.org', meta: 'pro plan · in use', liveRuns: 0, unlink: 'Unlink', windows: [
+          { label: 'Weekly', used: 72, resets: 'Mon 09:00', color: 'var(--warn)' },
+        ] },
       ],
       metrics: [
         { label: 'Tickets in', value: '11', note: '', color: 'var(--ink)', border: 'var(--line)', span: 'auto' },

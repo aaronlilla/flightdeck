@@ -500,31 +500,52 @@ export interface ReconnectResponse {
   jid: string | null;
 }
 
-/** One connected Claude account, for the Accounts panel's list. Never carries
- *  `configDir`: a filesystem path on the machine running the fleet is not something the
- *  console needs to render, and keeping it off the wire keeps it off every client. */
+export type AccountProvider = 'claude' | 'codex';
+
+/** One window an account is measured on: the session (five-hour) window, the weekly
+ *  window, or a weekly bucket scoped to one model such as Fable. Read live from the
+ *  provider (`accounts-probe.ts`), never estimated. */
+export interface AccountWindow {
+  /** `session`, `weekly`, `weekly:Fable`. */
+  key: string;
+  /** `Session`, `Weekly`, `Weekly · Fable`. */
+  label: string;
+  /** 0..100 of the window used. */
+  usedPct: number;
+  /** When the window resets, epoch ms; null when the provider gave none. */
+  resetsAt: number | null;
+  /** The provider's own severity word when it gives one. */
+  severity?: string;
+}
+
+/** One linked account, for the Settings page. Never carries a path or a token: the
+ *  login lives on the machine running the fleet and stays there. */
 export interface AccountItem {
   id: string;
-  label: string;
+  provider: AccountProvider;
+  /** The email the subscription is under. This is the account's name; there is no
+   *  separate label. Absent only until the first probe has answered. */
+  email?: string;
+  /** `max`, `pro`, `team`, `plus`, as the provider names it. */
+  plan?: string;
   connectedAt: number;
   /** Runs currently attributed to this account, re-derived fresh on every request. */
   liveRuns: number;
-  /** The plan the account is on, off `claude auth status --json`'s `subscriptionType`
-   *  (`max`, `pro`, `team`). Absent until a probe has answered for it. */
-  plan?: string;
-  /** When a rate limit this account hit lifts, epoch ms. Absent when no limit is on
-   *  record or the recorded one has already passed -- never a guessed figure.
-   *
-   *  There is no percentage-used field here on purpose. The design draws a headroom
-   *  bar, and nothing in the Claude SDK reports how much of an account's five-hour or
-   *  seven-day window is gone; the only account-level signal is the reset time carried
-   *  by a rate-limit error. The console shows what it can prove and the missing source
-   *  is a roadmap item rather than an invented number. */
+  /** Every window the provider reports, with its reset time. Empty until read. */
+  windows: AccountWindow[];
+  /** When the windows were last read, epoch ms. */
+  readAt?: number;
+  /** Why the last read failed, when it did. The row keeps its previous windows. */
+  readError?: string;
+  /** When a rate limit a run hit lifts, epoch ms. Absent when none is on record. */
   limitedUntil?: number;
   /** Which window the recorded limit was on. */
   limitedWindow?: 'five_hour' | 'seven_day';
-  /** Whether this account is the one the Conductor and new runs launch under. */
+  /** Whether this account is the one the next session of its provider launches under. */
   selected?: boolean;
+  /** The machine's default Claude login, which every run used before accounts existed.
+   *  Shown so its limits are visible; it cannot be unlinked from the console. */
+  fleet?: boolean;
 }
 
 export interface AccountsResponse {
@@ -538,7 +559,7 @@ export type ConnectState = 'connecting' | 'waiting-in-browser' | 'probing' | 'co
  *  payload, no broadcast to any other open console tab. */
 export interface ConnectAttemptResponse {
   id: string;
-  label: string;
+  provider: AccountProvider;
   state: ConnectState;
   link?: string;
   error?: string;
