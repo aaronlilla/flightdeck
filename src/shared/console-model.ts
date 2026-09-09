@@ -472,7 +472,12 @@ export interface Integration {
   mcpState: McpConnState | null;
   /** The MCP CLI's own error text for a `mcp`-kind row, verbatim rather than a generic
    *  sentence. Null for a `conn`-kind row, and for an `mcp` row with no error to show. */
-  lastError: string | null;
+  lastError: string | null;  /** The two sentences this row shows -- its state, and what that state means for the
+   *  work. Composed on the server (`integrations-narrate.ts`) so the narrator can reach
+   *  them; the "checked four minutes ago" suffix is added by the client, because it is
+   *  the clock and the clock is never a narration fact. */
+  words: { status: string; note: string };
+  narration?: NarrationBag;
 }
 
 export interface IntegrationsResponse {
@@ -595,6 +600,11 @@ export interface ReviewMetrics {
   handedToQa?: number;
   blockersCleared?: number;
   slowestHop?: { name: string; minutes: number } | null;
+  /** The sentence under each tile, keyed by tile, composed on the server so it can be
+   *  narrated (`review-notes.ts`). Absent on a response older than this field, in which
+   *  case the screen composes them itself from the same function. */
+  notes?: Record<string, string>;
+  narration?: NarrationBag;
 }
 
 export interface ProposalsResponse {

@@ -19,8 +19,10 @@ import { watchedProcesses } from '../fleetwatch.js';
 import type { FleetProcess } from '../liveness.js';
 import { fleetConfigDir } from '../paths.js';
 import { appendOnce } from '../journal.js';
-import { claudeMcpList, type McpRow } from './mcp-runner.js';
+import { claudeMcpList, type McpRow } from './mcp-runner.js';import { integrationWordsFor } from '../../shared/integration-words.js';
 import { consoleDir, recordAction, type ActionsLedger } from './actions-ledger.js';
+import { narrateIntegrations } from './integrations-narrate.js';
+import type { Narrator } from './narrate-store.js';
 import type {
   Integration, IntegrationsResponse, IntegrationStatus, LanesResponse, McpConnState, ReconnectResponse,
 } from '../../shared/console-model.js';
@@ -312,6 +314,9 @@ function mcpProbes(spawnFn?: RunRequest['spawnFn']): Record<string, { decl: Inte
 export interface IntegrationsDeps {
   journalPath: string;
   ledger: ActionsLedger;
+  /** Absent, or null, means this console serves the rows' own template sentences. No
+   *  route here ever awaits the narrator. */
+  narrator?: Narrator | null;
   configPath?: string;
   spawnFn?: RunRequest['spawnFn'];
   /** Overrides the whole probe table. A specimen always sets this, so no test here
@@ -417,6 +422,11 @@ function downCopy(decl: IntegrationDecl, row: StoredRow | undefined, dependents:
 /** Exported for the W2 round-trip specimen only; every runtime caller reaches this
  *  through `IntegrationsRegistry`. */
 export function toIntegration(decl: IntegrationDecl, row: StoredRow | undefined, dependents: string[], canConnect: boolean): Integration {
+  const built = buildIntegration(decl, row, dependents, canConnect);
+  return { ...built, words: integrationWordsFor(built) };
+}
+
+function buildIntegration(decl: IntegrationDecl, row: StoredRow | undefined, dependents: string[], canConnect: boolean): Integration {
   const status = row?.status ?? 'checking';
   const down = status === 'down';
   const copy = down ? downCopy(decl, row, dependents) : null;
@@ -441,7 +451,7 @@ export function toIntegration(decl: IntegrationDecl, row: StoredRow | undefined,
     canConnect,
     links: {},
     mcpState: row?.mcpState ?? null,
-    lastError: row?.lastError ?? null,
+    lastError: row?.lastError ?? null,    words: { status: '', note: '' },
   };
 }
 
@@ -509,8 +519,9 @@ export class IntegrationsRegistry {
       const stored = readStored(this.configPath);
       const now = Date.now();
       const dependents = this.dependentsByIntegration();
-      const items = this.decls().map((decl) =>
-        toIntegration(decl, stored.rows[decl.id], dependents[decl.id] ?? [], Boolean(this.reconnects[decl.id])));
+      const items = narrateIntegrations(this.decls().map((decl) =>
+        toIntegration(decl, stored.rows[decl.id], dependents[decl.id] ?? [], Boolean(this.reconnects[decl.id]))),
+      this.deps.narrator ?? null);
       // Nothing awaits this, so a probe that rejects after the caller has moved on would
       // surface as an unhandled rejection and take the process down with it. A failed
       // probe is ordinary here: the row simply keeps its previous value until one works.
@@ -536,8 +547,9 @@ export class IntegrationsRegistry {
   private emptyResponse(): IntegrationsResponse {
     const stored = readStored(this.configPath);
     const dependents = this.dependentsByIntegration();
-    const items = this.decls().map((decl) =>
-      toIntegration(decl, stored.rows[decl.id], dependents[decl.id] ?? [], Boolean(this.reconnects[decl.id])));
+    const items = narrateIntegrations(this.decls().map((decl) =>
+      toIntegration(decl, stored.rows[decl.id], dependents[decl.id] ?? [], Boolean(this.reconnects[decl.id]))),
+      this.deps.narrator ?? null);
     return { items, checkedAt: Date.now(), everyS: this.everyS };
   }
 
@@ -573,8 +585,9 @@ export class IntegrationsRegistry {
     }));
     writeStored(this.configPath, stored);
     const dependents = this.dependentsByIntegration();
-    const items = this.decls().map((decl) =>
-      toIntegration(decl, stored.rows[decl.id], dependents[decl.id] ?? [], Boolean(this.reconnects[decl.id])));
+    const items = narrateIntegrations(this.decls().map((decl) =>
+      toIntegration(decl, stored.rows[decl.id], dependents[decl.id] ?? [], Boolean(this.reconnects[decl.id]))),
+      this.deps.narrator ?? null);
     return { items, checkedAt: now, everyS: this.everyS };
   }
 

@@ -438,9 +438,9 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
               </div>
             ) : null}
             {state.view === 'blockers' ? <BlockersView blockers={blockers} chains={state.blockers?.chains ?? []} laneTitle={(id) => state.lanes.find((l) => l.id === id)?.title ?? null} onOpenSettings={() => dispatch({ type: 'view', view: 'settings' })} onSendToLane={onSendLane} verbose={state.verbose} /> : null}
-            {state.view === 'queue' ? <QueueView items={state.queue} paused={state.queuePaused} pauseReason={state.queuePauseReason} maxInFlight={state.queueMaxInFlight} working={working} /> : null}
-            {state.view === 'review' ? <FlightReview proposals={state.proposals} now={state.now} tokensToday={state.caps?.tokensToday} dailyTokens={state.caps?.dailyTokens} /> : null}
-            {state.view === 'settings' ? <Settings integrations={state.integrations} accounts={state.accounts} onAccountsChanged={() => void refreshSlice('accounts')} caps={state.caps} now={state.now} maxInFlight={state.queueMaxInFlight} theme={state.theme} onTheme={(theme) => dispatch({ type: 'theme', theme })} /> : null}
+            {state.view === 'queue' ? <QueueView items={state.queue} paused={state.queuePaused} pauseReason={state.queuePauseReason} maxInFlight={state.queueMaxInFlight} working={working} verbose={state.verbose} /> : null}
+            {state.view === 'review' ? <FlightReview proposals={state.proposals} verbose={state.verbose} now={state.now} tokensToday={state.caps?.tokensToday} dailyTokens={state.caps?.dailyTokens} /> : null}
+            {state.view === 'settings' ? <Settings integrations={state.integrations} verbose={state.verbose} accounts={state.accounts} onAccountsChanged={() => void refreshSlice('accounts')} caps={state.caps} now={state.now} maxInFlight={state.queueMaxInFlight} theme={state.theme} onTheme={(theme) => dispatch({ type: 'theme', theme })} /> : null}
             <ConductorRail
               thread={state.thread} feed={state.feed} now={state.now} composer={state.composer}
               onComposerChange={(text) => dispatch({ type: 'composer', text })}

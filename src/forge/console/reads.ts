@@ -52,6 +52,7 @@ import {
   type GhPrDetail, type GhPrLookup,
 } from './pr.js';
 import { computeProposals, readRules, rulesPath } from './proposals.js';
+import { narrateReview } from './review-narrate.js';
 import { computeSandbox, newestLogFile, packetForRun, tailLogWithSeverity } from './sandbox.js';
 import { computeRunThread, computeThread, readThread, threadPath } from './thread.js';
 import { narrateThread } from './thread-narrate.js';
@@ -906,7 +907,12 @@ export class ConsoleReads {
     const fleet = this.journalCache.read(this.journalPath);
     const tokensByRun = Object.fromEntries(Object.entries(fleet.runs).map(([run, state]) => [run, state.tokensUsed]));
     const existingRules = readRules(rulesPath(this.forgeHomeDir));
-    return computeProposals(fleet.events, now, tokensByRun, existingRules);
+    const response = computeProposals(fleet.events, now, tokensByRun, existingRules);
+    const caps = this.capsResponse();
+    return narrateReview(
+      response, this.narrator, caps.tokensToday,
+      Number.isFinite(caps.dailyTokens) ? caps.dailyTokens : null,
+    );
   }
 
   /** The Conductor agent's `lane_detail` reads (2026-09-08): the same thread and story

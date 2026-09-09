@@ -3,6 +3,7 @@ import type { JSX } from 'react';
 import { ACTIONS, useAction } from '../actions.js';
 import type { QueueItem } from '../../shared/console-model.js';
 import { Marks } from './QuestionCard.js';
+import { NarratedLine } from './Narrated.js';
 
 /**
  * `Flightdeck Console.dc.html` 1c: what runs next, in the queue's own order, with why
@@ -17,6 +18,8 @@ export interface QueueViewProps {
   maxInFlight: number;
   /** Lanes working right now, for the stepper's "N working · M idle" line. */
   working?: number;
+  /** `?verbose=1`: the fact record under each narrated sentence. */
+  verbose?: boolean;
   onToast?: (text: string, ok: boolean) => void;
 }
 
@@ -43,7 +46,7 @@ function LaterRow({ item }: { item: QueueItem }): JSX.Element {
   );
 }
 
-export function QueueView({ items, paused, pauseReason, maxInFlight, working = 0 }: QueueViewProps): JSX.Element {
+export function QueueView({ items, paused, pauseReason, maxInFlight, working = 0, verbose }: QueueViewProps): JSX.Element {
   const width = useAction(ACTIONS.postQueueWidth);
   const next = items.filter((item) => item.state === 'queued');
   const later = items.filter((item) => item.state !== 'queued' && item.state !== 'done');
@@ -75,9 +78,9 @@ export function QueueView({ items, paused, pauseReason, maxInFlight, working = 0
         {next.map((item, index) => (
           <div key={item.id} className="queue-row" style={{ display: 'grid', gridTemplateColumns: '44px minmax(0,1fr) minmax(0,1fr) 190px', gap: 18, alignItems: 'baseline', padding: '14px 16px', borderBottom: '1px solid var(--line)' }}>
             <span className="hd" style={{ fontSize: 'var(--fs-num)', color: 'var(--ink3)', fontVariantNumeric: 'tabular-nums' }}>{index + 1}</span>
-            <span><span className="key" style={{ marginRight: 10 }}>{item.ticket ?? ''}</span><span className="hd" data-testid="queue-card-title" style={{ fontSize: 'var(--fs-rowhead)' }}>{titleOf(item)}</span></span>
-            <span style={{ color: 'var(--ink2)' }}>{item.whyNext ?? ''}</span>
-            <span style={{ color: index === 0 && !paused ? 'var(--acc)' : 'var(--ink)' }}>{item.startsIn ?? ''}</span>
+            <span><span className="key" style={{ marginRight: 10 }}>{item.ticket ?? ''}</span><span className="hd" data-testid="queue-card-title" style={{ fontSize: 'var(--fs-rowhead)' }}><NarratedLine bag={item.narration} field="title" glance={titleOf(item)} testid="queue-title" {...(verbose === undefined ? {} : { verbose })} /></span></span>
+            <span style={{ color: 'var(--ink2)' }}><NarratedLine bag={item.narration} field="whyNext" glance={item.whyNext ?? ''} testid="queue-why" {...(verbose === undefined ? {} : { verbose })} /></span>
+            <span style={{ color: index === 0 && !paused ? 'var(--acc)' : 'var(--ink)' }}><NarratedLine bag={item.narration} field="startsIn" glance={item.startsIn ?? ''} testid="queue-starts" {...(verbose === undefined ? {} : { verbose })} /></span>
           </div>
         ))}
         {next.length === 0 ? <p style={{ margin: '14px 16px', color: 'var(--ink2)' }}>Empty</p> : null}

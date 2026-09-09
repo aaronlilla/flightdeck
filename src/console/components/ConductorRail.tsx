@@ -191,7 +191,7 @@ export function MessageCard({ message, labelFor, onCommand, onUndo, onTopic, com
       return (
         <Row ts={message.ts}>
           <p style={{ margin: 0, color: 'var(--ink)', paddingLeft: 10, borderLeft: '2px solid var(--acc)', textDecoration: message.undone ? 'line-through' : 'none' }}>
-            {message.text}
+            <NarratedLine bag={message.narration} field="text" glance={message.text} testid="rail" {...(verbose === undefined ? {} : { verbose })} />
             {message.undoable && !message.undone && message.jid ? <> <a href="#" data-testid="receipt-undo" style={{ color: 'var(--acc)', fontSize: 'var(--fs-meta)' }} onClick={(e) => { e.preventDefault(); onUndo(message.jid as string); }}>Undo</a></> : null}
           </p>
         </Row>
