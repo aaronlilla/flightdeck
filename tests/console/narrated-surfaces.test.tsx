@@ -10,7 +10,7 @@
  * never touched -- person-authored text, or a console with `FORGE_NARRATE=off` -- has
  * all three registers equal, so it renders no disclosure at all.
  */
-import { screen, within, waitFor } from '@testing-library/react';
+import { fireEvent, screen, within, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -223,6 +223,11 @@ describe('the rail', () => {
     } as unknown as Message;
     const typed = { k: 'm2', type: 'operator', at: now - 10_000, text: 'limit per user or per IP?' } as unknown as Message;
     render(<ConductorRail thread={[event, typed]} feed={feed} now={now} composer="" onComposerChange={vi.fn()} onSend={vi.fn()} onCommand={vi.fn()} onUndo={vi.fn()} />);
+    // An `event` is a journal observation, not conversation: since #109 it lives in the
+    // Activity drawer, closed by default. The three registers travel with it there --
+    // the drawer prints the glance and keeps the disclosure -- so the drawer is opened
+    // before the registers are read, rather than the narration being dropped from it.
+    fireEvent.click(screen.getByTestId('activity-drawer'));
     const glances = screen.getAllByTestId('rail-glance').map((el) => el.textContent);
     expect(glances).toEqual(['PR #12 opened at 09:14.']);
     // The operator's own line never reaches the narrated component at all -- it is

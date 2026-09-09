@@ -235,17 +235,22 @@ function isObservation(message: Message): boolean {
   return message.type === 'event' || message.type === 'activity';
 }
 
-function groupObservations(observations: Message[]): { text: string; count: number }[] {
+function groupObservations(observations: Message[]): { text: string; count: number; first: Message }[] {
   const order: string[] = [];
   const counts = new Map<string, number>();
+  // The first row of a group carries the group's narration bag. Rows group by their
+  // glance, and two rows with one glance were narrated from one fact record, so they
+  // hold the same detail and the same raw record; the first is not a sample, it is the
+  // only answer there is.
+  const first = new Map<string, Message>();
   for (const message of observations) {
-    if (!counts.has(message.text)) order.push(message.text);
+    if (!counts.has(message.text)) { order.push(message.text); first.set(message.text, message); }
     counts.set(message.text, (counts.get(message.text) ?? 0) + 1);
   }
-  return order.map((text) => ({ text, count: counts.get(text) ?? 0 }));
+  return order.map((text) => ({ text, count: counts.get(text) ?? 0, first: first.get(text)! }));
 }
 
-function ActivityDrawer({ observations }: { observations: Message[] }): JSX.Element | null {
+function ActivityDrawer({ observations, verbose }: { observations: Message[]; verbose?: boolean }): JSX.Element | null {
   const [open, setOpen] = useState(false);
   if (observations.length === 0) return null;
   const groups = groupObservations(observations);
@@ -261,7 +266,10 @@ function ActivityDrawer({ observations }: { observations: Message[] }): JSX.Elem
       {open ? (
         <div data-testid="activity-drawer-body" style={{ padding: '0 16px 10px', display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 200, overflowY: 'auto' }}>
           {groups.map((group) => (
-            <div key={group.text} style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>{`${group.text} · ${group.count}`}</div>
+            <div key={group.text} style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>
+              <NarratedLine bag={group.first.narration} field="text" glance={group.text} testid="rail" {...(verbose === undefined ? {} : { verbose })} />
+              {` · ${group.count}`}
+            </div>
           ))}
         </div>
       ) : null}
@@ -339,7 +347,7 @@ export function ConductorRail(props: ConductorRailProps): JSX.Element {
           <button type="button" className="btn primary" data-testid="rail-jump" style={{ position: 'absolute', left: '50%', bottom: 10, transform: 'translateX(-50%)', fontSize: 'var(--fs-meta)', padding: '4px 10px' }} onClick={jump}>{unread} new below</button>
         ) : null}
       </div>
-      <ActivityDrawer observations={observations} />
+      <ActivityDrawer observations={observations} {...(verbose === undefined ? {} : { verbose })} />
       <div style={{ padding: '12px 16px 16px', borderTop: '1px solid var(--line)', display: 'flex', flexDirection: 'column', gap: 10 }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
           {commands.map((command) => (
