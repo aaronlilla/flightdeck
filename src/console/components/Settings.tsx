@@ -5,6 +5,7 @@ import { ACTIONS, useAction } from '../actions.js';
 import { durationWords } from '../laneVM.js';
 import type { AccountItem, Caps, Integration } from '../../shared/console-model.js';
 import { fmtTokens } from '../../shared/format-tokens.js';
+import { useWidthStepper } from '../useWidthStepper.js';
 import { Accounts } from './Accounts.js';
 import { NarratedLine } from './Narrated.js';
 import { Marks } from './QuestionCard.js';
@@ -83,11 +84,10 @@ function capInput(value: number): string {
 }
 
 export function Settings({ integrations, accounts, onAccountsChanged, caps, now, maxInFlight, theme, onTheme, verbose }: SettingsProps): JSX.Element {
-  const width = useAction(ACTIONS.postQueueWidth);
+  const width = useWidthStepper(maxInFlight);
   const save = useAction(ACTIONS.setCaps);
   const [daily, setDaily] = useState<string | null>(null);
   const shown = daily ?? (caps ? capInput(caps.dailyTokens) : '');
-  const setWidth = (value: number): void => { if (value >= 1 && value <= 12) void width.run(value); };
   const [capError, setCapError] = useState<string | null>(null);
   const parseTokens = (text: string): number | null => {
     const match = /^\s*(\d+(?:\.\d+)?)\s*([km])?\s*$/i.exec(text);
@@ -124,9 +124,9 @@ export function Settings({ integrations, accounts, onAccountsChanged, caps, now,
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
             <label style={{ fontSize: 'var(--fs-body)' }}>At once</label>
             <div className="step" data-testid="settings-width">
-              <button type="button" aria-label="one fewer" onClick={() => setWidth(maxInFlight - 1)}>−</button>
-              <span>{maxInFlight}</span>
-              <button type="button" aria-label="one more" onClick={() => setWidth(maxInFlight + 1)}>+</button>
+              <button type="button" aria-label="one fewer" onClick={width.dec}>−</button>
+              <span>{width.value}</span>
+              <button type="button" aria-label="one more" onClick={width.inc}>+</button>
             </div>
           </div>
           {width.result?.kind === 'done' ? <span style={{ fontSize: 'var(--fs-meta)', color: width.result.ok ? 'var(--ink3)' : 'var(--warn)' }}>{width.result.text}</span> : null}

@@ -2,6 +2,7 @@ import type { JSX } from 'react';
 
 import { ACTIONS, useAction } from '../actions.js';
 import type { QueueItem } from '../../shared/console-model.js';
+import { useWidthStepper } from '../useWidthStepper.js';
 import { Marks } from './QuestionCard.js';
 import { NarratedLine } from './Narrated.js';
 
@@ -47,11 +48,10 @@ function LaterRow({ item }: { item: QueueItem }): JSX.Element {
 }
 
 export function QueueView({ items, paused, pauseReason, maxInFlight, working = 0, verbose }: QueueViewProps): JSX.Element {
-  const width = useAction(ACTIONS.postQueueWidth);
+  const width = useWidthStepper(maxInFlight);
   const next = items.filter((item) => item.state === 'queued');
   const later = items.filter((item) => item.state !== 'queued' && item.state !== 'done');
   const idle = Math.max(0, maxInFlight - working);
-  const setWidth = (value: number): void => { if (value >= 1 && value <= 12) void width.run(value); };
   return (
     <main data-testid="queue-view" className="scroll" style={{ flex: 1, minWidth: 0, overflow: 'auto', padding: '26px 28px', display: 'flex', flexDirection: 'column', gap: 20 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 24 }}>
@@ -65,9 +65,9 @@ export function QueueView({ items, paused, pauseReason, maxInFlight, working = 0
             <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>{working} working · {idle} idle</span>
           </div>
           <div className="step" data-testid="queue-width">
-            <button type="button" aria-label="one fewer" onClick={() => setWidth(maxInFlight - 1)}>−</button>
-            <span>{maxInFlight}</span>
-            <button type="button" aria-label="one more" onClick={() => setWidth(maxInFlight + 1)}>+</button>
+            <button type="button" aria-label="one fewer" onClick={width.dec}>−</button>
+            <span>{width.value}</span>
+            <button type="button" aria-label="one more" onClick={width.inc}>+</button>
           </div>
         </div>
       </div>
