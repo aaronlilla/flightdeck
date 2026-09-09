@@ -34,6 +34,16 @@ Aaron, 2026-09-08. Only Aaron edits this paragraph.
 | R-20 | a goal-source item continues to its successor on a context handoff | autonomy | planned | | Q-17bb4283's shape passes |
 | R-21 | the console cuts over to a new head on a quiet interval, not only when the queue is idle | clock | planned | | no hand restart after a merge |
 | R-22 | the Merge click lands through git (fetch, squash, commit, push) instead of `gh pr merge`, so a GitHub mutation rate limit never blocks a reviewed PR; gate/council/PR-discovery still call `gh` (not yet moved off the API) | autonomy | review | this PR | real bare-remote fixture: item reaches done, mergedBy queue, base ref advanced, gate never called |
+| R-23 | `forge clock` report: critical path per item, worker vs runner suite runs, tick stall | clock | planned | | a run of `forge clock` prints per-item hop medians and the critical path |
+| R-24 | concurrent item advance; Codex lane runs beside the lenses | clock | planned | | a 21-minute council round no longer holds every other item's launch, status read and gate |
+| R-25 | the runner's verification is the one full run; worker limited to targeted tests by rule; suite output to file | clock, tokens | planned | | full-suite runs per item drop to one runner run plus CI |
+| R-26 | warden stale-session joins run state (open tool call, pid) into the process loop; tool-budget kept | autonomy | planned | | a worker inside a long sanctioned Bash call is never parked as stale |
+| R-27 | pending checks are a wait state; rebase only when behind | clock | planned | | review→end median moves toward CI duration, no park on a still-running check |
+| R-28 | queue passes the risk decision to council (no forced Codex); changed-lines count excludes lockfiles; small-PR path proven | tokens | planned | | a 20-line non-risky RN PR plus a lockfile change sizes as small |
+| R-29 | self loop records a refusal once and re-checks on head change | tokens | planned | | `self.merge-refused` stops re-polling every 5 minutes on an unchanged PR |
+| R-30 | ticket planning retries a transient fetch; reason on the fleet row | clock | planned | | a `fetch failed` plan hop retries with backoff instead of failing the item |
+| R-31 | warm-template provisioning by copy | clock | planned | | a matching `package-lock.json` hash skips `npm ci` for a copy |
+| R-32 | burn.mismatch once per change; cached journal readers | clock | planned | | `burn.mismatch` rows drop to one per run per changed value |
 
 ## Not in scope
 
@@ -59,6 +69,8 @@ Aaron, 2026-09-08. Only Aaron edits this paragraph.
 - 2026-09-08: per-board config in `~/.forge/projects/<KEY>.json` with workflow discovery.
 - 2026-09-08: both merge allow-lists (`FORGE_COUNCIL_AUTOMERGE`, `FORGE_QUEUE_MERGE_REPOS`) must name a repo for it to auto-merge.
 - 2026-09-08: the docs repository's roadmap on branch `docs/amp-g2-implementation` is retired by this file.
+- 2026-09-09: Codex lane is risky and large diffs only, except when it's something that deals with money, which always needs the highest and most aggressive review (Aaron). Money paths always get the full council — 3 lenses, Codex lane, Opus judge, all fix rounds — regardless of size.
+- 2026-09-09: R-23 to R-32 promoted from the wall-clock audit; first wave R-23 to R-26.
 
 ## Proposed
 
