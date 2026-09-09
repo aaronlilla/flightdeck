@@ -343,6 +343,9 @@ export interface PlanItem {
 }
 
 export interface Message {
+  /** `detail` and `raw` for `text`; the `glance` register is `text` itself. A row that
+   *  quotes a person or the agent carries three identical registers and no cache key. */
+  narration?: NarrationBag;
   k: string;
   type: MessageType;
   text: string;

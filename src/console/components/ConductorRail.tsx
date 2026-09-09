@@ -5,6 +5,7 @@ import { hm } from '../freshness.js';
 import { useStore } from '../store.js';
 import type { Feed, Message, MessageButton } from '../../shared/console-model.js';
 import { Marks, QuestionCard } from './QuestionCard.js';
+import { NarratedLine } from './Narrated.js';
 
 /**
  * `FD Rail.dc.html`: the Conductor rail. Rows by kind (status, receipt with Undo,
@@ -116,9 +117,11 @@ function ActionCard({ message, tone, kicker, title, body, onCommand, onTopic, co
   );
 }
 
-export function MessageCard({ message, labelFor, onCommand, onUndo, onTopic, composerId }: {
+export function MessageCard({ message, labelFor, onCommand, onUndo, onTopic, composerId, verbose }: {
   message: Message; labelFor?: (id: string) => string | null; onCommand: (text: string) => void;
   onUndo: (jid: string) => void; onTopic?: (laneId: string) => void; composerId: string;
+  /** `?verbose=1`: the fact record under a narrated row, identifiers intact. */
+  verbose?: boolean;
 }): JSX.Element | null {
   const label = (id: string): string | null => labelFor?.(id) ?? null;
   const from = message.lane ?? message.source;
@@ -153,7 +156,7 @@ export function MessageCard({ message, labelFor, onCommand, onUndo, onTopic, com
       return (
         <Row ts={message.ts}>
           <div>
-            <p data-testid="status-row" style={{ margin: 0, color: 'var(--ink)', whiteSpace: 'pre-wrap' }}>{message.text}</p>
+            <p data-testid="status-row" style={{ margin: 0, color: 'var(--ink)', whiteSpace: 'pre-wrap' }}><NarratedLine bag={message.narration} field="text" glance={message.text} testid="rail" {...(verbose === undefined ? {} : { verbose })} /></p>
             {message.btns && message.btns.length > 0 && !message.resolved ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 6 }}>
                 {message.btns.map((button) => <button key={button.label} type="button" className={buttonClass(button)} style={{ textAlign: 'left', whiteSpace: 'normal' }} onClick={() => onCommand(button.cmd)}>{button.label}</button>)}
@@ -165,7 +168,15 @@ export function MessageCard({ message, labelFor, onCommand, onUndo, onTopic, com
     case 'event':
     case 'thinking':
     case 'pr':
-      return <Row ts={message.ts}><p data-testid="status-row" style={{ margin: 0, color: 'var(--ink)' }}>{message.type === 'pr' && message.pr ? `Draft PR #${message.pr.no}: ${message.text}` : message.text}</p></Row>;
+      return (
+        <Row ts={message.ts}>
+          <p data-testid="status-row" style={{ margin: 0, color: 'var(--ink)' }}>
+            {message.type === 'pr' && message.pr ? `Draft PR #${message.pr.no}: ${message.text}` : (
+              <NarratedLine bag={message.narration} field="text" glance={message.text} testid="rail" {...(verbose === undefined ? {} : { verbose })} />
+            )}
+          </p>
+        </Row>
+      );
     case 'activity':
       if (message.tools && message.tools.length > 0) {
         return (
@@ -175,7 +186,7 @@ export function MessageCard({ message, labelFor, onCommand, onUndo, onTopic, com
           </details>
         );
       }
-      return <div style={{ marginLeft: 48, fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>{message.text}</div>;
+      return <div style={{ marginLeft: 48, fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}><NarratedLine bag={message.narration} field="text" glance={message.text} testid="rail" {...(verbose === undefined ? {} : { verbose })} /></div>;
     case 'receipt':
       return (
         <Row ts={message.ts}>
@@ -259,7 +270,7 @@ function ActivityDrawer({ observations }: { observations: Message[] }): JSX.Elem
 }
 
 export function ConductorRail(props: ConductorRailProps): JSX.Element {
-  const { thread, feed, now, composer, onComposerChange, onSend, onCommand, onUndo, labelFor, agentCount, topic = null, recipient = 'conductor', onRecipient, onTopic, commands = DEFAULT_COMMANDS, onStop } = props;
+  const { thread, feed, now, composer, onComposerChange, onSend, onCommand, onUndo, labelFor, agentCount, topic = null, recipient = 'conductor', onRecipient, onTopic, commands = DEFAULT_COMMANDS, onStop, verbose } = props;
   const composerAction = useStore().state.actions['sendCommand:rail'];
   const busy = composerAction?.pending ?? false;
   const conversation = thread.filter((message) => !isObservation(message));
@@ -320,7 +331,7 @@ export function ConductorRail(props: ConductorRailProps): JSX.Element {
         <div ref={listRef} onScroll={onScroll} data-testid="rail-thread" className="scroll" style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
           {conversation.map((message) => (
             <div key={message.k} id={`rail-msg-${message.k}`}>
-              <MessageCard message={message} labelFor={labelFor} onCommand={onCommand} onUndo={onUndo} onTopic={onTopic} composerId={composerId} />
+              <MessageCard message={message} labelFor={labelFor} onCommand={onCommand} onUndo={onUndo} onTopic={onTopic} composerId={composerId} {...(verbose === undefined ? {} : { verbose })} />
             </div>
           ))}
         </div>

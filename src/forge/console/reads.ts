@@ -54,6 +54,7 @@ import {
 import { computeProposals, readRules, rulesPath } from './proposals.js';
 import { computeSandbox, newestLogFile, packetForRun, tailLogWithSeverity } from './sandbox.js';
 import { computeRunThread, computeThread, readThread, threadPath } from './thread.js';
+import { narrateThread } from './thread-narrate.js';
 import { computeLaneSummary, computeReadiness, type PrFacts } from './summary.js';
 import type { MergeReadyReport } from '../../shared/console-model.js';
 import { gitDrift, type DriftFacts, type DriftFn } from './drift.js';
@@ -860,9 +861,10 @@ export class ConsoleReads {
       }
     }
     const titleFor = (id: string): string | null => titles.get(id) ?? null;
-    return computeThread(persisted, fleet.events, now, this.inbox.open(), titleFor, {
+    const thread = computeThread(persisted, fleet.events, now, this.inbox.open(), titleFor, {
       verbose, allAsks: this.inbox.all(),
     });
+    return { ...thread, messages: narrateThread(thread.messages, this.narrator) };
   }
 
   private journalResponse(query: { since?: number; run?: string; limit?: number }): JournalResponse {
@@ -916,7 +918,8 @@ export class ConsoleReads {
 
   private runThreadResponse(run: string, verbose = false): RunThreadResponse {
     const fleet = this.journalCache.read(this.journalPath);
-    const result = computeRunThread(run, fleet.events, new RunInbox(run).all(), { verbose, openAsks: this.inbox.open() });
+    const computed = computeRunThread(run, fleet.events, new RunInbox(run).all(), { verbose, openAsks: this.inbox.open() });
+    const result = { ...computed, messages: narrateThread(computed.messages, this.narrator) };
     return verbose ? { ...result, verbose: true } : result;
   }
 
