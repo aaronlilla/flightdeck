@@ -443,7 +443,40 @@ function foldLine(state: FleetState, line: string): void {
  * the world: two replays of the same file give the same answer, which is what makes a
  * restart honest rather than a fresh guess.
  */
+/**
+ * The fleet's state, folded from the journal at `path`.
+ *
+ * Incremental since 2026-09-09: one `JournalCache` per path lives for the process, so a
+ * second call reads only the bytes appended since the first. Before that every call
+ * re-parsed the whole file, and a 20 MB journal (75,000 rows, most of them the
+ * `burn.mismatch` rows R-32 is about) took 16.8 s per call, on the 4120 server's own
+ * thread, on every request path that asked for live runs or today's tokens. The state
+ * returned is shared: read it, never mutate it. `replayFresh` is the old full parse for
+ * a caller that wants its own copy.
+ */
 export function replay(path: string): FleetState {
+  let cache = replayCaches.get(path);
+  if (!cache) {
+    cache = new JournalCache();
+    replayCaches.set(path, cache);
+  }
+  const state = cache.read(path);
+  // A trailing fragment with no newline is a torn line to a full parse; the cache holds
+  // it back until the next append completes it, so it is reported here as torn without
+  // being folded, and the shared state stays untouched.
+  return cache.pendingFragment ? { ...state, torn: state.torn + 1 } : state;
+}
+
+const replayCaches = new Map<string, JournalCache>();
+
+/** Drops the per-process replay cache, for a test that rewrites a journal in place. */
+export function forgetReplay(path?: string): void {
+  if (path === undefined) replayCaches.clear();
+  else replayCaches.delete(path);
+}
+
+/** A full parse into a fresh state the caller owns. */
+export function replayFresh(path: string): FleetState {
   const state = emptyState();
   if (!existsSync(path)) return state;
   for (const line of readFileSync(path, 'utf8').split('\n')) foldLine(state, line);
@@ -493,6 +526,11 @@ export class JournalCache {
   private carry = '';
 
   constructor(private readonly reader: RangeReader = defaultRangeReader) {}
+
+  /** Whether the last read ended inside a line: bytes seen, not yet folded. */
+  get pendingFragment(): boolean {
+    return this.carry.length > 0;
+  }
 
   read(path: string): FleetState {
     const size = this.reader.size(path);

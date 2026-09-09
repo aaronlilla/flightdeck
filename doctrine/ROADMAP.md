@@ -43,7 +43,7 @@ Aaron, 2026-09-08. Only Aaron edits this paragraph.
 | R-29 | self loop records a refusal once and re-checks on head change | tokens | planned | | `self.merge-refused` stops re-polling every 5 minutes on an unchanged PR |
 | R-30 | ticket planning retries a transient fetch; reason on the fleet row | clock | planned | | a `fetch failed` plan hop retries with backoff instead of failing the item |
 | R-31 | warm-template provisioning by copy | clock | planned | | a matching `package-lock.json` hash skips `npm ci` for a copy |
-| R-32 | burn.mismatch once per change; cached journal readers | clock | planned | | `burn.mismatch` rows drop to one per run per changed value |
+| R-32 | burn.mismatch once per change; cached journal readers | clock | review | this PR (readers) | `replay()` is incremental per path: a 20 MB journal that took 16.8 s per call on the 4120 server's thread reads only its appended bytes after the first call (`tests/forge/journal-replay-cache.test.ts`); the burn.mismatch half is still open, 873 rows in one hour on 2026-09-09 |
 | R-33 | hook tax measured then batched into one fail-closed dispatcher | clock | planned | | per-Bash-call hook overhead drops from 2.1 s to under 400 ms, no guard weakened |
 | R-34 | fix rounds wired with a CI failure classifier | autonomy | planned | | a FIX FIRST verdict launches a same-worktree repair round instead of parking forever |
 | R-35 | one PR snapshot per item, gh reads 8 to 4 | tokens | planned | | a clean PR's advance uses 4 `gh` calls instead of 8 |
