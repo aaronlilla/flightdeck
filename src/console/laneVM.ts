@@ -60,7 +60,9 @@ export function laneCta(lane: Lane): LaneCta {
     case 'running':
       return { label: 'Watch live', cmd: 'watch', cls: 'btnS' };
     case 'parked':
-      return { label: 'Answer →', cmd: 'answer', cls: 'btnA' };
+      return lane.question
+        ? { label: 'Answer →', cmd: 'answer', cls: 'btnA' }
+        : { label: 'Resume ▶', cmd: 'resume', cls: 'btnP' };
     case 'handed-off':
       return { label: 'View council', cmd: 'council', cls: 'btnS' };
     case 'paused':
