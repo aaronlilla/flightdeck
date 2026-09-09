@@ -200,6 +200,18 @@ describe('ConsoleReads.lanesResponse: title and sourceUrl', () => {
   });
 
   it('H1.2 fix: plain reads the queue item\'s own review state and the attestation on disk, not the run\'s own unverified verdict', async () => {
+    // This specimen's repo ('o/n') is deliberately not on any allow-list, to prove the
+    // "your Merge" phrasing for an ordinary queue repo; FORGE_GH_BACKEND_OWNER flips
+    // that phrasing to the named-owner branch the moment it is set (reads.ts's own
+    // `controlledOwner` computation), so an ambient value from the launching shell must
+    // not leak into this assertion.
+    const ambientBackendOwner = process.env['FORGE_GH_BACKEND_OWNER'];
+    delete process.env['FORGE_GH_BACKEND_OWNER'];
+    onTestFinished(() => {
+      if (ambientBackendOwner === undefined) delete process.env['FORGE_GH_BACKEND_OWNER'];
+      else process.env['FORGE_GH_BACKEND_OWNER'] = ambientBackendOwner;
+    });
+
     const forgeHomeDir = tempDir('console-reads-');
     const { writeAttestation } = await import('../../../src/forge/council/attest.js');
     const attestationPath = writeAttestation({

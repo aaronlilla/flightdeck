@@ -14,16 +14,32 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { buildWorkerOptions, contextOf, toEngineConfig } from '../../src/forge/sdkengine.js';
 import { buildOptions } from '../../src/adapter/engine.js';
 
 let home: string;
+// FORGE_CONFIG_DIR wins outright over the injected `exists` fn (paths.ts's own doc
+// comment: "wins outright when set"). The fleet/forge-fallback specimens below depend on
+// that override being absent so the injected `exists` fn actually drives the branch; a
+// shell that happens to export FORGE_CONFIG_DIR (the queue orchestrator's own launch env
+// does) must not leak into those assertions.
+let ambientForgeConfigDir: string | undefined;
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'forge-sdk-'));
   process.env['FORGE_HOME'] = home;
+  ambientForgeConfigDir = process.env['FORGE_CONFIG_DIR'];
+  delete process.env['FORGE_CONFIG_DIR'];
+});
+
+afterEach(() => {
+  if (ambientForgeConfigDir === undefined) {
+    delete process.env['FORGE_CONFIG_DIR'];
+  } else {
+    process.env['FORGE_CONFIG_DIR'] = ambientForgeConfigDir;
+  }
 });
 
 const REQUEST = {
