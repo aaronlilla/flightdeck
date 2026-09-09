@@ -7,7 +7,7 @@
  * `reasonerFor('claude', ...)` seam the server wires in production -- the narrator itself
  * is never faked, because a fake narrator would prove only that the fake works.
  */
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -20,8 +20,11 @@ import type { NarrationFacts } from '../../../src/shared/console-model.js';
 import type { SliceName } from '../../../src/shared/console-events.js';
 import { Journal } from '../../../src/forge/journal.js';
 import { reasonerFor } from '../../../src/forge/reasoner-claude.js';
-import { narrationKey } from '../../../src/forge/console/narrate.js';
-import { Narrator, passThrough } from '../../../src/forge/console/narrate-store.js';
+import { VolatileFactError, narrationKey } from '../../../src/forge/console/narrate.js';
+import type { NarrationEntry } from '../../../src/forge/console/narrate-store.js';
+import {
+  CACHE_MAX_ENTRIES, NarrationStore, Narrator, passThrough,
+} from '../../../src/forge/console/narrate-store.js';
 
 let home: string;
 let policyPath: string;
@@ -403,6 +406,88 @@ describe('a policy that declares no narrate class', () => {
 
 describe('the cache key', () => {
   it('is the same across polls because nothing in it comes from the clock', () => {
-    expect(narrationKey(merged)).toBe(narrationKey({ ...merged, template: 'reworded' }));
+    const first = narrationKey(merged);
+    const start = Date.now();
+    while (Date.now() === start) { /* spin until the wall clock has actually moved */ }
+    expect(Date.now()).toBeGreaterThan(start);
+    expect(narrationKey(merged)).toBe(first);
+    // And the clock cannot get in by the front door either: a fact record carrying one
+    // is refused rather than hashed.
+    expect(() => narrationKey({ ...merged, facts: { ...merged.facts, now: Date.now() } as never }))
+      .toThrow(VolatileFactError);
   });
+
+  it('is not the same when the sentence being replaced says something else', () => {
+    expect(narrationKey(merged)).not.toBe(narrationKey({ ...merged, template: 'reworded' }));
+  });
+});
+
+describe('what a critique of the cache asked it to survive', () => {
+  /** One cache entry, valid enough to be indexed and re-read. */
+  function entry(key: string, narratedAt: number) {
+    return {
+      key, input: merged, glance: 'Checks passed.', detail: 'Every check passed.',
+      narratedAt, model: 'claude-sonnet-5',
+      verdict: { ok: true, token: null, register: null, rule: null, reason: 'accepted' },
+    } satisfies NarrationEntry;
+  }
+
+  it('leaves no .tmp file behind, and never lets two writers share one tmp name', () => {
+    // `${final}.tmp` was a fixed name. Two processes on one FORGE_HOME -- the console and
+    // `scripts/narrate-proof.ts`, which is how the live proof is actually run -- could be
+    // inside `writeFileSync` for the same key at once, and the loser's rename published
+    // the winner's half-written bytes under a name the next boot trusts.
+    const store = new NarrationStore(home);
+    store.put(entry('aaa', 1_000));
+    store.put(entry('bbb', 2_000));
+    const left = readdirSync(join(home, 'narration'));
+    expect(left.filter((name) => name.includes('.tmp'))).toEqual([]);
+    expect(left.sort()).toEqual(['aaa.json', 'bbb.json']);
+  });
+
+  it('keeps the newest entries and drops the oldest once the cache is over its ceiling', () => {
+    // One file per distinct fact record, forever, and `load()` reads every one of them at
+    // boot. At the policy's own 300 calls an hour that is a quarter of a million files a
+    // month on a fleet nobody is watching.
+    // The shipped ceiling is CACHE_MAX_ENTRIES; the store takes a smaller one so this
+    // specimen proves the sweep in milliseconds instead of writing twenty thousand files.
+    expect(CACHE_MAX_ENTRIES).toBeGreaterThan(1_000);
+    const ceiling = 40;
+    const store = new NarrationStore(home, ceiling);
+    const over = ceiling + 20;
+    for (let index = 0; index < over; index += 1) {
+      store.put(entry(`k${String(index).padStart(6, '0')}`, 1_000 + index));
+    }
+    expect(store.size()).toBeLessThanOrEqual(ceiling);
+    expect(readdirSync(join(home, 'narration')).length).toBeLessThanOrEqual(ceiling);
+
+    // The survivors are the newest, so the boards being read right now keep their sentences.
+    const reopened = new NarrationStore(home, ceiling);
+    expect(reopened.size()).toBeLessThanOrEqual(ceiling);
+    expect(reopened.has(`k${String(over - 1).padStart(6, '0')}`)).toBe(true);
+    expect(reopened.has('k000000')).toBe(false);
+  });
+
+  it('still counts an hour of calls against the cap after a restart', async () => {
+    // The cap is spend control and it lived in one process's memory. Every flightdeck
+    // cutover restarts the console, so an unattended fleet could buy the whole cap again
+    // each time -- the one thing `maxCallsPerHour` exists to make impossible.
+    const source = join(process.cwd(), 'src', 'forge', 'model-policy.json');
+    const policy = JSON.parse(readFileSync(source, 'utf8')) as {
+      classes: Record<string, Record<string, unknown>>;
+    };
+    policy.classes['narrate'] = { ...policy.classes['narrate'], maxCallsPerHour: 2 };
+    writeFileSync(policyPath, JSON.stringify(policy), 'utf8');
+
+    const first = rigWith(scriptedQuery(() => acceptedReply).fn, 1);
+    for (let n = 0; n < 2; n += 1) first.narrator.get({ ...merged, facts: { ...merged.facts, pr: 700 + n } });
+    await first.narrator.idle();
+    expect(narrateCalls(first.journalPath)).toBe(2);
+
+    const second = rigWith(scriptedQuery(() => acceptedReply).fn, 1);
+    const served = second.narrator.get({ ...merged, facts: { ...merged.facts, pr: 999 } });
+    await second.narrator.idle();
+    expect(served.glance).toBe(merged.template);
+    expect(narrateCalls(second.journalPath)).toBe(2);
+  }, 30_000);
 });

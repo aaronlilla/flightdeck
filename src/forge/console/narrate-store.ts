@@ -13,8 +13,9 @@
  * and make a different key (`escalation: never-by-retry`). Paying twice for the same
  * wrong answer is the failure this design is built to refuse.
  */
-import { mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
 
 import type { Narrated, NarrationFacts } from '../../shared/console-model.js';
 import type { SliceName } from '../../shared/console-events.js';
@@ -46,14 +47,30 @@ export interface NarrationEntry {
 
 const HOUR_MS = 3_600_000;
 
+/**
+ * How many narrations the cache keeps.
+ *
+ * There was no ceiling: one file per distinct fact record, kept for good, and `load()`
+ * reads every one of them at boot. The policy's own 300 calls an hour is a quarter of a
+ * million files a month, and the fleet this runs on is unattended. Twenty thousand is
+ * roughly three days of the cap and far more than a console shows in a session; past it
+ * the oldest go, because the sentences worth keeping are the ones on a board right now.
+ * (Found 2026-09-09 by a critique of this file.)
+ */
+export const CACHE_MAX_ENTRIES = 20_000;
+
 /** The disk half: one JSON file per key under `<FORGE_HOME>/narration`, written tmp then
  *  renamed so a half-written file is never read, and indexed in memory at construction. */
 export class NarrationStore {
   private readonly dir: string;
   private readonly index = new Map<string, NarrationEntry>();
+  private readonly max: number;
 
-  constructor(home: string = forgeHome()) {
+  /** `max` exists so a specimen can prove the eviction without writing twenty thousand
+   *  files; nothing in the server passes it. */
+  constructor(home: string = forgeHome(), max: number = CACHE_MAX_ENTRIES) {
     this.dir = join(home, 'narration');
+    this.max = max;
     mkdirSync(this.dir, { recursive: true });
     this.load();
   }
@@ -84,6 +101,29 @@ export class NarrationStore {
         // skipped on purpose, see above
       }
     }
+    this.evict();
+  }
+
+  /** Drops the oldest entries, on disk and in the index, until the cache is inside its
+   *  ceiling. `narratedAt` orders them; an entry without one is treated as the oldest
+   *  there is, because it is a record this version did not write. */
+  private evict(): void {
+    // A tenth of the ceiling is swept at once rather than one entry per write: a sort per
+    // `put` at the ceiling would be the console's slowest path forever after.
+    if (this.index.size <= this.max) return;
+    const target = Math.max(0, this.max - Math.ceil(this.max / 10));
+    const byAge = [...this.index.values()]
+      .sort((a, b) => (a.narratedAt ?? 0) - (b.narratedAt ?? 0));
+    const doomed = byAge.slice(0, this.index.size - target);
+    for (const entry of doomed) {
+      this.index.delete(entry.key);
+      try {
+        unlinkSync(join(this.dir, `${entry.key}.json`));
+      } catch {
+        // Already gone, or held open by another reader. The index no longer names it and
+        // the next boot will not either; a file left behind costs a byte count, not a fact.
+      }
+    }
   }
 
   get(key: string): NarrationEntry | undefined {
@@ -101,9 +141,15 @@ export class NarrationStore {
   put(entry: NarrationEntry): void {
     this.index.set(entry.key, entry);
     const final = join(this.dir, `${entry.key}.json`);
-    const tmp = `${final}.tmp`;
+    // The tmp name carries this process and one random word. It was `${final}.tmp` flat,
+    // and a FORGE_HOME has more than one writer -- the console server and
+    // `scripts/narrate-proof.ts` run against the same home on purpose -- so two writers of
+    // one key could interleave a write and a rename and publish half a file under a name
+    // the next boot trusts. (Found 2026-09-09 by a critique of this file.)
+    const tmp = `${final}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
     writeFileSync(tmp, JSON.stringify(entry, null, 2), 'utf8');
     renameSync(tmp, final);
+    this.evict();
   }
 }
 
@@ -138,12 +184,52 @@ export class Narrator {
   private readonly queue: NarrationRequest[] = [];
   private readonly pending = new Set<string>();
   private readonly callTimes: number[] = [];
+  /** Where the hour of calls is kept between processes. See `loadCallTimes`. */
+  private readonly callsPath: string;
   private running = 0;
   private lastCappedRowAt = 0;
   private idleWaiters: Array<() => void> = [];
 
   constructor(private readonly deps: NarratorDeps) {
     this.store = new NarrationStore(deps.home);
+    this.callsPath = join(deps.home ?? forgeHome(), 'narration-calls.json');
+    this.loadCallTimes();
+  }
+
+  /**
+   * The hour of calls, read back from disk.
+   *
+   * `maxCallsPerHour` is spend control, and it lived in this array alone -- so every
+   * restart handed the fleet a fresh 300. A flightdeck cutover restarts the console, and
+   * the console is the thing nobody is watching. The file is written beside the cache and
+   * holds nothing but timestamps; a file that will not parse is an empty hour, which is
+   * the same position this code was in before it existed. (Found 2026-09-09 by a critique
+   * of this file.)
+   */
+  private loadCallTimes(): void {
+    try {
+      const parsed = JSON.parse(readFileSync(this.callsPath, 'utf8')) as unknown;
+      if (!Array.isArray(parsed)) return;
+      const at = this.now();
+      for (const value of parsed) {
+        if (typeof value === 'number' && at - value < HOUR_MS) this.callTimes.push(value);
+      }
+      this.callTimes.sort((a, b) => a - b);
+    } catch {
+      // No file, or an unreadable one: an empty hour.
+    }
+  }
+
+  /** Written on every reservation, so a process that dies mid-hour still spent it. */
+  private saveCallTimes(): void {
+    try {
+      const tmp = `${this.callsPath}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+      writeFileSync(tmp, JSON.stringify(this.callTimes), 'utf8');
+      renameSync(tmp, this.callsPath);
+    } catch {
+      // A home that cannot be written is not a reason to stop answering reads. The cap
+      // then holds for this process only, which is where it started.
+    }
   }
 
   private now(): number {
@@ -184,6 +270,7 @@ export class Narrator {
       return false;
     }
     this.callTimes.push(at);
+    this.saveCallTimes();
     return true;
   }
 

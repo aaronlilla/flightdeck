@@ -32,7 +32,7 @@ function laneStub(id: string, state: LanesResponse['lanes'][number]['state']): L
     tokensPerMin: 0, fails: 0, hop: 0, hopStatus: 'live', observedAt: 5, verifiedAt: null,
     heart: false, since: 5, startedAt: 5, endedAt: null, question: null,
     pr: null, sandbox: null, blockedBy: null, runaway: false, needsAaron: null, title: null,
-    kind: 'manual', sourceUrl: null, plain: '', now: '', did: null, you: null, mergeable: null, attempts: 1, retiredAt: null,
+    kind: 'manual', sourceUrl: null, plain: '', now: '', did: null, didVerbatim: false, you: null, mergeable: null, attempts: 1, retiredAt: null,
     live: { alive: false, pid: null, lastEventAt: null, checkedAt: 0 },
   };
 }

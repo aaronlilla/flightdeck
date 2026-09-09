@@ -60,11 +60,25 @@ export function canonicalFacts(input: NarrationFacts): string {
   return JSON.stringify({ surface: input.surface, facts: sorted });
 }
 
-/** The cache key: sha256 of the canonical facts. The template is deliberately not in the
- *  key -- rewording a template must not throw away narrations of facts that did not
- *  change, and the checker is what keeps a narration honest, not the template's wording. */
+/**
+ * The cache key: sha256 of the canonical facts *and* the template the narration replaces.
+ *
+ * The template was deliberately left out at first, on the reasoning that rewording a
+ * template should not throw away narrations of facts that did not change. That reasoning
+ * was wrong, and a critique of this file found the hole: the facts are not a complete
+ * fingerprint of what a sentence says. `didFactsFor` (laneGlance.ts) puts the whole
+ * sentence in `template` and only the ids it can recognise in `facts`, and `railFactsFor`
+ * (thread-narrate.ts) leaves `facts` empty for any rail row with no clock time and no PR
+ * number -- so `run.started`, `run.paused` and `run.unblocked` all hash to one key. Served
+ * off the hash alone, whichever of them narrated first would answer for the others, and
+ * accepted entries survive restart, so the wrong sentence would be served for good.
+ *
+ * Keying on the template costs one call per reworded template, bounded by the hourly cap.
+ * Serving a sentence about a different event costs the operator's trust in every sentence.
+ */
 export function narrationKey(input: NarrationFacts): string {
-  return createHash('sha256').update(canonicalFacts(input)).digest('hex');
+  const material = [canonicalFacts(input), input.template, input.detailTemplate ?? ''].join('\n');
+  return createHash('sha256').update(material).digest('hex');
 }
 
 /**

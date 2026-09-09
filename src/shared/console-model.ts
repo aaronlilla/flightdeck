@@ -276,6 +276,11 @@ export interface Lane {
    *  `computeNext` in `summary.ts` builds its longer sentence from, so the two never
    *  disagree about what to do next. */
   did: string | null;
+  /** True when `did` is the agent's own words out of its `forge.report`, rather than a
+   *  sentence the server composed from the PR or the tool digest. The narrator rewrites
+   *  the composed ones and leaves this one alone, so the same report reads the same on
+   *  the tile as it does on the rail. */
+  didVerbatim: boolean;
   now: string;
   you: string | null;
   /** Whether this lane's own worker is alive right now, checked fresh every 2s
@@ -1006,7 +1011,18 @@ export interface Narrated {
   narratedAt: number | null;
 }
 
-export type NarrationFactValue = string | number | boolean | null;
+/**
+ * What a fact may be worth.
+ *
+ * `boolean` was here and is deliberately gone. A boolean fact is a fact the checker cannot
+ * hold on to: `true` yields no protected token (no digits, no word the key rules recognise)
+ * and `false` was skipped outright, so `draft: true` would let a narration say "ready for
+ * review" with nothing to refuse it. A caller with a yes/no fact writes the word it means
+ * -- `draft: 'draft'`, `mergeable: 'blocked'` -- which `WORD_KEY_RE` then protects
+ * verbatim. Narrowing the type is the enforcement: no builder can pass a boolean at all.
+ * (Found 2026-09-09 by a critique of `narrate-checker.ts`; no builder passed one.)
+ */
+export type NarrationFactValue = string | number | null;
 
 /**
  * Fact keys the narration cache may never be keyed on, refused at the type as well as at

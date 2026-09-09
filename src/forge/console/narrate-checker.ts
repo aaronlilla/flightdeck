@@ -43,15 +43,39 @@ const MACHINE_ID_PATTERNS: ReadonlyArray<{ name: string; re: RegExp }> = [
   { name: 'run id', re: /(?<![/-])\bqueue-brief-\d{10,}(?:-\d+)?\b/ },
   { name: 'journal id', re: /\bJ-[0-9a-f]{6,}\b/ },
   { name: 'commit sha', re: /\b[0-9a-f]{40}\b/ },
-  { name: 'ask or packet key', re: /(?<![/-])\b[0-9a-f]{16,39}\b/ },
-  { name: 'process id', re: /\bpid\s*[:=]?\s*\d+\b/i },
+  // The guards name the ids already reported above rather than the character `-`, which
+  // an ordinary id prefix uses too: `packet-a1b2...` used to slip past this rule entirely.
+  { name: 'ask or packet key', re: /(?<!\/)(?<!S-)(?<!J-)(?<!jira_)\b[0-9a-f]{16,39}\b/ },
+  { name: 'process id', re: /\b(?:pid|process(?:\s+id)?)\s*[:=]?\s*\d+\b/i },
 ];
 
 const URL_RE = /https?:\/\/\S+/g;
 const TICKET_RE = /(?<![A-Za-z])[A-Z]{2,6}-\d+(?!\d)/g;
 const PR_RE = /#\d+/g;
 const TIME_RE = /\b\d{1,2}:\d{2}\b/g;
-const NUMBER_RE = /(?<![\d.:\w-])\d+(?:\.\d+)?(?![\d.:])/g;
+/** A number written with thousands separators is one token. Masked before `NUMBER_RE`,
+ *  which would otherwise read `1,234` as `1` and `234` -- two half-facts, one of which a
+ *  wrong number still carries. The console writes token counts and ceilings this way. */
+const GROUPED_RE = /\b\d{1,3}(?:,\d{3})+\b/g;
+/** A calendar date is one token, not the year alone. Masked before `NUMBER_RE` runs, so
+ *  `2026-09-09` cannot be checked as `2026` with the month and the day free to change. */
+const DATE_RE = /\b\d{4}-\d{2}-\d{2}\b/g;
+/**
+ * A bare number.
+ *
+ * The lookbehind deliberately does not exclude a preceding `-`. It used to, and a
+ * critique of this file found what that cost: every shape where a digit run follows a
+ * hyphen lost all but its first group -- `10-20ms` was checked as `10` with the upper
+ * bound free to be anything, and `-5` was not checked at all. URLs, ticket keys, PR
+ * refs, clock times and dates are all masked out before this pattern runs, so a `-` in
+ * front of a digit here is a minus sign or a range separator, and both ends of a range
+ * are facts.
+ *
+ * The trailing guard is `(?!\.\d)` rather than `(?![\d.:])` for the same reason: a number
+ * that ends a sentence is followed by the sentence's own full stop, and the old guard
+ * threw the whole token away -- `the fee was 3.14.` protected nothing at all.
+ */
+const NUMBER_RE = /(?<![\d.:\w])\d+(?:\.\d+)*(?![\d:])(?!\.\d)/g;
 
 /** Fact keys whose string value is a person's or an owner's name, kept verbatim. */
 const NAME_KEY_RE = /^(owner|who|whoName|person|assignee|author|reviewer|holder)$/i;
@@ -64,14 +88,15 @@ function matchesOf(text: string, re: RegExp): string[] {
 
 /**
  * Every token in a piece of text that a narration is not allowed to invent or lose:
- * URLs, ticket keys, PR references, clock times and bare numbers. Extracted in that
- * order, each match masked out before the next pattern runs, so the `15` inside `09:15`
+ * URLs, ticket keys, PR references, clock times, dates, grouped numbers and bare
+ * numbers. Extracted in that order, each match masked out before the next pattern
+ * runs, so the `15` inside `09:15`
  * and the `96` inside `NWR-96` are never mistaken for numbers of their own.
  */
 export function protectedTokensIn(text: string): string[] {
   const found: string[] = [];
   let rest = text;
-  for (const re of [URL_RE, TICKET_RE, PR_RE, TIME_RE, NUMBER_RE]) {
+  for (const re of [URL_RE, TICKET_RE, PR_RE, TIME_RE, DATE_RE, GROUPED_RE, NUMBER_RE]) {
     for (const token of matchesOf(rest, re)) found.push(token);
     rest = rest.replace(new RegExp(re.source, re.flags.includes('g') ? re.flags : `${re.flags}g`), ' ');
   }
@@ -86,7 +111,7 @@ export function protectedTokensFor(input: NarrationFacts): string[] {
   const out: string[] = [];
   for (const key of Object.keys(facts).sort()) {
     const value = facts[key];
-    if (value === null || value === undefined || value === false) continue;
+    if (value === null || value === undefined) continue;
     const text = String(value);
     if (!text.trim()) continue;
     if (typeof value === 'number') {
@@ -96,6 +121,13 @@ export function protectedTokensFor(input: NarrationFacts): string[] {
     if (typeof value === 'string' && (NAME_KEY_RE.test(key) || WORD_KEY_RE.test(key))) {
       out.push(text);
     }
+    // A fact whose value is itself a machine id contributes no protected tokens. It is in
+    // the record so `raw` can carry it verbatim, and the `machine-id` rule forbids it
+    // reaching either sentence -- requiring its digits as well would be asking the
+    // narration for a token the next rule rejects it for using. (Found 2026-09-09, when
+    // widening `NUMBER_RE` made the digits inside `S-81782ab6...` visible for the first
+    // time and the parked specimen started demanding its own run id.)
+    if (MACHINE_ID_PATTERNS.some(({ re }) => re.test(text))) continue;
     for (const token of protectedTokensIn(text)) out.push(token);
   }
   return [...new Set(out)];

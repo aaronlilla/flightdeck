@@ -35,9 +35,30 @@ describe('narrationKey', () => {
     expect(narrationKey(moved)).not.toBe(narrationKey(queueFacts));
   });
 
-  it('does not fold the template into the key', () => {
+  it('hashes differently when the template says something else', () => {
     const reworded: NarrationFacts = { ...queueFacts, template: 'Fourth in line.' };
-    expect(narrationKey(reworded)).toBe(narrationKey(queueFacts));
+    expect(narrationKey(reworded)).not.toBe(narrationKey(queueFacts));
+  });
+
+  // The falsifier for the collision this key was changed to close: two rail rows that
+  // say different things, with no clock time and no PR number between them, so
+  // `railFactsFor` gives both an empty fact record. Keyed on facts alone they are one
+  // entry, and the first one narrated answers for the other for good.
+  it('separates two rail rows whose fact records are both empty', () => {
+    const started: NarrationFacts = { surface: 'rail.event', facts: {}, template: 'The run started.' };
+    const paused: NarrationFacts = { surface: 'rail.event', facts: {}, template: 'The run paused.' };
+    expect(narrationKey(started)).not.toBe(narrationKey(paused));
+  });
+
+  it('separates two lane sentences that differ only in the words the agent reported', () => {
+    const base: NarrationFacts = { surface: 'lane.did', facts: { lane: 'NWR-96', state: 'running' }, template: 'Wrote the store.' };
+    const later: NarrationFacts = { ...base, template: 'Wrote the checker.' };
+    expect(narrationKey(later)).not.toBe(narrationKey(base));
+  });
+
+  it('separates two narrations whose only difference is the fuller template', () => {
+    const short: NarrationFacts = { ...queueFacts, detailTemplate: 'Fourth, and nothing ahead of it waits on you.' };
+    expect(narrationKey(short)).not.toBe(narrationKey(queueFacts));
   });
 });
 

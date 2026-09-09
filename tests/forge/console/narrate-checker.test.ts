@@ -43,6 +43,58 @@ describe('protectedTokensIn', () => {
   });
 });
 
+// The holes a critique of this file found on 2026-09-09. Each one is a shape the console
+// actually writes, where the old patterns kept one digit group and let the rest change.
+describe('protectedTokensIn holds the whole of a number', () => {
+  it('keeps a date whole rather than its year alone', () => {
+    expect(protectedTokensIn('resumed on 2026-09-09 at noon')).toEqual(['2026-09-09']);
+  });
+
+  it('keeps both ends of a range', () => {
+    expect(protectedTokensIn('latency held between 10-20ms')).toEqual(['10', '20']);
+  });
+
+  it('keeps a decimal that ends a sentence', () => {
+    expect(protectedTokensIn('the fee was 3.14.')).toEqual(['3.14']);
+  });
+
+  it('keeps a grouped number whole rather than its thousands and its remainder', () => {
+    // `1,234` used to read as `1` and `234`, so a narration saying `1,999` carried `1`
+    // and was refused for the wrong reason, and one saying `9,234` carried `234` and was
+    // accepted for the wrong reason. Both halves are the same fact; the token is the fact.
+    expect(protectedTokensIn('compacted at 1,234 tokens')).toEqual(['1,234']);
+    expect(protectedTokensIn('200,000 of 2,000,000')).toEqual(['200,000', '2,000,000']);
+  });
+
+  it('still keeps the digits inside a time or a ticket key out of it', () => {
+    expect(protectedTokensIn('NWR-96 at 09:15')).toEqual(['NWR-96', '09:15']);
+  });
+});
+
+describe('the leaked-id rules', () => {
+  const factsWith = (template: string): NarrationFacts => ({
+    surface: 'lane.did', facts: { lane: 'NWR-96' }, template,
+  });
+
+  it('refuses a hyphen-prefixed packet key, which a bare-hex rule used to miss', () => {
+    const verdict = checkNarration(factsWith('NWR-96 is waiting on the packet.'), {
+      glance: 'NWR-96 is waiting on packet-a1b2c3d4e5f67890123.',
+      detail: 'NWR-96 is waiting on packet-a1b2c3d4e5f67890123 to come back.',
+    });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.rule).toBe('machine-id');
+  });
+
+  it('refuses a process id however it is written', () => {
+    const verdict = checkNarration(factsWith('NWR-96 is running.'), {
+      glance: 'NWR-96 is running under process id 88213.',
+      detail: 'NWR-96 is running under process id 88213 right now.',
+    });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.rule).toBe('machine-id');
+  });
+});
+
 describe('rejections, with the offending token named', () => {
   it('rejects a dropped PR number', () => {
     const verdict = checkNarration(merged, {
@@ -95,6 +147,25 @@ describe('rejections, with the offending token named', () => {
     expect(verdict.token).toBe('S-81782ab668cbbbb3');
     expect(verdict.register).toBe('glance');
     expect(verdict.rule).toBe('machine-id');
+  });
+
+  it("rejects a glance that dropped a token its own template carries", () => {
+    // Rule 4, which had no specimen until a critique of this file said so. The facts here
+    // carry no `pr`, so rules 2 and 3 have nothing to say: the only thing standing between
+    // the operator and a lost PR number is the template's own sentence.
+    const composed: NarrationFacts = {
+      surface: 'lane.you',
+      facts: { lane: 'NWR-96' },
+      template: 'Review PR #412 and merge it.',
+    };
+    const verdict = checkNarration(composed, {
+      glance: 'Review the pull request and merge it.',
+      detail: 'NWR-96 is waiting on your review before it can merge.',
+    });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.token).toBe('#412');
+    expect(verdict.register).toBe('glance');
+    expect(verdict.rule).toBe('missing-token');
   });
 
   it('rejects an empty register', () => {

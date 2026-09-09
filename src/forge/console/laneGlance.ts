@@ -70,22 +70,41 @@ function prDidSentence(pr: LanePr): string {
   return `Opened ${label} #${pr.no}${title}${stats}`;
 }
 
+/** Where a `did` sentence came from. `report` is the agent's own free text; the other
+ *  two are composed here out of the lane's own machine-readable rows. */
+export type DidSource = 'report' | 'pr' | 'digest';
+
 /**
  * `did`: one sentence on what the agent did, sourced in order from the newest
  * `forge.report`'s own `done` field, the lane's own PR, a whole-run tool digest, or
  * `null`. Every source passes through `stripMachineIds` and `shortenShas`.
+ *
+ * The source comes back with the sentence because it decides who is allowed to rewrite
+ * it. A `report` sentence is the agent's own account of its work, and the rail already
+ * treats it that way -- `forge.report` renders as a `reply`, which is not in
+ * `thread-narrate.ts`'s `NARRATED_TYPES`, so the rail shows the agent's words. Without
+ * the source the lane tile narrated the same substring, and one report reached the
+ * operator in two voices, one of them the model's. `pr` and `digest` are sentences this
+ * file composed out of counts and ids, so the narrator may rewrite those.
  */
-export function computeDid(runEvents: ForgeEvent[], pr: LanePr | null): string | null {
+export function didFrom(
+  runEvents: ForgeEvent[], pr: LanePr | null,
+): { text: string | null; source: DidSource | null } {
   for (let index = runEvents.length - 1; index >= 0; index -= 1) {
     const row = runEvents[index]!;
     if (row.event === 'forge.report' && typeof row.done === 'string' && row.done.trim()) {
-      return clean(firstSentence(row.done));
+      return { text: clean(firstSentence(row.done)), source: 'report' };
     }
   }
-  if (pr) return clean(prDidSentence(pr));
+  if (pr) return { text: clean(prDidSentence(pr)), source: 'pr' };
   const digest = toolDigest(runEvents);
-  if (digest) return clean(digest);
-  return null;
+  if (digest) return { text: clean(digest), source: 'digest' };
+  return { text: null, source: null };
+}
+
+/** The sentence alone, for every caller that does not have to decide who may rewrite it. */
+export function computeDid(runEvents: ForgeEvent[], pr: LanePr | null): string | null {
+  return didFrom(runEvents, pr).text;
 }
 
 /**

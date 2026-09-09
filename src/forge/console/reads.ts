@@ -44,7 +44,8 @@ import { readRetired, retiredPath } from './retire.js';
 import { plainFactsFor, plainForQueueItem, plainStatus, prMergedSentence, type QueueVerdict } from './plain.js';
 import { Binder } from './narrate-bind.js';
 import type { Narrator } from './narrate-store.js';
-import { computeYou, didFactsFor, youFactsFor } from './laneGlance.js';
+import { computeYou, youFactsFor } from './laneGlance.js';
+import { narrateLaneFields } from './lane-narrate.js';
 import { readAttestationAtPath } from '../council/attest.js';
 import {
   computeBranchPr, computeQueuePr, computeRunPr, PR_CACHE_TTL_MS, prCachePath, readPrCache, writePrCache,
@@ -739,43 +740,8 @@ export class ConsoleReads {
     return patched;
   }
 
-  /**
-   * The three board-tile sentences, through the narrator.
-   *
-   * `did`, `now` and `you` keep their own string type -- what changes is who wrote the
-   * string, which is now always the narrator's `glance` register. The other two
-   * registers go into the lane's own `narration` bag, so the sheet can show `detail`
-   * and `?verbose=1` can show `raw` without either one being able to reach the tile.
-   *
-   * A lane parked on the operator's own question, and a `you` line that quotes it, go
-   * through `Binder.verbatim`: no model call, no cache key, three identical registers.
-   */
   private narrateLane(lane: Lane): void {
-    const bag: NarrationBag = {};
-    const binder = new Binder(this.narrator, 'lanes');
-    const ref = lane.ticket ?? lane.id;
-
-    const did = binder.field(bag, 'did', didFactsFor(lane, lane.did), ref);
-    if (did !== null) lane.did = did;
-
-    const plainFacts = plainFactsFor(lane, lane.plain, { now: Date.now() });
-    const now = plainFacts
-      ? binder.field(bag, 'now', plainFacts, ref)
-      : binder.verbatim(bag, 'now', lane.plain);
-    if (now !== null) {
-      lane.now = now;
-      // The brief's own alias: `plain` is `now.glance` and nothing else, so no consumer
-      // can end up reading a sentence the narrator never wrote.
-      lane.plain = now;
-    }
-
-    const youFacts = youFactsFor(lane, lane.you);
-    const you = youFacts
-      ? binder.field(bag, 'you', youFacts, ref)
-      : binder.verbatim(bag, 'you', lane.you);
-    if (you !== null) lane.you = you;
-
-    if (Object.keys(bag).length > 0) lane.narration = bag;
+    narrateLaneFields(lane, this.narrator);
   }
 
   /**
