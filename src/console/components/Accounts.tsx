@@ -198,7 +198,7 @@ export function Accounts({ accounts, now, onChanged, pollMs = DEFAULT_POLL_MS }:
             key={account.id} data-testid={`account-${account.id}`}
             style={{
               position: 'relative', border: `1px solid ${limited ? 'var(--warn)' : 'var(--line)'}`, padding: '14px 18px',
-              display: 'grid', gridTemplateColumns: '170px minmax(0,1fr) 110px auto', gap: 18, alignItems: 'center',
+              display: 'grid', gridTemplateColumns: '240px minmax(0,1fr) 110px auto', gap: 18, alignItems: 'center',
               background: limited ? 'var(--warnTint)' : 'transparent',
             }}
           >
