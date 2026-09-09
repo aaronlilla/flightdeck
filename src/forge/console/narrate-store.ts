@@ -21,7 +21,7 @@ import type { SliceName } from '../../shared/console-events.js';
 import type { Reasoner } from '../contracts.js';
 import type { Journal } from '../journal.js';
 import { forgeHome } from '../paths.js';
-import { maxCallsPerHourFor, modelFor } from '../policy.js';
+import { classFor, maxCallsPerHourFor, modelFor } from '../policy.js';
 
 import {
   buildNarrationPrompt, narratedFrom, narrationKey, parseNarration, rawFor, templateNarration,
@@ -38,6 +38,10 @@ export interface NarrationEntry {
   narratedAt: number;
   model: string;
   verdict: NarrationVerdict;
+  /** The call never came back: a dropped session, a timeout, an account limit, a reply
+   *  that was not a narration. Held so the same key is not re-bought on the very next
+   *  poll, and dropped on restart, because what failed was the trip and not the facts. */
+  transport?: true;
 }
 
 const HOUR_MS = 3_600_000;
@@ -69,7 +73,13 @@ export class NarrationStore {
       if (!name.endsWith('.json')) continue;
       try {
         const entry = JSON.parse(readFileSync(join(this.dir, name), 'utf8')) as NarrationEntry;
-        if (entry && typeof entry.key === 'string') this.index.set(entry.key, entry);
+        if (!entry || typeof entry.key !== 'string') continue;
+        // A transport failure is forgotten here on purpose. Inside one process it stands,
+        // so a model that is down or an account past its limit cannot be re-bought by
+        // every board every few seconds; across a restart it is gone, so a whole fleet's
+        // sentences are not frozen on their templates for good by one bad ten minutes.
+        if (entry.transport) continue;
+        this.index.set(entry.key, entry);
       } catch {
         // skipped on purpose, see above
       }
@@ -143,7 +153,17 @@ export class Narrator {
   /** `FORGE_NARRATE=off` disables the model entirely: templates everywhere, the cache
    *  untouched and still served, not a single call made. */
   private enabled(): boolean {
-    return (process.env['FORGE_NARRATE'] ?? '').toLowerCase() !== 'off';
+    if ((process.env['FORGE_NARRATE'] ?? '').toLowerCase() === 'off') return false;
+    // A policy file that declares no `narrate` class is a fleet that has not bought the
+    // narration layer. That is a configuration, not a fault: every surface serves its own
+    // template in all three registers and nothing is queued, rather than one dead call
+    // and one journal row per key.
+    try {
+      classFor(CLASS_NAME, this.deps.policyPath);
+    } catch {
+      return false;
+    }
+    return true;
   }
 
   /** Whether a call may be reserved now, counting reservations rather than completions:
@@ -220,8 +240,11 @@ export class Narrator {
 
   private async work(input: NarrationRequest): Promise<void> {
     const key = narrationKey(input);
-    const model = modelFor(CLASS_NAME, this.deps.policyPath);
+    // Inside the try on purpose: a throw out here is an unhandled rejection, because
+    // nothing awaits `work`.
+    let model = CLASS_NAME;
     try {
+      model = modelFor(CLASS_NAME, this.deps.policyPath);
       const prompt = buildNarrationPrompt(input, protectedTokensFor(input));
       const reply = await this.deps.reasoner.call({ className: CLASS_NAME, prompt });
       const parsed = parseNarration(reply.text);
@@ -252,11 +275,34 @@ export class Narrator {
       }
     } catch (error) {
       // A failed call is journaled by the reasoner itself (`reasoner.call` with
-      // `parsed: false`, or `reasoner.timeout`). Nothing is cached, because the failure
-      // says nothing about the facts -- but nothing is retried on this pass either.
+      // `parsed: false`, or `reasoner.timeout`) and again here by surface. The entry is
+      // cached as a refusal, not left unknown: an unknown key is re-queued by the very
+      // next poll, so a model that is down for a minute buys a fresh call from every
+      // board in the fleet every few seconds, which is the one failure mode a narration
+      // layer must not have (`escalation: never-by-retry`).
+      //
+      // Freezing the sentence at its template is safe because the key is the fact record.
+      // The moment anything about the lane moves -- a check lands, the state changes, the
+      // queue shifts -- the facts differ, the key differs, and a new call is made. Only a
+      // record that never changes again keeps its template, and a row nothing will ever
+      // touch again is exactly the row worth the least.
+      const reason = error instanceof Error ? error.message : String(error);
+      this.store.put({
+        key,
+        input: { surface: input.surface, facts: input.facts, template: input.template, ...(input.detailTemplate ? { detailTemplate: input.detailTemplate } : {}) },
+        glance: input.template,
+        detail: input.detailTemplate ?? input.template,
+        narratedAt: this.now(),
+        model,
+        verdict: {
+          ok: false, token: null, register: null, rule: 'empty',
+          reason: `the call did not complete: ${reason}`,
+        },
+        transport: true,
+      });
       this.deps.journal.append({
         event: 'narration.failed', actor: 'narrator', class: CLASS_NAME,
-        surface: input.surface, error: error instanceof Error ? error.message : String(error),
+        surface: input.surface, error: reason, cachedTemplate: true,
       });
     } finally {
       this.pending.delete(key);

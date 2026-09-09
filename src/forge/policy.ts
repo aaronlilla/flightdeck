@@ -187,7 +187,7 @@ export function classNames(path?: string): string[] {
 /** One class's full record. A name nobody declared throws rather than falling back. */
 export function classFor(name: string, path?: string): ClassSpec {
   const spec = loadPolicy(path).classes[name];
-  if (!spec) throw new Error(`no model class named ${name} in ${policyPath()}`);
+  if (!spec) throw new Error(`no model class named ${name} in ${path ?? policyPath()}`);
   return spec;
 }
 

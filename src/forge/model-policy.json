@@ -57,6 +57,17 @@
     "the same diff with a whole subprocess and its own tool calls -- it earns a real",
     "budget, not the full 900s a heavier lane needs for more work per call."
   ],
+  "_narrate_timeout_comment": [
+    "R-23: narrate's timeoutMs is 180000ms, three times the fleet default, and that is a",
+    "generous number on purpose. Nothing waits on a narration -- every route answers from",
+    "the template the moment it is asked, and the sentence lands on a later poll -- so a",
+    "slow call costs a slower disclosure and nothing else. A tight one costs much more:",
+    "since a call that fails is cached as a refusal (never-by-retry, so a model that is",
+    "down cannot be re-bought by every board every few seconds), a call killed at 60s",
+    "while the box was busy freezes that fact record on its template for good. The live",
+    "proof on 2026-09-09 lost five of twenty specimens to exactly that. Slow is free here;",
+    "premature is permanent."
+  ],
   "classes": {
     "triage": {"model": "sonnet", "effort": "low", "maxContext": 60000, "maxTurns": 20, "provider": "claude"},
     "plan": {"model": "fable", "effort": "high", "maxContext": 200000, "maxTurns": 60, "provider": "codex"},
@@ -68,7 +79,7 @@
     "audit-judge": {"model": "opus", "effort": "high", "maxContext": 150000, "maxTurns": 30, "provider": "codex"},
     "research": {"model": "sonnet", "effort": "medium", "maxContext": 150000, "maxTurns": 40, "provider": "claude"},
     "evaluate": {"model": "haiku", "effort": "low", "maxContext": 30000, "maxTurns": 6, "provider": "claude"},
-    "narrate": {"model": "haiku", "effort": "low", "maxContext": 20000, "maxTurns": 1, "provider": "claude", "timeoutMs": 60000, "maxCallsPerHour": 300},
+    "narrate": {"model": "haiku", "effort": "low", "maxContext": 20000, "maxTurns": 1, "provider": "claude", "timeoutMs": 180000, "maxCallsPerHour": 300},
     "sweep": {"model": "sonnet", "effort": "low", "maxContext": 80000, "maxTurns": 20, "provider": "claude"}
   },
   "_governor_comment": [

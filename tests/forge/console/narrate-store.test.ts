@@ -241,6 +241,98 @@ describe('a rejected narration is not paid for twice', () => {
   });
 });
 
+/** A fake `query` that dies mid-session the first `failures` times it is opened, then
+ *  answers normally. A dropped socket, a killed subprocess, a model that 500s. */
+function failingQuery(failures: number, reply: string) {
+  let opened = 0;
+  const fn = ((params: { prompt: string | AsyncIterable<unknown>; options?: Options }) => {
+    opened += 1;
+    const failThis = opened <= failures;
+    const promptIter = params.prompt as AsyncIterable<unknown>;
+    async function* generate() {
+      yield {
+        type: 'system', subtype: 'init', session_id: 'narrate-fail',
+        model: params.options?.model ?? '', cwd: params.options?.cwd ?? '',
+        tools: [], slash_commands: [],
+      };
+      if (failThis) throw new Error('the model session dropped');
+      for await (const _pushed of promptIter) {
+        yield {
+          type: 'assistant', session_id: 'narrate-fail',
+          message: {
+            model: params.options?.model ?? '',
+            content: [{ type: 'text', text: reply }],
+            usage: {
+              input_tokens: 10, cache_read_input_tokens: 0,
+              cache_creation_input_tokens: 0, output_tokens: 5,
+            },
+          },
+        };
+        yield { type: 'result', subtype: 'success', is_error: false, duration_ms: 1, total_cost_usd: 0 };
+        return;
+      }
+    }
+    return generate() as unknown as ReturnType<QueryFn>;
+  }) as QueryFn;
+  return { fn, opened: () => opened };
+}
+
+describe('a call that failed in transport is not paid for twice', () => {
+  it('serves the template, journals the failure, and makes zero calls on the next poll', async () => {
+    const dropped = failingQuery(1, acceptedReply);
+    const { narrator, journalPath } = rigWith(dropped.fn);
+    narrator.get(merged);
+    await narrator.idle();
+
+    const failed = rows(journalPath).filter((row) => row['event'] === 'narration.failed');
+    expect(failed).toHaveLength(1);
+    const before = narrateCalls(journalPath);
+    expect(before).toBe(1);
+
+    const served = narrator.get(merged);
+    expect(served.glance).toBe(merged.template);
+    expect(served.detail).toBe(merged.template);
+    expect(served.narratedAt).toBeNull();
+    await narrator.idle();
+    expect(narrateCalls(journalPath)).toBe(before);
+    expect(dropped.opened()).toBe(1);
+  });
+
+  it('lets a restart try once more, so a bad ten minutes is not a permanent template', async () => {
+    const dropped = failingQuery(1, acceptedReply);
+    const first = rigWith(dropped.fn);
+    first.narrator.get(merged);
+    await first.narrator.idle();
+    expect(narrateCalls(first.journalPath)).toBe(1);
+
+    const restarted = rigWith(dropped.fn);
+    expect(restarted.narrator.cacheSize()).toBe(0);
+    expect(restarted.narrator.get(merged).narratedAt).toBeNull();
+    await restarted.narrator.idle();
+    expect(narrateCalls(restarted.journalPath)).toBe(2);
+    // Second time the call came back, so the sentence is there and stays there.
+    const polled = restarted.narrator.get(merged);
+    expect(polled.glance).toBe('Checks passed and the council approved PR #412.');
+    expect(polled.narratedAt).not.toBeNull();
+  });
+
+  it('does not re-try a narration the checker refused, which is about the facts', async () => {
+    const leaked = JSON.stringify({
+      glance: 'Run S-81782ab668cbbbb3 merged PR #412.',
+      detail: 'Every check on PR #412 passed and the council approved it, so NWR-96 is done and ready to merge.',
+    });
+    const first = rigWith(scriptedQuery(() => leaked).fn);
+    first.narrator.get(merged);
+    await first.narrator.idle();
+
+    const restarted = rigWith(scriptedQuery(() => leaked).fn);
+    expect(restarted.narrator.cacheSize()).toBe(1);
+    expect(restarted.narrator.get(merged).glance).toBe(merged.template);
+    await restarted.narrator.idle();
+    expect(narrateCalls(restarted.journalPath)).toBe(1);
+  });
+});
+
 describe('the hourly cap', () => {
   it('serves the template for the 301st distinct key in an hour and journals it once', async () => {
     const at = Date.UTC(2026, 8, 9, 9, 0, 0);
@@ -285,6 +377,27 @@ describe('person-authored text', () => {
     expect(narrated.detail).toBe(words);
     expect(narrated.raw).toBe(words);
     expect(narrated.narratedAt).toBeNull();
+  });
+});
+
+describe('a policy that declares no narrate class', () => {
+  it('narrates nothing, calls nothing and throws nothing', async () => {
+    const bare = join(home, 'bare-policy.json');
+    writeFileSync(bare, JSON.stringify({ version: 1, classes: {} }), 'utf8');
+    const journalPath = join(home, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    const hang = neverResolvingQuery();
+    const narrator = new Narrator({
+      reasoner: reasonerFor('claude', { journal, queryFn: hang.fn, cwd: home, policyPath: bare }),
+      journal, home, policyPath: bare,
+    });
+    const narrated = narrator.get(merged);
+    expect(narrated.glance).toBe(merged.template);
+    expect(narrated.narratedAt).toBeNull();
+    await narrator.idle();
+    expect(hang.opened()).toBe(0);
+    expect(narrateCalls(journalPath)).toBe(0);
+    expect(narrator.cacheSize()).toBe(0);
   });
 });
 

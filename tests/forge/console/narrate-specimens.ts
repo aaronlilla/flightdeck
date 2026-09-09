@@ -42,8 +42,10 @@ export const SPECIMENS: NarrationFacts[] = [
   { surface: 'queue.startsIn', facts: { state: 'queued' },
     template: 'Starts when a slot frees up.' },
   // blockers.ts#blockerFactsFor
-  { surface: 'blocker.title', facts: { state: 'open' },
-    template: 'Sentry is not connecting.' },
+  // A real title never says its own state word, so `blockerFactsFor` emits no `state`
+  // for one; what it does carry is the PR number and the person the merge waits for.
+  { surface: 'blocker.title', facts: { pr: 412, who: 'Joe' },
+    template: 'Joe needs to merge PR #412 on aaronlilla/flightdeck.' },
   { surface: 'blocker.detail', facts: { pr: 501 },
     template: 'PR #501 on aaronlilla/flightdeck has failing checks.' },
   { surface: 'blocker.howToResolve', facts: { who: 'Joe' },
