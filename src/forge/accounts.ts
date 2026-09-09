@@ -12,8 +12,10 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
+import type { AccountUsage } from './accounts-usage.js';
+import { isLimited } from './accounts-usage.js';
 import type { ForgeEvent } from './journal.js';
-import { forgeHome } from './paths.js';
+import { fleetConfigDir, forgeHome } from './paths.js';
 
 export interface AccountRecord {
   id: string;
@@ -90,4 +92,41 @@ export function liveRunsByAccount(events: ForgeEvent[], liveGoals: string[]): Re
     counts[account] = (counts[account] ?? 0) + 1;
   }
   return counts;
+}
+
+/**
+ * The account a new session should launch under: the least-busy account that is not
+ * inside a rate limit right now, ties broken by the order they were connected.
+ * `undefined` when the registry is empty or every account is limited -- the caller then
+ * falls back to the fleet login, which is what every session used before accounts
+ * existed.
+ *
+ * This is deliberately not `governor.ts#accountFor`: that one ranks on a `utilization`
+ * fraction nothing populates, and consults a `WindowGate` rebuilt empty on every
+ * launch, so it could never see a limit another process hit. This reads the limit state
+ * from disk, which is the whole point of the failover.
+ */
+export function pickAccount(
+  accounts: AccountRecord[], usage: AccountUsage, live: Record<string, number>, now: number,
+): AccountRecord | undefined {
+  const usable = accounts.filter((account) => !isLimited(account.id, now, usage));
+  if (usable.length === 0) return undefined;
+  return usable.reduce((best, account) => (
+    (live[account.id] ?? 0) < (live[best.id] ?? 0) ? account : best
+  ), usable[0]!);
+}
+
+/**
+ * The config directory a session should authenticate through: the picked account's, or
+ * the fleet login when no account is registered or all of them are limited. Every
+ * Claude-model call site goes through this, so adding an account in the console changes
+ * what the next session runs under.
+ */
+export function configDirForSession(
+  accounts: AccountRecord[], usage: AccountUsage, live: Record<string, number>, now: number,
+  existsConfigDir?: (path: string) => boolean,
+): { configDir: string; accountId: string | null } {
+  const picked = pickAccount(accounts, usage, live, now);
+  if (picked) return { configDir: picked.configDir, accountId: picked.id };
+  return { configDir: fleetConfigDir(existsConfigDir), accountId: null };
 }

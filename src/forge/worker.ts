@@ -22,6 +22,7 @@ import { parseShellPrefix } from './chain-env.js';
 import type { Inbox } from './inbox.js';
 import { asRunId, type Actuator } from './contracts.js';
 import { checkConformance, isRateLimitMessage, WindowGate, type Account } from './governor.js';
+import { recordRateLimit } from './accounts-usage.js';
 import { clearParkRecord } from './parkrecord.js';
 
 /**
@@ -429,6 +430,10 @@ export class Worker {
           const resumeAt = isRateLimitMessage(message)
             ? this.windowGate.onRateLimitEvent(accountId ?? className, 'five_hour', message, Date.now()).resumeAt
             : undefined;
+          // `WindowGate` is memory only and every launch builds a fresh one, so the
+          // limit is also written to disk: that record is what stops the next session
+          // choosing this same exhausted account (`accounts.ts#pickAccount`).
+          if (resumeAt !== undefined && accountId) recordRateLimit(accountId, 'five_hour', resumeAt, Date.now());
           journal.append({
             event: 'run.paused', run: runName, actor: 'runner', reason: message,
             ...(resumeAt !== undefined ? { resumeAt } : {}),

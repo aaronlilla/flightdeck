@@ -488,6 +488,22 @@ export interface AccountItem {
   connectedAt: number;
   /** Runs currently attributed to this account, re-derived fresh on every request. */
   liveRuns: number;
+  /** The plan the account is on, off `claude auth status --json`'s `subscriptionType`
+   *  (`max`, `pro`, `team`). Absent until a probe has answered for it. */
+  plan?: string;
+  /** When a rate limit this account hit lifts, epoch ms. Absent when no limit is on
+   *  record or the recorded one has already passed -- never a guessed figure.
+   *
+   *  There is no percentage-used field here on purpose. The design draws a headroom
+   *  bar, and nothing in the Claude SDK reports how much of an account's five-hour or
+   *  seven-day window is gone; the only account-level signal is the reset time carried
+   *  by a rate-limit error. The console shows what it can prove and the missing source
+   *  is a roadmap item rather than an invented number. */
+  limitedUntil?: number;
+  /** Which window the recorded limit was on. */
+  limitedWindow?: 'five_hour' | 'seven_day';
+  /** Whether this account is the one the Conductor and new runs launch under. */
+  selected?: boolean;
 }
 
 export interface AccountsResponse {

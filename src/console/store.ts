@@ -6,6 +6,7 @@
 import { createContext, useContext, useReducer } from 'react';
 import type { Dispatch } from 'react';
 import type {
+  AccountItem,
   BlockersResponse,
   Caps,
   Feed,
@@ -83,6 +84,7 @@ export interface State {
   thread: Message[];
   journal: JournalEntry[];
   integrations: Integration[];
+  accounts: AccountItem[];
   caps: Caps | null;
   proposals: ProposalsResponse | null;
   queue: QueueItem[];
@@ -159,6 +161,7 @@ export type Action =
   | { type: 'action-clear'; key: string }
   | { type: 'journal'; journal: JournalEntry[] }
   | { type: 'integrations'; integrations: Integration[] }
+  | { type: 'accounts'; accounts: AccountItem[] }
   | { type: 'caps'; caps: Caps }
   | { type: 'proposals'; proposals: ProposalsResponse }
   | { type: 'queue'; items: QueueItem[]; paused: boolean; maxInFlight: number; pauseReason?: string | null }
@@ -219,6 +222,7 @@ export function initialState(): State {
     thread: [],
     journal: [],
     integrations: [],
+    accounts: [],
     caps: null,
     proposals: null,
     queue: [],
@@ -312,6 +316,8 @@ export function reducer(state: State, action: Action): State {
       return { ...state, journal: action.journal };
     case 'integrations':
       return { ...state, integrations: action.integrations };
+    case 'accounts':
+      return { ...state, accounts: action.accounts };
     case 'caps':
       return { ...state, caps: action.caps };
     case 'proposals':
