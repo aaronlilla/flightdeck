@@ -7,7 +7,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
-  briefIdFor, buildBacklogJql, queueBackendHandoff, queueCommentOnPr, queueMergeAllowed, queueProductionWorkflowExists,
+  briefIdFor, buildBacklogJql, buildWatcherJql, queueBackendHandoff, queueCommentOnPr, queueMergeAllowed, queueProductionWorkflowExists,
 } from '../../src/forge/queue-wire.ts';
 import { readChainEnv } from '../../src/forge/chain-env.ts';
 
@@ -61,6 +61,20 @@ describe('buildBacklogJql: A.5', () => {
   it('escapes an embedded double quote so the JQL stays well-formed', () => {
     const jql = buildBacklogJql('says "urgent"', { FORGE_BACKLOG_PROJECT: 'BBZ' } as NodeJS.ProcessEnv);
     expect(jql).toBe('project = BBZ AND statusCategory != Done AND text ~ "says \\"urgent\\""');
+  });
+});
+
+describe('buildWatcherJql: R-11', () => {
+  it('scopes to the project, the current assignee, and open tickets not already in review or QA', () => {
+    const jql = buildWatcherJql({ FORGE_BACKLOG_PROJECT: 'BBZ' } as NodeJS.ProcessEnv);
+    expect(jql).toBe(
+      'project = BBZ AND assignee = currentUser() AND statusCategory != Done '
+      + 'AND status not in ("In Review", "QA") ORDER BY updated ASC',
+    );
+  });
+
+  it('refuses honestly when FORGE_BACKLOG_PROJECT is unset, rather than watching every project', () => {
+    expect(() => buildWatcherJql({} as NodeJS.ProcessEnv)).toThrow(/FORGE_BACKLOG_PROJECT/);
   });
 });
 

@@ -28,7 +28,11 @@ import { appendRoutinesSection, loadRoutines, matchRoutines } from './self/routi
 import { routinesDir } from './paths.js';
 import { createJiraFeed, createJiraWriteClient, type JiraConfig } from './intake/jira.js';
 import { runQueueHandoff } from './intake/queueHandoff.js';
+import { runQueueIntakeOnce, type QueueIntakeResult } from './intake/jiraWatcher.js';
 import type { PollItemDetail } from './intake/poller.js';
+import type { QueueStore } from './intake/queueStore.js';
+import type { WatermarkStore } from './intake/once.js';
+import { readWatermark, writeWatermark } from './intake/watermarkStore.js';
 import { planFromPacket } from './intake/planner.js';
 import { resolvePlanProvider } from './intake/reasoner.js';
 import { parseRepoMap, routeRepo, repoFromBrief, ticketFromBrief } from './intake/repoRoute.js';
@@ -72,6 +76,70 @@ export function buildBacklogJql(filter: string, env: NodeJS.ProcessEnv = process
   if (!project) throw new Error('backlog: missing FORGE_BACKLOG_PROJECT');
   const escaped = filter.replace(/"/g, '\\"');
   return `project = ${project} AND statusCategory != Done AND text ~ "${escaped}"`;
+}
+
+/** R-11: the watcher's own JQL, "mine, open, not already with a reviewer", for
+ *  `queueIntake`'s poll below. Same honesty rule as `buildBacklogJql`: refuses naming
+ *  the missing variable rather than resolving to an unscoped search. Ordered
+ *  oldest-updated-first so a poll that only reads part of a large result set still
+ *  reaches the tickets most overdue for the watcher's attention first. */
+export function buildWatcherJql(env: NodeJS.ProcessEnv = process.env): string {
+  const project = env['FORGE_BACKLOG_PROJECT'];
+  if (!project) throw new Error('watcher: missing FORGE_BACKLOG_PROJECT');
+  return `project = ${project} AND assignee = currentUser() AND statusCategory != Done `
+    + 'AND status not in ("In Review", "QA") ORDER BY updated ASC';
+}
+
+/** R-11: a watermark file of its own, distinct from `chainIntake`'s
+ *  (`chain-wire.ts`). That poll's JQL is unscoped (whatever `FORGE_JIRA_JQL` names, or
+ *  the feed's own default); this one is scoped to `buildWatcherJql` -- the operator's
+ *  own assignment. Sharing one watermark file between two different result sets would
+ *  corrupt whichever poll ran second, reading its own new tickets as already seen.
+ *  `createJiraFeed` hardcodes `feed.name` to `'jira'`, so `runIntakeOnce` always calls
+ *  `get`/`set` with that fixed string; this store ignores it and always reads and
+ *  writes a separate, fixed file (`jira-queue`) instead. */
+function watcherWatermarkStore(): WatermarkStore {
+  return {
+    get: () => readWatermark('jira-queue' as PollSourceName),
+    set: (_source, mark) => writeWatermark('jira-queue', mark),
+  };
+}
+
+/**
+ * R-11: one poll of the watcher's own JQL, feeding every new packet straight into the
+ * `QueueStore` -- the same `addTicketItem` path `POST /queue {source: ticket}` uses --
+ * instead of planning a chain brief. A ticket the queue already owns in a non-done
+ * state is skipped rather than re-queued (`runQueueIntakeOnce`'s own de-dupe, in
+ * `intake/jiraWatcher.ts`). Same pure/wired split `chainIntake` keeps from `chain.ts`:
+ * this is the wired half, `runQueueIntakeOnce` is the pure, tested core it calls.
+ *
+ * With no Jira credentials configured, resolves to an empty poll rather than throwing
+ * -- `forge up`'s own timer wiring is what decides whether this function runs at all,
+ * gated on the same credentials, so a caller that reaches this far already has them.
+ *
+ * Not yet built: turning a skip into "comments become sends", and a Done transition
+ * into "closes the lane" (goal brief items 3 and 4).
+ */
+export function queueIntake(
+  store: QueueStore, configFn: () => JiraConfig | undefined = jiraConfigFromEnv,
+): () => Promise<QueueIntakeResult> {
+  return async () => {
+    const config = configFn();
+    if (!config) return { added: [], skippedOwned: [] };
+
+    const feed = createJiraFeed({ ...config, jql: buildWatcherJql() });
+    const journal = new Journal(journalPath());
+    try {
+      return await runQueueIntakeOnce(
+        [feed],
+        watcherWatermarkStore(),
+        store,
+        (event) => journal.append({ actor: 'queue-intake', ...event }),
+      );
+    } finally {
+      journal.close();
+    }
+  };
 }
 
 /**
