@@ -66,19 +66,19 @@ export function TicketSheet({ lane, now, onClose, onCommand, onSendLane }: Ticke
       </div>
       <div className="scroll sheet-body" style={{ flex: 1, overflow: 'auto', padding: '18px 24px', display: 'flex', flexDirection: 'column', gap: 20 }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 'var(--fs-key)' }}>
-          <p style={{ margin: 0 }}><span className="kick" style={{ display: 'inline-block', width: 110 }}>What happened</span>{failed ? `The summary did not load: ${failed}` : summary ? (summary.what.join(' ') || lane.did || 'Nothing on record yet.') : 'Loading…'}</p>
-          <p style={{ margin: 0 }}><span className="kick" style={{ display: 'inline-block', width: 110 }}>Where it is</span>{summary?.status ?? lane.now ?? ''}</p>
-          <p style={{ margin: 0 }}><span className="kick" style={{ display: 'inline-block', width: 110 }}>What's next</span>{summary?.next ?? lane.you ?? ''}</p>
+          <p style={{ margin: 0 }}><span className="kick" style={{ display: 'inline-block', width: 110 }}>Did</span>{failed ? `The summary did not load: ${failed}` : summary ? (summary.what.join(' ') || lane.did || 'Nothing yet') : 'Loading…'}</p>
+          <p style={{ margin: 0 }}><span className="kick" style={{ display: 'inline-block', width: 110 }}>Now</span>{summary?.status ?? lane.now ?? ''}</p>
+          <p style={{ margin: 0 }}><span className="kick" style={{ display: 'inline-block', width: 110 }}>Next</span>{summary?.next ?? lane.you ?? ''}</p>
         </div>
         {question ? (
           <div style={{ position: 'relative', border: '1px solid var(--warn)', background: 'var(--warnTint)', padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 6 }}>
             <Marks />
             <span className="kick" style={{ color: 'var(--warn)', fontWeight: 700 }}>It asked · {hm(question.askedAt)}</span>
-            <p className="hd" dir="auto" style={{ margin: 0, fontSize: 'var(--fs-heading)', lineHeight: 1.2, overflowWrap: 'anywhere' }}>{question.text.trim() || 'The agent asked a question but sent no text; answer below.'}</p>
+            <p className="hd" dir="auto" style={{ margin: 0, fontSize: 'var(--fs-heading)', lineHeight: 1.2, overflowWrap: 'anywhere' }}>{question.text.trim() || 'No question text'}</p>
           </div>
         ) : null}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-          <span className="kick" style={{ marginBottom: 8 }}>Its story</span>
+          <span className="kick" style={{ marginBottom: 8 }}>Story</span>
           {entries.map((entry, index) => (
             <div key={`${entry.at}-${index}`} style={{ display: 'grid', gridTemplateColumns: '44px 14px 1fr', gap: 10, alignItems: 'baseline', padding: '5px 0' }}>
               <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)', fontVariantNumeric: 'tabular-nums' }}>{hm(entry.at)}</span>
@@ -109,22 +109,22 @@ export function TicketSheet({ lane, now, onClose, onCommand, onSendLane }: Ticke
       <div className="scroll" style={{ borderTop: '1px solid var(--line)', padding: '16px 24px 20px', display: 'flex', flexDirection: 'column', gap: 16, maxHeight: '55%', overflow: 'auto', flex: 'none' }}>
         {question ? (
           <div data-testid="question-card" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <label className="kick" style={{ fontSize: 'var(--fs-meta)', color: 'var(--warn)', fontWeight: 700 }}>Answer its question</label>
+            <label className="kick" style={{ fontSize: 'var(--fs-meta)', color: 'var(--warn)', fontWeight: 700 }}>Answer</label>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {question.opts.filter((option) => option.trim().length > 0).map((option, index) => (
                 <button key={option} type="button" className="opt" data-testid="question-option" data-recommended={index === 0 ? 'true' : 'false'} onClick={() => submitAnswer(option)}><i /><span>{option}</span></button>
               ))}
             </div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'stretch' }}>
-              <textarea className="inp warnFocus" data-testid="question-freetext" rows={2} style={{ minHeight: 56 }} placeholder="Or write the answer in full…" value={answer} onChange={(e) => setAnswer(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitAnswer(answer); } }} />
+              <textarea className="inp warnFocus" data-testid="question-freetext" rows={2} style={{ minHeight: 56 }} placeholder="Or type an answer" value={answer} onChange={(e) => setAnswer(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitAnswer(answer); } }} />
               <button type="button" className="btn warn" style={{ fontSize: 'var(--fs-key)', padding: '6px 18px', minWidth: 88 }} onClick={() => submitAnswer(answer)}>Answer</button>
             </div>
           </div>
         ) : null}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <label className="kick" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink2)' }}>Send a note while it works</label>
+          <label className="kick" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink2)' }}>Note</label>
           <div style={{ display: 'flex', gap: 8, alignItems: 'stretch' }}>
-            <input className="inp" data-testid="sheet-note" placeholder="e.g. Use the existing redis client" value={note} onChange={(e) => setNote(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') submitNote(); }} />
+            <input className="inp" data-testid="sheet-note" value={note} onChange={(e) => setNote(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') submitNote(); }} />
             <button type="button" className="btn" style={{ fontSize: 'var(--fs-key)', padding: '6px 18px', minWidth: 88 }} onClick={submitNote}>Send</button>
           </div>
           {sent ? <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>Sent: {sent}</span> : null}

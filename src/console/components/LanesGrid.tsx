@@ -41,9 +41,8 @@ function mergeLine(lane: Lane, now: number): string {
   const pr = lane.pr;
   if (!pr) return 'ready';
   const checks = pr.checks === 'success' ? 'checks passed' : pr.checks === 'failure' ? 'checks failing' : pr.checks === 'pending' ? 'checks running' : 'checks not read yet';
-  const council = pr.verdict ? `council ${pr.verdict.toLowerCase()}` : 'no council verdict yet';
-  const since = durationWords(now - lane.since);
-  return `PR #${pr.no}, ${checks}, ${council} ${since} ago.`;
+  const council = pr.verdict ? `council ${pr.verdict.toLowerCase()}` : 'no verdict yet';
+  return `PR #${pr.no} · ${checks} · ${council}`;
 }
 
 export function LanesGrid(props: LanesGridProps): JSX.Element {
@@ -109,7 +108,7 @@ export function LanesGrid(props: LanesGridProps): JSX.Element {
               return (
                 <div key={lane.id} className="rowBlocked">
                   <span className="key">{lane.ticket ?? ''}</span>
-                  <span><span className="hd" style={{ fontSize: 'var(--fs-lead)' }}>{laneHeadline(lane).main}</span><span style={{ color: 'var(--ink2)' }}> — {blocker?.detail ?? lane.reason ?? lane.now ?? 'no reason on record.'}</span></span>
+                  <span><span className="hd" style={{ fontSize: 'var(--fs-lead)' }}>{laneHeadline(lane).main}</span><span style={{ color: 'var(--ink2)' }}> — {blocker?.detail ?? lane.reason ?? lane.now ?? 'no reason'}</span></span>
                   <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>{who} · {durationWords(now - lane.since)}</span>
                   <button type="button" className={`btn ${cta.kind === 'secondary' ? '' : cta.kind}`} onClick={() => onCommand(lane.id, cta.cmd)}>{cta.label}</button>
                 </div>

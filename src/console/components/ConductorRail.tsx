@@ -109,7 +109,7 @@ function ActionCard({ message, tone, kicker, title, body, onCommand, onTopic, co
               {button.label}
             </button>
           ))}
-          <label htmlFor={composerId} data-testid="question-freetext" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)', cursor: 'pointer' }}>Or reply below; a typed answer goes to this card.</label>
+          <label htmlFor={composerId} data-testid="question-freetext" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)', cursor: 'pointer' }}>Or type below</label>
         </div>
       ) : null}
     </div>
@@ -208,7 +208,7 @@ export function MessageCard({ message, labelFor, onCommand, onUndo, onTopic, com
     case 'blocker':
       return <ActionCard message={message} tone="warn" kicker={message.kicker ?? `Blocked${label(from) ? ` · ${label(from)}` : ''}`} title={message.title ?? message.text} body={message.body ?? ''} onCommand={onCommand} onTopic={onTopic} composerId={composerId} />;
     case 'decision':
-      return <ActionCard message={message} tone="neutral" kicker={message.kicker ?? `Decided for you${label(from) ? ` · ${label(from)}` : ''} · no reply needed`} title={message.title ?? message.text} body={message.body ?? ''} onCommand={onCommand} onTopic={onTopic} composerId={composerId} />;
+      return <ActionCard message={message} tone="neutral" kicker={message.kicker ?? `Decided${label(from) ? ` · ${label(from)}` : ''}`} title={message.title ?? message.text} body={message.body ?? ''} onCommand={onCommand} onTopic={onTopic} composerId={composerId} />;
     case 'refusal':
       return <ActionCard message={message} tone="warn" kicker="Refused" title={message.text} body="" onCommand={onCommand} composerId={composerId} />;
     default:
@@ -303,9 +303,7 @@ export function ConductorRail(props: ConductorRailProps): JSX.Element {
     onSend(text, toAgent ? topic!.id : undefined);
     onComposerChange('');
   };
-  const placeholder = !topic ? 'Tell the conductor…'
-    : toAgent ? `Talk to the agent working ${topic.label}: tell it what to do instead, ask what it tried, or give it what it needs.`
-      : `Answer or ask about ${topic.label}. Long answers are fine; Shift+Enter for a new line.`;
+  const placeholder = !topic ? 'Conductor…' : toAgent ? `The agent on ${topic.label}…` : `About ${topic.label}…`;
   void now;
   return (
     <aside className="rail" data-testid="conductor-rail" style={{ width: 400, flex: 'none', height: '100%', display: 'flex', flexDirection: 'column', borderLeft: '1px solid var(--line)', background: 'var(--bg)', color: 'var(--ink)', fontSize: 'var(--fs-body)', lineHeight: 1.45 }}>
@@ -338,7 +336,7 @@ export function ConductorRail(props: ConductorRailProps): JSX.Element {
         {topic ? (
           <div data-testid="rail-topic" style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-              <span>About <span className="hd" style={{ fontSize: 'var(--fs-ui)', color: 'var(--ink2)', letterSpacing: '.05em' }}>{topic.label}</span> · send to</span>
+              <span>About <span className="hd" style={{ fontSize: 'var(--fs-ui)', color: 'var(--ink2)', letterSpacing: '.05em' }}>{topic.label}</span></span>
               <a href="#" style={{ color: 'var(--acc)' }} onClick={(e) => { e.preventDefault(); onTopic?.(null); }}>Clear</a>
             </div>
             <div style={{ display: 'flex', border: '1px solid var(--line2)' }}>
@@ -356,7 +354,7 @@ export function ConductorRail(props: ConductorRailProps): JSX.Element {
           />
           <button type="button" className="btn primary" data-testid="action-sendCommand-rail" aria-busy={busy} style={{ alignSelf: 'stretch', fontSize: 'var(--fs-key)', padding: '6px 18px', minWidth: 72 }} onClick={send}>{busy ? 'Working…' : 'Send'}</button>
         </div>
-        {!feed.live ? <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--warn)' }}>The feed is disconnected{feed.reason ? ` (${feed.reason})` : ''}; commands resume when it returns.</span> : null}
+        {!feed.live ? <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--warn)' }}>Feed lost{feed.reason ? `: ${feed.reason}` : ''}</span> : null}
         {composerAction?.result?.kind === 'done' && !composerAction.result.ok ? <span data-testid="rail-composer-result" style={{ fontSize: 'var(--fs-meta)', color: 'var(--warn)' }}>{composerAction.result.text}</span> : null}
       </div>
     </aside>
