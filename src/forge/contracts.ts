@@ -20,7 +20,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
-import { buildForgeMcpServer, type ForgeToolHandlers } from '../adapter/engine.js';
+import { buildForgeMcpServer, FORGE_ASK_SHAPE, type ForgeToolHandlers } from '../adapter/engine.js';
 import type { GotchaInput } from './gotcha.js';
 import { CLASS_BUDGETS, DEFAULT_CLASS } from './exec.js';
 import type { FleetProcess, LivenessSignal, StuckSignal } from './liveness.js';
@@ -622,11 +622,7 @@ export const FORGE_TOOLS: string[] = FORGE_TOOL_NAMES.map((name) => `mcp__forge_
 
 export const ForgeDoneInputSchema = z.object({ evidence: z.string().min(1) });
 export const ForgeHandoffInputSchema = z.object({ packet: z.string().min(1) });
-export const ForgeAskInputSchema = z.object({
-  question: z.string().min(1),
-  options: z.array(z.string()).optional(),
-  kind: z.enum(['question', 'blocker']).optional(),
-});
+export const ForgeAskInputSchema = z.object(FORGE_ASK_SHAPE);
 export const ForgeGotchaInputSchema = z.object({
   run: z.string().min(1),
   what: z.string().min(1),
