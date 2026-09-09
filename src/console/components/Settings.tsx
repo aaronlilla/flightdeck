@@ -84,7 +84,7 @@ export function Settings({ integrations, caps, now, maxInFlight, theme, onTheme 
   };
   const saveCap = (): void => {
     const value = parseTokens(shown);
-    if (value === null) { setCapError(`"${shown.trim()}" is not a token count. Write a number with an optional k or M, like 40M.`); return; }
+    if (value === null) { setCapError(`"${shown.trim()}" — use a number like 40M`); return; }
     setCapError(null);
     void save.run({ dailyTokens: value }).then((outcome) => { if (outcome.kind === 'confirm') void save.confirm(); setDaily(null); });
   };
@@ -105,7 +105,7 @@ export function Settings({ integrations, caps, now, maxInFlight, theme, onTheme 
         <Marks />
         <h6 className="sec">Agents</h6>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
-          <div><label style={{ display: 'block', fontSize: 'var(--fs-body)' }}>Agents running at once</label><span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>Each agent takes one ticket at a time. Lowering it lets running work finish.</span></div>
+          <label style={{ fontSize: 'var(--fs-body)' }}>At once</label>
           <div className="step" data-testid="settings-width">
             <button type="button" aria-label="one fewer" onClick={() => setWidth(maxInFlight - 1)}>−</button>
             <span>{maxInFlight}</span>
@@ -118,7 +118,7 @@ export function Settings({ integrations, caps, now, maxInFlight, theme, onTheme 
         <Marks />
         <h6 className="sec">Daily spend cap</h6>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <label htmlFor="daily-cap" style={{ fontSize: 'var(--fs-body)' }}>Tokens per day</label>
+          <label htmlFor="daily-cap" style={{ fontSize: 'var(--fs-body)' }}>Tokens</label>
           <div style={{ display: 'flex', gap: 8 }}>
             <input id="daily-cap" className="inp hd" style={{ width: 120, flex: 'none', minHeight: 36, fontSize: 'var(--fs-title)' }} value={shown} onChange={(e) => setDaily(e.target.value)} onBlur={saveCap} onKeyDown={(e) => { if (e.key === 'Enter') saveCap(); }} />
             <div className="seg" aria-label="What happens at the cap" data-testid="cap-enforcement">
@@ -127,7 +127,6 @@ export function Settings({ integrations, caps, now, maxInFlight, theme, onTheme 
             </div>
           </div>
           {capError ? <span data-testid="cap-error" style={{ fontSize: 'var(--fs-meta)', color: 'var(--warn)' }}>{capError}</span> : null}
-          <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>{caps?.enforcement === 'on' ? 'The policy file enforces the cap; new work stops at it.' : 'No enforcement is configured; the cap is a warning.'}</span>
           {save.result?.kind === 'done' ? <span style={{ fontSize: 'var(--fs-meta)', color: save.result.ok ? 'var(--ink3)' : 'var(--warn)' }}>{save.result.text}</span> : null}
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -138,15 +137,11 @@ export function Settings({ integrations, caps, now, maxInFlight, theme, onTheme 
       <section style={{ position: 'relative', border: '1px solid var(--line)', padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
         <Marks />
         <h6 className="sec">Theme</h6>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
-          <div><label style={{ display: 'block', fontSize: 'var(--fs-body)' }}>Light or dark</label><span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>Light unless you flip it; the system's own setting picks the start.</span></div>
-          <div className="seg" role="group" aria-label="Theme">
-            <button type="button" data-testid="theme-light" aria-pressed={theme === 'light'} onClick={() => onTheme('light')}>Light</button>
-            <button type="button" data-testid="theme-dark" aria-pressed={theme === 'dark'} onClick={() => onTheme('dark')}>Dark</button>
-          </div>
+        <div className="seg" role="group" aria-label="Theme">
+          <button type="button" data-testid="theme-light" aria-pressed={theme === 'light'} onClick={() => onTheme('light')}>Light</button>
+          <button type="button" data-testid="theme-dark" aria-pressed={theme === 'dark'} onClick={() => onTheme('dark')}>Dark</button>
         </div>
       </section>
-      <p style={{ margin: 0, gridColumn: '1/-1', fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>Changes apply immediately and are written to the journal, so any of them can be undone from the Conductor.</p>
     </main>
   );
 }

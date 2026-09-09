@@ -73,7 +73,7 @@ export function Chrome({ view, badges, feed, project, queueOn = true, now, onNav
             <i style={{ width: 8, height: 8, background: feed.live ? 'var(--acc)' : 'var(--warn)', display: 'block' }} />
             {feed.live ? 'Feed live' : `Feed lost${feed.reason ? `: ${feed.reason}` : ''}`}
           </span>
-          {!queueOn ? <span data-testid="queue-off" style={{ color: 'var(--warn)' }}>Queue off: nothing starts</span> : null}
+          {!queueOn ? <span data-testid="queue-off" style={{ color: 'var(--warn)' }}>Queue off</span> : null}
           {project ? <span data-testid="project-label" title={project.name ?? project.key} style={{ minWidth: 0, maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis' }}>{project.name ? `${project.key} · ${project.name}` : project.key}</span> : null}
           <span style={{ flex: 'none', fontVariantNumeric: 'tabular-nums', color: 'var(--ink)' }}>{hm(now)}</span>
         </div>
