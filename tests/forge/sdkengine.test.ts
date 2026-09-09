@@ -75,6 +75,18 @@ describe('the options a worker runs under', () => {
     expect(options.env['CLAUDE_CONFIG_DIR']).not.toBe('/somebody/elses/claude');
   });
 
+  it('pins CLAUDE_CONFIG_DIR to an assigned account\'s configDir over the fleet default', () => {
+    // P4.8: when a caller (worker.ts, via accountFor) hands this a configDir, that
+    // account wins outright -- never the fleet default, and never whatever the request's
+    // own env happened to carry in.
+    const options = buildWorkerOptions({
+      ...REQUEST,
+      env: { CLAUDE_CONFIG_DIR: '/somebody/elses/claude', PATH: '/usr/bin' },
+      configDir: '/accounts/test-a',
+    }, () => false);
+    expect(options.env['CLAUDE_CONFIG_DIR']).toBe('/accounts/test-a');
+  });
+
   it('unsets ANTHROPIC_API_KEY so the subscription login is what authenticates', () => {
     const options = buildWorkerOptions({ ...REQUEST, env: { ANTHROPIC_API_KEY: 'sk-nope' } });
     expect(options.env['ANTHROPIC_API_KEY']).toBeUndefined();

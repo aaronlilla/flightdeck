@@ -23,8 +23,12 @@ import type { Inbox } from '../inbox.js';
 import { deliverAnswer } from '../runinbox.js';
 import { appendOnce, replay } from '../journal.js';
 import type { StuckSignal } from '../liveness.js';
-import type { Registry } from '../registry.js';
+import { processAlive, type Registry } from '../registry.js';
 import type { RunRequest } from '../exec.js';
+import {
+  accountsRegistryPath, addAccount, liveRunsByAccount, loadAccounts, removeAccount,
+} from '../accounts.js';
+import { AccountsConnect, realLogout, realProbeStatus, realSpawnLogin } from '../accounts-connect.js';
 import type { Lanes } from '../supervisor.js';
 import type { QueueStore } from '../intake/queueStore.js';
 import { conductorAgentEnabled, governorBudget } from '../policy.js';
@@ -45,7 +49,10 @@ import {
   applyRule, dismissRule, restoreRule, rulesPath, setRuleStatus, startEnforcementTick,
   type RulesDeps,
 } from './rules.js';
-import type { ActionResult, LanesResponse, Message, PlanItem } from '../../shared/console-model.js';
+import type {
+  AccountsResponse, ActionResult, ConnectAttemptResponse, ConnectStartResponse, DisconnectResponse,
+  LanesResponse, Message, PlanItem,
+} from '../../shared/console-model.js';
 import { fmtTokens } from '../../shared/format-tokens.js';
 import { stripMachineIds } from '../../shared/humanize.js';
 import type { ConductorAgent, ConductorContext } from './agent.js';
@@ -271,6 +278,9 @@ export interface ConsoleWritesDeps {
   lanesViewAll?: () => LanesResponse;
   /** Where `retired.jsonl` lives. Defaults to `forgeHome()`. A specimen only. */
   forgeHomeDir?: string;
+  /** Overrides where the account registry lives. A specimen only; production reads
+   *  `accounts.ts`'s own default under `forgeHome()`. */
+  accountsRegistryPath?: string;
 }
 
 function readBody<T>(request: IncomingMessage): Promise<T | null> {
@@ -342,6 +352,10 @@ export class ConsoleWrites {
 
   private readonly integrations: IntegrationsRegistry;
 
+  private readonly accountsConnect: AccountsConnect;
+
+  private readonly accountsPath: string;
+
   private readonly pendingConfirms = new Map<string, PendingConfirm>();
 
   private readonly pendingPlans = new Map<string, PendingPlan>();
@@ -359,6 +373,17 @@ export class ConsoleWrites {
       ...(deps.integrationsConfigPath ? { configPath: deps.integrationsConfigPath } : {}),
       ...(deps.spawnFn ? { spawnFn: deps.spawnFn } : {}),
       ...(deps.lanesView ? { lanesView: deps.lanesView } : {}),
+    });
+    this.accountsPath = deps.accountsRegistryPath ?? accountsRegistryPath();
+    const registryPath = this.accountsPath;
+    this.accountsConnect = new AccountsConnect({
+      loadAccounts: () => loadAccounts(registryPath),
+      addAccount: (record) => addAccount(record, registryPath),
+      removeAccount: (id) => removeAccount(id, registryPath),
+      liveRunCount: (accountId) => this.liveRunsByAccount()[accountId] ?? 0,
+      spawnLogin: realSpawnLogin(deps.spawnFn),
+      probeStatus: realProbeStatus(deps.spawnFn),
+      logout: realLogout(deps.spawnFn),
     });
     // Not started here: `server.ts` starts it from `listen()` and stops it in `close()`,
     // the same lifecycle the heartbeat timer already has. Starting it the moment a
@@ -438,6 +463,17 @@ export class ConsoleWrites {
 
   private spendToday(): number {
     return tokensToday(replay(this.deps.journalPath).runs, Date.now());
+  }
+
+  /** Fresh every call, per the disconnect refusal's own rule: never a cached count. A
+   *  goal is "live" the same way `Registry.admit` decides it -- a row on disk whose pid
+   *  is still alive -- rather than reading it off a lane, which the run being counted
+   *  could itself have just rewritten. */
+  private liveRunsByAccount(): Record<string, number> {
+    const liveGoals = this.deps.registry.all()
+      .filter((row) => processAlive(row.pid))
+      .map((row) => row.goal);
+    return liveRunsByAccount(replay(this.deps.journalPath).events, liveGoals);
   }
 
   /**
@@ -858,7 +894,56 @@ export class ConsoleWrites {
       return true;
     }
 
+    if (path === '/accounts' && method === 'GET') {
+      if (!this.deps.authorized(request, response)) return true;
+      const live = this.liveRunsByAccount();
+      const items = loadAccounts(this.accountsPath).map((account) => ({
+        id: account.id, label: account.label, connectedAt: account.connectedAt,
+        liveRuns: live[account.id] ?? 0,
+      }));
+      respond(response, 200, { items } satisfies AccountsResponse);
+      return true;
+    }
+
     let match: RegExpMatchArray | null;
+
+    if (path === '/accounts/connect' && method === 'POST') {
+      if (!this.deps.authorized(request, response)) return true;
+      const body = await readBody<{ label?: string }>(request);
+      const label = body?.label?.trim();
+      if (!label) {
+        respond(response, 400, { ok: false, error: 'a connect attempt needs a label' } satisfies ConnectStartResponse);
+        return true;
+      }
+      const result = this.accountsConnect.startConnect(label);
+      respond(response, result.ok ? 200 : 409, result.ok
+        ? { ok: true, attemptId: result.attemptId } satisfies ConnectStartResponse
+        : { ok: false, error: result.error } satisfies ConnectStartResponse);
+      return true;
+    }
+
+    if ((match = path.match(/^\/accounts\/connect\/([^/]+)$/)) && method === 'GET') {
+      if (!this.deps.authorized(request, response)) return true;
+      const attempt = this.accountsConnect.getAttempt(decodeURIComponent(match[1]!));
+      if (!attempt) {
+        respond(response, 404, { error: `no connect attempt ${decodeURIComponent(match[1]!)}` });
+        return true;
+      }
+      respond(response, 200, {
+        id: attempt.id, label: attempt.label, state: attempt.state,
+        ...(attempt.link !== undefined ? { link: attempt.link } : {}),
+        ...(attempt.error !== undefined ? { error: attempt.error } : {}),
+        ...(attempt.accountId !== undefined ? { accountId: attempt.accountId } : {}),
+      } satisfies ConnectAttemptResponse);
+      return true;
+    }
+
+    if ((match = path.match(/^\/accounts\/([^/]+)\/disconnect$/)) && method === 'POST') {
+      if (!this.deps.authorized(request, response)) return true;
+      const result = await this.accountsConnect.disconnect(decodeURIComponent(match[1]!));
+      respond(response, result.ok ? 200 : 409, result satisfies DisconnectResponse);
+      return true;
+    }
 
     if ((match = path.match(/^\/integrations\/([^/]+)\/check$/)) && method === 'POST') {
       if (!this.deps.authorized(request, response)) return true;

@@ -70,6 +70,8 @@ const CASES: Record<string, Case> = {
   sendCommand: { args: ['what is stuck', undefined], result: { cards: [{ k: 'r', type: 'receipt', text: 'two lanes are waiting on you', ts: 0, source: 'conductor' }] }, text: 'two lanes are waiting on you' },
   checkIntegration: { args: ['aws'], result: { items: [{ id: 'aws', name: 'AWS', status: 'connected', latencyMs: 12 }] }, text: 'AWS is connected (12 ms)' },
   reconnectIntegration: { args: ['aws'], result: { ok: true, message: 'aws sso login finished', jid: 'J-1' }, text: 'aws sso login finished' },
+  connectAccount: { args: ['work'], result: { ok: true, attemptId: 'attempt-1' }, text: 'connect attempt started' },
+  disconnectAccount: { args: ['test-a'], result: { ok: true }, text: 'account disconnected' },
   applyProposal: { args: ['P-1'], result: { ...OK, message: 'rule applied' }, text: 'rule applied' },
   dismissProposal: { args: ['P-1'], result: { ...OK, message: 'proposal dismissed' }, text: 'proposal dismissed' },
   restoreProposal: { args: ['P-1'], result: { ...OK, message: 'proposal restored' }, text: 'proposal restored' },
