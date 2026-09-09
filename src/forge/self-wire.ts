@@ -5,7 +5,7 @@
  * nothing is in flight. Everything here is glue over real files and real commands; the
  * decisions live in the pure modules this file calls, each with its own specimens.
  */
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { ChainEnv } from './chain-env.js';
@@ -22,6 +22,7 @@ import { Journal, JournalCache } from './journal.js';
 const journalCache = new JournalCache();
 import { forgeHome, gotchasDir, journalPath } from './paths.js';
 import { analyze, type AttestationRoundInput, type RunTranscript, type SelfAnalyzeInputs } from './self/analyze.js';
+import { appendProposedLine } from './roadmap.js';
 import { enqueueFindings } from './self/enqueue.js';
 import { FindingsLedger } from './self/ledger.js';
 import { cutoverDue } from './self/selfCutover.js';
@@ -196,6 +197,12 @@ export function buildSelfLoop(opts: SelfLoopOptions): SelfLoop {
       const enqueued = enqueueFindings(findings, {
         store: opts.store, briefsDir: join(home, 'self', 'briefs'), ledger, selfRepo,
         maxInFlight: Number(env['FORGE_SELF_MAX_IN_FLIGHT'] ?? 1) || 1, clock, append,
+        appendProposed: checkout ? (line: string) => {
+          const roadmapPath = join(checkout, 'doctrine', 'ROADMAP.md');
+          if (!existsSync(roadmapPath)) return;
+          const text = readFileSync(roadmapPath, 'utf8');
+          writeFileSync(roadmapPath, appendProposedLine(text, line), 'utf8');
+        } : undefined,
       });
       const { merged, refused } = await mergeSelfItems();
       let restart = false;

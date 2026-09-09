@@ -23,6 +23,7 @@ import { QUEUE_IN_FLIGHT_STATES } from '../intake/queue.js';
 import type { QueueStore } from '../intake/queueStore.js';
 import type { SelfFinding } from './analyze.js';
 import type { FindingsLedger } from './ledger.js';
+import { citesRoadmapId } from '../roadmap.js';
 
 export interface SelfEnqueueDeps {
   store: QueueStore;
@@ -41,6 +42,11 @@ export interface SelfEnqueueDeps {
   /** Writes one row to the fleet journal, returning it -- the same shape `queue.ts`'s
    *  own `QueueRuntimeDeps.append` uses. */
   append(event: Record<string, unknown>): { id: string };
+  /** R-02 guard #4: appends one line to `doctrine/ROADMAP.md`'s `## Proposed` section for
+   *  a finding whose summary and evidence cite no `R-nn` id, instead of enqueuing it.
+   *  Absent leaves this stream exactly as it was before guard #4 existed: a finding with
+   *  no roadmap id still enqueues like any other. */
+  appendProposed?: (line: string) => void;
 }
 
 function capitalizeFirst(text: string): string {
@@ -102,6 +108,19 @@ export function enqueueFindings(findings: SelfFinding[], deps: SelfEnqueueDeps):
     const now = deps.clock();
     const row = deps.ledger.record(found, now);
     if (row.enqueuedItemId) continue;
+
+    // Guard #4: a finding that cites no roadmap id has nothing in
+    // doctrine/ROADMAP.md to attach to. It goes under `## Proposed` once, marked so a
+    // later tick does not append it again, and is never turned into a queue item.
+    if (deps.appendProposed && !row.proposedAt
+      && !citesRoadmapId(`${found.summary}\n${found.evidence.join('\n')}`)) {
+      const date = new Date(now).toISOString().slice(0, 10);
+      deps.appendProposed(`- ${date}: ${found.signature} -- ${found.summary}`);
+      deps.ledger.markProposed(found.id, now);
+      continue;
+    }
+    if (row.proposedAt) continue;
+
     // A finding that is an observation rather than a defect is recorded in the ledger
     // and never handed to a worker. The first live token-outlier item (2026-09-07)
     // spent a session proving the number was by design, and the loop then queued one
