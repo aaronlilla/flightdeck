@@ -1233,6 +1233,37 @@ describe('F3: forge_ask parks', () => {
 
     expect(parked.has('f3-falsifier-run')).toBe(true);
   });
+
+  it('W1: with a reasoner wired, an under-four-option ask is padded before it parks', async () => {
+    const parked = new Map<string, string>();
+    const inbox = new Inbox(join(home, 'inbox-f3-reasoner'));
+    const journal = new Journal(journalPath);
+    const gotchas = new Gotchas(join(home, 'gotchas-f3-reasoner'), journalPath);
+    const reasoner = {
+      provider: 'claude' as const,
+      call: async () => ({
+        text: JSON.stringify({ options: ['dev', 'staging', 'prod', 'canary'], recommended: 2 }),
+      }),
+    };
+    const handlers = buildForgeToolHandlers({
+      run: 'f3-reasoner-run', goal: 'f3-reasoner-run', inbox, journal, parked, gotchas, reasoner,
+    });
+
+    await handlers.onAsk({ question: 'which environment?', options: ['dev'] });
+
+    const key = parked.get('f3-reasoner-run');
+    expect(key).toBeTruthy();
+    const entry = inbox.entry(key as string);
+    expect(entry?.optionSource).toBe('drafted');
+    expect(entry?.options).toContain('Something else, I will type it');
+    expect(entry?.options.length).toBeGreaterThanOrEqual(4);
+    expect(typeof entry?.recommended).toBe('number');
+
+    journal.close();
+    const state = replay(journalPath);
+    expect(state.events.some((e) => e.event === 'forge.ask.options' && e['source'] === 'drafted'))
+      .toBe(true);
+  });
 });
 
 describe('F4: close() stops every live engine, not just forgetting about it', () => {

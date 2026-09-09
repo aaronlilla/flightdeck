@@ -296,6 +296,12 @@ export const FORGE_EVENT_NAMES = [
   // H1.8: one lane's own outcome from the bulk `POST /merge-ready` -- always an
   // operator's own click, never a worker acting on its own.
   'merge-ready.merged',
+  // W1, 2026-09-08: `completeAskOptions` (`console/ask-options.ts`) padding a
+  // `forge_ask` call's options out to four or more before the ask reaches the inbox --
+  // `source: 'worker'` when the worker already supplied enough, `source: 'drafted'`
+  // when a reasoner call filled the gap, and the same row on any reasoner failure
+  // (worker's own options kept, `recommended: null`).
+  'forge.ask.options',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];
