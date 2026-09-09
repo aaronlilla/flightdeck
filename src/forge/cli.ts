@@ -37,7 +37,8 @@ import { SEVERITY_RANK } from './council/synthesis.js';
 import { runCutover } from './cutover.js';
 import { CredentialHorizon, readLoginLock } from './credential-horizon.js';
 import { accountFor, buildBurnLedger, checkBudget, WindowGate } from './governor.js';
-import { accountsRegistryPath, liveRunsByAccount, loadAccounts } from './accounts.js';
+import { accountsRegistryPath, liveRunsByAccount, loadAccounts, pickAccount } from './accounts.js';
+import { readAccountUsage } from './accounts-usage.js';
 import { reconcileBurnOnce } from './burn-reconcile.js';
 import { planIntakeWrites } from './intake/dryRun.js';
 import { createJiraFeed, createJiraWriteClient, probeJira, type JiraWriteClient } from './intake/jira.js';
@@ -887,15 +888,16 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       // A registry with no connected accounts yet, or one where every account is paused
       // or over its ceiling, resolves to `undefined`, and `Worker` falls back to
       // `fleetConfigDir()` exactly as before, so an empty registry never blocks a launch.
-      const registeredAccounts = loadAccounts(accountsRegistryPath())
-        .map((record) => ({ id: record.id, configDir: record.configDir }));
+      // Selection reads the usage store on disk (`accounts-usage.ts`): the windows each
+      // provider last reported and any limit a run hit, so the account with the most
+      // headroom wins and one that another process exhausted is skipped. `WindowGate`
+      // is memory-only and starts empty in this process, which is why it is not used.
       const liveGoalsForAccounts = registry.all()
         .filter((row) => processAlive(row.pid))
         .map((row) => row.goal);
       const liveRunsPerAccount = liveRunsByAccount(replay(journalPath()).events, liveGoalsForAccounts);
-      const selectedAccount = registeredAccounts.length > 0
-        ? accountFor(launchClass, registeredAccounts, new WindowGate(), liveRunsPerAccount, Date.now())
-        : undefined;
+      const picked = pickAccount(loadAccounts(accountsRegistryPath()), readAccountUsage(), liveRunsPerAccount, Date.now(), 'claude');
+      const selectedAccount = picked ? { id: picked.id, configDir: picked.configDir } : undefined;
       // Where a `gh` credential lapse from the drift check lands. An expired token
       // reads as an unknown mergeable state, and answering that with "rebase onto the
       // base branch" asks for something no rebase can deliver. The park goes under

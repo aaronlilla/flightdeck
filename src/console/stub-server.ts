@@ -884,14 +884,55 @@ export function createStubServer() {
         json(response, 200, { rows, total });
         return;
       }
-      // The accounts the Settings section shows: one ready, one inside a rate limit,
-      // so both states of the row are visible without waiting for a real limit.
+      // The accounts the Settings section shows: the fleet default login, a Claude
+      // account in use, and a ChatGPT account in use, each with its own usage windows.
       if (urlPath === '/accounts' && method === 'GET') {
         const now = Date.now();
+        const day = 86_400_000;
         json(response, 200, { items: [
-          { id: 'acct-a', label: 'aaron', connectedAt: now - 86_400_000, liveRuns: 2, plan: 'max', selected: true },
-          { id: 'acct-b', label: 'spare', connectedAt: now - 3_600_000, liveRuns: 0, plan: 'pro', limitedUntil: now + 42 * 60_000, limitedWindow: 'five_hour' },
+          {
+            id: 'fleet', provider: 'claude', email: 'aaron@example.com', plan: 'max', connectedAt: now - 30 * day,
+            liveRuns: 0, fleet: true, selected: false, readAt: now - 5_000,
+            windows: [
+              { key: 'session', label: 'Session', usedPct: 30, resetsAt: now + 3 * 3_600_000 },
+              { key: 'weekly', label: 'Weekly', usedPct: 80, resetsAt: now + 5 * day, severity: 'warning' },
+              { key: 'weekly:fable', label: 'Weekly · Fable', usedPct: 72, resetsAt: now + 5 * day },
+            ],
+          },
+          {
+            id: 'acct-a', provider: 'claude', email: 'ops@example.com', plan: 'max', connectedAt: now - 10 * day,
+            liveRuns: 2, selected: true, readAt: now - 5_000,
+            windows: [
+              { key: 'session', label: 'Session', usedPct: 12, resetsAt: now + 3 * 3_600_000 },
+              { key: 'weekly', label: 'Weekly', usedPct: 41, resetsAt: now + 5 * day },
+              { key: 'weekly:fable', label: 'Weekly · Fable', usedPct: 20, resetsAt: now + 5 * day },
+            ],
+          },
+          {
+            id: 'acct-b', provider: 'codex', email: 'aaron@example.org', plan: 'pro', connectedAt: now - 2 * day,
+            liveRuns: 0, selected: true, readAt: now - 5_000,
+            windows: [
+              { key: 'weekly', label: 'Weekly', usedPct: 72, resetsAt: now + 5 * day },
+            ],
+          },
         ] });
+        return;
+      }
+      if (urlPath === '/accounts/connect' && method === 'POST') {
+        await readJson<Record<string, unknown>>(request);
+        json(response, 200, { ok: true, attemptId: 'att-1' });
+        return;
+      }
+      const accountsConnectMatch = /^\/accounts\/connect\/([^/]+)$/.exec(urlPath);
+      if (accountsConnectMatch && method === 'GET') {
+        const id = decodeURIComponent(accountsConnectMatch[1] as string);
+        json(response, 200, { id, provider: 'claude', state: 'waiting-in-browser', link: 'https://example.com/login' });
+        return;
+      }
+      const accountsDisconnectMatch = /^\/accounts\/([^/]+)\/disconnect$/.exec(urlPath);
+      if (accountsDisconnectMatch && method === 'POST') {
+        await readJson<Record<string, unknown>>(request);
+        json(response, 200, { ok: true });
         return;
       }
 

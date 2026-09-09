@@ -13,13 +13,23 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import type { AccountUsage } from './accounts-usage.js';
-import { isLimited } from './accounts-usage.js';
+import { isLimited, usedFraction } from './accounts-usage.js';
 import type { ForgeEvent } from './journal.js';
 import { fleetConfigDir, forgeHome } from './paths.js';
 
+export type AccountProvider = 'claude' | 'codex';
+
 export interface AccountRecord {
   id: string;
+  /** Which login this is: a Claude config directory or a Codex home. Rows written
+   *  before providers existed read as `claude`. */
+  provider: AccountProvider;
+  /** The email the subscription is under; the account's name everywhere it is shown.
+   *  Absent only for a row whose login has not been probed yet. */
+  email?: string;
+  /** Kept for rows written before email became the name. New rows set it to the email. */
   label: string;
+  /** `CLAUDE_CONFIG_DIR` for a Claude login; `CODEX_HOME` for a Codex one. */
   configDir: string;
   connectedAt: number;
 }
@@ -51,7 +61,12 @@ function writeStored(path: string, value: StoredFile): void {
 
 /** Every connected account, in the order they were added. */
 export function loadAccounts(path: string = accountsRegistryPath()): AccountRecord[] {
-  return readStored(path).accounts;
+  return readStored(path).accounts.map((account) => ({ ...account, provider: account.provider ?? 'claude' }));
+}
+
+/** What a row is called: its email, or the legacy label until a probe names it. */
+export function accountName(account: Pick<AccountRecord, 'email' | 'label'>): string {
+  return account.email ?? account.label;
 }
 
 /** Appends one account. The caller (a completed connect attempt) is what already
@@ -95,38 +110,39 @@ export function liveRunsByAccount(events: ForgeEvent[], liveGoals: string[]): Re
 }
 
 /**
- * The account a new session should launch under: the least-busy account that is not
- * inside a rate limit right now, ties broken by the order they were connected.
- * `undefined` when the registry is empty or every account is limited -- the caller then
- * falls back to the fleet login, which is what every session used before accounts
- * existed.
- *
- * This is deliberately not `governor.ts#accountFor`: that one ranks on a `utilization`
- * fraction nothing populates, and consults a `WindowGate` rebuilt empty on every
- * launch, so it could never see a limit another process hit. This reads the limit state
- * from disk, which is the whole point of the failover.
+ * The account a new session of `provider` should launch under: the one with the most
+ * headroom that is not inside a rate limit right now, ties broken by fewer live runs,
+ * then by the order they were connected. Headroom is the worst of the account's
+ * windows as the provider last reported them (`accounts-probe.ts`); an account with no
+ * reading yet counts as fully free, so a fresh login is tried before an exhausted one.
+ * `undefined` when no account of that provider is usable -- the caller then falls back
+ * to the machine's own login, which is what every session used before accounts existed.
  */
 export function pickAccount(
   accounts: AccountRecord[], usage: AccountUsage, live: Record<string, number>, now: number,
+  provider: AccountProvider = 'claude',
 ): AccountRecord | undefined {
-  const usable = accounts.filter((account) => !isLimited(account.id, now, usage));
+  const usable = accounts.filter((account) => account.provider === provider && !isLimited(account.id, now, usage));
   if (usable.length === 0) return undefined;
-  return usable.reduce((best, account) => (
-    (live[account.id] ?? 0) < (live[best.id] ?? 0) ? account : best
-  ), usable[0]!);
+  const worst = (account: AccountRecord): number => usedFraction(account.id, now, usage);
+  return usable.reduce((best, account) => {
+    const byHeadroom = worst(account) - worst(best);
+    if (byHeadroom !== 0) return byHeadroom < 0 ? account : best;
+    return (live[account.id] ?? 0) < (live[best.id] ?? 0) ? account : best;
+  }, usable[0]!);
 }
 
 /**
- * The config directory a session should authenticate through: the picked account's, or
- * the fleet login when no account is registered or all of them are limited. Every
- * Claude-model call site goes through this, so adding an account in the console changes
- * what the next session runs under.
+ * The directory a session should authenticate through: the picked account's, or the
+ * machine's own login when no account of that provider is registered or all of them are
+ * limited. For Claude that is `CLAUDE_CONFIG_DIR`; for Codex it is `CODEX_HOME`, and
+ * the fallback is the user's own `~/.codex` (null here, meaning leave the env alone).
  */
 export function configDirForSession(
   accounts: AccountRecord[], usage: AccountUsage, live: Record<string, number>, now: number,
-  existsConfigDir?: (path: string) => boolean,
-): { configDir: string; accountId: string | null } {
-  const picked = pickAccount(accounts, usage, live, now);
+  existsConfigDir?: (path: string) => boolean, provider: AccountProvider = 'claude',
+): { configDir: string | null; accountId: string | null } {
+  const picked = pickAccount(accounts, usage, live, now, provider);
   if (picked) return { configDir: picked.configDir, accountId: picked.id };
-  return { configDir: fleetConfigDir(existsConfigDir), accountId: null };
+  return { configDir: provider === 'claude' ? fleetConfigDir(existsConfigDir) : null, accountId: null };
 }

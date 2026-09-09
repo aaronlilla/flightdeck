@@ -25,8 +25,17 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
+import type { WindowReading } from './accounts-probe.js';
 import type { RateLimitWindow } from './governor.js';
 import { forgeHome } from './paths.js';
+
+/** The last live reading of an account's windows, as the provider reported them. */
+export interface AccountReading {
+  at: number;
+  email?: string;
+  plan?: string;
+  windows: WindowReading[];
+}
 
 export interface AccountWindowState {
   /** Epoch ms the limit lifts, from the error that reported it. */
@@ -40,6 +49,11 @@ export interface AccountUsageRecord {
   plan?: string;
   planAt?: number;
   windows?: Partial<Record<RateLimitWindow, AccountWindowState>>;
+  /** The last successful probe. Kept across a failed one, so a row never goes blank
+   *  because the network blinked. */
+  reading?: AccountReading;
+  /** Why the most recent probe failed, and when. Cleared by the next success. */
+  readError?: { at: number; error: string };
 }
 
 export type AccountUsage = Record<string, AccountUsageRecord>;
@@ -84,6 +98,41 @@ export function recordPlan(
   write(path, usage);
 }
 
+/** Stores a live reading. The plan it carries becomes the account's. */
+export function recordReading(
+  account: string, reading: AccountReading, path: string = accountsUsagePath(),
+): void {
+  const usage = readAccountUsage(path);
+  const prev = usage[account] ?? {};
+  delete prev.readError;
+  usage[account] = { ...prev, reading, ...(reading.plan ? { plan: reading.plan, planAt: reading.at } : {}) };
+  write(path, usage);
+}
+
+/** Stores why a probe failed, leaving the previous reading in place. */
+export function recordReadError(
+  account: string, error: string, now: number, path: string = accountsUsagePath(),
+): void {
+  const usage = readAccountUsage(path);
+  usage[account] = { ...(usage[account] ?? {}), readError: { at: now, error } };
+  write(path, usage);
+}
+
+/**
+ * The worst-used window as a 0..1 fraction, off the last reading; 0 when there is no
+ * reading yet, so an unread account is tried before a known-busy one. A window whose
+ * reset time has passed no longer counts: the provider will have opened it again.
+ */
+export function usedFraction(account: string, now: number, usage: AccountUsage): number {
+  const windows = usage[account]?.reading?.windows ?? [];
+  let worst = 0;
+  for (const window of windows) {
+    if (window.resetsAt !== null && window.resetsAt <= now) continue;
+    worst = Math.max(worst, window.usedPct / 100);
+  }
+  return worst;
+}
+
 /** The soonest moment `account` is usable again, or `null` when no limit is on record
  *  or every recorded limit has already lifted. */
 export function limitedUntil(
@@ -94,6 +143,12 @@ export function limitedUntil(
   for (const [window, state] of Object.entries(windows) as [RateLimitWindow, AccountWindowState][]) {
     if (!state || state.limitedUntil <= now) continue;
     if (!latest || state.limitedUntil > latest.until) latest = { until: state.limitedUntil, window };
+  }
+  // A window the provider reports as fully used is a limit too, until it resets.
+  for (const read of usage[account]?.reading?.windows ?? []) {
+    if (read.usedPct < 100 || read.resetsAt === null || read.resetsAt <= now) continue;
+    const window: RateLimitWindow = read.key === 'session' ? 'five_hour' : 'seven_day';
+    if (!latest || read.resetsAt > latest.until) latest = { until: read.resetsAt, window };
   }
   return latest;
 }

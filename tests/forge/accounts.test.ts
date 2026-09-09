@@ -29,27 +29,27 @@ describe('the account registry file', () => {
   });
 
   it('adds an account and reads it back', () => {
-    addAccount({ id: 'test-a', label: 'work', configDir: '/accounts/test-a', connectedAt: 1000 }, path);
+    addAccount({ id: 'test-a', provider: 'claude', label: 'work', configDir: '/accounts/test-a', connectedAt: 1000 }, path);
     const accounts = loadAccounts(path);
     expect(accounts).toHaveLength(1);
-    expect(accounts[0]).toEqual({ id: 'test-a', label: 'work', configDir: '/accounts/test-a', connectedAt: 1000 });
+    expect(accounts[0]).toEqual({ id: 'test-a', provider: 'claude', label: 'work', configDir: '/accounts/test-a', connectedAt: 1000 });
   });
 
   it('adds a second account alongside the first, rather than overwriting it', () => {
-    addAccount({ id: 'test-a', label: 'work', configDir: '/accounts/test-a', connectedAt: 1000 }, path);
-    addAccount({ id: 'test-b', label: 'personal', configDir: '/accounts/test-b', connectedAt: 2000 }, path);
+    addAccount({ id: 'test-a', provider: 'claude', label: 'work', configDir: '/accounts/test-a', connectedAt: 1000 }, path);
+    addAccount({ id: 'test-b', provider: 'claude', label: 'personal', configDir: '/accounts/test-b', connectedAt: 2000 }, path);
     expect(loadAccounts(path).map((a) => a.id)).toEqual(['test-a', 'test-b']);
   });
 
   it('removes an account by id, leaving the rest untouched', () => {
-    addAccount({ id: 'test-a', label: 'work', configDir: '/accounts/test-a', connectedAt: 1000 }, path);
-    addAccount({ id: 'test-b', label: 'personal', configDir: '/accounts/test-b', connectedAt: 2000 }, path);
+    addAccount({ id: 'test-a', provider: 'claude', label: 'work', configDir: '/accounts/test-a', connectedAt: 1000 }, path);
+    addAccount({ id: 'test-b', provider: 'claude', label: 'personal', configDir: '/accounts/test-b', connectedAt: 2000 }, path);
     removeAccount('test-a', path);
     expect(loadAccounts(path).map((a) => a.id)).toEqual(['test-b']);
   });
 
   it('removing an id that is not there is a no-op, not a throw', () => {
-    addAccount({ id: 'test-a', label: 'work', configDir: '/accounts/test-a', connectedAt: 1000 }, path);
+    addAccount({ id: 'test-a', provider: 'claude', label: 'work', configDir: '/accounts/test-a', connectedAt: 1000 }, path);
     expect(() => removeAccount('test-nope', path)).not.toThrow();
     expect(loadAccounts(path)).toHaveLength(1);
   });

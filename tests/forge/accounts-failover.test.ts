@@ -14,7 +14,9 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { addAccount, configDirForSession, loadAccounts, pickAccount, type AccountRecord } from '../../src/forge/accounts.js';
-import { isLimited, limitedUntil, readAccountUsage, recordPlan, recordRateLimit } from '../../src/forge/accounts-usage.js';
+import {
+  isLimited, limitedUntil, readAccountUsage, recordPlan, recordRateLimit, recordReading,
+} from '../../src/forge/accounts-usage.js';
 import { planFrom } from '../../src/forge/accounts-connect.js';
 import { fleetConfigDir } from '../../src/forge/paths.js';
 
@@ -34,7 +36,7 @@ afterEach(() => {
 });
 
 function account(id: string, extra: Partial<AccountRecord> = {}): AccountRecord {
-  return { id, label: id, configDir: join(dir, id), connectedAt: NOW, ...extra };
+  return { id, provider: 'claude', label: id, configDir: join(dir, id), connectedAt: NOW, ...extra };
 }
 
 describe('the usage store remembers a limit across processes', () => {
@@ -99,6 +101,32 @@ describe('a session picks an account that is not limited', () => {
     expect(pickAccount([account('a')], usage, {}, NOW)).toBeUndefined();
     expect(pickAccount([account('a')], usage, {}, NOW + 61_000)?.id).toBe('a');
   });
+
+  it('ignores accounts of the other provider entirely', () => {
+    const claude = account('a');
+    const codex = account('b', { provider: 'codex' });
+    expect(pickAccount([claude, codex], {}, {}, NOW, 'claude')?.id).toBe('a');
+    expect(pickAccount([claude, codex], {}, {}, NOW, 'codex')?.id).toBe('b');
+    expect(pickAccount([codex], {}, {}, NOW, 'claude')).toBeUndefined();
+  });
+
+  it('prefers the account whose worst window is lower, ahead of live-run count', () => {
+    recordReading('a', { at: NOW, windows: [{ key: 'session', label: 'Session', usedPct: 80, resetsAt: NOW + 3_600_000 }] }, usagePath);
+    recordReading('b', { at: NOW, windows: [{ key: 'session', label: 'Session', usedPct: 20, resetsAt: NOW + 3_600_000 }] }, usagePath);
+    const usage = readAccountUsage(usagePath);
+    // b has more headroom even though it also has more live runs -- headroom wins first.
+    const picked = pickAccount([account('a'), account('b')], usage, { a: 0, b: 5 }, NOW);
+    expect(picked?.id).toBe('b');
+  });
+
+  it('treats a window reading of 100% with a future reset as a limit, and stops once it resets', () => {
+    recordReading('a', { at: NOW, windows: [{ key: 'session', label: 'Session', usedPct: 100, resetsAt: NOW + 60_000 }] }, usagePath);
+    const usage = readAccountUsage(usagePath);
+    expect(isLimited('a', NOW, usage)).toBe(true);
+    expect(pickAccount([account('a')], usage, {}, NOW)).toBeUndefined();
+    expect(isLimited('a', NOW + 61_000, usage)).toBe(false);
+    expect(pickAccount([account('a')], usage, {}, NOW + 61_000)?.id).toBe('a');
+  });
 });
 
 describe('the config directory a session authenticates through', () => {
@@ -122,6 +150,11 @@ describe('the config directory a session authenticates through', () => {
     recordRateLimit('a', 'five_hour', NOW + 60_000, NOW, usagePath);
     const chosen = configDirForSession([account('a')], readAccountUsage(usagePath), {}, NOW, fleet);
     expect(chosen.accountId).toBeNull();
+  });
+
+  it('returns configDir: null for codex with no codex account registered -- there is no fleet Codex login', () => {
+    const chosen = configDirForSession([account('a')], {}, {}, NOW, fleet, 'codex');
+    expect(chosen).toEqual({ configDir: null, accountId: null });
   });
 });
 

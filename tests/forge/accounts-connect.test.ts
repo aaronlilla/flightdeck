@@ -1,15 +1,15 @@
 /**
- * The connect/disconnect flow for a second (and third, ...) Claude account.
+ * The connect/disconnect flow for a second (and third, ...) account, Claude or Codex.
  *
  * Every specimen here drives `AccountsConnect` with fake `spawnLogin`/`probeStatus`
- * functions -- nothing spawns a real `claude` process, and no browser link or auth
- * error text is ever asserted to reach anywhere but the object this module hands back
- * directly to its caller.
+ * functions -- nothing spawns a real `claude` or `codex` process, and no browser link or
+ * auth error text is ever asserted to reach anywhere but the object this module hands
+ * back directly to its caller.
  */
 import { describe, expect, it, vi } from 'vitest';
 
-import { AccountsConnect } from '../../src/forge/accounts-connect.js';
-import type { AccountRecord } from '../../src/forge/accounts.js';
+import { AccountsConnect, identityFrom } from '../../src/forge/accounts-connect.js';
+import type { AccountProvider, AccountRecord } from '../../src/forge/accounts.js';
 
 function makeDeps() {
   let accounts: AccountRecord[] = [];
@@ -23,9 +23,9 @@ function makeDeps() {
       addAccount: (record: AccountRecord) => { accounts = [...accounts, record]; },
       removeAccount: (id: string) => { accounts = accounts.filter((a) => a.id !== id); },
       liveRunCount: (id: string) => liveByAccount[id] ?? 0,
-      spawnLogin: vi.fn(async (_configDir: string): Promise<{ ok: boolean; link?: string; error?: string }> => ({ ok: true, link: 'https://example.test/authorize/abc' })),
-      probeStatus: vi.fn(async (_configDir: string): Promise<{ ok: boolean; error?: string }> => ({ ok: true })),
-      logout: vi.fn(async (_configDir: string): Promise<{ ok: boolean; error?: string }> => ({ ok: true })),
+      spawnLogin: vi.fn(async (_provider: AccountProvider, _configDir: string): Promise<{ ok: boolean; link?: string; error?: string }> => ({ ok: true, link: 'https://example.test/authorize/abc' })),
+      probeStatus: vi.fn(async (_provider: AccountProvider, _configDir: string): Promise<{ ok: boolean; email?: string; error?: string }> => ({ ok: true, email: 'work@example.test' })),
+      logout: vi.fn(async (_provider: AccountProvider, _configDir: string): Promise<{ ok: boolean; error?: string }> => ({ ok: true })),
       now: () => 1_000,
       randomId: () => `id-${idCounter++}`,
     },
@@ -44,7 +44,7 @@ describe('starting a connect attempt', () => {
   it('runs connecting -> waiting-in-browser -> probing -> connected, and adds the account', async () => {
     const { deps, accountsRef } = makeDeps();
     const connect = new AccountsConnect(deps);
-    const started = connect.startConnect('work');
+    const started = connect.startConnect('claude');
     expect(started.ok).toBe(true);
     if (!started.ok) return;
 
@@ -53,14 +53,31 @@ describe('starting a connect attempt', () => {
     expect(attempt?.state).toBe('connected');
     expect(attempt?.link).toBe('https://example.test/authorize/abc');
     expect(accountsRef()).toHaveLength(1);
-    expect(accountsRef()[0]?.label).toBe('work');
+    expect(accountsRef()[0]?.provider).toBe('claude');
+    expect(accountsRef()[0]?.email).toBe('work@example.test');
+  });
+
+  it('a codex attempt spawns with provider "codex" and is confirmed by probeStatus("codex", dir)', async () => {
+    const { deps, accountsRef } = makeDeps();
+    deps.probeStatus = vi.fn(async (_provider: AccountProvider, _configDir: string) => ({ ok: true, email: 'codex@example.test' }));
+    const connect = new AccountsConnect(deps);
+    const started = connect.startConnect('codex');
+    if (!started.ok) throw new Error('expected ok');
+
+    await untilSettled(connect, started.attemptId);
+    const attempt = connect.getAttempt(started.attemptId);
+    expect(attempt?.state).toBe('connected');
+    expect(deps.spawnLogin).toHaveBeenCalledWith('codex', expect.any(String));
+    expect(deps.probeStatus).toHaveBeenCalledWith('codex', expect.any(String));
+    expect(accountsRef()[0]?.provider).toBe('codex');
+    expect(accountsRef()[0]?.email).toBe('codex@example.test');
   });
 
   it('fails cleanly when the probe fails, leaving the registry unchanged', async () => {
     const { deps, accountsRef } = makeDeps();
     deps.probeStatus = vi.fn(async () => ({ ok: false, error: 'not authenticated' }));
     const connect = new AccountsConnect(deps);
-    const started = connect.startConnect('work');
+    const started = connect.startConnect('claude');
     if (!started.ok) throw new Error('expected ok');
 
     await untilSettled(connect, started.attemptId);
@@ -74,7 +91,7 @@ describe('starting a connect attempt', () => {
     const { deps, accountsRef } = makeDeps();
     deps.spawnLogin = vi.fn(async () => ({ ok: false, error: 'browser flow timed out' }));
     const connect = new AccountsConnect(deps);
-    const started = connect.startConnect('work');
+    const started = connect.startConnect('claude');
     if (!started.ok) throw new Error('expected ok');
 
     await untilSettled(connect, started.attemptId);
@@ -85,15 +102,44 @@ describe('starting a connect attempt', () => {
     expect(deps.probeStatus).not.toHaveBeenCalled();
   });
 
-  it('refuses a second concurrent attempt for the same label', () => {
+  it('a probe that reports an email already linked for that provider fails with "already linked" and adds nothing', async () => {
+    const { deps, accountsRef } = makeDeps();
+    deps.loadAccounts = () => [{ id: 'existing', provider: 'claude', label: 'work@example.test', email: 'work@example.test', configDir: '/accounts/existing', connectedAt: 0 }];
+    deps.probeStatus = vi.fn(async () => ({ ok: true, email: 'work@example.test' }));
+    const connect = new AccountsConnect(deps);
+    const started = connect.startConnect('claude');
+    if (!started.ok) throw new Error('expected ok');
+
+    await untilSettled(connect, started.attemptId);
+    const attempt = connect.getAttempt(started.attemptId);
+    expect(attempt?.state).toBe('failed');
+    expect(attempt?.error).toMatch(/already linked/i);
+    expect(accountsRef()).toHaveLength(0);
+  });
+
+  it('the same email under the other provider is not treated as a collision', async () => {
+    const { deps, accountsRef } = makeDeps();
+    deps.loadAccounts = () => [{ id: 'existing', provider: 'codex', label: 'work@example.test', email: 'work@example.test', configDir: '/accounts/existing', connectedAt: 0 }];
+    deps.probeStatus = vi.fn(async () => ({ ok: true, email: 'work@example.test' }));
+    const connect = new AccountsConnect(deps);
+    const started = connect.startConnect('claude');
+    if (!started.ok) throw new Error('expected ok');
+
+    await untilSettled(connect, started.attemptId);
+    const attempt = connect.getAttempt(started.attemptId);
+    expect(attempt?.state).toBe('connected');
+    expect(accountsRef()).toHaveLength(1);
+  });
+
+  it('refuses a second concurrent attempt for the same provider', () => {
     const { deps } = makeDeps();
     let resolveLogin: (value: { ok: boolean; link?: string }) => void = () => {};
     deps.spawnLogin = vi.fn(() => new Promise<{ ok: boolean; link?: string }>((resolve) => { resolveLogin = resolve; }));
     const connect = new AccountsConnect(deps);
-    const first = connect.startConnect('work');
+    const first = connect.startConnect('claude');
     expect(first.ok).toBe(true);
 
-    const second = connect.startConnect('work');
+    const second = connect.startConnect('claude');
     expect(second.ok).toBe(false);
     if (second.ok) throw new Error('expected refusal');
     expect(second.error).toMatch(/already/i);
@@ -101,16 +147,39 @@ describe('starting a connect attempt', () => {
     resolveLogin({ ok: true, link: 'https://example.test' });
   });
 
+  it('does not refuse a concurrent attempt for the other provider', () => {
+    const { deps } = makeDeps();
+    deps.spawnLogin = vi.fn(() => new Promise<{ ok: boolean; link?: string }>(() => {}));
+    const connect = new AccountsConnect(deps);
+    const first = connect.startConnect('claude');
+    expect(first.ok).toBe(true);
+
+    const second = connect.startConnect('codex');
+    expect(second.ok).toBe(true);
+  });
+
   it('refuses a config-dir collision before spawning anything', () => {
     const { deps, accountsRef } = makeDeps();
     void accountsRef;
-    deps.loadAccounts = () => [{ id: 'test-a', label: 'work', configDir: '/accounts/work', connectedAt: 0 }];
+    deps.loadAccounts = () => [{ id: 'test-a', provider: 'claude', label: 'work', configDir: '/accounts/work', connectedAt: 0 }];
     const connect = new AccountsConnect(deps, { configDirFor: () => '/accounts/work' });
-    const result = connect.startConnect('work-2');
+    const result = connect.startConnect('claude');
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('expected refusal');
     expect(result.error).toMatch(/collision/i);
     expect(deps.spawnLogin).not.toHaveBeenCalled();
+  });
+});
+
+describe('identityFrom', () => {
+  it('reads email and subscriptionType out of a real auth status body', () => {
+    expect(identityFrom('{"loggedIn":true,"email":"x@y.z","subscriptionType":"max"}')).toEqual({ plan: 'max', email: 'x@y.z' });
+  });
+
+  it('reads through surrounding noise and tolerates a missing field or garbage entirely', () => {
+    expect(identityFrom('noise before {"subscriptionType":"pro"} noise after')).toEqual({ plan: 'pro' });
+    expect(identityFrom('{"loggedIn":true}')).toEqual({});
+    expect(identityFrom('not json at all')).toEqual({});
   });
 });
 
@@ -123,7 +192,7 @@ describe('disconnecting an account', () => {
   }
 
   it('refuses to remove the last remaining account', async () => {
-    const connect = connectWith([{ id: 'test-a', label: 'only', configDir: '/a', connectedAt: 0 }]);
+    const connect = connectWith([{ id: 'test-a', provider: 'claude', label: 'only', configDir: '/a', connectedAt: 0 }]);
     const result = await connect.disconnect('test-a');
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('expected refusal');
@@ -133,8 +202,8 @@ describe('disconnecting an account', () => {
   it('refuses to remove an account with live runs', async () => {
     const connect = connectWith(
       [
-        { id: 'test-a', label: 'one', configDir: '/a', connectedAt: 0 },
-        { id: 'test-b', label: 'two', configDir: '/b', connectedAt: 0 },
+        { id: 'test-a', provider: 'claude', label: 'one', configDir: '/a', connectedAt: 0 },
+        { id: 'test-b', provider: 'claude', label: 'two', configDir: '/b', connectedAt: 0 },
       ],
       { 'test-a': 2 },
     );
@@ -148,8 +217,8 @@ describe('disconnecting an account', () => {
     const removeAccount = vi.fn();
     const { deps } = makeDeps();
     deps.loadAccounts = () => [
-      { id: 'test-a', label: 'one', configDir: '/a', connectedAt: 0 },
-      { id: 'test-b', label: 'two', configDir: '/b', connectedAt: 0 },
+      { id: 'test-a', provider: 'claude', label: 'one', configDir: '/a', connectedAt: 0 },
+      { id: 'test-b', provider: 'claude', label: 'two', configDir: '/b', connectedAt: 0 },
     ];
     deps.removeAccount = removeAccount;
     const connect = new AccountsConnect(deps);
@@ -160,8 +229,8 @@ describe('disconnecting an account', () => {
 
   it('refuses disconnecting an id that does not exist', async () => {
     const connect = connectWith([
-      { id: 'test-a', label: 'one', configDir: '/a', connectedAt: 0 },
-      { id: 'test-b', label: 'two', configDir: '/b', connectedAt: 0 },
+      { id: 'test-a', provider: 'claude', label: 'one', configDir: '/a', connectedAt: 0 },
+      { id: 'test-b', provider: 'claude', label: 'two', configDir: '/b', connectedAt: 0 },
     ]);
     const result = await connect.disconnect('nope');
     expect(result.ok).toBe(false);
@@ -172,9 +241,9 @@ describe('disconnecting an account', () => {
     // exactly once -- on the last account -- never earlier from a stale count and never
     // later by having missed that it became the last one.
     let accounts: AccountRecord[] = [
-      { id: 'test-a', label: 'a', configDir: '/a', connectedAt: 0 },
-      { id: 'test-b', label: 'b', configDir: '/b', connectedAt: 0 },
-      { id: 'test-c', label: 'c', configDir: '/c', connectedAt: 0 },
+      { id: 'test-a', provider: 'claude', label: 'a', configDir: '/a', connectedAt: 0 },
+      { id: 'test-b', provider: 'claude', label: 'b', configDir: '/b', connectedAt: 0 },
+      { id: 'test-c', provider: 'claude', label: 'c', configDir: '/c', connectedAt: 0 },
     ];
     const { deps } = makeDeps();
     deps.loadAccounts = () => accounts;
@@ -197,18 +266,18 @@ describe('disconnecting an account', () => {
   it('logs the account out before removing it from the registry', async () => {
     const order: string[] = [];
     const removeAccount = vi.fn(() => { order.push('removeAccount'); });
-    const logout = vi.fn(async (_configDir: string) => { order.push('logout'); return { ok: true }; });
+    const logout = vi.fn(async (_provider: AccountProvider, _configDir: string) => { order.push('logout'); return { ok: true }; });
     const { deps } = makeDeps();
     deps.loadAccounts = () => [
-      { id: 'test-a', label: 'one', configDir: '/a', connectedAt: 0 },
-      { id: 'test-b', label: 'two', configDir: '/b', connectedAt: 0 },
+      { id: 'test-a', provider: 'claude', label: 'one', configDir: '/a', connectedAt: 0 },
+      { id: 'test-b', provider: 'claude', label: 'two', configDir: '/b', connectedAt: 0 },
     ];
     deps.removeAccount = removeAccount;
     deps.logout = logout;
     const connect = new AccountsConnect(deps);
     const result = await connect.disconnect('test-b');
     expect(result.ok).toBe(true);
-    expect(logout).toHaveBeenCalledWith('/b');
+    expect(logout).toHaveBeenCalledWith('claude', '/b');
     expect(order).toEqual(['logout', 'removeAccount']);
   });
 
@@ -216,8 +285,8 @@ describe('disconnecting an account', () => {
     const removeAccount = vi.fn();
     const { deps } = makeDeps();
     deps.loadAccounts = () => [
-      { id: 'test-a', label: 'one', configDir: '/a', connectedAt: 0 },
-      { id: 'test-b', label: 'two', configDir: '/b', connectedAt: 0 },
+      { id: 'test-a', provider: 'claude', label: 'one', configDir: '/a', connectedAt: 0 },
+      { id: 'test-b', provider: 'claude', label: 'two', configDir: '/b', connectedAt: 0 },
     ];
     deps.removeAccount = removeAccount;
     deps.logout = vi.fn(async () => ({ ok: false, error: 'claude auth logout exited 1' }));

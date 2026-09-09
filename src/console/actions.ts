@@ -20,7 +20,7 @@ import * as api from './api.js';
 import type { Action as StoreAction, ActionLink, ActionOutcome, View } from './store.js';
 import { useStore } from './store.js';
 import type { SliceName } from '../shared/console-events.js';
-import type { ActionResult, Message } from '../shared/console-model.js';
+import type { AccountProvider, ActionResult, Message } from '../shared/console-model.js';
 
 export type Effect = 'lane' | 'queue' | 'integration' | 'account' | 'caps' | 'conductor' | 'proposal' | 'blocker' | 'journal' | 'none';
 
@@ -231,9 +231,9 @@ export const ACTIONS = {
     jid: (response) => response.jid,
     link: () => viewLink('settings', 'integrations'),
   }),
-  connectAccount: spec<[string], Awaited<ReturnType<typeof api.connectAccount>>>({
+  connectAccount: spec<[AccountProvider], Awaited<ReturnType<typeof api.connectAccount>>>({
     id: 'connectAccount', label: 'Connect', reversible: true, effect: 'account',
-    call: ([label]) => api.connectAccount(label),
+    call: ([provider]) => api.connectAccount(provider),
     text: (response) => (response.ok ? 'connect attempt started' : response.error ?? 'could not start the connect attempt'),
     ok: (response) => response.ok,
     link: () => viewLink('settings', 'accounts'),

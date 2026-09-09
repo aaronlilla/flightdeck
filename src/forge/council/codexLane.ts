@@ -17,6 +17,8 @@ import { join } from 'node:path';
 
 import { z } from 'zod';
 
+import { configDirForSession, loadAccounts } from '../accounts.js';
+import { readAccountUsage } from '../accounts-usage.js';
 import { redact } from '../contracts.ts';
 import type { CouncilFinding } from '../contracts.ts';
 import type { Journal } from '../journal.ts';
@@ -197,6 +199,10 @@ export interface CodexLaneDeps {
 export function makeCodexLane(deps: CodexLaneDeps = {}): CodexLane {
   const runner = deps.runner ?? REAL_CODEX_CALL_RUNNER;
   const env = deps.env ?? workerEnv(process.env);
+  // A linked ChatGPT account with headroom becomes this call's Codex home; with none
+  // linked the call runs under the machine's own `~/.codex`, as before accounts existed.
+  const codexHome = configDirForSession(loadAccounts(), readAccountUsage(), {}, Date.now(), undefined, 'codex').configDir;
+  if (codexHome && !deps.env) env['CODEX_HOME'] = codexHome;
   const timeoutS = deps.timeoutS
     ?? (Number(process.env['FORGE_CODEX_TIMEOUT_S']) || DEFAULT_TIMEOUT_S);
   const label = `council ${deps.run ?? 'unknown'}`;
