@@ -13,7 +13,7 @@ Aaron, 2026-09-08. Only Aaron edits this paragraph.
 | id | delivers | serves | status | pr | proof |
 | --- | --- | --- | --- | --- | --- |
 | R-01 | doctrine/ROADMAP.md exists with these sections | autonomy | running | this PR | file on main |
-| R-02 | roadmap guards: briefs for this repo need a `roadmap: R-nn` line, `npm run check:roadmap` in verify, conductor parks off-roadmap lanes, self-loop findings without an id land under Proposed | autonomy | review | #88, #TBD | guard #1 (brief line), guard #2 (`check:roadmap` in verify), guard #3 (off-roadmap lane park), guard #4 (Proposed routing) all shown red on a specimen then green |
+| R-02 | roadmap guards: briefs for this repo need a `roadmap: R-nn` line, `npm run check:roadmap` in verify, conductor parks off-roadmap lanes, self-loop findings without an id land under Proposed | autonomy | review | #88, #91 | guard #1 (brief line), guard #2 (`check:roadmap` in verify), guard #3 (off-roadmap lane park), guard #4 (Proposed routing) all shown red on a specimen then green |
 | R-03 | design canvas of every console surface and dialogue | autonomy | done | https://claude.ai/code/artifact/1dad754e-dd7b-4c09-aa26-c09ba51a7737 | canvas saved 2026-09-08; Aaron's Claude Design revision imported to `doctrine/design/` |
 | R-04 | the three UX rules as tests (identifier lint, one shared question card, one action per card state) | autonomy | running | | red on today's board, then green per fix |
 | R-05 | auto-merge honours FORGE_COUNCIL_AUTOMERGE | autonomy | done | #77 | Q-56440c7b merged with mergedBy queue, PR #79 |
