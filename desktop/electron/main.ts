@@ -18,7 +18,6 @@ import { hasLiveRun } from './fleet-state';
 import { readGitHead } from './git-head';
 import { consoleLabel } from './labels';
 import { queueIsOn } from './queue-state';
-import { accountsLine } from './accounts-line';
 import { WINDOW_OPTIONS, STATUS_WINDOW_OPTIONS } from './window-options';
 import { statusPageHtml } from './status-page';
 import { settingsPageHtml } from './settings-page';
@@ -56,38 +55,6 @@ function fetchState(): Promise<Record<string, unknown>> {
     );
     request.on('timeout', () => { request.destroy(); reject(new Error('/state timed out')); });
     request.on('error', reject);
-  });
-}
-
-/** `GET /accounts` with the console's own server token, capped at two seconds; any
- *  failure becomes one honest status line rather than a missing one. */
-async function readAccountsLine(): Promise<string> {
-  const forgeHomeDir = process.env['FORGE_HOME'] ?? join(app.getPath('home'), '.forge');
-  const tokenPath = join(forgeHomeDir, 'server-token');
-  let token = '';
-  try {
-    token = readFileSync(tokenPath, 'utf8').trim();
-  } catch {
-    return `Accounts: not read (no server token at ${tokenPath}).`;
-  }
-  return new Promise((resolve) => {
-    const request = httpGet(
-      { host: '127.0.0.1', port: 4120, path: '/accounts', timeout: 2000, headers: { 'x-forge-token': token } },
-      (response: IncomingMessage) => {
-        let body = '';
-        response.on('data', (chunk: Buffer) => { body += chunk.toString(); });
-        response.on('end', () => {
-          if (response.statusCode !== 200) { resolve(`Accounts: not read (/accounts answered ${response.statusCode}).`); return; }
-          try {
-            resolve(accountsLine(JSON.parse(body)));
-          } catch (error) {
-            resolve(`Accounts: not read (${error instanceof Error ? error.message : String(error)}).`);
-          }
-        });
-      },
-    );
-    request.on('timeout', () => { request.destroy(); resolve('Accounts: not read (/accounts timed out).'); });
-    request.on('error', (error) => resolve(`Accounts: not read (${error.message}).`));
   });
 }
 
@@ -308,8 +275,6 @@ async function bootstrap(): Promise<void> {
 
   const head = startedByThisApp ? readGitHead(git(), checkoutDir) : undefined;
   currentLabel = consoleLabel(startedByThisApp ? 'started' : 'attached', head);
-
-  logToStatus(await readAccountsLine());
 
   showStatus('Loading the board…');
   mainWindow = createMainWindow();

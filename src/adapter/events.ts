@@ -56,20 +56,6 @@ export type EngineEvent =
       }>;
     }
   | { type: 'compact-boundary'; trigger: string }
-  | {
-      /**
-       * The SDK's `rate_limit_event`, sent for claude.ai subscription sessions when the
-       * plan window state changes. On an ordinary turn it carries `status` and the
-       * window's reset time and nothing else; `utilization` arrives only when the
-       * product includes it. `resetsAt` is milliseconds since the epoch here (the SDK
-       * sends seconds), or null when the event named no reset.
-       */
-      type: 'rate-limit';
-      status: 'allowed' | 'allowed_warning' | 'rejected';
-      window: string | null;
-      utilization: number | null;
-      resetsAt: number | null;
-    }
   | { type: 'engine-error'; message: string; fatal: boolean }
   | { type: 'stderr'; text: string }
   | { type: 'unknown-message'; kind: string };

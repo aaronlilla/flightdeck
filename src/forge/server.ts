@@ -163,7 +163,7 @@ export interface ForgeServerOptions {
    *  else that constructs a `ForgeServer` with the router turned on must supply one
    *  or `POST /router` answers 501 rather than throwing. */
   reasoner?: Reasoner;
-  /** Overrides the console's read routes (`/lanes`, `/thread`, `/journal`, `/caps`, `/accounts`,
+  /** Overrides the console's read routes (`/lanes`, `/thread`, `/journal`, `/caps`,
    *  `/proposals`, `/run/:id/{thread,pr,sandbox}`). A specimen only: production always
    *  gets the default, which reads the real `~/.forge` tree. */
   consoleReads?: ConsoleReads;

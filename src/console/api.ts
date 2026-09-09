@@ -9,7 +9,6 @@ import type {
   AccountsResponse,
   ActionResult,
   BlockersActionResult,
-  AccountsResponse,
   BlockersResponse,
   Caps,
   CommandResponse,
@@ -176,10 +175,6 @@ export function postMergeReady(confirm?: string): Promise<Gated<MergeReadyResult
 
 export function getBlockers(): Promise<BlockersResponse> {
   return call<BlockersResponse>('/blockers');
-}
-
-export function getAccounts(): Promise<AccountsResponse> {
-  return call<AccountsResponse>('/accounts');
 }
 
 export function resolveBlocker(id: string): Promise<BlockersActionResult> {

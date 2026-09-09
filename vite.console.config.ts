@@ -50,7 +50,6 @@ export default defineConfig({
       '/integrations': proxied(),
       '/accounts': proxied(),
       '/caps': proxied(),
-      '/accounts': proxied(),
       '/proposals': proxied(),
       '/command': proxied(),
       '/run': proxied(),
