@@ -760,6 +760,16 @@ export interface SdkEngineDeps {
    * only report that none was recorded rather than resume the run on it.
    */
   onSessionStarted?: (run: string, sessionId: string, model: string) => void;
+  /** Forwarded straight into `buildForgeToolHandlers` (see `ForgeHandlerDeps` above), so
+   *  a real `forge run` process pads a short `forge_ask` the same way the specimens that
+   *  call `buildForgeToolHandlers` directly already do. Unset until a caller (`forge
+   *  run`) builds one; every existing specimen still builds an engine with none, and
+   *  keeps the old synchronous behavior. */
+  reasoner?: Reasoner;
+  /** Context handed to `completeAskOptions` alongside the reasoner above; see
+   *  `ForgeHandlerDeps.briefTitle`/`recentJournalRows`. */
+  briefTitle?: string;
+  recentJournalRows?: string[];
 }
 
 async function ghDriftCheck(cwd: string): Promise<Mergeable> {
@@ -854,6 +864,10 @@ export class SdkEngine implements EngineLike {
 
     const handlers = buildForgeToolHandlers({
       run: request.run, goal, inbox, journal, parked: this.parked, gotchas,
+      ...(this.deps.reasoner ? { reasoner: this.deps.reasoner } : {}),
+      ...(this.deps.briefTitle !== undefined ? { briefTitle: this.deps.briefTitle } : {}),
+      ...(this.deps.recentJournalRows !== undefined
+        ? { recentJournalRows: this.deps.recentJournalRows } : {}),
     });
 
     // Each assistant message's usage already carries the whole context of that turn --

@@ -1266,6 +1266,49 @@ describe('F3: forge_ask parks', () => {
   });
 });
 
+describe('W1 wiring: SdkEngineDeps forwards a reasoner into the real tool handlers', () => {
+  it('pads a short forge_ask raised through a live SdkEngine session, not only through buildForgeToolHandlers directly', async () => {
+    // The gap this closes: buildForgeToolHandlers already pads options when handed a
+    // reasoner directly (the F3 specimen above), but nothing proved SdkEngine.run()
+    // itself passes deps.reasoner down to that call. Before this fix, SdkEngineDeps had
+    // no reasoner field at all, so a real forge_ask would raise with the worker's own
+    // bare options and no recommendation, since the engine never wired one in.
+    //
+    // `fakeQuery`'s `toolUse` script step only replays the tool_use/tool_result
+    // messages; it never calls the tool through the real SDK server the way a live
+    // session does. To prove the wiring reaches the actual tool the SDK invokes, this
+    // pulls the registered `forge_ask` tool straight off the mcpServers config (the
+    // same lookup the "registering the forge tools" specimen above uses) and calls its
+    // handler directly.
+    const { fn, calls } = fakeQuery([[{ text: 'ok' }]]);
+    const reasoner = {
+      provider: 'claude' as const,
+      call: async () => ({
+        text: JSON.stringify({ options: ['dev', 'staging', 'prod', 'canary'], recommended: 2 }),
+      }),
+    };
+    const inboxDir = join(home, 'inbox-w1-wiring');
+    const engine = new SdkEngine({
+      journalPath, inboxDir, gotchasDir: join(home, 'gotchas-w1-wiring'), queryFn: fn,
+      reasoner,
+    } as never);
+
+    await engine.run({ ...REQUEST, run: 'w1-wiring-run', env: { PATH: '/usr/bin' } });
+
+    const forgeServer = calls[0]!.options.mcpServers?.['forge'] as unknown as
+      { instance: { _registeredTools: Record<string, { handler: (args: unknown) => Promise<unknown> }> } };
+    await forgeServer.instance._registeredTools['forge_ask']!.handler({ question: 'which environment?', options: ['dev'] });
+
+    const inbox = new Inbox(inboxDir);
+    const key = engine.parkedOn('w1-wiring-run');
+    expect(key).toBeTruthy();
+    const entry = inbox.entry(key as string);
+    expect(entry?.optionSource).toBe('drafted');
+    expect(entry?.options.length).toBeGreaterThanOrEqual(4);
+    expect(typeof entry?.recommended).toBe('number');
+  });
+});
+
 describe('F4: close() stops every live engine, not just forgetting about it', () => {
   it('tells the underlying session to stop once the whole chain is done', async () => {
     // A real async generator, standing in for the SDK's own session stream: calling
