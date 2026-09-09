@@ -22,7 +22,7 @@ Aaron, 2026-09-08. Only Aaron edits this paragraph.
 | R-08 | the handoff comment carries the worker's real visual plan; JoeHandoff posted on backend tickets; OTA outcome written back | autonomy | planned | | Haiping's ticket shows numbered steps |
 | R-09 | decisions on evidence: `decide:` line, `## Decision` posted before launch | autonomy | planned | | a Lane A ticket whose first comment is the decision |
 | R-10 | width 8 and the fixed two-by-four running grid with idle cards | clock | planned | | eight cards, idle slots say why |
-| R-11 | intake bridge to the queue store; Jira watcher at 30 s; a comment on an owned ticket becomes a send; Done closes the lane | clock | planned | | a comment reaches its lane within one poll |
+| R-11 | intake bridge to the queue store; Jira watcher at 30 s; a comment on an owned ticket becomes a send; Done closes the lane | clock | review | #99 | a comment reaches its lane within one poll |
 | R-12 | Sentry and CloudWatch feeds with watermarks and lane cards | any-board | planned | | a hand-flipped alarm is one event |
 | R-13 | `event` kind: triage session, verdicts, `create` on the Jira client, form-shaped filing | autonomy | planned | | a synthetic Sentry issue becomes a ticket with a finding |
 | R-14 | digest lane: noise ledger folded once a day into one Jira comment | tokens | planned | | the digest posts once with its card's count |
