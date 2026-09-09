@@ -270,6 +270,44 @@ function consumeWrote(state: FleetState, run: string): boolean {
   return true;
 }
 
+/**
+ * True when `row` looks like the SDK's own per-block repeat of `prev` rather than a
+ * second, genuine usage event: same run, same model, all four usage numbers identical,
+ * and close enough in time that it is almost certainly the same turn's usage object
+ * seen twice (23.1% of `subagent.usage` rows in a real fleet.jsonl were exact repeats
+ * of the row immediately before them, within milliseconds). The 5-second window is a
+ * heuristic, not a proof: two genuinely identical consecutive turns landing inside 5s
+ * of each other would also be merged by this check.
+ */
+export function isRepeatedUsageRow(prev: ForgeEvent | undefined, row: ForgeEvent): boolean {
+  if (!prev || !prev.usage || !row.usage) return false;
+  if (prev.run !== row.run || prev.model !== row.model) return false;
+  if (prev.usage.input !== row.usage.input) return false;
+  if (prev.usage.cacheRead !== row.usage.cacheRead) return false;
+  if (prev.usage.cacheCreation !== row.usage.cacheCreation) return false;
+  if (prev.usage.output !== row.usage.output) return false;
+  return Math.abs(row.at - prev.at) < 5_000;
+}
+
+/** Last usage-carrying row seen per run, per `FleetState`, so `foldLine` can tell a
+ *  genuine second usage event from the SDK's own per-block repeat of the first. Kept
+ *  out of `FleetState` itself (like `wroteSinceLastTurn`) so it never becomes part of
+ *  the state a caller can inspect or serialize. */
+const lastUsageRowByRun = new WeakMap<FleetState, Map<string, ForgeEvent>>();
+
+function lastUsageRow(state: FleetState, run: string): ForgeEvent | undefined {
+  return lastUsageRowByRun.get(state)?.get(run);
+}
+
+function setLastUsageRow(state: FleetState, run: string, row: ForgeEvent): void {
+  let map = lastUsageRowByRun.get(state);
+  if (!map) {
+    map = new Map();
+    lastUsageRowByRun.set(state, map);
+  }
+  map.set(run, row);
+}
+
 /** One line folded into `state`. Shared by `replay()` and `JournalCache`, so a full parse
  *  and an incremental one can never learn different lessons from the same line. */
 function foldLine(state: FleetState, line: string): void {
@@ -284,26 +322,35 @@ function foldLine(state: FleetState, line: string): void {
   state.events.push(row);
 
   if (row.usage) {
-    const alias = aliasOf(row.model ?? '');
-    // Real tokens moved whether or not this policy has a price for the model that
-    // billed them -- `tokensUsed` is the board's own honest total and never waits on
-    // a price table the way `costUsd`/`burn` (list-price-equivalent, still useful for
-    // the Governor's own dollar-denominated admission checks) do.
-    const tokensThisRow = row.usage.input + row.usage.cacheRead + row.usage.cacheCreation + row.usage.output;
-    if (row.run) runOf(state, row.run).tokensUsed += tokensThisRow;
-    if (!isKnownAlias(alias)) {
-      // Billed nothing rather than at whatever priceFor's fallback used to guess: the
-      // model itself is named here so a person can add it to model-policy.json instead
-      // of the fallback rate quietly becoming the answer for every reroute like it.
-      if (!state.unknownModels.includes(row.model ?? alias)) state.unknownModels.push(row.model ?? alias);
-    } else {
-      const spent = costOf(row.usage, alias);
-      state.burn[alias] = (state.burn[alias] ?? 0) + spent;
-      if (row.run) {
-        const run = runOf(state, row.run);
-        run.costUsd += spent;
-        run.cacheReadTokens += row.usage.cacheRead;
-        run.totalReadTokens += row.usage.input + row.usage.cacheRead;
+    // The SDK repeats one turn's usage object across every content-block message it
+    // sends for that turn; the adapter now dedupes its own live `usage` events for
+    // this reason (see `src/adapter/engine.ts`), but rows already on disk from before
+    // that fix -- and any other producer of `usage`/`subagent.usage` rows -- still need
+    // the same skip on replay, or the fold double-counts what the block repeat wrote.
+    const repeated = row.run ? isRepeatedUsageRow(lastUsageRow(state, row.run), row) : false;
+    if (row.run) setLastUsageRow(state, row.run, row);
+    if (!repeated) {
+      const alias = aliasOf(row.model ?? '');
+      // Real tokens moved whether or not this policy has a price for the model that
+      // billed them -- `tokensUsed` is the board's own honest total and never waits on
+      // a price table the way `costUsd`/`burn` (list-price-equivalent, still useful for
+      // the Governor's own dollar-denominated admission checks) do.
+      const tokensThisRow = row.usage.input + row.usage.cacheRead + row.usage.cacheCreation + row.usage.output;
+      if (row.run) runOf(state, row.run).tokensUsed += tokensThisRow;
+      if (!isKnownAlias(alias)) {
+        // Billed nothing rather than at whatever priceFor's fallback used to guess: the
+        // model itself is named here so a person can add it to model-policy.json instead
+        // of the fallback rate quietly becoming the answer for every reroute like it.
+        if (!state.unknownModels.includes(row.model ?? alias)) state.unknownModels.push(row.model ?? alias);
+      } else {
+        const spent = costOf(row.usage, alias);
+        state.burn[alias] = (state.burn[alias] ?? 0) + spent;
+        if (row.run) {
+          const run = runOf(state, row.run);
+          run.costUsd += spent;
+          run.cacheReadTokens += row.usage.cacheRead;
+          run.totalReadTokens += row.usage.input + row.usage.cacheRead;
+        }
       }
     }
   }

@@ -215,6 +215,14 @@ export class Engine {
 
   private sessionId: string | null = null;
   private lastServingModel: string | null = null;
+  /**
+   * The SDK delivers one `assistant` message per content block (text, tool_use, ...),
+   * and every one of those messages for a given turn carries the same `message.id`
+   * and the same `usage` object — the totals for the whole turn, repeated verbatim on
+   * each block. Tracking the last message id we already counted lets a turn with
+   * several blocks emit its `usage` event exactly once.
+   */
+  private lastUsageMessageId: string | null = null;
   private readonly queryFn: QueryFn;
 
   /**
@@ -304,7 +312,13 @@ export class Engine {
         const model = message.message.model;
         if (model) this.lastServingModel = model;
         const usage = message.message.usage;
-        if (usage) {
+        // The SDK repeats the same message.id and the same usage totals on every
+        // content-block message that makes up one turn. Only the first block of a
+        // given message.id should turn into a usage event, or a turn with a text
+        // block plus a tool call double-counts its tokens.
+        const messageId = (message.message as { id?: string }).id ?? null;
+        if (usage && (messageId === null || messageId !== this.lastUsageMessageId)) {
+          if (messageId !== null) this.lastUsageMessageId = messageId;
           this.emit({
             type: 'usage',
             model: model ?? '',

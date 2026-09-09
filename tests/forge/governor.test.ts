@@ -349,3 +349,29 @@ describe('Codex\'s own ledger, separate from the fleet\'s and carrying no USD', 
     expect(folded).not.toHaveProperty('usd');
   });
 });
+
+describe('reconcileBurn does not double-count the SDK\'s per-block usage repeat', () => {
+  it('does not flag a mismatch when a subagent.usage row is an exact near-instant repeat', () => {
+    writeEvents(
+      { event: 'run.started', run: 'r1', actor: 'runner', className: 'implement', model: 'claude-sonnet-5', at: 1_000 },
+      {
+        event: 'usage', run: 'r1', actor: 'worker', model: 'claude-sonnet-5', at: 1_100,
+        usage: { input: 1_000_000, cacheRead: 0, cacheCreation: 0, output: 0 },
+      },
+      // The SDK's own per-block repeat of the exact same usage object, moments later.
+      {
+        event: 'usage', run: 'r1', actor: 'worker', model: 'claude-sonnet-5', at: 1_150,
+        usage: { input: 1_000_000, cacheRead: 0, cacheCreation: 0, output: 0 },
+      },
+      {
+        event: 'result.usage', run: 'r1', actor: 'worker', at: 1_200,
+        modelUsage: { 'claude-sonnet-5': { input: 1_000_000, cacheRead: 0, cacheCreation: 0, output: 0, costUsd: 3.0 } },
+      },
+    );
+    const state = replay(path);
+    const ledger = buildBurnLedger(state.events);
+    // Before the fix, perMessageSum counted the repeat too and doubled to ~6.0,
+    // which is more than 5% away from the result-message sum and would false-flag.
+    expect(reconcileBurn(state, ledger)).toHaveLength(0);
+  });
+});
