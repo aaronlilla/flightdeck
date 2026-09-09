@@ -12,7 +12,7 @@ Aaron, 2026-09-08. Only Aaron edits this paragraph.
 | --- | --- | --- | --- | --- | --- |
 | R-01 | doctrine/ROADMAP.md exists with these sections | autonomy | running | this PR | file on main |
 | R-02 | roadmap guards: briefs for this repo need a `roadmap: R-nn` line, `npm run check:roadmap` in verify, conductor parks off-roadmap lanes, self-loop findings without an id land under Proposed | autonomy | planned | | each guard shown red on a specimen |
-| R-03 | design canvas of every console surface and dialogue | autonomy | done | https://claude.ai/code/artifact/1dad754e-dd7b-4c09-aa26-c09ba51a7737 | canvas saved 2026-09-08 |
+| R-03 | design canvas of every console surface and dialogue | autonomy | done | https://claude.ai/code/artifact/1dad754e-dd7b-4c09-aa26-c09ba51a7737 | canvas saved 2026-09-08; Aaron's Claude Design revision imported to `doctrine/design/` |
 | R-04 | the three UX rules as tests (identifier lint, one shared question card, one action per card state) | autonomy | running | | red on today's board, then green per fix |
 | R-05 | auto-merge honours FORGE_COUNCIL_AUTOMERGE | autonomy | done | #77 | Q-56440c7b merged with mergedBy queue, PR #79 |
 | R-06 | the packet carries comments, assignee and links; In Review/QA scopes from the last QA comment | autonomy | planned | | a specimen ticket in QA planned from its last comment |
@@ -25,7 +25,7 @@ Aaron, 2026-09-08. Only Aaron edits this paragraph.
 | R-13 | `event` kind: triage session, verdicts, `create` on the Jira client, form-shaped filing | autonomy | planned | | a synthetic Sentry issue becomes a ticket with a finding |
 | R-14 | digest lane: noise ledger folded once a day into one Jira comment | tokens | planned | | the digest posts once with its card's count |
 | R-15 | supply rule: blockers first, then the back-fill order | clock | planned | | a free slot fills in the stated order |
-| R-16 | console surfaces rebuilt to the canvas | autonomy | planned | | the R-04 tests green |
+| R-16 | console surfaces rebuilt to `doctrine/design/Flightdeck Console.dc.html` | autonomy | planned | | the R-04 tests green and the console matches the design's Board, Chrome and Rail |
 | R-17 | conductor tools: repo read, tests, forge CLI, every console route, self-brief authoring | autonomy | planned | | the conductor clears a blocker with no person |
 | R-18 | project files and workflow discovery; every reader off FORGE_* | any-board | planned | | a second Jira project runs one ticket with no code change |
 | R-19 | a worker's leftover uncommitted files never park the item at the gate | autonomy | running | | the two 2026-09-08 cases pass |
