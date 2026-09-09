@@ -6,9 +6,9 @@
  * the Settings width and theme controls, the Flight review's Apply, and the lane sheet's
  * Answer and Send.
  */
-import { screen, within, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, within, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Chrome } from '../../src/console/components/Chrome.js';
 import { FlightReview } from '../../src/console/components/FlightReview.js';
@@ -100,19 +100,96 @@ describe('the Board', () => {
 });
 
 describe('the Queue and Settings steppers write the width', () => {
-  it('the Queue stepper posts one more', async () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mocks.postQueueWidth.mockClear();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('the Queue stepper posts one more, once the clicking stops', async () => {
     render(<QueueView items={[]} paused={false} maxInFlight={4} working={1} />);
-    await userEvent.click(within(screen.getByTestId('queue-width')).getByRole('button', { name: 'one more' }));
+    fireEvent.click(within(screen.getByTestId('queue-width')).getByRole('button', { name: 'one more' }));
+    expect(mocks.postQueueWidth).not.toHaveBeenCalled();
+    await act(async () => { await vi.advanceTimersByTimeAsync(400); });
     expect(mocks.postQueueWidth).toHaveBeenCalledWith(5);
   });
 
-  it('Settings posts one fewer and flips the theme', async () => {
+  it('Settings posts one fewer, once the clicking stops, and flips the theme', async () => {
     const onTheme = vi.fn();
     render(<Settings integrations={[]} accounts={[]} caps={null} now={now} maxInFlight={4} theme="light" onTheme={onTheme} />);
-    await userEvent.click(within(screen.getByTestId('settings-width')).getByRole('button', { name: 'one fewer' }));
+    fireEvent.click(within(screen.getByTestId('settings-width')).getByRole('button', { name: 'one fewer' }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(400); });
     expect(mocks.postQueueWidth).toHaveBeenCalledWith(3);
-    await userEvent.click(screen.getByTestId('theme-dark'));
+    fireEvent.click(screen.getByTestId('theme-dark'));
     expect(onTheme).toHaveBeenCalledWith('dark');
+  });
+
+  it('the displayed number moves at once, before any post goes out', () => {
+    render(<QueueView items={[]} paused={false} maxInFlight={4} working={1} />);
+    fireEvent.click(within(screen.getByTestId('queue-width')).getByRole('button', { name: 'one more' }));
+    expect(within(screen.getByTestId('queue-width')).getByText('5')).toBeInTheDocument();
+    expect(mocks.postQueueWidth).not.toHaveBeenCalled();
+  });
+
+  it('six to ten is one post of 10, not one per click', async () => {
+    render(<QueueView items={[]} paused={false} maxInFlight={6} working={1} />);
+    const more = within(screen.getByTestId('queue-width')).getByRole('button', { name: 'one more' });
+    fireEvent.click(more);
+    await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+    fireEvent.click(more);
+    await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+    fireEvent.click(more);
+    await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+    fireEvent.click(more);
+    expect(within(screen.getByTestId('queue-width')).getByText('10')).toBeInTheDocument();
+    expect(mocks.postQueueWidth).not.toHaveBeenCalled();
+    await act(async () => { await vi.advanceTimersByTimeAsync(400); });
+    expect(mocks.postQueueWidth).toHaveBeenCalledTimes(1);
+    expect(mocks.postQueueWidth).toHaveBeenCalledWith(10);
+  });
+
+  it('a rejected post snaps the display back to the server value', async () => {
+    mocks.postQueueWidth.mockResolvedValueOnce({ ok: false, jid: null, message: 'width refused', undoable: false });
+    render(<QueueView items={[]} paused={false} maxInFlight={4} working={1} />);
+    const more = within(screen.getByTestId('queue-width')).getByRole('button', { name: 'one more' });
+    fireEvent.click(more);
+    expect(within(screen.getByTestId('queue-width')).getByText('5')).toBeInTheDocument();
+    await act(async () => { await vi.advanceTimersByTimeAsync(400); });
+    expect(within(screen.getByTestId('queue-width')).getByText('4')).toBeInTheDocument();
+  });
+
+  it('a debounce that fires mid-flight is queued and resent once the call settles, never dropped', async () => {
+    let resolveFirst!: (value: { ok: boolean; jid: string | null; message: string; undoable: boolean }) => void;
+    const first = new Promise<{ ok: boolean; jid: string | null; message: string; undoable: boolean }>((resolve) => { resolveFirst = resolve; });
+    mocks.postQueueWidth.mockImplementationOnce(() => first);
+    render(<QueueView items={[]} paused={false} maxInFlight={4} working={1} />);
+    const more = within(screen.getByTestId('queue-width')).getByRole('button', { name: 'one more' });
+    fireEvent.click(more);
+    await act(async () => { await vi.advanceTimersByTimeAsync(400); });
+    expect(mocks.postQueueWidth).toHaveBeenCalledTimes(1);
+    expect(mocks.postQueueWidth).toHaveBeenCalledWith(5);
+    // A second click's debounce fires while the first post is still in flight --
+    // `useAction.run` would drop it silently; the hook must hold it instead.
+    fireEvent.click(more);
+    await act(async () => { await vi.advanceTimersByTimeAsync(400); });
+    expect(mocks.postQueueWidth).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      resolveFirst({ ok: true, jid: null, message: 'queue width set to 5', undoable: false });
+      await Promise.resolve();
+    });
+    expect(mocks.postQueueWidth).toHaveBeenCalledTimes(2);
+    expect(mocks.postQueueWidth).toHaveBeenLastCalledWith(6);
+  });
+
+  it('a width another actor set is picked up when the user is not mid-edit', () => {
+    const { rerender } = render(<QueueView items={[]} paused={false} maxInFlight={4} working={1} />);
+    expect(within(screen.getByTestId('queue-width')).getByText('4')).toBeInTheDocument();
+    rerender(<QueueView items={[]} paused={false} maxInFlight={10} working={1} />);
+    expect(within(screen.getByTestId('queue-width')).getByText('10')).toBeInTheDocument();
+    expect(mocks.postQueueWidth).not.toHaveBeenCalled();
   });
 });
 
