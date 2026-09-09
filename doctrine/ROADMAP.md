@@ -51,6 +51,9 @@ Aaron, 2026-09-08. Only Aaron edits this paragraph.
 | R-37 | per-item event-driven actors on top of R-24's leases | clock | planned | | an item advances on its own wake event instead of waiting for the next tick |
 | R-38 | completion schema and deterministic finalizer, routines matched by repo kind | tokens | planned | | `forge_done` evidence validates against a schema; an RN brief carries no roadmap routine |
 | R-39 | auto-compaction probe with the fleet threshold below the class ceiling | tokens | planned | | a probed session compacts before hitting the worker's context ceiling |
+| R-40 | no merge on a stale base: the gate re-runs the checks on the merge result when the base advanced since the PR's last green run | autonomy | planned | | a PR whose base moved is re-verified before merge, and `main` is never left red |
+| R-41 | `check:roadmap` fails a run only for the branch under test, never for another open PR's body; `verify`'s steps and CI's steps are the same list | autonomy | planned | | a worker's `npm run verify` cannot fail because another draft PR cites no R-id |
+| R-42 | a self-fix may never delete or skip a test to clear a red check; it fixes the code or parks and asks | autonomy | planned | | a specimen self-brief that deletes a failing test is refused at the gate |
 
 ## Not in scope
 
@@ -78,6 +81,13 @@ Aaron, 2026-09-08. Only Aaron edits this paragraph.
 - 2026-09-08: the docs repository's roadmap on branch `docs/amp-g2-implementation` is retired by this file.
 - 2026-09-09: Codex lane is risky and large diffs only, except when it's something that deals with money, which always needs the highest and most aggressive review (Aaron). Money paths always get the full council — 3 lenses, Codex lane, Opus judge, all fix rounds — regardless of size.
 - 2026-09-09: R-23 to R-32 promoted from the wall-clock audit; first wave R-23 to R-26.
+- 2026-09-09: pass-2 review (Claude + Codex): ticks overlap on stale snapshots, so tick
+  coalescing and per-item leases (R-24) precede any concurrency; attestation reuse
+  across a rebase is rejected; the Codex lane timeout stays at 900 s; the queue's git
+  auto-merge is allowed only when bound to the attested head and base.
+- 2026-09-09: a green PR is not a green merge. `main` went red when a PR whose checks predated a rebuilt component merged on a stale base, and again when a draft merged an import whose file was never committed. A red `main` blocks every queue merge. Requiring branches to be up to date is rejected because it serialises the fleet at width 6 to 12; the gate re-verifies only when the base advanced (R-40).
+- 2026-09-09: the roadmap guard must not couple one PR's verification to another PR's body, and CI must run the same steps as `verify` (today it skips `typecheck:console`, `check:ux`, `check:roadmap` and the desktop tests, so a green CI is narrower than a green verify) (R-41).
+- 2026-09-09 (Aaron): a self-fix may never delete a test to go green. The self loop's answer to a red trunk was to delete the failing rail-hygiene test, which was reporting a real regression: the rebuilt rail had lost its Activity drawer. Fix the code, or park and ask (R-42).
 
 ## Proposed
 
@@ -89,7 +99,3 @@ Self-loop findings that cite no R-id land here; only Aaron promotes them.
 - Every brief carries `roadmap: R-nn`.
 - A change to the goal paragraph without Aaron's own words in the commit is a defect.
 - Update an item's status and pr in the same PR that changes it.
-- 2026-09-09: pass-2 review (Claude + Codex): ticks overlap on stale snapshots, so tick
-  coalescing and per-item leases (R-24) precede any concurrency; attestation reuse
-  across a rebase is rejected; the Codex lane timeout stays at 900 s; the queue's git
-  auto-merge is allowed only when bound to the attested head and base.
