@@ -44,6 +44,13 @@ Aaron, 2026-09-08. Only Aaron edits this paragraph.
 | R-30 | ticket planning retries a transient fetch; reason on the fleet row | clock | planned | | a `fetch failed` plan hop retries with backoff instead of failing the item |
 | R-31 | warm-template provisioning by copy | clock | planned | | a matching `package-lock.json` hash skips `npm ci` for a copy |
 | R-32 | burn.mismatch once per change; cached journal readers | clock | planned | | `burn.mismatch` rows drop to one per run per changed value |
+| R-33 | hook tax measured then batched into one fail-closed dispatcher | clock | planned | | per-Bash-call hook overhead drops from 2.1 s to under 400 ms, no guard weakened |
+| R-34 | fix rounds wired with a CI failure classifier | autonomy | planned | | a FIX FIRST verdict launches a same-worktree repair round instead of parking forever |
+| R-35 | one PR snapshot per item, gh reads 8 to 4 | tokens | planned | | a clean PR's advance uses 4 `gh` calls instead of 8 |
+| R-36 | council runs while CI runs, attest only on exact head+base+green CI | clock | planned | | PR→merge time drops to max(CI, council) with no stale-head attestation |
+| R-37 | per-item event-driven actors on top of R-24's leases | clock | planned | | an item advances on its own wake event instead of waiting for the next tick |
+| R-38 | completion schema and deterministic finalizer, routines matched by repo kind | tokens | planned | | `forge_done` evidence validates against a schema; an RN brief carries no roadmap routine |
+| R-39 | auto-compaction probe with the fleet threshold below the class ceiling | tokens | planned | | a probed session compacts before hitting the worker's context ceiling |
 
 ## Not in scope
 
@@ -82,3 +89,7 @@ Self-loop findings that cite no R-id land here; only Aaron promotes them.
 - Every brief carries `roadmap: R-nn`.
 - A change to the goal paragraph without Aaron's own words in the commit is a defect.
 - Update an item's status and pr in the same PR that changes it.
+- 2026-09-09: pass-2 review (Claude + Codex): ticks overlap on stale snapshots, so tick
+  coalescing and per-item leases (R-24) precede any concurrency; attestation reuse
+  across a rebase is rejected; the Codex lane timeout stays at 900 s; the queue's git
+  auto-merge is allowed only when bound to the attested head and base.
