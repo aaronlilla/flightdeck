@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseRoadmapItems, roadmapIdOpen } from '../../src/forge/roadmap.js';
+import { appendProposedLine, citesRoadmapId, parseRoadmapItems, roadmapIdOpen } from '../../src/forge/roadmap.js';
 
 const TABLE = [
   '## Items',
@@ -35,5 +35,35 @@ describe('roadmapIdOpen', () => {
 
   it('is false for an id the table never names', () => {
     expect(roadmapIdOpen(TABLE, 'R-99')).toBe(false);
+  });
+});
+
+describe('citesRoadmapId', () => {
+  it('is true when the text names an R-nn id', () => {
+    expect(citesRoadmapId('fixes R-04 off-roadmap parking')).toBe(true);
+  });
+
+  it('is false when the text names no id', () => {
+    expect(citesRoadmapId('a queue item with no roadmap line')).toBe(false);
+  });
+});
+
+describe('appendProposedLine', () => {
+  it('adds a Proposed section when the file has none yet', () => {
+    const text = '# Roadmap\n\n## Items\n\n| id |\n';
+    const result = appendProposedLine(text, '- 2026-09-08: sig -- summary');
+    expect(result).toBe('# Roadmap\n\n## Items\n\n| id |\n\n## Proposed\n\n- 2026-09-08: sig -- summary\n');
+  });
+
+  it('appends after the last existing line in an already-present Proposed section', () => {
+    const text = [
+      '# Roadmap', '', '## Proposed', '', '- 2026-09-07: old -- first finding', '',
+      '## Items', '', '| id |',
+    ].join('\n');
+    const result = appendProposedLine(text, '- 2026-09-08: sig -- summary');
+    expect(result).toBe([
+      '# Roadmap', '', '## Proposed', '', '- 2026-09-07: old -- first finding',
+      '- 2026-09-08: sig -- summary', '', '## Items', '', '| id |',
+    ].join('\n'));
   });
 });

@@ -41,3 +41,30 @@ export function roadmapIdOpen(text: string, id: string): boolean {
   const item = parseRoadmapItems(text).find((row) => row.id === id);
   return item !== undefined && item.status.trim().toLowerCase() !== 'done';
 }
+
+/** R-02 guard #4: whether `text` names any `R-nn` id at all, not necessarily one still
+ *  open in the table -- `self/enqueue.ts` uses this on a finding's own summary and
+ *  evidence to decide whether it has anything to attach to, before it ever reaches the
+ *  roadmap table itself. */
+export function citesRoadmapId(text: string): boolean {
+  return /\bR-\d{2}\b/.test(text);
+}
+
+/** R-02 guard #4: inserts `line` at the end of `text`'s `## Proposed` section, adding the
+ *  section (as a new final heading) if the file does not have one yet. Pure so
+ *  `enqueue.ts`'s caller can read the real file, transform it here, and write it back
+ *  without this module ever touching a filesystem itself. */
+export function appendProposedLine(text: string, line: string): string {
+  const headingMatch = /^## Proposed\s*$/m.exec(text);
+  if (!headingMatch) {
+    const trimmed = text.replace(/\n+$/, '');
+    return `${trimmed}\n\n## Proposed\n\n${line}\n`;
+  }
+  const start = headingMatch.index + headingMatch[0].length;
+  const rest = text.slice(start);
+  const nextHeading = /\n## /.exec(rest);
+  const sectionEnd = nextHeading ? start + nextHeading.index : text.length;
+  const before = text.slice(0, sectionEnd).replace(/\n+$/, '');
+  const after = text.slice(sectionEnd);
+  return `${before}\n${line}\n${after}`;
+}
