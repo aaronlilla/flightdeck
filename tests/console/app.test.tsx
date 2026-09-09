@@ -89,7 +89,11 @@ describe('App', () => {
     await waitFor(() => expect(screen.getByText('NOT NULL')).toBeInTheDocument());
     await userEvent.click(screen.getByText('NOT NULL'));
     await waitFor(() => expect(screen.getByTestId('rail-thread').textContent).toMatch(/resumed/));
-    expect(screen.getByTestId('rail-thread').textContent).not.toMatch(/answer .*NOT NULL/i);
+    // The raw-command shape, not just any "answer" near "NOT NULL" -- the rail's own
+    // question-card copy ("...type a longer answer below and press Send.", FD
+    // Rail.dc.html) and the humanized "Answered: ..." receipt both contain "answer"
+    // ahead of "NOT NULL" without being the bug this guards against.
+    expect(screen.getByTestId('rail-thread').textContent).not.toMatch(/\banswer ask-[\w-]+ NOT NULL\b/i);
   });
 
   it('requires a confirm card before a kill goes through', async () => {
