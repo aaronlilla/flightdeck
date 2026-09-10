@@ -10,17 +10,19 @@
  * Every directory here is a real temporary directory and every junction a real one, so a
  * seed that only pretended to link would fail the resolution assertions.
  */
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { checkAddCandidate, seedConfigDir, SEEDED_COPIES, SEEDED_LINKS, validateAccounts, type AccountRecord } from '../../src/forge/accounts.js';
+import { checkAddCandidate, interactiveSentence, seedConfigDir, SEEDED_COPIES, SEEDED_LINKS, validateAccounts, type AccountRecord } from '../../src/forge/accounts.js';
 import {
-  clearSwitchMarker, markerPath, readSwitchMarker, sessionsFromConfigDir, switchLimitedAccount, switchMessage,
+  clearSwitchMarker, markerPath, readSwitchMarker, readSwitchMarkers, sessionsFromConfigDir,
+  switchLimitedAccount, switchMessage,
 } from '../../src/forge/accounts-switch.js';
+import { AccountsService } from '../../src/forge/accounts-service.js';
 import type { AccountUsage } from '../../src/forge/accounts-usage.js';
 import { ConsoleWrites } from '../../src/forge/console/command.js';
 import { Inbox } from '../../src/forge/inbox.js';
@@ -351,5 +353,128 @@ describe('one row per subscription', () => {
     // this through. `forge accounts add` fills it in from a probe when the network allows.
     const rows = [account('a', '/dir/one'), account('b', '/dir/two')];
     expect(validateAccounts(rows).ok).toBe(true);
+  });
+});
+
+// ---- the findings the review turned up, each with the case that would catch it again ----
+
+describe('a marker is claimed, not guessed at', () => {
+  function twoMarkers(): string {
+    const switches = join(dir, 'switch');
+    const from = join(dir, 'from');
+    switchLimitedAccount('spent', {
+      accounts: [account('spent', from), account('spare', join(dir, 'to'))],
+      usage: { spent: limited(), spare: reading(12) },
+      live: {}, now: NOW,
+      sessionsFor: () => ['sess-a', 'sess-b'],
+      dir: switches,
+    });
+    return switches;
+  }
+
+  it('refuses to pick between two terminals on one login', () => {
+    const switches = twoMarkers();
+    const from = join(dir, 'from');
+    // Picking the freshest means both terminals resume the same conversation while the
+    // other is deleted unresumed. Ambiguity is a question, not a guess.
+    expect(readSwitchMarker(from, NOW + 1000, switches)).toBeNull();
+    expect(readSwitchMarkers(from, NOW + 1000, switches).map((m) => m.sessionId).sort()).toEqual(['sess-a', 'sess-b']);
+  });
+
+  it('acts once exactly one marker is left', () => {
+    const switches = twoMarkers();
+    const from = join(dir, 'from');
+    clearSwitchMarker('sess-b', switches);
+    expect(readSwitchMarker(from, NOW + 1000, switches)?.sessionId).toBe('sess-a');
+  });
+
+  it('prunes a marker too old to act on instead of re-reading it forever', () => {
+    const switches = twoMarkers();
+    const from = join(dir, 'from');
+    expect(readdirSync(switches)).toHaveLength(2);
+    expect(readSwitchMarkers(from, NOW + 11 * 60 * 1000, switches)).toEqual([]);
+    expect(readdirSync(switches)).toEqual([]);
+  });
+});
+
+describe('seeding reports a filesystem failure instead of throwing past its own error channel', () => {
+  it('refuses a dangling junction rather than crashing on EEXIST', () => {
+    const operator = operatorTree();
+    const fresh = join(dir, 'fresh');
+    const gone = join(dir, 'gone');
+    mkdirSync(gone, { recursive: true });
+    mkdirSync(fresh, { recursive: true });
+    symlinkSync(gone, join(fresh, 'projects'), 'junction');
+    // The target disappears. `existsSync` on the link now answers false while the link
+    // itself is still there, which is the shape that made symlinkSync throw EEXIST.
+    rmSync(gone, { recursive: true, force: true });
+    expect(existsSync(join(fresh, 'projects'))).toBe(false);
+
+    const result = seedConfigDir(fresh, operator);
+    // Whatever it decides, it must come back through the result, never as a throw.
+    expect(typeof result.ok).toBe('boolean');
+    if (result.ok) expect(result.skipped).toContain('projects');
+  });
+});
+
+describe('the sentence tells a measured login from an unmeasured one', () => {
+  it('does not call a login unmeasured when its windows have merely rolled over', () => {
+    const usage: AccountUsage = {
+      op: { reading: { at: NOW - 1000, windows: [{ key: 'weekly', label: 'weekly', usedPct: 40, resetsAt: NOW - 1 }] } },
+    };
+    const sentence = interactiveSentence({ id: 'op', label: 'op', email: 'mine' }, NOW, usage);
+    expect(sentence).not.toContain('have not been read yet');
+    expect(sentence).toContain('current window');
+  });
+
+  it('still says so when nothing has ever been read', () => {
+    expect(interactiveSentence({ id: 'op', label: 'op', email: 'mine' }, NOW, {}))
+      .toContain('have not been read yet');
+  });
+});
+
+describe('the pick route tells exhausted apart from unregistered', () => {
+  it('says every login is spent rather than that none is registered', async () => {
+    const registryPath = writeStore(7, 91);
+    // Both logins inside a recorded limit: `pickAccount` returns undefined, exactly as it
+    // does when the registry is empty, and the two used to print the same false sentence.
+    writeFileSync(join(dir, 'accounts', 'usage.json'), JSON.stringify({
+      operator: { windows: { five_hour: { limitedUntil: Date.now() + 3_600_000, seenAt: Date.now() } } },
+      fleet: { windows: { five_hour: { limitedUntil: Date.now() + 3_600_000, seenAt: Date.now() } } },
+    }), 'utf8');
+    const { response, result } = capture();
+    await server(true, registryPath).handle('/accounts/pick', getRequest('/accounts/pick?mode=interactive'), response);
+    const { body } = await result;
+    expect(body.configDir).toBeNull();
+    expect(body.sentence).toContain('at its limit');
+    expect(body.sentence).not.toContain('no other login is registered');
+  });
+});
+
+describe('a login that runs dry actually produces markers', () => {
+  it('fires onLimited on the edge, which is what writes them', async () => {
+    // The review found the marker writer was a module nothing called. This is the
+    // production edge it now hangs off: a refresh that finds an account newly limited.
+    const fired: string[] = [];
+    const store: Record<string, any> = {};
+    const service = new AccountsService({
+      loadAccounts: () => [account('spent', join(dir, 'spent'))],
+      readUsage: () => store,
+      recordReading: (id, r) => { store[id] = { reading: r }; },
+      recordReadError: () => {},
+      liveRuns: () => ({}),
+      fleetConfigDir: () => null,
+      probe: async () => ({ windows: [{ key: 'weekly', label: 'weekly', usedPct: 100, resetsAt: Date.now() + 3_600_000 }] }),
+      onLimited: (id) => fired.push(id),
+      staleMs: 0,
+    });
+    await service.refreshAll();
+    expect(fired).toEqual(['spent']);
+
+    // And it is an edge, not a state: a second refresh on a login that was already
+    // limited must not rewrite every terminal's marker on every console poll.
+    fired.length = 0;
+    await service.refreshAll();
+    expect(fired).toEqual([]);
   });
 });

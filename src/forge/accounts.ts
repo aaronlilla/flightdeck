@@ -364,7 +364,15 @@ export function interactiveSentence(
 ): string {
   const name = accountName(account);
   const worst = worstWindow(account.id, now, usage, model);
-  if (!worst) return `Using the ${name} login; its limits have not been read yet.`;
+  if (!worst) {
+    // Two different states, and they used to print the same sentence. A login read
+    // twenty minutes ago whose windows have since rolled over has no *current* window,
+    // which is not the same as never having been measured -- and telling Aaron his login
+    // is unmeasured when it is measured and empty is exactly backwards.
+    return hasReading(account.id, usage)
+      ? `Using the ${name} login; nothing used in the current window.`
+      : `Using the ${name} login; its limits have not been read yet.`;
+  }
   return `Using the ${name} login, at ${percent(worst.usedPct)}% of its ${worst.label} limit.`;
 }
 
@@ -379,6 +387,17 @@ export const SEEDED_COPIES = ['settings.json', 'CLAUDE.md'] as const;
 export type SeedResult =
   | { ok: true; created: string[]; skipped: string[] }
   | { ok: false; reason: string };
+
+/** Whether anything at all is at this path, the link itself included. `existsSync`
+ *  follows a link and answers false for a junction whose target has gone. */
+function entryExists(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function isRealDirectory(path: string): boolean {
   try {
@@ -412,26 +431,43 @@ export function seedConfigDir(dir: string, operatorDir: string): SeedResult {
       return { ok: false, reason: `${dir} already has a real ${name}/ directory; converting a login in use is a manual step, not this one` };
     }
   }
-  mkdirSync(dir, { recursive: true });
   const created: string[] = [];
   const skipped: string[] = [];
-  for (const name of SEEDED_LINKS) {
-    const link = join(dir, name);
-    if (existsSync(link)) { skipped.push(name); continue; }
-    const target = join(operatorDir, name);
-    if (!existsSync(target)) { skipped.push(name); continue; }
-    // 'junction' is what Windows can make without an elevated process; everywhere else
-    // node ignores the type and makes an ordinary directory symlink.
-    symlinkSync(target, link, 'junction');
-    created.push(name);
-  }
-  for (const name of SEEDED_COPIES) {
-    const to = join(dir, name);
-    if (existsSync(to)) { skipped.push(name); continue; }
-    const from = join(operatorDir, name);
-    if (!existsSync(from)) { skipped.push(name); continue; }
-    copyFileSync(from, to);
-    created.push(name);
+  // Every filesystem call below is inside this one boundary. Without it a dangling
+  // junction (EEXIST) or a machine that refuses junction creation (EPERM) threw straight
+  // past the SeedResult channel this function defines, crashing `forge accounts seed`
+  // and turning a login that would have worked into an opaque failure. What is created
+  // before a failure is reported rather than rolled back: half a set of junctions is a
+  // fact the operator needs, and silently unlinking directories on an error path is a
+  // worse risk than leaving them.
+  try {
+    mkdirSync(dir, { recursive: true });
+    for (const name of SEEDED_LINKS) {
+      const link = join(dir, name);
+      // `existsSync` follows the link, so a junction whose target is gone reads as
+      // absent and `symlinkSync` then fails EEXIST. `lstatSync` sees the link itself.
+      if (entryExists(link)) { skipped.push(name); continue; }
+      const target = join(operatorDir, name);
+      if (!existsSync(target)) { skipped.push(name); continue; }
+      // 'junction' is what Windows can make without an elevated process; everywhere else
+      // node ignores the type and makes an ordinary directory symlink.
+      symlinkSync(target, link, 'junction');
+      created.push(name);
+    }
+    for (const name of SEEDED_COPIES) {
+      const to = join(dir, name);
+      if (entryExists(to)) { skipped.push(name); continue; }
+      const from = join(operatorDir, name);
+      if (!existsSync(from)) { skipped.push(name); continue; }
+      copyFileSync(from, to);
+      created.push(name);
+    }
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      reason: `could not seed ${dir}: ${why}${created.length ? ` (already created: ${created.join(', ')})` : ''}`,
+    };
   }
   return { ok: true, created, skipped };
 }

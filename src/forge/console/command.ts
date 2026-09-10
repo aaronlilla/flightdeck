@@ -28,6 +28,7 @@ import type { RunRequest } from '../exec.js';
 import { accountName, accountsRegistryPath, addAccount, interactiveSentence, liveRunsByAccount, loadAccounts, pickAccount, removeAccount } from '../accounts.js';
 import { AccountsService, diskWriters, fleetLoginDir, realProbe, type AccountsServiceDeps } from '../accounts-service.js';
 import { readAccountUsage, recordPlan } from '../accounts-usage.js';
+import { sessionsFromConfigDir, switchLimitedAccount } from '../accounts-switch.js';
 import { AccountsConnect, realLogout, realProbeStatus, realSpawnLogin } from '../accounts-connect.js';
 import type { Lanes } from '../supervisor.js';
 import type { QueueStore } from '../intake/queueStore.js';
@@ -402,6 +403,23 @@ export class ConsoleWrites {
       liveRuns: () => this.liveRunsByAccount(),
       fleetConfigDir: deps.fleetLoginDir ?? fleetLoginDir(() => fleetConfigDir()),
       probe: deps.accountsProbe ?? realProbe(),
+      // R-58, wired. A login that has just run out leaves one note per live terminal on
+      // it saying where to come back; the shim reads it after its child exits. Without
+      // this line the marker writer is a module nothing calls and a terminal on a spent
+      // login still just stops.
+      onLimited: (accountId) => {
+        try {
+          switchLimitedAccount(accountId, {
+            accounts: loadAccounts(this.accountsPath),
+            usage: readAccountUsage(),
+            live: this.liveRunsByAccount(),
+            now: Date.now(),
+            sessionsFor: sessionsFromConfigDir,
+          });
+        } catch {
+          // A login running dry must not take the console's refresh down with it.
+        }
+      },
     });
     this.accountsConnect = new AccountsConnect({
       loadAccounts: () => loadAccounts(registryPath),
@@ -983,7 +1001,13 @@ export class ConsoleWrites {
         : {
           configDir: null,
           label: null,
-          sentence: 'Using the default login; no other login is registered.',
+          // Two very different situations, and answering both with "nothing is
+          // registered" told Aaron something false at the exact moment it mattered: every
+          // login full, and the terminal falling back to the one login this feature
+          // exists to route traffic away from.
+          sentence: records.some((row) => row.provider === 'claude')
+            ? 'Using your own login: every other login is at its limit or its ceiling right now.'
+            : 'Using the default login; no other login is registered.',
         });
       return true;
     }

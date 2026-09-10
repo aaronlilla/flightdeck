@@ -40,6 +40,10 @@ export interface LoginResult {
   ok: boolean;
   link?: string;
   error?: string;
+  /** Why the new directory could not be furnished from the operator's, when it could not.
+   *  The login still worked -- this is not an error -- but a login with none of the
+   *  operator's settings, hooks, skills or memory is worth saying out loud. */
+  seedWarning?: string;
 }
 
 export interface ProbeResult {
@@ -132,7 +136,15 @@ export function realSpawnLogin(spawnFn?: RunRequest['spawnFn']): (provider: Acco
     // technically worked and was useless to work in. Seeding happens BEFORE the login, so
     // the very first session under it is already furnished. It refuses a directory that
     // is already in use rather than converting one, and never touches credentials.
-    if (provider === 'claude') seedConfigDir(configDir, operatorConfigDir());
+    // The result is USED. Dropped, a refusal was silent: the login went ahead, the
+    // account was registered, and the operator got exactly the stripped-down login this
+    // exists to prevent with nothing said anywhere. It does not block the login either --
+    // an unseeded login still works -- so it comes back as a warning beside the result.
+    let seedWarning: string | undefined;
+    if (provider === 'claude') {
+      const seeded = seedConfigDir(configDir, operatorConfigDir());
+      if (!seeded.ok) seedWarning = seeded.reason;
+    }
     const argv = provider === 'codex' ? [codexBinary(), 'login'] : ['claude', 'auth', 'login', '--claudeai'];
     const result = await execRun({
       argv, cwd: process.cwd(), owner: 'accounts-connect-login', cls: 'script',
@@ -143,6 +155,7 @@ export function realSpawnLogin(spawnFn?: RunRequest['spawnFn']): (provider: Acco
     return {
       ok: result.returncode === 0,
       ...(link ? { link } : {}),
+      ...(seedWarning ? { seedWarning } : {}),
       ...(result.returncode !== 0 ? { error: `${provider} login exited ${result.returncode}: ${result.tail}` } : {}),
     };
   };

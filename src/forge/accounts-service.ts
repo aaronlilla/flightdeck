@@ -29,6 +29,16 @@ export interface AccountsServiceDeps {
   now?: () => number;
   /** A reading older than this is refreshed on the next `list()`. */
   staleMs?: number;
+  /**
+   * Told when a refresh finds an account that was usable a moment ago and is now inside
+   * a limit. This is the event R-58 hangs off: the console wires it to the switch
+   * markers, so a terminal sitting on that login learns where to come back.
+   *
+   * Optional on purpose -- a service with nothing wired simply does not notify, which is
+   * what every test and the CLI want. It fires on the EDGE, not on the state, so a login
+   * that stays limited for an hour does not rewrite its markers on every poll.
+   */
+  onLimited?: (accountId: string) => void;
 }
 
 const DEFAULT_STALE_MS = 60_000;
@@ -139,9 +149,12 @@ export class AccountsService {
   private async refreshOne(row: Row): Promise<void> {
     if (this.inFlight.has(row.id)) return;
     this.inFlight.add(row.id);
+    const wasLimited = limitedUntil(row.id, this.now(), this.deps.readUsage()) !== null;
     try {
       const reading = await this.deps.probe(row.provider, row.dir);
       this.deps.recordReading(row.id, { ...reading, at: this.now() });
+      const nowLimited = limitedUntil(row.id, this.now(), this.deps.readUsage()) !== null;
+      if (!wasLimited && nowLimited) this.deps.onLimited?.(row.id);
     } catch (error) {
       this.deps.recordReadError(row.id, error instanceof Error ? error.message : String(error), this.now());
     } finally {

@@ -133,23 +133,45 @@ export function sessionsFromConfigDir(configDir: string): string[] {
  * has not written yet, and this design has no timers in it. Age is checked here, not by
  * the caller, because "every exit relaunches" is exactly what an unchecked marker does.
  */
-export function readSwitchMarker(
+export function readSwitchMarkers(
   fromConfigDir: string, now: number, dir: string = switchDir(), freshMs: number = MARKER_FRESH_MS,
-): SwitchMarker | null {
-  if (!existsSync(dir)) return null;
-  let best: SwitchMarker | null = null;
+): SwitchMarker[] {
+  if (!existsSync(dir)) return [];
+  const out: SwitchMarker[] = [];
   for (const name of readdirSync(dir)) {
     if (!name.endsWith('.json')) continue;
+    const path = join(dir, name);
     try {
-      const marker = JSON.parse(readFileSync(join(dir, name), 'utf8')) as SwitchMarker;
+      const marker = JSON.parse(readFileSync(path, 'utf8')) as SwitchMarker;
+      if (now - marker.at >= freshMs) {
+        // Pruned here rather than left to accumulate: nothing else ever deletes a marker
+        // that was never acted on, and every terminal exit re-parses the whole directory.
+        rmSync(path, { force: true });
+        continue;
+      }
       if (normalizeDir(marker.fromConfigDir) !== normalizeDir(fromConfigDir)) continue;
-      if (now - marker.at >= freshMs) continue;
-      if (!best || marker.at > best.at) best = marker;
+      out.push(marker);
     } catch {
       // Unreadable marker: nothing to act on.
     }
   }
-  return best;
+  return out.sort((a, b) => b.at - a.at);
+}
+
+/**
+ * The one marker a terminal on `fromConfigDir` may act on, or null.
+ *
+ * **Null when there is more than one.** Markers are written per session but matched on
+ * the directory, which every terminal on that login shares, so picking the freshest means
+ * two terminals racing to resume the same conversation while the other is deleted
+ * unresumed. One candidate is unambiguous; two is a question for the operator, and the
+ * shim prints the ids rather than guessing.
+ */
+export function readSwitchMarker(
+  fromConfigDir: string, now: number, dir: string = switchDir(), freshMs: number = MARKER_FRESH_MS,
+): SwitchMarker | null {
+  const markers = readSwitchMarkers(fromConfigDir, now, dir, freshMs);
+  return markers.length === 1 ? markers[0]! : null;
 }
 
 /** Removes a marker once it has been acted on, so an exit never replays it. */
