@@ -105,11 +105,11 @@ describe('validateAccounts: the registry refuses a shape the rest of the codebas
   });
 
   it('accepts an empty list', () => {
-    expect(validateAccounts([], own)).toEqual({ ok: true });
+    expect(validateAccounts([])).toEqual({ ok: true });
   });
 
   it('refuses an account whose id is not letters, digits, dots, dashes or underscores', () => {
-    const verdict = validateAccounts([{ id: 'bad id!', provider: 'claude' as const, label: 'x', configDir: join(dir, 'a'), connectedAt: 1 }], own);
+    const verdict = validateAccounts([{ id: 'bad id!', provider: 'claude' as const, label: 'x', configDir: join(dir, 'a'), connectedAt: 1 }]);
     expect(verdict.ok).toBe(false);
   });
 
@@ -118,7 +118,7 @@ describe('validateAccounts: the registry refuses a shape the rest of the codebas
       { id: 'a', provider: 'claude' as const, label: 'a', configDir: join(dir, 'a'), connectedAt: 1 },
       { id: 'a', provider: 'claude' as const, label: 'a2', configDir: join(dir, 'b'), connectedAt: 2 },
     ];
-    expect(validateAccounts(accounts, own).ok).toBe(false);
+    expect(validateAccounts(accounts).ok).toBe(false);
   });
 
   it('refuses a duplicate configDir under two different ids', () => {
@@ -126,18 +126,22 @@ describe('validateAccounts: the registry refuses a shape the rest of the codebas
       { id: 'a', provider: 'claude' as const, label: 'a', configDir: join(dir, 'shared'), connectedAt: 1 },
       { id: 'b', provider: 'claude' as const, label: 'b', configDir: join(dir, 'shared'), connectedAt: 2 },
     ];
-    expect(validateAccounts(accounts, own).ok).toBe(false);
+    expect(validateAccounts(accounts).ok).toBe(false);
   });
 
-  it('refuses a configDir equal to the operator\'s own config dir', () => {
-    const verdict = validateAccounts([{ id: 'a', provider: 'claude' as const, label: 'a', configDir: own, connectedAt: 1 }], own);
-    expect(verdict.ok).toBe(false);
+  // Reversed 2026-09-10 (Aaron): the operator's own dir is an ordinary account. It was
+  // refused so a worker could never share that login; on this machine that refusal cost
+  // the only pool with weekly headroom left, while the registry held the fleet
+  // subscription twice under two directories. Subscription identity is what a duplicate
+  // is measured on now -- see accounts-headroom.test.ts.
+  it("accepts a configDir equal to the operator's own config dir", () => {
+    const verdict = validateAccounts([{ id: 'a', provider: 'claude' as const, label: 'a', configDir: own, connectedAt: 1 }]);
+    expect(verdict).toEqual({ ok: true });
   });
 
   it('refuses a maxConcurrent that is not a positive integer', () => {
     const verdict = validateAccounts(
       [{ id: 'a', provider: 'claude' as const, label: 'a', configDir: join(dir, 'a'), connectedAt: 1, maxConcurrent: 0 }],
-      own,
     );
     expect(verdict.ok).toBe(false);
   });
@@ -145,7 +149,6 @@ describe('validateAccounts: the registry refuses a shape the rest of the codebas
   it('accepts a valid maxConcurrent', () => {
     const verdict = validateAccounts(
       [{ id: 'a', provider: 'claude' as const, label: 'a', configDir: join(dir, 'a'), connectedAt: 1, maxConcurrent: 3 }],
-      own,
     );
     expect(verdict.ok).toBe(true);
   });
@@ -172,11 +175,19 @@ describe('addAccount: validates before writing', () => {
     expect(loadAccounts(path)).toHaveLength(1);
   });
 
-  it('refuses to write a configDir equal to the operator\'s own', () => {
+  it("writes a configDir equal to the operator's own", () => {
     process.env['HOME'] = dir;
     process.env['USERPROFILE'] = dir;
     const ownClaude = join(dir, '.claude');
-    expect(() => addAccount({ id: 'a', provider: 'claude' as const, label: 'a', configDir: ownClaude, connectedAt: 1 }, path)).toThrow();
-    expect(loadAccounts(path)).toHaveLength(0);
+    addAccount({ id: 'a', provider: 'claude' as const, label: 'a', configDir: ownClaude, connectedAt: 1 }, path);
+    expect(loadAccounts(path)).toHaveLength(1);
+  });
+
+  it('refuses to write a subscription the registry already holds behind another dir', () => {
+    addAccount({ id: 'first', provider: 'claude' as const, label: 'first', configDir: join(dir, 'one'), connectedAt: 1, accountUuid: 'uuid-A' }, path);
+    expect(() => addAccount(
+      { id: 'second', provider: 'claude' as const, label: 'second', configDir: join(dir, 'two'), connectedAt: 2, accountUuid: 'uuid-A' }, path,
+    )).toThrow(/first/);
+    expect(loadAccounts(path)).toHaveLength(1);
   });
 });

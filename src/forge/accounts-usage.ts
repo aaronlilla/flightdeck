@@ -118,16 +118,43 @@ export function recordReadError(
   write(path, usage);
 }
 
+/** Whether this account has ever been read successfully. `usedFraction` cannot say so
+ *  on its own -- it returns 0 both for "measured, empty" and "never measured" -- and the
+ *  difference decides which account a launch picks (`pickAccount`). */
+export function hasReading(account: string, usage: AccountUsage): boolean {
+  return (usage[account]?.reading?.windows?.length ?? 0) > 0;
+}
+
 /**
- * The worst-used window as a 0..1 fraction, off the last reading; 0 when there is no
- * reading yet, so an unread account is tried before a known-busy one. A window whose
- * reset time has passed no longer counts: the provider will have opened it again.
+ * Whether a window can stop a run of `model`. An unscoped window (`session`, `weekly`)
+ * always can. A model-scoped one (`weekly:Fable`) only binds on its own model: a Fable
+ * weekly bucket at 87% has no say over a Sonnet run, and counting it made an account
+ * look exhausted for work it could still do.
+ *
+ * With no model named the old behaviour stands -- every window counts -- so a caller
+ * that does not know what it is about to launch stays conservative.
  */
-export function usedFraction(account: string, now: number, usage: AccountUsage): number {
+function windowBinds(key: string, model?: string): boolean {
+  const colon = key.indexOf(':');
+  if (colon < 0) return true;
+  if (!model) return true;
+  const scoped = key.slice(colon + 1).toLowerCase();
+  const wanted = model.toLowerCase();
+  return wanted.includes(scoped) || scoped.includes(wanted);
+}
+
+/**
+ * The worst-used binding window as a 0..1 fraction, off the last reading; 0 when there
+ * is no reading yet. Callers that must tell "measured, empty" from "never measured" ask
+ * `hasReading` -- this number cannot carry that difference. A window whose reset time
+ * has passed no longer counts: the provider will have opened it again.
+ */
+export function usedFraction(account: string, now: number, usage: AccountUsage, model?: string): number {
   const windows = usage[account]?.reading?.windows ?? [];
   let worst = 0;
   for (const window of windows) {
     if (window.resetsAt !== null && window.resetsAt <= now) continue;
+    if (!windowBinds(window.key, model)) continue;
     worst = Math.max(worst, window.usedPct / 100);
   }
   return worst;
@@ -136,7 +163,7 @@ export function usedFraction(account: string, now: number, usage: AccountUsage):
 /** The soonest moment `account` is usable again, or `null` when no limit is on record
  *  or every recorded limit has already lifted. */
 export function limitedUntil(
-  account: string, now: number, usage: AccountUsage,
+  account: string, now: number, usage: AccountUsage, model?: string,
 ): { until: number; window: RateLimitWindow } | null {
   const windows = usage[account]?.windows ?? {};
   let latest: { until: number; window: RateLimitWindow } | null = null;
@@ -144,9 +171,13 @@ export function limitedUntil(
     if (!state || state.limitedUntil <= now) continue;
     if (!latest || state.limitedUntil > latest.until) latest = { until: state.limitedUntil, window };
   }
-  // A window the provider reports as fully used is a limit too, until it resets.
+  // A window the provider reports as fully used is a limit too, until it resets --
+  // but only a window that can stop THIS model. A full `weekly:Fable` bucket does not
+  // make the account unusable for a Sonnet run, and treating it that way took the
+  // account out of the running for work it could still do.
   for (const read of usage[account]?.reading?.windows ?? []) {
     if (read.usedPct < 100 || read.resetsAt === null || read.resetsAt <= now) continue;
+    if (!windowBinds(read.key, model)) continue;
     const window: RateLimitWindow = read.key === 'session' ? 'five_hour' : 'seven_day';
     if (!latest || read.resetsAt > latest.until) latest = { until: read.resetsAt, window };
   }
@@ -154,6 +185,6 @@ export function limitedUntil(
 }
 
 /** Whether `account` is inside a recorded limit right now. */
-export function isLimited(account: string, now: number, usage: AccountUsage): boolean {
-  return limitedUntil(account, now, usage) !== null;
+export function isLimited(account: string, now: number, usage: AccountUsage, model?: string): boolean {
+  return limitedUntil(account, now, usage, model) !== null;
 }
