@@ -101,8 +101,12 @@ export function elevatedInstallLines(input: InstallScriptInput): string[] {
     `nssm set ${SERVICE_NAME} AppExit 76 Exit`,
     `nssm set ${SERVICE_NAME} AppKillProcessTree 0`,
     `nssm set ${SERVICE_NAME} AppStopMethodSkip 6`,
-    `nssm set ${SERVICE_NAME} ObjectName ".\\${input.serviceUser}" "<enter the password when prompted>"`,
-    `# Aaron enters the account password once; if prompted, grant it "Log on as a service".`,
+    // No password argument here on purpose: NSSM prompts for it interactively when
+    // ObjectName is set with only a username, and printing a placeholder string as a
+    // second argument would silently become the literal password if this line is ever
+    // copy-pasted as-is instead of typed by hand.
+    `nssm set ${SERVICE_NAME} ObjectName ".\\${input.serviceUser}"`,
+    `# Enter the account password once when prompted; if also prompted, grant it "Log on as a service".`,
     `nssm set ${SERVICE_NAME} Start SERVICE_AUTO_START`,
     `nssm start ${SERVICE_NAME}`,
   ];

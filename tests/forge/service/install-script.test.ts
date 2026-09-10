@@ -77,6 +77,14 @@ describe('elevatedInstallLines', () => {
     expect(lines).toContain('Start SERVICE_AUTO_START');
     expect(lines).toContain('nssm start FlightdeckConsole');
   });
+
+  it('the ObjectName line carries no second (password) argument -- a copy-paste hazard', () => {
+    // A substring check alone would pass even if a bogus placeholder password were
+    // appended after the real argument (exactly the bug this asserts against): the
+    // whole array element must equal the real command, nothing trailing it.
+    const objectNameLine = elevatedInstallLines(input).find((line) => line.includes('ObjectName'));
+    expect(objectNameLine).toBe(`nssm set FlightdeckConsole ObjectName ".\\${input.serviceUser}"`);
+  });
 });
 
 describe('elevatedUninstallLines', () => {
