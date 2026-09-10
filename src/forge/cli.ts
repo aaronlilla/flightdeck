@@ -19,6 +19,7 @@
  * nothing to stop. It parks rather than kills: the work survives and `forge up` continues
  * it. A stop that lost an afternoon is a stop nobody dares press.
  */
+import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
@@ -73,7 +74,7 @@ import { buildQueueRuntimeDeps, queueMergeDeps, queuePromoteDeps, jiraConfigFrom
 import { readWatcherPollSeconds, watcherFeed, watcherTick } from './intake/watcherWire.js';
 import { buildSelfLoop } from './self-wire.js';
 import { QueueTickBackoff } from './queue-backoff.js';
-import { loadPolicy, modelFor, modelIdFor, tierOfBrief } from './policy.js';
+import { loadPolicy, maxWallMsFor, modelFor, modelIdFor, tierOfBrief } from './policy.js';
 import { attestationCoversHead, checkHandoff, providerFor, redact, verified } from './contracts.js';
 import type { CouncilAttestation, HaipingHandoff, JoeHandoff } from './contracts.js';
 import { evaluateAction } from './rules/index.js';
@@ -94,6 +95,13 @@ import {
 import { readChainEnv, repoKindFor } from './chain-env.js';
 import { buildChainDeps, hasRunRegistered } from './chain-wire.js';
 import { isGoalFile } from './intake/goalFile.js';
+import { installShutdown } from './service/shutdown.js';
+import { realProcessTable } from './service/process-table.js';
+import { SessionClock } from './session-clock.js';
+import { sweepFinishedRun } from './sweep.js';
+import { extractDoD, TRANSCRIPT_TAIL_LINES, TranscriptDrift } from './conformance-drift.js';
+import { readTranscriptTail, transcriptPathFor } from './transcript-path.js';
+import { CodexAdvisor, realCodexAdvisorRunner } from './council/codexAdvisor.js';
 
 
 /** The port the console is actually served on: `FORGE_PORT` when a second `forge up` was
@@ -513,6 +521,12 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         lanes, inbox, journalPath: journalPath(), journalCache: sharedJournalCache, registry,
         stuck: () => liveness.stuck(),
         reasoner,
+        // R-55: the Codex advisor's routes. The advisor itself never spends unless a
+        // caller hits /codex/ask; `ask` never awaits the Codex turn (codexAdvisor.ts).
+        codexAdvisor: new CodexAdvisor({
+          runner: realCodexAdvisorRunner(),
+          journal: new Journal(journalPath()),
+        }),
         fleet: () => {
           const read = fleetSnapshot(deps);
           return Array.isArray(read) ? read.map((proc) => ({ ...proc })) : read;
@@ -547,6 +561,11 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       const wardenBlockers = new BlockerBoard({ journal: wardenJournal, actuator: wardenActuator });
       // B.9: every 10 turns or 5 minutes per run, replacing the "always due" default.
       const driftCadence = new DriftCadenceTracker();
+      // R-54: the transcript-reading drift judge, on the same cadence as the tool-name
+      // checker above. Shares `wardenActuator` (nudge/park) and `wardenJournal`.
+      const transcriptDrift = new TranscriptDrift({
+        reasoner, journal: wardenJournal, actuator: wardenActuator,
+      });
       // B.2: a fresh engine for the one relaunch a registry-abandoned goal ever gets from
       // this tick -- built once, reused across every relaunch this `forge up` process
       // ever attempts, the same as the reconcile engine above but kept open for the
@@ -610,6 +629,22 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       const burnReported = new Set<string>();
       const burnJournal = new Journal(journalPath());
 
+      // Elapsed clock (R-55): one instance for this process's lifetime, so a run parked
+      // for wall clock is parked once, not every tick until someone resumes it.
+      const sessionClock = new SessionClock();
+      // Orphan sweep (R-55): the set of run keys already swept this process's lifetime,
+      // so a `run.finished`/`run.killed` row already handled is never swept twice.
+      const sweptRuns = new Set<string>();
+      const sweepJournal = new Journal(journalPath());
+      const killPid = (pid: number): void => {
+        // Never /T: the sweep targets one leftover pid at a time, found by walking the
+        // real process tree itself -- a tree-kill here is exactly what ended 161
+        // processes under the console on 2026-09-08.
+        try { spawn('taskkill', ['/F', '/PID', String(pid)], { stdio: 'ignore' }); } catch {
+          // Already gone.
+        }
+      };
+
       const port = await server.listen();
       const tick = setInterval(() => {
         liveness.evaluate();
@@ -617,6 +652,54 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         try {
           const fleetState = sharedJournalCache.read(journalPath());
           for (const event of reconcileBurnOnce(fleetState, burnReported)) burnJournal.append(event);
+
+          sessionClock.tick({
+            liveRuns: () => Object.values(fleetState.runs)
+              .filter((run) => run.state === 'started')
+              .map((run) => ({ run: run.run, startedAt: run.startedAt, className: run.className })),
+            maxWallMsFor: (className) => (className ? maxWallMsFor(className) : undefined),
+            actuator: wardenActuator,
+            now: () => Date.now(),
+          });
+
+          for (const [key, run] of Object.entries(fleetState.runs)) {
+            if ((run.state !== 'finished' && run.state !== 'killed') || sweptRuns.has(key)) continue;
+            sweptRuns.add(key);
+            const admitted = registry.get(key);
+            if (!admitted) continue; // reaped already; nothing left to trace the subtree from
+            sweepFinishedRun({
+              processes: realProcessTable(),
+              journal: sweepJournal,
+              kill: killPid,
+              finishedRunPid: admitted.pid,
+              consolePid: process.pid,
+              liveSessionPids: registry.all()
+                .filter((row) => row.goal !== key && processAlive(row.pid))
+                .map((row) => row.pid),
+            });
+          }
+
+          // R-54: the transcript-reading drift judge, on the same due-cadence the
+          // tool-name checker above uses (B.9: every 10 turns or 5 minutes per run).
+          for (const run of Object.values(fleetState.runs)) {
+            if (run.state !== 'started') continue;
+            if (!driftCadence.isDue(run.run, run.turns, Date.now())) continue;
+            const admitted = registry.get(run.run);
+            let mission: string | undefined;
+            try {
+              mission = admitted ? readFileSync(admitted.briefPath, 'utf8') : undefined;
+            } catch {
+              mission = undefined;
+            }
+            const dod = mission ? extractDoD(mission) : undefined;
+            const transcriptTail = admitted?.sessionId
+              ? readTranscriptTail(
+                transcriptPathFor(fleetConfigDirChoice().dir, admitted.cwd, admitted.sessionId),
+                TRANSCRIPT_TAIL_LINES,
+              )
+              : '';
+            void transcriptDrift.check(run.run, mission, dod, transcriptTail, admitted?.briefPath);
+          }
         } catch {
           // Guarded the same as every other tick step: one bad read never stops liveness
           // or the Warden tick that already ran this cycle.
@@ -684,6 +767,19 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         queueTick.unref();
         queueLine = `queue on, polling every ${pollSeconds}s`;
       }
+
+      // Graceful stop: SIGINT/SIGTERM/Windows SIGBREAK clear the tick, close the server
+      // (waiting for in-flight requests), release the queue lock this process holds (if
+      // any), journal `console.stopped`, and exit 0. Wired here, after the queue lock is
+      // known, so the service definition's stop (`nssm stop`, which sends Ctrl-C) leaves
+      // the queue lock file clean rather than orphaned for the next start to reclaim.
+      const shutdownJournal = new Journal(journalPath());
+      installShutdown({
+        server,
+        clearTick: () => clearInterval(tick),
+        ...(queueLock?.ok ? { queueLock: { release: queueLock.release } } : {}),
+        journal: shutdownJournal,
+      });
 
       // R-11 part 2: the Jira watcher bridge -- FORGE_BACKLOG_PROJECT names the project it
       // watches, the same variable buildBacklogJql already reads for a backlog add. Its own

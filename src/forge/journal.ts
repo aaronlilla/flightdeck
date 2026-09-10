@@ -94,6 +94,10 @@ export interface RunState {
   /** Turns since the last Edit/Write/NotebookEdit tool call closed, for `assessCostShape`'s
    *  "no write tool call in a long while" leg. A run that has taken no turn yet reads 0. */
   turnsSinceWrite: number;
+  /** When this run's first `run.started` row landed, for the wall-clock check
+   *  (`session-clock.ts`). Undefined for a run whose fold never saw a `run.started` row
+   *  (a torn journal, or a row from before this field existed). */
+  startedAt?: number;
 }
 
 /** Tool names `turnsSinceWrite` treats as a write: the ones the roadmap's cost-shape
@@ -425,6 +429,9 @@ function foldLine(state: FleetState, line: string): void {
         if (row.model) run.model = row.model;
         if (row.predecessor) run.predecessor = row.predecessor;
         if (typeof row['className'] === 'string') run.className = row['className'];
+        // First `run.started` wins: a relaunch or resume journals a second one for the
+        // same run key, and the clock should still measure from when the run truly began.
+        if (run.startedAt === undefined) run.startedAt = row.at;
         break;
       case 'turn.end':
         run.turns += 1;

@@ -22,6 +22,7 @@ import {
   governorBudget,
   loadPolicy,
   maxDiffLinesFor,
+  maxWallMsFor,
   modelFor,
   modelIdFor,
   priceFor,
@@ -41,8 +42,26 @@ describe('the policy file', () => {
     const wanted = [
       'triage', 'plan', 'master', 'implement', 'implement-hard', 'verify',
       'audit-lens', 'audit-judge', 'research', 'evaluate', 'sweep', 'narrate',
+      // always-on-warden R-54: the drift judge's two classes.
+      'drift-judge', 'drift-confirm',
     ];
     expect(classNames().sort()).toEqual(wanted.sort());
+  });
+
+  it('gives every class maxTurns x 90,000ms rounded up to the nearest 60,000ms', () => {
+    const cases: Array<[string, number]> = [
+      ['implement', 10_800_000], ['implement-hard', 10_800_000], ['verify', 3_600_000],
+      ['evaluate', 540_000], ['triage', 1_800_000], ['plan', 5_400_000], ['master', 3_600_000],
+      ['audit-lens', 3_600_000], ['audit-judge', 2_700_000], ['research', 3_600_000],
+      ['sweep', 1_800_000], ['narrate', 120_000], ['drift-judge', 120_000], ['drift-confirm', 120_000],
+    ];
+    for (const [name, expected] of cases) {
+      expect(maxWallMsFor(name), name).toBe(expected);
+    }
+  });
+
+  it('reads undefined for an unknown class rather than guessing a budget', () => {
+    expect(maxWallMsFor('not-a-real-class')).toBeUndefined();
   });
 
   it('gives every class a model, an effort, a context ceiling and a turn cap', () => {

@@ -23,9 +23,13 @@
  */
 import { randomUUID } from 'node:crypto';
 
+import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
+import { z } from 'zod';
+
 import { Engine, type QueryFn } from '../../adapter/engine.js';
 import type { Inbox } from '../inbox.js';
-import { appendOnce } from '../journal.js';
+import { appendOnce, Journal } from '../journal.js';
+import { CodexAdvisor, realCodexAdvisorRunner } from '../council/codexAdvisor.js';
 import { loadAccounts, configDirForSession } from '../accounts.js';
 import { readAccountUsage } from '../accounts-usage.js';
 import { fleetConfigDir, forgeHome } from '../paths.js';
@@ -52,6 +56,27 @@ import {
 import { stripMachineIds } from '../../shared/humanize.js';
 import { fmtTokens } from '../../shared/format-tokens.js';
 import type { ActionResult, Lane, LanesResponse, Message } from '../../shared/console-model.js';
+
+/** R-55: the Codex advisor as a second, tiny MCP server alongside `conductor`
+ *  (`agent-tools.ts`, untouched by this goal). One tool, described as a second opinion
+ *  that costs quota -- the Conductor's own system prompt is what steers it toward
+ *  decisions rather than lookups; this tool itself has no such judgement. */
+export function buildCodexMcpServer(advisor: CodexAdvisor, cwd: string) {
+  return createSdkMcpServer({
+    name: 'codex',
+    tools: [
+      tool(
+        'ask_codex',
+        'Second opinion from the Codex reviewer; costs quota; use for decisions, not lookups.',
+        { prompt: z.string().describe('The question or decision to put to Codex.') },
+        async (args) => {
+          const { id } = await advisor.ask({ prompt: args.prompt, cwd, label: 'conductor' });
+          return { content: [{ type: 'text' as const, text: `Asked Codex (run ${id}); check back with its status once it has had time to answer.` }] };
+        },
+      ),
+    ],
+  });
+}
 
 export const CONDUCTOR_CLASS = 'implement';
 const DEFAULT_IDLE_MS = 5 * 60_000;
@@ -530,7 +555,16 @@ export class ConductorAgent {
       settingSources: [],
       tools: [],
       allowedTools: [...CONDUCTOR_TOOLS],
-      mcpServers: { conductor: buildConductorMcpServer(this.wrapped()) },
+      mcpServers: {
+        conductor: buildConductorMcpServer(this.wrapped()),
+        codex: buildCodexMcpServer(
+          new CodexAdvisor({
+            runner: realCodexAdvisorRunner(),
+            journal: new Journal(this.deps.journalPath),
+          }),
+          this.deps.cwd ?? forgeHome(),
+        ),
+      },
       effort: effortFor(CONDUCTOR_CLASS, policyPath),
       systemPrompt: CONDUCTOR_SYSTEM_PROMPT,
       env: this.env(),

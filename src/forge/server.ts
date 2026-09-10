@@ -21,7 +21,12 @@ import { dirname, extname, join } from 'node:path';
 import type { Duplex } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
+import { spawn as realNodeSpawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
+
 import { ConsoleReads } from './console/reads.js';
+import type { CodexAdvisor as CodexAdvisorLike } from './council/codexAdvisor.js';
 import { HEARTBEAT_MS, type BlockerKind } from '../shared/console-model.js';
 import { sliceEvent, sliceEventsFor } from '../shared/console-events.js';
 import { Narrator } from './console/narrate-store.js';
@@ -169,6 +174,11 @@ export interface ForgeServerOptions {
    *  `/proposals`, `/run/:id/{thread,pr,sandbox}`). A specimen only: production always
    *  gets the default, which reads the real `~/.forge` tree. */
   consoleReads?: ConsoleReads;
+  /** R-55: `POST /codex/ask` and `GET /codex/:id`, behind the same token as every other
+   *  route. Undefined (no default wired -- the advisor spends Codex quota, and this
+   *  goal's guardrail is "nothing else live") answers 501, the same pattern `/router`
+   *  uses above when its own dependency is unset. */
+  codexAdvisor?: CodexAdvisorLike;
   /** What every console write (`ConsoleWrites`) drives kill/pause/resume through.
    *  Defaults to a real `WardenActuator` over this server's own journal, registry and
    *  lanes. A specimen overrides this with a fake, per this stream's rule that a test
@@ -251,6 +261,8 @@ export class ForgeServer {
   private readonly modelPolicyPathOpt: string | undefined;
 
   private readonly reasoner: Reasoner | undefined;
+
+  private readonly codexAdvisorDep: CodexAdvisorLike | undefined;
 
   private readonly narrator: Narrator;
 
@@ -341,6 +353,7 @@ export class ForgeServer {
     this.forgeHomeDir = options.forgeHomeDir ?? forgeHome();
     this.modelPolicyPathOpt = options.modelPolicyPath;
     this.reasoner = options.reasoner;
+    this.codexAdvisorDep = options.codexAdvisor;
     // The narrator is the server's own, not the router's: it runs on the `narrate`
     // class, its cap is its own, and a console with no router still narrates. Nothing
     // here is awaited by a route -- `Narrator.get` answers from cache or serves the
@@ -377,6 +390,14 @@ export class ForgeServer {
       lanesViewAll: () => this.consoleReads.lanesResponse(true, true),
       forgeHomeDir: this.forgeHomeDir,
       queueStore: this.queueStoreForMerge,
+      // R-53: under the flag, a service in Session 0 cannot open a browser, so the
+      // account-login spawn `realSpawnLogin` would otherwise make is intercepted here
+      // and turned into a published event the desktop login helper answers instead.
+      // Every other spawn `ConsoleWrites` makes (probe, logout, anything else) passes
+      // straight through to the real `child_process.spawn` unchanged.
+      ...(process.env['FORGE_LOGIN_HELPER'] === '1'
+        ? { spawnFn: this.loginHelperSpawnFn() }
+        : {}),
       ...(options.modelPolicyPath ? { modelPolicyPath: options.modelPolicyPath } : {}),
     });
     this.queueMergeDepsOpt = options.queueMergeDeps;
@@ -819,6 +840,24 @@ export class ForgeServer {
       }
       return this.routeMessage(request, response);
     }
+    // R-53: the login helper's own progress post.
+    if (path === '/accounts/connect/helper-result') {
+      if (request.method !== 'POST') {
+        return json(response, 405, { error: 'posting a helper login result is not a safe method' });
+      }
+      return this.loginHelperResult(request, response);
+    }
+    // R-55: the Codex advisor, async so nothing here ever blocks a tick.
+    if (path === '/codex/ask') {
+      if (request.method !== 'POST') {
+        return json(response, 405, { error: 'asking Codex is not a safe method' });
+      }
+      return this.codexAsk(request, response);
+    }
+    const codexIdMatch = /^\/codex\/([^/]+)$/.exec(path);
+    if (codexIdMatch && request.method === 'GET') {
+      return this.codexStatusRoute(request, response, decodeURIComponent(codexIdMatch[1]!));
+    }
     const retireMatch = /^\/run\/([^/]+)\/(retire|unretire)$/.exec(path);
     if (retireMatch) {
       if (request.method !== 'POST') {
@@ -908,6 +947,96 @@ export class ForgeServer {
       }
       handle(parsed);
     });
+  }
+
+  /** R-55: `POST /codex/ask`, behind the token like every other route below. 501 when
+   *  no advisor is wired (production default -- Codex spend is opt-in, per the
+   *  guardrail's "nothing else live"), the same shape `/router` uses for its own
+   *  optional dependency. */
+  /** R-53: one outstanding helper login per config dir. Resolved by
+   *  `POST /accounts/connect/helper-result`; a config dir with nothing waiting (a stale
+   *  or duplicate post) is simply ignored, never an error -- the helper posts at most
+   *  once per event, but a retry after a reconnect must stay harmless. */
+  private readonly pendingHelperLogins = new Map<string, (outcome: { ok: boolean; link?: string; error?: string }) => void>();
+
+  /** The `spawnFn` `ConsoleWrites` -> `realSpawnLogin` -> `exec.ts`'s `run()` receives
+   *  under `FORGE_LOGIN_HELPER=1`. Only the `claude auth login` / `codex login` call is
+   *  intercepted (matched on argv, the same way `realSpawnLogin` builds it); every other
+   *  spawn passes straight through to the real `child_process.spawn`. */
+  private loginHelperSpawnFn(): (command: string, args: string[], options: SpawnOptions) => ChildProcess {
+    return (command, args, options) => {
+      const isLogin = (command === 'claude' && args[0] === 'auth' && args[1] === 'login')
+        || (args[0] === 'login' && command !== 'claude');
+      if (!isLogin) {
+        return realNodeSpawn(command, args, options);
+      }
+      const env = options.env;
+      const configDir = env?.['CLAUDE_CONFIG_DIR'] ?? env?.['CODEX_HOME'] ?? '';
+      const provider = command === 'claude' ? 'claude' : 'codex';
+      const stdout = new PassThrough();
+      const stderr = new PassThrough();
+      const child = new EventEmitter() as unknown as ChildProcess;
+      (child as unknown as { stdout: PassThrough }).stdout = stdout;
+      (child as unknown as { stderr: PassThrough }).stderr = stderr;
+      this.publish({ event: 'accounts.connect-requested', accountId: configDir, configDir, provider });
+      this.pendingHelperLogins.set(configDir, (outcome) => {
+        if (outcome.link) stdout.write(`${outcome.link}\n`);
+        stdout.end();
+        stderr.end();
+        child.emit('exit', outcome.ok ? 0 : 1, null);
+      });
+      return child;
+    };
+  }
+
+  /** R-53: `POST /accounts/connect/helper-result` -- the login helper's own progress
+   *  post, resolving whichever `claude auth login` call `loginHelperSpawnFn` is holding
+   *  open for that config dir. */
+  private loginHelperResult(request: IncomingMessage, response: ServerResponse): void {
+    if (!this.authorized(request, response)) return;
+    this.readJson<{ configDir?: string; ok?: boolean; link?: string; error?: string }>(request, response, (parsed) => {
+      if (!parsed || !parsed.configDir || typeof parsed.ok !== 'boolean') {
+        json(response, 400, { error: 'a helper result needs a configDir and ok' });
+        return;
+      }
+      const resolve = this.pendingHelperLogins.get(parsed.configDir);
+      this.pendingHelperLogins.delete(parsed.configDir);
+      resolve?.({ ok: parsed.ok, ...(parsed.link ? { link: parsed.link } : {}), ...(parsed.error ? { error: parsed.error } : {}) });
+      json(response, 200, { ok: true, delivered: Boolean(resolve) });
+    });
+  }
+
+  private codexAsk(request: IncomingMessage, response: ServerResponse): void {
+    if (!this.authorized(request, response)) return;
+    const advisor = this.codexAdvisorDep;
+    if (!advisor) {
+      json(response, 501, { error: 'the Codex advisor is enabled but this server has none wired' });
+      return;
+    }
+    this.readJson<{ prompt?: string; cwd?: string; label?: string; model?: string }>(request, response, (parsed) => {
+      void (async () => {
+        if (!parsed || !parsed.prompt || !parsed.cwd || !parsed.label) {
+          json(response, 400, { error: 'asking Codex needs a prompt, a cwd and a label' });
+          return;
+        }
+        const outcome = await advisor.ask({
+          prompt: parsed.prompt!, cwd: parsed.cwd!, label: parsed.label!,
+          ...(parsed.model ? { model: parsed.model } : {}),
+        });
+        json(response, 200, outcome);
+      })();
+    });
+  }
+
+  /** R-55: `GET /codex/:id`, wrapping the advisor's own `status`. */
+  private codexStatusRoute(request: IncomingMessage, response: ServerResponse, id: string): void {
+    if (!this.authorized(request, response)) return;
+    const advisor = this.codexAdvisorDep;
+    if (!advisor) {
+      json(response, 501, { error: 'the Codex advisor is enabled but this server has none wired' });
+      return;
+    }
+    void advisor.status(id).then((status) => json(response, 200, status));
   }
 
   private answer(request: IncomingMessage, response: ServerResponse): void {

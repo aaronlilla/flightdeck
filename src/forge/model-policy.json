@@ -68,19 +68,26 @@
     "proof on 2026-09-09 lost five of twenty specimens to exactly that. Slow is free here;",
     "premature is permanent."
   ],
+  "_max_wall_comment": [
+    "always-on-warden: maxWallMs is maxTurns x 90,000ms, rounded up to the nearest",
+    "60,000ms -- session-clock.ts parks a run once it runs this long past its own",
+    "run.started row. A backstop against a hung or abandoned run, not a throttle."
+  ],
   "classes": {
-    "triage": {"model": "sonnet", "effort": "low", "maxContext": 60000, "maxTurns": 20, "provider": "claude"},
-    "plan": {"model": "fable", "effort": "high", "maxContext": 200000, "maxTurns": 60, "provider": "codex"},
-    "master": {"model": "fable", "effort": "medium", "maxContext": 30000, "maxTurns": 40, "provider": "codex"},
-    "implement": {"model": "sonnet", "effort": "medium", "maxContext": 150000, "maxTurns": 120, "provider": "claude"},
-    "implement-hard": {"model": "opus", "effort": "high", "maxContext": 150000, "maxTurns": 120, "provider": "claude"},
-    "verify": {"model": "sonnet", "effort": "medium", "maxContext": 120000, "maxTurns": 40, "provider": "claude"},
-    "audit-lens": {"model": "sonnet", "effort": "medium", "maxContext": 120000, "maxTurns": 40, "provider": "codex", "timeoutMs": 480000},
-    "audit-judge": {"model": "opus", "effort": "high", "maxContext": 150000, "maxTurns": 30, "provider": "codex"},
-    "research": {"model": "sonnet", "effort": "medium", "maxContext": 150000, "maxTurns": 40, "provider": "claude"},
-    "evaluate": {"model": "haiku", "effort": "low", "maxContext": 30000, "maxTurns": 6, "provider": "claude"},
-    "narrate": {"model": "haiku", "effort": "low", "maxContext": 20000, "maxTurns": 1, "provider": "claude", "timeoutMs": 180000, "maxCallsPerHour": 300},
-    "sweep": {"model": "sonnet", "effort": "low", "maxContext": 80000, "maxTurns": 20, "provider": "claude"}
+    "triage": {"model": "sonnet", "effort": "low", "maxContext": 60000, "maxTurns": 20, "provider": "claude", "maxWallMs": 1800000},
+    "plan": {"model": "fable", "effort": "high", "maxContext": 200000, "maxTurns": 60, "provider": "codex", "maxWallMs": 5400000},
+    "master": {"model": "fable", "effort": "medium", "maxContext": 30000, "maxTurns": 40, "provider": "codex", "maxWallMs": 3600000},
+    "implement": {"model": "sonnet", "effort": "medium", "maxContext": 150000, "maxTurns": 120, "provider": "claude", "maxWallMs": 10800000},
+    "implement-hard": {"model": "opus", "effort": "high", "maxContext": 150000, "maxTurns": 120, "provider": "claude", "maxWallMs": 10800000},
+    "verify": {"model": "sonnet", "effort": "medium", "maxContext": 120000, "maxTurns": 40, "provider": "claude", "maxWallMs": 3600000},
+    "audit-lens": {"model": "sonnet", "effort": "medium", "maxContext": 120000, "maxTurns": 40, "provider": "codex", "timeoutMs": 480000, "maxWallMs": 3600000},
+    "audit-judge": {"model": "opus", "effort": "high", "maxContext": 150000, "maxTurns": 30, "provider": "codex", "maxWallMs": 2700000},
+    "research": {"model": "sonnet", "effort": "medium", "maxContext": 150000, "maxTurns": 40, "provider": "claude", "maxWallMs": 3600000},
+    "evaluate": {"model": "haiku", "effort": "low", "maxContext": 30000, "maxTurns": 6, "provider": "claude", "maxWallMs": 540000},
+    "narrate": {"model": "haiku", "effort": "low", "maxContext": 20000, "maxTurns": 1, "provider": "claude", "timeoutMs": 180000, "maxCallsPerHour": 300, "maxWallMs": 120000},
+    "sweep": {"model": "sonnet", "effort": "low", "maxContext": 80000, "maxTurns": 20, "provider": "claude", "maxWallMs": 1800000},
+    "drift-judge": {"model": "haiku", "effort": "low", "maxContext": 30000, "maxTurns": 1, "provider": "claude", "timeoutMs": 60000, "maxWallMs": 120000},
+    "drift-confirm": {"model": "sonnet", "effort": "medium", "maxContext": 30000, "maxTurns": 1, "provider": "claude", "timeoutMs": 120000, "maxWallMs": 120000}
   },
   "_governor_comment": [
     "P4.2: budgets Aaron sets, that the Governor queues against and never silently",
@@ -103,7 +110,9 @@
       "research": 15,
       "evaluate": 3,
       "narrate": 2,
-      "sweep": 10
+      "sweep": 10,
+      "drift-judge": 2,
+      "drift-confirm": 5
     }
   },
   "brief_tiers": {
