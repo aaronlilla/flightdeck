@@ -311,6 +311,16 @@ export const FORGE_EVENT_NAMES = [
   // when a reasoner call filled the gap, and the same row on any reasoner failure
   // (worker's own options kept, `recommended: null`).
   'forge.ask.options',
+  // always-on-warden (R-53 to R-56): `console.stopped` on a graceful SIGINT/SIGTERM/
+  // SIGBREAK shutdown (`service/shutdown.ts`); `drift.checked`/`drift.skipped` from the
+  // transcript-reading judge (`conformance-drift.ts`'s `TranscriptDrift`); `orphan.found`
+  // from the process sweep (`sweep.ts`); `codex.started`/`codex.finished` from the async
+  // Codex advisor (`council/codexAdvisor.ts`).
+  'console.stopped', 'drift.checked', 'drift.skipped', 'orphan.found', 'codex.started', 'codex.finished',
+  // `accounts.connect-requested`: a live-stream-only frame (never journaled) published
+  // when `FORGE_LOGIN_HELPER=1` turns a `claude auth login`/`codex login` spawn into an
+  // event the desktop login helper answers instead (`server.ts`'s `loginHelperSpawnFn`).
+  'accounts.connect-requested',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];

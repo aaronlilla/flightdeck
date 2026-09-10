@@ -241,3 +241,14 @@ export function youFactsFor(lane: Lane, you: string | null): NarrationFacts | nu
   if (lane.pr && you.includes(`#${lane.pr.no}`)) facts['pr'] = lane.pr.no;
   return { surface: 'lane.you', facts: facts as NarrationFacts['facts'], template: you };
 }
+
+/** always-on-warden R-55: the clock's own plain-English line for the glance ("running
+ *  42 min"), off `RunState.startedAt`. `null` for a run the clock has no start time for
+ *  (a torn journal, or a row from before the field existed) rather than guessing. */
+export function elapsedGlance(startedAt: number | undefined, now: number): string | null {
+  if (startedAt === undefined) return null;
+  const minutes = Math.max(0, Math.round((now - startedAt) / 60_000));
+  if (minutes < 60) return `running ${minutes} min`;
+  const hours = minutes / 60;
+  return `running ${hours.toFixed(1)} h`;
+}

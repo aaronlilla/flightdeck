@@ -133,6 +133,24 @@ describe('replay', () => {
     expect(replay(path).runs['alpha']?.className).toBeUndefined();
   });
 
+  it('carries startedAt from the first run.started row, for the wall-clock check', () => {
+    write({ event: 'run.started', run: 'alpha', actor: 'runner', at: 1_000 });
+    expect(replay(path).runs['alpha']?.startedAt).toBe(1_000);
+  });
+
+  it('keeps the first startedAt across a relaunch\'s second run.started row', () => {
+    write(
+      { event: 'run.started', run: 'alpha', actor: 'runner', at: 1_000 },
+      { event: 'run.started', run: 'alpha', actor: 'runner', at: 9_000 },
+    );
+    expect(replay(path).runs['alpha']?.startedAt).toBe(1_000);
+  });
+
+  it('leaves startedAt unset when a run never journaled run.started', () => {
+    write({ event: 'turn.end', run: 'alpha', actor: 'worker', context: 100 });
+    expect(replay(path).runs['alpha']?.startedAt).toBeUndefined();
+  });
+
   it('carries usage forward into a burn total per tier', () => {
     write(
       { event: 'run.started', run: 'alpha', actor: 'runner' },
