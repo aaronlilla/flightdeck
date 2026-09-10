@@ -42,9 +42,9 @@ async function start(session: string, repo: string, worktree: string): Promise<v
 
 describe('GET /sessions same-repo marker', () => {
   it('marks two live sessions on one repo "may need to merge", and leaves a session on another repo alone', async () => {
-    await start('s1', 'C:/dev/v2-React-Native', 'C:/dev/worktrees/v2-react-native--a');
-    await start('s2', 'C:/dev/v2-React-Native', 'C:/dev/worktrees/v2-react-native--b');
-    await start('s3', 'C:/dev/flightdeck', 'C:/dev/worktrees/flightdeck--one-ledger');
+    await start('s1', '/repos/example-mobile', '/repos/worktrees/example-mobile--a');
+    await start('s2', '/repos/example-mobile', '/repos/worktrees/example-mobile--b');
+    await start('s3', '/repos/flightdeck', '/repos/worktrees/flightdeck--one-ledger');
 
     const res = await fetch(`${base}/sessions?verbose=1`, { headers: { 'x-forge-token': server.token } });
     const body = await res.json() as { sessions: { sessionId: string; mayNeedToMerge?: boolean }[] };

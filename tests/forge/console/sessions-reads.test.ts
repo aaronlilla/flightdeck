@@ -39,7 +39,7 @@ describe('GET /sessions', () => {
     await fetch(`${base}/sessions/event`, {
       method: 'POST',
       headers: { 'x-forge-token': server.token, 'content-type': 'application/json' },
-      body: JSON.stringify({ event: 'session.started', session: '4f6b1c7e-88aa-4bcd-9e12-abcdef012345', pid: 4242, cwd: 'C:/dev/worktrees/flightdeck--one-ledger' }),
+      body: JSON.stringify({ event: 'session.started', session: '4f6b1c7e-88aa-4bcd-9e12-abcdef012345', pid: 4242, cwd: '/repos/worktrees/flightdeck--one-ledger' }),
     });
 
     const res = await fetch(`${base}/sessions`, { headers: { 'x-forge-token': server.token } });
@@ -47,7 +47,7 @@ describe('GET /sessions', () => {
     const bodyText = await res.text();
     expect(bodyText).not.toMatch(UUID_RE);
     expect(bodyText).not.toContain('4242');
-    expect(bodyText).toContain('C:/dev/worktrees/flightdeck--one-ledger');
+    expect(bodyText).toContain('/repos/worktrees/flightdeck--one-ledger');
 
     const verboseRes = await fetch(`${base}/sessions?verbose=1`, { headers: { 'x-forge-token': server.token } });
     const verboseText = await verboseRes.text();

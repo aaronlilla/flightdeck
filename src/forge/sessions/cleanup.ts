@@ -5,13 +5,23 @@
  * session's cwd, reported, never deleted.
  */
 import { execFileSync } from 'node:child_process';
+import { join } from 'node:path';
+
+import { workspaceRoot } from '../paths.js';
 
 export interface SweepResult {
   releasedLocks: string[];
 }
 
 const SWEPT_LINE = /^swept:\s*(.+)$/;
-const COORDLIB = 'C:/dev/.claude/coordination/coordlib.py';
+
+/** `<workspaceRoot>/.claude/coordination/coordlib.py` -- never a machine-rooted literal
+ *  (this repository stays project- and machine-agnostic; `tests/checks/agnostic.ts` is
+ *  the detector). `workspaceRoot()` already derives the parent of wherever `forge up`
+ *  itself runs from, which is exactly where `.claude/coordination` lives. */
+function coordlibPath(): string {
+  return join(workspaceRoot(), '.claude', 'coordination', 'coordlib.py');
+}
 
 /** Runs the coordination registry's own sweep and returns the lock names it released
  *  (parsed from its own `swept: <path>` lines) -- global, not scoped to one session,
@@ -19,7 +29,7 @@ const COORDLIB = 'C:/dev/.claude/coordination/coordlib.py';
  *  fails to run reports nothing released rather than blocking the ingest route. */
 export function sweepAndCollectLocks(pythonExe = 'python'): SweepResult {
   try {
-    const out = execFileSync(pythonExe, [COORDLIB, 'sweep'], {
+    const out = execFileSync(pythonExe, [coordlibPath(), 'sweep'], {
       encoding: 'utf8', timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe'],
     });
     const releasedLocks: string[] = [];

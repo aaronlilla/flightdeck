@@ -39,9 +39,9 @@ describe('ingestOne', () => {
   it('journals a 7th shape: session.cleanup, arising from a killed session', () => {
     const { deps, appended } = fakeDeps({
       sweep: () => ({ releasedLocks: ['rn-dev-loop'] }),
-      worktreeStatusFor: () => ({ path: 'C:/dev/worktrees/rn--x', clean: false, pushed: false }),
+      worktreeStatusFor: () => ({ path: '/repos/worktrees/rn--x', clean: false, pushed: false }),
     });
-    ingestOne(deps, { event: 'session.vanished', session: 's1', cwd: 'C:/dev/worktrees/rn--x' });
+    ingestOne(deps, { event: 'session.vanished', session: 's1', cwd: '/repos/worktrees/rn--x' });
     const kinds = appended.map((r) => r.event);
     expect(kinds).toEqual(['session.vanished', 'session.cleanup', 'worktree.left']);
   });
@@ -65,17 +65,17 @@ describe('ingestOne', () => {
       },
       worktreeStatusFor: (sessionId, cwd) => {
         expect(sessionId).toBe('s1');
-        expect(cwd).toBe('C:/dev/worktrees/rn--dirty');
-        return { path: 'C:/dev/worktrees/rn--dirty', clean: false, pushed: false };
+        expect(cwd).toBe('/repos/worktrees/rn--dirty');
+        return { path: '/repos/worktrees/rn--dirty', clean: false, pushed: false };
       },
     });
-    ingestOne(deps, { event: 'session.vanished', session: 's1', cwd: 'C:/dev/worktrees/rn--dirty' });
+    ingestOne(deps, { event: 'session.vanished', session: 's1', cwd: '/repos/worktrees/rn--dirty' });
 
     const cleanup = appended.find((r) => r.event === 'session.cleanup');
     expect(cleanup?.['releasedLocks']).toEqual(['bbms-test-db']);
 
     const left = appended.find((r) => r.event === 'worktree.left');
-    expect(left?.['path']).toBe('C:/dev/worktrees/rn--dirty');
+    expect(left?.['path']).toBe('/repos/worktrees/rn--dirty');
     expect(left?.['clean']).toBe(false);
     expect(left?.['pushed']).toBe(false);
 

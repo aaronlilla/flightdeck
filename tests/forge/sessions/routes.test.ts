@@ -50,7 +50,7 @@ describe('POST /sessions/event', () => {
     const res = await fetch(`${base}/sessions/event`, {
       method: 'POST',
       headers: { 'x-forge-token': server.token, 'content-type': 'application/json' },
-      body: JSON.stringify({ event: 'session.started', session: 's1', cwd: 'C:/dev' }),
+      body: JSON.stringify({ event: 'session.started', session: 's1', cwd: '/repos' }),
     });
     expect(res.status).toBe(200);
     const body = await res.json() as { seq: number[] };

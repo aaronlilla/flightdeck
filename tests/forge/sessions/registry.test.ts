@@ -33,22 +33,22 @@ describe('scanSessions', () => {
     cleanupDirs.push(homeDir, fleetDir, thirdAccountDir, accountsRegistryDir);
 
     writeSession(homeDir, 'sess-home', {
-      sessionId: 'sess-home', pid: 111, procStart: '1000', cwd: 'C:/dev/somewhere',
+      sessionId: 'sess-home', pid: 111, procStart: '1000', cwd: '/repos/somewhere',
       kind: 'interactive', name: 'dev-home', status: 'idle',
       startedAt: 1, statusUpdatedAt: 1,
     });
     writeSession(fleetDir, 'sess-fleet', {
-      sessionId: 'sess-fleet', pid: 222, procStart: '2000', cwd: 'C:/dev/worker',
+      sessionId: 'sess-fleet', pid: 222, procStart: '2000', cwd: '/repos/worker',
       kind: 'interactive', name: 'worker-1', status: 'busy',
       startedAt: 2, statusUpdatedAt: 2,
     });
     writeSession(thirdAccountDir, 'sess-third', {
-      sessionId: 'sess-third', pid: 333, procStart: '3000', cwd: 'C:/dev/third',
+      sessionId: 'sess-third', pid: 333, procStart: '3000', cwd: '/repos/third',
       kind: 'interactive', name: 'account-b', status: 'idle',
       startedAt: 3, statusUpdatedAt: 3,
     });
     writeSession(fleetDir, 'sess-dead', {
-      sessionId: 'sess-dead', pid: 444, procStart: '4000', cwd: 'C:/dev/dead',
+      sessionId: 'sess-dead', pid: 444, procStart: '4000', cwd: '/repos/dead',
       kind: 'interactive', name: 'dead-one', status: 'idle',
       startedAt: 4, statusUpdatedAt: 4,
     });
