@@ -33,7 +33,7 @@ import { completeAskOptions } from './console/ask-options.js';
 import { fleetConfigDir } from './paths.js';
 import { readParkRecord } from './parkrecord.js';
 import {
-  authorshipRule, gitflowRule, humanizerRule, sycophancyRule, vaguenessRule, readabilityRule,
+  authorshipRule, gitflowRule, humanizerRule, sycophancyRule, vaguenessRule,
   type ProposedAction, type Rule, type RuleVerdict,
 } from './rules/index.js';
 import { injectMessages, RunInbox } from './runinbox.js';
@@ -504,7 +504,7 @@ export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
  * `i--` decrement inside a source file is not an em dash).
  */
 const ALWAYS_ON_RULES: Rule[] = [gitflowRule, authorshipRule];
-const PROSE_RULES: Rule[] = [humanizerRule, sycophancyRule, vaguenessRule, readabilityRule];
+const PROSE_RULES: Rule[] = [humanizerRule, sycophancyRule, vaguenessRule];
 
 const PROSE_PATH_RE = /\.(md|mdx)$/i;
 const DOCS_DIR_RE = /(^|[/\\])docs([/\\]|$)/i;

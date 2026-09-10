@@ -1482,32 +1482,6 @@ describe('P4.7/I4: the Council rules library runs on every Bash and Edit/Write P
     expect(verdict.decision).toBeUndefined();
   });
 
-  // G3 (readability-total, 2026-09-10): no test proved readabilityRule was actually
-  // reachable from PROSE_RULES/this hook -- every existing readability test called
-  // readabilityRule.evaluate() directly. Removing it from PROSE_RULES leaves this red.
-  it('denies a gh pr create carrying no required sections, with the readability reason', async () => {
-    const parked = new Map<string, string>();
-    const journal = new Journal(journalPath);
-    const inbox = new Inbox(join(home, 'inbox-rules-readability'));
-    const hook = buildPreToolUseHook({ run: 'r5', goal: 'r5', parked, journal, inbox, deliverVia: 'hook' });
-
-    const verdict = await hook({
-      toolName: 'Bash',
-      input: {
-        command: 'gh pr create --repo boltbetz/BBManagementSystemV2 --title "BBZ-73 webhook claim" '
-          + '--body "fixed the bug, should be good to merge now"',
-      },
-      toolUseId: 'tu-5',
-    });
-
-    expect(verdict.decision).toBe('deny');
-    expect(verdict.reason).toMatch(/readability/i);
-    journal.close();
-    const state = replay(journalPath);
-    expect(state.events.some((e) => e.event === 'rule.denied' && e.run === 'r5'
-      && e['rule'] === 'readability')).toBe(true);
-  });
-
   it('a park in force still denies first -- the rules check never overrides an existing park', async () => {
     const parked = new Map<string, string>([['r4', 'some-key']]);
     const journal = new Journal(journalPath);

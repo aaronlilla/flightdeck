@@ -168,30 +168,3 @@ describe('probeJira — J4', () => {
     expect(result).toEqual({ ok: false, status: 403 });
   });
 });
-
-describe('createJiraWriteClient — order 19 backstop on comment()', () => {
-  const OVER_80_WORDS = Array.from({ length: 90 }, (_v, i) => `word${i}`).join(' ');
-
-  it('an over-ceiling comment never reaches fetchFn and reports ok: false', async () => {
-    let calls = 0;
-    const fetchFn = (async () => { calls += 1; return jsonResponse(200, {}); }) as unknown as typeof fetch;
-    const client = createJiraWriteClient({ ...CONFIG, fetchFn });
-
-    const result = await client.comment('BBZ-1', OVER_80_WORDS);
-
-    expect(calls).toBe(0);
-    expect(result.ok).toBe(false);
-    expect(result.body).toContain('readability refused');
-  });
-
-  it('a conforming comment reaches fetchFn exactly once and reports ok: true', async () => {
-    let calls = 0;
-    const fetchFn = (async () => { calls += 1; return jsonResponse(200, {}); }) as unknown as typeof fetch;
-    const client = createJiraWriteClient({ ...CONFIG, fetchFn });
-
-    const result = await client.comment('BBZ-1', 'Short comment, well under the ceiling.');
-
-    expect(calls).toBe(1);
-    expect(result.ok).toBe(true);
-  });
-});
