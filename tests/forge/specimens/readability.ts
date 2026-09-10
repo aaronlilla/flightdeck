@@ -28,12 +28,6 @@ const CONFORMING_BODY = [
   '```ts',
   'if (!await claims.tryClaim(transferId)) return ok();',
   '```',
-  '',
-  '## How to run',
-  '',
-  '```',
-  'npm test',
-  '```',
 ].join('\n');
 
 const SECTIONLESS_BODY = 'Fixed the webhook double-credit bug, should be good to merge now.';

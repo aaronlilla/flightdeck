@@ -35,7 +35,7 @@
       "surface": "pr-body",
       "repo": "acme-app",
       "title": "ACME-1 checkout fix",
-      "body": "## What changes\n\nThe retry path is capped at three attempts.\n\n## How to run\n\n```\nnpm test\n```",
+      "body": "## What changes\n\nThe retry path is capped at three attempts.",
       "as_of": "2026-09-10",
       "expected": "DENY",
       "reason_contains": ["missing required section \"What breaks\""]
@@ -45,7 +45,7 @@
       "surface": "pr-body",
       "repo": "acme-app",
       "title": "ACME-1 checkout fix",
-      "body": "## What breaks\n\nA doubled retry charges the card twice.\n\n## What changes\n\nThe retry path is capped.\n\n### src/checkout/retry.ts:12\n\n```ts\nline1();\nline2();\nline3();\nline4();\nline5();\nline6();\nline7();\nline8();\nline9();\nline10();\nline11();\nline12();\nline13();\nline14();\nline15();\nline16();\nline17();\nline18();\nline19();\nline20();\nline21();\nline22();\nline23();\nline24();\nline25();\nline26();\n```\n\n## How to run\n\n```\nnpm test\n```",
+      "body": "## What breaks\n\nA doubled retry charges the card twice.\n\n## What changes\n\nThe retry path is capped.\n\n### src/checkout/retry.ts:12\n\n```ts\nline1();\nline2();\nline3();\nline4();\nline5();\nline6();\nline7();\nline8();\nline9();\nline10();\nline11();\nline12();\nline13();\nline14();\nline15();\nline16();\nline17();\nline18();\nline19();\nline20();\nline21();\nline22();\nline23();\nline24();\nline25();\nline26();\n```",
       "as_of": "2026-09-10",
       "expected": "DENY",
       "reason_contains": ["over the 25-line cap"]
@@ -75,7 +75,7 @@
       "surface": "pr-body",
       "repo": "acme-app",
       "title": "ACME-1 checkout fix",
-      "body": "## What breaks\n\nA doubled retry charges the card twice.\n\n## What changes\n\nThe retry path is capped.\n\n### src/checkout/retry.ts:12\n\n```ts\nline1();\n```\n\n## How to run\n\n```\nnpm test\n```",
+      "body": "## What breaks\n\nA doubled retry charges the card twice.\n\n## What changes\n\nThe retry path is capped.\n\n### src/checkout/retry.ts:12\n\n```ts\nline1();\n```",
       "as_of": "2026-09-10",
       "expected": "DENY",
       "reason_contains": ["production lines, over the 300-line ceiling"],
