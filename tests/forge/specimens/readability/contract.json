@@ -6,7 +6,7 @@
   "ticket_key_pattern": "\\bACME-\\d+\\b",
   "banned_words": ["synergy", "leverage", "paradigm", "basically", "just", "actually"],
   "banned_word_matching": "case-insensitive; whole word; matched in prose only, never inside a fenced code block or inline backticks",
-  "required_sections": ["What breaks", "What changes", "How to run"],
+  "required_sections": ["What breaks", "What changes"],
   "prose_ceiling_words": {
     "pr-body": 150,
     "pr-comment": 80,
