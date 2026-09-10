@@ -1,0 +1,1053 @@
+{
+  "note": "One rule, two implementations. flightdeck picks accounts in TypeScript (src/forge/accounts.ts) and dev-harness picks them in Python (coordination/accounts.py); both are tested against this file, so a change to one that is not made to the other goes red. Times are epoch ms.",
+  "now": 1757505600000,
+  "provider": "claude",
+  "cases": [
+    {
+      "name": "least used wins",
+      "accounts": [
+        {
+          "id": "a",
+          "provider": "claude",
+          "configDir": "/accounts/a",
+          "connectedAt": 1757505600000
+        },
+        {
+          "id": "b",
+          "provider": "claude",
+          "configDir": "/accounts/b",
+          "connectedAt": 1757505600000
+        }
+      ],
+      "usage": {
+        "a": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 96,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        },
+        "b": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 3,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        }
+      },
+      "expect": "b"
+    },
+    {
+      "name": "a full session window takes an account out",
+      "accounts": [
+        {
+          "id": "a",
+          "provider": "claude",
+          "configDir": "/accounts/a",
+          "connectedAt": 1757505600000
+        },
+        {
+          "id": "b",
+          "provider": "claude",
+          "configDir": "/accounts/b",
+          "connectedAt": 1757505600000
+        }
+      ],
+      "usage": {
+        "a": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "session",
+                "label": "session",
+                "usedPct": 100,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        },
+        "b": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "session",
+                "label": "session",
+                "usedPct": 90,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        }
+      },
+      "expect": "b"
+    },
+    {
+      "name": "a limit that has already lifted does not count",
+      "accounts": [
+        {
+          "id": "a",
+          "provider": "claude",
+          "configDir": "/accounts/a",
+          "connectedAt": 1757505600000
+        }
+      ],
+      "usage": {
+        "a": {
+          "windows": {
+            "five_hour": {
+              "limitedUntil": 1757505599000,
+              "seenAt": 1757505598000
+            }
+          },
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 10,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        }
+      },
+      "expect": "a"
+    },
+    {
+      "name": "a recorded rate limit still in force takes the account out",
+      "accounts": [
+        {
+          "id": "a",
+          "provider": "claude",
+          "configDir": "/accounts/a",
+          "connectedAt": 1757505600000
+        },
+        {
+          "id": "b",
+          "provider": "claude",
+          "configDir": "/accounts/b",
+          "connectedAt": 1757505600000
+        }
+      ],
+      "usage": {
+        "a": {
+          "windows": {
+            "five_hour": {
+              "limitedUntil": 1757592000000,
+              "seenAt": 1757505600000
+            }
+          },
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 1,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        },
+        "b": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 80,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        }
+      },
+      "expect": "b"
+    },
+    {
+      "name": "a window whose reset has passed is not counted as used",
+      "accounts": [
+        {
+          "id": "a",
+          "provider": "claude",
+          "configDir": "/accounts/a",
+          "connectedAt": 1757505600000
+        },
+        {
+          "id": "b",
+          "provider": "claude",
+          "configDir": "/accounts/b",
+          "connectedAt": 1757505600000
+        }
+      ],
+      "usage": {
+        "a": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 99,
+                "resetsAt": 1757505599999
+              }
+            ]
+          }
+        },
+        "b": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 50,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        }
+      },
+      "expect": "a"
+    },
+    {
+      "name": "model-scoped window is ignored for another model",
+      "model": "sonnet",
+      "accounts": [
+        {
+          "id": "a",
+          "provider": "claude",
+          "configDir": "/accounts/a",
+          "connectedAt": 1757505600000
+        },
+        {
+          "id": "b",
+          "provider": "claude",
+          "configDir": "/accounts/b",
+          "connectedAt": 1757505600000
+        }
+      ],
+      "usage": {
+        "a": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 20,
+                "resetsAt": 1757592000000
+              },
+              {
+                "key": "weekly:Fable",
+                "label": "weekly:Fable",
+                "usedPct": 100,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        },
+        "b": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 30,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        }
+      },
+      "expect": "a"
+    },
+    {
+      "name": "model-scoped window binds on its own model",
+      "model": "fable",
+      "accounts": [
+        {
+          "id": "a",
+          "provider": "claude",
+          "configDir": "/accounts/a",
+          "connectedAt": 1757505600000
+        },
+        {
+          "id": "b",
+          "provider": "claude",
+          "configDir": "/accounts/b",
+          "connectedAt": 1757505600000
+        }
+      ],
+      "usage": {
+        "a": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 20,
+                "resetsAt": 1757592000000
+              },
+              {
+                "key": "weekly:Fable",
+                "label": "weekly:Fable",
+                "usedPct": 99,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        },
+        "b": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 30,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        }
+      },
+      "expect": "b"
+    },
+    {
+      "name": "a full model-scoped window does not disqualify another model's run",
+      "model": "sonnet",
+      "accounts": [
+        {
+          "id": "a",
+          "provider": "claude",
+          "configDir": "/accounts/a",
+          "connectedAt": 1757505600000
+        }
+      ],
+      "usage": {
+        "a": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 20,
+                "resetsAt": 1757592000000
+              },
+              {
+                "key": "weekly:Fable",
+                "label": "weekly:Fable",
+                "usedPct": 100,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        }
+      },
+      "expect": "a"
+    },
+    {
+      "name": "a versioned model id still matches its scoped bucket",
+      "model": "claude-fable-5",
+      "accounts": [
+        {
+          "id": "a",
+          "provider": "claude",
+          "configDir": "/accounts/a",
+          "connectedAt": 1757505600000
+        },
+        {
+          "id": "b",
+          "provider": "claude",
+          "configDir": "/accounts/b",
+          "connectedAt": 1757505600000
+        }
+      ],
+      "usage": {
+        "a": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 20,
+                "resetsAt": 1757592000000
+              },
+              {
+                "key": "weekly:Fable",
+                "label": "weekly:Fable",
+                "usedPct": 99,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        },
+        "b": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 30,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        }
+      },
+      "expect": "b"
+    },
+    {
+      "name": "with no model named every window counts",
+      "accounts": [
+        {
+          "id": "a",
+          "provider": "claude",
+          "configDir": "/accounts/a",
+          "connectedAt": 1757505600000
+        },
+        {
+          "id": "b",
+          "provider": "claude",
+          "configDir": "/accounts/b",
+          "connectedAt": 1757505600000
+        }
+      ],
+      "usage": {
+        "a": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 20,
+                "resetsAt": 1757592000000
+              },
+              {
+                "key": "weekly:Fable",
+                "label": "weekly:Fable",
+                "usedPct": 99,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        },
+        "b": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 30,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        }
+      },
+      "expect": "b"
+    },
+    {
+      "name": "measured and busy beats never read",
+      "accounts": [
+        {
+          "id": "measured",
+          "provider": "claude",
+          "configDir": "/accounts/measured",
+          "connectedAt": 1757505600000
+        },
+        {
+          "id": "never-read",
+          "provider": "claude",
+          "configDir": "/accounts/never-read",
+          "connectedAt": 1757505600000
+        }
+      ],
+      "usage": {
+        "measured": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 90,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        }
+      },
+      "expect": "measured"
+    },
+    {
+      "name": "an unmeasured account is still picked when it is all there is",
+      "accounts": [
+        {
+          "id": "never-read",
+          "provider": "claude",
+          "configDir": "/accounts/never-read",
+          "connectedAt": 1757505600000
+        }
+      ],
+      "usage": {},
+      "expect": "never-read"
+    },
+    {
+      "name": "a read error does not erase the reading behind it",
+      "accounts": [
+        {
+          "id": "a",
+          "provider": "claude",
+          "configDir": "/accounts/a",
+          "connectedAt": 1757505600000
+        },
+        {
+          "id": "b",
+          "provider": "claude",
+          "configDir": "/accounts/b",
+          "connectedAt": 1757505600000
+        }
+      ],
+      "usage": {
+        "a": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 3,
+                "resetsAt": 1757592000000
+              }
+            ]
+          },
+          "readError": {
+            "at": 1757505600000,
+            "error": "HTTP 429"
+          }
+        },
+        "b": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 80,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        }
+      },
+      "expect": "a"
+    },
+    {
+      "name": "ties break on fewer live runs",
+      "accounts": [
+        {
+          "id": "a",
+          "provider": "claude",
+          "configDir": "/accounts/a",
+          "connectedAt": 1757505600000
+        },
+        {
+          "id": "b",
+          "provider": "claude",
+          "configDir": "/accounts/b",
+          "connectedAt": 1757505600000
+        }
+      ],
+      "live": {
+        "a": 2,
+        "b": 0
+      },
+      "usage": {
+        "a": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 50,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        },
+        "b": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 50,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        }
+      },
+      "expect": "b"
+    },
+    {
+      "name": "every account limited yields no pick",
+      "accounts": [
+        {
+          "id": "a",
+          "provider": "claude",
+          "configDir": "/accounts/a",
+          "connectedAt": 1757505600000
+        }
+      ],
+      "usage": {
+        "a": {
+          "windows": {
+            "seven_day": {
+              "limitedUntil": 1757592000000,
+              "seenAt": 1757505600000
+            }
+          }
+        }
+      },
+      "expect": null
+    },
+    {
+      "name": "a codex row is never picked for claude",
+      "accounts": [
+        {
+          "id": "a",
+          "provider": "claude",
+          "configDir": "/accounts/a",
+          "connectedAt": 1757505600000
+        },
+        {
+          "id": "cx",
+          "provider": "codex",
+          "configDir": "/cx",
+          "connectedAt": 1757505600000
+        }
+      ],
+      "usage": {
+        "a": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 99,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        }
+      },
+      "expect": "a"
+    },
+    {
+      "name": "a held-back account loses to a far busier ordinary one",
+      "accounts": [
+        {
+          "id": "mine",
+          "provider": "claude",
+          "configDir": "/accounts/mine",
+          "connectedAt": 1757505600000,
+          "lastResort": true
+        },
+        {
+          "id": "fleet",
+          "provider": "claude",
+          "configDir": "/accounts/fleet",
+          "connectedAt": 1757505600000
+        }
+      ],
+      "usage": {
+        "mine": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 3,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        },
+        "fleet": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 96,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        }
+      },
+      "expect": "fleet"
+    },
+    {
+      "name": "a held-back account is used once the ordinary one is limited",
+      "accounts": [
+        {
+          "id": "mine",
+          "provider": "claude",
+          "configDir": "/accounts/mine",
+          "connectedAt": 1757505600000,
+          "lastResort": true
+        },
+        {
+          "id": "fleet",
+          "provider": "claude",
+          "configDir": "/accounts/fleet",
+          "connectedAt": 1757505600000
+        }
+      ],
+      "usage": {
+        "mine": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 3,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        },
+        "fleet": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 100,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        }
+      },
+      "expect": "mine"
+    },
+    {
+      "name": "a held-back account loses even to an ordinary one never read",
+      "accounts": [
+        {
+          "id": "mine",
+          "provider": "claude",
+          "configDir": "/accounts/mine",
+          "connectedAt": 1757505600000,
+          "lastResort": true
+        },
+        {
+          "id": "unread",
+          "provider": "claude",
+          "configDir": "/accounts/unread",
+          "connectedAt": 1757505600000
+        }
+      ],
+      "usage": {
+        "mine": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 3,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        }
+      },
+      "expect": "unread"
+    },
+    {
+      "name": "two held-back accounts still sort by headroom between themselves",
+      "accounts": [
+        {
+          "id": "a",
+          "provider": "claude",
+          "configDir": "/accounts/a",
+          "connectedAt": 1757505600000,
+          "lastResort": true
+        },
+        {
+          "id": "b",
+          "provider": "claude",
+          "configDir": "/accounts/b",
+          "connectedAt": 1757505600000,
+          "lastResort": true
+        }
+      ],
+      "usage": {
+        "a": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 80,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        },
+        "b": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 20,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        }
+      },
+      "expect": "b"
+    },
+    {
+      "name": "an account at its concurrency ceiling is skipped however much room it has",
+      "accounts": [
+        {
+          "id": "capped",
+          "provider": "claude",
+          "configDir": "/accounts/capped",
+          "connectedAt": 1757505600000,
+          "maxConcurrent": 2
+        },
+        {
+          "id": "spare",
+          "provider": "claude",
+          "configDir": "/accounts/spare",
+          "connectedAt": 1757505600000
+        }
+      ],
+      "live": {
+        "capped": 2
+      },
+      "usage": {
+        "capped": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 1,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        },
+        "spare": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 90,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        }
+      },
+      "expect": "spare"
+    },
+    {
+      "name": "an account under its ceiling is used normally",
+      "accounts": [
+        {
+          "id": "capped",
+          "provider": "claude",
+          "configDir": "/accounts/capped",
+          "connectedAt": 1757505600000,
+          "maxConcurrent": 2
+        },
+        {
+          "id": "spare",
+          "provider": "claude",
+          "configDir": "/accounts/spare",
+          "connectedAt": 1757505600000
+        }
+      ],
+      "live": {
+        "capped": 1
+      },
+      "usage": {
+        "capped": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 1,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        },
+        "spare": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 90,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        }
+      },
+      "expect": "capped"
+    },
+    {
+      "name": "an account with no ceiling is never capped",
+      "accounts": [
+        {
+          "id": "capped",
+          "provider": "claude",
+          "configDir": "/accounts/capped",
+          "connectedAt": 1757505600000
+        },
+        {
+          "id": "spare",
+          "provider": "claude",
+          "configDir": "/accounts/spare",
+          "connectedAt": 1757505600000
+        }
+      ],
+      "live": {
+        "capped": 99
+      },
+      "usage": {
+        "capped": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 1,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        },
+        "spare": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 90,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        }
+      },
+      "expect": "capped"
+    },
+    {
+      "name": "every account at its ceiling yields no pick",
+      "accounts": [
+        {
+          "id": "a",
+          "provider": "claude",
+          "configDir": "/accounts/a",
+          "connectedAt": 1757505600000,
+          "maxConcurrent": 1
+        },
+        {
+          "id": "b",
+          "provider": "claude",
+          "configDir": "/accounts/b",
+          "connectedAt": 1757505600000,
+          "maxConcurrent": 1
+        }
+      ],
+      "live": {
+        "a": 1,
+        "b": 1
+      },
+      "usage": {
+        "a": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 1,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        },
+        "b": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 2,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        }
+      },
+      "expect": null
+    }
+  ]
+}
