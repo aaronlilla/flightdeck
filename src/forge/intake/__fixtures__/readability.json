@@ -60,8 +60,8 @@
       "jira-comment": 80,
       "jira-description": 120
     },
-    "words_deny_from": "2026-09-23",
-    "words_deny_from_note": "provisional; recomputed as two weeks after stream C's first replacement PR opens. Before this date an over-ceiling count ADVISEs; on or after it, DENY.",
+    "words_deny_from": "2026-09-10",
+    "words_deny_from_note": "Aaron's decision, 2026-09-10, no longer provisional. Before this date an over-ceiling count ADVISEs; on or after it, DENY.",
     "production_ceiling": {
       "lines": 300,
       "files": 5
@@ -80,7 +80,13 @@
       "package-lock.json",
       "yarn.lock",
       "*.lock",
-      "Podfile.lock"
+      "Podfile.lock",
+      "*/__tests__/*",
+      "*/Tests/*",
+      "*.test.tsx",
+      "*.spec.tsx",
+      "*.test.js",
+      "*.test.mjs"
     ],
     "cannot_measure": "when diff_stats is null (no base, git failed) the verdict is ADVISE with reason containing 'cannot measure'; never SILENT",
     "off_switch": "HARNESS_READABILITY_OFF=1 makes every specimen SILENT; every DENY reason text names this variable",
@@ -101,7 +107,10 @@
         "an assignment whose key is password, token, secret, apikey or api_key (any case, = or :) with a non-placeholder value"
       ],
       "passes": "an environment variable name alone, e.g. TEST_DB_CONNECTION_STRING"
-    }
+    },
+    "fence_max_lines_json": 60,
+    "fence_max_lines_json_note": "a json-tagged fenced code block under a path:line heading longer than 60 lines DENYs with a reason containing '60' and 'json'; an untagged fence keeps the 25-line cap and a DENY reason names 'untagged'",
+    "exempt_globs_note": "fnmatch anchors at the start of the string and never treats '/' specially, so '__tests__/**' matches only a path that begins with __tests__/ and '*.test.ts' never matches .test.tsx. React Native keeps tests at src/**/__tests__/*.test.tsx; PR 146 was denied for ten of them on 2026-09-10. '*/__tests__/*' and '*/Tests/*' match a nested test directory anywhere."
   },
   "specimens": [
     {
@@ -203,7 +212,7 @@
       "repo": "bbmanagementsystemv2",
       "title": "BBZ-224 card declines and timeouts as problem-details",
       "body_file": "pr83-reshaped.md",
-      "as_of": "2026-09-15",
+      "as_of": "2026-09-09",
       "expected": "ADVISE",
       "reason_contains": [
         "150"
@@ -331,7 +340,7 @@
       "surface": "pr-body",
       "repo": "bbmanagementsystemv2",
       "title": "BBZ-73 webhook claim",
-      "as_of": "2026-09-10",
+      "as_of": "2026-09-09",
       "expected": "ADVISE",
       "reason_contains": [
         "350",
@@ -380,7 +389,7 @@
       "surface": "pr-body",
       "repo": "bbmanagementsystemv2",
       "title": "BBZ-73 webhook claim",
-      "as_of": "2026-09-10",
+      "as_of": "2026-09-09",
       "expected": "ADVISE",
       "reason_contains": [
         "6",
@@ -429,7 +438,7 @@
       "surface": "pr-body",
       "repo": "bbmanagementsystemv2",
       "title": "BBZ-73 webhook claim",
-      "as_of": "2026-09-10",
+      "as_of": "2026-09-09",
       "expected": "ADVISE",
       "reason_contains": [
         "cannot measure"
@@ -485,6 +494,48 @@
         {
           "path": "BoltBetz.ManagementSystem/Controllers/FinancialController.cs",
           "added": 350,
+          "deleted": 0
+        }
+      ]
+    },
+    {
+      "id": "pr83-reshaped-deny-on-flip-day",
+      "scope": [
+        "hook",
+        "flightdeck"
+      ],
+      "surface": "pr-body",
+      "repo": "bbmanagementsystemv2",
+      "title": "BBZ-224 card declines and timeouts as problem-details",
+      "body_file": "pr83-reshaped.md",
+      "as_of": "2026-09-10",
+      "expected": "DENY",
+      "reason_contains": [
+        "150",
+        "HARNESS_READABILITY_OFF"
+      ]
+    },
+    {
+      "id": "ceiling-301-production-deny-on-flip-day",
+      "scope": [
+        "hook",
+        "flightdeck"
+      ],
+      "surface": "pr-body",
+      "repo": "bbmanagementsystemv2",
+      "title": "BBZ-73 webhook claim",
+      "as_of": "2026-09-10",
+      "expected": "DENY",
+      "reason_contains": [
+        "301",
+        "300",
+        "HARNESS_READABILITY_OFF"
+      ],
+      "body": "## What breaks\n\nA doubled webhook credits twice.\n\n## What changes\n\nThe second one is ignored.\n\n### BoltBetz.ManagementSystem/Sila/SilaWebhookClaim.cs:24\n\n```csharp\nif (!await claims.TryClaimAsync(transferId)) return Ok();\n```\n\n## How to run\n\n```\ndotnet test\n```\n",
+      "diff_stats": [
+        {
+          "path": "BoltBetz.ManagementSystem/Sila/SilaWebhookClaim.cs",
+          "added": 301,
           "deleted": 0
         }
       ]
@@ -565,6 +616,244 @@
         "secret"
       ],
       "body": "## What breaks\n\nA doubled webhook credits twice.\n\n## What changes\n\nThe second one is ignored. Local run used Token=ghp_abcdefghijklmnopqrstuvwxyz0123456789 to reach the feed.\n\n### BoltBetz.ManagementSystem/Sila/SilaWebhookClaim.cs:24\n\n```csharp\nif (!await claims.TryClaimAsync(transferId)) return Ok();\n```\n\n## How to run\n\n```\ndotnet test\n```\n"
+    },
+    {
+      "id": "path-heading-substring-boundary",
+      "scope": [
+        "hook"
+      ],
+      "surface": "pr-body",
+      "repo": "bbmanagementsystemv2",
+      "title": "BBZ-90 webhook claim boundary check",
+      "as_of": "2026-09-10",
+      "expected": "DENY",
+      "reason_contains": [
+        "B.cs"
+      ],
+      "diff_stats": [
+        {
+          "path": "AB.cs",
+          "added": 10,
+          "deleted": 0
+        },
+        {
+          "path": "B.cs",
+          "added": 5,
+          "deleted": 0
+        }
+      ],
+      "body": "## What breaks\n\nA doubled webhook credits twice.\n\n## What changes\n\nThe second one is ignored.\n\n### AB.cs:24\n\n```csharp\nif (!await claims.TryClaimAsync(transferId)) return Ok();\n```\n\n## How to run\n\n```\ndotnet test\n```\n"
+    },
+    {
+      "id": "banned-word-markdown-emphasis-split",
+      "scope": [
+        "hook"
+      ],
+      "surface": "pr-comment",
+      "repo": "bbmanagementsystemv2",
+      "as_of": "2026-09-10",
+      "expected": "DENY",
+      "reason_contains": [
+        "harness"
+      ],
+      "body": "This **har**ness wraps the retry so it always succeeds."
+    },
+    {
+      "id": "section-empty-html-comment",
+      "scope": [
+        "hook"
+      ],
+      "surface": "pr-body",
+      "repo": "bbmanagementsystemv2",
+      "title": "BBZ-91 webhook claim comment padding",
+      "as_of": "2026-09-10",
+      "expected": "DENY",
+      "reason_contains": [
+        "What breaks",
+        "empty"
+      ],
+      "diff_stats": [
+        {
+          "path": "C.cs",
+          "added": 4,
+          "deleted": 0
+        }
+      ],
+      "body": "## What breaks\n\n<!-- todo: fill in -->\n\n## What changes\n\nThe second one is ignored.\n\n### C.cs:24\n\n```csharp\nreturn Ok();\n```\n\n## How to run\n\n```\ndotnet test\n```\n"
+    },
+    {
+      "id": "fence-json-26-lines-not-denied-for-length",
+      "scope": [
+        "hook"
+      ],
+      "surface": "pr-body",
+      "repo": "bbmanagementsystemv2",
+      "title": "BBZ-73 webhook claim",
+      "as_of": "2026-09-10",
+      "expected": "ADVISE",
+      "body": "## What breaks\n\nA doubled webhook credits twice.\n\n## What changes\n\nThe second one is ignored.\n\n### BoltBetz.ManagementSystem/Sila/SilaWebhookClaim.cs:24\n\n```json\n  \"k1\": 1,\n  \"k2\": 2,\n  \"k3\": 3,\n  \"k4\": 4,\n  \"k5\": 5,\n  \"k6\": 6,\n  \"k7\": 7,\n  \"k8\": 8,\n  \"k9\": 9,\n  \"k10\": 10,\n  \"k11\": 11,\n  \"k12\": 12,\n  \"k13\": 13,\n  \"k14\": 14,\n  \"k15\": 15,\n  \"k16\": 16,\n  \"k17\": 17,\n  \"k18\": 18,\n  \"k19\": 19,\n  \"k20\": 20,\n  \"k21\": 21,\n  \"k22\": 22,\n  \"k23\": 23,\n  \"k24\": 24,\n  \"k25\": 25,\n  \"k26\": 26,\n```\n\n## How to run\n\n```\ndotnet test\n```\n",
+      "diff_stats": null
+    },
+    {
+      "id": "fence-untagged-26-lines-denied-names-25-and-untagged",
+      "scope": [
+        "hook"
+      ],
+      "surface": "pr-body",
+      "repo": "bbmanagementsystemv2",
+      "title": "BBZ-73 webhook claim",
+      "as_of": "2026-09-10",
+      "expected": "DENY",
+      "reason_contains": [
+        "25",
+        "untagged"
+      ],
+      "body": "## What breaks\n\nA doubled webhook credits twice.\n\n## What changes\n\nThe second one is ignored.\n\n### BoltBetz.ManagementSystem/Sila/SilaWebhookClaim.cs:24\n\n```\n  \"k1\": 1,\n  \"k2\": 2,\n  \"k3\": 3,\n  \"k4\": 4,\n  \"k5\": 5,\n  \"k6\": 6,\n  \"k7\": 7,\n  \"k8\": 8,\n  \"k9\": 9,\n  \"k10\": 10,\n  \"k11\": 11,\n  \"k12\": 12,\n  \"k13\": 13,\n  \"k14\": 14,\n  \"k15\": 15,\n  \"k16\": 16,\n  \"k17\": 17,\n  \"k18\": 18,\n  \"k19\": 19,\n  \"k20\": 20,\n  \"k21\": 21,\n  \"k22\": 22,\n  \"k23\": 23,\n  \"k24\": 24,\n  \"k25\": 25,\n  \"k26\": 26,\n```\n\n## How to run\n\n```\ndotnet test\n```\n",
+      "diff_stats": null
+    },
+    {
+      "id": "fence-json-61-lines-denied-names-60-and-json",
+      "scope": [
+        "hook"
+      ],
+      "surface": "pr-body",
+      "repo": "bbmanagementsystemv2",
+      "title": "BBZ-73 webhook claim",
+      "as_of": "2026-09-10",
+      "expected": "DENY",
+      "reason_contains": [
+        "60",
+        "json"
+      ],
+      "body": "## What breaks\n\nA doubled webhook credits twice.\n\n## What changes\n\nThe second one is ignored.\n\n### BoltBetz.ManagementSystem/Sila/SilaWebhookClaim.cs:24\n\n```json\n  \"k1\": 1,\n  \"k2\": 2,\n  \"k3\": 3,\n  \"k4\": 4,\n  \"k5\": 5,\n  \"k6\": 6,\n  \"k7\": 7,\n  \"k8\": 8,\n  \"k9\": 9,\n  \"k10\": 10,\n  \"k11\": 11,\n  \"k12\": 12,\n  \"k13\": 13,\n  \"k14\": 14,\n  \"k15\": 15,\n  \"k16\": 16,\n  \"k17\": 17,\n  \"k18\": 18,\n  \"k19\": 19,\n  \"k20\": 20,\n  \"k21\": 21,\n  \"k22\": 22,\n  \"k23\": 23,\n  \"k24\": 24,\n  \"k25\": 25,\n  \"k26\": 26,\n  \"k27\": 27,\n  \"k28\": 28,\n  \"k29\": 29,\n  \"k30\": 30,\n  \"k31\": 31,\n  \"k32\": 32,\n  \"k33\": 33,\n  \"k34\": 34,\n  \"k35\": 35,\n  \"k36\": 36,\n  \"k37\": 37,\n  \"k38\": 38,\n  \"k39\": 39,\n  \"k40\": 40,\n  \"k41\": 41,\n  \"k42\": 42,\n  \"k43\": 43,\n  \"k44\": 44,\n  \"k45\": 45,\n  \"k46\": 46,\n  \"k47\": 47,\n  \"k48\": 48,\n  \"k49\": 49,\n  \"k50\": 50,\n  \"k51\": 51,\n  \"k52\": 52,\n  \"k53\": 53,\n  \"k54\": 54,\n  \"k55\": 55,\n  \"k56\": 56,\n  \"k57\": 57,\n  \"k58\": 58,\n  \"k59\": 59,\n  \"k60\": 60,\n  \"k61\": 61,\n```\n\n## How to run\n\n```\ndotnet test\n```\n",
+      "diff_stats": null
+    },
+    {
+      "id": "fence-untagged-25-lines-still-passes",
+      "scope": [
+        "hook"
+      ],
+      "surface": "pr-body",
+      "repo": "bbmanagementsystemv2",
+      "title": "BBZ-73 webhook claim",
+      "as_of": "2026-09-10",
+      "expected": "ADVISE",
+      "body": "## What breaks\n\nA doubled webhook credits twice.\n\n## What changes\n\nThe second one is ignored.\n\n### BoltBetz.ManagementSystem/Sila/SilaWebhookClaim.cs:24\n\n```\n  \"k1\": 1,\n  \"k2\": 2,\n  \"k3\": 3,\n  \"k4\": 4,\n  \"k5\": 5,\n  \"k6\": 6,\n  \"k7\": 7,\n  \"k8\": 8,\n  \"k9\": 9,\n  \"k10\": 10,\n  \"k11\": 11,\n  \"k12\": 12,\n  \"k13\": 13,\n  \"k14\": 14,\n  \"k15\": 15,\n  \"k16\": 16,\n  \"k17\": 17,\n  \"k18\": 18,\n  \"k19\": 19,\n  \"k20\": 20,\n  \"k21\": 21,\n  \"k22\": 22,\n  \"k23\": 23,\n  \"k24\": 24,\n  \"k25\": 25,\n```\n\n## How to run\n\n```\ndotnet test\n```\n",
+      "diff_stats": null
+    },
+    {
+      "id": "fence-json-60-lines-still-passes",
+      "scope": [
+        "hook"
+      ],
+      "surface": "pr-body",
+      "repo": "bbmanagementsystemv2",
+      "title": "BBZ-73 webhook claim",
+      "as_of": "2026-09-10",
+      "expected": "ADVISE",
+      "body": "## What breaks\n\nA doubled webhook credits twice.\n\n## What changes\n\nThe second one is ignored.\n\n### BoltBetz.ManagementSystem/Sila/SilaWebhookClaim.cs:24\n\n```json\n  \"k1\": 1,\n  \"k2\": 2,\n  \"k3\": 3,\n  \"k4\": 4,\n  \"k5\": 5,\n  \"k6\": 6,\n  \"k7\": 7,\n  \"k8\": 8,\n  \"k9\": 9,\n  \"k10\": 10,\n  \"k11\": 11,\n  \"k12\": 12,\n  \"k13\": 13,\n  \"k14\": 14,\n  \"k15\": 15,\n  \"k16\": 16,\n  \"k17\": 17,\n  \"k18\": 18,\n  \"k19\": 19,\n  \"k20\": 20,\n  \"k21\": 21,\n  \"k22\": 22,\n  \"k23\": 23,\n  \"k24\": 24,\n  \"k25\": 25,\n  \"k26\": 26,\n  \"k27\": 27,\n  \"k28\": 28,\n  \"k29\": 29,\n  \"k30\": 30,\n  \"k31\": 31,\n  \"k32\": 32,\n  \"k33\": 33,\n  \"k34\": 34,\n  \"k35\": 35,\n  \"k36\": 36,\n  \"k37\": 37,\n  \"k38\": 38,\n  \"k39\": 39,\n  \"k40\": 40,\n  \"k41\": 41,\n  \"k42\": 42,\n  \"k43\": 43,\n  \"k44\": 44,\n  \"k45\": 45,\n  \"k46\": 46,\n  \"k47\": 47,\n  \"k48\": 48,\n  \"k49\": 49,\n  \"k50\": 50,\n  \"k51\": 51,\n  \"k52\": 52,\n  \"k53\": 53,\n  \"k54\": 54,\n  \"k55\": 55,\n  \"k56\": 56,\n  \"k57\": 57,\n  \"k58\": 58,\n  \"k59\": 59,\n  \"k60\": 60,\n```\n\n## How to run\n\n```\ndotnet test\n```\n",
+      "diff_stats": null
+    },
+    {
+      "id": "rn-nested-tests-exempt",
+      "scope": [
+        "hook"
+      ],
+      "surface": "pr-body",
+      "repo": "v2-react-native",
+      "title": "BBZ-248 zod on the money endpoints",
+      "as_of": "2026-09-10",
+      "expected": "SILENT",
+      "body": "## What breaks\n\nA money endpoint can change shape and nothing notices.\n\n## What changes\n\nThe endpoint validates its body.\n\n### src/app/validateResponse.ts:122\n\n```ts\nexport const validateResponse = (endpoint, schema) => (data) => data;\n```\n\n## How to run\n\n```\nnpx jest --ci\n```\n",
+      "diff_stats": [
+        {
+          "path": "src/app/validateResponse.ts",
+          "added": 40,
+          "deleted": 0
+        },
+        {
+          "path": "src/app/__tests__/validateResponse.test.ts",
+          "added": 80,
+          "deleted": 0
+        },
+        {
+          "path": "src/features/wallet/hooks/__tests__/useBankTransfers.test.tsx",
+          "added": 30,
+          "deleted": 2
+        },
+        {
+          "path": "src/features/wallet/api/__tests__/responseShapeValidation.test.tsx",
+          "added": 120,
+          "deleted": 0
+        },
+        {
+          "path": "scripts/ci/__tests__/releaseChecks.test.mjs",
+          "added": 60,
+          "deleted": 0
+        },
+        {
+          "path": "package-lock.json",
+          "added": 900,
+          "deleted": 300
+        }
+      ]
+    },
+    {
+      "id": "path-heading-no-extension",
+      "scope": [
+        "hook"
+      ],
+      "surface": "pr-body",
+      "repo": "v2-react-native",
+      "title": "BBZ-254 staging build configuration",
+      "as_of": "2026-09-10",
+      "expected": "SILENT",
+      "body": "## What breaks\n\nA staging build installs as the production app.\n\n## What changes\n\nStaging gets its own build configuration.\n\n### ios/Podfile:43\n```ruby\nsetting = value\n```\nOne sentence on why.\n\n## How to run\n\n```bash\nnpm run test:ci-scripts\n```\n",
+      "diff_stats": [
+        {
+          "path": "ios/Podfile",
+          "added": 6,
+          "deleted": 1
+        }
+      ]
+    },
+    {
+      "id": "path-heading-space-in-basename",
+      "scope": [
+        "hook"
+      ],
+      "surface": "pr-body",
+      "repo": "v2-react-native",
+      "title": "BBZ-254 staging scheme",
+      "as_of": "2026-09-10",
+      "expected": "SILENT",
+      "body": "## What breaks\n\nA staging build installs as the production app.\n\n## What changes\n\nStaging gets its own build configuration.\n\n### ios/boltbetz.xcodeproj/xcshareddata/xcschemes/BoltBetz Staging.xcscheme:26\n```xml\nsetting = value\n```\nOne sentence on why.\n\n## How to run\n\n```bash\nnpm run test:ci-scripts\n```\n",
+      "diff_stats": [
+        {
+          "path": "ios/boltbetz.xcodeproj/xcshareddata/xcschemes/BoltBetz Staging.xcscheme",
+          "added": 88,
+          "deleted": 0
+        }
+      ]
+    },
+    {
+      "id": "path-heading-leading-words-still-strict",
+      "scope": [
+        "hook"
+      ],
+      "surface": "pr-body",
+      "repo": "v2-react-native",
+      "title": "BBZ-254 leading words",
+      "as_of": "2026-09-10",
+      "expected": "SILENT",
+      "body": "## What breaks\n\nA staging build installs as the production app.\n\n## What changes\n\nStaging gets its own build configuration.\n\n### The fix in src/app/observe.ts:41\n```ts\nsetting = value\n```\nOne sentence on why.\n\n## How to run\n\n```bash\nnpm run test:ci-scripts\n```\n",
+      "diff_stats": [
+        {
+          "path": "src/app/observe.ts",
+          "added": 3,
+          "deleted": 1
+        }
+      ]
     }
   ]
 }

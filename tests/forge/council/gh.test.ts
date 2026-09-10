@@ -4,7 +4,8 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { conclusionOf, countAddDel, countChangedLines, parseGhJson } from '../../../src/forge/council/gh.ts';
+import { conclusionOf, countAddDel, countChangedLines, guardedCommentPr, parseGhJson } from '../../../src/forge/council/gh.ts';
+import type { GhWriter } from '../../../src/forge/council/gh.ts';
 
 describe('countChangedLines', () => {
   it('counts added and removed content lines, never the +++/--- file headers', () => {
@@ -108,5 +109,38 @@ describe('parseGhJson', () => {
   it('prefers full over tail, same as every other gh JSON reader in this codebase', () => {
     const ok = { ok: true, tail: '{truncated', full: JSON.stringify({ headRefOid: 'full-value' }) };
     expect(parseGhJson<{ headRefOid: string }>(ok, 'pr view')).toEqual({ headRefOid: 'full-value' });
+  });
+});
+
+describe('guardedCommentPr — order 19 chokepoint', () => {
+  const OVER_80_WORDS = Array.from({ length: 90 }, (_v, i) => `word${i}`).join(' ');
+
+  function fakeWriter(): { writer: Pick<GhWriter, 'commentPr'>; state: { calls: number } } {
+    const state = { calls: 0 };
+    const writer: Pick<GhWriter, 'commentPr'> = {
+      async commentPr() {
+        state.calls += 1;
+        return { returncode: 0, stderr: '' };
+      },
+    };
+    return { writer, state };
+  }
+
+  it('an over-ceiling comment never reaches the stub, and reports the refusal', async () => {
+    const { writer, state } = fakeWriter();
+    let refusalReason = '';
+    const result = await guardedCommentPr(writer, 'bbmanagementsystemv2', 71, OVER_80_WORDS, (refusal) => {
+      refusalReason = refusal.reason;
+    });
+    expect(state.calls).toBe(0);
+    expect(result).toBeNull();
+    expect(refusalReason).toContain('80');
+  });
+
+  it('a conforming comment reaches the stub exactly once', async () => {
+    const { writer, state } = fakeWriter();
+    const result = await guardedCommentPr(writer, 'bbmanagementsystemv2', 71, 'Short comment, well under the ceiling.');
+    expect(state.calls).toBe(1);
+    expect(result).toEqual({ returncode: 0, stderr: '' });
   });
 });
