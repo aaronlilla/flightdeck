@@ -21,7 +21,7 @@ function runState(overrides: Partial<RunState> & Pick<RunState, 'run'>): RunStat
 function fleetWith(runs: Record<string, RunState>): FleetState {
   // Each run state's lastEventAt is mirrored as one worker row, since liveness reads rows.
   const events = Object.values(runs).filter((r) => r.lastEventAt > 0).map((r) => ev(r.run, 'worker', r.lastEventAt));
-  return { events, runs, burn: {}, handoffs: 0, torn: 0, unknownModels: [] };
+  return { events, runs, burn: {}, handoffs: 0, torn: 0, unknownModels: [], sessions: {} };
 }
 
 describe('baseRunKey', () => {
