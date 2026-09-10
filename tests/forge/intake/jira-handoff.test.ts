@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { buildHandoffComment, runJiraHandoff, type JiraHandoffEvent } from '../../../src/forge/intake/jiraHandoff.js';
-import type { JiraCallResult, JiraWriteClient } from '../../../src/forge/intake/jira.js';
+import { createJiraWriteClient, type JiraCallResult, type JiraWriteClient } from '../../../src/forge/intake/jira.js';
 import type { HaipingHandoff } from '../../../src/forge/contracts.js';
 
 const HAIPING: HaipingHandoff = {
@@ -98,5 +98,41 @@ describe('runJiraHandoff — the three writes, in order', () => {
     expect(commentEvents.at(-1)?.body?.length).toBeLessThanOrEqual(300);
     const assignEvents = events.filter((e) => e.kind === 'jira-assign');
     expect(assignEvents.at(-1)?.event).toBe('external.complete');
+  });
+
+  // G4 (readability-total, 2026-09-10): production wires this module's `client` param
+  // with the REAL `createJiraWriteClient` (cli.ts), not a fake -- so this exercises the
+  // order 19 backstop through the actual call site rather than trusting that the two
+  // files agree on the interface. An over-ceiling `notVisuallyVerified` list is the
+  // realistic way this comment blows the 80-word jira-comment ceiling.
+  it('an over-ceiling handoff comment never reaches the real client\'s fetchFn', async () => {
+    let calls = 0;
+    const fetchFn = (async () => { calls += 1; return new Response('{}', { status: 200 }); }) as unknown as typeof fetch;
+    const realClient = createJiraWriteClient({ site: 'https://acme.atlassian.net', email: 'bot@acme.test', token: 'tok', fetchFn });
+    const wordyHaiping: HaipingHandoff = {
+      ...HAIPING,
+      notVisuallyVerified: Array.from({ length: 90 }, (_v, i) => `area-${i}`),
+    };
+    const events: JiraHandoffEvent[] = [];
+
+    await runJiraHandoff(realClient, wordyHaiping, 'head-1', 'https://github.com/acme/widgets/pull/105', {}, (e) => events.push(e));
+
+    expect(calls).toBe(0);
+    const commentEvents = events.filter((e) => e.kind === 'jira-comment');
+    expect(commentEvents.at(-1)?.event).toBe('external.unknown');
+    expect(commentEvents.at(-1)?.body).toContain('readability refused');
+  });
+
+  it('a conforming handoff comment reaches the real client\'s fetchFn exactly once', async () => {
+    let calls = 0;
+    const fetchFn = (async () => { calls += 1; return new Response('{}', { status: 200 }); }) as unknown as typeof fetch;
+    const realClient = createJiraWriteClient({ site: 'https://acme.atlassian.net', email: 'bot@acme.test', token: 'tok', fetchFn });
+    const events: JiraHandoffEvent[] = [];
+
+    await runJiraHandoff(realClient, HAIPING, 'head-1', 'https://github.com/acme/widgets/pull/105', {}, (e) => events.push(e));
+
+    expect(calls).toBe(1);
+    const commentEvents = events.filter((e) => e.kind === 'jira-comment');
+    expect(commentEvents.at(-1)?.event).toBe('external.complete');
   });
 });
