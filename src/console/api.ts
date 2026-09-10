@@ -8,6 +8,8 @@ import { redactErrorBody } from './redact.js';
 import type {
   AccountProvider,
   AccountsResponse,
+  AccountUpdateRequest,
+  AccountUpdateResponse,
   ActionResult,
   BlockersActionResult,
   BlockersResponse,
@@ -16,8 +18,10 @@ import type {
   ConnectAttemptResponse,
   ConnectStartResponse,
   ConsoleStateSummary,
+  DeleteFilesResponse,
   DisconnectResponse,
   IntegrationsResponse,
+  LeftoversResponse,
   JournalResponse,
   LaneStory,
   LanesResponse,
@@ -383,4 +387,24 @@ export function getConnectAttempt(attemptId: string): Promise<ConnectAttemptResp
 
 export function disconnectAccount(id: string): Promise<DisconnectResponse> {
   return post<DisconnectResponse>(`/accounts/${encodeURIComponent(id)}/disconnect`, {});
+}
+
+/** How much of this login the fleet may take. An omitted field is left alone;
+ *  `maxConcurrent: 0` clears the ceiling. */
+export function updateAccount(id: string, patch: AccountUpdateRequest): Promise<AccountUpdateResponse> {
+  return call<AccountUpdateResponse>(`/accounts/${encodeURIComponent(id)}`, {
+    method: 'PATCH', body: JSON.stringify(patch),
+  });
+}
+
+export function getLeftovers(): Promise<LeftoversResponse> {
+  return call<LeftoversResponse>('/accounts/leftovers');
+}
+
+/** Removes one unlinked login's files. Takes the directory's NAME, never a path -- the
+ *  console never learns where the configs root is, and the server never accepts one. */
+export function deleteLeftover(name: string, confirm?: string): Promise<Gated<DeleteFilesResponse>> {
+  return post<Gated<DeleteFilesResponse>>(
+    `/accounts/leftovers/${encodeURIComponent(name)}/delete`, withConfirm({}, confirm),
+  );
 }

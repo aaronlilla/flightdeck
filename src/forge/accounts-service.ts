@@ -95,6 +95,8 @@ export class AccountsService {
         ...(email ? { email } : row.record && !row.record.email ? { email: accountName(row.record) } : {}),
         ...(record?.plan ?? reading?.plan ? { plan: record?.plan ?? reading?.plan } : {}),
         connectedAt: row.record?.connectedAt ?? 0,
+        ...(row.record?.lastResort ? { lastResort: true } : {}),
+        ...(row.record?.maxConcurrent !== undefined ? { maxConcurrent: row.record.maxConcurrent } : {}),
         liveRuns: live[row.id] ?? 0,
         windows: reading?.windows ?? [],
         ...(reading ? { readAt: reading.at } : {}),
@@ -141,6 +143,31 @@ export class AccountsService {
     );
   }
 
+  /**
+   * Whether this provider has any registered row at all, and the earliest still-future
+   * reset across every window those rows last reported.
+   *
+   * One reader, so the launcher's refusal and the console's banner tell the same story
+   * rather than each computing "when does this free up" its own way. The fleet row is
+   * deliberately not counted: it is the fallback, never a registered account, and
+   * counting it would make an empty registry look populated.
+   */
+  exhaustion(provider: AccountProvider): { registered: boolean; earliestReset: number | null } {
+    const now = this.now();
+    const usage = this.deps.readUsage();
+    const rows = this.deps.loadAccounts().filter((record) => record.provider === provider);
+    let earliest: number | null = null;
+    for (const row of rows) {
+      for (const window of usage[row.id]?.reading?.windows ?? []) {
+        const at = window.resetsAt;
+        // A reset already in the past tells a launch nothing about when it can run.
+        if (at === null || at <= now) continue;
+        if (earliest === null || at < earliest) earliest = at;
+      }
+    }
+    return { registered: rows.length > 0, earliestReset: earliest };
+  }
+
   /** Reads every account now, waiting for all of them. For the CLI and for tests. */
   async refreshAll(): Promise<void> {
     await Promise.all(this.rows().map((row) => this.refreshOne(row)));
@@ -161,6 +188,49 @@ export class AccountsService {
       this.inFlight.delete(row.id);
     }
   }
+}
+
+/** `3h 20m`, `45m`, `2d 4h` -- how long until a window frees up, in the shortest form
+ *  that still says it. */
+function untilWords(ms: number): string {
+  const minutes = Math.max(1, Math.round(ms / 60_000));
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ${minutes % 60}m`;
+  return `${Math.floor(hours / 24)}d ${hours % 24}h`;
+}
+
+export type LaunchAccountDecision =
+  | { refused: false; account?: AccountRecord }
+  | { refused: true; reason: string };
+
+/**
+ * What a launch does with `pickWithRefresh`'s answer.
+ *
+ * Three outcomes, and the middle one is the whole point. An account was picked: run
+ * under it. Nothing was picked and NOTHING IS REGISTERED: fall through to the machine's
+ * own login, exactly as every launch did before accounts existed -- that path is what
+ * makes a fresh install work and must never be taken away. Nothing was picked but rows
+ * ARE registered: refuse. Every one of them is spent, and the login the operator is
+ * typing into is not spare capacity to borrow (Aaron, 2026-09-10).
+ *
+ * Held-back rows are already tried first by `pickAccount`'s ranking, so reaching the
+ * third case means even those are limited. There is deliberately no second bypass here.
+ */
+export function launchAccountDecision(
+  picked: AccountRecord | undefined,
+  state: { registered: boolean; earliestReset: number | null },
+  now: number,
+): LaunchAccountDecision {
+  if (picked) return { refused: false, account: picked };
+  if (!state.registered) return { refused: false };
+  const when = state.earliestReset !== null && state.earliestReset > now
+    ? `the earliest window frees in ${untilWords(state.earliestReset - now)}`
+    : 'no reset time is on record for any of them';
+  return {
+    refused: true,
+    reason: `every linked account for this provider is spent or at its ceiling; ${when}`,
+  };
 }
 
 /** A `fetch` for the probes with a hard deadline, so a hung provider never holds a slot. */

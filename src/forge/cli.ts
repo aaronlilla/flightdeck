@@ -42,7 +42,7 @@ import {
   accountsRegistryPath, addAccount, checkAddCandidate, configDirForSession, liveRunsByAccount, loadAccounts, pickAccount, removeAccount, seedConfigDir,
 } from './accounts.js';
 import { readAccountUsage } from './accounts-usage.js';
-import { AccountsService, diskWriters, fleetLoginDir, realProbe } from './accounts-service.js';
+import { AccountsService, diskWriters, fleetLoginDir, launchAccountDecision, realProbe } from './accounts-service.js';
 import { reconcileBurnOnce } from './burn-reconcile.js';
 import { planIntakeWrites } from './intake/dryRun.js';
 import { createJiraFeed, createJiraWriteClient, probeJira, type JiraWriteClient } from './intake/jira.js';
@@ -1067,7 +1067,23 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         probe: realProbe(),
       });
       const picked = await accountsForRun.pickWithRefresh('claude', plannedModel);
-      const selectedAccount = picked ? { id: picked.id, configDir: picked.configDir } : undefined;
+      // A launch with rows registered and none of them usable STOPS here. It used to
+      // fall through to the machine's own login, which meant an exhausted fleet spent
+      // the window the operator was working in -- the exact outcome `lastResort` exists
+      // to prevent (Aaron, 2026-09-10). An EMPTY registry still falls through, because
+      // that is what makes a fresh install work.
+      const accountDecision = launchAccountDecision(
+        picked, accountsForRun.exhaustion('claude'), Date.now(),
+      );
+      if (accountDecision.refused) {
+        actuatorJournal.append({
+          event: 'run.refused', run: slug, actor: 'launcher', reason: accountDecision.reason,
+        });
+        return { code: 1, lines: [`refused: ${accountDecision.reason}`] };
+      }
+      const selectedAccount = accountDecision.account
+        ? { id: accountDecision.account.id, configDir: accountDecision.account.configDir }
+        : undefined;
       // Where a `gh` credential lapse from the drift check lands. An expired token
       // reads as an unknown mergeable state, and answering that with "rebase onto the
       // base branch" asks for something no rebase can deliver. The park goes under

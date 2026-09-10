@@ -25,7 +25,11 @@ import { appendOnce, replay } from '../journal.js';
 import type { StuckSignal } from '../liveness.js';
 import { processAlive, type Registry } from '../registry.js';
 import type { RunRequest } from '../exec.js';
-import { accountName, accountsRegistryPath, addAccount, interactiveSentence, liveRunsByAccount, loadAccounts, pickAccount, removeAccount } from '../accounts.js';
+import {
+  accountName, accountsRegistryPath, addAccount, interactiveSentence, liveRunsByAccount,
+  loadAccounts, pickAccount, removeAccount, updateAccount,
+} from '../accounts.js';
+import { deleteLeftover, listLeftovers } from '../accounts-leftovers.js';
 import { AccountsService, diskWriters, fleetLoginDir, realProbe, type AccountsServiceDeps } from '../accounts-service.js';
 import { readAccountUsage, recordPlan } from '../accounts-usage.js';
 import { sessionsFromConfigDir, switchLimitedAccount } from '../accounts-switch.js';
@@ -51,7 +55,8 @@ import {
   type RulesDeps,
 } from './rules.js';
 import type {
-  AccountsResponse, ActionResult, ConnectAttemptResponse, ConnectStartResponse, DisconnectResponse,
+  AccountsResponse, AccountUpdateRequest, AccountUpdateResponse, ActionResult, ConnectAttemptResponse,
+  ConnectStartResponse, DeleteFilesResponse, DisconnectResponse, LeftoversResponse,
   LanesResponse, Message, PlanItem,
 } from '../../shared/console-model.js';
 import { fmtTokens } from '../../shared/format-tokens.js';
@@ -1042,6 +1047,51 @@ export class ConsoleWrites {
         ...(attempt.error !== undefined ? { error: attempt.error } : {}),
         ...(attempt.accountId !== undefined ? { accountId: attempt.accountId } : {}),
       } satisfies ConnectAttemptResponse);
+      return true;
+    }
+
+    // Login directories no registered account is using any more, and the one way to
+    // remove one. Addressed by DIRECTORY NAME, never by a path from the browser --
+    // `accounts-leftovers.ts` states why, and its specimens are what hold the line.
+    if (path === '/accounts/leftovers' && method === 'GET') {
+      if (!this.deps.authorized(request, response)) return true;
+      respond(response, 200, { items: listLeftovers(this.accountsPath) } satisfies LeftoversResponse);
+      return true;
+    }
+
+    if ((match = path.match(/^\/accounts\/leftovers\/([^/]+)\/delete$/)) && method === 'POST') {
+      if (!this.deps.authorized(request, response)) return true;
+      const name = decodeURIComponent(match[1]!);
+      const body = await readBody<{ confirm?: string }>(request);
+      // Irreversible and large, so it goes through the same two-pass gate every other
+      // destructive route here uses: the first call answers 202 with a token and a
+      // confirm card, and only a second call carrying that token deletes anything.
+      const outcome = await this.confirmGate(
+        body as Record<string, unknown> | null, 'settings', `delete the login files for ${name}`,
+        async () => {
+          const verdict = deleteLeftover(name, this.accountsPath);
+          return verdict.ok
+            ? { status: 200, body: { ok: true, bytes: verdict.bytes } satisfies DeleteFilesResponse }
+            : { status: 409, body: { ok: false, error: verdict.reason } satisfies DeleteFilesResponse };
+        },
+      );
+      respond(response, outcome.status, outcome.body);
+      return true;
+    }
+
+    // How much of this login the fleet may take. One route for both fields because they
+    // are one decision; two would give the row two chances to disagree with itself
+    // mid-edit.
+    if ((match = path.match(/^\/accounts\/([^/]+)$/)) && method === 'PATCH') {
+      if (!this.deps.authorized(request, response)) return true;
+      const body = await readBody<AccountUpdateRequest>(request);
+      const patch: AccountUpdateRequest = {};
+      if (typeof body?.lastResort === 'boolean') patch.lastResort = body.lastResort;
+      if (typeof body?.maxConcurrent === 'number') patch.maxConcurrent = body.maxConcurrent;
+      const verdict = updateAccount(decodeURIComponent(match[1]!), patch, this.accountsPath);
+      respond(response, verdict.ok ? 200 : 409, verdict.ok
+        ? { ok: true } satisfies AccountUpdateResponse
+        : { ok: false, error: verdict.reason } satisfies AccountUpdateResponse);
       return true;
     }
 

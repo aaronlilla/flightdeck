@@ -167,6 +167,53 @@ export function addAccount(record: AccountRecord, path: string = accountsRegistr
   writeStored(path, stored);
 }
 
+/** What may be edited on a row that already exists: how much of this login the fleet is
+ *  allowed to take. Nothing here can move a config dir, a provider or a subscription --
+ *  those are what a connect attempt proved, and re-proving them is a new connect. */
+export interface AccountPatch {
+  lastResort?: boolean;
+  /** `0` means "no limit" and CLEARS the field. Storing a literal zero would be refused
+   *  by `validateAccounts` on the very next write, so the stepper's zero position has to
+   *  resolve to absent rather than to a number. */
+  maxConcurrent?: number;
+}
+
+/**
+ * Edits one row's spending controls in place, behind the same refusals every other write
+ * applies -- a ceiling that is not a positive integer is rejected here rather than
+ * written and tripped over later.
+ *
+ * Returns a `Verdict` rather than throwing: both callers (the console route and the CLI)
+ * turn a refusal into a message for a person, and neither wants an exception for
+ * something a person typed.
+ */
+export function updateAccount(
+  id: string, patch: AccountPatch, path: string = accountsRegistryPath(),
+): Verdict {
+  const stored = readStored(path);
+  const index = stored.accounts.findIndex((account) => account.id === id);
+  if (index === -1) return { ok: false, reason: `no account '${id}' is registered` };
+
+  const next: AccountRecord = { ...stored.accounts[index]! };
+  if (patch.lastResort !== undefined) {
+    if (patch.lastResort) next.lastResort = true;
+    else delete next.lastResort;
+  }
+  if (patch.maxConcurrent !== undefined) {
+    if (patch.maxConcurrent === 0) delete next.maxConcurrent;
+    else next.maxConcurrent = patch.maxConcurrent;
+  }
+
+  const candidate = [...stored.accounts];
+  candidate[index] = next;
+  const verdict = validateAccounts(candidate);
+  if (!verdict.ok) return verdict;
+
+  stored.accounts = candidate;
+  writeStored(path, stored);
+  return { ok: true };
+}
+
 /** Drops one account by id. A no-op, not a throw, when the id is not there -- the same
  *  tolerance `Registry.remove` gives a goal that already left. */
 export function removeAccount(id: string, path: string = accountsRegistryPath()): void {
