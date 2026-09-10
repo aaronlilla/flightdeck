@@ -16,9 +16,22 @@ const SECRET_PATTERN = /[A-Za-z0-9_-]{24,}/g;
 // hex) rather than length alone.
 const HEX_SHA = /^[0-9a-fA-F]{7,40}$/;
 
+// A match that starts right after a backslash has swallowed the letter of an escape
+// sequence in a JSON document: gh's --json output reaches the council through this
+// scrub, and turning backslash-n-BYPASS_EMAIL_VERIFICATION into backslash-[REDACTED]
+// made the whole document unparseable (v2-React-Native#148, 2026-09-10). Keep the escape
+// whole (one letter, or `u` plus four hex digits) and scrub what follows it.
+const escapeLength = (match: string): number => (match[0] === 'u' ? 5 : 1);
+
 export function redact(text: string): string {
   if (!text) return text;
-  return text.replace(SECRET_PATTERN, (match) => (HEX_SHA.test(match) ? match : '[REDACTED]'));
+  return text.replace(SECRET_PATTERN, (match: string, offset: number, whole: string) => {
+    if (HEX_SHA.test(match)) return match;
+    if (offset > 0 && whole[offset - 1] === '\\') {
+      return match.slice(0, escapeLength(match)) + '[REDACTED]';
+    }
+    return '[REDACTED]';
+  });
 }
 
 /** `redact()` applied to every string value in a record, other types left alone. */
