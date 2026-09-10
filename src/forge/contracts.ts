@@ -329,6 +329,10 @@ export const FORGE_EVENT_NAMES = [
   'session.started', 'session.prompt', 'session.stop', 'session.subagent-stop',
   'session.notification', 'session.ended', 'session.vanished', 'session.cleanup',
   'worktree.left', 'message.sent', 'message.queued', 'message.delivered',
+  // Order 19 (readability-total, R-59): a Jira comment or a PR comment refused by
+  // `readabilityVerdict` before it ever reached the write client; `readability.unconfigured`
+  // once per console start when no contract dir is present.
+  'readability.refused', 'readability.unconfigured',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];
