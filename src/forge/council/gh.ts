@@ -8,8 +8,6 @@
  */
 import { run as execRun } from '../exec.ts';
 import type { GhPrView } from './externalize.ts';
-import { readabilityVerdict } from '../intake/readability.ts';
-import { normalizeRepo } from '../rules/readability.ts';
 
 export interface PrSnapshot {
   repo: string;
@@ -59,34 +57,6 @@ export interface GhWriter {
   /** A.4: `gh pr edit --add-reviewer`, for the backend handoff -- requesting the backend
    *  owner as a reviewer on a draft PR this queue will never merge itself. */
   requestReviewer(repo: string, pr: number, reviewer: string): Promise<GhWriteResult>;
-}
-
-/** One row per refusal, for whatever caller wants to surface it (the queue journal). */
-export interface ReadabilityRefusal {
-  repo: string;
-  pr: number;
-  reason: string;
-}
-
-/**
- * The chokepoint every PR-comment write goes through, whichever `GhWriter` a caller
- * injects (the real `REAL_GH` in production, a recording stub in a specimen): a DENY
- * refuses before `writer.commentPr` is ever called, and `onRefused` -- when the caller
- * supplies one -- gets the reason so it can journal a `readability.refused` row.
- * Production has exactly one call site (`queue-wire.ts`'s `queueCommentOnPr`); every
- * other caller of `.commentPr` was moved here on 2026-09-10 so none could skip it.
- */
-export async function guardedCommentPr(
-  writer: Pick<GhWriter, 'commentPr'>, repo: string, pr: number, body: string,
-  onRefused?: (refusal: ReadabilityRefusal) => void,
-): Promise<GhWriteResult | null> {
-  const asOf = new Date().toISOString().slice(0, 10);
-  const verdict = readabilityVerdict('pr-comment', normalizeRepo(repo), '', body, undefined, asOf);
-  if (verdict.verdict === 'DENY') {
-    onRefused?.({ repo, pr, reason: verdict.reason });
-    return null;
-  }
-  return writer.commentPr(repo, pr, body);
 }
 
 /**

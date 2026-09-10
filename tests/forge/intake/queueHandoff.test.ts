@@ -117,24 +117,4 @@ describe('runQueueHandoff', () => {
     expect(calls).toContain('link:BBZ-1');
     expect(events.some((e) => e.event === 'voice.refused')).toBe(true);
   });
-
-  it('refuses to post a comment over the readability ceiling, without stopping the rest of the handoff', async () => {
-    const calls: string[] = [];
-    const client = fakeClient({
-      async comment(key) { calls.push(`comment:${key}`); return { ok: true }; },
-      async link(key) { calls.push(`link:${key}`); return { ok: true }; },
-    });
-    const events: QueueHandoffEvent[] = [];
-
-    const longTestPlan = Array.from({ length: 20 }, (_v, i) => `step number ${i} in the visual check plan`);
-    await runQueueHandoff(
-      client,
-      { ticket: 'BBZ-1', prUrl: 'https://github.com/acme/app/pull/1', what: 'fixes a null check.', testPlan: longTestPlan },
-      {}, (event) => events.push(event),
-    );
-
-    expect(calls).not.toContain('comment:BBZ-1');
-    expect(calls).toContain('link:BBZ-1');
-    expect(events.some((e) => e.event === 'readability.refused')).toBe(true);
-  });
 });

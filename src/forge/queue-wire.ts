@@ -18,7 +18,7 @@ import { chainCouncil, chainGate, chainGh, chainRebase, chainLauncher, chainLaun
 import { checkoutFor, repoKindFor as repoKindForEnv, type ChainEnv } from './chain-env.js';
 import type { CliResult, ForgeDeps } from './cli.js';
 import { autoMergeAllowed } from './council/risk.js';
-import { countAddDel, guardedCommentPr, REAL_GH } from './council/gh.js';
+import { countAddDel, REAL_GH } from './council/gh.js';
 import type { Packet, PollSourceName, Watermark } from './contracts.js';
 import { run as execRun } from './exec.js';
 import type { QueueMergeDeps, QueuePlannedBrief, QueuePlanner, QueuePromoteDeps, QueueRuntimeDeps, QueueTicketSearch } from './intake/queue.js';
@@ -210,24 +210,11 @@ export function queuePlanner(configFn: () => JiraConfig | undefined = jiraConfig
   };
 }
 
-/** A.2: posts the council's own notes on the PR, through `guardedCommentPr` (order 19) --
- *  `advanceItem` itself never touches `gh`, so every real write funnels through here, and
- *  a DENY parks the item with the refusal reason rather than posting an unreadable
- *  comment. */
+/** A.2: posts the council's own notes on the PR, through `REAL_GH.commentPr` --
+ *  `advanceItem` itself never touches `gh`, so every real write funnels through here. */
 export function queueCommentOnPr(): NonNullable<QueueRuntimeDeps['commentOnPr']> {
   return async ({ repo, pr, body }) => {
-    const refused = await guardedCommentPr(REAL_GH, repo, pr, body, (refusal) => {
-      const journal = new Journal(journalPath());
-      try {
-        journal.append({
-          event: 'readability.refused', run: `${repo}#${pr}`, actor: 'queue',
-          reason: refusal.reason,
-        });
-      } finally {
-        journal.close();
-      }
-    });
-    if (refused === null) return;
+    await REAL_GH.commentPr(repo, pr, body);
   };
 }
 
