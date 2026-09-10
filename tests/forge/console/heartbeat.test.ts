@@ -38,17 +38,21 @@ describe('the heartbeat frame', () => {
     });
     const published: Record<string, unknown>[] = [];
     const spy = vi.spyOn(server, 'publish').mockImplementation((event) => { published.push(event); });
+    // The Machine ticker (R-59) also calls `publish()` on its own 10s cadence once the
+    // server is listening, so this filters to heartbeats specifically rather than
+    // asserting on every publish this server ever makes.
+    const heartbeats = (): Record<string, unknown>[] => published.filter((e) => e['type'] === 'heartbeat');
 
     await server.listen();
-    expect(published).toHaveLength(0);
+    expect(heartbeats()).toHaveLength(0);
 
     await vi.advanceTimersByTimeAsync(HEARTBEAT_MS);
-    expect(published).toHaveLength(1);
-    expect(published[0]!['type']).toBe('heartbeat');
-    expect(typeof published[0]!['at']).toBe('number');
+    expect(heartbeats()).toHaveLength(1);
+    expect(heartbeats()[0]!['type']).toBe('heartbeat');
+    expect(typeof heartbeats()[0]!['at']).toBe('number');
 
     await vi.advanceTimersByTimeAsync(HEARTBEAT_MS * 2);
-    expect(published).toHaveLength(3);
+    expect(heartbeats()).toHaveLength(3);
 
     spy.mockRestore();
     await server.close();
@@ -90,11 +94,11 @@ describe('the console rule-enforcement tick', () => {
     await server.listen();
     // One timer for the heartbeat, one for the journal watch that feeds the live
     // spine, one for the rule-enforcement tick, one for the console's own liveness
-    // ticker, one for the Conductor's rounds.
-    expect(setIntervalSpy).toHaveBeenCalledTimes(5);
+    // ticker, one for the Conductor's rounds, one for the Machine ticker (R-59).
+    expect(setIntervalSpy).toHaveBeenCalledTimes(6);
 
     await server.close();
-    expect(clearIntervalSpy).toHaveBeenCalledTimes(5);
+    expect(clearIntervalSpy).toHaveBeenCalledTimes(6);
 
     setIntervalSpy.mockRestore();
     clearIntervalSpy.mockRestore();

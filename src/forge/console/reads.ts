@@ -882,7 +882,10 @@ export class ConsoleReads {
         if (session.status === 'live' && session.repo && (repoCounts.get(session.repo) ?? 0) > 1) {
           base['mayNeedToMerge'] = true;
         }
-        if (verbose) base['sessionId'] = session.sessionId;
+        if (verbose) {
+          base['sessionId'] = session.sessionId;
+          base['pid'] = session.pid;
+        }
         return base;
       });
     return { sessions: rows };

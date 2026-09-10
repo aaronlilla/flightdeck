@@ -75,6 +75,12 @@ import type { QueryFn } from '../adapter/engine.js';
 import { conductorAgentEnabled, reasonerTimeoutMsFor } from './policy.js';
 import { CONDUCTOR_CLASS } from './console/agent.js';
 import { Breaker, clearKillSwitch, Fleet, type LaneRecord, type Lanes } from './supervisor.js';
+import {
+  buildMachineSnapshot, MACHINE_COMMAND_LINE_GLANCE_LENGTH, MACHINE_READ_INTERVAL_MS,
+  type MachineProcessNode, type MachineSessionInput, type MachineSnapshot,
+} from './machine/snapshot.js';
+import { realProcessTable } from './service/process-table.js';
+import type { ProcessRow } from './sweep.js';
 
 /** Reads the server's own bearer token, minting one on first use. */
 export function ensureServerToken(path: string = serverTokenPath()): string {
@@ -234,6 +240,13 @@ export interface ForgeServerOptions {
    *  to 2000 (the "very live" board's own cadence). A specimen sets this low with fake
    *  timers rather than waiting on the real interval. */
   liveTickMs?: number;
+  /** Overrides `GET /machine`'s own process-table read. Defaults to `realProcessTable`
+   *  (one `Get-CimInstance` call). A specimen never shells out. */
+  processTable?: () => ProcessRow[];
+  /** How often the Machine ticker reads the process table, in ms. Defaults to
+   *  `MACHINE_READ_INTERVAL_MS` (10 s, measured 2026-09-10 -- see
+   *  `src/forge/machine/snapshot.ts`). A specimen sets this low with fake timers. */
+  machineTickMs?: number;
 }
 
 export class ForgeServer {
@@ -281,6 +294,15 @@ export class ForgeServer {
 
   private journalSizeSeen = -1;
   private liveTimer: ReturnType<typeof setInterval> | undefined;
+
+  /** R-59: the Machine page's own ticker. Reads the process table, joins it to the
+   *  session registry, and publishes a `machine` slice event only when the pid set or
+   *  any command line changed since the last read -- never on every tick. */
+  private machineTimer: ReturnType<typeof setInterval> | undefined;
+  private readonly processTableFn: () => ProcessRow[];
+  private readonly machineTickMs: number;
+  private lastMachineSnapshot: MachineSnapshot | undefined;
+  private lastMachineSignature = '';
 
   private readonly isAliveFn: (pid: number) => boolean;
 
@@ -351,6 +373,8 @@ export class ForgeServer {
     this.registry = options.registry ?? new Registry(registryDir());
     this.isAliveFn = options.isAlive ?? processAlive;
     this.liveTickMs = options.liveTickMs ?? 2_000;
+    this.processTableFn = options.processTable ?? realProcessTable;
+    this.machineTickMs = options.machineTickMs ?? MACHINE_READ_INTERVAL_MS;
     this.consoleDistDir = options.consoleDistDir ?? defaultConsoleDistDir();
     this.packetsDirPath = options.packetsDir ?? defaultPacketsDir();
     this.forgeHomeDir = options.forgeHomeDir ?? forgeHome();
@@ -545,6 +569,8 @@ export class ForgeServer {
     // console refreshes inside 2s instead of waiting on the 5s poll.
     this.liveTimer = setInterval(() => this.tickLiveness(), this.liveTickMs);
     this.liveTimer.unref?.();
+    this.machineTimer = setInterval(() => this.tickMachine(), this.machineTickMs);
+    this.machineTimer.unref?.();
     this.rounds.start();
     this.consoleWrites.start();
     return this.port;
@@ -569,6 +595,101 @@ export class ForgeServer {
     this.tickLiveness();
   }
 
+  /** Sessions this server currently believes are live and carry a pid, in the shape
+   *  `buildMachineSnapshot` wants. Sourced from the same journal fold `GET /sessions`
+   *  reads (`journal.ts`'s `sessions` map) -- a session the registry tick has not yet
+   *  journaled a `session.started` row for is simply not on the page yet, same as it is
+   *  not yet on `GET /sessions`. */
+  private machineSessionInputs(): MachineSessionInput[] {
+    const fleet = this.journalCache.read(this.journalPath);
+    return Object.values(fleet.sessions)
+      .filter((session) => session.status === 'live')
+      .map((session) => ({
+        sessionId: session.sessionId,
+        pid: session.pid,
+        name: session.name,
+        repo: session.repo ?? null,
+        branch: session.branch ?? null,
+        status: session.status,
+        startedAt: session.startedAt,
+      }));
+  }
+
+  /** One Machine ticker step, pulled out so a test can fire it directly under fake
+   *  timers. Publishes `machine` only when the pid set or any command line changed
+   *  since the last read -- a read that finds nothing new still updates
+   *  `lastMachineSnapshot` (so `GET /machine`'s `readAt` stays honest) without a
+   *  publish. */
+  private tickMachine(): void {
+    // Guarded the same as every other tick step in this file (`cli.ts`'s registry tick
+    // carries the same comment): one bad process-table read never takes the whole
+    // server down. A transient `Get-CimInstance` failure, or (2026-09-10, CI) simply
+    // running somewhere `powershell` is not on PATH, would otherwise throw inside a
+    // bare `setInterval` callback and crash the process -- the one ticker here that
+    // shells out to an external binary is also the one that most needs this.
+    try {
+      const startedAt = Date.now();
+      const rows = this.processTableFn();
+      const readMs = Date.now() - startedAt;
+      const snapshot = buildMachineSnapshot(this.machineSessionInputs(), rows, Date.now(), {
+        intervalMs: this.machineTickMs, readMs,
+      });
+      this.lastMachineSnapshot = snapshot;
+      const signature = rows
+        .map((row) => `${row.pid}:${row.commandLine ?? ''}`)
+        .sort()
+        .join('|');
+      if (signature === this.lastMachineSignature) return;
+      this.lastMachineSignature = signature;
+      this.publish(sliceEvent('machine', 'the process table changed'));
+    } catch {
+      // Leaves `lastMachineSnapshot` at its last good read; `GET /machine` still
+      // answers from that rather than failing the request over a transient read.
+    }
+  }
+
+  /** Test seam only: fires one Machine tick synchronously. Production relies on the
+   *  real `setInterval` from `listen()`. */
+  tickMachineForTest(): void {
+    this.tickMachine();
+  }
+
+  /** `GET /machine`: the three-register pattern `GET /sessions` already uses
+   *  (`reads.ts`'s `sessionsResponse`) -- a glance sentence built from real counts,
+   *  never literal text, with the raw pid and the full command line held back until
+   *  `?verbose=1`. Serves the ticker's last read rather than reading the process table
+   *  on the request thread, so a page load is never what makes a `Get-CimInstance`
+   *  call run. The very first request before any tick has fired takes that one read
+   *  synchronously rather than serving nothing. */
+  private machineResponse(verbose: boolean): Record<string, unknown> {
+    if (!this.lastMachineSnapshot) this.tickMachine();
+    // Still unset means even that one attempt failed (no process-table read has ever
+    // succeeded) -- an honest empty snapshot rather than a 500 over a transient read.
+    const snapshot: MachineSnapshot = this.lastMachineSnapshot ?? {
+      readAt: Date.now(), readMs: 0, intervalMs: this.machineTickMs,
+      sessions: [], unregistered: [], counts: { sessions: 0, processes: 0, unregistered: 0 },
+    };
+    const ageS = Math.max(0, Math.round((Date.now() - snapshot.readAt) / 1000));
+    const intervalS = Math.round(snapshot.intervalMs / 1000);
+    const glance = `${snapshot.counts.sessions} sessions, ${snapshot.counts.processes} processes, `
+      + `${snapshot.counts.unregistered} unregistered, read ${ageS} s ago, every ${intervalS} s`;
+    return {
+      glance,
+      readAt: snapshot.readAt,
+      intervalMs: snapshot.intervalMs,
+      sessions: snapshot.sessions.map((session) => ({
+        name: session.name,
+        repo: session.repo,
+        branch: session.branch,
+        status: session.status,
+        startedAt: session.startedAt,
+        root: session.root ? machineNodeForDisplay(session.root, verbose) : null,
+        ...(verbose ? { sessionId: session.sessionId, pid: session.pid } : {}),
+      })),
+      unregistered: snapshot.unregistered.map((node) => machineNodeForDisplay(node, verbose)),
+    };
+  }
+
   async close(): Promise<void> {
     this.rounds.stop();
     if (this.heartbeatTimer) {
@@ -582,6 +703,10 @@ export class ForgeServer {
     if (this.liveTimer) {
       clearInterval(this.liveTimer);
       this.liveTimer = undefined;
+    }
+    if (this.machineTimer) {
+      clearInterval(this.machineTimer);
+      this.machineTimer = undefined;
     }
     this.consoleWrites.stop();
     await this.conductor.stop();
@@ -793,6 +918,11 @@ export class ForgeServer {
 
     if (path === '/state' && request.method === 'GET') {
       return json(response, 200, this.state());
+    }
+    if (path === '/machine' && request.method === 'GET') {
+      if (!this.authorized(request, response)) return;
+      const url = new URL(request.url ?? '/', 'http://localhost');
+      return json(response, 200, this.machineResponse(url.searchParams.get('verbose') === '1'));
     }
     if (path === '/inbox' && request.method === 'GET') {
       // F3: `stale`/`staleReason` computed fresh on every read, from the registry as it
@@ -1564,6 +1694,25 @@ function usdPerHour(lane: LaneRecord): number {
   // (1/12 of an hour) is the shortest span this treats as long enough to extrapolate from.
   if (hours < 1 / 12) return 0;
   return Number((lane.cost_usd / hours).toFixed(4));
+}
+
+/** A `MachineProcessNode` reshaped for `GET /machine`'s default register: the full
+ *  command line and the pid are identifiers, held back until `?verbose=1` per the
+ *  same identifier-lint rule every other console view follows. */
+function machineNodeForDisplay(node: MachineProcessNode, verbose: boolean): Record<string, unknown> {
+  const commandLine = verbose
+    ? node.commandLine
+    : node.commandLine.length > MACHINE_COMMAND_LINE_GLANCE_LENGTH
+      ? `${node.commandLine.slice(0, MACHINE_COMMAND_LINE_GLANCE_LENGTH)}…`
+      : node.commandLine;
+  return {
+    name: node.name,
+    ageMs: node.ageMs,
+    commandLine,
+    output: node.output,
+    children: node.children.map((child) => machineNodeForDisplay(child, verbose)),
+    ...(verbose ? { pid: node.pid, ppid: node.ppid } : {}),
+  };
 }
 
 function json(response: ServerResponse, status: number, body: unknown): void {

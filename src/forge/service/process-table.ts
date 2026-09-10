@@ -13,12 +13,13 @@ interface RawRow {
   ParentProcessId: number;
   Name: string;
   CreationDate?: string;
+  CommandLine?: string;
 }
 
 /** Real production process table on Windows: one `Get-CimInstance` call, JSON out.
  *  `now` is injected only so a test could freeze age math; production never overrides it. */
 export function realProcessTable(now: () => number = Date.now): ProcessRow[] {
-  const script = "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CreationDate | ConvertTo-Json -Compress";
+  const script = "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CreationDate,CommandLine | ConvertTo-Json -Compress";
   const raw = execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], {
     encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,
   });
@@ -30,5 +31,6 @@ export function realProcessTable(now: () => number = Date.now): ProcessRow[] {
     ppid: row.ParentProcessId,
     name: row.Name,
     ageMs: row.CreationDate ? Math.max(0, nowMs - Date.parse(row.CreationDate)) : 0,
+    ...(row.CommandLine ? { commandLine: row.CommandLine } : {}),
   }));
 }

@@ -27,6 +27,7 @@ const TABS: { view: View; label: string }[] = [
   { view: 'board', label: 'Board' },
   { view: 'queue', label: 'Queue' },
   { view: 'review', label: 'Review' },
+  { view: 'machine', label: 'Machine' },
   { view: 'settings', label: 'Settings' },
 ];
 

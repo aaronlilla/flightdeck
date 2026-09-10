@@ -14,6 +14,7 @@ import { Chrome } from './components/Chrome.js';
 import { ConductorRail, DEFAULT_COMMANDS, type RailCommand } from './components/ConductorRail.js';
 import { FlightReview } from './components/FlightReview.js';
 import { LanesGrid } from './components/LanesGrid.js';
+import { MachineView } from './components/MachineView.js';
 import { buildNeeds } from './components/NeedsYou.js';
 import { QueueView } from './components/QueueView.js';
 import { Settings } from './components/Settings.js';
@@ -36,7 +37,7 @@ function receiptCard(jid: string | null, text: string, undoable: boolean): Messa
   return { k: `local-${Date.now()}-${Math.random()}`, type: jid ? 'receipt' : 'refusal', text, ts: Date.now(), source: 'console', jid: jid ?? undefined, undoable };
 }
 
-const VIEWS: View[] = ['board', 'blockers', 'queue', 'review', 'settings'];
+const VIEWS: View[] = ['board', 'blockers', 'queue', 'review', 'machine', 'settings'];
 
 export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   const [state, dispatch] = useReducer(reducer, undefined, initialState);
@@ -89,6 +90,11 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
           if (mounted.current) dispatch({ type: 'caps', caps });
           break;
         }
+        case 'machine': {
+          const machine = await api.getMachine({ verbose: stateRef.current.verbose });
+          if (mounted.current) dispatch({ type: 'machine', machine });
+          break;
+        }
         case 'proposals': {
           const proposals = await api.getProposals();
           if (mounted.current) dispatch({ type: 'proposals', proposals });
@@ -116,9 +122,10 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     if (refreshing.current) return;
     refreshing.current = true;
     try {
-      const [lanesR, threadR, integrationsR, capsR, proposalsR, queueR, consoleStateR, blockersR, accountsR] = await Promise.allSettled([
+      const [lanesR, threadR, integrationsR, capsR, proposalsR, queueR, consoleStateR, blockersR, accountsR, machineR] = await Promise.allSettled([
         api.getLanes({ all: true }), api.getThread(), api.getIntegrations(), api.getCaps(),
         api.getProposals(), api.getQueue(), api.getState(), api.getBlockers(), api.getAccounts(),
+        api.getMachine({ verbose: stateRef.current.verbose }),
       ]);
       if (!mounted.current) return;
       const failedSlices: string[] = [];
@@ -136,6 +143,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       const consoleState = settled(consoleStateR, 'state');
       const blockers = settled(blockersR, 'blockers');
       const accounts = settled(accountsR, 'accounts');
+      const machine = settled(machineR, 'machine');
       failCount.current = failedSlices.length > 0 ? failCount.current + 1 : 0;
       if (lanes) dispatch({ type: 'lanes', lanes: lanes.lanes, links: lanes.links, tokensToday: lanes.tokensToday });
       if (thread) dispatch({ type: 'thread', thread: applyResolved(thread.messages) });
@@ -148,6 +156,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       if (consoleState) dispatch({ type: 'project', project: consoleState.project ?? null });
       if (blockers) dispatch({ type: 'blockers', blockers });
       if (accounts) dispatch({ type: 'accounts', accounts: accounts.items });
+      if (machine) dispatch({ type: 'machine', machine });
       if (consoleState?.build) {
         if (servedBuildRef.current && servedBuildRef.current !== consoleState.build) {
           window.location.reload();
@@ -440,6 +449,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
             {state.view === 'blockers' ? <BlockersView blockers={blockers} chains={state.blockers?.chains ?? []} laneTitle={(id) => state.lanes.find((l) => l.id === id)?.title ?? null} onOpenSettings={() => dispatch({ type: 'view', view: 'settings' })} onSendToLane={onSendLane} verbose={state.verbose} /> : null}
             {state.view === 'queue' ? <QueueView items={state.queue} paused={state.queuePaused} pauseReason={state.queuePauseReason} maxInFlight={state.queueMaxInFlight} working={working} verbose={state.verbose} /> : null}
             {state.view === 'review' ? <FlightReview proposals={state.proposals} verbose={state.verbose} now={state.now} tokensToday={state.caps?.tokensToday} dailyTokens={state.caps?.dailyTokens} /> : null}
+            {state.view === 'machine' ? <MachineView machine={state.machine} verbose={state.verbose} now={state.now} /> : null}
             {state.view === 'settings' ? <Settings integrations={state.integrations} verbose={state.verbose} accounts={state.accounts} onAccountsChanged={() => void refreshSlice('accounts')} caps={state.caps} now={state.now} maxInFlight={state.queueMaxInFlight} theme={state.theme} onTheme={(theme) => dispatch({ type: 'theme', theme })} /> : null}
             <ConductorRail
               thread={state.thread} feed={state.feed} now={state.now} composer={state.composer}

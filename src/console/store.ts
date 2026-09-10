@@ -17,8 +17,9 @@ import type {
   ProposalsResponse,
   QueueItem,
 } from '../shared/console-model.js';
+import type { MachineResponse } from './api.js';
 
-export type View = 'board' | 'settings' | 'review' | 'queue' | 'blockers';
+export type View = 'board' | 'settings' | 'review' | 'queue' | 'blockers' | 'machine';
 export type Filter = 'all' | 'needs-me' | 'running' | 'finished' | string;
 export type Sort = 'cost' | 'age' | 'state';
 
@@ -87,6 +88,7 @@ export interface State {
   accounts: AccountItem[];
   caps: Caps | null;
   proposals: ProposalsResponse | null;
+  machine: MachineResponse | null;
   queue: QueueItem[];
   blockers: BlockersResponse | null;
   queuePaused: boolean;
@@ -164,6 +166,7 @@ export type Action =
   | { type: 'accounts'; accounts: AccountItem[] }
   | { type: 'caps'; caps: Caps }
   | { type: 'proposals'; proposals: ProposalsResponse }
+  | { type: 'machine'; machine: MachineResponse }
   | { type: 'queue'; items: QueueItem[]; paused: boolean; maxInFlight: number; pauseReason?: string | null }
   | { type: 'blockers'; blockers: BlockersResponse }
   | { type: 'queue-on'; on: boolean }
@@ -225,6 +228,7 @@ export function initialState(): State {
     accounts: [],
     caps: null,
     proposals: null,
+    machine: null,
     queue: [],
     blockers: null,
     queuePaused: false,
@@ -320,6 +324,8 @@ export function reducer(state: State, action: Action): State {
       return { ...state, accounts: action.accounts };
     case 'caps':
       return { ...state, caps: action.caps };
+    case 'machine':
+      return { ...state, machine: action.machine };
     case 'proposals':
       return { ...state, proposals: action.proposals };
     case 'queue':

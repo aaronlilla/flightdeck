@@ -125,6 +125,7 @@ export interface FleetState {
 
 export interface SessionFoldState {
   sessionId: string;
+  pid?: number;
   cwd?: string;
   configDir?: string;
   repo?: string;
@@ -349,6 +350,7 @@ function foldSessionEvent(state: FleetState, row: ForgeEvent): void {
   switch (row.event) {
     case 'session.started':
       session.startedAt = row.at;
+      if (typeof row['pid'] === 'number') session.pid = row['pid'] as number;
       if (typeof row['cwd'] === 'string') session.cwd = row['cwd'] as string;
       if (typeof row['configDir'] === 'string') session.configDir = row['configDir'] as string;
       if (typeof row['repo'] === 'string') session.repo = row['repo'] as string;

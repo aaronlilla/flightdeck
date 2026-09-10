@@ -16,6 +16,11 @@ export interface ProcessRow {
   /** Milliseconds since this process started, supplied by the caller (real code reads
    *  `Win32_Process.CreationDate`; a test hands the age directly). */
   ageMs: number;
+  /** `Win32_Process.CommandLine`, read for the Machine page (goal `machine-window`,
+   *  R-59). Optional: the sweep's own callers never populate it, and a dead or
+   *  permission-denied process reports none. Masked before it reaches a row --
+   *  see `src/forge/machine/redact.ts`. */
+  commandLine?: string;
 }
 
 export interface SweepJournal {
@@ -45,7 +50,7 @@ function childrenOf(pid: number, rows: ProcessRow[]): ProcessRow[] {
  *  down (never by assuming the process table names an ancestor chain honestly upward,
  *  which pid reuse could spoof). A process not reachable this way is not in the
  *  finished run's subtree, full stop -- this is the boundary the guardrail names. */
-function descendantsOf(pid: number, rows: ProcessRow[]): ProcessRow[] {
+export function descendantsOf(pid: number, rows: ProcessRow[]): ProcessRow[] {
   const out: ProcessRow[] = [];
   const seen = new Set<number>();
   const stack = [...childrenOf(pid, rows)];
