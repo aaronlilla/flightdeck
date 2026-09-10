@@ -476,7 +476,7 @@ export class ConsoleReads {
   static matches(path: string, method: string | undefined): boolean {
     if (method !== 'GET') return false;
     return path === '/lanes' || path === '/thread' || path === '/journal' || path === '/caps'
-      || path === '/proposals' || RUN_SUBROUTE.test(path);
+      || path === '/proposals' || path === '/sessions' || RUN_SUBROUTE.test(path);
   }
 
   /** True when a request matched a route this class owns and the response has already
@@ -512,6 +512,11 @@ export class ConsoleReads {
     }
     if (path === '/proposals') {
       json(response, 200, this.proposalsResponse());
+      return true;
+    }
+    if (path === '/sessions') {
+      const url = new URL(request.url ?? '/', 'http://localhost');
+      json(response, 200, this.sessionsResponse(url.searchParams.get('verbose') === '1'));
       return true;
     }
 
@@ -841,6 +846,46 @@ export class ConsoleReads {
     const fleet = this.journalCache.read(this.journalPath);
     const ledger = readActionsLedger(actionsLedgerPath(this.forgeHomeDir));
     return computeJournal(fleet.events, ledger, query);
+  }
+
+  /** `GET /sessions`: the whole-machine session registry, plain English by default (no
+   *  session id, no pid) -- `?verbose=1` adds them. Sourced from the journal's
+   *  `session.*` fold (`journal.ts`'s `sessions` map): what a session is doing is
+   *  reported as its cwd and last known status until item 1's registry scan is wired
+   *  into `cli.ts`'s 30 s tick and starts journaling `session.started`/`session.vanished`
+   *  for every session on the machine, not only ones a hook has reported for. */
+  private sessionsResponse(verbose: boolean): { sessions: Record<string, unknown>[] } {
+    const fleet = this.journalCache.read(this.journalPath);
+    const live = Object.values(fleet.sessions).filter((session) => session.status === 'live' && session.repo);
+    // Two live sessions naming the same repo -- whatever they are each doing, whoever
+    // lands second will need to merge past the first. Worktree is not required to match:
+    // that is exactly the two-worktrees-one-repo case the marker exists for.
+    const repoCounts = new Map<string, number>();
+    for (const session of live) repoCounts.set(session.repo as string, (repoCounts.get(session.repo as string) ?? 0) + 1);
+
+    const rows = Object.values(fleet.sessions)
+      .sort((a, b) => (b.lastEventAt ?? 0) - (a.lastEventAt ?? 0))
+      .map((session) => {
+        const base: Record<string, unknown> = {
+          name: session.name,
+          status: session.status,
+          cwd: session.cwd,
+          repo: session.repo,
+          branch: session.branch,
+          startedAt: session.startedAt,
+          lastEventAt: session.lastEventAt,
+        };
+        if (session.status === 'ended') {
+          base['exitClass'] = session.exitClass;
+          base['endedAt'] = session.endedAt;
+        }
+        if (session.status === 'live' && session.repo && (repoCounts.get(session.repo) ?? 0) > 1) {
+          base['mayNeedToMerge'] = true;
+        }
+        if (verbose) base['sessionId'] = session.sessionId;
+        return base;
+      });
+    return { sessions: rows };
   }
 
   private capsResponse(): Caps {

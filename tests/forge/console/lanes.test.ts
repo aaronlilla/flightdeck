@@ -27,7 +27,7 @@ function tempJournal(): { path: string; journal: Journal } {
 function baseInput(overrides: Partial<LanesInput> = {}): LanesInput {
   return {
     laneRecords: [],
-    fleet: { events: [], runs: {}, burn: {}, handoffs: 0, torn: 0, unknownModels: [] },
+    fleet: { events: [], runs: {}, burn: {}, handoffs: 0, torn: 0, unknownModels: [], sessions: {} },
     chain: new Map(),
     registryGet: () => undefined,
     openAsks: [],
