@@ -5,11 +5,12 @@
  * dev-harness, which `go.py` and `forge/run.py` launch workers through. Two
  * implementations of one rule drift silently unless something notices.
  *
- * The fixture is VENDORED here rather than read from dev-harness. It used to be read
- * from `C:/dev/dev-harness/coordination/accounts-cases.json`, and that failed every CI
- * run on both runners, because the design assumed neither repository had CI -- true of
- * dev-harness, false of this one. A test that cannot pass off this machine is not
- * fail-closed, it is just broken.
+ * The fixture is VENDORED here rather than read from the harness repository. It used to
+ * be read from an absolute path in that checkout, and that failed every CI run on both
+ * runners, because the design assumed neither repository had CI -- true of the harness
+ * repo, false of this one. A test that cannot pass off one machine is not fail-closed,
+ * it is just broken. This repository has to stay machine agnostic, which its own
+ * `check:agnostic` enforces.
  *
  * So the copy here is what this suite runs, and the check that the two copies have not
  * drifted apart lives in dev-harness (`coordination/test_accounts.py`), which has no CI
