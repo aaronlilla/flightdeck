@@ -1219,13 +1219,18 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       if (!sub || sub === 'list') {
         const lines = accounts.map((account) => {
           const cap = account.maxConcurrent !== undefined ? `, max ${account.maxConcurrent}` : '';
-          return `${account.id}  ${account.configDir}${cap}`;
+          const held = account.lastResort ? ', last resort' : '';
+          return `${account.id}  ${account.configDir}${cap}${held}`;
         });
         return { code: 0, lines: [...lines, accounts.length ? `from ${registryPath}` : `no accounts yet; ${registryPath} does not exist`] };
       }
       if (sub === 'add') {
-        const [, id, dir, maxRaw] = rest;
-        if (!id || !dir) return { code: 2, lines: ['forge accounts add <id> <config-dir> [max-concurrent]'] };
+        const flags = rest.filter((word) => word.startsWith('--'));
+        const lastResort = flags.includes('--last-resort');
+        const unknown = flags.find((word) => word !== '--last-resort');
+        if (unknown) return { code: 2, lines: [`unknown flag '${unknown}'`] };
+        const [, id, dir, maxRaw] = rest.filter((word) => !word.startsWith('--'));
+        if (!id || !dir) return { code: 2, lines: ['forge accounts add <id> <config-dir> [max-concurrent] [--last-resort]'] };
         const resolved = resolve(dir);
         let cap: number | undefined;
         if (maxRaw !== undefined) {
@@ -1248,6 +1253,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           id, configDir: resolved,
           ...(cap !== undefined ? { maxConcurrent: cap } : {}),
           ...(probedUuid ? { accountUuid: probedUuid } : {}),
+          ...(lastResort ? { lastResort } : {}),
         });
         if (!candidate.ok) return { code: 1, lines: [`refusing: ${candidate.reason}`] };
         try {
@@ -1255,11 +1261,12 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
             id, provider: 'claude', label: id, configDir: resolved, connectedAt: Date.now(),
             ...(cap !== undefined ? { maxConcurrent: cap } : {}),
             ...(probedUuid ? { accountUuid: probedUuid } : {}),
+            ...(lastResort ? { lastResort } : {}),
           }, registryPath);
         } catch (err) {
           return { code: 1, lines: [`refusing: ${err instanceof Error ? err.message : String(err)}`] };
         }
-        return { code: 0, lines: [`added '${id}' -> ${resolved}`] };
+        return { code: 0, lines: [`added '${id}' -> ${resolved}${lastResort ? ' (last resort)' : ''}`] };
       }
       if (sub === 'remove') {
         const id = rest[1];

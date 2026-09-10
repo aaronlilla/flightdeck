@@ -27,7 +27,10 @@ const CANDIDATES = [
 
 interface Case {
   name: string;
-  accounts: { id: string; provider?: AccountProvider; configDir: string; connectedAt?: number }[];
+  accounts: {
+    id: string; provider?: AccountProvider; configDir: string; connectedAt?: number;
+    maxConcurrent?: number; lastResort?: boolean; accountUuid?: string;
+  }[];
   usage: AccountUsage;
   live?: Record<string, number>;
   now?: number;
@@ -64,6 +67,11 @@ describe('the shared account-selection cases', () => {
         label: row.id,
         configDir: row.configDir,
         connectedAt: row.connectedAt ?? 0,
+        // Carried through explicitly: a field the fixture sets and this mapping drops is
+        // a case that silently passes here while the other picker really tests it.
+        ...(row.maxConcurrent !== undefined ? { maxConcurrent: row.maxConcurrent } : {}),
+        ...(row.lastResort !== undefined ? { lastResort: row.lastResort } : {}),
+        ...(row.accountUuid !== undefined ? { accountUuid: row.accountUuid } : {}),
       }));
       const picked = pickAccount(
         accounts, testCase.usage, testCase.live ?? {}, testCase.now ?? fixture.now,

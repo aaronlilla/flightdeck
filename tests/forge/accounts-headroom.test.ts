@@ -160,3 +160,67 @@ describe('the launch paths that used to pin the fleet login', () => {
     expect(fallback).toBe(fleetConfigDir(() => true));
   });
 });
+
+describe('the login Aaron types into is a last resort', () => {
+  it('loses to a far busier ordinary account', () => {
+    recordReading('fleet', { at: NOW, windows: [{ key: 'weekly', label: 'Weekly', usedPct: 96, resetsAt: LATER }] }, usagePath);
+    recordReading('mine', { at: NOW, windows: [{ key: 'weekly', label: 'Weekly', usedPct: 3, resetsAt: LATER }] }, usagePath);
+    const usage = readAccountUsage(usagePath);
+    const accounts = [account('mine', { lastResort: true }), account('fleet')];
+    expect(pickAccount(accounts, usage, {}, NOW)?.id).toBe('fleet');
+  });
+
+  it('is chosen once every ordinary account is limited', () => {
+    recordReading('fleet', { at: NOW, windows: [{ key: 'weekly', label: 'Weekly', usedPct: 100, resetsAt: LATER }] }, usagePath);
+    recordReading('mine', { at: NOW, windows: [{ key: 'weekly', label: 'Weekly', usedPct: 3, resetsAt: LATER }] }, usagePath);
+    const usage = readAccountUsage(usagePath);
+    const accounts = [account('mine', { lastResort: true }), account('fleet')];
+    expect(pickAccount(accounts, usage, {}, NOW)?.id).toBe('mine');
+  });
+
+  it('still loses to an ordinary account that has never been read', () => {
+    recordReading('mine', { at: NOW, windows: [{ key: 'weekly', label: 'Weekly', usedPct: 3, resetsAt: LATER }] }, usagePath);
+    const usage = readAccountUsage(usagePath);
+    const accounts = [account('mine', { lastResort: true }), account('unread')];
+    expect(pickAccount(accounts, usage, {}, NOW)?.id).toBe('unread');
+  });
+
+  it('two last-resort accounts still sort by headroom between themselves', () => {
+    recordReading('a', { at: NOW, windows: [{ key: 'weekly', label: 'Weekly', usedPct: 80, resetsAt: LATER }] }, usagePath);
+    recordReading('b', { at: NOW, windows: [{ key: 'weekly', label: 'Weekly', usedPct: 20, resetsAt: LATER }] }, usagePath);
+    const usage = readAccountUsage(usagePath);
+    const accounts = [account('a', { lastResort: true }), account('b', { lastResort: true })];
+    expect(pickAccount(accounts, usage, {}, NOW)?.id).toBe('b');
+  });
+});
+
+describe('maxConcurrent is a ceiling, not a decoration', () => {
+  beforeEach(() => {
+    recordReading('capped', { at: NOW, windows: [{ key: 'weekly', label: 'Weekly', usedPct: 1, resetsAt: LATER }] }, usagePath);
+    recordReading('spare', { at: NOW, windows: [{ key: 'weekly', label: 'Weekly', usedPct: 90, resetsAt: LATER }] }, usagePath);
+  });
+
+  it('skips an account already at its ceiling, however much room it has', () => {
+    const usage = readAccountUsage(usagePath);
+    const accounts = [account('capped', { maxConcurrent: 2 }), account('spare')];
+    expect(pickAccount(accounts, usage, { capped: 2 }, NOW)?.id).toBe('spare');
+  });
+
+  it('uses it while it is under the ceiling', () => {
+    const usage = readAccountUsage(usagePath);
+    const accounts = [account('capped', { maxConcurrent: 2 }), account('spare')];
+    expect(pickAccount(accounts, usage, { capped: 1 }, NOW)?.id).toBe('capped');
+  });
+
+  it('an account with no ceiling is never capped', () => {
+    const usage = readAccountUsage(usagePath);
+    const accounts = [account('capped'), account('spare')];
+    expect(pickAccount(accounts, usage, { capped: 99 }, NOW)?.id).toBe('capped');
+  });
+
+  it('returns nothing when every account is at its ceiling', () => {
+    const usage = readAccountUsage(usagePath);
+    const accounts = [account('capped', { maxConcurrent: 1 }), account('spare', { maxConcurrent: 1 })];
+    expect(pickAccount(accounts, usage, { capped: 1, spare: 1 }, NOW)).toBeUndefined();
+  });
+});
