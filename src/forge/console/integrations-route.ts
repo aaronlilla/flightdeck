@@ -16,7 +16,8 @@ import { randomUUID } from 'node:crypto';
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
-import { fleetConfigDir, workspaceRoot } from '../paths.js';
+import { workerConfigDir } from '../accounts.js';
+import { workspaceRoot } from '../paths.js';
 import { awsSsoLoginArgv, type IntegrationsRegistry } from './integrations.js';
 import type { McpConnState } from '../../shared/console-model.js';
 import { sliceEvent } from '../../shared/console-events.js';
@@ -68,7 +69,7 @@ export function defaultConnectFor(id: string): ConnectRunner | undefined {
       // overrides it, falling back to `workspaceRoot()` per this repo's no-hardcoded-paths
       // rule (`paths.ts`), rather than a literal drive-rooted directory in source.
       cwd: process.env['FORGE_WORKER_CWD'] ?? workspaceRoot(),
-      env: { ...process.env, CLAUDE_CONFIG_DIR: fleetConfigDir() },
+      env: { ...process.env, CLAUDE_CONFIG_DIR: workerConfigDir() },
     };
   }
   if (id === 'aws') {

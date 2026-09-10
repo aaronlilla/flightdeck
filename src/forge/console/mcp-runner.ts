@@ -10,7 +10,8 @@ import { existsSync, readFileSync as nodeReadFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { run as execRun, type RunRequest } from '../exec.js';
-import { fleetConfigDir, workspaceRoot } from '../paths.js';
+import { workerConfigDir } from '../accounts.js';
+import { workspaceRoot } from '../paths.js';
 import { commandOnPath } from './integrations.js';
 import type { McpConnState } from '../../shared/console-model.js';
 
@@ -130,7 +131,7 @@ async function fallbackFromClaudeJson(configDir: string, opts: ClaudeMcpListOpti
  *  credentials, and never as the primary path. Bounded at 5s, matching every other
  *  probe in this module: a hung `claude mcp list` resolves `unknown`, not hung. */
 export async function claudeMcpList(opts: ClaudeMcpListOptions = {}): Promise<ClaudeMcpListResult> {
-  const configDir = opts.configDir ?? fleetConfigDir(opts.exists);
+  const configDir = opts.configDir ?? workerConfigDir(undefined, opts.exists);
   const cwd = fleetWorkerCwd();
 
   const available = await commandOnPath('claude', opts.spawnFn);
@@ -162,7 +163,7 @@ export async function claudeMcpList(opts: ClaudeMcpListOptions = {}): Promise<Cl
 /** `claude mcp get <name>` for one server's full detail beyond what `list` printed
  *  (`Type`, `URL`, the full `Status` line) -- same status symbols as `list`, one block. */
 export async function claudeMcpGet(name: string, opts: ClaudeMcpListOptions = {}): Promise<{ ok: boolean; statusLine: string | null }> {
-  const configDir = opts.configDir ?? fleetConfigDir(opts.exists);
+  const configDir = opts.configDir ?? workerConfigDir(undefined, opts.exists);
   const cwd = fleetWorkerCwd();
 
   const result = await Promise.race([

@@ -19,9 +19,11 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
-  checkAddCandidate, pickAccount, validateAccounts, type AccountRecord,
+  accountsRegistryPath, addAccount, checkAddCandidate, pickAccount, validateAccounts,
+  workerConfigDir, type AccountRecord,
 } from '../../src/forge/accounts.js';
-import { recordReading, usedFraction, type AccountUsage } from '../../src/forge/accounts-usage.js';
+import { fleetConfigDir } from '../../src/forge/paths.js';
+import { accountsUsagePath, recordReading, usedFraction, type AccountUsage } from '../../src/forge/accounts-usage.js';
 import { readAccountUsage } from '../../src/forge/accounts-usage.js';
 
 let dir: string;
@@ -138,5 +140,23 @@ describe('an unmeasured account is not a free one', () => {
   it('still picks an unmeasured account when it is the only one left', () => {
     const picked = pickAccount([account('never-read')], {}, {}, NOW);
     expect(picked?.id).toBe('never-read');
+  });
+});
+
+describe('the launch paths that used to pin the fleet login', () => {
+  it('workerConfigDir returns the picked account when one is registered', () => {
+    process.env['FORGE_HOME'] = dir;
+    const registry = accountsRegistryPath();
+    addAccount(account('busy', { configDir: join(dir, 'busy') }), registry);
+    addAccount(account('roomy', { configDir: join(dir, 'roomy') }), registry);
+    recordReading('busy', { at: NOW, windows: [{ key: 'weekly', label: 'Weekly', usedPct: 96, resetsAt: LATER }] }, accountsUsagePath());
+    recordReading('roomy', { at: NOW, windows: [{ key: 'weekly', label: 'Weekly', usedPct: 3, resetsAt: LATER }] }, accountsUsagePath());
+    expect(workerConfigDir(undefined, () => true, 'claude', NOW)).toBe(join(dir, 'roomy'));
+  });
+
+  it('falls back to the machine login when nothing is registered', () => {
+    process.env['FORGE_HOME'] = dir;
+    const fallback = workerConfigDir(undefined, () => true, 'claude', NOW);
+    expect(fallback).toBe(fleetConfigDir(() => true));
   });
 });

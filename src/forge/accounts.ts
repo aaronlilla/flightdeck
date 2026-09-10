@@ -20,7 +20,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 import type { AccountUsage } from './accounts-usage.js';
-import { hasReading, isLimited, usedFraction } from './accounts-usage.js';
+import { hasReading, isLimited, readAccountUsage, usedFraction } from './accounts-usage.js';
 import type { ForgeEvent } from './journal.js';
 import { fleetConfigDir, forgeHome } from './paths.js';
 
@@ -241,4 +241,33 @@ export function configDirForSession(
   const picked = pickAccount(accounts, usage, live, now, provider, model);
   if (picked) return { configDir: picked.configDir, accountId: picked.id };
   return { configDir: provider === 'claude' ? fleetConfigDir(existsConfigDir) : null, accountId: null };
+}
+
+/**
+ * The config dir a launch path should pin, for the paths that cannot await a probe.
+ *
+ * These used to hardcode `fleetConfigDir()`, which pinned every worker, reasoner, MCP
+ * runner and integrations probe to one account whatever the registry said. Selection
+ * here reads the store as it stands rather than refreshing it: a reading `forge run` or
+ * the console took minutes ago is a far better basis than "always this one account", and
+ * these call sites are synchronous.
+ *
+ * Never throws and never returns empty: any trouble at all falls back to the machine's
+ * own login, which is what every one of these paths did unconditionally before.
+ */
+export function workerConfigDir(
+  model?: string,
+  existsConfigDir?: (path: string) => boolean,
+  provider: AccountProvider = 'claude',
+  now: number = Date.now(),
+): string {
+  const fallback = fleetConfigDir(existsConfigDir);
+  try {
+    const picked = configDirForSession(
+      loadAccounts(), readAccountUsage(), {}, now, existsConfigDir, provider, model,
+    );
+    return picked.configDir ?? fallback;
+  } catch {
+    return fallback;
+  }
 }

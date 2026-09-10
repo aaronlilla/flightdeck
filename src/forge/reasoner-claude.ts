@@ -21,7 +21,7 @@ import { Engine, type QueryFn } from '../adapter/engine.js';
 import type { Provider, Reasoner } from './contracts.js';
 import type { Journal } from './journal.js';
 import { modelFor, modelIdFor, reasonerTimeoutMsFor } from './policy.js';
-import { fleetConfigDir } from './paths.js';
+import { workerConfigDir } from './accounts.js';
 import { workerEnv } from './worker.js';
 
 /** The preferred JSON shape a `claude` reasoner call is asked to answer with. There is
@@ -152,7 +152,9 @@ export class ClaudeReasoner implements Reasoner {
     const startedAt = now();
 
     const env = workerEnv(this.deps.env ?? process.env);
-    env['CLAUDE_CONFIG_DIR'] = fleetConfigDir(this.deps.existsConfigDir);
+    // `model` is already resolved above, so a model-scoped weekly bucket only counts
+    // against a reasoner run of that model.
+    env['CLAUDE_CONFIG_DIR'] = workerConfigDir(model, this.deps.existsConfigDir);
 
     const engine = new Engine(this.deps.queryFn);
     let text = '';
