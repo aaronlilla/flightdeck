@@ -204,3 +204,11 @@ export function operatorConfigDir(): string {
 export function switchDir(): string {
   return join(forgeHome(), 'switch');
 }
+
+/** The readability contract and specimen set an install step writes to this machine --
+ *  never shipped in this repo, since a real contract names real repos and real PR
+ *  prose (order 19). `FORGE_READABILITY_DIR` overrides it for a specimen or a machine
+ *  laid out differently. */
+export function readabilityDir(): string {
+  return process.env['FORGE_READABILITY_DIR'] ?? join(forgeHome(), 'readability');
+}

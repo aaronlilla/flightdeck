@@ -169,8 +169,10 @@ describe('forge status', () => {
     expect((await forge(['status'], { processes: () => [] })).lines.join('\n')).toContain('NEEDS AARON');
   });
 
-  it('says so when nothing is running', async () => {
-    expect((await forge(['status'], { processes: () => [] })).lines).toEqual(['nothing is running']);
+  it('says so when nothing is running, plus the readability rule\'s own status', async () => {
+    const lines = (await forge(['status'], { processes: () => [] })).lines;
+    expect(lines[0]).toBe('nothing is running');
+    expect(lines[1]).toMatch(/^Readability rule: /);
   });
 
   /**

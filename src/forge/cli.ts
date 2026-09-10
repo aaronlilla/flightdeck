@@ -59,6 +59,8 @@ import { readProcessList, watchedProcesses, probeProcessListCached } from './fle
 import { Gotchas } from './gotcha.js';
 import { Inbox, isAskStale } from './inbox.js';
 import { replay, Journal, JournalCache } from './journal.js';
+import { initReadabilityAndJournal, readabilityStatusLine } from './console/readability-status.js';
+import { getReadabilityContractState } from './intake/readability.js';
 import { scanSessions } from './sessions/registry.js';
 
 /** `process.kill(pid, 0)` sends no signal -- it only asks the OS whether the pid exists
@@ -446,16 +448,22 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       // lanes, no waiting asks, no fleet notice -- exactly what a fresh CI runner looks
       // like) got the packet folded and then thrown away unread.
       const chainRows = chainStatusLines(foldChainState(state.events));
+      // G4 (R-59, 2026-09-10): the readability contract's own status is on every
+      // `forge status` regardless of fleet activity -- the one place a human actually
+      // looks that isn't the raw journal, so "the contract is stale/unconfigured" is a
+      // fact `forge status` states rather than one nobody happens to see.
+      const readabilityLine = readabilityStatusLine(getReadabilityContractState());
       // An idle fleet says one thing and stops. Appending "inbox: 0 waiting" to it made
       // "nothing is running" impossible to say, which is the answer a person most wants.
       if (!rows.length && !waiting && !state.torn && !stuckRows.length && !fleetNotice && !chainRows.length) {
-        return { code: 0, lines: ['nothing is running'] };
+        return { code: 0, lines: ['nothing is running', readabilityLine] };
       }
       if (state.torn) {
         rows.push(`journal: ${state.torn} torn line(s), which is a crash somebody should read`);
       }
       rows.push(`inbox: ${waiting} waiting${stale ? ` (${stale} stale)` : ''}`);
       if (fleetNotice) rows.push(fleetNotice);
+      rows.push(readabilityLine);
       return { code: 0, lines: [...stuckRows, ...rows, ...chainRows] };
     }
 
@@ -474,6 +482,10 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           // The journal itself failing must not turn a survived rejection into an exit.
         }
       });
+      // R-59: loaded once here, cached for every write path downstream (jira.ts,
+      // council/gh.ts, rules/readability.ts, ...) -- never a fail-closed refusal when the
+      // contract is missing, only this one journal row and the Settings page's line.
+      initReadabilityAndJournal(guardJournal);
       const state = replay(journalPath());
 
       // Before anything else starts: pick up whatever the registry says crashed. A row

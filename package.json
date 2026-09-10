@@ -22,7 +22,7 @@
     "check:agnostic": "tsx tests/checks/agnostic.ts",
     "check:faultinject": "tsx tests/checks/fault-inject.ts",
     "check:roadmap": "tsx scripts/check-roadmap.ts",
-    "check:fixture-parity": "tsx scripts/check-fixture-parity.ts",
+    "check:readability-parity": "tsx scripts/check-readability-parity.ts",
     "desktop:test": "npm --prefix desktop test",
     "verify": "npm run typecheck && npm run typecheck:console && npm run test && npm run check:ux && npm run check:agnostic && npm run check:roadmap && npm run check:faultinject && npm run desktop:test",
     "forge": "tsx src/forge/cli.ts",

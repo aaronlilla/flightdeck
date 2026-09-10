@@ -41,6 +41,18 @@ for (const name of Object.keys(process.env)) {
 }
 
 /**
+ * The readability contract (order 19) is machine data, never repo data (R-59,
+ * 2026-09-10) -- a real contract names real repos and real PR prose, which this repo's
+ * `check:agnostic` forbids. Every test file gets the neutral in-repo specimen set by
+ * default, same as the real machine gets the real one from `install.ps1`. A specimen
+ * that wants a different contract (a missing dir, a malformed file) overrides this
+ * itself and calls `resetReadabilityContractForTests()`.
+ */
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+process.env['FORGE_READABILITY_DIR'] = join(dirname(fileURLToPath(import.meta.url)), 'forge', 'specimens', 'readability');
+
+/**
  * The SDK's own `query` throws in every test in this suite.
  *
  * Nothing under test is allowed to reach the model: every session specimen injects its

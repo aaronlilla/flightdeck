@@ -1,8 +1,8 @@
 /**
  * Order 19 (READABLE BY JOE), applied to Council's proposed actions and to the worker's
  * own PreToolUse hook. Reuses `readabilityVerdict` (`intake/readability.ts`) rather than
- * re-deriving the contract a second time -- the same shared `fixtures.json` both this
- * rule and `hooks/authorship_guard.py` implement.
+ * re-deriving the contract a second time -- the contract is installed to this machine and
+ * loaded once, the same shape both this rule and the operator's own authorship hook read.
  *
  * A structured `'pr'` action (Council's merge gate, `cli.ts`) already carries a real
  * `repo`/`title`/`body`; a `'bash'` action (the worker's own `gh pr create`/`comment`/
@@ -14,7 +14,7 @@
 import { readFileSync } from 'node:fs';
 import { deny, allow } from './types.ts';
 import type { ProposedAction, RuleVerdict } from './types.ts';
-import { readabilityVerdict, OUTWARD_REPOS } from '../intake/readability.ts';
+import { readabilityVerdict, getReadabilityContractState } from '../intake/readability.ts';
 
 const RULE_NAME = 'readability';
 
@@ -37,11 +37,11 @@ function argValue(command: string, flag: string): string | null {
   return (m[1] ?? m[2] ?? m[3] ?? '').replace(/\\(["'])/g, '$1');
 }
 
-/** `OUTWARD_REPOS` holds bare repo names ('bbmanagementsystemv2'), but every real
- *  caller -- the worker's own `gh --repo owner/name`, cli.ts's merge gate, queue.ts's
- *  routed `item.repo` -- carries an `owner/name` slug or a path. Strip everything up to
- *  the last `/` before comparing, or the OUTWARD_REPOS check silently never matches and
- *  every gate downstream of it is a no-op (G3, 2026-09-10: confirmed empirically). */
+/** The contract's `outward_repos` holds bare repo names, but every real caller -- the
+ *  worker's own `gh --repo owner/name`, cli.ts's merge gate, queue.ts's routed
+ *  `item.repo` -- carries an `owner/name` slug or a path. Strip everything up to the
+ *  last `/` before comparing, or the outward-repo check silently never matches and every
+ *  gate downstream of it is a no-op (G3, 2026-09-10: confirmed empirically). */
 export function normalizeRepo(repo: string | null | undefined): string | null {
   if (!repo) return null;
   const last = repo.replace(/\\/g, '/').split('/').filter(Boolean).pop();
@@ -103,7 +103,11 @@ export const readabilityRule = {
   evaluate(action: ProposedAction): RuleVerdict {
     const found = textOf(action);
     if (!found) return allow();
-    if (found.repo !== null && !OUTWARD_REPOS.includes(found.repo)) return allow();
+    // Unconfigured means `readabilityVerdict` itself is SILENT for everything, never a
+    // refusal -- skip straight through rather than reading a contract that is not there.
+    const state = getReadabilityContractState();
+    if (!state.ok) return allow();
+    if (found.repo !== null && !state.contract.outward_repos.includes(found.repo)) return allow();
     const asOf = new Date().toISOString().slice(0, 10);
 
     // The ticket-key check only fires on surface 'pr-title', but `found.surface` reads

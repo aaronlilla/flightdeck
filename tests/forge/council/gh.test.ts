@@ -2,10 +2,16 @@
  * The pure pieces of `council/gh.ts`: counting a diff's changed lines and folding a
  * `statusCheckRollup` into one conclusion. No `gh` call anywhere in this file.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, beforeAll, afterAll } from 'vitest';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { conclusionOf, countAddDel, countChangedLines, guardedCommentPr, parseGhJson } from '../../../src/forge/council/gh.ts';
 import type { GhWriter } from '../../../src/forge/council/gh.ts';
+import { resetReadabilityContractForTests } from '../../../src/forge/intake/readability.ts';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const NEUTRAL_CONTRACT_DIR = path.join(__dirname, '..', 'specimens', 'readability');
 
 describe('countChangedLines', () => {
   it('counts added and removed content lines, never the +++/--- file headers', () => {
@@ -113,6 +119,15 @@ describe('parseGhJson', () => {
 });
 
 describe('guardedCommentPr — order 19 chokepoint', () => {
+  beforeAll(() => {
+    process.env['FORGE_READABILITY_DIR'] = NEUTRAL_CONTRACT_DIR;
+    resetReadabilityContractForTests();
+  });
+  afterAll(() => {
+    delete process.env['FORGE_READABILITY_DIR'];
+    resetReadabilityContractForTests();
+  });
+
   const OVER_80_WORDS = Array.from({ length: 90 }, (_v, i) => `word${i}`).join(' ');
 
   function fakeWriter(): { writer: Pick<GhWriter, 'commentPr'>; state: { calls: number } } {
@@ -129,7 +144,7 @@ describe('guardedCommentPr — order 19 chokepoint', () => {
   it('an over-ceiling comment never reaches the stub, and reports the refusal', async () => {
     const { writer, state } = fakeWriter();
     let refusalReason = '';
-    const result = await guardedCommentPr(writer, 'bbmanagementsystemv2', 71, OVER_80_WORDS, (refusal) => {
+    const result = await guardedCommentPr(writer, 'acme-app', 71, OVER_80_WORDS, (refusal) => {
       refusalReason = refusal.reason;
     });
     expect(state.calls).toBe(0);
@@ -139,17 +154,17 @@ describe('guardedCommentPr — order 19 chokepoint', () => {
 
   it('a conforming comment reaches the stub exactly once', async () => {
     const { writer, state } = fakeWriter();
-    const result = await guardedCommentPr(writer, 'bbmanagementsystemv2', 71, 'Short comment, well under the ceiling.');
+    const result = await guardedCommentPr(writer, 'acme-app', 71, 'Short comment, well under the ceiling.');
     expect(state.calls).toBe(1);
     expect(result).toEqual({ returncode: 0, stderr: '' });
   });
 
   // G3 (readability-total, 2026-09-10): the real `gh` CLI takes an owner/name repo
-  // slug, never OUTWARD_REPOS's bare name -- every real caller of this chokepoint
+  // slug, never the contract's bare repo name -- every real caller of this chokepoint
   // passes a slug, so the gate must recognize one.
   it('an over-ceiling comment on an owner/name repo slug still never reaches the stub', async () => {
     const { writer, state } = fakeWriter();
-    const result = await guardedCommentPr(writer, 'boltbetz/BBManagementSystemV2', 71, OVER_80_WORDS);
+    const result = await guardedCommentPr(writer, 'acme/acme-app', 71, OVER_80_WORDS);
     expect(state.calls).toBe(0);
     expect(result).toBeNull();
   });

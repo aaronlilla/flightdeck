@@ -1,47 +1,150 @@
-import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, readFileSync, cpSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readabilityVerdict } from '../../../src/forge/intake/readability.ts';
+import {
+  loadContract,
+  readabilityVerdict,
+  resetReadabilityContractForTests,
+  hasSecretShape,
+} from '../../../src/forge/intake/readability.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const FIXTURES_DIR = path.join(__dirname, '..', '..', '..', 'src', 'forge', 'intake', '__fixtures__');
+const NEUTRAL_SPECIMENS_SRC = path.join(__dirname, '..', 'specimens', 'readability');
 
-const fixtures = JSON.parse(readFileSync(path.join(FIXTURES_DIR, 'readability.json'), 'utf8'));
+let originalEnv: string | undefined;
 
-// The byte-identity check against the shared authoring-machine copy
-// (`C:/dev/.claude/goals/...`, outside this repo and outside any CI checkout) lives in
-// `scripts/check-fixture-parity.ts` (`npm run check:fixture-parity`) instead of here: a
-// CI runner structurally cannot have that path, and R-42 forbids skipping a test to clear
-// a red check rather than moving the check to where it can actually run. Every vitest
-// specimen below still reads the committed copy in this repo, so CI keeps proving those.
+beforeEach(() => {
+  originalEnv = process.env['FORGE_READABILITY_DIR'];
+  resetReadabilityContractForTests();
+});
 
-describe('readabilityVerdict against shared specimens', () => {
-  const flightdeckSpecimens = fixtures.specimens.filter((s: any) => s.scope.includes('flightdeck'));
+afterEach(() => {
+  if (originalEnv === undefined) delete process.env['FORGE_READABILITY_DIR'];
+  else process.env['FORGE_READABILITY_DIR'] = originalEnv;
+  resetReadabilityContractForTests();
+});
 
-  it('runs every flightdeck-scoped specimen (count matches jq)', () => {
-    // Independently derived via:
-    //   jq '[.specimens[] | select(.scope | index("flightdeck"))] | length' fixtures.json
-    // Do not compute this the same way the suite does -- that would make the assertion
-    // tautological (comparing the filter to itself) and could never catch a specimen
-    // silently dropped from `flightdeckSpecimens` before this test sees it.
-    const EXPECTED_FLIGHTDECK_SPECIMEN_COUNT = 27;
-    // eslint-disable-next-line no-console
-    console.log(`flightdeck-scoped specimens run: ${flightdeckSpecimens.length}`);
-    expect(flightdeckSpecimens.length).toBe(EXPECTED_FLIGHTDECK_SPECIMEN_COUNT);
+describe('loadContract -- data lives on the machine, never in the repo', () => {
+  it('never throws on a directory with no contract.json; returns {ok: false}', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'forge-readability-empty-'));
+    try {
+      const result = loadContract(dir);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.reason).toContain('no contract at');
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
-  for (const specimen of flightdeckSpecimens) {
+  it('never throws on a directory that does not exist at all', () => {
+    const dir = path.join(tmpdir(), `forge-readability-missing-${Date.now()}`);
+    const result = loadContract(dir);
+    expect(result.ok).toBe(false);
+  });
+
+  it('never throws on a malformed contract.json; returns {ok: false}', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'forge-readability-malformed-'));
+    try {
+      writeFileSync(path.join(dir, 'contract.json'), '{ not valid json', 'utf8');
+      const result = loadContract(dir);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.reason).toContain('malformed contract at');
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('loads a well-formed contract.json', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'forge-readability-ok-'));
+    try {
+      const contract = {
+        verdicts: ['DENY', 'ADVISE', 'SILENT'],
+        surfaces: ['pr-body'],
+        outward_repos: ['acme-app'],
+        ticket_key_repos: ['acme-app'],
+        ticket_key_pattern: '\\bACME-\\d+\\b',
+        banned_words: ['synergy'],
+        required_sections: ['What breaks', 'What changes', 'How to run'],
+        prose_ceiling_words: { 'pr-body': 150 },
+        words_deny_from: '2026-01-01',
+        production_ceiling: { lines: 300, files: 5 },
+        exempt_globs: ['**/*.test.ts'],
+        fence_max_lines: 25,
+      };
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(path.join(dir, 'contract.json'), JSON.stringify(contract), 'utf8');
+      const result = loadContract(dir);
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.contract.outward_repos).toEqual(['acme-app']);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('readabilityVerdict when the contract is not configured', () => {
+  it('is SILENT -- loud (via the caller journaling readability.unconfigured), never a refusal', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'forge-readability-unconfigured-'));
+    try {
+      process.env['FORGE_READABILITY_DIR'] = dir;
+      resetReadabilityContractForTests();
+      const result = readabilityVerdict(
+        'pr-body',
+        'acme-app',
+        'no ticket key here',
+        'this body has none of the required sections and would DENY if the contract were live',
+        undefined,
+        '2026-09-10',
+      );
+      expect(result.verdict).toBe('SILENT');
+      expect(result.reason).toContain('not configured');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('readabilityVerdict against the neutral in-repo specimen set', () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(path.join(tmpdir(), 'forge-readability-neutral-'));
+    cpSync(NEUTRAL_SPECIMENS_SRC, tempDir, { recursive: true });
+    process.env['FORGE_READABILITY_DIR'] = tempDir;
+    resetReadabilityContractForTests();
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const raw = readFileSync(path.join(NEUTRAL_SPECIMENS_SRC, 'specimens.json'), 'utf8');
+  const specimens: any[] = JSON.parse(raw).specimens;
+
+  it('pins the neutral specimen count at 8, so a silently dropped specimen fails here', () => {
+    // Independently stated, not derived from `specimens.length` itself -- a specimen
+    // silently dropped from the fixture would otherwise pass this the same way it
+    // passes the loop below.
+    const EXPECTED_NEUTRAL_SPECIMEN_COUNT = 8;
+    expect(specimens.length).toBe(EXPECTED_NEUTRAL_SPECIMEN_COUNT);
+  });
+
+  for (const specimen of specimens) {
     it(`${specimen.id}: expects ${specimen.expected}`, () => {
-      const body = specimen.body ?? (specimen.body_file
-        ? readFileSync(path.join(FIXTURES_DIR, specimen.body_file), 'utf8')
-        : '');
       const result = readabilityVerdict(
         specimen.surface,
         specimen.repo ?? null,
         specimen.title ?? '',
-        body,
-        Object.prototype.hasOwnProperty.call(specimen, 'diff_stats') ? specimen.diff_stats : undefined,
+        specimen.body ?? '',
+        specimen.diff_stats,
         specimen.as_of,
       );
       expect(result.verdict).toBe(specimen.expected);
@@ -53,10 +156,7 @@ describe('readabilityVerdict against shared specimens', () => {
 });
 
 describe('hasSecretShape', () => {
-  it('is proven against a deliberately-broken specimen before being trusted', async () => {
-    const { hasSecretShape } = await import('../../../src/forge/intake/readability.ts');
-    // Red check: a naive matcher that never fires would pass a suite with no assertions
-    // on the negative case, so assert both directions explicitly.
+  it('is proven against a deliberately-broken specimen before being trusted', () => {
     expect(hasSecretShape('ghp_abcdefghijklmnopqrstuvwxyz0123456789').hit).toBe(true);
     expect(hasSecretShape('TEST_DB_CONNECTION_STRING=<your value>').hit).toBe(false);
   });

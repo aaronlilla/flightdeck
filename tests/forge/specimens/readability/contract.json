@@ -1,0 +1,21 @@
+{
+  "verdicts": ["DENY", "ADVISE", "SILENT"],
+  "surfaces": ["pr-body", "pr-title", "pr-comment", "pr-review", "jira-comment", "jira-description"],
+  "outward_repos": ["acme-app", "acme-api"],
+  "ticket_key_repos": ["acme-app", "acme-api"],
+  "ticket_key_pattern": "\\bACME-\\d+\\b",
+  "banned_words": ["synergy", "leverage", "paradigm", "basically", "just", "actually"],
+  "banned_word_matching": "case-insensitive; whole word; matched in prose only, never inside a fenced code block or inline backticks",
+  "required_sections": ["What breaks", "What changes", "How to run"],
+  "prose_ceiling_words": {
+    "pr-body": 150,
+    "pr-comment": 80,
+    "pr-review": 80,
+    "jira-description": 120,
+    "jira-comment": 80
+  },
+  "words_deny_from": "2026-09-10",
+  "production_ceiling": { "lines": 300, "files": 5 },
+  "exempt_globs": ["**/*.test.ts", "**/*.lock", "**/package-lock.json"],
+  "fence_max_lines": 25
+}
