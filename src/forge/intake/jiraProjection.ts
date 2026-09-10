@@ -9,7 +9,6 @@
  */
 import { withMarker } from './selfWrite.js';
 import { voiceGuard } from './voiceGuard.js';
-import { readabilityVerdict } from './readability.js';
 import type { Packet } from '../contracts.js';
 
 export interface FakeJiraSink {
@@ -55,9 +54,6 @@ export async function writeVoicedComment(
 ): Promise<{ ok: boolean; reason?: string }> {
   const verdict = voiceGuard(body);
   if (!verdict.ok) return { ok: false, reason: verdict.reason };
-  const asOf = new Date().toISOString().slice(0, 10);
-  const readability = readabilityVerdict('jira-comment', null, '', body, undefined, asOf);
-  if (readability.verdict === 'DENY') return { ok: false, reason: readability.reason };
   const marked = withMarker(body, operationId);
   const list = jira.comments.get(ticketKey) ?? [];
   list.push(marked);

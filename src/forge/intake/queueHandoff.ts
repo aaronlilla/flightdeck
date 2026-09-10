@@ -12,7 +12,6 @@ import { createHash } from 'node:crypto';
 
 import type { ExternalWrite } from '../contracts.js';
 import { voiceGuard } from './voiceGuard.js';
-import { readabilityVerdict } from './readability.js';
 import type { JiraCallResult, JiraWriteClient } from './jira.js';
 
 export interface QueueHandoffInput {
@@ -44,8 +43,7 @@ export interface QueueHandoffEnv {
 }
 
 export interface QueueHandoffEvent {
-  event: 'external.intent' | 'external.call' | 'external.complete' | 'external.unknown' | 'voice.refused'
-    | 'readability.refused';
+  event: 'external.intent' | 'external.call' | 'external.complete' | 'external.unknown' | 'voice.refused';
   kind: string;
   idempotencyKey?: string;
   ticket: string;
@@ -111,16 +109,9 @@ export async function runQueueHandoff(
 
   const commentText = buildQueueHandoffComment(input);
   const voice = voiceGuard(commentText);
-  const asOf = new Date().toISOString().slice(0, 10);
-  const readability = voice.ok
-    ? readabilityVerdict('jira-comment', null, '', commentText, undefined, asOf)
-    : null;
   if (!voice.ok) {
     emit({ event: 'voice.refused', kind: 'jira-comment', ticket, reason: voice.reason });
     lines.push(`jira-comment: refused by voiceGuard (${voice.reason})`);
-  } else if (readability?.verdict === 'DENY') {
-    emit({ event: 'readability.refused', kind: 'jira-comment', ticket, reason: readability.reason });
-    lines.push(`jira-comment: refused by readability (${readability.reason})`);
   } else {
     const comment = await performOne('jira-comment', ticket, input.prUrl, () => client.comment(ticket, commentText), emit);
     lines.push(comment.line);

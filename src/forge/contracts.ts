@@ -311,9 +311,6 @@ export const FORGE_EVENT_NAMES = [
   // when a reasoner call filled the gap, and the same row on any reasoner failure
   // (worker's own options kept, `recommended: null`).
   'forge.ask.options',
-  // Order 19 (readability-total, 2026-09-10): a Jira comment or a PR comment refused by
-  // `readabilityVerdict` before it ever reached the write client.
-  'readability.refused',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];

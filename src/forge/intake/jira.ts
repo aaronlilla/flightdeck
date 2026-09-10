@@ -18,7 +18,6 @@
  */
 import { redact } from '../redact.js';
 import type { FakePollFeed, PollItemDetail, RawPollItem } from './poller.js';
-import { readabilityVerdict } from './readability.js';
 
 export interface JiraConfig {
   site: string;
@@ -229,15 +228,6 @@ export function createJiraWriteClient(config: Pick<JiraConfig, 'site' | 'email' 
 
   return {
     async comment(key, body) {
-      // The backstop: whatever assembled `body` and whichever caller reached this
-      // point, a DENY refuses the write here too, before `fetchFn` is ever called.
-      // Callers with journal access (queueHandoff.ts) check first and emit their own
-      // refusal event; this exists for the caller that forgets to.
-      const asOf = new Date().toISOString().slice(0, 10);
-      const verdict = readabilityVerdict('jira-comment', null, '', body, undefined, asOf);
-      if (verdict.verdict === 'DENY') {
-        return { ok: false, body: `readability refused this comment: ${verdict.reason}` };
-      }
       const response = await fetchFn(`${config.site}/rest/api/3/issue/${key}/comment`, {
         method: 'POST', headers, body: JSON.stringify({ body: adfFromText(body) }),
       });

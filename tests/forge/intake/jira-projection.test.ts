@@ -64,12 +64,4 @@ describe('writeVoicedComment — the guard runs before the sink, never after', (
     expect(comments).toHaveLength(1);
     expect(comments[0]).toContain('forge-intake-op:op-2');
   });
-
-  it('refuses a comment over the readability ceiling before it ever reaches the sink', async () => {
-    const jira = createFakeJiraSink();
-    const over80 = Array.from({ length: 90 }, (_v, i) => `word${i}`).join(' ');
-    const result = await writeVoicedComment(jira, 'BBZ-1', over80, 'op-3');
-    expect(result.ok).toBe(false);
-    expect(jira.comments.get('BBZ-1') ?? []).toHaveLength(0);
-  });
 });
