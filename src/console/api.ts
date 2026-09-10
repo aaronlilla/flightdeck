@@ -102,6 +102,40 @@ export function getProposals(): Promise<ProposalsResponse> {
   return call<ProposalsResponse>('/proposals');
 }
 
+export interface MachineProcessRowView {
+  name: string;
+  ageMs: number;
+  commandLine: string;
+  output: string;
+  children: MachineProcessRowView[];
+  pid?: number;
+  ppid?: number;
+}
+
+export interface MachineSessionView {
+  name?: string;
+  repo: string | null;
+  branch: string | null;
+  status: string;
+  startedAt?: number;
+  root: MachineProcessRowView | null;
+  sessionId?: string;
+  pid?: number;
+}
+
+export interface MachineResponse {
+  glance: string;
+  readAt: number;
+  intervalMs: number;
+  sessions: MachineSessionView[];
+  unregistered: MachineProcessRowView[];
+}
+
+export function getMachine(opts?: { verbose?: boolean }): Promise<MachineResponse> {
+  const qs = opts?.verbose ? '?verbose=1' : '';
+  return call<MachineResponse>(`/machine${qs}`);
+}
+
 export function getRunThread(id: string, opts?: { verbose?: boolean }): Promise<RunThreadResponse> {
   const qs = opts?.verbose ? '?verbose=1' : '';
   return call<RunThreadResponse>(`/run/${encodeURIComponent(id)}/thread${qs}`);

@@ -20,7 +20,8 @@ export type SliceName =
   | 'journal'
   | 'blockers'
   | 'caps'
-  | 'proposals';
+  | 'proposals'
+  | 'machine';
 
 /** A type alias rather than an interface on purpose: an object type written this way
  *  is assignable to the server's `Record<string, unknown>` publish parameter. */

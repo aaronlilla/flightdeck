@@ -62,6 +62,7 @@ import { replay, Journal, JournalCache } from './journal.js';
 import { initReadabilityAndJournal, readabilityStatusLine } from './console/readability-status.js';
 import { getReadabilityContractState } from './intake/readability.js';
 import { scanSessions } from './sessions/registry.js';
+import { sessionStartedRow } from './sessions/started-row.js';
 
 /** `process.kill(pid, 0)` sends no signal -- it only asks the OS whether the pid exists
  *  (works the same on win32 via OpenProcess), throwing ESRCH when it does not. Best-effort
@@ -744,14 +745,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
             if (!row.sessionId) continue; // a malformed record names no session to journal
             const known = fleetState.sessions[row.sessionId];
             if (!known && !row.vanished) {
-              burnJournal.append({
-                event: 'session.started', actor: 'registry', session: row.sessionId,
-                cwd: row.cwd, configDir: row.configDir,
-                ...(row.repo ? { repo: row.repo } : {}),
-                ...(row.worktree ? { worktree: row.worktree } : {}),
-                ...(row.branch ? { branch: row.branch } : {}),
-                name: row.name,
-              });
+              burnJournal.append(sessionStartedRow(row));
             }
             if (row.vanished && (!known || known.status === 'live')) {
               burnJournal.append({ event: 'session.vanished', actor: 'registry', session: row.sessionId, cwd: row.cwd });

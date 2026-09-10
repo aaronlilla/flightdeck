@@ -52,11 +52,11 @@ function lane(extra: Partial<Lane> & { id: string }): Lane {
 const queue = { items: [] as QueueItem[], paused: false, pauseReason: null, maxInFlight: 4, on: true };
 
 describe('the chrome', () => {
-  it('shows the five tabs in the design order, a badge only when the count is above zero, and the project', async () => {
+  it('shows the six tabs in the design order, a badge only when the count is above zero, and the project', async () => {
     const onNav = vi.fn();
     render(<Chrome view="board" badges={{ blockers: 3 }} feed={feed} project={{ key: 'NWR', name: 'Northwind Rewards' }} now={now} onNav={onNav} />);
     const nav = screen.getByRole('navigation');
-    expect(within(nav).getAllByRole('link').map((a) => a.textContent)).toEqual(['Blockers3', 'Board', 'Queue', 'Review', 'Settings']);
+    expect(within(nav).getAllByRole('link').map((a) => a.textContent)).toEqual(['Blockers3', 'Board', 'Queue', 'Review', 'Machine', 'Settings']);
     expect(screen.getByTestId('project-label')).toHaveTextContent('NWR · Northwind Rewards');
     await userEvent.click(screen.getByTestId('nav-queue'));
     expect(onNav).toHaveBeenCalledWith('queue');

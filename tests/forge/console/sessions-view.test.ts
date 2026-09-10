@@ -32,13 +32,30 @@ afterEach(async () => {
   await server.close();
 });
 
-async function start(session: string, repo: string, worktree: string): Promise<void> {
+async function start(session: string, repo: string, worktree: string, pid?: number): Promise<void> {
   await fetch(`${base}/sessions/event`, {
     method: 'POST',
     headers: { 'x-forge-token': server.token, 'content-type': 'application/json' },
-    body: JSON.stringify({ event: 'session.started', session, repo, worktree, cwd: worktree }),
+    body: JSON.stringify({ event: 'session.started', session, repo, worktree, cwd: worktree, ...(pid ? { pid } : {}) }),
   });
 }
+
+describe('GET /sessions pid', () => {
+  it('returns the posted pid under ?verbose=1 and omits it from the default register', async () => {
+    await start('s-pid', '/repos/flightdeck', '/repos/worktrees/flightdeck--machine-window', 4242);
+
+    const verboseRes = await fetch(`${base}/sessions?verbose=1`, { headers: { 'x-forge-token': server.token } });
+    const verboseBody = await verboseRes.json() as { sessions: { sessionId: string; pid?: number }[] };
+    const verboseRow = verboseBody.sessions.find((row) => row.sessionId === 's-pid');
+    expect(verboseRow?.pid).toBe(4242);
+
+    const plainRes = await fetch(`${base}/sessions`, { headers: { 'x-forge-token': server.token } });
+    const plainBody = await plainRes.json() as { sessions: Record<string, unknown>[] };
+    const plainRow = plainBody.sessions.find((row) => row['name'] === 's-pid' || row['cwd'] === '/repos/worktrees/flightdeck--machine-window');
+    expect(plainRow?.['pid']).toBeUndefined();
+    expect(plainRow?.['sessionId']).toBeUndefined();
+  });
+});
 
 describe('GET /sessions same-repo marker', () => {
   it('marks two live sessions on one repo "may need to merge", and leaves a session on another repo alone', async () => {
