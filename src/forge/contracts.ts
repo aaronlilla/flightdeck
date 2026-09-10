@@ -163,7 +163,7 @@ export const FORGE_EVENT_NAMES = [
   'ask.answered', 'ask.raised', 'console.unhandled', 'cutover.completed', 'cutover.moved', 'engine.error',
   'forge.ask', 'forge.done', 'forge.handoff', 'forge.report', 'gotcha', 'inbox.acknowledged',
   'inbox.delivered', 'liveness.cleared', 'liveness.stuck', 'note', 'permission.denied',
-  'run.blocked', 'run.finished', 'run.handoff', 'run.parked', 'run.paused', 'run.resumed',
+  'run.blocked', 'run.finished', 'run.handoff', 'run.parked', 'run.paused', 'run.refused', 'run.resumed',
   'run.started', 'run.verify-failed', 'subagent.usage', 'tool.end', 'tool.start', 'turn.end',
   'warden.parked',
   // The spec's additions (the "Contracts" paragraph of the 2026-09-04 13:45 refined

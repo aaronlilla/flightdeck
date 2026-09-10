@@ -245,6 +245,20 @@ export const ACTIONS = {
     ok: (response) => response.ok,
     link: () => viewLink('settings', 'accounts'),
   }),
+  updateAccount: spec<[string, Parameters<typeof api.updateAccount>[1]], Awaited<ReturnType<typeof api.updateAccount>>>({
+    id: 'updateAccount', label: 'Save', reversible: true, effect: 'account',
+    call: ([id, patch]) => api.updateAccount(id, patch),
+    text: (response) => (response.ok ? 'account updated' : response.error ?? 'could not update this account'),
+    ok: (response) => response.ok,
+    link: () => viewLink('settings', 'accounts'),
+  }),
+  deleteLeftover: spec<[string], Awaited<ReturnType<typeof api.deleteLeftover>>>({
+    id: 'deleteLeftover', label: 'Delete files', reversible: false, effect: 'account',
+    call: ([name], confirm) => api.deleteLeftover(name, confirm),
+    text: (response) => (api.isConfirmPending(response) ? 'awaiting confirm' : response.ok ? 'login files removed' : response.error ?? 'could not remove these files'),
+    ok: (response) => !api.isConfirmPending(response) && response.ok,
+    link: () => viewLink('settings', 'accounts'),
+  }),
   applyProposal: spec<[string], ActionResult>({
     id: 'applyProposal', label: 'Apply rule', reversible: true, effect: 'proposal',
     call: ([id]) => api.applyProposal(id), text: fromActionResult, ok: okOf, jid: jidOf, link: () => viewLink('review', 'review'),

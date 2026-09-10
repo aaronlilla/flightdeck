@@ -541,6 +541,11 @@ export interface AccountItem {
   limitedUntil?: number;
   /** Which window the recorded limit was on. */
   limitedWindow?: 'five_hour' | 'seven_day';
+  /** Held back for when everything else is exhausted -- the login the operator types
+   *  into. Editable from the Settings row; absent means ordinary. */
+  lastResort?: boolean;
+  /** Concurrency ceiling. Absent means no limit, which is the default for a new row. */
+  maxConcurrent?: number;
   /** Whether this account is the one the next session of its provider launches under. */
   selected?: boolean;
   /** The machine's default Claude login, which every run used before accounts existed.
@@ -550,6 +555,37 @@ export interface AccountItem {
 
 export interface AccountsResponse {
   items: AccountItem[];
+}
+
+/** `PATCH /accounts/:id`'s body: how much of this login the fleet may take. Both fields
+ *  are optional and an omitted one is left alone; `maxConcurrent: 0` clears the ceiling. */
+export interface AccountUpdateRequest {
+  lastResort?: boolean;
+  maxConcurrent?: number;
+}
+
+export interface AccountUpdateResponse {
+  ok: boolean;
+  error?: string;
+}
+
+/** A login directory left on disk after its account was unlinked. Named, never pathed:
+ *  the console has no business knowing where the configs root is. */
+export interface LeftoverItem {
+  name: string;
+  bytes: number;
+}
+
+export interface LeftoversResponse {
+  items: LeftoverItem[];
+}
+
+/** `POST /accounts/leftovers/:name/delete`'s body. `bytes` is what was actually removed,
+ *  so the row can say so rather than estimating. */
+export interface DeleteFilesResponse {
+  ok: boolean;
+  error?: string;
+  bytes?: number;
 }
 
 export type ConnectState = 'connecting' | 'waiting-in-browser' | 'probing' | 'connected' | 'failed';

@@ -11,6 +11,9 @@ vi.mock('../../src/console/api.js', () => ({
   connectAccount: vi.fn(),
   getConnectAttempt: vi.fn(),
   disconnectAccount: vi.fn(),
+  updateAccount: vi.fn(),
+  deleteLeftover: vi.fn(),
+  getLeftovers: vi.fn(async () => ({ items: [] })),
 }));
 import * as api from '../../src/console/api.js';
 
