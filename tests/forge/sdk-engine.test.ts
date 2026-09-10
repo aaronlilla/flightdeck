@@ -8,7 +8,8 @@
  */
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
@@ -27,6 +28,10 @@ import { Gotchas } from '../../src/forge/gotcha.js';
 import { BlockerBoard } from '../../src/forge/blockers.js';
 import { CredentialHorizon } from '../../src/forge/credential-horizon.js';
 import { readMergeableDetailed } from '../../src/forge/drift.js';
+import { resetReadabilityContractForTests } from '../../src/forge/intake/readability.ts';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const NEUTRAL_READABILITY_DIR = join(__dirname, 'specimens', 'readability');
 
 let home: string;
 let journalPath: string;
@@ -40,6 +45,8 @@ beforeEach(() => {
   // directory when FORGE_HOME is unset. Without this, every specimen here that touches
   // a RunInbox writes into this machine's actual ~/.forge/runs rather than a temp dir.
   process.env['FORGE_HOME'] = home;
+  process.env['FORGE_READABILITY_DIR'] = NEUTRAL_READABILITY_DIR;
+  resetReadabilityContractForTests();
 });
 
 interface ScriptedStep {
@@ -1480,6 +1487,32 @@ describe('P4.7/I4: the Council rules library runs on every Bash and Edit/Write P
     const verdict = await hook({ toolName: 'Bash', input: { command: 'npm test' }, toolUseId: 'tu-3' });
 
     expect(verdict.decision).toBeUndefined();
+  });
+
+  // G3 (readability-total, 2026-09-10): no test proved readabilityRule was actually
+  // reachable from PROSE_RULES/this hook -- every existing readability test called
+  // readabilityRule.evaluate() directly. Removing it from PROSE_RULES leaves this red.
+  it('denies a gh pr create carrying no required sections, with the readability reason', async () => {
+    const parked = new Map<string, string>();
+    const journal = new Journal(journalPath);
+    const inbox = new Inbox(join(home, 'inbox-rules-readability'));
+    const hook = buildPreToolUseHook({ run: 'r5', goal: 'r5', parked, journal, inbox, deliverVia: 'hook' });
+
+    const verdict = await hook({
+      toolName: 'Bash',
+      input: {
+        command: 'gh pr create --repo acme/acme-app --title "ACME-73 webhook claim" '
+          + '--body "fixed the bug, should be good to merge now"',
+      },
+      toolUseId: 'tu-5',
+    });
+
+    expect(verdict.decision).toBe('deny');
+    expect(verdict.reason).toMatch(/readability/i);
+    journal.close();
+    const state = replay(journalPath);
+    expect(state.events.some((e) => e.event === 'rule.denied' && e.run === 'r5'
+      && e['rule'] === 'readability')).toBe(true);
   });
 
   it('a park in force still denies first -- the rules check never overrides an existing park', async () => {

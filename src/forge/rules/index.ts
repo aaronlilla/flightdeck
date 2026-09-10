@@ -10,6 +10,7 @@ import { authorshipRule } from './authorship.ts';
 import { humanizerRule } from './humanizer.ts';
 import { sycophancyRule } from './sycophancy.ts';
 import { vaguenessRule } from './vagueness.ts';
+import { readabilityRule } from './readability.ts';
 import type { ProposedAction, Rule, RuleVerdict } from './types.ts';
 
 export type { ProposedAction, Rule, RuleVerdict } from './types.ts';
@@ -19,13 +20,19 @@ export { authorshipRule } from './authorship.ts';
 export { humanizerRule } from './humanizer.ts';
 export { sycophancyRule } from './sycophancy.ts';
 export { vaguenessRule } from './vagueness.ts';
+export { readabilityRule } from './readability.ts';
 
 /**
  * `2026-09-04-forge-roadmap.md:139`'s list: gitflow, authorship, humanizer, sycophancy,
- * vagueness. Convergence is out of scope (decision 3: the roadmap retires the hook, not
- * the specimen, and flightdeck's kernel guard keeps its own corpus untouched).
+ * vagueness. Readability (order 19, readability-total) joined 2026-09-10: the same PR
+ * title/body/comment action this array already sees for `cli.ts`'s merge gate and
+ * `queue.ts`'s comment authorization is exactly what Joe cannot read past. Convergence is
+ * out of scope (decision 3: the roadmap retires the hook, not the specimen, and
+ * flightdeck's kernel guard keeps its own corpus untouched).
  */
-export const RULES: Rule[] = [gitflowRule, authorshipRule, humanizerRule, sycophancyRule, vaguenessRule];
+export const RULES: Rule[] = [
+  gitflowRule, authorshipRule, humanizerRule, sycophancyRule, vaguenessRule, readabilityRule,
+];
 
 export function evaluateAction(action: ProposedAction): RuleVerdict {
   for (const rule of RULES) {

@@ -2,9 +2,16 @@
  * The pure pieces of `council/gh.ts`: counting a diff's changed lines and folding a
  * `statusCheckRollup` into one conclusion. No `gh` call anywhere in this file.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, beforeAll, afterAll } from 'vitest';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-import { conclusionOf, countAddDel, countChangedLines, parseGhJson } from '../../../src/forge/council/gh.ts';
+import { conclusionOf, countAddDel, countChangedLines, guardedCommentPr, parseGhJson } from '../../../src/forge/council/gh.ts';
+import type { GhWriter } from '../../../src/forge/council/gh.ts';
+import { resetReadabilityContractForTests } from '../../../src/forge/intake/readability.ts';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const NEUTRAL_CONTRACT_DIR = path.join(__dirname, '..', 'specimens', 'readability');
 
 describe('countChangedLines', () => {
   it('counts added and removed content lines, never the +++/--- file headers', () => {
@@ -108,5 +115,57 @@ describe('parseGhJson', () => {
   it('prefers full over tail, same as every other gh JSON reader in this codebase', () => {
     const ok = { ok: true, tail: '{truncated', full: JSON.stringify({ headRefOid: 'full-value' }) };
     expect(parseGhJson<{ headRefOid: string }>(ok, 'pr view')).toEqual({ headRefOid: 'full-value' });
+  });
+});
+
+describe('guardedCommentPr — order 19 chokepoint', () => {
+  beforeAll(() => {
+    process.env['FORGE_READABILITY_DIR'] = NEUTRAL_CONTRACT_DIR;
+    resetReadabilityContractForTests();
+  });
+  afterAll(() => {
+    delete process.env['FORGE_READABILITY_DIR'];
+    resetReadabilityContractForTests();
+  });
+
+  const OVER_80_WORDS = Array.from({ length: 90 }, (_v, i) => `word${i}`).join(' ');
+
+  function fakeWriter(): { writer: Pick<GhWriter, 'commentPr'>; state: { calls: number } } {
+    const state = { calls: 0 };
+    const writer: Pick<GhWriter, 'commentPr'> = {
+      async commentPr() {
+        state.calls += 1;
+        return { returncode: 0, stderr: '' };
+      },
+    };
+    return { writer, state };
+  }
+
+  it('an over-ceiling comment never reaches the stub, and reports the refusal', async () => {
+    const { writer, state } = fakeWriter();
+    let refusalReason = '';
+    const result = await guardedCommentPr(writer, 'acme-app', 71, OVER_80_WORDS, (refusal) => {
+      refusalReason = refusal.reason;
+    });
+    expect(state.calls).toBe(0);
+    expect(result).toBeNull();
+    expect(refusalReason).toContain('80');
+  });
+
+  it('a conforming comment reaches the stub exactly once', async () => {
+    const { writer, state } = fakeWriter();
+    const result = await guardedCommentPr(writer, 'acme-app', 71, 'Short comment, well under the ceiling.');
+    expect(state.calls).toBe(1);
+    expect(result).toEqual({ returncode: 0, stderr: '' });
+  });
+
+  // G3 (readability-total, 2026-09-10): the real `gh` CLI takes an owner/name repo
+  // slug, never the contract's bare repo name -- every real caller of this chokepoint
+  // passes a slug, so the gate must recognize one.
+  it('an over-ceiling comment on an owner/name repo slug still never reaches the stub', async () => {
+    const { writer, state } = fakeWriter();
+    const result = await guardedCommentPr(writer, 'acme/acme-app', 71, OVER_80_WORDS);
+    expect(state.calls).toBe(0);
+    expect(result).toBeNull();
   });
 });
