@@ -18,8 +18,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { workerConfigDir } from './accounts.js';
 import { readProcessList } from './fleetwatch.js';
-import { fleetConfigDir, forgeHome, runDir } from './paths.js';
+import { forgeHome, runDir } from './paths.js';
 import { INHERITED, workerEnv } from './worker.js';
 
 /**
@@ -108,16 +109,18 @@ export function loginInFlight(lines: string[] = readProcessList()): boolean {
 /**
  * The environment a worker is launched with.
  *
- * `CLAUDE_CONFIG_DIR` is pinned rather than inherited. Sharing the interactive session's
- * directory means the fleet writes into the store Aaron is using, and a login in either
- * place changes what the other authenticates as.
+ * `CLAUDE_CONFIG_DIR` is pinned rather than inherited: a child that inherits it behaves
+ * as a continuation of a session it is not part of. Which account it is pinned TO comes
+ * from the registry now (`workerConfigDir`), not from one hardcoded login -- that pinned
+ * every worker to a single account however exhausted it was, and however much room
+ * another had.
  */
 export function launchEnv(
   parent: NodeJS.ProcessEnv = process.env,
   existsConfigDir?: (path: string) => boolean,
 ): NodeJS.ProcessEnv {
   const clean = workerEnv(parent);
-  clean['CLAUDE_CONFIG_DIR'] = fleetConfigDir(existsConfigDir);
+  clean['CLAUDE_CONFIG_DIR'] = workerConfigDir(undefined, existsConfigDir);
   clean['FORGE_HOME'] = forgeHome();
   clean['FORGE_RUNTIME'] = runtimeVersion();
   return clean;

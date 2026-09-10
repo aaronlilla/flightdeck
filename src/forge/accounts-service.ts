@@ -97,6 +97,40 @@ export class AccountsService {
     return items;
   }
 
+  /**
+   * The account a launch should use, on a reading taken now rather than whenever the
+   * Settings page last polled. Every row of `provider` whose reading is older than
+   * `staleMs` is probed first, all of them in parallel, and only then is the choice
+   * made.
+   *
+   * A probe that fails is not fatal and never opens the gate: `refreshOne` records the
+   * error and leaves the last reading in place, so a dead network degrades to the last
+   * known numbers. An account that has never been read successfully stays unmeasured,
+   * and `pickAccount` sorts it last.
+   *
+   * `model` names what is about to run, so a model-scoped weekly bucket only counts
+   * against a run of that model.
+   */
+  async pickWithRefresh(
+    provider: AccountProvider = 'claude', model?: string,
+  ): Promise<AccountRecord | undefined> {
+    const stale = this.deps.staleMs ?? DEFAULT_STALE_MS;
+    const before = this.deps.readUsage();
+    const now = this.now();
+    await Promise.all(
+      this.rows()
+        .filter((row) => row.provider === provider)
+        .filter((row) => {
+          const reading = before[row.id]?.reading;
+          return !reading || now - reading.at > stale;
+        })
+        .map((row) => this.refreshOne(row)),
+    );
+    return pickAccount(
+      this.deps.loadAccounts(), this.deps.readUsage(), this.deps.liveRuns(), this.now(), provider, model,
+    );
+  }
+
   /** Reads every account now, waiting for all of them. For the CLI and for tests. */
   async refreshAll(): Promise<void> {
     await Promise.all(this.rows().map((row) => this.refreshOne(row)));

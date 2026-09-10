@@ -10,15 +10,17 @@
  * add` was told about a directory the operator already logged in by hand, and reads it
  * back for `accountFor` (`governor.ts`) and the console routes to use.
  *
- * Two refusals, on every write: a `configDir` equal to the operator's own `~/.claude`,
- * which a worker must never share, and a duplicate id or a duplicate dir.
+ * Two refusals, on every write: a duplicate id or config dir, and a duplicate
+ * `accountUuid` -- one subscription is one row, however many directories are logged into
+ * it. No directory is privileged: the operator's own `~/.claude` is an ordinary account
+ * (Aaron, 2026-09-10), because on this machine it was the only pool with room left and
+ * the registry was refusing it by name while holding the fleet subscription twice.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
 import type { AccountUsage } from './accounts-usage.js';
-import { isLimited, usedFraction } from './accounts-usage.js';
+import { hasReading, isLimited, readAccountUsage, usedFraction } from './accounts-usage.js';
 import type { ForgeEvent } from './journal.js';
 import { fleetConfigDir, forgeHome } from './paths.js';
 
@@ -36,6 +38,11 @@ export interface AccountRecord {
   label: string;
   /** `CLAUDE_CONFIG_DIR` for a Claude login; `CODEX_HOME` for a Codex one. */
   configDir: string;
+  /** The subscription behind this login, from `/api/oauth/profile`'s `account.uuid`.
+   *  What a duplicate is actually measured on: two directories logged into one
+   *  subscription add no headroom, and that is the case the directory check missed.
+   *  Absent on rows written before this existed, which are never deduped by it. */
+  accountUuid?: string;
   connectedAt: number;
   /** Concurrency ceiling for this account's admission. Read, shown, not yet enforced
    *  by the governor. */
@@ -84,10 +91,10 @@ const ID_SHAPE = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
  * existing set plus whatever is being added). Used both to gate a write here and, via
  * `checkAddCandidate`, to gate a candidate before anything is even attempted for it.
  */
-export function validateAccounts(accounts: AccountRecord[], ownDir: string = join(homedir(), '.claude')): Verdict {
-  const own = normalizeDir(ownDir);
+export function validateAccounts(accounts: AccountRecord[]): Verdict {
   const ids = new Set<string>();
   const dirs = new Set<string>();
+  const uuids = new Map<string, string>();
   for (const account of accounts) {
     if (!ID_SHAPE.test(account.id)) return { ok: false, reason: `account id '${account.id}' must be letters, digits, dots, dashes or underscores` };
     if (ids.has(account.id)) return { ok: false, reason: `duplicate account id '${account.id}'` };
@@ -96,9 +103,15 @@ export function validateAccounts(accounts: AccountRecord[], ownDir: string = joi
       return { ok: false, reason: `account '${account.id}' has no configDir` };
     }
     const dir = normalizeDir(account.configDir);
-    if (dir === own) return { ok: false, reason: `account '${account.id}' points at the operator's own config dir; a worker never shares that login` };
     if (dirs.has(dir)) return { ok: false, reason: `account '${account.id}' repeats a config dir another account already uses` };
     dirs.add(dir);
+    if (account.accountUuid) {
+      const owner = uuids.get(account.accountUuid);
+      if (owner) {
+        return { ok: false, reason: `account '${account.id}' is the same subscription as '${owner}' behind another directory; one login is one account` };
+      }
+      uuids.set(account.accountUuid, account.id);
+    }
     if (account.maxConcurrent !== undefined && (!Number.isInteger(account.maxConcurrent) || account.maxConcurrent < 1)) {
       return { ok: false, reason: `account '${account.id}' has a maxConcurrent that is not a positive integer` };
     }
@@ -108,16 +121,19 @@ export function validateAccounts(accounts: AccountRecord[], ownDir: string = joi
 
 /** The same refusals a write applies, without performing one. `forge accounts add` and
  *  a browser connect attempt both run this before doing anything else, so a dir the
- *  registry would refuse (the operator's own `~/.claude` above all) is never even
- *  probed or logged into. */
+ *  registry would refuse -- a directory already registered, or a subscription already
+ *  registered behind a different directory -- is never probed or logged into twice.
+ *  A candidate with no `accountUuid` yet skips only the subscription check; a connect
+ *  attempt fills it in from the profile call it already makes. */
 export function checkAddCandidate(
   existing: AccountRecord[],
-  candidate: { id: string; configDir: string; maxConcurrent?: number; provider?: AccountProvider },
+  candidate: { id: string; configDir: string; maxConcurrent?: number; provider?: AccountProvider; accountUuid?: string },
 ): Verdict {
   const account: AccountRecord = {
     id: candidate.id, provider: candidate.provider ?? 'claude', label: candidate.id, configDir: candidate.configDir, connectedAt: 0,
   };
   if (candidate.maxConcurrent !== undefined) account.maxConcurrent = candidate.maxConcurrent;
+  if (candidate.accountUuid !== undefined) account.accountUuid = candidate.accountUuid;
   return validateAccounts([...existing, account]);
 }
 
@@ -134,7 +150,7 @@ export function accountName(account: Pick<AccountRecord, 'email' | 'label'>): st
 /** Appends one account, after the same refusals `validateAccounts` applies to every
  *  write. The caller (a completed connect attempt, or `forge accounts add`) is what
  *  already proved the account works; this both persists it and holds the line on
- *  shape, duplicates and the operator's own dir. Throws rather than silently refusing,
+ *  shape and duplicates. Throws rather than silently refusing,
  *  since both callers are already inside a try/catch that turns a thrown reason into a
  *  reported failure. */
 export function addAccount(record: AccountRecord, path: string = accountsRegistryPath()): void {
@@ -180,22 +196,34 @@ export function liveRunsByAccount(events: ForgeEvent[], liveGoals: string[]): Re
 /**
  * The account a new session of `provider` should launch under: the one with the most
  * headroom that is not inside a rate limit right now, ties broken by fewer live runs,
- * then by the order they were connected. Headroom is the worst of the account's
- * windows as the provider last reported them (`accounts-probe.ts`); an account with no
- * reading yet counts as fully free, so a fresh login is tried before an exhausted one.
+ * then by the order they were connected. Headroom is the worst of the windows that can
+ * actually stop a run of `model` -- a model-scoped weekly bucket for some other model
+ * cannot, so it does not count (`usedFraction`).
+ *
+ * An account nobody has read yet sorts LAST, not first. It used to sort first, because
+ * "no reading" read as 0% used; that made a fresh login look better than a measured one
+ * and is exactly the fail-open standing order 1 forbids. A measured account, however
+ * busy, is preferred to an unmeasured one, and an unmeasured account is still picked
+ * when it is all there is.
+ *
  * `undefined` when no account of that provider is usable -- the caller then falls back
  * to the machine's own login, which is what every session used before accounts existed.
  */
 export function pickAccount(
   accounts: AccountRecord[], usage: AccountUsage, live: Record<string, number>, now: number,
-  provider: AccountProvider = 'claude',
+  provider: AccountProvider = 'claude', model?: string,
 ): AccountRecord | undefined {
-  const usable = accounts.filter((account) => account.provider === provider && !isLimited(account.id, now, usage));
+  const usable = accounts.filter((account) => account.provider === provider && !isLimited(account.id, now, usage, model));
   if (usable.length === 0) return undefined;
-  const worst = (account: AccountRecord): number => usedFraction(account.id, now, usage);
+  // Unmeasured sorts after every measured account, whatever they read.
+  const worst = (account: AccountRecord): number => (
+    hasReading(account.id, usage) ? usedFraction(account.id, now, usage, model) : Number.POSITIVE_INFINITY
+  );
   return usable.reduce((best, account) => {
-    const byHeadroom = worst(account) - worst(best);
-    if (byHeadroom !== 0) return byHeadroom < 0 ? account : best;
+    const here = worst(account);
+    const there = worst(best);
+    if (here < there) return account;
+    if (here > there) return best;
     return (live[account.id] ?? 0) < (live[best.id] ?? 0) ? account : best;
   }, usable[0]!);
 }
@@ -208,9 +236,38 @@ export function pickAccount(
  */
 export function configDirForSession(
   accounts: AccountRecord[], usage: AccountUsage, live: Record<string, number>, now: number,
-  existsConfigDir?: (path: string) => boolean, provider: AccountProvider = 'claude',
+  existsConfigDir?: (path: string) => boolean, provider: AccountProvider = 'claude', model?: string,
 ): { configDir: string | null; accountId: string | null } {
-  const picked = pickAccount(accounts, usage, live, now, provider);
+  const picked = pickAccount(accounts, usage, live, now, provider, model);
   if (picked) return { configDir: picked.configDir, accountId: picked.id };
   return { configDir: provider === 'claude' ? fleetConfigDir(existsConfigDir) : null, accountId: null };
+}
+
+/**
+ * The config dir a launch path should pin, for the paths that cannot await a probe.
+ *
+ * These used to hardcode `fleetConfigDir()`, which pinned every worker, reasoner, MCP
+ * runner and integrations probe to one account whatever the registry said. Selection
+ * here reads the store as it stands rather than refreshing it: a reading `forge run` or
+ * the console took minutes ago is a far better basis than "always this one account", and
+ * these call sites are synchronous.
+ *
+ * Never throws and never returns empty: any trouble at all falls back to the machine's
+ * own login, which is what every one of these paths did unconditionally before.
+ */
+export function workerConfigDir(
+  model?: string,
+  existsConfigDir?: (path: string) => boolean,
+  provider: AccountProvider = 'claude',
+  now: number = Date.now(),
+): string {
+  const fallback = fleetConfigDir(existsConfigDir);
+  try {
+    const picked = configDirForSession(
+      loadAccounts(), readAccountUsage(), {}, now, existsConfigDir, provider, model,
+    );
+    return picked.configDir ?? fallback;
+  } catch {
+    return fallback;
+  }
 }

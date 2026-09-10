@@ -38,9 +38,10 @@ import { runCutover } from './cutover.js';
 import { CredentialHorizon, readLoginLock } from './credential-horizon.js';
 import { accountFor, buildBurnLedger, checkBudget, WindowGate } from './governor.js';
 import {
-  accountsRegistryPath, addAccount, checkAddCandidate, liveRunsByAccount, loadAccounts, pickAccount, removeAccount,
+  accountsRegistryPath, addAccount, checkAddCandidate, configDirForSession, liveRunsByAccount, loadAccounts, pickAccount, removeAccount,
 } from './accounts.js';
 import { readAccountUsage } from './accounts-usage.js';
+import { AccountsService, diskWriters, fleetLoginDir, realProbe } from './accounts-service.js';
 import { reconcileBurnOnce } from './burn-reconcile.js';
 import { planIntakeWrites } from './intake/dryRun.js';
 import { createJiraFeed, createJiraWriteClient, probeJira, type JiraWriteClient } from './intake/jira.js';
@@ -325,6 +326,18 @@ function parseRunArgs(rest: string[]): {
     ...(runKey !== undefined ? { runKey } : {}),
     ...(invalid ? { invalid } : {}),
   };
+}
+
+// Which login a chain-launched or queue-launched goal runs under. Selection reads the
+// store as it stands rather than probing, because these launch paths are synchronous;
+// a reading refreshed by `forge run` or by the console minutes ago is still far better
+// than the fleet login every time, which is what this used to be. Falls back to the
+// machine's own login when nothing is registered.
+function configDirForLaunch(): string {
+  const fleet = fleetConfigDirChoice().dir;
+  return configDirForSession(
+    loadAccounts(accountsRegistryPath()), readAccountUsage(), {}, Date.now(),
+  ).configDir ?? fleet;
 }
 
 function money(amount: number): string {
@@ -618,7 +631,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       let chainLine = '';
       if (chainEnv.enabled) {
         const chainJournal = new Journal(journalPath());
-        const chainDeps = buildChainDeps(chainEnv, fleetConfigDirChoice().dir, deps);
+        const chainDeps = buildChainDeps(chainEnv, configDirForLaunch, deps);
         const chainTick = setInterval(() => {
           void (async () => {
             try {
@@ -652,7 +665,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       if (queueLock?.ok) {
         process.once('exit', () => queueLock.release());
         const queueJournal = new Journal(journalPath());
-        const queueDeps = buildQueueRuntimeDeps(chainEnv, fleetConfigDirChoice().dir, deps, queueStore);
+        const queueDeps = buildQueueRuntimeDeps(chainEnv, configDirForLaunch, deps, queueStore);
         const pollSeconds = Number(process.env['FORGE_QUEUE_POLL_S']) || 15;
         // B.1: three identical consecutive queue.tick-error rows back this off to a
         // 10 minute drip rather than retrying every pollSeconds all night on the same
@@ -898,7 +911,22 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         .filter((row) => processAlive(row.pid))
         .map((row) => row.goal);
       const liveRunsPerAccount = liveRunsByAccount(replay(journalPath()).events, liveGoalsForAccounts);
-      const picked = pickAccount(loadAccounts(accountsRegistryPath()), readAccountUsage(), liveRunsPerAccount, Date.now(), 'claude');
+      // Refreshed before it is used, not after: nothing else reads an account's headroom
+      // unless the Settings page happens to be open, so a launch used to choose on
+      // numbers that could be hours stale or absent entirely -- and an account nobody had
+      // read counted as fully free. `pickWithRefresh` probes any row older than a minute
+      // first, in parallel, and a probe that fails leaves the last reading standing
+      // rather than reverting to "free".
+      const accountsForRun = new AccountsService({
+        loadAccounts: () => loadAccounts(accountsRegistryPath()),
+        readUsage: () => readAccountUsage(),
+        recordReading: diskWriters.recordReading,
+        recordReadError: diskWriters.recordReadError,
+        liveRuns: () => liveRunsPerAccount,
+        fleetConfigDir: fleetLoginDir(() => fleetConfigDirChoice().dir),
+        probe: realProbe(),
+      });
+      const picked = await accountsForRun.pickWithRefresh('claude', plannedModel);
       const selectedAccount = picked ? { id: picked.id, configDir: picked.configDir } : undefined;
       // Where a `gh` credential lapse from the drift check lands. An expired token
       // reads as an unknown mergeable state, and answering that with "rebase onto the
@@ -1204,10 +1232,30 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           cap = Number(maxRaw);
           if (!Number.isInteger(cap) || cap < 1) return { code: 2, lines: [`max-concurrent must be a positive integer, got '${maxRaw}'`] };
         }
-        const candidate = checkAddCandidate(accounts, { id, configDir: resolved, ...(cap !== undefined ? { maxConcurrent: cap } : {}) });
+        // Which subscription this directory is logged into, before anything is written.
+        // Two directories on ONE subscription add no headroom, and that is what the
+        // registry held on this machine: the fleet login registered a second time under
+        // another path, counted as a second account. A probe that fails is not fatal --
+        // the row is written without a uuid and the next successful read fills it in --
+        // because a dir with no network right now is still a dir worth registering.
+        let probedUuid: string | undefined;
+        try {
+          probedUuid = (await realProbe()('claude', resolved)).accountUuid;
+        } catch {
+          probedUuid = undefined;
+        }
+        const candidate = checkAddCandidate(accounts, {
+          id, configDir: resolved,
+          ...(cap !== undefined ? { maxConcurrent: cap } : {}),
+          ...(probedUuid ? { accountUuid: probedUuid } : {}),
+        });
         if (!candidate.ok) return { code: 1, lines: [`refusing: ${candidate.reason}`] };
         try {
-          addAccount({ id, provider: 'claude', label: id, configDir: resolved, connectedAt: Date.now(), ...(cap !== undefined ? { maxConcurrent: cap } : {}) }, registryPath);
+          addAccount({
+            id, provider: 'claude', label: id, configDir: resolved, connectedAt: Date.now(),
+            ...(cap !== undefined ? { maxConcurrent: cap } : {}),
+            ...(probedUuid ? { accountUuid: probedUuid } : {}),
+          }, registryPath);
         } catch (err) {
           return { code: 1, lines: [`refusing: ${err instanceof Error ? err.message : String(err)}`] };
         }

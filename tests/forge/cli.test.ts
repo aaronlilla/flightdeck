@@ -1298,11 +1298,15 @@ describe('forge accounts: list, add, remove', () => {
     expect(result.lines.join('\n')).toMatch(/refusing/);
   });
 
-  it('refuses to add an account whose configDir is the operator\'s own ~/.claude', async () => {
+  // Reversed 2026-09-10 (Aaron): no directory is privileged. The operator's own login
+  // is registrable like any other, and what a duplicate is measured on is the
+  // subscription behind it, not the path.
+  it("adds an account whose configDir is the operator's own ~/.claude", async () => {
     const own = join(homedir(), '.claude');
     const result = await forge(['accounts', 'add', 'work', own]);
-    expect(result.code).toBe(1);
-    expect(result.lines.join('\n')).toMatch(/refusing/);
+    expect(result.code).toBe(0);
+    const listed = await forge(['accounts', 'list']);
+    expect(listed.lines.some((line) => /work/.test(line))).toBe(true);
   });
 
   it('removes an account by id', async () => {
