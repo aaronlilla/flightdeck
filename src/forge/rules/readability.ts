@@ -25,14 +25,16 @@ interface ParsedGh {
   body: string;
 }
 
-/** A double-quoted or single-quoted shell argument value, unescaped just enough to read
- *  the text a human would see -- this rule only needs the prose, never a faithful shell
- *  parse. */
+/** A shell argument value -- double-quoted, single-quoted, or bare (a `--repo owner/name`
+ *  has no reason to be quoted, having no spaces), unescaped just enough to read the text a
+ *  human would see. This rule only needs the prose, never a faithful shell parse. */
 function argValue(command: string, flag: string): string | null {
-  const re = new RegExp(`${flag}\\s+"((?:[^"\\\\]|\\\\.)*)"|${flag}\\s+'((?:[^'\\\\]|\\\\.)*)'`);
+  const re = new RegExp(
+    `${flag}\\s+"((?:[^"\\\\]|\\\\.)*)"|${flag}\\s+'((?:[^'\\\\]|\\\\.)*)'|${flag}\\s+(\\S+)`,
+  );
   const m = re.exec(command);
   if (!m) return null;
-  return (m[1] ?? m[2] ?? '').replace(/\\(["'])/g, '$1');
+  return (m[1] ?? m[2] ?? m[3] ?? '').replace(/\\(["'])/g, '$1');
 }
 
 /** `OUTWARD_REPOS` holds bare repo names ('bbmanagementsystemv2'), but every real
