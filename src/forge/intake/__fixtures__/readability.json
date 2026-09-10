@@ -620,7 +620,8 @@
     {
       "id": "path-heading-substring-boundary",
       "scope": [
-        "hook"
+        "hook",
+        "flightdeck"
       ],
       "surface": "pr-body",
       "repo": "bbmanagementsystemv2",

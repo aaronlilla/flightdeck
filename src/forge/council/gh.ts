@@ -9,6 +9,7 @@
 import { run as execRun } from '../exec.ts';
 import type { GhPrView } from './externalize.ts';
 import { readabilityVerdict } from '../intake/readability.ts';
+import { normalizeRepo } from '../rules/readability.ts';
 
 export interface PrSnapshot {
   repo: string;
@@ -80,7 +81,7 @@ export async function guardedCommentPr(
   onRefused?: (refusal: ReadabilityRefusal) => void,
 ): Promise<GhWriteResult | null> {
   const asOf = new Date().toISOString().slice(0, 10);
-  const verdict = readabilityVerdict('pr-comment', repo, '', body, undefined, asOf);
+  const verdict = readabilityVerdict('pr-comment', normalizeRepo(repo), '', body, undefined, asOf);
   if (verdict.verdict === 'DENY') {
     onRefused?.({ repo, pr, reason: verdict.reason });
     return null;

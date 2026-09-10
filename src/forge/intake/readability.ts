@@ -152,6 +152,14 @@ function isExempt(filePath: string): boolean {
   return EXEMPT_MATCHERS.some((re) => re.test(filePath)) || /test/i.test(filePath.split('/').pop() ?? '');
 }
 
+/** Whether a documented path `a` and a diff path `b` name the same file -- equal, or one
+ *  a path-suffix of the other at a `/` boundary. A bare substring match (G3, 2026-09-10)
+ *  let "AB.cs" count as documenting "B.cs" since 'AB.cs'.includes('B.cs') is true. */
+function pathsMatch(a: string, b: string): boolean {
+  if (a === b) return true;
+  return a.endsWith(`/${b}`) || b.endsWith(`/${a}`);
+}
+
 interface HeadingMatch {
   level: number;
   text: string;
@@ -275,7 +283,7 @@ export function readabilityVerdict(
     findings.push({ level: 'ADVISE', message: 'cannot measure the diff (no base, or git failed)' });
   } else if (diffStats !== undefined && needsSections) {
     const production = diffStats.filter((d) => !isExempt(d.path));
-    const undocumented = production.filter((d) => !documentedProductionPaths.some((p) => p.includes(d.path) || d.path.includes(p)));
+    const undocumented = production.filter((d) => !documentedProductionPaths.some((p) => pathsMatch(p, d.path)));
     if (undocumented.length > 0) {
       findings.push({ level: 'DENY', message: `undocumented production path(s): ${undocumented.map((d) => d.path).join(', ')}` });
     }

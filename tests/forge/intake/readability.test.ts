@@ -42,7 +42,7 @@ describe('readabilityVerdict against shared specimens', () => {
     // Do not compute this the same way the suite does -- that would make the assertion
     // tautological (comparing the filter to itself) and could never catch a specimen
     // silently dropped from `flightdeckSpecimens` before this test sees it.
-    const EXPECTED_FLIGHTDECK_SPECIMEN_COUNT = 26;
+    const EXPECTED_FLIGHTDECK_SPECIMEN_COUNT = 27;
     // eslint-disable-next-line no-console
     console.log(`flightdeck-scoped specimens run: ${flightdeckSpecimens.length}`);
     expect(flightdeckSpecimens.length).toBe(EXPECTED_FLIGHTDECK_SPECIMEN_COUNT);

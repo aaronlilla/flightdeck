@@ -143,4 +143,14 @@ describe('guardedCommentPr — order 19 chokepoint', () => {
     expect(state.calls).toBe(1);
     expect(result).toEqual({ returncode: 0, stderr: '' });
   });
+
+  // G3 (readability-total, 2026-09-10): the real `gh` CLI takes an owner/name repo
+  // slug, never OUTWARD_REPOS's bare name -- every real caller of this chokepoint
+  // passes a slug, so the gate must recognize one.
+  it('an over-ceiling comment on an owner/name repo slug still never reaches the stub', async () => {
+    const { writer, state } = fakeWriter();
+    const result = await guardedCommentPr(writer, 'boltbetz/BBManagementSystemV2', 71, OVER_80_WORDS);
+    expect(state.calls).toBe(0);
+    expect(result).toBeNull();
+  });
 });

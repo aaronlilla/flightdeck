@@ -35,10 +35,20 @@ function argValue(command: string, flag: string): string | null {
   return (m[1] ?? m[2] ?? '').replace(/\\(["'])/g, '$1');
 }
 
+/** `OUTWARD_REPOS` holds bare repo names ('bbmanagementsystemv2'), but every real
+ *  caller -- the worker's own `gh --repo owner/name`, cli.ts's merge gate, queue.ts's
+ *  routed `item.repo` -- carries an `owner/name` slug or a path. Strip everything up to
+ *  the last `/` before comparing, or the OUTWARD_REPOS check silently never matches and
+ *  every gate downstream of it is a no-op (G3, 2026-09-10: confirmed empirically). */
+export function normalizeRepo(repo: string | null | undefined): string | null {
+  if (!repo) return null;
+  const last = repo.replace(/\\/g, '/').split('/').filter(Boolean).pop();
+  return last ? last.toLowerCase() : null;
+}
+
 function repoFromCommand(command: string, cwd: string): string | null {
   const flagged = argValue(command, '--repo');
-  const repoPart = flagged ? flagged.split('/').pop() ?? flagged : null;
-  if (repoPart) return repoPart.toLowerCase();
+  if (flagged) return normalizeRepo(flagged);
   const segments = cwd.replace(/\\/g, '/').split('/').filter(Boolean);
   const last = segments[segments.length - 1] ?? '';
   return last ? last.replace(/^.*--/, '').toLowerCase() : null;
@@ -74,7 +84,7 @@ function textOf(action: ProposedAction): { surface: string; repo: string | null;
     case 'pr':
       return {
         surface: action.op === 'comment' ? 'pr-comment' : 'pr-body',
-        repo: action.repo,
+        repo: normalizeRepo(action.repo),
         title: action.title ?? '',
         body: action.body ?? '',
       };

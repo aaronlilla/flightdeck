@@ -114,4 +114,16 @@ export const READABILITY_SPECIMENS: Specimen[] = [
     } satisfies ProposedAction,
     expect: 'allow',
   },
+  {
+    // G3 (readability-total, 2026-09-10): repo arrives as an owner/name slug in every
+    // real caller (gh --repo, cli.ts's merge gate, queue.ts's routed item.repo), never
+    // as OUTWARD_REPOS's bare name -- the mismatch made the whole gate a no-op.
+    name: "Council's merge gate: 'pr' action with an owner/name repo slug still gates",
+    input: {
+      kind: 'pr', op: 'comment', repo: 'boltbetz/BBManagementSystemV2', title: '',
+      body: Array.from({ length: 90 }, (_v, i) => `word${i}`).join(' '), cwd: CWD,
+    } satisfies ProposedAction,
+    expect: 'deny',
+    reasonIncludes: '80',
+  },
 ];
