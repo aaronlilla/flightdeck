@@ -58,6 +58,9 @@ import {
   registryDir, serverTokenPath,
 } from './paths.js';
 import { routerEnabled } from './policy.js';
+import { ingest, type IngestDeps, type IncomingSessionEvent } from './sessions/ingest.js';
+import { SessionInbox } from './sessions/inbox.js';
+import { sweepAndCollectLocks, worktreeStatusFor } from './sessions/cleanup.js';
 import { retireFinished, retireLane, retirePreview, retiredPath, type RetireLaneDeps } from './console/retire.js';
 import { mergeReadyReportFrom } from './console/lanes.js';
 import { chainStatusRows, foldChainState } from './chain.js';
@@ -822,6 +825,36 @@ export class ForgeServer {
       }
       return this.send(request, response);
     }
+    if (path === '/sessions/event' && request.method === 'POST') {
+      return this.sessionsEvent(request, response);
+    }
+    if (path === '/journal/append' && request.method === 'POST') {
+      return this.journalAppend(request, response);
+    }
+    const sessionMessageMatch = /^\/sessions\/([^/]+)\/message$/.exec(path);
+    if (sessionMessageMatch && request.method === 'POST') {
+      return this.sessionMessage(request, response, decodeURIComponent(sessionMessageMatch[1] as string));
+    }
+    const sessionInboxMatch = /^\/sessions\/([^/]+)\/inbox$/.exec(path);
+    if (sessionInboxMatch && request.method === 'GET') {
+      if (!this.authorized(request, response)) return;
+      let inbox: SessionInbox;
+      try {
+        inbox = new SessionInbox(decodeURIComponent(sessionInboxMatch[1] as string));
+      } catch (error) {
+        json(response, 400, { error: (error as Error).message });
+        return;
+      }
+      const drained = inbox.drain();
+      for (const message of drained) {
+        appendOnce(this.journalPath, {
+          event: 'message.delivered', actor: 'session',
+          session: decodeURIComponent(sessionInboxMatch[1] as string),
+          from: message.from, chars: message.text.length,
+        });
+      }
+      return json(response, 200, { messages: drained.map((m) => ({ from: m.from, text: m.text, at: m.at })) });
+    }
     if (path === '/amend') {
       if (request.method !== 'POST') {
         return json(response, 405, { error: 'amending a brief is not a safe method' });
@@ -1114,6 +1147,78 @@ export class ForgeServer {
         return;
       }
       new RunInbox(parsed.run).send(parsed.text, 'console');
+      json(response, 200, { ok: true });
+    });
+  }
+
+  private ingestDeps(): IngestDeps {
+    return {
+      append: (row) => appendOnce(this.journalPath, row),
+      lastStopFor: (sessionId) => this.journalCache.read(this.journalPath).sessions[sessionId]?.lastStop,
+      sweep: () => sweepAndCollectLocks(),
+      worktreeStatusFor: (sessionId, cwd) => worktreeStatusFor(sessionId, cwd),
+    };
+  }
+
+  /**
+   * `POST /sessions/event`: `hooks/forge_report.py`'s single object or spooled array.
+   * Journals each row, and for a killed/interrupted terminal event runs cleanup --
+   * see `sessions/ingest.ts`, which does the actual branching this route just wires up.
+   */
+  private sessionsEvent(request: IncomingMessage, response: ServerResponse): void {
+    if (!this.authorized(request, response)) return;
+    this.readJson<IncomingSessionEvent | IncomingSessionEvent[]>(request, response, (parsed) => {
+      if (!parsed) {
+        json(response, 400, { error: 'a session event needs a body' });
+        return;
+      }
+      try {
+        const rows = ingest(this.ingestDeps(), parsed);
+        json(response, 200, { seq: rows.map((row) => row.seq) });
+      } catch (error) {
+        json(response, 400, { error: (error as Error).message });
+      }
+    });
+  }
+
+  /**
+   * `POST /journal/append`: the one non-Node write path (`coordination/ledger.py` and any
+   * future writer), same `authorized()` pattern as every other mutating route. Accepts
+   * one row or an array; returns the stamped `seq` for each.
+   */
+  private journalAppend(request: IncomingMessage, response: ServerResponse): void {
+    if (!this.authorized(request, response)) return;
+    this.readJson<Record<string, unknown> | Record<string, unknown>[]>(request, response, (parsed) => {
+      if (!parsed) {
+        json(response, 400, { error: 'append needs a body' });
+        return;
+      }
+      const rows = Array.isArray(parsed) ? parsed : [parsed];
+      const stamped = rows.map((row) => appendOnce(this.journalPath, row));
+      json(response, 200, { seq: stamped.map((row) => row.seq) });
+    });
+  }
+
+  /** `POST /sessions/:id/message {text, from}`: queues a message for a hand-opened
+   *  terminal, delivered on its next `UserPromptSubmit` via `GET /sessions/:id/inbox`.
+   *  Journals `message.queued` with `chars` only -- never the text. */
+  private sessionMessage(request: IncomingMessage, response: ServerResponse, sessionId: string): void {
+    if (!this.authorized(request, response)) return;
+    this.readJson<{ text?: string; from?: string }>(request, response, (parsed) => {
+      if (!parsed || !parsed.text || !parsed.from) {
+        json(response, 400, { error: 'a session message needs text and from' });
+        return;
+      }
+      try {
+        new SessionInbox(sessionId).queue(parsed.text, parsed.from);
+      } catch (error) {
+        json(response, 400, { error: (error as Error).message });
+        return;
+      }
+      appendOnce(this.journalPath, {
+        event: 'message.queued', actor: 'console', session: sessionId,
+        to: sessionId, from: parsed.from, chars: parsed.text.length,
+      });
       json(response, 200, { ok: true });
     });
   }

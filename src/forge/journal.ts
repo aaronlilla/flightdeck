@@ -118,6 +118,25 @@ export interface FleetState {
   /** Model ids usage was reported under that this policy has no price for. Billed
    *  nothing, named here rather than folded silently into burn at a guessed rate. */
   unknownModels: string[];
+  /** One row per session seen in `session.*`/`message.*` events, keyed by session id.
+   *  Populated by `foldSessionEvent` below; read by `GET /sessions` (`reads.ts`). */
+  sessions: Record<string, SessionFoldState>;
+}
+
+export interface SessionFoldState {
+  sessionId: string;
+  cwd?: string;
+  configDir?: string;
+  repo?: string;
+  worktree?: string;
+  branch?: string;
+  name?: string;
+  status: 'live' | 'ended';
+  startedAt?: number;
+  lastEventAt?: number;
+  endedAt?: number;
+  lastStop?: { closedWithComplete: boolean; closeKind: string; at: number };
+  exitClass?: string;
 }
 
 /** The highest `seq` already on disk, or 0 for a file with none (empty, missing, or
@@ -309,7 +328,59 @@ function runOf(state: FleetState, name: string): RunState {
 }
 
 function emptyState(): FleetState {
-  return { events: [], runs: {}, burn: {}, handoffs: 0, torn: 0, unknownModels: [] };
+  return { events: [], runs: {}, burn: {}, handoffs: 0, torn: 0, unknownModels: [], sessions: {} };
+}
+
+function sessionOf(state: FleetState, id: string): SessionFoldState {
+  const found = state.sessions[id];
+  if (found) return found;
+  const created: SessionFoldState = { sessionId: id, status: 'live' };
+  state.sessions[id] = created;
+  return created;
+}
+
+/** `session.*` events carry no `run`, so they never reach the run-keyed switch below --
+ *  this runs unconditionally, the same way the `usage` handling above does. */
+function foldSessionEvent(state: FleetState, row: ForgeEvent): void {
+  const id = typeof row['session'] === 'string' ? (row['session'] as string) : undefined;
+  if (!id) return;
+  const session = sessionOf(state, id);
+  session.lastEventAt = row.at;
+  switch (row.event) {
+    case 'session.started':
+      session.startedAt = row.at;
+      if (typeof row['cwd'] === 'string') session.cwd = row['cwd'] as string;
+      if (typeof row['configDir'] === 'string') session.configDir = row['configDir'] as string;
+      if (typeof row['repo'] === 'string') session.repo = row['repo'] as string;
+      if (typeof row['worktree'] === 'string') session.worktree = row['worktree'] as string;
+      if (typeof row['branch'] === 'string') session.branch = row['branch'] as string;
+      if (typeof row['name'] === 'string') session.name = row['name'] as string;
+      session.status = 'live';
+      break;
+    case 'session.prompt':
+      session.status = 'live';
+      break;
+    case 'session.stop':
+    case 'session.subagent-stop':
+      session.lastStop = {
+        closedWithComplete: Boolean(row['closedWithComplete']),
+        closeKind: typeof row['closeKind'] === 'string' ? (row['closeKind'] as string) : 'open',
+        at: row.at,
+      };
+      break;
+    case 'session.ended':
+      session.status = 'ended';
+      session.endedAt = row.at;
+      if (typeof row['exitClass'] === 'string') session.exitClass = row['exitClass'] as string;
+      break;
+    case 'session.vanished':
+      session.status = 'ended';
+      session.endedAt = row.at;
+      session.exitClass = 'killed';
+      break;
+    default:
+      break;
+  }
 }
 
 /** Per-run "a write tool call closed since the last turn ended" flag, kept off `RunState`
@@ -384,6 +455,10 @@ function foldLine(state: FleetState, line: string): void {
     return;
   }
   state.events.push(row);
+
+  if (typeof row.event === 'string' && row.event.startsWith('session.')) {
+    foldSessionEvent(state, row);
+  }
 
   if (row.usage) {
     // The SDK repeats one turn's usage object across every content-block message it

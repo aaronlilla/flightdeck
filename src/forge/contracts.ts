@@ -321,6 +321,14 @@ export const FORGE_EVENT_NAMES = [
   // when `FORGE_LOGIN_HELPER=1` turns a `claude auth login`/`codex login` spawn into an
   // event the desktop login helper answers instead (`server.ts`'s `loginHelperSpawnFn`).
   'accounts.connect-requested',
+  // R-49 to R-52 (one-orchestrator-one-ledger): the whole-machine session registry and
+  // ledger. `session.*` covers a session's own lifecycle (from `hooks/forge_report.py`
+  // and the registry scan in `cli.ts`'s 30s tick); `session.cleanup`/`worktree.left`
+  // are the fan-out a killed/interrupted exit triggers (`sessions/ingest.ts`); `message.*`
+  // covers cross-session messages, recorded as `chars` only, never text.
+  'session.started', 'session.prompt', 'session.stop', 'session.subagent-stop',
+  'session.notification', 'session.ended', 'session.vanished', 'session.cleanup',
+  'worktree.left', 'message.sent', 'message.queued', 'message.delivered',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];

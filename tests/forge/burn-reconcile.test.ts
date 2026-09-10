@@ -10,7 +10,7 @@ import type { FleetState } from '../../src/forge/journal.js';
 import { reconcileBurnOnce } from '../../src/forge/burn-reconcile.js';
 
 function baseState(overrides: Partial<FleetState> = {}): FleetState {
-  return { events: [], runs: {}, burn: {}, handoffs: 0, torn: 0, unknownModels: [], ...overrides };
+  return { events: [], runs: {}, burn: {}, handoffs: 0, torn: 0, unknownModels: [], sessions: {}, ...overrides };
 }
 
 describe('reconcileBurnOnce', () => {
