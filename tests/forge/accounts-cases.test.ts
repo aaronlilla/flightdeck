@@ -1,33 +1,39 @@
 /**
- * The account-selection rule, against the fixture dev-harness is tested against too.
+ * The account-selection rule, against the cases dev-harness is tested against too.
  *
  * There are two pickers on this machine: this one, and `coordination/accounts.py` in
  * dev-harness, which `go.py` and `forge/run.py` launch workers through. Two
- * implementations of one rule drift silently unless something notices, and this file
- * plus `coordination/test_accounts.py` are that something -- they read the SAME cases,
- * so a change made on one side and not the other turns both red.
+ * implementations of one rule drift silently unless something notices.
  *
- * It fails, rather than skipping, when the fixture cannot be found. A silent skip is
- * exactly how the two rules would come apart without anyone hearing about it.
+ * The fixture is VENDORED here rather than read from the harness repository. It used to
+ * be read from an absolute path in that checkout, and that failed every CI run on both
+ * runners, because the design assumed neither repository had CI -- true of the harness
+ * repo, false of this one. A test that cannot pass off one machine is not fail-closed,
+ * it is just broken. This repository has to stay machine agnostic, which its own
+ * `check:agnostic` enforces.
+ *
+ * So the copy here is what this suite runs, and the check that the two copies have not
+ * drifted apart lives in dev-harness (`coordination/test_accounts.py`), which has no CI
+ * and runs only where both repositories exist -- which is also the only place either
+ * file can be edited.
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
 import { pickAccount, type AccountProvider, type AccountRecord } from '../../src/forge/accounts.js';
 import type { AccountUsage } from '../../src/forge/accounts-usage.js';
 
-// The installed harness first, then the checkout it ships from. Deliberately not an
-// environment variable: `vitest.config.ts` replaces the test environment wholesale, so
-// an override there would silently do nothing -- worse than having no override.
-const CANDIDATES = [
-  'C:/dev/.claude/coordination/accounts-cases.json',
-  'C:/dev/dev-harness/coordination/accounts-cases.json',
-];
+const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), 'accounts-cases.json');
 
 interface Case {
   name: string;
-  accounts: { id: string; provider?: AccountProvider; configDir: string; connectedAt?: number }[];
+  accounts: {
+    id: string; provider?: AccountProvider; configDir: string; connectedAt?: number;
+    maxConcurrent?: number; lastResort?: boolean; accountUuid?: string;
+  }[];
   usage: AccountUsage;
   live?: Record<string, number>;
   now?: number;
@@ -36,22 +42,11 @@ interface Case {
   expect: string | null;
 }
 
-function loadFixture(): { now: number; provider: AccountProvider; cases: Case[] } {
-  const found = CANDIDATES.find((path) => existsSync(path));
-  if (!found) {
-    throw new Error(
-      `the shared account-selection fixture is missing. Looked at: ${CANDIDATES.join(', ')}. `
-      + 'It ships from dev-harness (coordination/accounts-cases.json) and is what keeps this '
-      + 'picker and the dev-harness picker implementing one rule. Install the harness, or '
-      + 'check out dev-harness at C:/dev/dev-harness.',
-    );
-  }
-  return JSON.parse(readFileSync(found, 'utf8')) as { now: number; provider: AccountProvider; cases: Case[] };
-}
+const fixture = JSON.parse(readFileSync(FIXTURE, 'utf8')) as {
+  now: number; provider: AccountProvider; cases: Case[];
+};
 
 describe('the shared account-selection cases', () => {
-  const fixture = loadFixture();
-
   it('has cases to run', () => {
     expect(fixture.cases.length).toBeGreaterThan(0);
   });
@@ -64,6 +59,12 @@ describe('the shared account-selection cases', () => {
         label: row.id,
         configDir: row.configDir,
         connectedAt: row.connectedAt ?? 0,
+        // Carried through explicitly: a field the fixture sets and this mapping drops is
+        // a case that passes here while only the other picker really tests it. That
+        // happened with lastResort and maxConcurrent.
+        ...(row.maxConcurrent !== undefined ? { maxConcurrent: row.maxConcurrent } : {}),
+        ...(row.lastResort !== undefined ? { lastResort: row.lastResort } : {}),
+        ...(row.accountUuid !== undefined ? { accountUuid: row.accountUuid } : {}),
       }));
       const picked = pickAccount(
         accounts, testCase.usage, testCase.live ?? {}, testCase.now ?? fixture.now,

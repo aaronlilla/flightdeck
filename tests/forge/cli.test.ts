@@ -1309,6 +1309,19 @@ describe('forge accounts: list, add, remove', () => {
     expect(listed.lines.some((line) => /work/.test(line))).toBe(true);
   });
 
+  it('marks an account as a last resort and shows it in the list', async () => {
+    const dir = join(home, 'account-held');
+    const added = await forge(['accounts', 'add', 'held', dir, '--last-resort']);
+    expect(added.code).toBe(0);
+    const listed = await forge(['accounts', 'list']);
+    expect(listed.lines.some((line) => /last resort/.test(line))).toBe(true);
+  });
+
+  it('refuses a flag it does not know', async () => {
+    const result = await forge(['accounts', 'add', 'x', join(home, 'x'), '--nope']);
+    expect(result.code).toBe(2);
+  });
+
   it('removes an account by id', async () => {
     const dir = join(home, 'account-a');
     await forge(['accounts', 'add', 'work', dir]);

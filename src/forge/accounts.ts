@@ -44,9 +44,14 @@ export interface AccountRecord {
    *  Absent on rows written before this existed, which are never deduped by it. */
   accountUuid?: string;
   connectedAt: number;
-  /** Concurrency ceiling for this account's admission. Read, shown, not yet enforced
-   *  by the governor. */
+  /** Concurrency ceiling: an account at or above this many live runs is not admitted. */
   maxConcurrent?: number;
+  /** Held back for when everything else is exhausted. The login the operator types into
+   *  is marked this way (Aaron, 2026-09-10): worker traffic on it eats the window he is
+   *  working in, so it is worth having and not worth spending first. A flag rather than a
+   *  path comparison on purpose -- inferring it from `~/.claude` is the rule that refused
+   *  the only account with headroom left. */
+  lastResort?: boolean;
 }
 
 export type Verdict = { ok: true } | { ok: false; reason: string };
@@ -127,13 +132,14 @@ export function validateAccounts(accounts: AccountRecord[]): Verdict {
  *  attempt fills it in from the profile call it already makes. */
 export function checkAddCandidate(
   existing: AccountRecord[],
-  candidate: { id: string; configDir: string; maxConcurrent?: number; provider?: AccountProvider; accountUuid?: string },
+  candidate: { id: string; configDir: string; maxConcurrent?: number; provider?: AccountProvider; accountUuid?: string; lastResort?: boolean },
 ): Verdict {
   const account: AccountRecord = {
     id: candidate.id, provider: candidate.provider ?? 'claude', label: candidate.id, configDir: candidate.configDir, connectedAt: 0,
   };
   if (candidate.maxConcurrent !== undefined) account.maxConcurrent = candidate.maxConcurrent;
   if (candidate.accountUuid !== undefined) account.accountUuid = candidate.accountUuid;
+  if (candidate.lastResort !== undefined) account.lastResort = candidate.lastResort;
   return validateAccounts([...existing, account]);
 }
 
@@ -213,18 +219,30 @@ export function pickAccount(
   accounts: AccountRecord[], usage: AccountUsage, live: Record<string, number>, now: number,
   provider: AccountProvider = 'claude', model?: string,
 ): AccountRecord | undefined {
-  const usable = accounts.filter((account) => account.provider === provider && !isLimited(account.id, now, usage, model));
-  if (usable.length === 0) return undefined;
-  // Unmeasured sorts after every measured account, whatever they read.
-  const worst = (account: AccountRecord): number => (
-    hasReading(account.id, usage) ? usedFraction(account.id, now, usage, model) : Number.POSITIVE_INFINITY
+  const atCeiling = (account: AccountRecord): boolean => (
+    account.maxConcurrent !== undefined && (live[account.id] ?? 0) >= account.maxConcurrent
   );
+  const usable = accounts.filter((account) => (
+    account.provider === provider && !isLimited(account.id, now, usage, model) && !atCeiling(account)
+  ));
+  if (usable.length === 0) return undefined;
+  // Compared in order, first difference wins. Held-back accounts lose to every ordinary
+  // one; among equals, a measured account beats an unmeasured one; then least used; then
+  // fewest live runs; then the order they were connected.
+  const rank = (account: AccountRecord): number[] => [
+    account.lastResort ? 1 : 0,
+    hasReading(account.id, usage) ? 0 : 1,
+    hasReading(account.id, usage) ? usedFraction(account.id, now, usage, model) : 0,
+    live[account.id] ?? 0,
+  ];
   return usable.reduce((best, account) => {
-    const here = worst(account);
-    const there = worst(best);
-    if (here < there) return account;
-    if (here > there) return best;
-    return (live[account.id] ?? 0) < (live[best.id] ?? 0) ? account : best;
+    const here = rank(account);
+    const there = rank(best);
+    for (let i = 0; i < here.length; i += 1) {
+      if (here[i]! < there[i]!) return account;
+      if (here[i]! > there[i]!) return best;
+    }
+    return best;
   }, usable[0]!);
 }
 

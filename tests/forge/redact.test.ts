@@ -36,7 +36,7 @@ describe('redact', () => {
 // `\n` as two characters. A long word right after one of those newlines, such as an
 // env key in a fenced block of the PR body, used to be swallowed together with the
 // `n` of the escape, leaving `\[REDACTED]`: not JSON, so the council refused a PR
-// over the shape of its own body (BOLTBETZ-LLC/v2-React-Native#148, 2026-09-10).
+// over the shape of its own body (mobile app repository, PR 148, 2026-09-10).
 describe('redact keeps JSON escapes intact', () => {
   it('leaves a document parseable when a long word follows an escaped newline', () => {
     const doc = JSON.stringify({ body: 'SHOW_DEV_BADGE=\nBYPASS_EMAIL_VERIFICATION=\nALLOW_ENV_SWITCH=' });
