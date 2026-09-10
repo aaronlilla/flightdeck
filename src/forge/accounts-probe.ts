@@ -34,6 +34,10 @@ export interface WindowReading {
 export interface UsageReading {
   email?: string;
   plan?: string;
+  /** `account.uuid` from the profile call: which subscription this login is on. Stable
+   *  across an email change, and the only way to tell two directories logged into ONE
+   *  subscription from two real accounts. */
+  accountUuid?: string;
   windows: WindowReading[];
 }
 
@@ -116,15 +120,17 @@ export function parseClaudeUsage(body: string): WindowReading[] {
   return out;
 }
 
-export function parseClaudeProfile(body: string): { email?: string; plan?: string } {
+export function parseClaudeProfile(body: string): { email?: string; plan?: string; accountUuid?: string } {
   try {
-    const parsed = JSON.parse(body) as { account?: { email?: unknown; has_claude_max?: unknown; has_claude_pro?: unknown }; organization?: { organization_type?: unknown } };
-    const email = typeof parsed.account?.email === 'string' ? parsed.account.email : undefined;
+    const parsed = JSON.parse(body) as { account?: { uuid?: unknown; email?: unknown; email_address?: unknown; has_claude_max?: unknown; has_claude_pro?: unknown }; organization?: { organization_type?: unknown } };
+    const email = typeof parsed.account?.email === 'string' ? parsed.account.email
+      : typeof parsed.account?.email_address === 'string' ? parsed.account.email_address : undefined;
+    const accountUuid = typeof parsed.account?.uuid === 'string' ? parsed.account.uuid : undefined;
     const orgType = typeof parsed.organization?.organization_type === 'string' ? parsed.organization.organization_type : undefined;
     const plan = parsed.account?.has_claude_max === true ? 'max'
       : parsed.account?.has_claude_pro === true ? 'pro'
         : orgType ? orgType.replace(/^claude_/, '') : undefined;
-    return { ...(email ? { email } : {}), ...(plan ? { plan } : {}) };
+    return { ...(email ? { email } : {}), ...(plan ? { plan } : {}), ...(accountUuid ? { accountUuid } : {}) };
   } catch {
     return {};
   }

@@ -34,6 +34,8 @@ export interface AccountReading {
   at: number;
   email?: string;
   plan?: string;
+  /** Which subscription this login is on, from the profile call. */
+  accountUuid?: string;
   windows: WindowReading[];
 }
 
