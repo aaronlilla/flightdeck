@@ -23,7 +23,7 @@ import { dirname, join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { pickAccount, type AccountProvider, type AccountRecord } from '../../src/forge/accounts.js';
+import { interactiveSentence, pickAccount, type AccountProvider, type AccountRecord, type PickMode } from '../../src/forge/accounts.js';
 import type { AccountUsage } from '../../src/forge/accounts-usage.js';
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), 'accounts-cases.json');
@@ -39,11 +39,19 @@ interface Case {
   now?: number;
   model?: string;
   provider?: AccountProvider;
+  mode?: PickMode;
   expect: string | null;
 }
 
+interface SentenceCase {
+  name: string;
+  account: { id: string; label: string; email?: string };
+  usage: AccountUsage;
+  expect: string;
+}
+
 const fixture = JSON.parse(readFileSync(FIXTURE, 'utf8')) as {
-  now: number; provider: AccountProvider; cases: Case[];
+  now: number; provider: AccountProvider; cases: Case[]; sentences: SentenceCase[];
 };
 
 describe('the shared account-selection cases', () => {
@@ -65,12 +73,25 @@ describe('the shared account-selection cases', () => {
         ...(row.maxConcurrent !== undefined ? { maxConcurrent: row.maxConcurrent } : {}),
         ...(row.lastResort !== undefined ? { lastResort: row.lastResort } : {}),
         ...(row.accountUuid !== undefined ? { accountUuid: row.accountUuid } : {}),
+        // `mode` is carried the same way: a case whose mode this mapping dropped would
+        // read as a worker pick and pass while testing nothing about a terminal.
       }));
       const picked = pickAccount(
         accounts, testCase.usage, testCase.live ?? {}, testCase.now ?? fixture.now,
-        testCase.provider ?? fixture.provider, testCase.model,
+        testCase.provider ?? fixture.provider, testCase.model, testCase.mode ?? 'worker',
       );
       expect(picked?.id ?? null).toBe(testCase.expect);
+    });
+  }
+});
+
+describe('the sentence a terminal prints', () => {
+  // Two fixtures that differ only in how full the login is, each expecting its own
+  // percent. `coordination/test_accounts.py` asserts the same three strings out of the
+  // Python implementation, so one hardcoded sentence cannot satisfy both languages.
+  for (const testCase of fixture.sentences) {
+    it(testCase.name, () => {
+      expect(interactiveSentence(testCase.account, fixture.now, testCase.usage)).toBe(testCase.expect);
     });
   }
 });

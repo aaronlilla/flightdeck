@@ -20,10 +20,10 @@ import type { AccountRecord } from './accounts.js';
 import { existsSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 
-import { accountName, type AccountProvider } from './accounts.js';
+import { accountName, seedConfigDir, type AccountProvider } from './accounts.js';
 import { identityOnDisk } from './accounts-probe.js';
 import { run as execRun, type RunRequest } from './exec.js';
-import { forgeHome } from './paths.js';
+import { forgeHome, operatorConfigDir } from './paths.js';
 
 export type ConnectState = 'connecting' | 'waiting-in-browser' | 'probing' | 'connected' | 'failed';
 
@@ -127,6 +127,12 @@ const LINK_PATTERN = /https?:\/\/\S+/;
 export function realSpawnLogin(spawnFn?: RunRequest['spawnFn']): (provider: AccountProvider, configDir: string) => Promise<LoginResult> {
   return async (provider: AccountProvider, configDir: string) => {
     mkdirSync(configDir, { recursive: true });
+    // A new Claude login directory used to be created empty, so the session that opened
+    // on it had none of the operator's settings, hooks, skills or memory -- a login that
+    // technically worked and was useless to work in. Seeding happens BEFORE the login, so
+    // the very first session under it is already furnished. It refuses a directory that
+    // is already in use rather than converting one, and never touches credentials.
+    if (provider === 'claude') seedConfigDir(configDir, operatorConfigDir());
     const argv = provider === 'codex' ? [codexBinary(), 'login'] : ['claude', 'auth', 'login', '--claudeai'];
     const result = await execRun({
       argv, cwd: process.cwd(), owner: 'accounts-connect-login', cls: 'script',

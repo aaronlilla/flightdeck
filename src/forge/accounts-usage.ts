@@ -136,7 +136,7 @@ export function hasReading(account: string, usage: AccountUsage): boolean {
  * With no model named the old behaviour stands -- every window counts -- so a caller
  * that does not know what it is about to launch stays conservative.
  */
-function windowBinds(key: string, model?: string): boolean {
+export function windowBinds(key: string, model?: string): boolean {
   const colon = key.indexOf(':');
   if (colon < 0) return true;
   if (!model) return true;

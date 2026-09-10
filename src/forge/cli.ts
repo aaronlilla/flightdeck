@@ -38,7 +38,7 @@ import { runCutover } from './cutover.js';
 import { CredentialHorizon, readLoginLock } from './credential-horizon.js';
 import { accountFor, buildBurnLedger, checkBudget, WindowGate } from './governor.js';
 import {
-  accountsRegistryPath, addAccount, checkAddCandidate, configDirForSession, liveRunsByAccount, loadAccounts, pickAccount, removeAccount,
+  accountsRegistryPath, addAccount, checkAddCandidate, configDirForSession, liveRunsByAccount, loadAccounts, pickAccount, removeAccount, seedConfigDir,
 } from './accounts.js';
 import { readAccountUsage } from './accounts-usage.js';
 import { AccountsService, diskWriters, fleetLoginDir, realProbe } from './accounts-service.js';
@@ -64,7 +64,7 @@ import { loadConsoleEnv } from './console-env.js';
 import { titleFromHeading } from './console/lanes.js';
 import {
   ensureHome, fleetConfigDirChoice, forgeHome, gotchasDir, inboxDir, intakeBriefsDir, journalPath,
-  killSwitchPath, lanesDir, queuePath, registryDir, runsDir,
+  killSwitchPath, lanesDir, operatorConfigDir, queuePath, registryDir, runsDir,
 } from './paths.js';
 import { runQueueTick } from './intake/queue.js';
 import { acquireQueueLock } from './intake/queueLock.js';
@@ -1268,6 +1268,25 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         }
         return { code: 0, lines: [`added '${id}' -> ${resolved}${lastResort ? ' (last resort)' : ''}`] };
       }
+      if (sub === 'seed') {
+        // For a login directory that already exists and was created empty -- the ones
+        // made before seeding was wired in. Same refusal as the automatic path: a
+        // directory with a real `projects/` folder is a login in use, and converting one
+        // is a written procedure the operator runs by hand, not something this does.
+        const id = rest[1];
+        if (!id) return { code: 2, lines: ['forge accounts seed <id>'] };
+        const account = accounts.find((row) => row.id === id);
+        if (!account) return { code: 1, lines: [`refusing: no account '${id}' in ${registryPath}`] };
+        const result = seedConfigDir(account.configDir, operatorConfigDir());
+        if (!result.ok) return { code: 1, lines: [`refusing: ${result.reason}`] };
+        return {
+          code: 0,
+          lines: [
+            result.created.length ? `seeded ${account.configDir}: ${result.created.join(', ')}` : `nothing to seed in ${account.configDir}`,
+            ...(result.skipped.length ? [`already there: ${result.skipped.join(', ')}`] : []),
+          ],
+        };
+      }
       if (sub === 'remove') {
         const id = rest[1];
         if (!id) return { code: 2, lines: ['forge accounts remove <id>'] };
@@ -1275,7 +1294,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         removeAccount(id, registryPath);
         return { code: 0, lines: [`removed '${id}'`] };
       }
-      return { code: 2, lines: ['forge accounts [list|add <id> <config-dir> [max-concurrent]|remove <id>]'] };
+      return { code: 2, lines: ['forge accounts [list|add <id> <config-dir> [max-concurrent] [--last-resort]|seed <id>|remove <id>]'] };
     }
 
     case 'cutover': {

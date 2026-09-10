@@ -1048,6 +1048,275 @@
         }
       },
       "expect": null
+    },
+    {
+      "name": "interactive: the operator's own login wins while it has room",
+      "mode": "interactive",
+      "accounts": [
+        {
+          "id": "operator",
+          "provider": "claude",
+          "configDir": "/accounts/operator",
+          "connectedAt": 1757505600000,
+          "lastResort": true
+        },
+        {
+          "id": "fleet",
+          "provider": "claude",
+          "configDir": "/accounts/fleet",
+          "connectedAt": 1757505600000
+        }
+      ],
+      "usage": {
+        "operator": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 7,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        },
+        "fleet": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 40,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        }
+      },
+      "expect": "operator"
+    },
+    {
+      "name": "worker: the operator's own login still loses, at the same numbers",
+      "mode": "worker",
+      "accounts": [
+        {
+          "id": "operator",
+          "provider": "claude",
+          "configDir": "/accounts/operator",
+          "connectedAt": 1757505600000,
+          "lastResort": true
+        },
+        {
+          "id": "fleet",
+          "provider": "claude",
+          "configDir": "/accounts/fleet",
+          "connectedAt": 1757505600000
+        }
+      ],
+      "usage": {
+        "operator": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 7,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        },
+        "fleet": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 40,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        }
+      },
+      "expect": "fleet"
+    },
+    {
+      "name": "interactive: a nearly full operator login is routed like a worker",
+      "mode": "interactive",
+      "accounts": [
+        {
+          "id": "operator",
+          "provider": "claude",
+          "configDir": "/accounts/operator",
+          "connectedAt": 1757505600000,
+          "lastResort": true
+        },
+        {
+          "id": "fleet",
+          "provider": "claude",
+          "configDir": "/accounts/fleet",
+          "connectedAt": 1757505600000
+        }
+      ],
+      "usage": {
+        "operator": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 90,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        },
+        "fleet": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 96,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        }
+      },
+      "expect": "fleet"
+    },
+    {
+      "name": "interactive: an unmeasured operator login is not preferred",
+      "mode": "interactive",
+      "accounts": [
+        {
+          "id": "operator",
+          "provider": "claude",
+          "configDir": "/accounts/operator",
+          "connectedAt": 1757505600000,
+          "lastResort": true
+        },
+        {
+          "id": "fleet",
+          "provider": "claude",
+          "configDir": "/accounts/fleet",
+          "connectedAt": 1757505600000
+        }
+      ],
+      "usage": {
+        "fleet": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 40,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        }
+      },
+      "expect": "fleet"
+    },
+    {
+      "name": "interactive: the operator's login is still used when it is all there is",
+      "mode": "interactive",
+      "accounts": [
+        {
+          "id": "operator",
+          "provider": "claude",
+          "configDir": "/accounts/operator",
+          "connectedAt": 1757505600000,
+          "lastResort": true
+        }
+      ],
+      "usage": {
+        "operator": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 99,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        }
+      },
+      "expect": "operator"
+    }
+  ],
+  "sentenceNote": "The one line a terminal prints. Both implementations build it, and the two fixtures differ only in how full the login is, so a hardcoded string cannot pass for both.",
+  "sentences": [
+    {
+      "name": "a login with room",
+      "account": {
+        "id": "operator",
+        "label": "operator",
+        "email": "aaron-personal"
+      },
+      "usage": {
+        "operator": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 7,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        }
+      },
+      "expect": "Using the aaron-personal login, at 7% of its weekly limit."
+    },
+    {
+      "name": "a login nearly gone",
+      "account": {
+        "id": "operator",
+        "label": "operator",
+        "email": "aaron-personal"
+      },
+      "usage": {
+        "operator": {
+          "reading": {
+            "at": 1757505600000,
+            "windows": [
+              {
+                "key": "weekly",
+                "label": "weekly",
+                "usedPct": 91,
+                "resetsAt": 1757592000000
+              }
+            ]
+          }
+        }
+      },
+      "expect": "Using the aaron-personal login, at 91% of its weekly limit."
+    },
+    {
+      "name": "a login nobody has read",
+      "account": {
+        "id": "fresh",
+        "label": "fresh",
+        "email": "a-new-login"
+      },
+      "usage": {},
+      "expect": "Using the a-new-login login; its limits have not been read yet."
     }
   ]
 }
