@@ -45,6 +45,10 @@ export interface ClassSpec {
    *  without a cap a board nobody is watching could narrate forever. A class carrying
    *  none is uncapped, which is every class that shipped before this field. */
   maxCallsPerHour?: number;
+  /** always-on-warden R-55: `maxTurns x 90,000ms`, rounded up to the nearest 60,000ms.
+   *  `session-clock.ts` parks a live run once it runs this long past its own
+   *  `run.started` row. A class carrying none is never parked on wall clock alone. */
+  maxWallMs?: number;
 }
 
 /**
@@ -338,6 +342,13 @@ export function reasonerTimeoutMsFor(className: string, path?: string): number {
  */
 export function maxCallsPerHourFor(className: string, path?: string): number | null {
   return loadPolicy(path).classes[className]?.maxCallsPerHour ?? null;
+}
+
+/** always-on-warden R-55: `session-clock.ts`'s own budget lookup. `undefined` for a
+ *  class with no `maxWallMs` (or an unknown class), read the same way as every other
+ *  class-scoped setting here -- never parked, never guessed. */
+export function maxWallMsFor(className: string, path?: string): number | undefined {
+  return loadPolicy(path).classes[className]?.maxWallMs;
 }
 
 /** The default when a class names no `maxDiffLines` of its own. */
