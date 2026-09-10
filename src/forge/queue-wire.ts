@@ -399,13 +399,13 @@ export function queuePromoteDeps(chainEnv: ChainEnv): QueuePromoteDeps {
 }
 
 export function buildQueueRuntimeDeps(
-  chainEnv: ChainEnv, fleetConfigDir: string, deps: ForgeDeps, store: QueueRuntimeDeps['store'],
+  chainEnv: ChainEnv, configDirFor: () => string, deps: ForgeDeps, store: QueueRuntimeDeps['store'],
   maxInFlight: () => number = readQueueWidth,
 ): QueueRuntimeDeps {
   return {
     planner: queuePlanner(),
-    launcher: chainLauncher(chainEnv, fleetConfigDir),
-    launchGoal: chainLaunchGoal(fleetConfigDir),
+    launcher: chainLauncher(chainEnv, configDirFor),
+    launchGoal: chainLaunchGoal(configDirFor),
     gh: chainGh(),
     rebaseOnBase: chainRebase(),
     council: chainCouncil(deps),

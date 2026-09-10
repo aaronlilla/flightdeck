@@ -570,7 +570,7 @@ export async function provisionWorktree(input: {
 /** H2/H3: real worktrees, a real detached launch, and a real status read off the shared
  *  journal -- one `ChainLauncher` per `chain-env.ts` configuration, built fresh on every
  *  `forge up` process. */
-export function chainLauncher(chainEnv: ChainEnv, fleetConfigDir: string): ChainLauncher {
+export function chainLauncher(chainEnv: ChainEnv, configDirFor: () => string): ChainLauncher {
   return {
     async provision({ ticket, repo }) {
       return provisionWorktree({
@@ -604,7 +604,7 @@ export function chainLauncher(chainEnv: ChainEnv, fleetConfigDir: string): Chain
 
       const env: NodeJS.ProcessEnv = { ...process.env };
       for (const name of WORKER_ENV_STRIP) delete env[name];
-      env['CLAUDE_CONFIG_DIR'] = fleetConfigDir;
+      env['CLAUDE_CONFIG_DIR'] = configDirFor();
       env['FORGE_HOME'] = forgeHome();
 
       // E1, 2026-09-05: the parent's own runtime, never a path derived from
@@ -671,11 +671,11 @@ export function chainLauncher(chainEnv: ChainEnv, fleetConfigDir: string): Chain
  * is passed straight through to `forge run --run-key` so both sides agree on the same
  * name the status poller (`ChainLauncher.status`, reused unchanged) reads back.
  */
-export function chainLaunchGoal(fleetConfigDir: string): NonNullable<QueueRuntimeDeps['launchGoal']> {
+export function chainLaunchGoal(configDirFor: () => string): NonNullable<QueueRuntimeDeps['launchGoal']> {
   return async ({ goalPath, block, cwd, runKey }) => {
     const env: NodeJS.ProcessEnv = { ...process.env };
     for (const name of WORKER_ENV_STRIP) delete env[name];
-    env['CLAUDE_CONFIG_DIR'] = fleetConfigDir;
+    env['CLAUDE_CONFIG_DIR'] = configDirFor();
     env['FORGE_HOME'] = forgeHome();
     env['FORGE_RUNTIME'] = runtimeVersion();
 
@@ -860,10 +860,10 @@ export function chainGate(deps: ForgeDeps): ChainGateFn {
   };
 }
 
-export function buildChainDeps(chainEnv: ChainEnv, fleetConfigDir: string, deps: ForgeDeps): ChainDeps {
+export function buildChainDeps(chainEnv: ChainEnv, configDirFor: () => string, deps: ForgeDeps): ChainDeps {
   return {
     intake: chainIntake(),
-    launcher: chainLauncher(chainEnv, fleetConfigDir),
+    launcher: chainLauncher(chainEnv, configDirFor),
     gh: chainGh(),
     council: chainCouncil(deps),
     gate: chainGate(deps),

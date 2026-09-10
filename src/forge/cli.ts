@@ -38,7 +38,7 @@ import { runCutover } from './cutover.js';
 import { CredentialHorizon, readLoginLock } from './credential-horizon.js';
 import { accountFor, buildBurnLedger, checkBudget, WindowGate } from './governor.js';
 import {
-  accountsRegistryPath, addAccount, checkAddCandidate, liveRunsByAccount, loadAccounts, pickAccount, removeAccount,
+  accountsRegistryPath, addAccount, checkAddCandidate, configDirForSession, liveRunsByAccount, loadAccounts, pickAccount, removeAccount,
 } from './accounts.js';
 import { readAccountUsage } from './accounts-usage.js';
 import { AccountsService, diskWriters, fleetLoginDir, realProbe } from './accounts-service.js';
@@ -326,6 +326,18 @@ function parseRunArgs(rest: string[]): {
     ...(runKey !== undefined ? { runKey } : {}),
     ...(invalid ? { invalid } : {}),
   };
+}
+
+// Which login a chain-launched or queue-launched goal runs under. Selection reads the
+// store as it stands rather than probing, because these launch paths are synchronous;
+// a reading refreshed by `forge run` or by the console minutes ago is still far better
+// than the fleet login every time, which is what this used to be. Falls back to the
+// machine's own login when nothing is registered.
+function configDirForLaunch(): string {
+  const fleet = fleetConfigDirChoice().dir;
+  return configDirForSession(
+    loadAccounts(accountsRegistryPath()), readAccountUsage(), {}, Date.now(),
+  ).configDir ?? fleet;
 }
 
 function money(amount: number): string {
@@ -619,7 +631,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       let chainLine = '';
       if (chainEnv.enabled) {
         const chainJournal = new Journal(journalPath());
-        const chainDeps = buildChainDeps(chainEnv, fleetConfigDirChoice().dir, deps);
+        const chainDeps = buildChainDeps(chainEnv, configDirForLaunch, deps);
         const chainTick = setInterval(() => {
           void (async () => {
             try {
@@ -653,7 +665,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       if (queueLock?.ok) {
         process.once('exit', () => queueLock.release());
         const queueJournal = new Journal(journalPath());
-        const queueDeps = buildQueueRuntimeDeps(chainEnv, fleetConfigDirChoice().dir, deps, queueStore);
+        const queueDeps = buildQueueRuntimeDeps(chainEnv, configDirForLaunch, deps, queueStore);
         const pollSeconds = Number(process.env['FORGE_QUEUE_POLL_S']) || 15;
         // B.1: three identical consecutive queue.tick-error rows back this off to a
         // 10 minute drip rather than retrying every pollSeconds all night on the same
