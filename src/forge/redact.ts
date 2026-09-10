@@ -19,8 +19,8 @@ const HEX_SHA = /^[0-9a-fA-F]{7,40}$/;
 // A match that starts right after a backslash has swallowed the letter of an escape
 // sequence in a JSON document: gh's --json output reaches the council through this
 // scrub, and turning backslash-n-BYPASS_EMAIL_VERIFICATION into backslash-[REDACTED]
-// made the whole document unparseable (v2-React-Native#148, 2026-09-10). Keep the escape
-// whole (one letter, or `u` plus four hex digits) and scrub what follows it.
+// made the whole document unparseable (mobile app repository, PR 148, 2026-09-10). Keep
+// the escape whole (one letter, or `u` plus four hex digits) and scrub what follows it.
 const escapeLength = (match: string): number => (match[0] === 'u' ? 5 : 1);
 
 export function redact(text: string): string {
