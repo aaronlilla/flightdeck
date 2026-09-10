@@ -25,9 +25,10 @@ import { appendOnce, replay } from '../journal.js';
 import type { StuckSignal } from '../liveness.js';
 import { processAlive, type Registry } from '../registry.js';
 import type { RunRequest } from '../exec.js';
-import { accountsRegistryPath, addAccount, liveRunsByAccount, loadAccounts, removeAccount } from '../accounts.js';
+import { accountName, accountsRegistryPath, addAccount, interactiveSentence, liveRunsByAccount, loadAccounts, pickAccount, removeAccount } from '../accounts.js';
 import { AccountsService, diskWriters, fleetLoginDir, realProbe, type AccountsServiceDeps } from '../accounts-service.js';
 import { readAccountUsage, recordPlan } from '../accounts-usage.js';
+import { sessionsFromConfigDir, switchLimitedAccount } from '../accounts-switch.js';
 import { AccountsConnect, realLogout, realProbeStatus, realSpawnLogin } from '../accounts-connect.js';
 import type { Lanes } from '../supervisor.js';
 import type { QueueStore } from '../intake/queueStore.js';
@@ -402,6 +403,23 @@ export class ConsoleWrites {
       liveRuns: () => this.liveRunsByAccount(),
       fleetConfigDir: deps.fleetLoginDir ?? fleetLoginDir(() => fleetConfigDir()),
       probe: deps.accountsProbe ?? realProbe(),
+      // R-58, wired. A login that has just run out leaves one note per live terminal on
+      // it saying where to come back; the shim reads it after its child exits. Without
+      // this line the marker writer is a module nothing calls and a terminal on a spent
+      // login still just stops.
+      onLimited: (accountId) => {
+        try {
+          switchLimitedAccount(accountId, {
+            accounts: loadAccounts(this.accountsPath),
+            usage: readAccountUsage(),
+            live: this.liveRunsByAccount(),
+            now: Date.now(),
+            sessionsFor: sessionsFromConfigDir,
+          });
+        } catch {
+          // A login running dry must not take the console's refresh down with it.
+        }
+      },
     });
     this.accountsConnect = new AccountsConnect({
       loadAccounts: () => loadAccounts(registryPath),
@@ -958,6 +976,39 @@ export class ConsoleWrites {
     if (path === '/accounts' && method === 'GET') {
       if (!this.deps.authorized(request, response)) return true;
       respond(response, 200, { items: this.accountsService.list() } satisfies AccountsResponse);
+      return true;
+    }
+
+    if (path.startsWith('/accounts/pick') && method === 'GET') {
+      if (!this.deps.authorized(request, response)) return true;
+      // What a terminal asks before it opens. `mode=interactive` is Aaron at a keyboard,
+      // who should get his own login while it has room; anything else is a worker, who
+      // should stay off it. The answer is three plain fields: where to point
+      // `CLAUDE_CONFIG_DIR`, what to call the login, and the one sentence to print.
+      const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+      const mode = url.searchParams.get('mode') === 'interactive' ? 'interactive' : 'worker';
+      const model = url.searchParams.get('model') ?? undefined;
+      const now = Date.now();
+      const usage = readAccountUsage();
+      const records = loadAccounts(this.accountsPath);
+      const picked = pickAccount(records, usage, this.liveRunsByAccount(), now, 'claude', model, mode);
+      respond(response, 200, picked
+        ? {
+          configDir: picked.configDir,
+          label: accountName(picked),
+          sentence: interactiveSentence(picked, now, usage, model),
+        }
+        : {
+          configDir: null,
+          label: null,
+          // Two very different situations, and answering both with "nothing is
+          // registered" told Aaron something false at the exact moment it mattered: every
+          // login full, and the terminal falling back to the one login this feature
+          // exists to route traffic away from.
+          sentence: records.some((row) => row.provider === 'claude')
+            ? 'Using your own login: every other login is at its limit or its ceiling right now.'
+            : 'Using the default login; no other login is registered.',
+        });
       return true;
     }
 

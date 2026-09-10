@@ -20,10 +20,10 @@ import type { AccountRecord } from './accounts.js';
 import { existsSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 
-import { accountName, type AccountProvider } from './accounts.js';
+import { accountName, seedConfigDir, type AccountProvider } from './accounts.js';
 import { identityOnDisk } from './accounts-probe.js';
 import { run as execRun, type RunRequest } from './exec.js';
-import { forgeHome } from './paths.js';
+import { forgeHome, operatorConfigDir } from './paths.js';
 
 export type ConnectState = 'connecting' | 'waiting-in-browser' | 'probing' | 'connected' | 'failed';
 
@@ -40,6 +40,10 @@ export interface LoginResult {
   ok: boolean;
   link?: string;
   error?: string;
+  /** Why the new directory could not be furnished from the operator's, when it could not.
+   *  The login still worked -- this is not an error -- but a login with none of the
+   *  operator's settings, hooks, skills or memory is worth saying out loud. */
+  seedWarning?: string;
 }
 
 export interface ProbeResult {
@@ -127,6 +131,20 @@ const LINK_PATTERN = /https?:\/\/\S+/;
 export function realSpawnLogin(spawnFn?: RunRequest['spawnFn']): (provider: AccountProvider, configDir: string) => Promise<LoginResult> {
   return async (provider: AccountProvider, configDir: string) => {
     mkdirSync(configDir, { recursive: true });
+    // A new Claude login directory used to be created empty, so the session that opened
+    // on it had none of the operator's settings, hooks, skills or memory -- a login that
+    // technically worked and was useless to work in. Seeding happens BEFORE the login, so
+    // the very first session under it is already furnished. It refuses a directory that
+    // is already in use rather than converting one, and never touches credentials.
+    // The result is USED. Dropped, a refusal was silent: the login went ahead, the
+    // account was registered, and the operator got exactly the stripped-down login this
+    // exists to prevent with nothing said anywhere. It does not block the login either --
+    // an unseeded login still works -- so it comes back as a warning beside the result.
+    let seedWarning: string | undefined;
+    if (provider === 'claude') {
+      const seeded = seedConfigDir(configDir, operatorConfigDir());
+      if (!seeded.ok) seedWarning = seeded.reason;
+    }
     const argv = provider === 'codex' ? [codexBinary(), 'login'] : ['claude', 'auth', 'login', '--claudeai'];
     const result = await execRun({
       argv, cwd: process.cwd(), owner: 'accounts-connect-login', cls: 'script',
@@ -137,6 +155,7 @@ export function realSpawnLogin(spawnFn?: RunRequest['spawnFn']): (provider: Acco
     return {
       ok: result.returncode === 0,
       ...(link ? { link } : {}),
+      ...(seedWarning ? { seedWarning } : {}),
       ...(result.returncode !== 0 ? { error: `${provider} login exited ${result.returncode}: ${result.tail}` } : {}),
     };
   };

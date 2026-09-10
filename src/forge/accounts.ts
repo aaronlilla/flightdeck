@@ -16,11 +16,11 @@
  * (Aaron, 2026-09-10), because on this machine it was the only pool with room left and
  * the registry was refusing it by name while holding the fleet subscription twice.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 import type { AccountUsage } from './accounts-usage.js';
-import { hasReading, isLimited, readAccountUsage, usedFraction } from './accounts-usage.js';
+import { hasReading, isLimited, readAccountUsage, usedFraction, windowBinds } from './accounts-usage.js';
 import type { ForgeEvent } from './journal.js';
 import { fleetConfigDir, forgeHome } from './paths.js';
 
@@ -200,6 +200,40 @@ export function liveRunsByAccount(events: ForgeEvent[], liveGoals: string[]): Re
 }
 
 /**
+ * Who is about to type: a worker Forge launches, or Aaron at a terminal.
+ *
+ * The two want opposite things from the same registry. A worker must stay off the login
+ * he is sitting in, which is what `lastResort` is for. A terminal he opens should PREFER
+ * that login -- it is his, its conversation history is there, and spending it is the
+ * point -- right up until it is nearly gone, at which point the terminal wants the same
+ * answer a worker would give.
+ */
+export type PickMode = 'worker' | 'interactive';
+
+/** How full the operator's own login may get before an interactive launch stops
+ *  preferring it. Under this, a terminal opens on his login; at or above it, a terminal
+ *  is routed like a worker and he is told why in one sentence. */
+export const INTERACTIVE_OPERATOR_CEILING = 0.9;
+
+/**
+ * The first rank key: normally "held-back accounts lose", but inverted for the login the
+ * operator types into while that login still has room.
+ *
+ * Fail-closed on purpose (standing order 1): a held-back row nobody has measured does
+ * NOT get preferred. "No reading" is not "has room", and preferring an unmeasured login
+ * for every terminal on the machine is exactly the fail-open the pick rule already
+ * learned to refuse once.
+ */
+function heldBackRank(
+  account: AccountRecord, usage: AccountUsage, now: number, model: string | undefined, mode: PickMode,
+): number {
+  if (!account.lastResort) return 0;
+  if (mode !== 'interactive') return 1;
+  if (!hasReading(account.id, usage)) return 1;
+  return usedFraction(account.id, now, usage, model) < INTERACTIVE_OPERATOR_CEILING ? -1 : 1;
+}
+
+/**
  * The account a new session of `provider` should launch under: the one with the most
  * headroom that is not inside a rate limit right now, ties broken by fewer live runs,
  * then by the order they were connected. Headroom is the worst of the windows that can
@@ -217,7 +251,7 @@ export function liveRunsByAccount(events: ForgeEvent[], liveGoals: string[]): Re
  */
 export function pickAccount(
   accounts: AccountRecord[], usage: AccountUsage, live: Record<string, number>, now: number,
-  provider: AccountProvider = 'claude', model?: string,
+  provider: AccountProvider = 'claude', model?: string, mode: PickMode = 'worker',
 ): AccountRecord | undefined {
   const atCeiling = (account: AccountRecord): boolean => (
     account.maxConcurrent !== undefined && (live[account.id] ?? 0) >= account.maxConcurrent
@@ -230,7 +264,7 @@ export function pickAccount(
   // one; among equals, a measured account beats an unmeasured one; then least used; then
   // fewest live runs; then the order they were connected.
   const rank = (account: AccountRecord): number[] => [
-    account.lastResort ? 1 : 0,
+    heldBackRank(account, usage, now, model, mode),
     hasReading(account.id, usage) ? 0 : 1,
     hasReading(account.id, usage) ? usedFraction(account.id, now, usage, model) : 0,
     live[account.id] ?? 0,
@@ -288,4 +322,152 @@ export function workerConfigDir(
   } catch {
     return fallback;
   }
+}
+
+/**
+ * The worst binding window of an account's last reading, or null when nothing has been
+ * read. `usedFraction` deliberately cannot carry this: it returns a number, and a
+ * sentence a person reads needs to name which window the number is about.
+ */
+export function worstWindow(
+  account: string, now: number, usage: AccountUsage, model?: string,
+): { label: string; usedPct: number } | null {
+  const windows = usage[account]?.reading?.windows ?? [];
+  let worst: { label: string; usedPct: number } | null = null;
+  for (const window of windows) {
+    if (window.resetsAt !== null && window.resetsAt <= now) continue;
+    if (!windowBinds(window.key, model)) continue;
+    if (!worst || window.usedPct > worst.usedPct) worst = { label: window.label, usedPct: window.usedPct };
+  }
+  return worst;
+}
+
+/** Rounded the way both implementations round: halfway goes up, in Python too, which
+ *  `round()` there does not do. A percent that differs by one between the two languages
+ *  is a sentence that differs, and the parity test is what would catch it. */
+function percent(usedPct: number): number {
+  return Math.floor(usedPct + 0.5);
+}
+
+/**
+ * The one line a terminal prints before handing over to the real binary: which login it
+ * chose and how full that login is, in words.
+ *
+ * Never an id, never a uuid, never a path -- Aaron reads this every time he opens a
+ * terminal, and the only two things worth his attention are whose login he is on and
+ * whether it is about to run out. `accounts.py` builds the identical sentence; the two
+ * are tested against each other on two different percentages, so a hardcoded string
+ * cannot pass for both.
+ */
+export function interactiveSentence(
+  account: Pick<AccountRecord, 'id' | 'email' | 'label'>, now: number, usage: AccountUsage, model?: string,
+): string {
+  const name = accountName(account);
+  const worst = worstWindow(account.id, now, usage, model);
+  if (!worst) {
+    // Two different states, and they used to print the same sentence. A login read
+    // twenty minutes ago whose windows have since rolled over has no *current* window,
+    // which is not the same as never having been measured -- and telling Aaron his login
+    // is unmeasured when it is measured and empty is exactly backwards.
+    return hasReading(account.id, usage)
+      ? `Using the ${name} login; nothing used in the current window.`
+      : `Using the ${name} login; its limits have not been read yet.`;
+  }
+  return `Using the ${name} login, at ${percent(worst.usedPct)}% of its ${worst.label} limit.`;
+}
+
+/** What a freshly logged-in directory shares with the operator's, and what it must keep
+ *  to itself. The junctions are the point: one transcript tree means a session started
+ *  on one login resumes on another with no copying (proved on CLI 2.1.267 before any of
+ *  this was built), and one hooks/skills/plugins tree means a second login is not a
+ *  stripped-down machine. */
+export const SEEDED_LINKS = ['projects', 'hooks', 'skills', 'plugins'] as const;
+export const SEEDED_COPIES = ['settings.json', 'CLAUDE.md'] as const;
+
+export type SeedResult =
+  | { ok: true; created: string[]; skipped: string[] }
+  | { ok: false; reason: string };
+
+/** Whether anything at all is at this path, the link itself included. `existsSync`
+ *  follows a link and answers false for a junction whose target has gone. */
+function entryExists(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isRealDirectory(path: string): boolean {
+  try {
+    const stat = lstatSync(path);
+    return stat.isDirectory() && !stat.isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Gives a new login directory everything except the login: the operator's transcript,
+ * hook, skill and plugin trees by junction, and copies of the two files that are read far
+ * more often than they are written.
+ *
+ * Nothing is copied that is per-login -- `.credentials.json`, `.claude.json`, `sessions`,
+ * `tasks`, `cache`, `daemon`, `shell-snapshots`, `session-env`, `backups`,
+ * `history.jsonl` -- and `.credentials.json` in particular is never read, opened or
+ * looked at by this function at all.
+ *
+ * **It never converts a directory that is already in use.** A real `projects/` folder
+ * under the target means a live login with its own history, and turning that into a
+ * junction would strand it. Such a directory is REFUSED, by name, and the operator is
+ * given a written procedure to convert it by hand at a quiet moment. The check is on the
+ * entries themselves, not on the parent: an empty target directory is fine, a target
+ * with real content is not.
+ */
+export function seedConfigDir(dir: string, operatorDir: string): SeedResult {
+  for (const name of SEEDED_LINKS) {
+    if (isRealDirectory(join(dir, name))) {
+      return { ok: false, reason: `${dir} already has a real ${name}/ directory; converting a login in use is a manual step, not this one` };
+    }
+  }
+  const created: string[] = [];
+  const skipped: string[] = [];
+  // Every filesystem call below is inside this one boundary. Without it a dangling
+  // junction (EEXIST) or a machine that refuses junction creation (EPERM) threw straight
+  // past the SeedResult channel this function defines, crashing `forge accounts seed`
+  // and turning a login that would have worked into an opaque failure. What is created
+  // before a failure is reported rather than rolled back: half a set of junctions is a
+  // fact the operator needs, and silently unlinking directories on an error path is a
+  // worse risk than leaving them.
+  try {
+    mkdirSync(dir, { recursive: true });
+    for (const name of SEEDED_LINKS) {
+      const link = join(dir, name);
+      // `existsSync` follows the link, so a junction whose target is gone reads as
+      // absent and `symlinkSync` then fails EEXIST. `lstatSync` sees the link itself.
+      if (entryExists(link)) { skipped.push(name); continue; }
+      const target = join(operatorDir, name);
+      if (!existsSync(target)) { skipped.push(name); continue; }
+      // 'junction' is what Windows can make without an elevated process; everywhere else
+      // node ignores the type and makes an ordinary directory symlink.
+      symlinkSync(target, link, 'junction');
+      created.push(name);
+    }
+    for (const name of SEEDED_COPIES) {
+      const to = join(dir, name);
+      if (entryExists(to)) { skipped.push(name); continue; }
+      const from = join(operatorDir, name);
+      if (!existsSync(from)) { skipped.push(name); continue; }
+      copyFileSync(from, to);
+      created.push(name);
+    }
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      reason: `could not seed ${dir}: ${why}${created.length ? ` (already created: ${created.join(', ')})` : ''}`,
+    };
+  }
+  return { ok: true, created, skipped };
 }

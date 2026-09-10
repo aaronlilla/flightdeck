@@ -185,3 +185,22 @@ export function routinesDir(): string {
   if (override) return override;
   return fileURLToPath(new URL('../../routines/', import.meta.url));
 }
+
+/**
+ * The login the operator himself types into: `~/.claude`, unless `CLAUDE_OPERATOR_DIR`
+ * says otherwise. Derived from the home directory rather than written down, so this file
+ * keeps the machine-agnostic rule it exists to hold.
+ *
+ * It is the seeding SOURCE and nothing here ever writes to it: a new login gets junctions
+ * pointing at its transcript, hook, skill and plugin trees, and that is the whole
+ * relationship.
+ */
+export function operatorConfigDir(): string {
+  return process.env['CLAUDE_OPERATOR_DIR'] ?? join(homedir(), '.claude');
+}
+
+/** Where a console that has seen a login run dry leaves a note for the terminals sitting
+ *  on it: one file per session, picked up by the shim after the child exits. */
+export function switchDir(): string {
+  return join(forgeHome(), 'switch');
+}
