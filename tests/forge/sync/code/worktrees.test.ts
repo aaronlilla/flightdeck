@@ -27,35 +27,35 @@ interface Row {
   expectRemoved: boolean;
 }
 
-const MAIN_PATH = 'C:/dev/flightdeck';
+const MAIN_PATH = 'D:/work/flightdeck';
 const CHECKOUT = MAIN_PATH;
 const REPO = 'aaronlilla/flightdeck';
 
 function buildRows(): Row[] {
   return [
-    { reason: 'dirty', path: 'C:/dev/worktrees/flightdeck--dirty', branch: 'feature/dirty',
+    { reason: 'dirty', path: 'D:/work/worktrees/flightdeck--dirty', branch: 'feature/dirty',
       status: { clean: false, pushed: true }, claimed: false,
       pr: { number: 1, state: 'MERGED', mergedAt: '2026-09-01T00:00:00Z' }, expectRemoved: false },
-    { reason: 'unpushed', path: 'C:/dev/worktrees/flightdeck--unpushed', branch: 'feature/unpushed',
+    { reason: 'unpushed', path: 'D:/work/worktrees/flightdeck--unpushed', branch: 'feature/unpushed',
       status: { clean: true, pushed: false }, claimed: false,
       pr: { number: 2, state: 'MERGED', mergedAt: '2026-09-01T00:00:00Z' }, expectRemoved: false },
-    { reason: 'claimed', path: 'C:/dev/worktrees/flightdeck--claimed', branch: 'feature/claimed',
+    { reason: 'claimed', path: 'D:/work/worktrees/flightdeck--claimed', branch: 'feature/claimed',
       status: { clean: true, pushed: true }, claimed: true,
       pr: { number: 3, state: 'MERGED', mergedAt: '2026-09-01T00:00:00Z' }, expectRemoved: false },
-    { reason: 'claimed-after-snapshot', path: 'C:/dev/worktrees/flightdeck--late-claim', branch: 'feature/late-claim',
+    { reason: 'claimed-after-snapshot', path: 'D:/work/worktrees/flightdeck--late-claim', branch: 'feature/late-claim',
       status: { clean: true, pushed: true }, claimed: false, claimedAfterSnapshot: true,
       pr: { number: 4, state: 'MERGED', mergedAt: '2026-09-01T00:00:00Z' }, expectRemoved: false },
-    { reason: 'pr-open', path: 'C:/dev/worktrees/flightdeck--open', branch: 'feature/open',
+    { reason: 'pr-open', path: 'D:/work/worktrees/flightdeck--open', branch: 'feature/open',
       status: { clean: true, pushed: true }, claimed: false,
       pr: { number: 5, state: 'OPEN', mergedAt: null }, expectRemoved: false },
-    { reason: 'no-pr', path: 'C:/dev/worktrees/flightdeck--nopr', branch: 'feature/nopr',
+    { reason: 'no-pr', path: 'D:/work/worktrees/flightdeck--nopr', branch: 'feature/nopr',
       status: { clean: true, pushed: true }, claimed: false, pr: null, expectRemoved: false },
-    { reason: 'gh-error', path: 'C:/dev/worktrees/flightdeck--gherr', branch: 'feature/gherr',
+    { reason: 'gh-error', path: 'D:/work/worktrees/flightdeck--gherr', branch: 'feature/gherr',
       status: { clean: true, pushed: true }, claimed: false, pr: null, ghError: true, expectRemoved: false },
-    { reason: 'merged-clean', path: 'C:/dev/worktrees/flightdeck--merged', branch: 'feature/merged',
+    { reason: 'merged-clean', path: 'D:/work/worktrees/flightdeck--merged', branch: 'feature/merged',
       status: { clean: true, pushed: true }, claimed: false,
       pr: { number: 6, state: 'MERGED', mergedAt: '2026-09-01T00:00:00Z' }, expectRemoved: true },
-    { reason: 'closed-clean', path: 'C:/dev/worktrees/flightdeck--closed', branch: 'feature/closed',
+    { reason: 'closed-clean', path: 'D:/work/worktrees/flightdeck--closed', branch: 'feature/closed',
       status: { clean: true, pushed: true }, claimed: false,
       pr: { number: 7, state: 'CLOSED', mergedAt: null }, expectRemoved: true },
   ];
@@ -238,14 +238,14 @@ describe('sweepWorktrees', () => {
     deps.git = async (checkout: string, argv: string[]) => {
       if (argv[0] === 'worktree' && argv[1] === 'list') {
         const base = await realGit(checkout, argv);
-        return `${base}\n\nworktree C:/dev/worktrees/flightdeck--detached\nHEAD deadbeef\ndetached`;
+        return `${base}\n\nworktree D:/work/worktrees/flightdeck--detached\nHEAD deadbeef\ndetached`;
       }
       return realGit(checkout, argv);
     };
 
     const result = await sweepWorktrees(deps);
 
-    const detached = result.kept.find((r) => r.path === 'C:/dev/worktrees/flightdeck--detached');
+    const detached = result.kept.find((r) => r.path === 'D:/work/worktrees/flightdeck--detached');
     expect(detached, 'expected a kept row for the detached worktree').toBeDefined();
     expect(detached?.reason).toBe('detached');
     void gitCalls;

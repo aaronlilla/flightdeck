@@ -24,19 +24,19 @@ describe('buildCodeSyncDeps', () => {
     };
 
     const deps = buildCodeSyncDeps(
-      { FORGE_REPO_CHECKOUTS: 'aaronlilla/flightdeck=C:/dev/flightdeck', FORGE_REPO_BASE: 'aaronlilla/flightdeck=main' },
+      { FORGE_REPO_CHECKOUTS: 'aaronlilla/flightdeck=D:/work/flightdeck', FORGE_REPO_BASE: 'aaronlilla/flightdeck=main' },
       { execRun: fakeExecRun as never },
     );
 
-    await deps.git('C:/dev/flightdeck', ['fetch', '--quiet', 'origin', 'main']);
-    await deps.gh(['pr', 'list', '--repo', 'aaronlilla/flightdeck', '--head', 'feature/x'], 'C:/dev/flightdeck');
+    await deps.git('D:/work/flightdeck', ['fetch', '--quiet', 'origin', 'main']);
+    await deps.gh(['pr', 'list', '--repo', 'aaronlilla/flightdeck', '--head', 'feature/x'], 'D:/work/flightdeck');
 
     expect(calls[0]?.argv).toEqual(['git', 'fetch', '--quiet', 'origin', 'main']);
-    expect(calls[0]?.cwd).toBe('C:/dev/flightdeck');
+    expect(calls[0]?.cwd).toBe('D:/work/flightdeck');
     expect(calls[1]?.argv).toEqual(['gh', 'pr', 'list', '--repo', 'aaronlilla/flightdeck', '--head', 'feature/x']);
-    expect(calls[1]?.cwd).toBe('C:/dev/flightdeck');
+    expect(calls[1]?.cwd).toBe('D:/work/flightdeck');
 
-    expect(deps.repos).toEqual([{ repo: 'aaronlilla/flightdeck', checkout: 'C:/dev/flightdeck', base: 'main' }]);
+    expect(deps.repos).toEqual([{ repo: 'aaronlilla/flightdeck', checkout: 'D:/work/flightdeck', base: 'main' }]);
   });
 
   it('claimedPaths returns only the fresh-heartbeat claim from a temp sessions dir', () => {
@@ -47,15 +47,15 @@ describe('buildCodeSyncDeps', () => {
 
     writeFileSync(
       join(tmpDir, 'fresh.json'),
-      JSON.stringify({ heartbeatAt: freshHeartbeatSec, claims: [{ path: 'C:/dev/worktrees/flightdeck--fresh' }] }),
+      JSON.stringify({ heartbeatAt: freshHeartbeatSec, claims: [{ path: 'D:/work/worktrees/flightdeck--fresh' }] }),
     );
     writeFileSync(
       join(tmpDir, 'stale.json'),
-      JSON.stringify({ heartbeatAt: staleHeartbeatSec, claims: [{ path: 'C:/dev/worktrees/flightdeck--stale' }] }),
+      JSON.stringify({ heartbeatAt: staleHeartbeatSec, claims: [{ path: 'D:/work/worktrees/flightdeck--stale' }] }),
     );
 
     const deps = buildCodeSyncDeps({}, { sessionsDir: tmpDir });
 
-    expect(deps.claimedPaths()).toEqual(['C:/dev/worktrees/flightdeck--fresh']);
+    expect(deps.claimedPaths()).toEqual(['D:/work/worktrees/flightdeck--fresh']);
   });
 });
