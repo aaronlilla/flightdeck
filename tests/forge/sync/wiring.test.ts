@@ -139,7 +139,7 @@ afterEach(() => {
   if (originalCheckouts === undefined) delete process.env['FORGE_REPO_CHECKOUTS']; else process.env['FORGE_REPO_CHECKOUTS'] = originalCheckouts;
 });
 
-function buildWiring() {
+function buildWiring(overrideExecRun?: (request: RunRequest) => Promise<RunResult>) {
   const queueStore = new QueueStore(join(dir, 'console', 'queue.jsonl'));
   queueStore.append({ id: 'q1', at: Date.now(), ticket: 'BBZ-1', updatedAt: Date.now() });
   const journal = new Journal(join(dir, 'fleet.jsonl'));
@@ -157,7 +157,7 @@ function buildWiring() {
       lanesResponse: () => ({ lanes: [{ id: 'lane-a' }] }),
       runRecheckResponse: async () => ({ status: 'ok' }),
     },
-    execRun: fakeExecRun(),
+    execRun: overrideExecRun ?? fakeExecRun(),
     sessionsDir,
   });
 }
@@ -197,5 +197,32 @@ describe('production sync wiring: nine full-scope stages', () => {
     const blast = (captured?.body as { blast: string }).blast;
     expect(blast).toContain('remove 2 stale worktrees');
     expect(blast).not.toContain('not wired yet');
+  });
+
+  it('bounds the dry-run worktree sweep so a slow real sweep can never block the confirm dialog', async () => {
+    vi.useFakeTimers();
+    try {
+      const slowExecRun: (request: RunRequest) => Promise<RunResult> = async ({ argv }) => {
+        if (argv[0] === 'git' && argv[1] === 'worktree' && argv[2] === 'list') {
+          // A real sweep across every configured repo's worktrees measured over two
+          // minutes end to end on the live console (2026-09-11) -- Aaron clicked "Full
+          // re-sync and start" and got no feedback at all because the confirm dialog
+          // waited on this call before it could render.
+          await new Promise((resolve) => { setTimeout(resolve, 120_000); });
+        }
+        return fakeExecRun()({ argv } as RunRequest);
+      };
+      const wiring = buildWiring(slowExecRun);
+
+      let settled: number | null | undefined;
+      let pending = true;
+      wiring.staleWorktreeCount().then((value) => { settled = value; pending = false; });
+
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect(pending, 'staleWorktreeCount must resolve within its own bound, not the sweep\'s').toBe(false);
+      expect(settled).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

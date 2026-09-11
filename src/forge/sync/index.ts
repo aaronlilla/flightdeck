@@ -45,8 +45,9 @@ export interface ProductionSyncDeps {
 export interface ProductionSyncStages {
   stages: Partial<Record<SyncStageName, SyncStageFn>>;
   /** The `full` confirm blast's own dry-run worktree count -- a stale run's decision
-   *  table with no `git worktree remove` or `git branch -D` call. */
-  staleWorktreeCount: () => Promise<number>;
+   *  table with no `git worktree remove` or `git branch -D` call. `null` when it did
+   *  not land inside the confirm dialog's own time budget. */
+  staleWorktreeCount: () => Promise<number | null>;
 }
 
 export function buildProductionSyncStages(deps: ProductionSyncDeps): ProductionSyncStages {
@@ -153,6 +154,17 @@ export function buildProductionSyncStages(deps: ProductionSyncDeps): ProductionS
 
   return {
     stages,
-    staleWorktreeCount: async () => (await sweepWorktrees(codeSyncDeps, { dryRun: true })).removed.length,
+    // A real sweep touches every worktree across every configured repo with real git
+    // (`worktreeStatusFor`'s three synchronous git subprocesses per worktree) and, for
+    // each eligible one, a real `gh pr list` call -- against this machine's actual
+    // checkouts (rn + bb + flightdeck) that is ~90 worktrees, and it measured over two
+    // minutes end to end. Blocking the confirm dialog on that made `Full re-sync and
+    // start` look completely dead: Aaron clicked it and got no feedback at all. The
+    // count is still real when it lands in time; past the bound the blast just says the
+    // sweep will run rather than guessing a number.
+    staleWorktreeCount: () => Promise.race([
+      sweepWorktrees(codeSyncDeps, { dryRun: true }).then((result) => result.removed.length),
+      new Promise<null>((resolve) => { setTimeout(() => resolve(null), 4_000); }),
+    ]),
   };
 }

@@ -38,8 +38,10 @@ export interface SyncRoutesOptions {
    *  specimen still gets a real sentence shape, just with nothing live behind the count. */
   blastCounts?: () => { queueItems: number; runningWorkers: number };
   /** R-73: `sweepWorktrees(deps, { dryRun: true })`'s count, named in the same blast
-   *  sentence. Absent reads as `0`, a real number rather than a placeholder sentence. */
-  staleWorktreeCount?: () => Promise<number>;
+   *  sentence. `null` when it did not land in time (the production wiring bounds it to
+   *  4s -- a real sweep across every configured repo's worktrees can run past a minute).
+   *  Absent or `null` reads as "the sweep will run", never a guessed number. */
+  staleWorktreeCount?: () => Promise<number | null>;
 }
 
 function respond(response: ServerResponse, status: number, body: unknown): void {
@@ -118,10 +120,13 @@ export class SyncRoutes {
         let blast = '';
         if (!confirmed) {
           const { queueItems, runningWorkers } = this.opts.blastCounts?.() ?? { queueItems: 0, runningWorkers: 0 };
-          const staleWorktrees = (await this.opts.staleWorktreeCount?.()) ?? 0;
+          const staleWorktrees = (await this.opts.staleWorktreeCount?.()) ?? null;
+          const worktreeClause = staleWorktrees === null
+            ? 'worktree sweep: will run (count not ready in time)'
+            : `worktree sweep: remove ${staleWorktrees} stale worktree${staleWorktrees === 1 ? '' : 's'}`;
           blast = `wipe ${queueItems} queue items, stop ${runningWorkers} running workers `
             + '(this engages the kill switch and blocks every launch until the run\'s resume stage '
-            + `clears it), reset watermarks, worktree sweep: remove ${staleWorktrees} stale worktree${staleWorktrees === 1 ? '' : 's'}`;
+            + `clears it), reset watermarks, ${worktreeClause}`;
         }
         const outcome = await gate(body, 'console', blast, start);
         respond(response, outcome.status, outcome.body);
