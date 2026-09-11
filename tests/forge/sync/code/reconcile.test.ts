@@ -22,8 +22,8 @@ function buildDeps(byBranch: Map<string, RepoPr[]>, ghErrorBranches: Set<string>
       return JSON.stringify(byBranch.get(branch) ?? []);
     },
     repos: [
-      { repo: 'aaronlilla/v2-React-Native', checkout: 'C:/dev/v2-React-Native', base: 'develop' },
-      { repo: 'aaronlilla/BBManagementSystemV2', checkout: 'C:/dev/BBManagementSystemV2', base: 'develop' },
+      { repo: 'aaronlilla/mobile-app', checkout: 'D:/work/mobile-app', base: 'develop' },
+      { repo: 'aaronlilla/backend-api', checkout: 'D:/work/backend-api', base: 'develop' },
     ],
     claimedPaths: () => [],
     worktreeStatus: () => undefined,
@@ -45,12 +45,12 @@ describe('reconcilePrs', () => {
     const result = await reconcilePrs(deps, ['bbz-100', 'bbz-101', 'bbz-102', 'bbz-103']);
 
     expect(result.shipped).toEqual([
-      { key: 'bbz-100', repo: 'aaronlilla/v2-React-Native', pr: 10 },
-      { key: 'bbz-100', repo: 'aaronlilla/BBManagementSystemV2', pr: 10 },
+      { key: 'bbz-100', repo: 'aaronlilla/mobile-app', pr: 10 },
+      { key: 'bbz-100', repo: 'aaronlilla/backend-api', pr: 10 },
     ]);
     expect(result.open).toEqual([
-      { key: 'bbz-101', repo: 'aaronlilla/v2-React-Native', pr: 11, branch: 'feature/bbz-101' },
-      { key: 'bbz-101', repo: 'aaronlilla/BBManagementSystemV2', pr: 11, branch: 'feature/bbz-101' },
+      { key: 'bbz-101', repo: 'aaronlilla/mobile-app', pr: 11, branch: 'feature/bbz-101' },
+      { key: 'bbz-101', repo: 'aaronlilla/backend-api', pr: 11, branch: 'feature/bbz-101' },
     ]);
     expect(result.none).toEqual(expect.arrayContaining(['bbz-102', 'bbz-102', 'bbz-103', 'bbz-103']));
     expect(result.none).toHaveLength(4);
@@ -60,12 +60,12 @@ describe('reconcilePrs', () => {
     const byBranch = new Map<string, RepoPr[]>([
       ['feature/bbz-200', [{ repo: 'r', state: 'MERGED', mergedAt: '2026-09-01T00:00:00Z', number: 20, headRefName: 'feature/bbz-200' }]],
     ]);
-    const { deps, ghCalls } = buildDeps(byBranch, new Set(), 'C:/dev/v2-React-Native');
+    const { deps, ghCalls } = buildDeps(byBranch, new Set(), 'D:/work/mobile-app');
 
     const result = await reconcilePrs(deps, ['bbz-200']);
 
     expect(result.shipped).toHaveLength(1);
-    expect(result.shipped[0]?.repo).toBe('aaronlilla/v2-React-Native');
+    expect(result.shipped[0]?.repo).toBe('aaronlilla/mobile-app');
     expect(result.none).toEqual(['bbz-200']); // the BBMS repo call returned no PR
     expect(ghCalls).toHaveLength(2);
   });
@@ -94,8 +94,8 @@ describe('reconcilePrs', () => {
     const result = await reconcilePrs(deps, ['bbz-400']);
 
     expect(result.open).toEqual([
-      { key: 'bbz-400', repo: 'aaronlilla/v2-React-Native', pr: 51, branch: 'feature/bbz-400' },
-      { key: 'bbz-400', repo: 'aaronlilla/BBManagementSystemV2', pr: 51, branch: 'feature/bbz-400' },
+      { key: 'bbz-400', repo: 'aaronlilla/mobile-app', pr: 51, branch: 'feature/bbz-400' },
+      { key: 'bbz-400', repo: 'aaronlilla/backend-api', pr: 51, branch: 'feature/bbz-400' },
     ]);
     expect(result.shipped).toEqual([]);
   });
