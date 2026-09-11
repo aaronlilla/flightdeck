@@ -910,7 +910,7 @@ describe('ConsoleReads.lanesResponse: title and sourceUrl', () => {
     const longAgo = Date.now() - 20 * 60_000;
     const journalPath = join(forgeHomeDir, 'fleet.jsonl');
     const journal = new Journal(journalPath);
-    journal.append({ event: 'intake.planned', packetId: 'p1', repo: 'BOLTBETZ-LLC/v2-React-Native', at: longAgo });
+    journal.append({ event: 'intake.planned', packetId: 'p1', repo: 'acme/widgets', at: longAgo });
     journal.append({ event: 'chain.launched', packetId: 'p1', runKey, at: longAgo });
     journal.append({
       event: 'chain.provisioned', packetId: 'p1', worktreePath: 'w', branch: 'feature/bbz-226', at: longAgo,
@@ -930,7 +930,7 @@ describe('ConsoleReads.lanesResponse: title and sourceUrl', () => {
     // actually merged days ago.
     writePrCache(prCachePath(forgeHomeDir), {
       [runKey]: {
-        pr: { no: 107, url: 'https://github.com/BOLTBETZ-LLC/v2-React-Native/pull/107', draft: true, merged: false },
+        pr: { no: 107, url: 'https://github.com/acme/widgets/pull/107', draft: true, merged: false },
         at: Date.now() - 10 * 60_000,
       },
     });
@@ -941,7 +941,7 @@ describe('ConsoleReads.lanesResponse: title and sourceUrl', () => {
       inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore, jiraSite: null,
       ghDetailLookup: async (repo, pr) => {
         ghCalls += 1;
-        expect(repo).toBe('BOLTBETZ-LLC/v2-React-Native');
+        expect(repo).toBe('acme/widgets');
         expect(pr).toBe(107);
         return { headSha: 'deadbeef', isDraft: true, merged: true, title: 'BBZ-226 fix', checks: 'success', mergedAt: 1_000 };
       },

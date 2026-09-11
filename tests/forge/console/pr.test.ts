@@ -14,7 +14,7 @@ function chainWith(row: ChainPacketState): Map<string, ChainPacketState> {
 // legacy row never needs a one-time hand migration to become re-checkable.
 describe('repoFromPrUrl', () => {
   it('extracts owner/repo from a real PR url', () => {
-    expect(repoFromPrUrl('https://github.com/BOLTBETZ-LLC/v2-React-Native/pull/107')).toBe('BOLTBETZ-LLC/v2-React-Native');
+    expect(repoFromPrUrl('https://github.com/acme/widgets/pull/107')).toBe('acme/widgets');
     expect(repoFromPrUrl('https://github.com/aaronlilla/flightdeck/pull/80')).toBe('aaronlilla/flightdeck');
   });
 
