@@ -52,6 +52,7 @@ import { appendOnce, Journal, JournalCache, type RangeReader } from './journal.j
 import type { StuckSignal } from './liveness.js';
 import { WardenActuator } from './warden.js';
 import { QueueStore } from './intake/queueStore.js';
+import type { QueueLoopStatus } from './intake/queueTickRunner.js';
 import { mergeItem, type QueueMergeDeps, type QueuePromoteDeps, type QueueTicketSearch } from './intake/queue.js';
 import {
   forgeHome, killSwitchPath as defaultKillSwitchPath, packetsDir as defaultPacketsDir, queuePath as defaultQueuePath,
@@ -387,6 +388,12 @@ export class ForgeServer {
   private readonly queueMergeDepsOpt: QueueMergeDeps | undefined;
   /** Set by `forge up` once the self loop exists; read fresh on every `/state`. */
   selfStatus: (() => unknown) | undefined;
+
+  /** R-81: set by `forge up` once the queue subsystem is known; read fresh on every
+   *  `/state`. A process that holds the queue lock serves its runner's status; one that
+   *  does not serves `ticking: false` and says so. Left unset only when `FORGE_QUEUE` is
+   *  off, which is the one case `/state` answers with null. */
+  queueLoop: (() => QueueLoopStatus) | undefined;
 
   /** R-68: the Jira watcher engine. Public so `cli.ts`'s boot can start it without this
    *  class needing to know about `FORGE_BACKLOG_PROJECT` or `watcher.json` itself --
@@ -934,6 +941,11 @@ export class ForgeServer {
       // window and the console's top bar both need to say when the queue subsystem is
       // not running at all, distinct from a running queue that is merely paused.
       queue_on: process.env['FORGE_QUEUE'] === '1',
+      // R-81: whether the queue loop is still finishing passes, in a plain sentence and
+      // in raw numbers beside it. Null only when the queue subsystem is off in this
+      // process; a process that boots the server without the queue lock says so in the
+      // field instead, because a null there reads exactly like a loop that has stopped.
+      queue_loop: this.queueLoop?.() ?? null,
       build: runtimeVersion(),
       checkoutDir: this.checkoutDirPath,
       consoleDistDir: this.consoleDistDir,
