@@ -40,6 +40,9 @@ export interface PrFacts {
   body: string | null;
   checks: 'success' | 'failure' | 'pending' | null;
   merged: boolean | null;
+  /** Follow-up to R-61: the raw `gh` fact `state === 'CLOSED'` -- a PR closed without
+   *  merging, distinct from one still genuinely open. */
+  closed?: boolean | null;
 }
 
 export interface DriftFacts {
@@ -184,6 +187,13 @@ export function computeReadiness(input: {
   if (pr?.merged) {
     return {
       ok: false, why: 'already merged', checks: pr.checks ?? null, behindBase: null, headMoved: false,
+    };
+  }
+  // Follow-up to R-61: same reasoning as "already merged" -- a PR closed without
+  // merging is also done, and its checks/audit facts no longer decide anything.
+  if (pr?.closed) {
+    return {
+      ok: false, why: 'closed without merging', checks: pr.checks ?? null, behindBase: null, headMoved: false,
     };
   }
   const reasons: string[] = [];

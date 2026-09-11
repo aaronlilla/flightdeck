@@ -46,10 +46,21 @@ export function prMergedSentence(pr: Lane['pr']): string {
   return `Merged: PR #${pr.no} landed${time}.`;
 }
 
+/** Follow-up to R-61 (live finding, PR #80): a PR closed without merging is not
+ *  "open" -- the board read "PR #80 is open; the council reviews it next" for three
+ *  days after the PR actually closed. `null` for a PR the caller hasn't asked about,
+ *  so every call site's own "no PR" branch stays untouched. */
+function closedPrSentence(pr: Lane['pr']): string | null {
+  if (!pr?.closed) return null;
+  return `PR #${pr.no} was closed without merging.`;
+}
+
 function reviewSentence(lane: Lane): string | null {
   const pr = lane.pr;
   if (!pr) return null;
   if (pr.merged) return null;
+  const closed = closedPrSentence(pr);
+  if (closed) return closed;
   const checks = pr.checks === 'success' ? 'checks green'
     : pr.checks === 'failure' ? 'checks red'
       : 'checks pending';
@@ -100,6 +111,8 @@ export function plainStatus(lane: Lane, context: PlainContext): string {
       return `Finished at ${clockTime(lane.since)} with no pull request open.`;
     }
     case 'unverified': {
+      const closed = closedPrSentence(lane.pr);
+      if (closed) return `The session ended without finishing its checklist. ${closed}`;
       if (lane.pr) {
         return `The session ended without finishing its checklist, but its PR #${lane.pr.no} is open; `
           + 'the council reviews it next.';
@@ -169,6 +182,9 @@ export function plainForQueueItem(item: QueueItem, verdict: QueueVerdict | null,
       const pr = item.pr;
       if (!pr) return null;
       if (pr.merged) return `Merged: draft PR #${pr.no} landed.`;
+      // Follow-up to R-61: same reasoning as the `merged` branch above -- a PR closed
+      // without merging is done, never "open" or "waiting for your Merge."
+      if (pr.closed) return `PR #${pr.no} was closed without merging.`;
       return `Draft PR #${pr.no} is open; the queue never merges on its own, so it is waiting for your Merge.`;
     }
     case 'parked':
