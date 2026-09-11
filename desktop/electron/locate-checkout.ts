@@ -25,6 +25,11 @@ export interface LocateCandidates {
   rememberedCheckoutDir?: string;
   /** `~/.forge/console.checkout`'s content, read by the caller via `readCheckoutFile`. */
   checkoutFileDir?: string;
+  /** A directory the operator was asked for and chose. Not a fallback: it is the one
+   *  explicit decision here, so it SETTLES a disagreement rather than joining it -- a
+   *  pick that merely became a fourth candidate left the refusal unendable. Still
+   *  checked before it is trusted. */
+  pickedDir?: string;
   installDir?: string;
   join(...parts: string[]): string;
 }
@@ -39,7 +44,7 @@ export function looksLikeForgeRepo(fs: LocateFs, join: (...p: string[]) => strin
   return hasBuiltEntry || hasSourceEntry;
 }
 
-export type LocateSource = 'env' | 'remembered' | 'checkout-file' | 'install-dir';
+export type LocateSource = 'picked' | 'env' | 'remembered' | 'checkout-file' | 'install-dir';
 
 export type LocateOutcome =
   /** One unambiguous checkout. `source` is how it was chosen, for reporting. */
@@ -51,6 +56,7 @@ export type LocateOutcome =
 
 /** How each candidate is named in a refusal, so the operator knows what to go and fix. */
 const WHERE: Record<LocateSource, string> = {
+  picked: 'the folder you picked',
   env: 'the FORGE_REPO_DIR environment variable',
   remembered: 'the checkout remembered in settings',
   'checkout-file': 'the saved path in ~/.forge/console.checkout',
@@ -74,8 +80,22 @@ function sameDirKey(dir: string): string {
 
 export function locateCheckout(fs: LocateFs, candidates: LocateCandidates): LocateOutcome {
   const {
-    env, rememberedCheckoutDir, checkoutFileDir, installDir, join,
+    env, rememberedCheckoutDir, checkoutFileDir, pickedDir, installDir, join,
   } = candidates;
+
+  // An explicit pick outranks every setting and ends any disagreement between them. It
+  // is still verified: trusting a mis-pick would write a broken candidate that refuses
+  // every later launch.
+  if (pickedDir) {
+    const picked = tidy(pickedDir);
+    if (!looksLikeForgeRepo(fs, join, picked)) {
+      return {
+        kind: 'refused',
+        refusal: `${WHERE['picked']} is ${picked}, which is not a Forge checkout. Pick the folder that holds package.json.`,
+      };
+    }
+    return { kind: 'ok', dir: picked, source: 'picked' };
+  }
 
   // The install directory is where the app happens to live, not something anybody
   // configured, so it is only consulted when nothing else is and it never conflicts.

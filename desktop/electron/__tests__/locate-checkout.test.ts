@@ -208,3 +208,41 @@ describe('locateCheckout treats one directory spelled two ways as one directory'
   // so `sameDirKey` case-folds and the comparison does hold there. Unproven by this
   // suite; named so nobody reads its absence as coverage.
 });
+
+/**
+ * Code-review finding, 2026-09-11: the picker offered on a refusal did not end the
+ * refusal. A pick was written to settings, which ADDED a fourth disagreeing candidate,
+ * so the next launch refused again with a longer message and the only exit left was
+ * editing settings by hand.
+ *
+ * A directory the operator was asked for and chose is not a fallback -- it is the one
+ * explicit decision in the whole resolution -- so it settles the disagreement instead of
+ * joining it. It is still checked before it is trusted.
+ */
+describe('a directory the operator picked settles the disagreement', () => {
+  const fs = fsWith(new Set([
+    '/picked/package.json', '/picked/dist/forge/cli.js',
+    '/env/package.json', '/env/dist/forge/cli.js',
+    '/file/package.json', '/file/dist/forge/cli.js',
+  ]));
+
+  it('uses the picked directory even when the other settings disagree', () => {
+    const result = locateCheckout(fs, {
+      env: { FORGE_REPO_DIR: '/env' },
+      checkoutFileDir: '/file',
+      pickedDir: '/picked',
+      join,
+    });
+    expect(result).toEqual({ kind: 'ok', dir: '/picked', source: 'picked' });
+  });
+
+  it('refuses a picked directory that is not a checkout, rather than trusting the pick', () => {
+    const result = locateCheckout(fs, {
+      env: { FORGE_REPO_DIR: '/env' },
+      pickedDir: '/nonsense',
+      join,
+    });
+    expect(result.kind).toBe('refused');
+    expect(result.kind === 'refused' ? result.refusal : '').toContain('/nonsense');
+  });
+});

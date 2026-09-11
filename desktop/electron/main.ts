@@ -327,12 +327,13 @@ function focusExisting(): void {
   mainWindow.focus();
 }
 
-async function resolveCheckoutDir(): Promise<string | undefined> {
+async function resolveCheckoutDir(pickedDir?: string): Promise<string | undefined> {
   const settings = readSettings(fsAdapter, settingsPath());
   const installDir = dirname(app.getPath('exe'));
   const found = locateCheckout(fsAdapter, {
     env: { FORGE_REPO_DIR: process.env['FORGE_REPO_DIR'] },
     rememberedCheckoutDir: settings.checkoutDir,
+    ...(pickedDir ? { pickedDir } : {}),
     // Code-review finding, 2026-09-10: this call never read the canonical checkout
     // file at all -- item 4's "one checkout every launcher reads" reached dev.cjs
     // and dev-hidden.vbs but not the packaged app itself, the one users actually run.
@@ -356,8 +357,12 @@ async function resolveCheckoutDir(): Promise<string | undefined> {
       const result = await dialog.showOpenDialog(statusWindow, { properties: ['openDirectory'] });
       if (result.canceled || result.filePaths.length === 0) return resolve(undefined);
       const picked = result.filePaths[0]!;
-      updateSettings(fsAdapter, settingsPath(), { checkoutDir: picked });
-      resolve(picked);
+      // Re-resolve THROUGH the picked path rather than returning it unchecked: a
+      // mis-pick written to settings became a broken candidate that refused every later
+      // launch, and an unverified directory was handed straight to `forge up` as its cwd.
+      const after = await resolveCheckoutDir(picked);
+      if (after) updateSettings(fsAdapter, settingsPath(), { checkoutDir: after });
+      resolve(after);
     });
   });
 }
