@@ -612,7 +612,11 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
     // `chain.ts`'s own planning hop (`runChainTick`) never launches in the same pass
     // that wrote `intake.planned`.
     return writeTransition(
-      item, { ticket: brief.ticket, briefPath: brief.briefPath, repo: brief.repo, state: 'running' },
+      // `reason: null` clears the interview's own "waiting on an answer" line the moment
+      // the item stops waiting -- the same staleness the after-gate `reason` above had to
+      // be taught to clear, and this hop is the only place it can happen, because an item
+      // held at `planning` never re-enters `planning` and so never hits that clear.
+      item, { ticket: brief.ticket, briefPath: brief.briefPath, repo: brief.repo, state: 'running', reason: null },
       deps, 'queue.planned', { repo: brief.repo },
     );
   }

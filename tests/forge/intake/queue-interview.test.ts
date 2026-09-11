@@ -234,6 +234,10 @@ describe('the planning hop as an interview', () => {
     const after = h.store.get(item.id)!;
     expect(after.state).toBe('running');
     expect(after.briefPath).toBe('C:/briefs/BBZ-277.md');
+    // The "interview" reason belongs to the wait, not to the item: an item that moved on
+    // still reading "interview" is the same staleness the after-gate reason already had
+    // to be taught to clear.
+    expect(after.reason).toBeNull();
     expect(h.events.filter((row) => row['event'] === 'queue.planned')).toHaveLength(1);
     expect(h.briefsWritten).toHaveLength(1);
     expect(h.briefsWritten[0]).toContain('# Goal:');
