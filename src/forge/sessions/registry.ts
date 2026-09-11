@@ -49,9 +49,26 @@ export interface RegistryDeps {
   /** Path fed to `loadAccounts` for the registry-derived dirs. */
   accountsRegistryPath?: string;
   readSessionFiles?: (dir: string) => Record<string, unknown>[];
-  /** `undefined`/`null` when the pid is dead; the live process's start-time token when alive. */
-  probeAlivePid?: (pid: number) => number | string | null | undefined;
+  /** `undefined`/`null` when the pid is dead. When alive: the live process's start-time
+   *  token if the probe knows it (then a differing `procStart` on the record means the pid
+   *  was recycled and the session is gone), or `true` for a liveness-only answer that
+   *  makes no claim about start time and is never compared to `procStart`. */
+  probeAlivePid?: (pid: number) => number | string | true | null | undefined;
   gitInfo?: (cwd: string) => GitInfo;
+}
+
+/** The default liveness probe: `process.kill(pid, 0)` sends no signal, it only asks the
+ *  OS whether the pid exists (OpenProcess on win32), throwing when it does not. It cannot
+ *  see the process's start time, so it answers `true`, never a start-time token -- the
+ *  2026-09-10 escape was this probe answering with a sentinel that `scanSessions` then
+ *  compared to the record's `procStart`, marking every live session vanished each tick. */
+export function probeAlivePidLiveness(pid: number): true | undefined {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return undefined;
+  }
 }
 
 function defaultFixedConfigDirs(): ConfigDirEntry[] {
@@ -140,8 +157,11 @@ export function scanSessions(deps: RegistryDeps = {}): SessionRow[] {
       const cwd = typeof record['cwd'] === 'string' ? record['cwd'] : '';
       const live = Number.isFinite(pid) ? probeAlivePid(pid) : undefined;
       const recordedProcStart = record['procStart'];
+      // A `true` answer is liveness only: the probe saw the pid but not its start time, so
+      // there is nothing to hold `procStart` against. Only a probe that returns a token
+      // can detect a recycled pid.
       const vanished = live === undefined || live === null
-        || (recordedProcStart !== undefined && String(live) !== String(recordedProcStart));
+        || (live !== true && recordedProcStart !== undefined && String(live) !== String(recordedProcStart));
       const git = cwd ? gitInfo(cwd) : { repo: null, worktree: null, branch: null };
       rows.push({
         sessionId: String(record['sessionId'] ?? ''),

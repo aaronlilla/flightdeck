@@ -61,24 +61,8 @@ import { Inbox, isAskStale } from './inbox.js';
 import { replay, Journal, JournalCache } from './journal.js';
 import { initReadabilityAndJournal, readabilityStatusLine } from './console/readability-status.js';
 import { getReadabilityContractState } from './intake/readability.js';
-import { scanSessions } from './sessions/registry.js';
+import { probeAlivePidLiveness, scanSessions } from './sessions/registry.js';
 import { sessionStartedRow } from './sessions/started-row.js';
-
-/** `process.kill(pid, 0)` sends no signal -- it only asks the OS whether the pid exists
- *  (works the same on win32 via OpenProcess), throwing ESRCH when it does not. Best-effort
- *  liveness only, not a `procStart` match: a pid recycled onto an unrelated process inside
- *  one 30s tick window would misread as still-live, a narrower gap than G3's finding
- *  (every row misread as dead), and outside this goal's remaining time budget to close by
- *  threading `Win32_Process.CreationDate` through `fleetwatch.ts`'s probe (flagged in the
- *  goal brief's Status as a known follow-up). */
-function probeAlivePidReal(pid: number): number | string | undefined {
-  try {
-    process.kill(pid, 0);
-    return 1;
-  } catch {
-    return undefined;
-  }
-}
 import { checkLaunch, launchEnv, loginInFlight, pinnedRuntime, runtimeHead, runtimeVersion } from './launcher.js';
 import { assess, LivenessSupervisor } from './liveness.js';
 import { loadConsoleEnv } from './console-env.js';
@@ -741,7 +725,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         // already reported never gets a duplicate started row here.
         try {
           const fleetState = sharedJournalCache.read(journalPath());
-          for (const row of scanSessions({ probeAlivePid: probeAlivePidReal })) {
+          for (const row of scanSessions({ probeAlivePid: probeAlivePidLiveness })) {
             if (!row.sessionId) continue; // a malformed record names no session to journal
             const known = fleetState.sessions[row.sessionId];
             if (!known && !row.vanished) {
