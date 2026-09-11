@@ -266,7 +266,7 @@ function defaultGhBranchLookup(): GhBranchLookupFn {
     const result = await execRun({
       argv: [
         'gh', 'pr', 'list', '--repo', repo, '--head', branch, '--state', 'all', '--json',
-        'number,url,isDraft,mergedAt,title,headRefOid',
+        'number,url,isDraft,mergedAt,title,headRefOid,state',
       ],
       cwd: process.cwd(), owner: 'console-pr-branch', cls: 'script', fullOutput: true,
     });
@@ -482,7 +482,17 @@ export class ConsoleReads {
         // -- it never turns into a new perpetual retry loop. `POST /run/:id/recheck`
         // remains the operator's way to force another look.
         console.error(`final pr re-check for ${run} failed: ${error instanceof Error ? error.message : String(error)}`);
-        markChecked(basic, startedAt);
+        // Code review (2026-09-10): this fallback write is itself a read+write pair
+        // that can throw (disk full, EBUSY) -- production never awaits
+        // `pendingPrRefreshes`, so an uncaught throw here would become the exact
+        // unhandled-rejection crash class the sibling comment on
+        // `scheduleQueuePrRefresh` already names as having killed the console four
+        // times on 2026-09-08. Never let it escape this task.
+        try {
+          markChecked(basic, startedAt);
+        } catch (writeError) {
+          console.error(`final pr re-check cache write for ${run} failed: ${writeError instanceof Error ? writeError.message : String(writeError)}`);
+        }
       } finally {
         this.prRefreshInFlight.delete(run);
       }
@@ -1020,19 +1030,15 @@ export class ConsoleReads {
     const now = Date.now();
     const cachePath = prCachePath(this.forgeHomeDir);
     const cache = readPrCache(cachePath);
-    const { pr, cache: nextCache } = await computeRunPr(
-      run, this.chain(), cache, now, this.ghLookup, this.ghDetailLookup, this.attestationReader,
-    );
-    if (pr) {
-      if (nextCache !== cache) writePrCache(cachePath, nextCache);
-      return { pr };
-    }
     // Item 7: `computeRunPr` only ever finds a PR through a chain packet's
-    // `provisioned.branch`; a queue-sourced lane has no chain packet at all, so this
-    // route answered `{ pr: null }` for one forever even with a real, open PR. Its
-    // queue item already carries `repo` and a bare `pr` off the queue's own log --
-    // read the detail straight off those instead of a branch lookup that never had
-    // anything to find.
+    // `provisioned.branch`; a queue-sourced lane has no chain packet at all, so calling
+    // it first answered `{ pr: null }` for one forever even with a real, open PR --
+    // worse, once past TTL it *writes* that `{ pr: null, at }` back
+    // (`computeRunPr`'s own no-branch-found branch), permanently destroying a
+    // queue-sourced row's `repo`/`closed`/`finalCheckAt` the moment this route is
+    // ever called for one (an operator opening the PR panel). Its queue item already
+    // carries `repo` and a bare `pr` off the queue's own log -- read the detail
+    // straight off those instead of a branch lookup that never had anything to find.
     const item = this.queueStore.all().find((row) => row.runKey === run);
     if (item?.repo && item.pr) {
       const { pr: queuePr, cache: queueCache } = await computeQueuePr(
@@ -1041,8 +1047,25 @@ export class ConsoleReads {
       writePrCache(cachePath, queueCache);
       return { pr: queuePr };
     }
+    // R-61 item 1: the same queue-sourced lane, once its queue item has been archived
+    // (no `item` above), still has a `repo` on its own cache row -- written by the
+    // ordinary queue refresh or the final re-check -- to fall back to. Reusing it here
+    // keeps this route on the same `computeQueuePr` path (which never destroys the
+    // row) instead of falling through to `computeRunPr` below, whose only answer for a
+    // lane with no chain packet is a destructive `{ pr: null }`.
+    const cachedRow = cache[run];
+    if (!item && cachedRow?.repo && cachedRow.pr?.no) {
+      const { pr: queuePr, cache: queueCache } = await computeQueuePr(
+        run, cachedRow.repo, cachedRow.pr, cache, now, this.ghDetailLookup, this.attestationReader,
+      );
+      writePrCache(cachePath, queueCache);
+      return { pr: queuePr };
+    }
+    const { pr, cache: nextCache } = await computeRunPr(
+      run, this.chain(), cache, now, this.ghLookup, this.ghDetailLookup, this.attestationReader,
+    );
     if (nextCache !== cache) writePrCache(cachePath, nextCache);
-    return { pr: null };
+    return { pr };
   }
 
   private runSandboxResponse(run: string): RunSandboxResponse {

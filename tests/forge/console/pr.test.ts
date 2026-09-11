@@ -157,7 +157,7 @@ describe('computeBranchPr', () => {
       no: 39, url: 'https://github.com/o/n/pull/39', draft: true, merged: false,
       title: 'dedupe warden.health on an open unregistered trip', mergedAt: null,
     });
-    expect(result.cache['S-b9d39bae548707e0']).toEqual({ pr: result.pr, at: 1_000 });
+    expect(result.cache['S-b9d39bae548707e0']).toEqual({ pr: result.pr, at: 1_000, repo: 'o/n' });
   });
 
   it('item 11: finds an already-merged PR too, off mergedAt', async () => {

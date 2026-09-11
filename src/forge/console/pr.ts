@@ -185,6 +185,9 @@ export interface GhBranchPr {
   mergedAt: string | null;
   title: string;
   headRefOid: string;
+  /** R-61 item 2: `gh`'s own `state` -- 'CLOSED' without `mergedAt` is a PR closed
+   *  without merging. Optional so a specimen predating this field still type-checks. */
+  state?: string;
 }
 
 export type GhBranchLookupFn = (repo: string, branch: string) => Promise<GhBranchPr | undefined>;
@@ -211,6 +214,16 @@ export async function computeBranchPr(
   const found = await branchLookup(repo, branch);
   if (!found) return { pr: null, cache: { ...cache, [run]: { pr: null, at: now } } };
 
-  const pr: LanePr = { no: found.number, url: found.url, draft: found.isDraft, merged: Boolean(found.mergedAt), title: found.title, mergedAt: found.mergedAt ? Date.parse(found.mergedAt) : null };
-  return { pr, cache: { ...cache, [run]: { pr, at: now } } };
+  const pr: LanePr = {
+    no: found.number, url: found.url, draft: found.isDraft, merged: Boolean(found.mergedAt), title: found.title,
+    mergedAt: found.mergedAt ? Date.parse(found.mergedAt) : null,
+    // R-61 item 2: without this, a chain-only lane (discovered exclusively through a
+    // branch lookup, never a queue item) whose PR closed without merging never gets a
+    // `closed` fact at all, so `retireEligible`'s new check reads it as still open --
+    // stuck exactly the way item 2 was written to stop. `undefined` (not `false`) when
+    // a specimen's fake lookup omits `state` entirely, so every test predating this
+    // field still type-checks unchanged.
+    closed: found.state === undefined ? undefined : found.state === 'CLOSED',
+  };
+  return { pr, cache: { ...cache, [run]: { pr, at: now, repo } } };
 }
