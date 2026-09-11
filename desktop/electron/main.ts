@@ -40,6 +40,16 @@ function settingsPath(): string {
   return join(app.getPath('userData'), 'settings.json');
 }
 
+/** `app.getPath('home')` reads the OS user-profile folder directly and does not
+ *  follow a `USERPROFILE`/`HOME` env override on Windows -- an e2e harness that
+ *  wants to test the fresh-start path without ever reaching the real
+ *  `~/.forge/console.launch.cmd` (found live, 2026-09-11: an e2e run without this
+ *  seam raced the real WMI launcher against the real port 4120 console) needs its
+ *  own seam. `FORGE_APP_HOME_OVERRIDE` is that seam -- unset in every normal run. */
+function appHomeDir(): string {
+  return process.env['FORGE_APP_HOME_OVERRIDE'] ?? app.getPath('home');
+}
+
 function fetchState(): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     const request = httpGet(
@@ -62,8 +72,15 @@ function fetchState(): Promise<Record<string, unknown>> {
 }
 
 function spawnChild(command: string, args: string[], cwd: string, env: Record<string, string> = {}): Spawned {
+  // G5 live e2e finding, 2026-09-11: spawning a `.cmd`/`.bat` command (buildStartCommand's
+  // `npm.cmd run forge -- up` fallback, taken whenever no launcher script is installed)
+  // without `shell: true` throws a synchronous `spawn EINVAL` on Windows -- uncaught by
+  // bringUpConsole's caller, it silently stranded the status window on "Bringing up the
+  // console..." forever. Only found by actually spawning a real child process end to end;
+  // no unit test in this repo drives node:child_process's own OS-level spawn behavior.
+  const shell = process.platform === 'win32' && /\.(cmd|bat)$/i.test(command);
   const child = nodeSpawn(command, args, {
-    cwd, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...env },
+    cwd, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...env }, shell,
   });
   return {
     pid: child.pid,
@@ -299,7 +316,7 @@ async function resolveCheckoutDir(): Promise<string | undefined> {
     // Code-review finding, 2026-09-10: this call never read the canonical checkout
     // file at all -- item 4's "one checkout every launcher reads" reached dev.cjs
     // and dev-hidden.vbs but not the packaged app itself, the one users actually run.
-    checkoutFileDir: readCheckoutFile(fsAdapter, join, app.getPath('home')),
+    checkoutFileDir: readCheckoutFile(fsAdapter, join, appHomeDir()),
     installDir,
     join,
   });
@@ -373,7 +390,22 @@ async function bootstrap(): Promise<void> {
   const deps = buildSupervisorDeps(forgeEnv);
 
   showStatus('Bringing up the console…');
-  const outcome = await bringUpConsole(checkoutDir, deps);
+  // G3 finding, 2026-09-10 (accepted, not fixed at the time): bootstrap() had no
+  // try/catch around this call, unlike the watchdog's revive path. Confirmed as real
+  // harm by G5's own live e2e, 2026-09-11 (a real spawn EINVAL on this exact call
+  // stranded the status window on "Bringing up the console..." forever, with only an
+  // unhandled-rejection warning on stderr no one watching the window would ever see).
+  // Auto-retries rather than dead-ending, matching 'wait'/'show-no-console' below.
+  let outcome: Awaited<ReturnType<typeof bringUpConsole>>;
+  try {
+    outcome = await bringUpConsole(checkoutDir, deps);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    showStatus(`bringing up the console failed unexpectedly: ${message}`);
+    statusWindow?.webContents.send('revive-failed');
+    scheduleBootstrapRetry();
+    return;
+  }
 
   if (outcome.mode === 'start-failed') {
     showStatus(outcome.reason);
@@ -432,7 +464,7 @@ async function bootstrap(): Promise<void> {
  *  built as its own function so the watchdog's revive can run the identical
  *  bring-up attempt later. */
 function buildSupervisorDeps(forgeEnv: Record<string, string> | undefined): SupervisorDeps {
-  const homeDir = app.getPath('home');
+  const homeDir = appHomeDir();
   // Code-review finding, 2026-09-10: the queue lock the server actually writes lives
   // under FORGE_HOME when it is set (src/forge/paths.ts's forgeHome()), not always
   // <home>/.forge -- reading the wrong directory silently disables the wait/attach
