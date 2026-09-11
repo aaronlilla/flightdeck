@@ -62,6 +62,8 @@ export default defineConfig({
       '/clear': proxied(),
       '/merge-ready': proxied(),
       '/retire-finished': proxied(),
+      '/sync': proxied(),
+      '/watcher': proxied(),
       '/events': proxied(true),
     },
   },

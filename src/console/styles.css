@@ -109,4 +109,10 @@ textarea.inp{line-height:1.45;padding:8px 10px;resize:vertical}
 .machine-session-header{display:flex;gap:12px;flex-wrap:wrap;font-size:var(--fs-ui)}
 .machine-session-empty{color:var(--ink2);font-size:var(--fs-ui)}
 .machine-unregistered{border:1px solid var(--line2);padding:10px 12px;display:flex;flex-direction:column;gap:8px}
+/* The re-sync cards (R-71): one row per stage, colored by its own status. */
+.sync-stage{color:var(--ink2)}
+.sync-stage--ok{color:var(--ink2)}
+.sync-stage--failed{color:var(--warn)}
+.sync-stage--running{color:var(--acc)}
+.sync-stage--skipped{color:var(--ink3)}
 .machine-unregistered-label{color:var(--ink2);font-size:var(--fs-ui)}

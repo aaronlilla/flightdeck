@@ -18,10 +18,13 @@ import { MachineView } from './components/MachineView.js';
 import { buildNeeds } from './components/NeedsYou.js';
 import { QueueView } from './components/QueueView.js';
 import { Settings } from './components/Settings.js';
+import { SyncCard } from './components/SyncCard.js';
 import { TicketSheet } from './components/TicketSheet.js';
+import { WatcherStatus } from './components/WatcherStatus.js';
 import { focusableIn, trapTab } from './focus-trap.js';
 import { blockerFor, type BoardCommand } from './laneVM.js';
 import { initialState, reducer, StoreContext, type ActionLink, type View } from './store.js';
+import type { SyncScope } from './sync-types.js';
 import { isSliceEvent, type SliceName } from '../shared/console-events.js';
 import type { Message } from '../shared/console-model.js';
 import { commandEcho } from '../shared/humanize.js';
@@ -110,6 +113,11 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
           if (mounted.current) dispatch({ type: 'blockers', blockers });
           break;
         }
+        case 'sync': {
+          const sync = await api.getSync();
+          if (mounted.current) dispatch({ type: 'sync', sync });
+          break;
+        }
         default:
           break;
       }
@@ -122,10 +130,10 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     if (refreshing.current) return;
     refreshing.current = true;
     try {
-      const [lanesR, threadR, integrationsR, capsR, proposalsR, queueR, consoleStateR, blockersR, accountsR, machineR] = await Promise.allSettled([
+      const [lanesR, threadR, integrationsR, capsR, proposalsR, queueR, consoleStateR, blockersR, accountsR, machineR, syncR] = await Promise.allSettled([
         api.getLanes({ all: true }), api.getThread(), api.getIntegrations(), api.getCaps(),
         api.getProposals(), api.getQueue(), api.getState(), api.getBlockers(), api.getAccounts(),
-        api.getMachine({ verbose: stateRef.current.verbose }),
+        api.getMachine({ verbose: stateRef.current.verbose }), api.getSync(),
       ]);
       if (!mounted.current) return;
       const failedSlices: string[] = [];
@@ -144,6 +152,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       const blockers = settled(blockersR, 'blockers');
       const accounts = settled(accountsR, 'accounts');
       const machine = settled(machineR, 'machine');
+      const sync = settled(syncR, 'sync');
       failCount.current = failedSlices.length > 0 ? failCount.current + 1 : 0;
       if (lanes) dispatch({ type: 'lanes', lanes: lanes.lanes, links: lanes.links, tokensToday: lanes.tokensToday });
       if (thread) dispatch({ type: 'thread', thread: applyResolved(thread.messages) });
@@ -157,6 +166,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       if (blockers) dispatch({ type: 'blockers', blockers });
       if (accounts) dispatch({ type: 'accounts', accounts: accounts.items });
       if (machine) dispatch({ type: 'machine', machine });
+      if (sync) dispatch({ type: 'sync', sync });
       if (consoleState?.build) {
         if (servedBuildRef.current && servedBuildRef.current !== consoleState.build) {
           window.location.reload();
@@ -382,6 +392,18 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
 
   const onStop = useCallback(() => { void runCatalogAction(ACTIONS.stopAll, [], 'fleet'); }, [runCatalogAction]);
 
+  const onResync = useCallback((scope: Exclude<SyncScope, 'full'>) => {
+    void runCatalogAction(ACTIONS.resyncPage, [scope], scope);
+  }, [runCatalogAction]);
+
+  const onWatcherToggle = useCallback((on: boolean) => {
+    if (on) void runCatalogAction(ACTIONS.watcherOn, [], 'watcher');
+    else void runCatalogAction(ACTIONS.watcherOff, [], 'watcher');
+  }, [runCatalogAction]);
+
+  const syncBusy = (scope: Exclude<SyncScope, 'full'>): boolean => state.sync?.runs[scope]?.endedAt === undefined && state.sync?.runs[scope] != null;
+  const syncFullRunning = state.sync?.runs.full != null && state.sync.runs.full.endedAt === undefined;
+
   const sheet = state.sheet;
   const sheetLane = sheet?.type === 'ticket' ? state.lanes.find((l) => l.id === sheet.id) : undefined;
   useEffect(() => {
@@ -434,23 +456,47 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     <StoreContext.Provider value={{ state, dispatch }}>
       <ActionsContext.Provider value={actionsHost}>
         <div className="app" data-theme={state.theme} data-testid="app">
-          <Chrome view={state.view} badges={badges} feed={state.feed} project={state.project} queueOn={state.queueOn} now={state.now} onNav={(view) => dispatch({ type: 'view', view })} />
+          <Chrome view={state.view} badges={badges} feed={state.feed} project={state.project} queueOn={state.queueOn} syncFullRunning={syncFullRunning} watcher={state.sync?.watcher ?? null} onWatcherToggle={onWatcherToggle} now={state.now} onNav={(view) => dispatch({ type: 'view', view })} />
           <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
             {state.view === 'board' ? (
-              <div style={{ flex: 1, minWidth: 0, position: 'relative', display: 'flex' }}>
-                <LanesGrid lanes={state.lanes} blockers={blockers} queue={queue} needs={needs} now={state.now} onOpen={openLane} onCommand={onBoardCommand} onLaneCommand={onLaneCommand} onQueue={() => dispatch({ type: 'view', view: 'queue' })} />
-                {sheet?.type === 'ticket' && sheetLane ? (
-                  <div ref={sheetContainerRef} tabIndex={-1} data-testid="sheet-scrim" style={{ position: 'absolute', inset: 0, background: 'var(--scrim)', outline: 'none' }} onClick={() => dispatch({ type: 'sheet', sheet: null })}>
-                    <TicketSheet lane={sheetLane} now={state.now} onClose={() => dispatch({ type: 'sheet', sheet: null })} onCommand={onLaneCommand} onSendLane={onSendLane} verbose={state.verbose} />
-                  </div>
-                ) : null}
+              <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+                <SyncCard scope="lanes" run={state.sync?.runs.lanes ?? null} busy={syncBusy('lanes')} onResync={onResync} />
+                <div style={{ flex: 1, minWidth: 0, position: 'relative', display: 'flex' }}>
+                  <LanesGrid lanes={state.lanes} blockers={blockers} queue={queue} needs={needs} now={state.now} onOpen={openLane} onCommand={onBoardCommand} onLaneCommand={onLaneCommand} onQueue={() => dispatch({ type: 'view', view: 'queue' })} />
+                  {sheet?.type === 'ticket' && sheetLane ? (
+                    <div ref={sheetContainerRef} tabIndex={-1} data-testid="sheet-scrim" style={{ position: 'absolute', inset: 0, background: 'var(--scrim)', outline: 'none' }} onClick={() => dispatch({ type: 'sheet', sheet: null })}>
+                      <TicketSheet lane={sheetLane} now={state.now} onClose={() => dispatch({ type: 'sheet', sheet: null })} onCommand={onLaneCommand} onSendLane={onSendLane} verbose={state.verbose} />
+                    </div>
+                  ) : null}
+                </div>
               </div>
             ) : null}
-            {state.view === 'blockers' ? <BlockersView blockers={blockers} chains={state.blockers?.chains ?? []} laneTitle={(id) => state.lanes.find((l) => l.id === id)?.title ?? null} onOpenSettings={() => dispatch({ type: 'view', view: 'settings' })} onSendToLane={onSendLane} verbose={state.verbose} /> : null}
-            {state.view === 'queue' ? <QueueView items={state.queue} paused={state.queuePaused} pauseReason={state.queuePauseReason} maxInFlight={state.queueMaxInFlight} working={working} verbose={state.verbose} /> : null}
+            {state.view === 'blockers' ? (
+              <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+                <SyncCard scope="inbox" run={state.sync?.runs.inbox ?? null} busy={syncBusy('inbox')} onResync={onResync} />
+                <BlockersView blockers={blockers} chains={state.blockers?.chains ?? []} laneTitle={(id) => state.lanes.find((l) => l.id === id)?.title ?? null} onOpenSettings={() => dispatch({ type: 'view', view: 'settings' })} onSendToLane={onSendLane} verbose={state.verbose} />
+              </div>
+            ) : null}
+            {state.view === 'queue' ? (
+              <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+                <SyncCard scope="queue" run={state.sync?.runs.queue ?? null} busy={syncBusy('queue')} onResync={onResync} />
+                <QueueView items={state.queue} paused={state.queuePaused} pauseReason={state.queuePauseReason} maxInFlight={state.queueMaxInFlight} working={working} verbose={state.verbose} />
+              </div>
+            ) : null}
             {state.view === 'review' ? <FlightReview proposals={state.proposals} verbose={state.verbose} now={state.now} tokensToday={state.caps?.tokensToday} dailyTokens={state.caps?.dailyTokens} /> : null}
-            {state.view === 'machine' ? <MachineView machine={state.machine} verbose={state.verbose} now={state.now} /> : null}
-            {state.view === 'settings' ? <Settings integrations={state.integrations} verbose={state.verbose} accounts={state.accounts} onAccountsChanged={() => void refreshSlice('accounts')} caps={state.caps} now={state.now} maxInFlight={state.queueMaxInFlight} theme={state.theme} onTheme={(theme) => dispatch({ type: 'theme', theme })} /> : null}
+            {state.view === 'machine' ? (
+              <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+                <SyncCard scope="machine" run={state.sync?.runs.machine ?? null} busy={syncBusy('machine')} onResync={onResync} />
+                <SyncCard scope="sessions" run={state.sync?.runs.sessions ?? null} busy={syncBusy('sessions')} onResync={onResync} />
+                <MachineView machine={state.machine} verbose={state.verbose} now={state.now} />
+              </div>
+            ) : null}
+            {state.view === 'settings' ? (
+              <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+                <Settings integrations={state.integrations} verbose={state.verbose} accounts={state.accounts} onAccountsChanged={() => void refreshSlice('accounts')} caps={state.caps} now={state.now} maxInFlight={state.queueMaxInFlight} theme={state.theme} onTheme={(theme) => dispatch({ type: 'theme', theme })} />
+                <SyncCard scope="accounts" run={state.sync?.runs.accounts ?? null} busy={syncBusy('accounts')} onResync={onResync} />
+              </div>
+            ) : null}
             <ConductorRail
               thread={state.thread} feed={state.feed} now={state.now} composer={state.composer}
               onComposerChange={(text) => dispatch({ type: 'composer', text })}
