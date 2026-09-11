@@ -108,6 +108,7 @@ import { sweepFinishedRun } from './sweep.js';
 import { extractDoD, TRANSCRIPT_TAIL_LINES, TranscriptDrift } from './conformance-drift.js';
 import { readTranscriptTail, transcriptPathFor } from './transcript-path.js';
 import { CodexAdvisor, realCodexAdvisorRunner } from './council/codexAdvisor.js';
+import { scheduleAccountsProbeTick } from './sync/pages/accounts.js';
 
 
 /** The port the console is actually served on: `FORGE_PORT` when a second `forge up` was
@@ -943,6 +944,34 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         selfLine = 'self loop NOT started: the queue lock is held elsewhere';
       }
       server.selfStatus = () => selfLoop.status();
+
+      // R-70: the Accounts page gets the same re-probe cadence Sessions and the Warden
+      // tick already have -- nothing else refreshes a login's reading once the Settings
+      // page is closed, so a stale row could sit for as long as the console stayed shut.
+      // Every FORGE_ACCOUNTS_PROBE_S seconds (default 600), force a fresh read of every
+      // account and journal what came back. Guarded inside scheduleAccountsProbeTick
+      // exactly like the registry and self ticks above: one bad probe never stops it.
+      const accountsProbeJournal = new Journal(journalPath());
+      const accountsProbeService = new AccountsService({
+        loadAccounts: () => loadAccounts(accountsRegistryPath()),
+        readUsage: () => readAccountUsage(),
+        recordReading: diskWriters.recordReading,
+        recordReadError: diskWriters.recordReadError,
+        liveRuns: () => liveRunsByAccount(
+          replay(journalPath()).events,
+          registry.all().filter((row) => processAlive(row.pid)).map((row) => row.goal),
+        ),
+        fleetConfigDir: fleetLoginDir(() => fleetConfigDirChoice().dir),
+        probe: realProbe(),
+      });
+      scheduleAccountsProbeTick({
+        seconds: Number(process.env['FORGE_ACCOUNTS_PROBE_S']) || 600,
+        accounts: {
+          refreshAll: () => accountsProbeService.refreshAll(),
+          list: () => accountsProbeService.list(),
+        },
+        journal: accountsProbeJournal,
+      });
 
       return {
         code: 0,
