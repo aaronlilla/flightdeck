@@ -82,6 +82,24 @@ describe('reconcilePrs', () => {
     expect(ghCalls.every((c) => c.argv.includes('hotfix/urgent-fix'))).toBe(true);
   });
 
+  it('picks the OPEN row over a stale merged/closed row when a reused branch name has both', async () => {
+    const byBranch = new Map<string, RepoPr[]>([
+      ['feature/bbz-400', [
+        { repo: 'r', state: 'CLOSED', mergedAt: '2026-01-01T00:00:00Z', number: 50, headRefName: 'feature/bbz-400' },
+        { repo: 'r', state: 'OPEN', mergedAt: null, number: 51, headRefName: 'feature/bbz-400' },
+      ]],
+    ]);
+    const { deps } = buildDeps(byBranch, new Set());
+
+    const result = await reconcilePrs(deps, ['bbz-400']);
+
+    expect(result.open).toEqual([
+      { key: 'bbz-400', repo: 'aaronlilla/v2-React-Native', pr: 51, branch: 'feature/bbz-400' },
+      { key: 'bbz-400', repo: 'aaronlilla/BBManagementSystemV2', pr: 51, branch: 'feature/bbz-400' },
+    ]);
+    expect(result.shipped).toEqual([]);
+  });
+
   it('reports a gh error for one key as none, logs a failed count, and never loses the others', async () => {
     const byBranch = new Map<string, RepoPr[]>([
       ['feature/bbz-300', [{ repo: 'r', state: 'MERGED', mergedAt: '2026-09-01T00:00:00Z', number: 40, headRefName: 'feature/bbz-300' }]],

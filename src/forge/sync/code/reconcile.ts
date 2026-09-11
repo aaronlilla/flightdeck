@@ -19,6 +19,13 @@ interface GhPrRow {
   headRefName: string;
 }
 
+/** A branch name can be reused after its earlier PR merged or closed, so `gh pr list
+ *  --head` can return more than one row -- the same case `worktrees.ts#pickPrRow`
+ *  guards against. An OPEN row always outranks a stale merged/closed one. */
+function pickPrRow(rows: GhPrRow[]): GhPrRow | undefined {
+  return rows.find((row) => row.state === 'OPEN') ?? rows[0];
+}
+
 export async function reconcilePrs(deps: CodeSyncDeps, keys: string[]): Promise<ReconcilePrsResult> {
   const shipped: ReconcilePrsResult['shipped'] = [];
   const open: ReconcilePrsResult['open'] = [];
@@ -34,7 +41,7 @@ export async function reconcilePrs(deps: CodeSyncDeps, keys: string[]): Promise<
           checkout,
         );
         const rows = JSON.parse(out) as GhPrRow[];
-        const row = rows[0];
+        const row = pickPrRow(rows);
         if (!row) {
           none.push(key);
         } else if (row.mergedAt) {
