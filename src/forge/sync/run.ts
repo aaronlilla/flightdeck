@@ -75,13 +75,18 @@ export function createSyncRunner(deps: RunSyncDeps): SyncRunner {
   async function runSync(scope: SyncScope): Promise<SyncRunRecord> {
     if (running.has(scope)) throw new SyncAlreadyRunningError(scope);
     running.add(scope);
-    const now = deps.now ?? Date.now;
-    const id = deps.id ? deps.id() : randomUUID();
-    const record: SyncRunRecord = { scope, id, startedAt: now(), stages: [], ok: false };
-    deps.journal.append({ event: 'sync.started', actor: 'sync', scope, id } as never);
-    deps.store.save(record);
 
+    // Everything after the guard above lives inside this try/finally -- a throw from
+    // `deps.id()`, the initial `sync.started` journal append, or the first `store.save`
+    // must still release `scope` from `running`, or one bad `deps.journal`/`deps.store`
+    // call permanently wedges every future run of that scope for this process's life.
     try {
+      const now = deps.now ?? Date.now;
+      const id = deps.id ? deps.id() : randomUUID();
+      const record: SyncRunRecord = { scope, id, startedAt: now(), stages: [], ok: false };
+      deps.journal.append({ event: 'sync.started', actor: 'sync', scope, id } as never);
+      deps.store.save(record);
+
       let failed = false;
       for (const name of STAGE_ORDER[scope]) {
         const startedAt = now();

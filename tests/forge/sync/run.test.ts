@@ -103,6 +103,24 @@ describe('createSyncRunner', () => {
     journal.close();
   });
 
+  it('a throw before the loop still releases the running guard (critique finding)', async () => {
+    const journal = tempJournal();
+    const store = tempStore();
+    const stages = Object.fromEntries(FULL_ORDER.map((name) => [name, okStage(name)]));
+    let first = true;
+    const runner = createSyncRunner({
+      stages, journal, store,
+      id: () => { if (first) { first = false; throw new Error('id generator exploded'); } return 'ok-id'; },
+    });
+
+    await expect(runner.runSync('full')).rejects.toThrow('id generator exploded');
+    expect(runner.isRunning('full')).toBe(false);
+
+    const record = await runner.runSync('full');
+    expect(record.ok).toBe(true);
+    journal.close();
+  });
+
   it('persists the record and reads it back through the store', async () => {
     const journal = tempJournal();
     const store = tempStore();
