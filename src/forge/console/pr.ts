@@ -17,6 +17,18 @@ export const PR_CACHE_TTL_MS = 60_000;
 interface CacheRow {
   pr: LanePr | null;
   at: number;
+  /** R-61 item 1: the repo this PR was last read against, carried alongside the PR fact
+   *  itself so a lane whose queue item has since left the active queue (archived) still
+   *  has somewhere to read a repo from for its one final re-check -- `lane.repo` itself
+   *  is `null` the moment no queue item and no chain packet supplies it. Unset for a row
+   *  written before this field existed; such a row gets no final re-check until its next
+   *  ordinary (queue-item-present) write fills it in. */
+  repo?: string | null;
+  /** R-61 item 1: epoch ms of the one-shot re-check fired once a finished lane's queue
+   *  item is gone (`ConsoleReads#scheduleFinalPrCheck`) -- once set, that lane is never
+   *  re-checked again, whatever the re-check found. A terminal correction, not a new
+   *  perpetual poll. */
+  finalCheckAt?: number;
 }
 
 export type Cache = Record<string, CacheRow>;
@@ -69,6 +81,10 @@ export interface GhPrDetail {
   /** Item 1: epoch ms off `gh`'s own `mergedAt`, when the PR has merged. `null` for one
    *  that has not (or that `gh` did not report a time for). */
   mergedAt?: number | null;
+  /** R-61 item 2: `gh`'s own `state === 'CLOSED'` -- a PR closed without merging.
+   *  Optional so a specimen that never asked `gh` for `state` (every test predating
+   *  this field) still type-checks; a real `gh` read always sets it. */
+  closed?: boolean;
 }
 
 export type GhDetailLookupFn = (repo: string, pr: number) => Promise<GhPrDetail | undefined>;
@@ -128,7 +144,7 @@ export async function computeRunPr(
     const detail = await detailLookup(packet.repo, found.number);
     if (detail) {
       const verdict = attestationReader?.(packet.repo, found.number, detail.headSha)?.verdict ?? null;
-      pr = { ...pr, checks: detail.checks, merged: detail.merged, title: detail.title, verdict, mergedAt: detail.mergedAt ?? null };
+      pr = { ...pr, checks: detail.checks, merged: detail.merged, title: detail.title, verdict, mergedAt: detail.mergedAt ?? null, closed: detail.closed ?? undefined };
     } else {
       pr = { ...pr, checks: null, merged: null, title: null, verdict: null };
     }
@@ -152,10 +168,10 @@ export async function computeQueuePr(
   detailLookup: GhDetailLookupFn, attestationReader?: AttestationReaderFn,
 ): Promise<{ pr: LanePr; cache: Cache }> {
   const detail = await detailLookup(repo, basic.no);
-  if (!detail) return { pr: basic, cache: { ...cache, [run]: { pr: basic, at: now } } };
+  if (!detail) return { pr: basic, cache: { ...cache, [run]: { pr: basic, at: now, repo } } };
   const verdict = attestationReader?.(repo, basic.no, detail.headSha)?.verdict ?? null;
-  const pr: LanePr = { ...basic, checks: detail.checks, merged: detail.merged, title: detail.title, verdict, mergedAt: detail.mergedAt ?? null };
-  return { pr, cache: { ...cache, [run]: { pr, at: now } } };
+  const pr: LanePr = { ...basic, checks: detail.checks, merged: detail.merged, title: detail.title, verdict, mergedAt: detail.mergedAt ?? null, closed: detail.closed ?? undefined };
+  return { pr, cache: { ...cache, [run]: { pr, at: now, repo } } };
 }
 
 /** Item 11: `gh pr list --repo <repo> --head <branch> --state all --json

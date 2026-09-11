@@ -40,7 +40,7 @@ import {
   titleFromHeading, windowLanes, type LanesInput,
 } from './lanes.js';
 import { computeLaneStory, type GitCommit } from './story.js';
-import { readRetired, retiredPath } from './retire.js';
+import { laneFinished, readRetired, retiredPath } from './retire.js';
 import { plainFactsFor, plainForQueueItem, plainStatus, prMergedSentence, type QueueVerdict } from './plain.js';
 import { Binder } from './narrate-bind.js';
 import type { Narrator } from './narrate-store.js';
@@ -170,7 +170,7 @@ function defaultGhDetailLookup(): GhDetailLookupFn {
     const result = await execRun({
       argv: [
         'gh', 'pr', 'view', String(pr), '--repo', repo, '--json',
-        'isDraft,mergedAt,statusCheckRollup,title,headRefOid,body',
+        'isDraft,mergedAt,statusCheckRollup,title,headRefOid,body,state',
       ],
       cwd: process.cwd(), owner: 'console-pr-detail', cls: 'script', fullOutput: true,
     });
@@ -178,13 +178,16 @@ function defaultGhDetailLookup(): GhDetailLookupFn {
     try {
       const parsed = JSON.parse(result.full ?? result.tail) as {
         isDraft?: boolean; mergedAt?: string | null; statusCheckRollup?: RawStatusCheckLike[];
-        title?: string; headRefOid?: string; body?: string | null;
+        title?: string; headRefOid?: string; body?: string | null; state?: string;
       };
       if (!parsed.headRefOid) return undefined;
       return {
         headSha: parsed.headRefOid, isDraft: parsed.isDraft ?? false, merged: Boolean(parsed.mergedAt),
         title: parsed.title ?? '', checks: conclusionOf(parsed.statusCheckRollup), body: parsed.body ?? null,
         mergedAt: parsed.mergedAt ? Date.parse(parsed.mergedAt) : null,
+        // R-61 item 2: `gh`'s raw `state` -- 'CLOSED' without a `mergedAt` is a PR
+        // closed without merging, distinct from one still open.
+        closed: parsed.state === 'CLOSED',
       };
     } catch {
       return undefined;
@@ -426,6 +429,60 @@ export class ConsoleReads {
         // this task has no awaiter in production, and an unhandled one killed the
         // console four times on 2026-09-08.
         console.error(`pr refresh for ${run} failed: ${error instanceof Error ? error.message : String(error)}`);
+      } finally {
+        this.prRefreshInFlight.delete(run);
+      }
+    })();
+    this.pendingPrRefreshes.push(task);
+  }
+
+  /** R-61 item 1: `scheduleQueuePrRefresh` above never fires again once a run's queue
+   *  item has left the active queue log (retired, or aged out) -- `queueItem` is
+   *  permanently `undefined` from that moment on, so a PR fact cached while it was still
+   *  open and unmerged stays frozen forever, and the one lane an operator would use to
+   *  clear it (`retireEligible`) trusts that exact frozen fact. This gives a *finished*
+   *  lane with no live queue item, a known PR number, and a stale `merged`-not-`true`
+   *  cache entry exactly one more re-check, sourced from the cache's own last-known
+   *  `repo`/`pr.no` rather than a live queue item, using the same `computeQueuePr` +
+   *  injected `ghDetailLookup` + cache-write path every other refresh here already uses
+   *  -- never a fabricated result. `finalCheckAt` is written on the row whatever the
+   *  re-check finds (including a failed `gh` call, caught below): a terminal correction,
+   *  not a new perpetual poll for a lane whose PR may never resolve. An operator can
+   *  still force a fresh look at any time through `POST /run/:id/recheck`, which drops
+   *  the cache row (and with it `finalCheckAt`) outright.
+   *
+   *  `/critique` (2026-09-10): every writer here (`scheduleQueuePrRefresh`,
+   *  `scheduleBranchPrDiscovery`, this method) reads the whole cache file at task start
+   *  and writes the whole thing back after `gh` resolves -- a sibling task for a
+   *  *different* lane that reads-then-writes in between silently reverts whatever this
+   *  task already wrote, `finalCheckAt` included, which would turn "terminal" back into
+   *  "re-fires on the next stale poll". Pre-existing in the other two writers (same
+   *  read-modify-write shape, out of scope for R-61 to fix everywhere); narrowed here to
+   *  a single synchronous re-read immediately before the write, so the only window left
+   *  is the same synchronous tick every other write in this file already accepts, not
+   *  the width of an entire `gh` call. */
+  private scheduleFinalPrCheck(run: string, repo: string, basic: LanePr): void {
+    if (this.prRefreshInFlight.has(run)) return;
+    this.prRefreshInFlight.add(run);
+    const cachePath = prCachePath(this.forgeHomeDir);
+    const markChecked = (pr: LanePr, at: number): void => {
+      const fresh = readPrCache(cachePath);
+      writePrCache(cachePath, { ...fresh, [run]: { pr, at, repo, finalCheckAt: at } });
+    };
+    const task = (async () => {
+      const startedAt = Date.now();
+      try {
+        const cache = readPrCache(cachePath);
+        const { pr } = await computeQueuePr(
+          run, repo, basic, cache, startedAt, this.ghDetailLookup, this.attestationReader,
+        );
+        markChecked(pr, startedAt);
+      } catch (error) {
+        // A failed gh read (network blip, spawn refused) still ends the one-shot check
+        // -- it never turns into a new perpetual retry loop. `POST /run/:id/recheck`
+        // remains the operator's way to force another look.
+        console.error(`final pr re-check for ${run} failed: ${error instanceof Error ? error.message : String(error)}`);
+        markChecked(basic, startedAt);
       } finally {
         this.prRefreshInFlight.delete(run);
       }
@@ -724,6 +781,19 @@ export class ConsoleReads {
         if (!cached || now - cached.at >= PR_CACHE_TTL_MS) {
           this.scheduleBranchPrDiscovery(lane.id, repo, branch);
         }
+      }
+    }
+    // R-61 item 1: none of the queueItem-gated blocks above ever fire once a run's
+    // queue item has left the active queue log -- give a finished lane with a known,
+    // still-unresolved PR exactly one final re-check, sourced from the cache's own
+    // last-known repo/PR rather than a live queueItem. Skipped entirely while a queue
+    // item still exists (the ordinary polling above already covers that lane).
+    if (!queueItem) {
+      const cached = prCache[lane.id];
+      const alreadyChecked = cached?.finalCheckAt !== undefined;
+      const unresolved = cached?.pr?.no && cached.pr.merged !== true && !cached.pr.closed;
+      if (laneFinished(lane) && unresolved && cached?.repo && !alreadyChecked && now - cached.at >= PR_CACHE_TTL_MS) {
+        this.scheduleFinalPrCheck(lane.id, cached.repo, cached.pr!);
       }
     }
     // Item 9: `computeLanes` already stripped `plain`/`reason` once, but both of the
