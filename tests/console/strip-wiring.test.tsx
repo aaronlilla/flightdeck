@@ -188,3 +188,36 @@ describe('a blocker card survives the first paint (regression on the fix for fin
     expect(screen.getByTestId('question-card').textContent).toContain('Sentry is unreachable');
   });
 });
+
+describe('a refused command raises no unhandled rejection (regression on the fix for finding 1)', () => {
+  beforeEach(() => {
+    (globalThis as unknown as { WebSocket: unknown }).WebSocket = FakeSocket;
+    state.lanes = []; state.blockers = []; state.thread = []; state.cards = [];
+    mocks.sendCommand.mockReset();
+  });
+
+  it('every caller of the command path that ignores the result says so', async () => {
+    // The command path rejects on a refusal so the strip can roll a card back. A caller
+    // that fires and forgets has to swallow it, or the browser logs an unhandled
+    // rejection on every refused command typed into the rail.
+    const unhandled: unknown[] = [];
+    // jsdom does not dispatch `unhandledrejection`; node's own hook does fire, and it is
+    // the one that proves this. Verified by removing the catch and watching it fail.
+    const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+    process.on('unhandledRejection', onUnhandled);
+    mocks.sendCommand.mockResolvedValue({
+      cards: [{ k: 'r1', type: 'refusal', text: 'I did not understand that', ts: Date.now(), source: 'conductor' }],
+    });
+    render(<App />);
+    await waitFor(() => expect(screen.getByTestId('rail-thread')).toBeInTheDocument());
+    const composer = document.getElementById('rail-composer') as HTMLTextAreaElement;
+    await userEvent.type(composer, 'do the thing{Enter}');
+    await waitFor(() => expect(mocks.sendCommand).toHaveBeenCalled());
+    // Let any rejection reach the loop: node reports one only after a full turn with no
+    // handler attached.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await new Promise((resolve) => setImmediate(resolve));
+    process.off('unhandledRejection', onUnhandled);
+    expect(unhandled.map(String)).toEqual([]);
+  });
+});

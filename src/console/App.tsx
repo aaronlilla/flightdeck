@@ -315,8 +315,11 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     const topicLane = !toLane && stateRef.current.topic ? stateRef.current.lanes.find((l) => l.id === stateRef.current.topic) : undefined;
     const question = topicLane?.question;
     const looksLikeAsk = /\?\s*$/.test(trimmed) || /^(what|why|how|show|who|when|where|which|pause|resume|kill|merge|confirm|dismiss|run|answer|status|spend|cap|nudge|ask)\b/i.test(trimmed);
-    if (question && !looksLikeAsk) { processCommand(`answer ${question.key} ${trimmed}`); return; }
-    processCommand(trimmed, toLane);
+    // The command path rejects on a refusal so the Needs-you strip can roll a card back
+    // (R-75 item 4). Every caller that does not want the rejection has to say so, or a
+    // refused command raises an unhandled rejection in the browser.
+    if (question && !looksLikeAsk) { void processCommand(`answer ${question.key} ${trimmed}`).catch(() => undefined); return; }
+    void processCommand(trimmed, toLane).catch(() => undefined);
   }, [processCommand, labelFor]);
 
   /** A card button, a chip or a question's answer: `open <view>` and `open lane <id>`
