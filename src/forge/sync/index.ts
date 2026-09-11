@@ -23,7 +23,7 @@ import { clearKillSwitch, Fleet, Lanes } from '../supervisor.js';
 import { pullJira } from './jira-pull.js';
 import type { SyncStageFn } from './run.js';
 import type { SyncStageName } from '../../shared/sync-contract.js';
-import type { JiraWatcher } from './watcher-state.js';
+import { writeWatcherState, type JiraWatcher } from './watcher-state.js';
 
 export interface ProductionSyncDeps {
   queueStore: QueueStore;
@@ -72,6 +72,11 @@ export function buildProductionSyncStages(deps: ProductionSyncDeps): Partial<Rec
       const project = deps.watcher.status().project ?? process.env['FORGE_BACKLOG_PROJECT'] ?? null;
       if (!project) return { counts: {}, message: 'no project configured for the watcher' };
       await deps.watcher.start(project);
+      // /code-review medium finding: without this, a full sync's own watcher-on stage
+      // started the engine in memory but never wrote watcher.json, so the two ways of
+      // turning the watcher on (this stage and POST /watcher/on) left different
+      // persisted state -- a restart right after a full sync would not bring it back.
+      writeWatcherState({ on: true, project });
       return { counts: {} };
     },
 

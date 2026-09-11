@@ -71,13 +71,13 @@ import { loadConsoleEnv } from './console-env.js';
 import { titleFromHeading } from './console/lanes.js';
 import {
   ensureHome, fleetConfigDirChoice, forgeHome, gotchasDir, inboxDir, intakeBriefsDir, journalPath,
-  killSwitchPath, lanesDir, operatorConfigDir, queuePath, registryDir, runsDir,
+  killSwitchPath, lanesDir, operatorConfigDir, queuePath, registryDir, runsDir, watcherStatePath,
 } from './paths.js';
 import { runQueueTick } from './intake/queue.js';
 import { acquireQueueLock } from './intake/queueLock.js';
 import { QueueStore } from './intake/queueStore.js';
 import { buildQueueRuntimeDeps, queueMergeDeps, queuePromoteDeps, jiraConfigFromEnv } from './queue-wire.js';
-import { readWatcherState, writeWatcherState } from './sync/watcher-state.js';
+import { readWatcherState, shouldAutoStartWatcher, writeWatcherState } from './sync/watcher-state.js';
 import { buildSelfLoop } from './self-wire.js';
 import { QueueTickBackoff } from './queue-backoff.js';
 import { loadPolicy, maxWallMsFor, modelFor, modelIdFor, tierOfBrief } from './policy.js';
@@ -890,14 +890,20 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
 
       // R-68: the Jira watcher now runs through `server.watcher` (`sync/watcher-state.ts`'s
       // `JiraWatcher`), which `POST /watcher/on|off` can start and stop later with no
-      // restart. Boot still starts it automatically -- from `watcher.json`'s own `on` flag
-      // when one exists, falling back to the old `FORGE_BACKLOG_PROJECT`-is-set rule for a
-      // machine that has never flipped the switch -- so nothing regresses for an operator
-      // who never touches the new routes.
+      // restart. Boot still starts it automatically -- from `watcher.json`'s own `on`
+      // flag once that file exists, falling back to the old `FORGE_BACKLOG_PROJECT`-is-set
+      // rule only for a machine that has never flipped the switch. `existsSync` rather
+      // than `watcherFileState.on` alone is load-bearing (/code-review medium finding):
+      // without it, an explicit `POST /watcher/off` writes `{on:false}` and the very next
+      // `forge up` silently overrides it back on whenever FORGE_BACKLOG_PROJECT is still
+      // set in the environment -- the ordinary case, since nothing unsets that env var
+      // when a person flips the switch off from the console.
       let watcherLine = '';
       const watcherFileState = readWatcherState();
       const watcherProject = watcherFileState.project ?? process.env['FORGE_BACKLOG_PROJECT'] ?? null;
-      const shouldStartWatcher = watcherFileState.on || Boolean(process.env['FORGE_BACKLOG_PROJECT']);
+      const shouldStartWatcher = shouldAutoStartWatcher(
+        existsSync(watcherStatePath()), watcherFileState, process.env['FORGE_BACKLOG_PROJECT'],
+      );
       if (!shouldStartWatcher || !watcherProject) {
         watcherLine = 'jira watcher NOT started: no FORGE_BACKLOG_PROJECT';
       } else if (!jiraConfigFromEnv()) {

@@ -13,7 +13,7 @@ import type { WatermarkStore } from '../../../src/forge/intake/once.js';
 import { QueueStore } from '../../../src/forge/intake/queueStore.js';
 import { initialWatermark } from '../../../src/forge/intake/watermark.js';
 import { Journal } from '../../../src/forge/journal.js';
-import { JiraWatcher, readWatcherState, writeWatcherState } from '../../../src/forge/sync/watcher-state.js';
+import { JiraWatcher, readWatcherState, shouldAutoStartWatcher, writeWatcherState } from '../../../src/forge/sync/watcher-state.js';
 
 function tempPath(name: string): string {
   return join(mkdtempSync(join(tmpdir(), 'watcher-state-')), name);
@@ -41,6 +41,20 @@ describe('readWatcherState / writeWatcherState', () => {
 
   it('a missing file reads as off with no project', () => {
     expect(readWatcherState(tempPath('missing.json'))).toEqual({ on: false, project: null });
+  });
+});
+
+describe('shouldAutoStartWatcher (/code-review medium finding)', () => {
+  it('a never-written state file falls back to FORGE_BACKLOG_PROJECT being set', () => {
+    expect(shouldAutoStartWatcher(false, { on: false, project: null }, 'BBZ')).toBe(true);
+    expect(shouldAutoStartWatcher(false, { on: false, project: null }, undefined)).toBe(false);
+  });
+
+  it('once the file exists, its own on flag wins even with the env var still set', () => {
+    // The exact regression: POST /watcher/off wrote {on:false}, but the env var that
+    // started it in the first place is still set in the shell/service environment.
+    expect(shouldAutoStartWatcher(true, { on: false, project: 'BBZ' }, 'BBZ')).toBe(false);
+    expect(shouldAutoStartWatcher(true, { on: true, project: 'BBZ' }, undefined)).toBe(true);
   });
 });
 

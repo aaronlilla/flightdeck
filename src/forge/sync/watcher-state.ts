@@ -39,6 +39,21 @@ export function writeWatcherState(state: WatcherFileState, path: string = watche
   writeFileSync(path, JSON.stringify(state), 'utf8');
 }
 
+/**
+ * `cli.ts`'s boot decision, pulled out so it is testable without spinning up `forge up`.
+ * Once `watcher.json` exists at all, its own `on` flag is authoritative -- an explicit
+ * `POST /watcher/off` must stay off across a restart even while `FORGE_BACKLOG_PROJECT`
+ * is still set in the environment (the ordinary case: nothing unsets that env var when a
+ * person flips the switch from the console). Only a machine that has never written the
+ * file falls back to the old "env var is set" rule, so a fresh install with no watcher
+ * history keeps its prior boot-only behavior.
+ */
+export function shouldAutoStartWatcher(
+  stateFileExists: boolean, state: WatcherFileState, envProject: string | undefined,
+): boolean {
+  return stateFileExists ? state.on : Boolean(envProject);
+}
+
 export interface JiraWatcherDeps {
   jiraConfig: () => JiraConfig | undefined;
   watermarks: WatermarkStore;
