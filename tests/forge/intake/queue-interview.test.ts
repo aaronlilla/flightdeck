@@ -343,6 +343,55 @@ describe('the planning hop as an interview', () => {
     expect(h.store.get(behind.id)!.state).toBe('running');
   });
 
+  it('a planning call that re-enters an item while its interview is still in flight costs no second interview (live 2026-09-11: four interviews per ticket)', async () => {
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const prompts: string[] = [];
+    const reasoner: Reasoner = {
+      provider: 'claude',
+      async call(input) {
+        prompts.push(input.prompt);
+        await gate;
+        return { text: JSON.stringify(ONE_REPO_ONE_AARON) };
+      },
+    };
+    const inbox = tempInbox();
+    const records = new MemoryInterviewStore();
+    const deps = {
+      reasoner, inbox, records,
+      packetFor: async (ticket: string) => packetFor(ticket),
+      scout: async () => ({ answered: true, text: 'found it', citation: 'a.ts:1' }),
+      writeBriefFile: async () => ({ briefPath: 'C:/briefs/x.md', repo: 'owner/repo' }),
+    };
+
+    const first = planTicketWithInterview('BBZ-277', 'Q-1', deps);
+    await new Promise((r) => setTimeout(r, 5));
+    const second = await planTicketWithInterview('BBZ-277', 'Q-1', deps);
+
+    expect(second).toEqual({ waiting: 'interview', asks: 0 });
+    expect(prompts, 'the overlapping call must not start a second interview').toHaveLength(1);
+    release!();
+    const done = await first;
+    expect('waiting' in done).toBe(true);
+    expect(asksForItem(inbox, 'Q-1')).toHaveLength(1);
+  });
+
+  it('a lease older than the window does not block a fresh interview (a crashed process must not hold a ticket forever)', async () => {
+    const reasoner = scriptedReasoner([ONE_REPO_ONE_AARON, SCOUT_ANSWERS]);
+    const inbox = tempInbox();
+    const records = new MemoryInterviewStore();
+    records.put({ itemId: 'Q-2', ticket: 'BBZ-277', at: 1, answers: [], inFlightAt: 1 });
+    const deps = {
+      reasoner, inbox, records,
+      packetFor: async (ticket: string) => packetFor(ticket),
+      scout: async () => ({ answered: true, text: 'found it', citation: 'a.ts:1' }),
+      writeBriefFile: async () => ({ briefPath: 'C:/briefs/x.md', repo: 'owner/repo' }),
+    };
+    const out = await planTicketWithInterview('BBZ-277', 'Q-2', deps);
+    expect('waiting' in out).toBe(true);
+    expect(reasoner.prompts.length).toBeGreaterThan(0);
+  });
+
   it('a held item costs no reasoner call on the ticks it spends waiting', async () => {
     const reasoner = scriptedReasoner([ONE_REPO_ONE_AARON, SCOUT_ANSWERS]);
     const h = harness(reasoner);

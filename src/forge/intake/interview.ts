@@ -138,7 +138,7 @@ function parseQuestion(raw: unknown): InterviewQuestion | null {
 export async function interview(
   packet: Packet, reasoner: Reasoner, opts: { append?: JournalAppend } = {},
 ): Promise<InterviewResult> {
-  const reply = await reasoner.call({ className: 'plan', prompt: buildInterviewPrompt(packet) });
+  const reply = await reasoner.call({ className: 'plan-ticket', prompt: buildInterviewPrompt(packet) });
   let parsed: unknown;
   try {
     parsed = JSON.parse(reply.text);
@@ -201,6 +201,6 @@ export function buildBriefPrompt(packet: Packet, answers: InterviewAnswer[]): st
 export async function writeBrief(
   packet: Packet, answers: InterviewAnswer[], reasoner: Reasoner,
 ): Promise<PlannedBrief> {
-  const result = await reasoner.call({ className: 'plan', prompt: buildBriefPrompt(packet, answers) });
+  const result = await reasoner.call({ className: 'plan-ticket', prompt: buildBriefPrompt(packet, answers) });
   return { packetId: packet.id, ticket: packet.ticket, text: result.text };
 }

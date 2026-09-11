@@ -21,6 +21,10 @@ export interface InterviewRecord {
   at: number;
   /** Everything answered without a person: the scout's findings, verbatim. */
   answers: InterviewAnswer[];
+  /** Set while the interview's own reasoner call is in flight, cleared when it lands. A
+   *  planning hop that re-enters the item inside `INTERVIEW_LEASE_MS` returns `waiting`
+   *  without a call: on 2026-09-11 every pulled ticket was interviewed four times. */
+  inFlightAt?: number;
 }
 
 export class InterviewStore {
