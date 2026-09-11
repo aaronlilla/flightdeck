@@ -71,7 +71,7 @@ describe('readSlackReplies', () => {
 
     expect(result.ok).toBe(true);
     expect(result.attached).toEqual([
-      { askKey: key, from: 'Joe', text: 'hide it, the endpoint returns null there' },
+      { askKey: key, from: 'Joe', text: 'hide it, the endpoint returns null there', thread: THREAD_TS },
     ]);
 
     const entry = inbox.entry(key)!;
@@ -91,16 +91,19 @@ describe('readSlackReplies', () => {
     const log: FetchLog = { urls: [] };
     const deps = { config: configWith(TWO_USER_THREAD, log), inbox, append: () => {} };
 
+    const reads = (): string[] => log.urls.filter((url) => url.includes('conversations.replies'));
+
     const first = await readSlackReplies(emptyMark(), deps);
-    expect(log.urls).toHaveLength(1);
-    expect(log.urls[0]).toContain('conversations.replies');
-    expect(log.urls[0]).toContain(encodeURIComponent(THREAD_TS));
+    // The rate-limit rule is one `conversations.replies` per open pass per tick. The
+    // acknowledgement posts through the same injected fetch, so count reads, not calls.
+    expect(reads()).toHaveLength(1);
+    expect(reads()[0]).toContain(encodeURIComponent(THREAD_TS));
     expect(first.watermark.committedAt).toBeGreaterThan(0);
 
     // The ask now has an answeredBy, so it is no longer an open pass and is not re-read.
     expect(openPasses(inbox)).toHaveLength(0);
     const second = await readSlackReplies(first.watermark, deps);
-    expect(log.urls).toHaveLength(1);
+    expect(reads()).toHaveLength(1);
     expect(second.attached).toHaveLength(0);
     expect(inbox.entry(key)!.reply).toBe('hide it, the endpoint returns null there');
   });
@@ -154,6 +157,125 @@ describe('readSlackReplies', () => {
     expect(rows.map((row) => row['event'])).toEqual(['slack.failed']);
     expect(rows[0]!['reason']).toBe('ratelimited');
     expect(inbox.entry(key)!.answeredBy).toBeNull();
+  });
+
+  // Aaron, 2026-09-11: "the person who replied needs to get feedback that the system got
+  // their reply." A teammate who answers into a thread and hears nothing cannot tell
+  // whether it landed, whether it was understood, or whether to say more.
+  it('posts exactly one acknowledgement into the same thread when it attaches an answer', async () => {
+    const inbox = tempInbox();
+    const key = passedAsk(inbox);
+    const log: FetchLog = { urls: [] };
+    const acks: { thread: string; text: string }[] = [];
+
+    await readSlackReplies(emptyMark(), {
+      config: configWith(TWO_USER_THREAD, log), inbox, append: () => {},
+      acknowledge: async (thread, text) => { acks.push({ thread, text }); return { ok: true }; },
+    });
+
+    expect(acks).toHaveLength(1);
+    expect(acks[0]!.thread).toBe(THREAD_TS);
+    expect(acks[0]!.text.toLowerCase()).toContain('got');
+    // Plain words, never a bare identifier on its own.
+    expect(acks[0]!.text).not.toMatch(/^BBZ-277/);
+    expect(inbox.entry(key)!.answeredBy).toBe('Joe');
+  });
+
+  it('never acknowledges the same reply twice', async () => {
+    const inbox = tempInbox();
+    passedAsk(inbox);
+    const log: FetchLog = { urls: [] };
+    const acks: string[] = [];
+    const deps = {
+      config: configWith(TWO_USER_THREAD, log), inbox, append: () => {},
+      acknowledge: async (_thread: string, text: string) => { acks.push(text); return { ok: true }; },
+    };
+
+    const first = await readSlackReplies(emptyMark(), deps);
+    await readSlackReplies(first.watermark, deps);
+    await readSlackReplies(first.watermark, deps);
+
+    expect(acks).toHaveLength(1);
+  });
+
+  it('says plainly when it cannot read the reply as one of the options', async () => {
+    const inbox = tempInbox();
+    passedAsk(inbox);
+    const log: FetchLog = { urls: [] };
+    const acks: string[] = [];
+
+    await readSlackReplies(emptyMark(), {
+      config: configWith({
+        ok: true,
+        messages: [
+          TWO_USER_THREAD.messages[0],
+          { user: 'U0JOE', text: 'depends what the endpoint does on a cold wallet', ts: '1757600200.000300' },
+        ],
+      }, log),
+      inbox,
+      append: () => {},
+      acknowledge: async (_thread, text) => { acks.push(text); return { ok: true }; },
+    });
+
+    expect(acks).toHaveLength(1);
+    expect(acks[0]!.toLowerCase()).toContain("can't tell which");
+  });
+
+  it('acknowledges a reply it can read as one of the options differently', async () => {
+    const inbox = tempInbox();
+    passedAsk(inbox);
+    const log: FetchLog = { urls: [] };
+    const acks: string[] = [];
+
+    await readSlackReplies(emptyMark(), {
+      config: configWith({
+        ok: true,
+        messages: [TWO_USER_THREAD.messages[0], { user: 'U0JOE', text: '1', ts: '1757600200.000300' }],
+      }, log),
+      inbox,
+      append: () => {},
+      acknowledge: async (_thread, text) => { acks.push(text); return { ok: true }; },
+    });
+
+    expect(acks).toHaveLength(1);
+    expect(acks[0]!.toLowerCase()).not.toContain("can't tell which");
+    expect(acks[0]).toContain('hide the row');
+  });
+
+  it('says nothing to somebody the question was not passed to', async () => {
+    const inbox = tempInbox();
+    passedAsk(inbox);
+    const log: FetchLog = { urls: [] };
+    const acks: string[] = [];
+
+    await readSlackReplies(emptyMark(), {
+      config: configWith({
+        ok: true, messages: [TWO_USER_THREAD.messages[0], TWO_USER_THREAD.messages[1]],
+      }, log),
+      inbox,
+      append: () => {},
+      acknowledge: async (_thread, text) => { acks.push(text); return { ok: true }; },
+    });
+
+    expect(acks).toHaveLength(0);
+  });
+
+  it('a failed acknowledgement never un-attaches the answer it was acknowledging', async () => {
+    const inbox = tempInbox();
+    const key = passedAsk(inbox);
+    const log: FetchLog = { urls: [] };
+    const rows: Record<string, unknown>[] = [];
+
+    const result = await readSlackReplies(emptyMark(), {
+      config: configWith(TWO_USER_THREAD, log), inbox, append: (row) => rows.push(row),
+      acknowledge: async () => ({ ok: false, reason: 'not_in_channel' }),
+    });
+
+    expect(result.attached).toHaveLength(1);
+    const entry = inbox.entry(key)!;
+    expect(entry.answeredBy).toBe('Joe');
+    expect(entry.reply).toBe('hide it, the endpoint returns null there');
+    expect(rows.map((row) => row['event'])).toContain('ask.returned');
   });
 
   it('reads nothing at all when Slack is not configured', async () => {

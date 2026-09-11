@@ -16,7 +16,7 @@ import { describe, expect, it } from 'vitest';
 import { Inbox } from '../../../src/forge/inbox.js';
 import {
   MAX_OPEN_PASSES, buildPassMessage, missingEnvSentence, missingSlackEnv, openPassCount,
-  parseSlackUsers, postQuestion, slackConfigFromEnv, type SlackConfig,
+  parseSlackUsers, postQuestion, postThreadReply, slackConfigFromEnv, type SlackConfig,
 } from '../../../src/forge/intake/slack.js';
 
 function tempInbox(): Inbox {
@@ -239,6 +239,54 @@ describe('postQuestion', () => {
     expect(outcome.ok).toBe(false);
     expect(outcome.reason).toContain(String(MAX_OPEN_PASSES));
     expect(log.calls).toHaveLength(0);
+  });
+});
+
+describe('postThreadReply', () => {
+  // A reaction would be the cheaper acknowledgement and cannot be used: the bot holds
+  // chat:write, groups:history and groups:read, so reactions.add fails with missing_scope.
+  // This asserts the endpoint, so a later "simplification" to a reaction breaks here
+  // rather than at run time in front of a teammate.
+  it('posts a threaded message, never a reaction', async () => {
+    const log: FetchLog = { calls: [] };
+    const outcome = await postThreadReply('1757600000.000100', 'Got it, thanks.', {
+      config: config(log), readability: passes, append: () => {},
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(log.calls).toHaveLength(1);
+    expect(log.calls[0]!.url).toBe('https://slack.com/api/chat.postMessage');
+    expect(log.calls[0]!.url).not.toContain('reactions');
+    const sent = JSON.parse(String(log.calls[0]!.init.body));
+    expect(sent.thread_ts).toBe('1757600000.000100');
+    expect(sent.channel).toBe('C1');
+    expect(sent.text).toBe('Got it, thanks.');
+  });
+
+  it('refuses without calling fetch when a guard denies the sentence', async () => {
+    const log: FetchLog = { calls: [] };
+    const voiceDenied = await postThreadReply('1757600000.000100', 'Aaron said to hide it', {
+      config: config(log), readability: passes, append: () => {},
+      voice: () => ({ ok: false, reason: 'Aaron named in the third person' }),
+    });
+    expect(voiceDenied.ok).toBe(false);
+    expect(log.calls).toHaveLength(0);
+
+    const readabilityDenied = await postThreadReply('1757600000.000100', 'Got it.', {
+      config: config(log), append: () => {},
+      readability: () => ({ verdict: 'DENY', reason: 'banned word(s) in prose: just' }),
+    });
+    expect(readabilityDenied.ok).toBe(false);
+    expect(log.calls).toHaveLength(0);
+  });
+
+  it('reports an ok:false response rather than claiming it landed', async () => {
+    const log: FetchLog = { calls: [] };
+    const outcome = await postThreadReply('1757600000.000100', 'Got it, thanks.', {
+      config: config(log, { ok: false, error: 'not_in_channel' }), readability: passes, append: () => {},
+    });
+    expect(outcome.ok).toBe(false);
+    expect(outcome.reason).toBe('not_in_channel');
   });
 });
 

@@ -122,6 +122,47 @@ function refuse(askKey: string, entry: InboxEntry, deps: PostQuestionDeps, reaso
   return { ok: false, reason };
 }
 
+/**
+ * One sentence back into the thread, so the person who answered knows it landed.
+ *
+ * Aaron, 2026-09-11: "the person who replied needs to get feedback that the system got
+ * their reply." Without it a teammate types an answer into a thread and hears nothing,
+ * and cannot tell whether it arrived, whether it was understood, or whether to say more.
+ *
+ * A reaction would be the cheaper signal and is deliberately not used: the bot holds
+ * `chat:write`, `groups:history` and `groups:read`, so `reactions.add` would fail at run
+ * time with `missing_scope`. A threaded message needs no scope the bot lacks.
+ *
+ * Guarded like every other write here -- a sentence that fails the voice guard or the
+ * readability rule is not sent, and never reaches `fetch`.
+ */
+export async function postThreadReply(
+  thread: string, text: string, deps: Omit<PostQuestionDeps, 'inbox'> & { inbox?: Inbox },
+): Promise<{ ok: boolean; reason?: string }> {
+  const config = deps.config;
+  if (!config) return { ok: false, reason: 'slack is not configured' };
+  const voice = (deps.voice ?? voiceGuard)(text);
+  if (!voice.ok) return { ok: false, reason: voice.reason ?? 'the voice guard refused it' };
+  const readable = (deps.readability ?? defaultReadability)(text);
+  if (readable.verdict === 'DENY') return { ok: false, reason: readable.reason ?? 'readability refused it' };
+  try {
+    const doFetch = config.fetchFn ?? fetch;
+    const raw = await doFetch('https://slack.com/api/chat.postMessage', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        Authorization: `Bearer ${config.token}`,
+      },
+      body: JSON.stringify({ channel: config.channel, thread_ts: thread, text }),
+    });
+    const response = await raw.json() as { ok?: boolean; error?: string };
+    if (!response.ok) return { ok: false, reason: response.error ?? 'slack did not accept it' };
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, reason: (error as Error).message };
+  }
+}
+
 /** How many asks are passed and still waiting on a teammate. */
 export function openPassCount(inbox: Inbox): number {
   return inbox.all().filter((entry) => entry.passedTo && entry.answer === undefined).length;
