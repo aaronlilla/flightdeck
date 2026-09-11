@@ -145,3 +145,32 @@ describe('probeAlivePidLiveness', () => {
     expect(probeAlivePidLiveness(2 ** 22 + 12345)).toBeUndefined();
   });
 });
+
+describe('resolveConfigDirs', () => {
+  it('reads a dir named by both the fixed list and the accounts registry only once', () => {
+    // Aaron's own login is a fixed dir AND an accounts-registry entry, so every session in
+    // it was scanned twice: 6 session files came back as 12 rows on 2026-09-10, and the
+    // registry tick journaled two identical `session.started` rows for each terminal.
+    const homeDir = makeDir();
+    const accountsRegistryDir = makeDir();
+    cleanupDirs.push(homeDir, accountsRegistryDir);
+
+    writeSession(homeDir, 'sess-home', {
+      sessionId: 'sess-home', pid: 111, cwd: '/repos/somewhere',
+      kind: 'interactive', name: 'dev-home', status: 'idle',
+    });
+    const registryPath = join(accountsRegistryDir, 'registry.json');
+    writeFileSync(registryPath, JSON.stringify({
+      accounts: [{ id: 'own', provider: 'claude', label: 'default', configDir: homeDir }],
+    }));
+
+    const rows = scanSessions({
+      fixedConfigDirs: () => [{ dir: homeDir, accountLabel: 'default' }],
+      accountsRegistryPath: registryPath,
+      probeAlivePid: () => true,
+      gitInfo: () => ({ repo: null, worktree: null, branch: null }),
+    });
+
+    expect(rows.map((row) => row.sessionId)).toEqual(['sess-home']);
+  });
+});

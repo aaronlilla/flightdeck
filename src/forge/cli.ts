@@ -62,7 +62,9 @@ import { replay, Journal, JournalCache } from './journal.js';
 import { initReadabilityAndJournal, readabilityStatusLine } from './console/readability-status.js';
 import { getReadabilityContractState } from './intake/readability.js';
 import { probeAlivePidLiveness, scanSessions } from './sessions/registry.js';
-import { sessionStartedRow } from './sessions/started-row.js';
+import { journalRegistryRows, planRegistryRows } from './sessions/reconcile.js';
+import { type IngestDeps } from './sessions/ingest.js';
+import { sweepAndCollectLocks, worktreeStatusFor } from './sessions/cleanup.js';
 import { checkLaunch, launchEnv, loginInFlight, pinnedRuntime, runtimeHead, runtimeVersion } from './launcher.js';
 import { assess, LivenessSupervisor } from './liveness.js';
 import { loadConsoleEnv } from './console-env.js';
@@ -718,28 +720,40 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           // Guarded the same as every other tick step: one bad read never stops liveness
           // or the Warden tick that already ran this cycle.
         }
-        // R-49: the whole-machine session registry, on the same cadence. Journals
-        // `session.started` only for a session this journal has never heard of (a
-        // hand-opened terminal whose hook has not fired yet) and `session.vanished`
-        // only for a session the journal still shows as live -- so a session the hook
-        // already reported never gets a duplicate started row here.
-        try {
-          const fleetState = sharedJournalCache.read(journalPath());
-          for (const row of scanSessions({ probeAlivePid: probeAlivePidLiveness })) {
-            if (!row.sessionId) continue; // a malformed record names no session to journal
-            const known = fleetState.sessions[row.sessionId];
-            if (!known && !row.vanished) {
-              burnJournal.append(sessionStartedRow(row));
-            }
-            if (row.vanished && (!known || known.status === 'live')) {
-              burnJournal.append({ event: 'session.vanished', actor: 'registry', session: row.sessionId, cwd: row.cwd });
-            }
-          }
-        } catch {
-          // Same guard: one bad registry read never stops liveness or the Warden tick.
-        }
       }, 30_000);
       tick.unref();
+
+      // R-49: the whole-machine session registry, on its own 5 s cadence rather than the
+      // 30 s tick above. A hard kill leaves no `SessionEnd` hook behind, so this scan is
+      // the only thing that ever notices one. The probe itself sees a killed pid in under
+      // 600 ms, so the cadence is the whole of the delay: a 10 s tick puts the worst case
+      // at 10.5 s, just outside the 10 s the board is meant to be right within, and 5 s
+      // puts it at 5.5 s. The scan is one `process.kill(pid, 0)` per session file plus a
+      // cached git lookup -- 12 files on this machine, so the cadence costs nothing
+      // measurable. `planRegistryRows` holds the whole decision; see `sessions/reconcile.ts`.
+      const registryJournal = new Journal(journalPath());
+      const registryTick = setInterval(() => {
+        try {
+          const fleetState = sharedJournalCache.read(journalPath());
+          // A hard kill never reaches `POST /sessions/event`, so until now the tick's
+          // `session.vanished` row was appended raw and the cleanup that releases the
+          // session's claims and locks never ran: 695 vanished rows on this machine had
+          // produced 2 `session.cleanup` rows. The same `ingestOne` the route uses now
+          // handles the tick's terminal rows, so one path classifies and cleans up.
+          const registryIngest: IngestDeps = {
+            append: (row) => registryJournal.append(row),
+            lastStopFor: (sessionId) => fleetState.sessions[sessionId]?.lastStop,
+            sweep: () => sweepAndCollectLocks(),
+            worktreeStatusFor: (sessionId, cwd) => worktreeStatusFor(sessionId, cwd),
+          };
+          const scanned = scanSessions({ probeAlivePid: probeAlivePidLiveness });
+          journalRegistryRows(planRegistryRows(scanned, fleetState.sessions), registryIngest);
+        } catch {
+          // Guarded the same as every other tick step: one bad registry read never stops
+          // liveness or the Warden tick.
+        }
+      }, 5_000);
+      registryTick.unref();
 
       // P5.7: `FORGE_CHAIN=1` turns this on; off, `forge up` behaves exactly as it did
       // before this stream. Its own timer, at `FORGE_CHAIN_POLL_S` (default 300s), so a
