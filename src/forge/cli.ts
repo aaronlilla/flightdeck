@@ -58,7 +58,8 @@ import { serverRequest } from './server-request.js';
 import { readProcessList, watchedProcesses, probeProcessListCached } from './fleetwatch.js';
 import { Gotchas } from './gotcha.js';
 import { Inbox, isAskStale } from './inbox.js';
-import { replay, Journal, JournalCache } from './journal.js';
+import { replay, appendOnce, Journal, JournalCache } from './journal.js';
+import { journalInterviewAnswer } from './intake/interviewPlanner.js';
 import { initReadabilityAndJournal, readabilityStatusLine } from './console/readability-status.js';
 import { getReadabilityContractState } from './intake/readability.js';
 import { probeAlivePidLiveness, scanSessions } from './sessions/registry.js';
@@ -1326,6 +1327,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       const answerText = answer.join(' ');
       const answered = inbox.answer(key, answerText);
       if (!answered) return { code: 1, lines: [`nothing asked ${key}`] };
+      journalInterviewAnswer((row) => appendOnce(journalPath(), row), answered);
       // A run this process itself holds the live session for (deps.engine, injected by a
       // specimen or by `forge run` calling straight through) is answered in place. Every
       // run also gets its answer queued through the inbox, which is what reaches a run

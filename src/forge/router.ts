@@ -14,6 +14,7 @@ import type { Reasoner } from './contracts.js';
 import type { Inbox, InboxEntry } from './inbox.js';
 import type { Journal } from './journal.js';
 import { deliverAnswer } from './runinbox.js';
+import { journalInterviewAnswer } from './intake/interviewPlanner.js';
 
 /** Haiku classifies; Sonnet acts. Both are existing model-policy classes, chosen for
  *  the cost/latency the two steps actually need rather than new classes invented for
@@ -110,7 +111,10 @@ export async function act(
     }
     const answered = ctx.inbox.answer(key, answer);
     const delivered = Boolean(answered);
-    if (answered) await deliverAnswer(answered, key, answer);
+    if (answered) {
+      await deliverAnswer(answered, key, answer);
+      journalInterviewAnswer((row) => ctx.journal.append(row), answered);
+    }
     return { class: 'answer', key, answer, delivered };
   }
 

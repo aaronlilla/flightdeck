@@ -56,11 +56,31 @@ export interface InterviewPlannerDeps {
  * teammate with a call they did not make is worse than saying nothing: the worker reads
  * `## Decisions` as settled and never asks again. Found by code review, 2026-09-11.
  */
-function answeredByOf(entry: InboxEntry): string {
+export function answeredByOf(entry: InboxEntry): string {
   if (entry.answeredBy && entry.reply !== undefined && entry.answer === entry.reply) {
     return entry.answeredBy;
   }
   return 'the operator';
+}
+
+/**
+ * Journals `interview.answered` at the one condition every answer-delivery surface
+ * shares: the closed ask belongs to an item (`item:<id>`, minted by `askRunFor`), never
+ * an ordinary worker ask. Called from every place an ask is actually answered --
+ * `/answer`, the console's own `answer <key> <text>` command, `forge answer`, and the
+ * auto-answer rule -- rather than from one route alone, so the row fires wherever the
+ * shipped app actually delivers an answer, not only where a test happens to call in.
+ */
+export function journalInterviewAnswer(append: JournalAppend | undefined, answered: InboxEntry): void {
+  const itemRun = answered.runs.find((run) => run.startsWith(ITEM_RUN_PREFIX));
+  if (itemRun === undefined) return;
+  append?.({
+    event: 'interview.answered',
+    itemId: itemRun.slice(ITEM_RUN_PREFIX.length),
+    ticket: answered.ticket,
+    askKey: answered.key,
+    answeredBy: answeredByOf(answered),
+  });
 }
 
 function answersFrom(entries: InboxEntry[]): InterviewAnswer[] {
@@ -138,7 +158,7 @@ export async function planTicketWithInterview(
       forPerson = { ...question, answerableBy: 'aaron' };
       note = found.text;
     }
-    deps.inbox.raise({
+    const entry = deps.inbox.raise({
       run: askRunFor(itemId),
       question: note ? `${forPerson.text}\n\n(looked in the code first: ${note})` : forPerson.text,
       options: forPerson.options,
@@ -148,6 +168,19 @@ export async function planTicketWithInterview(
       ticket,
       actionTarget: forPerson.answerableBy === 'teammate' && forPerson.who ? `teammate:${forPerson.who}` : 'interview',
     });
+    // The Flow page's only record of what was asked and who owns it -- `queue.waiting`
+    // says an item is held, never why. Written once per ask that actually creates a new
+    // inbox entry: `entry.asked === 1` is `raise`'s own signal for that, so two questions
+    // in this loop that normalise to the same key (identical text and options) get one
+    // row, matching the one ask `raise` actually left on disk -- never two rows sharing
+    // an askKey. A repo question the scout answered above never reaches this line at all.
+    if (entry.asked === 1) {
+      deps.append?.({
+        event: 'interview.asked', itemId, ticket, askKey: entry.key,
+        answerableBy: forPerson.answerableBy, question: entry.question,
+        ...(forPerson.who ? { who: forPerson.who } : {}),
+      });
+    }
     raised += 1;
   }
 

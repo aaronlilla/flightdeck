@@ -48,6 +48,7 @@ import { readQueuePaused, writeQueuePaused } from './console/queue-pause.js';
 import { writeQueueWidth } from './console/queue-width.js';
 import type { Actuator, Reasoner } from './contracts.js';
 import { isAskStale, projectStaleness, type Inbox } from './inbox.js';
+import { journalInterviewAnswer } from './intake/interviewPlanner.js';
 import { appendOnce, Journal, JournalCache, type RangeReader } from './journal.js';
 import type { StuckSignal } from './liveness.js';
 import { WardenActuator } from './warden.js';
@@ -1346,6 +1347,7 @@ export class ForgeServer {
         // this always rides the cross-process inbox queue.
         await deliverAnswer(answered, parsed.key, parsed.answer);
         this.publish({ event: 'ask.answered', key: answered.key, runs: answered.runs });
+        journalInterviewAnswer((row) => appendOnce(this.journalPath, row), answered);
         json(response, 200, answered);
       })();
     });

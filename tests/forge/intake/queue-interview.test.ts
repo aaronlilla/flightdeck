@@ -168,6 +168,62 @@ describe('the planning hop as an interview', () => {
     expect(asks).toHaveLength(1);
     expect(asks[0]!.question).toContain('hide the row');
     expect(asks[0]!.ticket).toBe('BBZ-277');
+
+    // The scout answered the repo question outright, so only the operator's question
+    // ever reached the inbox -- and only that one gets an `interview.asked` row.
+    const asked = h.events.filter((row) => row['event'] === 'interview.asked');
+    expect(asked).toHaveLength(1);
+    expect(asked[0]!['itemId']).toBe(item.id);
+    expect(asked[0]!['ticket']).toBe('BBZ-277');
+    expect(asked[0]!['askKey']).toBe(asks[0]!.key);
+    expect(asked[0]!['answerableBy']).toBe('aaron');
+    // What was asked, not only who owns it -- the comment above this row's write site
+    // claims both, so both need to actually be there.
+    expect(asked[0]!['question']).toContain('hide the row');
+  });
+
+  // Line-item finding: `inbox.raise` dedupes by askKey, so two questions that normalise
+  // to the same key (identical text and options, same item, same actionTarget) leave one
+  // entry on disk. The row must follow that -- one row, not two sharing an askKey.
+  it('two questions that normalise to the same askKey write one interview.asked row, not two', async () => {
+    const SAME_QUESTION_TWICE = {
+      route: 'frontend',
+      questions: [
+        { text: 'same question, asked twice?', options: [], recommended: null, answerableBy: 'aaron' },
+        { text: 'same question, asked twice?', options: [], recommended: null, answerableBy: 'aaron' },
+      ],
+    };
+    const reasoner = scriptedReasoner([SAME_QUESTION_TWICE]);
+    const h = harness(reasoner);
+    const item = addTicketItem(h.store, 'BBZ-400');
+
+    await runQueueTick(h.deps, [item]);
+
+    const asks = asksForItem(h.inbox, item.id);
+    expect(asks).toHaveLength(1);
+    const asked = h.events.filter((row) => row['event'] === 'interview.asked');
+    expect(asked).toHaveLength(1);
+    expect(asked[0]!['askKey']).toBe(asks[0]!.key);
+  });
+
+  // A teammate-tagged question names who owns it; the row must carry that name, not just
+  // 'teammate' as a category.
+  it('a teammate-tagged ask carries who in its interview.asked row', async () => {
+    const TEAMMATE_QUESTION = {
+      route: 'frontend',
+      questions: [
+        { text: 'who owns the Slack bot token?', options: [], recommended: null, answerableBy: 'teammate', who: 'joe' },
+      ],
+    };
+    const reasoner = scriptedReasoner([TEAMMATE_QUESTION]);
+    const h = harness(reasoner);
+    const item = addTicketItem(h.store, 'BBZ-401');
+
+    await runQueueTick(h.deps, [item]);
+
+    const asked = h.events.filter((row) => row['event'] === 'interview.asked');
+    expect(asked).toHaveLength(1);
+    expect(asked[0]!['who']).toBe('joe');
   });
 
   it('sends the repo question to the scout as a git grep for the question own terms', async () => {
@@ -280,6 +336,12 @@ describe('the planning hop as an interview', () => {
     expect(asks).toHaveLength(1);
     expect(asks[0]!.question).toContain('looked in the code first');
     expect(h.store.get(item.id)!.state).toBe('planning');
+
+    // A repo question the scout could not answer still becomes an ask, and the row it
+    // writes says so -- `answerableBy` reads 'aaron', the reassigned owner, never 'repo'.
+    const asked = h.events.filter((row) => row['event'] === 'interview.asked');
+    expect(asked).toHaveLength(1);
+    expect(asked[0]!['answerableBy']).toBe('aaron');
   });
 
   it('a backend-only ticket never launches a worker and raises no ask', async () => {
@@ -297,6 +359,9 @@ describe('the planning hop as an interview', () => {
     expect(after.reason).toContain('returns null for an empty wallet');
     expect(asksForItem(h.inbox, item.id)).toHaveLength(0);
     expect(h.events.some((row) => row['event'] === 'queue.planned')).toBe(false);
+    // A backend-routed ticket never reaches the ask loop at all, so no interview.asked
+    // row gets written for it either.
+    expect(h.events.some((row) => row['event'] === 'interview.asked')).toBe(false);
   });
 
   // Found by /critique, 2026-09-11. An interview ask names its item, not a launched
@@ -405,5 +470,8 @@ describe('the planning hop as an interview', () => {
     expect(reasoner.prompts).toHaveLength(afterFirst);
     // And the waiting row is written once, not once per tick.
     expect(h.events.filter((row) => row['event'] === 'queue.waiting')).toHaveLength(1);
+    // A held item's ask was raised once, on the first tick; the ticks it spends waiting
+    // never re-raise it, so no repeat interview.asked row appears.
+    expect(h.events.filter((row) => row['event'] === 'interview.asked')).toHaveLength(1);
   });
 });
