@@ -17,8 +17,11 @@
  *    with its message instead, and the next interval still fires.
  * 2. The time of the last completed pass is held in memory and served on the state read,
  *    so "overdue" is a question anybody can answer without replaying the journal.
- * 3. A pass over a held item still proves the loop ran -- at most one completion row a
- *    minute, or immediately when the number of items considered changes.
+ * 3. A pass over a held item still proves the loop ran -- one completion row a minute,
+ *    carrying how many items the pass considered and whether that count moved since the
+ *    last row. The ceiling binds unconditionally. An earlier draft wrote a row at once
+ *    on a changed count, which meant an ordinary busy queue -- one whose count moves
+ *    every pass as items are added and drain -- wrote a row per tick forever.
  *
  * It deliberately does NOT change what the tick decides. Every hop, every transition and
  * every refusal still belongs to `runQueueTick`.
@@ -189,9 +192,10 @@ export class QueueTickRunner<T> {
     }
   }
 
-  /** Resolves once the pass in flight, if any, has finished. The shutdown path and any
-   *  caller that must observe a pass it started await this rather than guessing at a
-   *  timer. */
+  /** Resolves once the pass in flight, if any, has finished. Used by callers that must
+   *  observe a pass they started rather than guessing at a timer. `installShutdown` does
+   *  NOT await it today, so a stop signal can still land mid-pass with no drain -- the
+   *  same as before this module existed, and not something it promises. */
   whenIdle(): Promise<void> {
     return this.current ?? Promise.resolve();
   }
@@ -258,7 +262,11 @@ export class QueueTickRunner<T> {
     const changed = this.countMovedSinceRow;
     this.countMovedSinceRow = false;
     this.lastCompletionRowAt = now;
-    this.record({ event: 'queue.tick-complete', actor: 'queue', considered, changed, at: now });
+    // No `at` of our own. `Journal.append` stamps every row, and a row carrying this
+    // class's injected clock instead was rejected outright by `replayEvents` whenever
+    // that clock did not look like a real epoch -- found against a real journal on disk,
+    // 2026-09-11, which is the gap both reviews closed on.
+    this.record({ event: 'queue.tick-complete', actor: 'queue', considered, changed });
   }
 
   private onFailed(error: unknown): void {

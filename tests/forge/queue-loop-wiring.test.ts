@@ -18,6 +18,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { Inbox } from '../../src/forge/inbox.js';
+import { replayEvents } from '../../src/forge/contracts.js';
 import { Journal } from '../../src/forge/journal.js';
 import { QueueStore } from '../../src/forge/intake/queueStore.js';
 import { QueueTickBackoff } from '../../src/forge/queue-backoff.js';
@@ -123,5 +124,60 @@ describe('GET /state carries the queue loop', () => {
     expect(loop['ticking']).toBe(false);
     expect(loop['overdue']).toBe(false);
     expect(loop['sentence']).toBe('This process is not running the queue loop; another process holds the queue lock.');
+  });
+});
+
+describe('the rows survive a real journal on disk', () => {
+  /** Both reviews on 2026-09-11 closed with the same "not verified": nothing had been run
+   *  against a real `Journal` and a real replay. A fake journal that collects objects
+   *  cannot show that `queue.tick-complete` is accepted by the closed event union -- and
+   *  an unregistered name is quarantined on replay, and counted as a torn tail whenever
+   *  it is the last line, which on a quiet fleet it usually is. */
+  it('writes a completion row a real replay reads back, not quarantines', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-queue-journal-'));
+    const path = join(home, 'fleet.jsonl');
+    const journal = new Journal(path);
+    let at = 1_700_000_000_000;
+    const runner = new QueueTickRunner<string>({
+      tick: async () => {},
+      items: () => ['one'],
+      journal: { append: (row) => journal.append(row as never) },
+      backoff: new QueueTickBackoff({ append: (row) => journal.append(row as never) }, { now: () => at }),
+      intervalMs: 15_000,
+      now: () => at,
+    });
+
+    runner.tick();
+    await runner.whenIdle();
+    journal.close();
+
+    const replayed = replayEvents(readFileSync(path, 'utf8'));
+    expect(replayed.quarantined).toBe(0);
+    expect(replayed.tornTail).toBe(false);
+    expect(replayed.events.map((row) => row.event)).toContain('queue.tick-complete');
+  });
+
+  it('writes a failure row a real replay reads back too', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-queue-journal-fail-'));
+    const path = join(home, 'fleet.jsonl');
+    const journal = new Journal(path);
+    let at = 1_700_000_000_000;
+    const runner = new QueueTickRunner<string>({
+      tick: async () => { throw new Error('cannot reach Jira'); },
+      items: () => [],
+      journal: { append: (row) => journal.append(row as never) },
+      backoff: new QueueTickBackoff({ append: (row) => journal.append(row as never) }, { now: () => at }),
+      intervalMs: 15_000,
+      now: () => at,
+    });
+
+    runner.tick();
+    await runner.whenIdle();
+    journal.close();
+
+    const replayed = replayEvents(readFileSync(path, 'utf8'));
+    expect(replayed.quarantined).toBe(0);
+    expect(replayed.tornTail).toBe(false);
+    expect(replayed.events.map((row) => row.event)).toContain('queue.tick-error');
   });
 });
