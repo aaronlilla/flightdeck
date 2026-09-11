@@ -96,13 +96,19 @@ export interface LivenessInput {
 }
 
 export interface LivenessThresholds {
-  /** No worker event mid-turn, for a run whose registry liveness is false or unknown. */
+  /**
+   * No worker event mid-turn, for a run whose registry liveness is unknown
+   * (`registryLive === undefined`). A run with `registryLive === false` never reaches
+   * this check at all: it returns earlier in `assess()`, so idle never fires for it at
+   * any duration.
+   */
   idleMs: number;
   /**
    * No worker event mid-turn, for a run the registry has confirmed is backed by a live
    * pid. Wider than `idleMs`: a model composing a long turn, or waiting out a rate
    * limit, crosses 120s routinely while genuinely alive. Only `registryLive === true`
-   * earns this; `false` and `undefined` both fall back to `idleMs`.
+   * earns this; `registryLive === undefined` falls back to `idleMs`, and
+   * `registryLive === false` skips the idle check entirely.
    */
   liveIdleMs: number;
   /** A fleet-account session file that has not been touched. */
