@@ -1,19 +1,10 @@
 /**
  * Re-exports the fetch/reconcile/sweep functions plus the deps shape and the real-deps
- * builder. `CodeSyncDeps` is typed here verbatim against
- * `2026-09-11-resync-contract.md`'s `CodeSyncDeps` block until stream A merges
- * `src/shared/sync-contract.ts`; the type test at
- * `tests/forge/sync/code/contract-shape.test.ts` proves this file matches it once it
- * exists.
+ * builder. `CodeSyncDeps` comes straight from `src/shared/sync-contract.ts` (stream A);
+ * the type test at `tests/forge/sync/code/contract-shape.test.ts` proves it is used
+ * verbatim, never a local re-declaration that could drift from it.
  */
-export interface CodeSyncDeps {
-  git(checkout: string, argv: string[]): Promise<string>;
-  gh(argv: string[], cwd?: string): Promise<string>;
-  repos: Array<{ repo: string; checkout: string; base: string }>;
-  claimedPaths(): string[];
-  worktreeStatus(path: string): { clean: boolean; pushed: boolean } | undefined;
-  now(): number;
-}
+export type { CodeSyncDeps } from '../../../shared/sync-contract.ts';
 
 export { fetchRepos } from './fetch.ts';
 export type { FetchReposResult } from './fetch.ts';
