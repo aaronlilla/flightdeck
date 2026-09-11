@@ -158,6 +158,10 @@ describe('every console write publishes a slice event', () => {
     expect(named, `${sample.path} answered ${status} and published ${JSON.stringify(published.slice(before))}`)
       .toEqual(expect.arrayContaining(sample.slices));
     for (const event of slices) {
+      // A running sync scope emits its own `sync` slice per stage transition (live
+      // progress); those carry a different reason and are not the route-completion
+      // publish this test guards.
+      if (event.reason === 'a sync stage advanced') continue;
       expect(event.reason).toMatch(/answered \d{3}$/);
       expect(typeof event.at).toBe('number');
     }

@@ -111,7 +111,7 @@ export async function sweepWorktrees(
 
       let status: { clean: boolean; pushed: boolean } | undefined;
       try {
-        status = deps.worktreeStatus(entry.path);
+        status = await deps.worktreeStatus(entry.path);
       } catch {
         kept.push({ path: entry.path, branch, reason: 'status-error' });
         continue;
