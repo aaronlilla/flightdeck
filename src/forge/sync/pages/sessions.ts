@@ -4,16 +4,14 @@
  * `ingest`, then run the global lock sweep once more so a re-sync also clears anything
  * the tick's own once-per-tick sweep missed between ticks.
  */
+import type { StageResult } from '../../../shared/sync-contract.js';
 import type { FleetState } from '../../journal.js';
 import { journalRegistryRows, planRegistryRows } from '../../sessions/reconcile.js';
 import { probeAlivePidLiveness } from '../../sessions/registry.js';
 import type { SessionRow } from '../../sessions/registry.js';
 import type { IngestDeps } from '../../sessions/ingest.js';
 
-export interface StageResult {
-  counts: Record<string, number>;
-  message?: string;
-}
+export type { StageResult } from '../../../shared/sync-contract.js';
 
 export interface SyncSessionsDeps {
   scan(): SessionRow[];
