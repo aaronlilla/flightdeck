@@ -405,6 +405,35 @@ describe('ConsoleWrites.command / kill confirm flow', () => {
     expect(receipt.text).toBe('Answered "Restart the forge MCP connection?": Restart');
   });
 
+  // The Needs-you strip, the rail question card and the ticket sheet all reach an answer
+  // through this exact path -- POST /command -> ConsoleWrites.command -> deliverAnswerCard
+  // -- never through /answer directly. A row that only fires on /answer never fires in
+  // production; this drives the console's own command grammar instead.
+  it('writes an interview.answered row when the console answers an item: ask through the command grammar', async () => {
+    const raised = inbox.raise({ run: 'item:Q-console1', question: 'hide or zero?', ticket: 'BBZ-300' });
+
+    await writes.command(`answer ${raised.key} hide`);
+
+    const rows = readFileSync(journalPath, 'utf8').split('\n').filter((l) => l.trim())
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+      .filter((row) => row['event'] === 'interview.answered');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!['itemId']).toBe('Q-console1');
+    expect(rows[0]!['ticket']).toBe('BBZ-300');
+    expect(rows[0]!['askKey']).toBe(raised.key);
+  });
+
+  it('writes no interview.answered row when the console answers an ordinary worker ask', async () => {
+    const raised = inbox.raise({ run: 'alpha', question: 'Restart the forge MCP connection?' });
+
+    await writes.command(`answer ${raised.key} Restart`);
+
+    const rows = readFileSync(journalPath, 'utf8').split('\n').filter((l) => l.trim())
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+      .filter((row) => row['event'] === 'interview.answered');
+    expect(rows).toHaveLength(0);
+  });
+
   it('W4: "answer <n>" resolves the option by number against the one open ask', async () => {
     inbox.raise({ run: 'alpha', question: 'NOT NULL or nullable?', options: ['NOT NULL', 'nullable + backfill'] });
 

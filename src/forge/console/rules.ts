@@ -17,6 +17,7 @@ import { dirname, join } from 'node:path';
 import type { Inbox } from '../inbox.js';
 import { appendOnce, replay } from '../journal.js';
 import { deliverAnswer } from '../runinbox.js';
+import { journalInterviewAnswer } from '../intake/interviewPlanner.js';
 import { consoleDir, recordAction, type ActionsLedger } from './actions-ledger.js';
 import { killRun, type RunActionsDeps } from './run-actions.js';
 import type { ActionResult, Rule } from '../../shared/console-model.js';
@@ -164,6 +165,7 @@ export async function enforceRulesOnce(deps: EnforcementDeps): Promise<void> {
         const answered = deps.inbox.answer(ask.key, rule.effect);
         if (answered) {
           await deliverAnswer(answered, ask.key, rule.effect);
+          journalInterviewAnswer((row) => appendOnce(deps.runActions.journalPath, row), answered);
           appendOnce(deps.runActions.journalPath, {
             event: 'decision.made', actor: 'console', action: 'rule.enforced', ruleId: rule.id,
             text: `auto-answer enforced on ${ask.key}`,

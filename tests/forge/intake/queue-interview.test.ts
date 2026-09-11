@@ -177,6 +177,53 @@ describe('the planning hop as an interview', () => {
     expect(asked[0]!['ticket']).toBe('BBZ-277');
     expect(asked[0]!['askKey']).toBe(asks[0]!.key);
     expect(asked[0]!['answerableBy']).toBe('aaron');
+    // What was asked, not only who owns it -- the comment above this row's write site
+    // claims both, so both need to actually be there.
+    expect(asked[0]!['question']).toContain('hide the row');
+  });
+
+  // Line-item finding: `inbox.raise` dedupes by askKey, so two questions that normalise
+  // to the same key (identical text and options, same item, same actionTarget) leave one
+  // entry on disk. The row must follow that -- one row, not two sharing an askKey.
+  it('two questions that normalise to the same askKey write one interview.asked row, not two', async () => {
+    const SAME_QUESTION_TWICE = {
+      route: 'frontend',
+      questions: [
+        { text: 'same question, asked twice?', options: [], recommended: null, answerableBy: 'aaron' },
+        { text: 'same question, asked twice?', options: [], recommended: null, answerableBy: 'aaron' },
+      ],
+    };
+    const reasoner = scriptedReasoner([SAME_QUESTION_TWICE]);
+    const h = harness(reasoner);
+    const item = addTicketItem(h.store, 'BBZ-400');
+
+    await runQueueTick(h.deps, [item]);
+
+    const asks = asksForItem(h.inbox, item.id);
+    expect(asks).toHaveLength(1);
+    const asked = h.events.filter((row) => row['event'] === 'interview.asked');
+    expect(asked).toHaveLength(1);
+    expect(asked[0]!['askKey']).toBe(asks[0]!.key);
+  });
+
+  // A teammate-tagged question names who owns it; the row must carry that name, not just
+  // 'teammate' as a category.
+  it('a teammate-tagged ask carries who in its interview.asked row', async () => {
+    const TEAMMATE_QUESTION = {
+      route: 'frontend',
+      questions: [
+        { text: 'who owns the Slack bot token?', options: [], recommended: null, answerableBy: 'teammate', who: 'joe' },
+      ],
+    };
+    const reasoner = scriptedReasoner([TEAMMATE_QUESTION]);
+    const h = harness(reasoner);
+    const item = addTicketItem(h.store, 'BBZ-401');
+
+    await runQueueTick(h.deps, [item]);
+
+    const asked = h.events.filter((row) => row['event'] === 'interview.asked');
+    expect(asked).toHaveLength(1);
+    expect(asked[0]!['who']).toBe('joe');
   });
 
   it('sends the repo question to the scout as a git grep for the question own terms', async () => {
