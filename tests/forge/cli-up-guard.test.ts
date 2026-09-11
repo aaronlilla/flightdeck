@@ -57,10 +57,31 @@ describe('forge up: a held port', () => {
     const holder = await bindThrowaway(port);
     process.env['FORGE_PORT'] = String(port);
 
-    const result = await forge(['up', '--here']);
+    // CI finding, 2026-09-11: the real findPortHolderPid() shells out to
+    // `netstat -ano`, a Windows-only flag combo. Exercising it for real (this
+    // test's original shape) passed locally on Windows but failed on the
+    // ubuntu-latest CI runner (netstat missing or a different output shape),
+    // degrading to the "already in use" fallback message. This case's own
+    // job -- proving the exit-76 message names the holder pid -- does not
+    // depend on the real OS-level lookup, so it injects a fake `portHolder`
+    // (the seam `ForgeDeps` already exists for exactly this) instead.
+    const result = await forge(['up', '--here'], { portHolder: () => 12345 });
 
     expect(result.code).toBe(76);
     expect(result.lines.join('\n')).toMatch(new RegExp(`${port} is held by pid \\d+`));
+
+    await new Promise<void>((resolve) => holder.close(() => resolve()));
+  }, 20000);
+
+  it('falls back to "already in use" when the real port-holder lookup finds nothing', async () => {
+    const port = await ephemeralPort();
+    const holder = await bindThrowaway(port);
+    process.env['FORGE_PORT'] = String(port);
+
+    const result = await forge(['up', '--here'], { portHolder: () => undefined });
+
+    expect(result.code).toBe(76);
+    expect(result.lines.join('\n')).toMatch(new RegExp(`${port} is already in use`));
 
     await new Promise<void>((resolve) => holder.close(() => resolve()));
   }, 20000);
