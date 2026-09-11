@@ -65,6 +65,11 @@ export interface ChromeProps {
   /** `/state`'s `queue_on`: false means the queue subsystem is not running at all, so
    *  nothing starts however many slots are free. Shown beside the feed state. */
   queueOn?: boolean;
+  /** `/state`'s `queue_paused`: the queue subsystem is running but `runQueueTick` is
+   *  returning early on the flag file (`readQueuePaused`) without advancing anything.
+   *  Distinct from `queueOn` -- a paused queue is still on, just idle -- so both can show
+   *  at once; this is what the console lacked when a 53-minute pause went unseen. */
+  queuePaused?: boolean;
   /** R-71: true while the `full` sync scope is `running`, off the `sync` slice. Disables
    *  the Full re-sync button rather than letting a second run race the first. */
   syncFullRunning?: boolean;
@@ -89,7 +94,7 @@ const TABS: { view: View; label: string }[] = [
   { view: 'settings', label: 'Settings' },
 ];
 
-export function Chrome({ view, badges, feed, project, queueOn = true, syncFullRunning = false, watcher = null, onWatcherToggle, now, onNav, strip }: ChromeProps): JSX.Element {
+export function Chrome({ view, badges, feed, project, queueOn = true, queuePaused = false, syncFullRunning = false, watcher = null, onWatcherToggle, now, onNav, strip }: ChromeProps): JSX.Element {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 'none', fontFamily: 'Barlow,system-ui,sans-serif', color: 'var(--ink)', background: 'var(--bg)' }}>
       <div style={{ height: 32, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 0 0 10px', background: 'var(--panel)', borderBottom: '1px solid var(--line)', fontSize: 'var(--fs-meta)', color: 'var(--ink2)' }}>
@@ -134,6 +139,7 @@ export function Chrome({ view, badges, feed, project, queueOn = true, syncFullRu
             {feed.live ? 'Feed live' : `Feed lost${feed.reason ? `: ${feed.reason}` : ''}`}
           </span>
           {!queueOn ? <span data-testid="queue-off" style={{ color: 'var(--warn)' }}>Queue off</span> : null}
+          {queueOn && queuePaused ? <span data-testid="queue-paused" style={{ color: 'var(--warn)' }}>Queue paused</span> : null}
           {project ? <span data-testid="project-label" title={project.name ?? project.key} style={{ minWidth: 0, maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis' }}>{project.name ? `${project.key} · ${project.name}` : project.key}</span> : null}
           {watcher ? <WatcherStatusRow status={watcher} onToggle={onWatcherToggle ?? (() => undefined)} /> : null}
           <FullResyncButton running={syncFullRunning} />

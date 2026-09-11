@@ -946,6 +946,11 @@ export class ForgeServer {
       // process; a process that boots the server without the queue lock says so in the
       // field instead, because a null there reads exactly like a loop that has stopped.
       queue_loop: this.queueLoop?.() ?? null,
+      // Queue-paused visibility fix: the flag file the queue tick itself checks
+      // (`readQueuePaused`, `runQueueTick`'s `deps.paused()`) read fresh on every call --
+      // never cached, never the constructor-time `readPaused` closure captured for
+      // `QueueRoutes` above, because the file changes while this process keeps running.
+      queue_paused: readQueuePaused(),
       build: runtimeVersion(),
       checkoutDir: this.checkoutDirPath,
       consoleDistDir: this.consoleDistDir,

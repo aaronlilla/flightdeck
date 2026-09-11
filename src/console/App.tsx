@@ -492,7 +492,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     <StoreContext.Provider value={{ state, dispatch }}>
       <ActionsContext.Provider value={actionsHost}>
         <div className="app" data-theme={state.theme} data-testid="app">
-          <Chrome view={state.view} badges={badges} feed={state.feed} project={state.project} queueOn={state.queueOn} syncFullRunning={syncFullRunning} watcher={state.sync?.watcher ?? null} onWatcherToggle={onWatcherToggle} now={state.now} onNav={(view) => dispatch({ type: 'view', view })} strip={<NeedsYou items={needs} now={state.now} onCommand={onStripCommand} />} />
+          <Chrome view={state.view} badges={badges} feed={state.feed} project={state.project} queueOn={state.queueOn} queuePaused={state.queuePaused} syncFullRunning={syncFullRunning} watcher={state.sync?.watcher ?? null} onWatcherToggle={onWatcherToggle} now={state.now} onNav={(view) => dispatch({ type: 'view', view })} strip={<NeedsYou items={needs} now={state.now} onCommand={onStripCommand} />} />
           <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
             {state.view === 'board' ? (
               <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
