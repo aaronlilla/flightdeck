@@ -298,6 +298,57 @@ describe('GET /state', () => {
     });
   });
 
+  // Queue-paused visibility: the flag file the queue tick itself reads
+  // (`readQueuePaused`, `src/forge/console/queue-pause.ts`) was invisible on `/state` --
+  // seen live on the console today: the flag file said paused, `/state` said nothing,
+  // and the operator had no way to know the queue had been sitting idle for 53 minutes.
+  describe('queue_paused: read fresh off the real flag file, never cached', () => {
+    const flagPath = () => join(dir, 'console', 'queue-paused.json');
+
+    it('reads true from the real flag file on disk, the same file the queue tick checks', async () => {
+      mkdirSync(join(dir, 'console'), { recursive: true });
+      writeFileSync(flagPath(), JSON.stringify({ paused: true }), 'utf8');
+      const state = await (await fetch(`${base}/state`)).json() as Record<string, unknown>;
+      expect(state['queue_paused']).toBe(true);
+    });
+
+    it('reads false when the flag file is absent', async () => {
+      const state = await (await fetch(`${base}/state`)).json() as Record<string, unknown>;
+      expect(state['queue_paused']).toBe(false);
+    });
+
+    it('reads false when the flag file is malformed JSON, rather than throwing', async () => {
+      mkdirSync(join(dir, 'console'), { recursive: true });
+      writeFileSync(flagPath(), '{not json', 'utf8');
+      const state = await (await fetch(`${base}/state`)).json() as Record<string, unknown>;
+      expect(state['queue_paused']).toBe(false);
+    });
+
+    it('reads true even when FORGE_QUEUE is unset -- the pause flag and the on/off switch are independent', async () => {
+      const original = process.env['FORGE_QUEUE'];
+      delete process.env['FORGE_QUEUE'];
+      try {
+        mkdirSync(join(dir, 'console'), { recursive: true });
+        writeFileSync(flagPath(), JSON.stringify({ paused: true }), 'utf8');
+        const state = await (await fetch(`${base}/state`)).json() as Record<string, unknown>;
+        expect(state['queue_on']).toBe(false);
+        expect(state['queue_paused']).toBe(true);
+      } finally {
+        if (original === undefined) delete process.env['FORGE_QUEUE'];
+        else process.env['FORGE_QUEUE'] = original;
+      }
+    });
+
+    it('picks up a pause written to disk after the server already started, never a boot-time snapshot', async () => {
+      const before = await (await fetch(`${base}/state`)).json() as Record<string, unknown>;
+      expect(before['queue_paused']).toBe(false);
+      mkdirSync(join(dir, 'console'), { recursive: true });
+      writeFileSync(flagPath(), JSON.stringify({ paused: true }), 'utf8');
+      const after = await (await fetch(`${base}/state`)).json() as Record<string, unknown>;
+      expect(after['queue_paused']).toBe(true);
+    });
+  });
+
   // X1: a lane can carry a stale verdict from an earlier chain (parked, or otherwise
   // finished) while a fresh run for the same slug is genuinely live. A tile driven off
   // the lane record alone would show the dead chain's verdict beside a running tool; the

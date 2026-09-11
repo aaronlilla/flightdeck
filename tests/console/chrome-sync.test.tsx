@@ -87,3 +87,35 @@ describe('the Full re-sync and start button', () => {
     await waitFor(() => expect(screen.getByTestId('full-resync-result').textContent).toBe('already running'));
   });
 });
+
+describe('Queue paused visibility', () => {
+  it('shows "Queue paused" beside the queue indicator when queuePaused is true and the queue is on', () => {
+    render(
+      <Wrapper>
+        <Chrome view="board" badges={{}} feed={{ live: true, lostAt: null, reason: null, retryInS: null, lastHeartbeatAt: null }} project={null} queueOn queuePaused now={Date.now()} onNav={() => undefined} />
+      </Wrapper>,
+    );
+    expect(screen.getByTestId('queue-paused').textContent).toBe('Queue paused');
+  });
+
+  it('does not show the label when the queue is not paused', () => {
+    render(
+      <Wrapper>
+        <Chrome view="board" badges={{}} feed={{ live: true, lostAt: null, reason: null, retryInS: null, lastHeartbeatAt: null }} project={null} queueOn now={Date.now()} onNav={() => undefined} />
+      </Wrapper>,
+    );
+    expect(screen.queryByTestId('queue-paused')).toBeNull();
+  });
+});
+
+describe('Queue paused is independent of queue-on', () => {
+  it('shows "Queue paused" beside "Queue off" when the queue is off but a pause flag is still set', () => {
+    render(
+      <Wrapper>
+        <Chrome view="board" badges={{}} feed={{ live: true, lostAt: null, reason: null, retryInS: null, lastHeartbeatAt: null }} project={null} queueOn={false} queuePaused now={Date.now()} onNav={() => undefined} />
+      </Wrapper>,
+    );
+    expect(screen.getByTestId('queue-off').textContent).toBe('Queue off');
+    expect(screen.getByTestId('queue-paused').textContent).toBe('Queue paused');
+  });
+});
