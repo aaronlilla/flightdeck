@@ -1,13 +1,12 @@
 /**
- * R-68: the production wiring for the `full` sync. Six of the nine stages are stream A's
- * own and real here; `fetch-repos`, `reconcile-prs` and `sweep-worktrees` (stream B) are
- * deliberately left out of the returned map -- `run.ts`'s own absent-stage handling marks
- * each `skipped` with `not wired yet: stream B`, never `ok`, which is the one permitted
- * placeholder this brief allows. `pull-jira`'s `shippedKeys` degrades to `[]` until
- * `reconcile-prs` exists to report one, which only means nothing is excluded yet -- an
- * honest gap, not a fabricated result. Stream C's five page-scope stages are likewise
- * absent until `sync/pages/index.ts` exists; every non-`full` scope reads as one skipped
- * stage until then.
+ * R-68/R-73: the production wiring for the `full` sync and the five per-page scopes.
+ * `fetch-repos`, `reconcile-prs` and `sweep-worktrees` bind stream B's real functions
+ * (`./code/index.js`) through `buildCodeSyncDeps`; the five page scopes bind stream C's
+ * real functions (`./pages/index.js`) through `buildPageDeps`. `reconcile-prs` checks
+ * the ticket keys the queue held right before `wipe-queue` cleared it, and its `shipped`
+ * result feeds `pull-jira`'s `shippedKeys` so a ticket already merged is never re-queued
+ * -- both threaded through closured state in the order `run.ts`'s `full` scope actually
+ * runs them (`wipe-queue` before `reconcile-prs` before `pull-jira`).
  */
 import { join } from 'node:path';
 
@@ -21,6 +20,8 @@ import { Journal } from '../journal.js';
 import { Registry } from '../registry.js';
 import { clearKillSwitch, Fleet, Lanes } from '../supervisor.js';
 import { pullJira } from './jira-pull.js';
+import { buildCodeSyncDeps, fetchRepos, reconcilePrs, sweepWorktrees, type BuildCodeSyncDepsOptions } from './code/index.js';
+import { buildPageDeps, type PageDepsInput } from './pages/index.js';
 import type { SyncStageFn } from './run.js';
 import type { SyncStageName } from '../../shared/sync-contract.js';
 import { writeWatcherState, type JiraWatcher } from './watcher-state.js';
@@ -29,10 +30,38 @@ export interface ProductionSyncDeps {
   queueStore: QueueStore;
   watcher: JiraWatcher;
   journal: Journal;
+  /** Page-sync's own two collaborators (`sync/pages/index.ts#PageDepsInput`). Optional
+   *  so an existing caller with no lanes/registry concept (e.g. `index.test.ts`'s
+   *  `watcher-on` specimen) keeps compiling against a harmless default. */
+  registry?: PageDepsInput['registry'];
+  consoleReads?: PageDepsInput['consoleReads'];
+  /** Code-sync's real-deps overrides, for a test only -- production always omits both
+   *  and gets `buildCodeSyncDeps`'s real git/gh/session-claim reads. */
+  env?: NodeJS.ProcessEnv;
+  execRun?: BuildCodeSyncDepsOptions['execRun'];
+  sessionsDir?: string;
 }
 
-export function buildProductionSyncStages(deps: ProductionSyncDeps): Partial<Record<SyncStageName, SyncStageFn>> {
-  return {
+export interface ProductionSyncStages {
+  stages: Partial<Record<SyncStageName, SyncStageFn>>;
+  /** The `full` confirm blast's own dry-run worktree count -- a stale run's decision
+   *  table with no `git worktree remove` or `git branch -D` call. */
+  staleWorktreeCount: () => Promise<number>;
+}
+
+export function buildProductionSyncStages(deps: ProductionSyncDeps): ProductionSyncStages {
+  const codeSyncDeps = buildCodeSyncDeps(deps.env ?? process.env, {
+    execRun: deps.execRun, sessionsDir: deps.sessionsDir,
+  });
+  const pageDeps = buildPageDeps({
+    registry: deps.registry ?? { all: () => [] },
+    consoleReads: deps.consoleReads ?? { lanesResponse: () => ({ lanes: [] }), runRecheckResponse: async () => undefined },
+  });
+
+  let queueTicketsAtWipe: string[] = [];
+  let shippedKeysFromReconcile: string[] = [];
+
+  const stages: Partial<Record<SyncStageName, SyncStageFn>> = {
     'stop-workers': async () => {
       const fleet = new Fleet(new Lanes(lanesDir()), new Registry(registryDir()), journalPath(), killSwitchPath());
       const result = await fleet.stopAll('sync full: stopping running workers');
@@ -40,6 +69,9 @@ export function buildProductionSyncStages(deps: ProductionSyncDeps): Partial<Rec
     },
 
     'wipe-queue': async () => {
+      queueTicketsAtWipe = Array.from(new Set(
+        deps.queueStore.all().map((item) => item.ticket).filter((ticket): ticket is string => Boolean(ticket)),
+      ));
       const count = deps.queueStore.wipe(deps.journal);
       return { counts: { wiped: count } };
     },
@@ -47,6 +79,32 @@ export function buildProductionSyncStages(deps: ProductionSyncDeps): Partial<Rec
     'reset-watermarks': async () => {
       const deleted = resetWatermarks(join(forgeHome(), 'intake'));
       return { counts: { reset: deleted.length } };
+    },
+
+    'fetch-repos': async () => {
+      const result = await fetchRepos(codeSyncDeps);
+      return {
+        counts: { fetched: result.fetched.length, failed: result.failed.length },
+        ...(result.failed.length ? { message: result.failed.map((f) => `${f.repo}: ${f.message}`).join('; ') } : {}),
+      };
+    },
+
+    'reconcile-prs': async () => {
+      const result = await reconcilePrs(codeSyncDeps, queueTicketsAtWipe);
+      // A key can land in both `shipped` and `open` -- one repo's half merged, another
+      // repo's half still open (reconcile.ts's own doc comment names this case). Only a
+      // key with NO open half is safe to treat as shipped for `pull-jira`'s skip list;
+      // otherwise the still-open half would silently fall out of the queue for good.
+      const openKeys = new Set(result.open.map((row) => row.key));
+      shippedKeysFromReconcile = [...new Set(
+        result.shipped.map((row) => row.key).filter((key) => !openKeys.has(key)),
+      )];
+      return { counts: { shipped: result.shipped.length, open: result.open.length, none: result.none.length } };
+    },
+
+    'sweep-worktrees': async () => {
+      const result = await sweepWorktrees(codeSyncDeps);
+      return { counts: { removed: result.removed.length, kept: result.kept.length } };
     },
 
     'pull-jira': async () => {
@@ -58,7 +116,7 @@ export function buildProductionSyncStages(deps: ProductionSyncDeps): Partial<Rec
       if (!project) return { counts: {} as Record<string, number>, message: 'no FORGE_BACKLOG_PROJECT configured' };
       const feed = watcherFeed(project, config, []);
       const result = await pullJira({
-        feed, store: deps.queueStore, briefsDir: intakeBriefsDir(), shippedKeys: [], journal: deps.journal,
+        feed, store: deps.queueStore, briefsDir: intakeBriefsDir(), shippedKeys: shippedKeysFromReconcile, journal: deps.journal,
       });
       return {
         counts: {
@@ -85,5 +143,16 @@ export function buildProductionSyncStages(deps: ProductionSyncDeps): Partial<Rec
       writeQueuePaused(false);
       return { counts: {} };
     },
+
+    'scan-sessions': async () => pageDeps.sessions(),
+    'probe-accounts': async () => pageDeps.accounts(),
+    'snapshot-machine': async () => pageDeps.machine(),
+    'refresh-inbox': async () => pageDeps.inbox(),
+    'recheck-lanes': async () => pageDeps.lanes(),
+  };
+
+  return {
+    stages,
+    staleWorktreeCount: async () => (await sweepWorktrees(codeSyncDeps, { dryRun: true })).removed.length,
   };
 }

@@ -270,9 +270,10 @@ export interface ForgeServerOptions {
   /** R-68: the last run per scope (`GET /sync`, `POST /sync/:scope`). Defaults to a real
    *  `SyncStore` over `syncStatePath()`, which follows `FORGE_HOME`. A specimen only. */
   syncStore?: SyncStore;
-  /** R-68: the stage functions `POST /sync/:scope` actually runs. Defaults to the
-   *  production wiring in `sync/index.ts`, which passes stream B and C's real
-   *  `not wired yet` placeholders until those streams merge. A specimen injects fakes. */
+  /** R-68/R-73: the stage functions `POST /sync/:scope` actually runs. Defaults to the
+   *  production wiring in `sync/index.ts`, which binds every stage to real stream B
+   *  (code-sync) and stream C (page-sync) functions -- no stage ships skipped. A
+   *  specimen injects fakes instead, which also skips building the real wiring below. */
   syncDeps?: RunSyncDeps;
 }
 
@@ -503,10 +504,15 @@ export class ForgeServer {
       journal: new Journal(this.journalPath),
     });
     this.syncStore = options.syncStore ?? new SyncStore();
+    // R-73: real stage wiring is only built when nothing already injected `syncDeps`
+    // (every test that overrides `syncDeps` fakes its own nine stages and never wants
+    // `buildProductionSyncStages`'s real git/gh/session reads running underneath it).
+    const productionStages = options.syncDeps ? undefined : buildProductionSyncStages({
+      queueStore: this.queueStoreForMerge, watcher: this.watcher, journal: new Journal(this.journalPath),
+      registry: this.registry, consoleReads: this.consoleReads,
+    });
     const syncDeps: RunSyncDeps = options.syncDeps ?? {
-      stages: buildProductionSyncStages({
-        queueStore: this.queueStoreForMerge, watcher: this.watcher, journal: new Journal(this.journalPath),
-      }),
+      stages: productionStages!.stages,
       journal: new Journal(this.journalPath),
       store: this.syncStore,
     };
@@ -523,6 +529,7 @@ export class ForgeServer {
         queueItems: this.queueStoreForMerge.all().length,
         runningWorkers: this.registry.all().filter((row) => this.isAliveFn(row.pid)).length,
       }),
+      staleWorktreeCount: productionStages?.staleWorktreeCount,
     });
     this.conductor = new ConductorAgent({
       writes: this.consoleWrites, reads: this.consoleReads, queue: this.queueRoutes,

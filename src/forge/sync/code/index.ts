@@ -13,3 +13,4 @@ export type { ReconcilePrsResult } from './reconcile.ts';
 export { sweepWorktrees } from './worktrees.ts';
 export type { SweepWorktreesResult, SweptWorktree } from './worktrees.ts';
 export { buildCodeSyncDeps } from './real-deps.ts';
+export type { BuildCodeSyncDepsOptions } from './real-deps.ts';

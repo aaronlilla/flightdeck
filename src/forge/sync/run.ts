@@ -100,7 +100,7 @@ export function createSyncRunner(deps: RunSyncDeps): SyncRunner {
           const fn = deps.stages[name];
           if (!fn) {
             status = 'skipped';
-            message = 'not wired yet: stream B';
+            message = `stage not configured: ${name}`;
           } else {
             try {
               const result = await fn({ now });

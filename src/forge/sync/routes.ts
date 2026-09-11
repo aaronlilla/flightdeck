@@ -37,6 +37,9 @@ export interface SyncRoutesOptions {
    *  wiped and how many workers are running right now. Absent reads as `0, 0` -- a bare
    *  specimen still gets a real sentence shape, just with nothing live behind the count. */
   blastCounts?: () => { queueItems: number; runningWorkers: number };
+  /** R-73: `sweepWorktrees(deps, { dryRun: true })`'s count, named in the same blast
+   *  sentence. Absent reads as `0`, a real number rather than a placeholder sentence. */
+  staleWorktreeCount?: () => Promise<number>;
 }
 
 function respond(response: ServerResponse, status: number, body: unknown): void {
@@ -106,13 +109,20 @@ export class SyncRoutes {
 
       if (scope === 'full') {
         const gate = this.opts.confirmGate ?? ((_body, _source, _blast, act) => act());
-        const { queueItems, runningWorkers } = this.opts.blastCounts?.() ?? { queueItems: 0, runningWorkers: 0 };
-        // Stream B's sweepWorktrees(deps, {dryRun:true}) would name a live stale-worktree
-        // count here; until it merges the sentence says so plainly rather than guessing
-        // or silently dropping the clause.
-        const blast = `wipe ${queueItems} queue items, stop ${runningWorkers} running workers `
-          + '(this engages the kill switch and blocks every launch until the run\'s resume stage '
-          + `clears it), reset watermarks, worktree sweep: not wired yet`;
+        // A confirmed call (`body.confirm` a token) never reads `blast` -- confirmGate's
+        // own confirmed branch runs `act()` straight off the pending record it saved
+        // earlier. Computing it anyway would mean a real `sweepWorktrees(dryRun)` git+gh
+        // fan-out (one `gh pr list` per removable-candidate worktree) on every confirmed
+        // run, purely to build a sentence nothing reads.
+        const confirmed = typeof body?.['confirm'] === 'string';
+        let blast = '';
+        if (!confirmed) {
+          const { queueItems, runningWorkers } = this.opts.blastCounts?.() ?? { queueItems: 0, runningWorkers: 0 };
+          const staleWorktrees = (await this.opts.staleWorktreeCount?.()) ?? 0;
+          blast = `wipe ${queueItems} queue items, stop ${runningWorkers} running workers `
+            + '(this engages the kill switch and blocks every launch until the run\'s resume stage '
+            + `clears it), reset watermarks, worktree sweep: remove ${staleWorktrees} stale worktree${staleWorktrees === 1 ? '' : 's'}`;
+        }
         const outcome = await gate(body, 'console', blast, start);
         respond(response, outcome.status, outcome.body);
         return true;
