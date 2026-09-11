@@ -68,6 +68,21 @@ describe('createSyncRunner', () => {
     expect(byName['resume']).toBe('skipped');
   });
 
+  it('a failed run calls onFailure exactly once; a clean run never does', async () => {
+    let calls = 0;
+    const okStages = Object.fromEntries(FULL_ORDER.map((name) => [name, okStage(name)]));
+    const okRunner = createSyncRunner({ stages: okStages, journal: tempJournal(), store: tempStore(), onFailure: async () => { calls += 1; } });
+    await okRunner.runSync('full');
+    expect(calls).toBe(0);
+
+    const badStages = Object.fromEntries(FULL_ORDER.map((name) => [name, okStage(name)]));
+    badStages['reconcile-prs'] = async () => { throw new Error('gh exploded'); };
+    const badRunner = createSyncRunner({ stages: badStages, journal: tempJournal(), store: tempStore(), onFailure: async () => { calls += 1; } });
+    const record = await badRunner.runSync('full');
+    expect(record.ok).toBe(false);
+    expect(calls).toBe(1);
+  });
+
   it('an absent stage is skipped, never failed, and the run still reads ok', async () => {
     const journal = tempJournal();
     const store = tempStore();
@@ -131,5 +146,41 @@ describe('createSyncRunner', () => {
     journal.close();
 
     expect(store.get('full')).toEqual(record);
+  });
+
+  it('writes and publishes a stage as running before it finishes, then its terminal status', async () => {
+    const journal = tempJournal();
+    const store = tempStore();
+    // The first stage blocks until released, so a running stage can be observed while it
+    // is genuinely mid-flight -- the exact window that showed nothing before this change.
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const stages: Record<string, SyncStageFn> = Object.fromEntries(FULL_ORDER.map((name) => [name, okStage(name)]));
+    stages['stop-workers'] = async () => { await gate; return { counts: {} }; };
+
+    const publishedStatuses: Array<string | undefined> = [];
+    const runner = createSyncRunner({
+      stages, journal, store,
+      publish: (rec) => publishedStatuses.push(rec.stages.find((s) => s.name === 'stop-workers')?.status),
+    });
+
+    const run = runner.runSync('full');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Mid-flight: the store already holds stop-workers as running, and a running row was
+    // published, before the stage has returned.
+    const mid = store.get('full');
+    expect(mid?.stages.find((s) => s.name === 'stop-workers')?.status).toBe('running');
+    expect(publishedStatuses).toContain('running');
+
+    release!();
+    const record = await run;
+    journal.close();
+
+    // The same stage ends ok, and both a running and an ok publish fired for it.
+    expect(record.stages.find((s) => s.name === 'stop-workers')?.status).toBe('ok');
+    expect(publishedStatuses.filter((s) => s === 'running').length).toBeGreaterThanOrEqual(1);
+    expect(publishedStatuses).toContain('ok');
   });
 });

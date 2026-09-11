@@ -9,7 +9,7 @@
 import { randomUUID } from 'node:crypto';
 
 import type {
-  SyncRunRecord, SyncScope, SyncStage, SyncStageName, SyncStageStatus,
+  SyncRunRecord, SyncScope, SyncStage, SyncStageName,
 } from '../../shared/sync-contract.js';
 import type { Journal } from '../journal.js';
 import type { SyncStore } from './store.js';
@@ -26,6 +26,16 @@ export interface RunSyncDeps {
   store: SyncStore;
   now?: () => number;
   id?: () => string;
+  /** Runs once, after the stage loop, only when a stage threw: the place to undo what an
+   *  earlier stage left half-done (the kill switch `stop-workers` engaged, for one). Its
+   *  own throw is journaled as `sync.cleanup-error` and never masks the run's result. */
+  onFailure?: () => Promise<void>;
+  /** Called after every stage transition (a stage going `running`, then its terminal
+   *  `ok|failed|skipped`) so the console's socket carries live progress. Optional: a
+   *  test or a caller with no socket omits it and the run still journals and persists
+   *  each transition. Without it, a two-minute stage showed nothing between its start
+   *  and end -- the store only ever saved a completed stage. */
+  publish?: (record: SyncRunRecord) => void;
 }
 
 /** `full`'s own nine stages, in the plan's order. Every other scope reuses the page-scope
@@ -87,46 +97,70 @@ export function createSyncRunner(deps: RunSyncDeps): SyncRunner {
       deps.journal.append({ event: 'sync.started', actor: 'sync', scope, id } as never);
       deps.store.save(record);
 
-      let failed = false;
-      for (const name of STAGE_ORDER[scope]) {
-        const startedAt = now();
-        let status: SyncStageStatus;
-        let counts: Record<string, number> = {};
-        let message: string | undefined;
-
-        if (failed) {
-          status = 'skipped';
-        } else {
-          const fn = deps.stages[name];
-          if (!fn) {
-            status = 'skipped';
-            message = `stage not configured: ${name}`;
-          } else {
-            try {
-              const result = await fn({ now });
-              status = 'ok';
-              counts = result.counts;
-              message = result.message;
-            } catch (error) {
-              status = 'failed';
-              message = error instanceof Error ? error.message : String(error);
-              failed = true;
-            }
-          }
-        }
-
-        const stage: SyncStage = {
-          name, status, startedAt, endedAt: now(), counts, ...(message ? { message } : {}),
-        };
-        record.stages.push(stage);
+      // Persist, journal and publish one stage transition: whenever a stage flips to
+      // `running` or to its terminal status, the store holds it and the socket carries
+      // it. This is what makes a long stage (the worktree sweep) visible while it runs
+      // instead of only after it ends.
+      const emit = (stage: SyncStage): void => {
         journalStage(deps.journal, scope, id, stage);
         deps.store.save(record);
+        deps.publish?.(record);
+      };
+
+      let failed = false;
+      for (const name of STAGE_ORDER[scope]) {
+        const stage: SyncStage = { name, status: 'running', startedAt: now(), counts: {} };
+
+        if (failed) {
+          stage.status = 'skipped';
+          stage.endedAt = now();
+          record.stages.push(stage);
+          emit(stage);
+          continue;
+        }
+
+        const fn = deps.stages[name];
+        if (!fn) {
+          stage.status = 'skipped';
+          stage.message = `stage not configured: ${name}`;
+          stage.endedAt = now();
+          record.stages.push(stage);
+          emit(stage);
+          continue;
+        }
+
+        // The stage is live: record and broadcast `running` before awaiting it, so the
+        // console shows it in flight rather than a gap.
+        record.stages.push(stage);
+        emit(stage);
+        try {
+          const result = await fn({ now });
+          stage.status = 'ok';
+          stage.counts = result.counts;
+          if (result.message !== undefined) stage.message = result.message;
+        } catch (error) {
+          stage.status = 'failed';
+          stage.message = error instanceof Error ? error.message : String(error);
+          failed = true;
+        }
+        stage.endedAt = now();
+        emit(stage);
       }
 
       // A skipped stage (an absent one, or one downstream of a failure) never fails the
       // run on its own -- only a stage that actually threw does. This is what keeps the
       // one permitted stream-B/C placeholder from reading the whole run as broken.
       record.ok = record.stages.every((stage) => stage.status !== 'failed');
+      if (!record.ok && deps.onFailure) {
+        try {
+          await deps.onFailure();
+        } catch (error) {
+          deps.journal.append({
+            event: 'sync.cleanup-error', actor: 'sync', scope, id,
+            message: error instanceof Error ? error.message : String(error),
+          } as never);
+        }
+      }
       record.endedAt = now();
       deps.journal.append({ event: 'sync.finished', actor: 'sync', scope, id, ok: record.ok } as never);
       deps.store.save(record);

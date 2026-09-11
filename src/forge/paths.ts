@@ -43,6 +43,13 @@ export function inboxDir(): string {
   return join(forgeHome(), 'inbox');
 }
 
+/** R-76: what one item's interview already settled, kept while the item waits on a
+ *  person. Beside the inbox rather than inside it, so nothing walking the inbox reads an
+ *  interview record as an ask. */
+export function interviewRecordsDir(): string {
+  return join(forgeHome(), 'interviews');
+}
+
 export function packetsDir(): string {
   return join(forgeHome(), 'packets');
 }

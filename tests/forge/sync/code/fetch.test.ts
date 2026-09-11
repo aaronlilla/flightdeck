@@ -23,7 +23,7 @@ describe('fetchRepos', () => {
         { repo: 'aaronlilla/flightdeck', checkout: 'D:/work/flightdeck', base: 'main' },
       ],
       claimedPaths: () => [],
-      worktreeStatus: () => undefined,
+      worktreeStatus: async () => undefined,
       now: () => 0,
     };
 

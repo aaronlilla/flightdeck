@@ -105,7 +105,7 @@ function buildDeps(rows: Row[], opts?: { dryRun?: boolean }) {
       }
       return rows.filter((r) => r.claimed || r.claimedAfterSnapshot).map((r) => r.path);
     },
-    worktreeStatus(path) {
+    async worktreeStatus(path) {
       return rowByPath.get(path)?.status;
     },
     now: () => 0,
@@ -191,6 +191,29 @@ describe('sweepWorktrees', () => {
     expect(bad, 'the throwing worktree should be kept, not crash the sweep').toBeDefined();
     expect(bad?.reason).toBe('status-error');
     // every other row still got decided
+    const closed = rows.find((r) => r.reason === 'closed-clean')!;
+    expect(result.removed.some((r) => r.path === closed.path)).toBe(true);
+  });
+
+  it('a git worktree remove failure keeps that worktree as remove-error and never aborts the whole sweep', async () => {
+    const rows = buildRows();
+    const badPath = rows.find((r) => r.reason === 'merged-clean')!.path;
+    const { deps } = buildDeps(rows);
+    const realGit = deps.git;
+    deps.git = async (checkout: string, argv: string[]) => {
+      if (argv[0] === 'worktree' && argv[1] === 'remove' && argv[2] === badPath) {
+        throw new Error(`git worktree failed: error: failed to delete '${badPath}': Permission denied`);
+      }
+      return realGit(checkout, argv);
+    };
+
+    const result = await sweepWorktrees(deps);
+
+    const bad = result.kept.find((r) => r.path === badPath);
+    expect(bad, 'the unremovable worktree should be kept, not crash the sweep').toBeDefined();
+    expect(bad?.reason).toBe('remove-error');
+    expect(result.removed.some((r) => r.path === badPath)).toBe(false);
+    // the row after it still got removed
     const closed = rows.find((r) => r.reason === 'closed-clean')!;
     expect(result.removed.some((r) => r.path === closed.path)).toBe(true);
   });

@@ -114,7 +114,7 @@ describe('POST /sync/full', () => {
     const body = await res.json() as { blast: string };
     expect(body.blast).toContain('wipe 1 queue items');
     expect(body.blast).toContain('stop 0 running workers');
-    expect(body.blast).toContain('worktree sweep: will run (count not ready in time)');
+    expect(body.blast).toContain('sweep merged and closed worktrees');
     release?.();
   });
 

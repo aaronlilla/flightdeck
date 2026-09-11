@@ -330,7 +330,11 @@ export function readabilityVerdict(
   const wordsDenyFrom = contract.words_deny_from;
 
   const isJira = surface.startsWith('jira');
-  const inScope = isJira || (repo !== null && outwardRepos.includes(repo));
+  // R-76: a Slack question goes to a teammate, so it is outward-facing text with no
+  // repository attached to it -- in scope the same way a Jira comment is, rather than
+  // waved through for lack of a repo name to match.
+  const isSlack = surface.startsWith('slack');
+  const inScope = isJira || isSlack || (repo !== null && outwardRepos.includes(repo));
   if (!inScope) {
     return { verdict: 'SILENT', reason: `${repo ?? 'no repo'} is not an outward-facing repo` };
   }

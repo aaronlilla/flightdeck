@@ -73,7 +73,7 @@ export interface CodeSyncDeps {
   gh(argv: string[], cwd?: string): Promise<string>;           // same shape
   repos: Array<{ repo: string; checkout: string; base: string }>; // from FORGE_REPO_CHECKOUTS / FORGE_REPO_BASE via chain-env.ts
   claimedPaths(): string[];   // every `claims[].path` across the coordination registry's session files whose heartbeatAt is within 10 min
-  worktreeStatus(path: string): { clean: boolean; pushed: boolean } | undefined; // sessions/cleanup.ts#worktreeStatusFor
+  worktreeStatus(path: string): Promise<{ clean: boolean; pushed: boolean } | undefined>; // sessions/cleanup.ts#worktreeStatusForAsync -- async so the ~90-worktree sweep never blocks the event loop
   now(): number;
 }
 

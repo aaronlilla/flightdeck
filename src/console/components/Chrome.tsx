@@ -19,18 +19,33 @@ function FullResyncButton({ running }: { running: boolean }): JSX.Element {
     if (confirming) void action.confirm();
     else void action.run();
   };
+  // The blast can run past 100 characters (queue count, worker count, worktree count),
+  // and this row has no room to grow: everything after it (project label, watcher,
+  // the button itself, the clock) used to get pushed off the right edge of the window,
+  // taking the Confirm button with it -- clicking the first time left nothing left to
+  // click. Same `maxWidth` + ellipsis treatment `feed-state`/`project-label` already use
+  // above, plus a `title` so the full sentence is still readable on hover.
+  const label = action.pending ? (confirming ? 'Starting…' : 'Checking…') : (confirming ? 'Confirm' : 'Full re-sync and start');
   return (
-    <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-      {confirming ? <span data-testid="full-resync-gate">{(action.result as { kind: 'confirm'; blast: string }).blast}</span> : null}
+    <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+      {confirming ? (
+        <span
+          data-testid="full-resync-gate"
+          title={(action.result as { kind: 'confirm'; blast: string }).blast}
+          style={{ minWidth: 0, maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+        >
+          {(action.result as { kind: 'confirm'; blast: string }).blast}
+        </span>
+      ) : null}
       <button
         type="button"
         data-testid={confirming ? 'full-resync-confirm' : 'full-resync'}
         onClick={onClick}
         disabled={disabled}
         title={running ? 'a full re-sync is already running' : undefined}
-        style={{ font: 'inherit', color: 'inherit', background: 'none', border: '1px solid var(--line)', padding: '1px 6px', cursor: disabled ? 'default' : 'pointer' }}
+        style={{ flex: 'none', font: 'inherit', color: 'inherit', background: 'none', border: '1px solid var(--line)', padding: '1px 6px', cursor: disabled ? 'default' : 'pointer' }}
       >
-        {confirming ? 'Confirm' : 'Full re-sync and start'}
+        {label}
       </button>
       {!confirming && action.result?.kind === 'done' ? <span data-testid="full-resync-result">{action.result.text}</span> : null}
     </span>

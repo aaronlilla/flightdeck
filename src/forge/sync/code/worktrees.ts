@@ -111,7 +111,7 @@ export async function sweepWorktrees(
 
       let status: { clean: boolean; pushed: boolean } | undefined;
       try {
-        status = deps.worktreeStatus(entry.path);
+        status = await deps.worktreeStatus(entry.path);
       } catch {
         kept.push({ path: entry.path, branch, reason: 'status-error' });
         continue;
@@ -158,8 +158,16 @@ export async function sweepWorktrees(
 
       const reason = pr.mergedAt ? 'merged-clean' : 'closed-clean';
       if (!dryRun) {
-        await deps.git(checkout, ['worktree', 'remove', entry.path]);
-        await deps.git(checkout, ['branch', '-D', branch]);
+        // A worktree git cannot remove (a file locked by a stuck process, a shell whose
+        // cwd is inside it) is kept, named, and the sweep moves on. On 2026-09-11 one
+        // such tree failed the whole full re-sync and left the fleet's kill switch on.
+        try {
+          await deps.git(checkout, ['worktree', 'remove', entry.path]);
+          await deps.git(checkout, ['branch', '-D', branch]);
+        } catch {
+          kept.push({ path: entry.path, branch, reason: 'remove-error' });
+          continue;
+        }
       }
       removed.push({ path: entry.path, branch, reason });
     }

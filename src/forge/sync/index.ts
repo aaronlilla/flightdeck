@@ -44,10 +44,10 @@ export interface ProductionSyncDeps {
 
 export interface ProductionSyncStages {
   stages: Partial<Record<SyncStageName, SyncStageFn>>;
-  /** The `full` confirm blast's own dry-run worktree count -- a stale run's decision
-   *  table with no `git worktree remove` or `git branch -D` call. `null` when it did
-   *  not land inside the confirm dialog's own time budget. */
-  staleWorktreeCount: () => Promise<number | null>;
+  /** Undoes what `stop-workers` engaged when a later stage throws: the fleet-wide kill
+   *  switch. The queue stays paused and the watcher stays off (nothing was synced), so
+   *  a failed run leaves the fleet quiet, never dead. Live escape 2026-09-11 12:12. */
+  onFailure: () => Promise<void>;
 }
 
 export function buildProductionSyncStages(deps: ProductionSyncDeps): ProductionSyncStages {
@@ -152,19 +152,13 @@ export function buildProductionSyncStages(deps: ProductionSyncDeps): ProductionS
     'recheck-lanes': async () => pageDeps.lanes(),
   };
 
+  // No pre-confirm worktree count: computing one runs a full dry-run sweep, and
+  // `operator-experience.md` §10 forbids a route blocking on a process sweep (this
+  // confirm dialog blocking on it is the specimen that rule was written against). The
+  // real removed count shows live on the `sweep-worktrees` stage as it runs, which
+  // happens only after the operator confirms -- nothing is removed before then.
   return {
     stages,
-    // A real sweep touches every worktree across every configured repo with real git
-    // (`worktreeStatusFor`'s three synchronous git subprocesses per worktree) and, for
-    // each eligible one, a real `gh pr list` call -- against this machine's actual
-    // checkouts (rn + bb + flightdeck) that is ~90 worktrees, and it measured over two
-    // minutes end to end. Blocking the confirm dialog on that made `Full re-sync and
-    // start` look completely dead: Aaron clicked it and got no feedback at all. The
-    // count is still real when it lands in time; past the bound the blast just says the
-    // sweep will run rather than guessing a number.
-    staleWorktreeCount: () => Promise.race([
-      sweepWorktrees(codeSyncDeps, { dryRun: true }).then((result) => result.removed.length),
-      new Promise<null>((resolve) => { setTimeout(() => resolve(null), 4_000); }),
-    ]),
+    onFailure: async () => { clearKillSwitch(killSwitchPath()); },
   };
 }

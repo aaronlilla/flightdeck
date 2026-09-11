@@ -513,8 +513,13 @@ export class ForgeServer {
     });
     const syncDeps: RunSyncDeps = options.syncDeps ?? {
       stages: productionStages!.stages,
+      onFailure: productionStages!.onFailure,
       journal: new Journal(this.journalPath),
       store: this.syncStore,
+      // Each stage transition (running, then its terminal status) emits a `sync` slice
+      // frame so the console refetches GET /sync and shows the run advancing live,
+      // instead of only after the whole run resolves.
+      publish: () => this.publish(sliceEvent('sync', 'a sync stage advanced')),
     };
     this.syncRunner = createSyncRunner(syncDeps);
     this.syncRoutes = new SyncRoutes({
@@ -529,7 +534,6 @@ export class ForgeServer {
         queueItems: this.queueStoreForMerge.all().length,
         runningWorkers: this.registry.all().filter((row) => this.isAliveFn(row.pid)).length,
       }),
-      staleWorktreeCount: productionStages?.staleWorktreeCount,
     });
     this.conductor = new ConductorAgent({
       writes: this.consoleWrites, reads: this.consoleReads, queue: this.queueRoutes,
