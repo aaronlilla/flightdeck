@@ -747,7 +747,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
             worktreeStatusFor: (sessionId, cwd) => worktreeStatusFor(sessionId, cwd),
           };
           const scanned = scanSessions({ probeAlivePid: probeAlivePidLiveness });
-          journalRegistryRows(planRegistryRows(scanned, fleetState.sessions), registryIngest);
+          journalRegistryRows(planRegistryRows(scanned, fleetState.sessions, probeAlivePidLiveness), registryIngest);
         } catch {
           // Guarded the same as every other tick step: one bad registry read never stops
           // liveness or the Warden tick.

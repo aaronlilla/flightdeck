@@ -44,6 +44,10 @@ export interface VanishedRow {
 
 export type RegistryRow = SessionStartedRow | VanishedRow;
 
+/** The same shape `RegistryDeps.probeAlivePid` declares (registry.ts:56), so the probe the
+ *  scan already uses drops in here with no adapter: anything truthy means the pid answered. */
+export type ProbeAlivePid = (pid: number) => number | string | true | null | undefined;
+
 /** True when the fold is missing identity the scan can supply, or carries a pid the scan
  *  disagrees with (the session file is the authority: a hook reports the short-lived hook
  *  process's pid, never the terminal's). */
@@ -62,6 +66,7 @@ function identityIsStale(known: KnownSession, row: SessionRow): boolean {
 export function planRegistryRows(
   scanned: SessionRow[],
   known: Record<string, KnownSession | undefined>,
+  probeAlivePid: ProbeAlivePid,
 ): RegistryRow[] {
   const rows: RegistryRow[] = [];
   for (const row of scanned) {
@@ -81,6 +86,45 @@ export function planRegistryRows(
     if (!current || current.status === 'ended' || identityIsStale(current, row)) {
       rows.push(sessionStartedRow(row));
     }
+  }
+  rows.push(...planOrphanRows(scanned, known, probeAlivePid));
+  return rows;
+}
+
+/**
+ * The sessions the fold believes live that the scan never returns at all.
+ *
+ * `scanSessions` finds a session by its `<pid>.json` file under a config dir. A console SDK
+ * worker's file is gone once the console that spawned it dies, so the scan stops returning
+ * it while the fold still carries it live -- and the loop above, which only ever walks the
+ * scan, has nothing to say about a session that is not in front of it. On 2026-09-11, two
+ * minutes after the console restarted onto #142, that was 28 of its 35 live rows, the
+ * oldest last heard from at 21:11 the night before.
+ *
+ * The fold already carries the pid these sessions reported, so no new sensor is needed and
+ * no staleness threshold is guessed: the same probe the scan uses answers it. Two rules keep
+ * this from ever reaching a session that is not gone:
+ *
+ *  - a pid that answers the probe is alive, and nothing is written. A session file that
+ *    merely disappeared under a running process stays live, which is the safe direction --
+ *    a recycled pid reads as alive, never as a kill.
+ *  - a fold row carrying no pid is no evidence at all and is left alone. The one nameless
+ *    live row on the machine had no pid and no cwd, and sweeping on a guess would release
+ *    another session's locks.
+ */
+function planOrphanRows(
+  scanned: SessionRow[],
+  known: Record<string, KnownSession | undefined>,
+  probeAlivePid: ProbeAlivePid,
+): VanishedRow[] {
+  const seen = new Set(scanned.map((row) => row.sessionId).filter(Boolean));
+  const rows: VanishedRow[] = [];
+  for (const [sessionId, current] of Object.entries(known)) {
+    if (!current || current.status !== 'live') continue;
+    if (seen.has(sessionId)) continue;
+    if (typeof current.pid !== 'number') continue;
+    if (probeAlivePid(current.pid)) continue;
+    rows.push({ event: 'session.vanished', actor: 'registry', session: sessionId, cwd: current.cwd ?? '' });
   }
   return rows;
 }
