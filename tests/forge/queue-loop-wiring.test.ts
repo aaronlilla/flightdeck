@@ -21,7 +21,7 @@ import { Inbox } from '../../src/forge/inbox.js';
 import { Journal } from '../../src/forge/journal.js';
 import { QueueStore } from '../../src/forge/intake/queueStore.js';
 import { QueueTickBackoff } from '../../src/forge/queue-backoff.js';
-import { QueueTickRunner } from '../../src/forge/intake/queueTickRunner.js';
+import { notTickingHere, QueueTickRunner } from '../../src/forge/intake/queueTickRunner.js';
 import { ForgeServer } from '../../src/forge/server.js';
 import { Lanes } from '../../src/forge/supervisor.js';
 
@@ -42,6 +42,12 @@ describe('the queue timer schedules the runner itself', () => {
 
   it('publishes the runner status on the server it just built', () => {
     expect(source).toContain('server.queueLoop = () => queueRunner.status()');
+  });
+
+  it('says so on the state read when another process holds the queue lock', () => {
+    // `/critique`, 2026-09-11: a null field on a process that never ticks reads exactly
+    // like a loop that should be ticking and has stopped.
+    expect(source).toContain('server.queueLoop = () => notTickingHere(');
   });
 });
 
@@ -105,5 +111,17 @@ describe('GET /state carries the queue loop', () => {
     expect(loop['overdue']).toBe(true);
     expect(loop['sentence']).toContain('1 minute');
     expect(loop['intervalSeconds']).toBe(15);
+    expect(loop['ticking']).toBe(true);
+  });
+
+  it('serves a process that is not the ticker as not ticking, never as overdue', async () => {
+    server!.queueLoop = () => notTickingHere(15_000);
+
+    const { status, body } = await readState();
+    expect(status).toBe(200);
+    const loop = body['queue_loop'] as Record<string, unknown>;
+    expect(loop['ticking']).toBe(false);
+    expect(loop['overdue']).toBe(false);
+    expect(loop['sentence']).toBe('This process is not running the queue loop; another process holds the queue lock.');
   });
 });

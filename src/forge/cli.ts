@@ -75,7 +75,7 @@ import {
 } from './paths.js';
 import { runQueueTick } from './intake/queue.js';
 import { acquireQueueLock } from './intake/queueLock.js';
-import { QueueTickRunner } from './intake/queueTickRunner.js';
+import { notTickingHere, QueueTickRunner } from './intake/queueTickRunner.js';
 import { QueueStore } from './intake/queueStore.js';
 import { buildQueueRuntimeDeps, queueMergeDeps, queuePromoteDeps, jiraConfigFromEnv } from './queue-wire.js';
 import { slackConfigFromEnv } from './intake/slack.js';
@@ -856,6 +856,10 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         : undefined;
       if (queueLock && !queueLock.ok) {
         queueLine = `queue NOT started: ${queueLock.reason}`;
+        // R-81: say so on `/state` too. A null field here reads identically to a loop
+        // that should be ticking and has stopped, so the process that is not the ticker
+        // has to name itself rather than stay quiet.
+        server.queueLoop = () => notTickingHere((Number(process.env['FORGE_QUEUE_POLL_S']) || 15) * 1000);
       }
       if (queueLock?.ok) {
         process.once('exit', () => queueLock.release());

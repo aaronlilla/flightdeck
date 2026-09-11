@@ -188,6 +188,65 @@ describe('QueueTickRunner: a stopped loop is visible without reading records (it
     expect(status.sentence).toBe('The queue loop finished a pass 0 seconds ago.');
   });
 
+  it('reads overdue while every pass is failing, not healthy (critique finding, 2026-09-11)', async () => {
+    const journal = fakeJournal();
+    const clock = fakeClock();
+    const runner = new QueueTickRunner<string>({
+      tick: async () => { throw new Error('the worktree is gone'); },
+      items: () => [],
+      journal,
+      backoff: new QueueTickBackoff(journal, { now: clock.now, threshold: 99 }),
+      intervalMs: INTERVAL,
+      now: clock.now,
+    });
+
+    for (let i = 0; i < 4; i += 1) {
+      runner.tick();
+      await runner.whenIdle();
+      clock.advance(INTERVAL);
+    }
+
+    const status = runner.status();
+    // A pass that threw is not a pass that ran. Stamping it as one would leave a loop
+    // doing no work at all reading healthy forever.
+    expect(status.lastCompletedAt).toBeNull();
+    expect(status.overdue).toBe(true);
+    expect(status.lastOutcome).toBe('failed');
+    expect(status.lastError).toBe('the worktree is gone');
+  });
+
+  it('keeps saying the passes failed once the backoff starts dripping', async () => {
+    const journal = fakeJournal();
+    const clock = fakeClock();
+    const backoff = new QueueTickBackoff(journal, { now: clock.now, threshold: 2, dripMs: 600_000 });
+    const runner = new QueueTickRunner<string>({
+      tick: async () => { throw new Error('cannot reach Jira'); },
+      items: () => [],
+      journal,
+      backoff,
+      intervalMs: INTERVAL,
+      now: clock.now,
+    });
+
+    for (let i = 0; i < 2; i += 1) {
+      runner.tick();
+      await runner.whenIdle();
+      clock.advance(INTERVAL);
+    }
+    expect(backoff.isPaused).toBe(true);
+
+    // The next intervals are refused by the drip. That must not rewrite the failure.
+    clock.advance(INTERVAL * 2);
+    runner.tick();
+    await runner.whenIdle();
+
+    const status = runner.status();
+    expect(status.paused).toBe(true);
+    expect(status.lastOutcome).toBe('failed');
+    expect(status.overdue).toBe(true);
+    expect(status.sentence).toContain('every pass since has failed');
+  });
+
   it('says nothing that identifies an item, a run or a machine', () => {
     const journal = fakeJournal();
     const clock = fakeClock();
