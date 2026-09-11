@@ -101,7 +101,10 @@ describe('computeThread', () => {
       disposition: 'park',
     };
     const result = computeThread([], [], 10_000, [entry]);
-    const question = result.messages.find((m) => m.type === 'question');
+    // R-75 item 1: a question card is status, not conversation, so it reaches the
+    // console through `cards`. The card itself is unchanged.
+    expect(result.messages.some((m) => m.type === 'question')).toBe(false);
+    const question = result.cards.find((m) => m.type === 'question');
     expect(question).toBeDefined();
     expect(question?.askKey).toBe('ask-1');
     expect(question?.opts).toEqual(['Yes', 'No']);
@@ -139,6 +142,8 @@ describe('computeThread: plain mode (deliverable 8)', () => {
     ];
     const result = computeThread(persisted, [], 10_000);
     const reply = result.messages.find((m) => m.type === 'reply');
+    // R-75 item 1: a refusal stays on the rail -- it is the Conductor answering the
+    // operator. Its humanizing is unchanged.
     const refusal = result.messages.find((m) => m.type === 'refusal');
     expect(reply?.text).not.toMatch(/S-[0-9a-f]{12,}/);
     expect(refusal?.text).not.toMatch(/jira_/);
@@ -173,7 +178,8 @@ describe('computeThread: plain mode (deliverable 8)', () => {
       },
     ];
     const result = computeThread(persisted, [], 10_000);
-    const confirm = result.messages.find((m) => m.type === 'confirm');
+    // R-75 item 1: a confirm card left the rail for `cards`.
+    const confirm = result.cards.find((m) => m.type === 'confirm');
     expect(confirm?.text).not.toMatch(/queue-BBZ-182|jira_/);
     expect(confirm?.text).toContain('BBZ-182');
     expect(confirm?.blast).not.toMatch(/jira_/);
@@ -186,7 +192,8 @@ describe('computeThread: plain mode (deliverable 8)', () => {
       kind: 'question', runs: ['S-b9d39bae548707e0'], goals: [], asked: 1, at: 2_000, disposition: 'park',
     };
     const result = computeThread([], [], 10_000, [entry]);
-    const question = result.messages.find((m) => m.type === 'question');
+    // R-75 item 1: the open-ask card travels in `cards`; its humanizing is unchanged.
+    const question = result.cards.find((m) => m.type === 'question');
     expect(question?.text).not.toMatch(/S-[0-9a-f]{12,}/);
     expect(question?.text).toBe('PR #39 is open, draft, and mergeable');
   });
@@ -265,6 +272,8 @@ describe('computeRunThread', () => {
       disposition: 'park',
     };
     const result = computeRunThread('alpha', [], [], { openAsks: [entry] });
+    // The run sheet is not the rail: R-75's split is `computeThread`'s alone, and a
+    // run's own thread still carries the whole exchange, question card included.
     const question = result.messages.find((m) => m.type === 'question');
     expect(question).toBeDefined();
     expect(question?.askKey).toBe('ask-1');

@@ -15,7 +15,7 @@ import { ConductorRail, DEFAULT_COMMANDS, type RailCommand } from './components/
 import { FlightReview } from './components/FlightReview.js';
 import { LanesGrid } from './components/LanesGrid.js';
 import { MachineView } from './components/MachineView.js';
-import { buildNeeds } from './components/NeedsYou.js';
+import { NeedsYou, buildNeeds } from './components/NeedsYou.js';
 import { QueueView } from './components/QueueView.js';
 import { Settings } from './components/Settings.js';
 import { SyncCard } from './components/SyncCard.js';
@@ -75,7 +75,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
         }
         case 'conductor': {
           const thread = await api.getThread();
-          if (mounted.current) dispatch({ type: 'thread', thread: applyResolved(thread.messages) });
+          if (mounted.current) dispatch({ type: 'thread', thread: applyResolved(thread.messages), cards: applyResolved(thread.cards ?? []) });
           break;
         }
         case 'integrations': {
@@ -155,7 +155,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       const sync = settled(syncR, 'sync');
       failCount.current = failedSlices.length > 0 ? failCount.current + 1 : 0;
       if (lanes) dispatch({ type: 'lanes', lanes: lanes.lanes, links: lanes.links, tokensToday: lanes.tokensToday });
-      if (thread) dispatch({ type: 'thread', thread: applyResolved(thread.messages) });
+      if (thread) dispatch({ type: 'thread', thread: applyResolved(thread.messages), cards: applyResolved(thread.cards ?? []) });
       if (integrations) dispatch({ type: 'integrations', integrations: integrations.items });
       if (caps) dispatch({ type: 'caps', caps });
       if (proposals) dispatch({ type: 'proposals', proposals });
@@ -251,9 +251,12 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
 
   /** A typed command or a card button, round-tripped through `POST /command`. A working
    *  row goes up while the Conductor answers, and the reply cards land in the rail. */
-  const processCommand = useCallback((text: string, run?: string) => {
+  /** R-75: returns a promise that RESOLVES when the fleet accepted the command and
+   *  REJECTS with the refusal text when it did not, so the Needs-you strip can roll a
+   *  card back. Callers that do not care ignore it; none of them changes behaviour. */
+  const processCommand = useCallback((text: string, run?: string): Promise<void> => {
     const trimmed = text.trim();
-    if (!trimmed) return;
+    if (!trimmed) return Promise.resolve();
     if (/^answer\s/i.test(trimmed)) {
       const card: Message = { k: `op-${Date.now()}-${Math.random()}`, type: 'operator', text: commandEcho(trimmed, { labelFor }), ts: Date.now(), source: 'operator' };
       dispatch({ type: 'thread-append', messages: [card], local: true });
@@ -269,17 +272,19 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     }
     const dropWorking = (): void => { if (!working) return; if (timeoutTimer) clearTimeout(timeoutTimer); dispatch({ type: 'local-card-drop', k: working.k }); };
     dispatch({ type: 'action-pending', key });
-    void (async () => {
+    return (async () => {
+      let refusal: string | null = null;
       try {
         const response = await api.sendCommand(trimmed, run);
         dropWorking();
         const answer = response.cards.filter((card) => card.type !== 'operator');
         if (answer.length > 0) dispatch({ type: 'thread-append', messages: answer });
-        const refused = answer.some((card) => card.type === 'refusal');
+        const refused = answer.find((card) => card.type === 'refusal');
+        if (refused) refusal = refused.text;
         dispatch({ type: 'action-result', key, result: { kind: 'done', ok: !refused, text: answer[0]?.text ?? 'no reply', jid: null, at: Date.now(), link: null } });
         if (tokenAction) {
           const resolvedValue: 'confirmed' | 'declined' = /^dismiss\s/i.test(trimmed) ? 'declined' : 'confirmed';
-          const target = stateRef.current.thread.find((m) => m.btns?.some((b) => b.cmd === trimmed));
+          const target = [...stateRef.current.thread, ...stateRef.current.cards].find((m) => m.btns?.some((b) => b.cmd === trimmed));
           if (target) {
             resolvedOverridesRef.current.set(target.k, { resolved: resolvedValue, at: Date.now() });
             dispatch({ type: 'local-card-resolve', k: target.k, resolved: resolvedValue });
@@ -290,8 +295,10 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
         const message = caught instanceof api.ApiError ? errorText(caught) : 'the command did not go through';
         appendReceipt(null, message, false);
         dispatch({ type: 'action-result', key, result: { kind: 'done', ok: false, text: message, jid: null, at: Date.now(), link: null } });
+        refusal = message;
       }
       for (const slice of EFFECT_SLICES[ACTIONS.sendCommand.effect]) void refreshSlice(slice);
+      if (refusal !== null) throw new Error(refusal);
     })();
   }, [appendReceipt, refreshSlice, labelFor]);
 
@@ -308,8 +315,11 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     const topicLane = !toLane && stateRef.current.topic ? stateRef.current.lanes.find((l) => l.id === stateRef.current.topic) : undefined;
     const question = topicLane?.question;
     const looksLikeAsk = /\?\s*$/.test(trimmed) || /^(what|why|how|show|who|when|where|which|pause|resume|kill|merge|confirm|dismiss|run|answer|status|spend|cap|nudge|ask)\b/i.test(trimmed);
-    if (question && !looksLikeAsk) { processCommand(`answer ${question.key} ${trimmed}`); return; }
-    processCommand(trimmed, toLane);
+    // The command path rejects on a refusal so the Needs-you strip can roll a card back
+    // (R-75 item 4). Every caller that does not want the rejection has to say so, or a
+    // refused command raises an unhandled rejection in the browser.
+    if (question && !looksLikeAsk) { void processCommand(`answer ${question.key} ${trimmed}`).catch(() => undefined); return; }
+    void processCommand(trimmed, toLane).catch(() => undefined);
   }, [processCommand, labelFor]);
 
   /** A card button, a chip or a question's answer: `open <view>` and `open lane <id>`
@@ -323,7 +333,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       const view = target.toLowerCase() as View;
       if (VIEWS.includes(view)) { dispatch({ type: 'view', view }); return; }
     }
-    processCommand(text);
+    void processCommand(text).catch(() => undefined);
   }, [processCommand, openLane]);
 
   /**
@@ -385,8 +395,26 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
 
   const onLaneCommand = useCallback((id: string, text: string) => {
     dispatch({ type: 'topic', topic: id });
-    processCommand(text);
+    void processCommand(text).catch(() => undefined);
   }, [processCommand]);
+
+  /** The Needs-you strip's own command path. It takes the SAME `open <view>` and
+   *  `open lane <id>` shortcut the rail takes -- a blocker card's "Open Blockers and
+   *  clear it" is navigation, and posting it to the grammar got an unknown-command
+   *  refusal while the strip advanced past the card as if it had worked. What it does
+   *  post, it hands back as a promise, so a refusal rolls the card back. */
+  const onStripCommand = useCallback((id: string, text: string): Promise<void> => {
+    const open = /^open\s+(.+)$/i.exec(text.trim());
+    if (open) {
+      const target = open[1]!.trim();
+      const laneMatch = /^lane\s+(.+)$/i.exec(target);
+      if (laneMatch) { openLane(laneMatch[1]!.trim()); return Promise.resolve(); }
+      const view = target.toLowerCase() as View;
+      if (VIEWS.includes(view)) { dispatch({ type: 'view', view }); return Promise.resolve(); }
+    }
+    dispatch({ type: 'topic', topic: id });
+    return processCommand(text);
+  }, [processCommand, openLane]);
 
   const onSendLane = useCallback((id: string, text: string) => { onRailSend(text, id); }, [onRailSend]);
 
@@ -437,16 +465,24 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     return () => container.removeEventListener('keydown', onKeyDown);
   }, [state.sheet]);
 
-  const needs = buildNeeds(state.lanes, state.integrations, (_kind, id) => openLane(id));
+  // R-75 item 3: everything that needs a person, in one ordered list, rendered one at
+  // a time by the strip above the tabs.
+  // `state.blockers` is null until the slice lands, and the flattened `blockers` above
+  // is an empty array in that window. Handing THAT to the strip would read as "no
+  // blocker is open" and drop every blocker card on first paint, so the strip gets the
+  // raw slice: undefined means "not read yet", and nothing is dropped on a guess.
+  const needs = buildNeeds(state.lanes, state.cards, state.blockers?.blockers);
   const activeLanes = state.lanes.filter((l) => l.retiredAt === null && l.state !== 'merged' && l.state !== 'killed');
   // A slot is taken by any lane still on the board, working or waiting.
   const working = activeLanes.length;
   const blockersBadge = blockers.filter((b) => b.state !== 'resolved').length;
-  const badges: Partial<Record<View, number>> = { blockers: blockersBadge || undefined, board: needs.length || undefined };
+  // R-75 item 3: no tab badge carries the ask count any more -- the strip's own
+  // "1 of N" counter is the indicator, and two of them disagreed on sight.
+  const badges: Partial<Record<View, number>> = { blockers: blockersBadge || undefined };
   // A topic is usually a lane on the board; a card about a queued ticket that has not
   // started yet names the ticket itself.
   const topic = state.topic ? { id: state.topic, label: labelFor(state.topic) ?? (/^[A-Z][A-Z0-9_]*-\d+$/.test(state.topic) ? state.topic : 'this lane') } : null;
-  const topicCard = topic ? [...state.thread].reverse().find((m) => (m.lane === topic.id || m.source === topic.id) && m.btns && m.btns.length > 0 && !m.resolved) : undefined;
+  const topicCard = topic ? [...state.thread, ...state.cards].reverse().find((m) => (m.lane === topic.id || m.source === topic.id) && m.btns && m.btns.length > 0 && !m.resolved) : undefined;
   const commands: RailCommand[] = topic
     ? [...(topicCard?.btns ?? []).map((b) => ({ label: b.label, cmd: b.cmd })), { label: 'Show its story', cmd: `open lane ${topic.id}` }]
     : DEFAULT_COMMANDS;
@@ -456,13 +492,13 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     <StoreContext.Provider value={{ state, dispatch }}>
       <ActionsContext.Provider value={actionsHost}>
         <div className="app" data-theme={state.theme} data-testid="app">
-          <Chrome view={state.view} badges={badges} feed={state.feed} project={state.project} queueOn={state.queueOn} syncFullRunning={syncFullRunning} watcher={state.sync?.watcher ?? null} onWatcherToggle={onWatcherToggle} now={state.now} onNav={(view) => dispatch({ type: 'view', view })} />
+          <Chrome view={state.view} badges={badges} feed={state.feed} project={state.project} queueOn={state.queueOn} syncFullRunning={syncFullRunning} watcher={state.sync?.watcher ?? null} onWatcherToggle={onWatcherToggle} now={state.now} onNav={(view) => dispatch({ type: 'view', view })} strip={<NeedsYou items={needs} now={state.now} onCommand={onStripCommand} />} />
           <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
             {state.view === 'board' ? (
               <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
                 <SyncCard scope="lanes" run={state.sync?.runs.lanes ?? null} busy={syncBusy('lanes')} onResync={onResync} />
                 <div style={{ flex: 1, minWidth: 0, position: 'relative', display: 'flex' }}>
-                  <LanesGrid lanes={state.lanes} blockers={blockers} queue={queue} needs={needs} now={state.now} onOpen={openLane} onCommand={onBoardCommand} onLaneCommand={onLaneCommand} onQueue={() => dispatch({ type: 'view', view: 'queue' })} />
+                  <LanesGrid lanes={state.lanes} blockers={blockers} queue={queue} now={state.now} onOpen={openLane} onCommand={onBoardCommand} onLaneCommand={onLaneCommand} onQueue={() => dispatch({ type: 'view', view: 'queue' })} />
                   {sheet?.type === 'ticket' && sheetLane ? (
                     <div ref={sheetContainerRef} tabIndex={-1} data-testid="sheet-scrim" style={{ position: 'absolute', inset: 0, background: 'var(--scrim)', outline: 'none' }} onClick={() => dispatch({ type: 'sheet', sheet: null })}>
                       <TicketSheet lane={sheetLane} now={state.now} onClose={() => dispatch({ type: 'sheet', sheet: null })} onCommand={onLaneCommand} onSendLane={onSendLane} verbose={state.verbose} />

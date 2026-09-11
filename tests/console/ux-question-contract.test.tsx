@@ -26,7 +26,7 @@ import { screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ConductorRail } from '../../src/console/components/ConductorRail.js';
-import { buildNeeds } from '../../src/console/components/NeedsYou.js';
+import { NeedsYou, buildNeeds } from '../../src/console/components/NeedsYou.js';
 import { BlockersView } from '../../src/console/components/BlockersView.js';
 import type { Blocker, Feed, Lane, Message } from '../../src/shared/console-model.js';
 import { render } from './helpers/with-store.js';
@@ -42,34 +42,55 @@ function assertQuestionCardContract(): void {
   within(card).getByTestId('question-freetext');
 }
 
+function laneAsking(key: string, text: string, opts: string[]): Lane {
+  return {
+    title: null, kind: 'manual', sourceUrl: null, plain: '', mergeable: null, attempts: 1, retiredAt: null,
+    id: 'FLT-9', ticket: 'FLT-9', model: 'sonnet-5', modelId: 'claude-sonnet-5', className: 'implement',
+    repo: 'flightdeck-api', attempt: 1, state: 'parked', reason: null, stepN: 1, stepTotal: 6, stepText: 'waiting',
+    ctxTokens: 1, ctxCeiling: 2, ctxCompactAt: 2, tokens: 1, tokenCap: null, tokensPerMin: 0,
+    fails: 0, hop: 0, hopStatus: 'live', observedAt: Date.now(), verifiedAt: Date.now(), heart: true, since: Date.now(),
+    startedAt: Date.now(), endedAt: null, pr: null, sandbox: null, blockedBy: null, runaway: false,
+    needsAaron: null, live: { alive: false, pid: null, lastEventAt: null, checkedAt: 0 }, did: null, didVerbatim: false, now: '', you: null,
+    question: { key, text, opts, askedAt: Date.now(), recommended: 0, optionSource: 'worker' },
+  };
+}
+
 import { within } from '@testing-library/react';
 
 describe('UX rule 2: every question renders through one shared, multiple-choice component (RED on main)', () => {
-  it('the Conductor rail question card uses the shared question-card contract', () => {
-    const message: Message = {
-      k: 'ask1', type: 'question', text: 'which fix round should run next?', ts: Date.now(), source: 'FLT-1',
-      opts: ['round A', 'round B'], askKey: 'ask1',
-    };
-    render(
-      <ConductorRail
-        thread={[message]} feed={feedUp} now={Date.now()} composer="" onComposerChange={vi.fn()}
-        onSend={vi.fn()} onCommand={vi.fn()} onUndo={vi.fn()} onOpenJournal={vi.fn()}
-      />,
-    );
+  // R-75 item 3 (spec `doctrine/design/operator-experience.md` §5): the rail's two
+  // question surfaces became ONE -- the Needs-you strip -- and the rail renders neither
+  // a question nor a confirm any more. The contract is unchanged and still asserted; it
+  // is asserted where the question is now asked, and the rail is asserted empty of it.
+  it('the Needs-you strip renders a question through the shared question-card contract', () => {
+    const asked = laneAsking('ask1', 'which fix round should run next?', ['round A', 'round B']);
+    render(<NeedsYou items={buildNeeds([asked], [])} now={Date.now()} onCommand={vi.fn()} />);
     assertQuestionCardContract();
   });
 
-  it('the Conductor rail confirm card uses the shared question-card contract', () => {
-    const message: Message = {
+  it('the Needs-you strip renders a confirm through the shared question-card contract', () => {
+    const confirm: Message = {
       k: 'c1', type: 'confirm', text: 'Kill FLT-1?', ts: Date.now(), source: 'console', blast: 'discards the diff.',
+      title: 'Kill FLT-1?', kicker: 'Confirm · FLT-1',
     };
+    render(<NeedsYou items={buildNeeds([], [confirm])} now={Date.now()} onCommand={vi.fn()} />);
+    assertQuestionCardContract();
+  });
+
+  it('the Conductor rail renders neither, whatever it is handed', () => {
+    const question: Message = {
+      k: 'ask1', type: 'question', text: 'which fix round should run next?', ts: Date.now(), source: 'FLT-1',
+      opts: ['round A', 'round B'], askKey: 'ask1',
+    };
+    const confirm: Message = { k: 'c1', type: 'confirm', text: 'Kill FLT-1?', ts: Date.now(), source: 'console', blast: 'discards the diff.' };
     render(
       <ConductorRail
-        thread={[message]} feed={feedUp} now={Date.now()} composer="" onComposerChange={vi.fn()}
+        thread={[question, confirm]} feed={feedUp} now={Date.now()} composer="" onComposerChange={vi.fn()}
         onSend={vi.fn()} onCommand={vi.fn()} onUndo={vi.fn()} onOpenJournal={vi.fn()}
       />,
     );
-    assertQuestionCardContract();
+    expect(screen.queryByTestId('question-card')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('card-confirm')).not.toBeInTheDocument();
   });
 
   it('the lane sheet run ask renders through the shared question-card contract', () => {
@@ -86,7 +107,7 @@ describe('UX rule 2: every question renders through one shared, multiple-choice 
     // `NeedsYou` builds plain data, not JSX -- rendering its own plate is out of scope
     // for this component-test file, so the contract is asserted directly on what it
     // hands the board: no options, no recommendation, just a single "Answer ->" CTA.
-    const [need] = buildNeeds([askedLane], [], vi.fn());
+    const [need] = buildNeeds([askedLane], []);
     expect(need).toBeDefined();
     // A `question-card` contract on this need would carry its own options; today's
     // shape has none at all, only a truncated one-line `line` and a single `cta`.

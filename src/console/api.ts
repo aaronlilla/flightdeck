@@ -78,8 +78,14 @@ export function getLanes(params?: { all?: boolean; archived?: boolean }): Promis
   return call<LanesResponse>(params?.all ? '/lanes?all=1' : '/lanes');
 }
 
-export function getThread(opts?: { verbose?: boolean }): Promise<ThreadResponse> {
-  return call<ThreadResponse>(opts?.verbose ? '/thread?verbose=1' : '/thread');
+/** R-75 item 1: `GET /thread` carries the rail's own list plus the status cards that
+ *  left it. An older server that answers with `messages` alone reads as no cards. */
+export interface ThreadSplitResponse extends ThreadResponse {
+  cards?: Message[];
+}
+
+export function getThread(opts?: { verbose?: boolean }): Promise<ThreadSplitResponse> {
+  return call<ThreadSplitResponse>(opts?.verbose ? '/thread?verbose=1' : '/thread');
 }
 
 export function getJournal(params?: { since?: number; run?: string; limit?: number }): Promise<JournalResponse> {

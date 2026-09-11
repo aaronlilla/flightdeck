@@ -93,7 +93,7 @@ describe('the flight review counts the day', () => {
   });
 });
 
-describe('a raised blocker is a card in the rail', () => {
+describe('a raised blocker is a card the console reads off the thread response', () => {
   it('names the lane, what stopped, and the two things the operator can do', () => {
     const row = event({ event: 'blocker.raised', at: now, key: 'sentry', what: 'the Sentry token expired', runs: ['run-b'] });
     const card = blockerCardFor(row, (id) => (id === 'run-b' ? 'ABC-2' : null));
@@ -102,6 +102,9 @@ describe('a raised blocker is a card in the rail', () => {
     expect(card.title).toBe('ABC-2 cannot go on: the Sentry token expired');
     expect(card.btns?.map((b) => b.cmd)).toEqual(['open blockers', 'open lane run-b']);
     const thread = computeThread([{ k: 'op', type: 'operator', text: 'hi', ts: now - 1, source: 'operator' }], [row], now);
-    expect(thread.messages.some((m) => m.type === 'blocker')).toBe(true);
+    // R-75 item 1: a blocker is a strip item now, so it travels in `cards`, not on
+    // the rail's own list. The card's own shape is asserted above, unchanged.
+    expect(thread.messages.some((m) => m.type === 'blocker')).toBe(false);
+    expect(thread.cards.some((m) => m.type === 'blocker')).toBe(true);
   });
 });

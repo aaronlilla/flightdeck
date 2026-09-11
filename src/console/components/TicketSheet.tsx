@@ -54,7 +54,9 @@ export function TicketSheet({ lane, now, onClose, onCommand, onSendLane, verbose
   const submitNote = (): void => {
     const text = note.trim();
     if (!text) return;
-    void Promise.resolve(onSendLane(lane.id, text)).then(() => setSent(text));
+    // The page's command path rejects on a refusal since R-75; a bare `.then` here would
+    // raise an unhandled rejection the moment the fleet turned a note down.
+    void Promise.resolve(onSendLane(lane.id, text)).then(() => setSent(text)).catch(() => undefined);
     setNote('');
   };
   const entries = story?.entries ?? [];
