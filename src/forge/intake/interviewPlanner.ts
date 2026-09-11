@@ -56,7 +56,7 @@ export interface InterviewPlannerDeps {
  * teammate with a call they did not make is worse than saying nothing: the worker reads
  * `## Decisions` as settled and never asks again. Found by code review, 2026-09-11.
  */
-function answeredByOf(entry: InboxEntry): string {
+export function answeredByOf(entry: InboxEntry): string {
   if (entry.answeredBy && entry.reply !== undefined && entry.answer === entry.reply) {
     return entry.answeredBy;
   }
@@ -138,7 +138,7 @@ export async function planTicketWithInterview(
       forPerson = { ...question, answerableBy: 'aaron' };
       note = found.text;
     }
-    deps.inbox.raise({
+    const entry = deps.inbox.raise({
       run: askRunFor(itemId),
       question: note ? `${forPerson.text}\n\n(looked in the code first: ${note})` : forPerson.text,
       options: forPerson.options,
@@ -147,6 +147,12 @@ export async function planTicketWithInterview(
       kind: 'question',
       ticket,
       actionTarget: forPerson.answerableBy === 'teammate' && forPerson.who ? `teammate:${forPerson.who}` : 'interview',
+    });
+    // The Flow page's only record of what was asked and who owns it -- `queue.waiting`
+    // says an item is held, never why. Written here, once per ask actually raised, so a
+    // repo question the scout answered above never gets one.
+    deps.append?.({
+      event: 'interview.asked', itemId, ticket, askKey: entry.key, answerableBy: forPerson.answerableBy,
     });
     raised += 1;
   }

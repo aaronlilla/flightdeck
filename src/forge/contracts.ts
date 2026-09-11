@@ -350,6 +350,13 @@ export const FORGE_EVENT_NAMES = [
   // `readabilityVerdict` before it ever reached the write client; `readability.unconfigured`
   // once per console start when no contract dir is present.
   'readability.refused', 'readability.unconfigured',
+  // The interview's own asks and answers (`intake/interviewPlanner.ts`, `server.ts`'s
+  // `/answer` route): a `queue.waiting` row says an item is held, but not what was asked
+  // or when an answer landed. `interview.asked` is written once per ask actually raised
+  // to the inbox (never for a repo question the scout answered outright); `interview.answered`
+  // is written when `/answer` closes an ask whose run names an item (`item:<id>`), never
+  // for an ordinary worker ask.
+  'interview.asked', 'interview.answered',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];
