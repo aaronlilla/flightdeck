@@ -1,11 +1,16 @@
 /**
  * Where the app finds a Forge checkout to run `forge up` from.
  *
- * Order: FORGE_REPO_DIR, then a path the user picked before (read from
- * settings), then the directory the app is installed beside, if that looks
- * like the repository. No path is hardcoded; every candidate comes from the
- * environment, a settings file, or the app's own install location, and each
- * candidate is checked before it is trusted.
+ * It never falls back (Aaron, 2026-09-11: "I don't want the console to ever fallback,
+ * why would I want that"). Falling back meant quietly running a directory the operator
+ * did not choose, and it hid a real misconfiguration for days: an environment variable
+ * and the saved checkout file pointed at different trees, the ranking silently preferred
+ * one, and nothing a start printed said which.
+ *
+ * So a configured candidate that is broken, or two that disagree, is a REFUSAL naming
+ * what was found and where. Only an unambiguous answer resolves, and it carries the
+ * source so the caller can say how it was chosen. A machine with nothing configured is
+ * its own outcome, so the caller can still ask the operator to pick a folder.
  */
 export interface LocateFs {
   existsSync(path: string): boolean;
@@ -18,11 +23,7 @@ export interface LocateEnv {
 export interface LocateCandidates {
   env: LocateEnv;
   rememberedCheckoutDir?: string;
-  /** `~/.forge/console.checkout`'s content (item 4, plan step 9), read by the
-   *  caller via `readCheckoutFile` -- ranked above the install dir, below
-   *  `FORGE_REPO_DIR` and the remembered setting: the canonical launcher-owned
-   *  checkout wins over an install dir that merely happens to look like a
-   *  repo, but an explicit override still wins over it. */
+  /** `~/.forge/console.checkout`'s content, read by the caller via `readCheckoutFile`. */
   checkoutFileDir?: string;
   installDir?: string;
   join(...parts: string[]): string;
@@ -38,35 +39,65 @@ export function looksLikeForgeRepo(fs: LocateFs, join: (...p: string[]) => strin
   return hasBuiltEntry || hasSourceEntry;
 }
 
-export interface LocateResult {
-  dir: string;
-  source: 'env' | 'remembered' | 'checkout-file' | 'install-dir';
-}
+export type LocateSource = 'env' | 'remembered' | 'checkout-file' | 'install-dir';
 
-/**
- * Resolve a checkout, or return undefined when none of the candidates
- * check out. Undefined means the caller should ask the user to pick one.
- */
-export function locateCheckout(fs: LocateFs, candidates: LocateCandidates): LocateResult | undefined {
+export type LocateOutcome =
+  /** One unambiguous checkout. `source` is how it was chosen, for reporting. */
+  | { kind: 'ok'; dir: string; source: LocateSource }
+  /** Something IS configured and cannot be trusted. Never resolve past this. */
+  | { kind: 'refused'; refusal: string }
+  /** Nothing is configured at all: the caller asks the operator to pick a folder. */
+  | { kind: 'unconfigured' };
+
+/** How each candidate is named in a refusal, so the operator knows what to go and fix. */
+const WHERE: Record<LocateSource, string> = {
+  env: 'the FORGE_REPO_DIR environment variable',
+  remembered: 'the checkout remembered in settings',
+  'checkout-file': 'the saved path in ~/.forge/console.checkout',
+  'install-dir': 'the directory the app is installed beside',
+};
+
+export function locateCheckout(fs: LocateFs, candidates: LocateCandidates): LocateOutcome {
   const {
     env, rememberedCheckoutDir, checkoutFileDir, installDir, join,
   } = candidates;
 
-  if (env.FORGE_REPO_DIR && looksLikeForgeRepo(fs, join, env.FORGE_REPO_DIR)) {
-    return { dir: env.FORGE_REPO_DIR, source: 'env' };
+  // The install directory is where the app happens to live, not something anybody
+  // configured, so it is only consulted when nothing else is and it never conflicts.
+  const configured: Array<{ source: LocateSource; dir: string }> = [];
+  if (env.FORGE_REPO_DIR) configured.push({ source: 'env', dir: env.FORGE_REPO_DIR });
+  if (rememberedCheckoutDir) configured.push({ source: 'remembered', dir: rememberedCheckoutDir });
+  if (checkoutFileDir) configured.push({ source: 'checkout-file', dir: checkoutFileDir });
+
+  // A configured candidate that is not a checkout is a broken setting, not a reason to
+  // run a different directory. Refuse and name it.
+  const broken = configured.find((c) => !looksLikeForgeRepo(fs, join, c.dir));
+  if (broken) {
+    return {
+      kind: 'refused',
+      refusal: `${WHERE[broken.source]} points at ${broken.dir}, which is not a Forge checkout. `
+        + 'Fix it or clear it; nothing else will be run in its place.',
+    };
   }
 
-  if (rememberedCheckoutDir && looksLikeForgeRepo(fs, join, rememberedCheckoutDir)) {
-    return { dir: rememberedCheckoutDir, source: 'remembered' };
+  // Two settings that disagree mean nobody has decided which tree serves. Picking the
+  // higher-ranked one is exactly the silent choice this function exists to stop making.
+  const distinct = [...new Set(configured.map((c) => c.dir))];
+  if (distinct.length > 1) {
+    const named = configured.map((c) => `${WHERE[c.source]} -> ${c.dir}`).join('; ');
+    return {
+      kind: 'refused',
+      refusal: `Configured checkouts disagree, so none was chosen: ${named}. `
+        + 'Point them at the same directory, or clear the ones that are wrong.',
+    };
   }
 
-  if (checkoutFileDir && looksLikeForgeRepo(fs, join, checkoutFileDir)) {
-    return { dir: checkoutFileDir, source: 'checkout-file' };
-  }
+  const agreed = configured[0];
+  if (agreed) return { kind: 'ok', dir: agreed.dir, source: agreed.source };
 
   if (installDir && looksLikeForgeRepo(fs, join, installDir)) {
-    return { dir: installDir, source: 'install-dir' };
+    return { kind: 'ok', dir: installDir, source: 'install-dir' };
   }
 
-  return undefined;
+  return { kind: 'unconfigured' };
 }

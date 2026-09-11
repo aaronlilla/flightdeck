@@ -340,7 +340,19 @@ async function resolveCheckoutDir(): Promise<string | undefined> {
     installDir,
     join,
   });
-  if (found) return found.dir;
+  if (found.kind === 'ok') {
+    // Say which tree is about to serve and how it was chosen. Without this a console on
+    // a stale checkout looked identical to one on the trunk (Aaron, 2026-09-11).
+    logToStatus(`checkout ${found.dir} (from ${found.source})`);
+    return found.dir;
+  }
+
+  if (found.kind === 'refused') {
+    // Configured and untrustworthy: never resolve past it to a directory nobody chose.
+    showStatus(found.refusal);
+    logToStatus(`checkout refused: ${found.refusal}`);
+    return undefined;
+  }
 
   statusWindow?.webContents.send('need-folder');
   showStatus('Could not find a Forge checkout. Pick the repository folder to continue.');

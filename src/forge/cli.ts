@@ -65,7 +65,7 @@ import { probeAlivePidLiveness, scanSessions } from './sessions/registry.js';
 import { journalRegistryRows, planRegistryRows } from './sessions/reconcile.js';
 import { type IngestDeps } from './sessions/ingest.js';
 import { sweepAndCollectLocks, worktreeStatusFor } from './sessions/cleanup.js';
-import { checkLaunch, launchEnv, loginInFlight, pinnedRuntime, runtimeHead, runtimeVersion } from './launcher.js';
+import { checkLaunch, launchEnv, loginInFlight, pinnedRuntime, runtimeCheckout, runtimeHead, runtimeVersion } from './launcher.js';
 import { assess, LivenessSupervisor } from './liveness.js';
 import { loadConsoleEnv } from './console-env.js';
 import { titleFromHeading } from './console/lanes.js';
@@ -977,6 +977,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         code: 0,
         lines: [
           `forge ${runtimeVersion()} up on http://127.0.0.1:${port}`,
+          `serving ${runtimeCheckout()}`,
           `replayed ${state.events.length} events, ${Object.keys(state.runs).length} run(s)`,
           state.torn ? `${state.torn} torn journal line(s) survived and were skipped` : '',
           ...reconcileLines,
