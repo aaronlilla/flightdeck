@@ -96,8 +96,10 @@ export function buildNeeds(lanes: Lane[], cards: Message[], _now?: number): Need
     needs.push({
       kind: card.type,
       id: card.lane ?? card.source,
-      key: card.kicker ?? '',
-      title: card.title ?? card.text,
+      // The kicker IS the head for a card ("Blocked · NWR-178"); repeating the headline
+      // in both lines read as a stutter in the 2026-09-11 screenshot.
+      key: '',
+      title: card.kicker ?? card.text,
       line: card.title ?? card.text,
       options: options.length > 0 ? options : [{ label: 'Confirm', cmd: `confirm ${card.k}` }, { label: 'Not now', cmd: `dismiss ${card.k}` }],
       askKey: card.askKey ?? card.k,

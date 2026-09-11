@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { CONSOLE_ROUTES, HEARTBEAT_MS } from '../shared/console-model.js';
 import { computeNext } from '../forge/console/summary.js';
 import { orderChains } from '../forge/console/blockers.js';
-import { RAIL_TYPES } from '../forge/console/thread.js';
+import { RAIL_TYPES } from '../shared/rail-kinds.js';
 import type {
   ActionResult, Blocker, Caps, Integration, JournalEntry, Lane, LaneSummary, Message, QueueAddRequest,
   QueueAddResponse, QueueItem, QueueSource, ReauditResponse, Rule,

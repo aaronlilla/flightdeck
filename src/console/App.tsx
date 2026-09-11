@@ -279,7 +279,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
         dispatch({ type: 'action-result', key, result: { kind: 'done', ok: !refused, text: answer[0]?.text ?? 'no reply', jid: null, at: Date.now(), link: null } });
         if (tokenAction) {
           const resolvedValue: 'confirmed' | 'declined' = /^dismiss\s/i.test(trimmed) ? 'declined' : 'confirmed';
-          const target = stateRef.current.thread.find((m) => m.btns?.some((b) => b.cmd === trimmed));
+          const target = [...stateRef.current.thread, ...stateRef.current.cards].find((m) => m.btns?.some((b) => b.cmd === trimmed));
           if (target) {
             resolvedOverridesRef.current.set(target.k, { resolved: resolvedValue, at: Date.now() });
             dispatch({ type: 'local-card-resolve', k: target.k, resolved: resolvedValue });
@@ -450,7 +450,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   // A topic is usually a lane on the board; a card about a queued ticket that has not
   // started yet names the ticket itself.
   const topic = state.topic ? { id: state.topic, label: labelFor(state.topic) ?? (/^[A-Z][A-Z0-9_]*-\d+$/.test(state.topic) ? state.topic : 'this lane') } : null;
-  const topicCard = topic ? [...state.thread].reverse().find((m) => (m.lane === topic.id || m.source === topic.id) && m.btns && m.btns.length > 0 && !m.resolved) : undefined;
+  const topicCard = topic ? [...state.thread, ...state.cards].reverse().find((m) => (m.lane === topic.id || m.source === topic.id) && m.btns && m.btns.length > 0 && !m.resolved) : undefined;
   const commands: RailCommand[] = topic
     ? [...(topicCard?.btns ?? []).map((b) => ({ label: b.label, cmd: b.cmd })), { label: 'Show its story', cmd: `open lane ${topic.id}` }]
     : DEFAULT_COMMANDS;

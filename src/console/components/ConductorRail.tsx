@@ -6,6 +6,7 @@ import { useStore } from '../store.js';
 import type { Feed, Message, MessageButton } from '../../shared/console-model.js';
 import { Marks, QuestionCard } from './QuestionCard.js';
 import { NarratedLine } from './Narrated.js';
+import { RAIL_TYPES } from '../../shared/rail-kinds.js';
 
 /**
  * `FD Rail.dc.html`: the Conductor rail. Rows by kind (status, receipt with Undo,
@@ -323,8 +324,13 @@ export function ConductorRail(props: ConductorRailProps): JSX.Element {
   const { thread, feed, now, composer, onComposerChange, onSend, onCommand, onUndo, labelFor, agentCount, topic = null, recipient = 'conductor', onRecipient, onTopic, commands = DEFAULT_COMMANDS, onStop, verbose } = props;
   const composerAction = useStore().state.actions['sendCommand:rail'];
   const busy = composerAction?.pending ?? false;
-  const conversation = thread.filter((message) => !isObservation(message));
-  const observations = thread.filter(isObservation);
+  // R-75 item 1: the rail draws conversation and nothing else, whatever it is handed.
+  // The builder already split the fetched thread; this filter is what makes the rule
+  // hold for every OTHER path a card can arrive by -- a refusal off the command route,
+  // a card the page put up itself.
+  const railRows = thread.filter((message) => RAIL_TYPES.has(message.type));
+  const conversation = railRows.filter((message) => !isObservation(message));
+  const observations = railRows.filter(isObservation);
   // R-75 item 2 (`FD Rail.dc.html` 1a, rewritten 2026-09-11): the list OPENS at the
   // bottom and stays pinned there, chatroom style. Scrolling up unpins and keeps the
   // reader's place; what arrives below is counted on one jump button that re-pins.

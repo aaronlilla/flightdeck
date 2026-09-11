@@ -12,7 +12,10 @@ import { existsSync, readFileSync } from 'node:fs';
 import type { ForgeEvent } from '../journal.js';
 import type { InboxEntry } from '../inbox.js';
 import type { RunMessage } from '../runinbox.js';
-import type { Message, MessageType, ThreadResponse } from '../../shared/console-model.js';
+import type { Message, ThreadResponse } from '../../shared/console-model.js';
+import { RAIL_TYPES } from '../../shared/rail-kinds.js';
+
+export { RAIL_TYPES };
 
 /** `GET /thread`'s response since R-75: the rail's own list, plus the status cards that
  *  left it. Declared here rather than in `src/shared/console-model.ts` so the shared
@@ -168,18 +171,6 @@ function humanizeMessage(message: Message, labelFor: TitleForFn, questionFor: (k
     ...(message.opts ? { opts: message.opts.map(stripText) } : {}),
   };
 }
-
-/**
- * R-75 item 1: the rail is conversation only. `operator`, `reply` and `receipt` are what
- * a person said and what came back; `event` and `activity` stay on the same list because
- * the rail's closed Activity drawer reads them off it and draws them nowhere else. Every
- * other kind is status, and status left the chat (spec §3): it reaches the console
- * through the response's `cards` field, which the Needs-you strip, the Board and the
- * future Flow page read.
- */
-export const RAIL_TYPES: ReadonlySet<MessageType> = new Set<MessageType>([
-  'operator', 'reply', 'receipt', 'event', 'activity',
-]);
 
 /**
  * The board-wide thread: every persisted rail message, one system chip per matching

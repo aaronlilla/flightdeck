@@ -4,6 +4,7 @@
  * sheet, the palette, a hover tip, a toast, the theme, composer drafts).
  */
 import { createContext, useContext, useReducer } from 'react';
+import { RAIL_TYPES } from '../shared/rail-kinds.js';
 import type { Dispatch } from 'react';
 import type {
   AccountItem,
@@ -296,26 +297,36 @@ export function reducer(state: State, action: Action): State {
       return {
         ...state,
         thread: state.thread.filter((m) => m.k !== action.k),
+        cards: state.cards.filter((m) => m.k !== action.k),
         localCards: state.localCards.filter((m) => m.k !== action.k),
       };
     case 'local-card-text':
       return {
         ...state,
         thread: state.thread.map((m) => (m.k === action.k ? { ...m, text: action.text } : m)),
+        cards: state.cards.map((m) => (m.k === action.k ? { ...m, text: action.text } : m)),
         localCards: state.localCards.map((m) => (m.k === action.k ? { ...m, text: action.text } : m)),
       };
     case 'local-card-resolve':
       return {
         ...state,
         thread: state.thread.map((m) => (m.k === action.k ? { ...m, resolved: action.resolved } : m)),
+        cards: state.cards.map((m) => (m.k === action.k ? { ...m, resolved: action.resolved } : m)),
         localCards: state.localCards.map((m) => (m.k === action.k ? { ...m, resolved: action.resolved } : m)),
       };
-    case 'thread-append':
+    case 'thread-append': {
+      // R-75 item 1: a card that arrives by any path -- the command route's reply, a
+      // card the page put up itself -- is split the same way the thread response is.
+      // A refusal or a confirm appended here used to land straight in the rail.
+      const toRail = action.messages.filter((m) => RAIL_TYPES.has(m.type));
+      const toCards = action.messages.filter((m) => !RAIL_TYPES.has(m.type));
       return {
         ...state,
-        thread: [...state.thread, ...action.messages],
+        thread: [...state.thread, ...toRail],
+        cards: [...state.cards, ...toCards],
         localCards: action.local ? [...state.localCards, ...action.messages] : state.localCards,
       };
+    }
     case 'action-pending':
       return { ...state, actions: { ...state.actions, [action.key]: { pending: true, startedAt: Date.now(), result: null } } };
     case 'action-result':
