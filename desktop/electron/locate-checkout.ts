@@ -101,3 +101,29 @@ export function locateCheckout(fs: LocateFs, candidates: LocateCandidates): Loca
 
   return { kind: 'unconfigured' };
 }
+
+/** What the app should do with a resolution outcome: which directory to use, what to
+ *  tell the operator, and whether to offer the folder picker. */
+export interface CheckoutPrompt {
+  dir?: string;
+  /** The sentence shown in the status window. Absent when a checkout resolved. */
+  status?: string;
+  /** The line written to the status log either way, so a start is never silent. */
+  log: string;
+  /** Whether to offer the folder picker. A refusal MUST offer it: refusing to guess is
+   *  the point, but leaving no way back would mean an app that cannot start at all. */
+  pickFolder: boolean;
+}
+
+export function checkoutPrompt(outcome: LocateOutcome): CheckoutPrompt {
+  if (outcome.kind === 'ok') {
+    return { dir: outcome.dir, log: `checkout ${outcome.dir} (from ${outcome.source})`, pickFolder: false };
+  }
+  if (outcome.kind === 'refused') {
+    return { status: outcome.refusal, log: `checkout refused: ${outcome.refusal}`, pickFolder: true };
+  }
+  return {
+    status: 'Could not find a Forge checkout. Pick the repository folder to continue.',
+    log: 'checkout not configured', pickFolder: true,
+  };
+}

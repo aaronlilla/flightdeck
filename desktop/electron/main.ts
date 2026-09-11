@@ -6,7 +6,7 @@ import { execFileSync, spawn as nodeSpawn } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { get as httpGet, type IncomingMessage } from 'node:http';
 
-import { locateCheckout, type LocateFs } from './locate-checkout';
+import { checkoutPrompt, locateCheckout, type LocateFs } from './locate-checkout';
 import {
   mergeForgeEnv, readSettings, updateSettings, type SettingsFs, type WindowBounds,
 } from './settings';
@@ -340,22 +340,16 @@ async function resolveCheckoutDir(): Promise<string | undefined> {
     installDir,
     join,
   });
-  if (found.kind === 'ok') {
-    // Say which tree is about to serve and how it was chosen. Without this a console on
-    // a stale checkout looked identical to one on the trunk (Aaron, 2026-09-11).
-    logToStatus(`checkout ${found.dir} (from ${found.source})`);
-    return found.dir;
-  }
+  const prompt = checkoutPrompt(found);
+  // Say which tree is about to serve and how it was chosen. Without this a console on a
+  // stale checkout looked identical to one on the trunk (Aaron, 2026-09-11).
+  logToStatus(prompt.log);
+  if (prompt.dir) return prompt.dir;
 
-  if (found.kind === 'refused') {
-    // Configured and untrustworthy: never resolve past it to a directory nobody chose.
-    showStatus(found.refusal);
-    logToStatus(`checkout refused: ${found.refusal}`);
-    return undefined;
-  }
-
+  // A refusal still offers the picker. Refusing to guess is the point; leaving no way
+  // back would be an app that cannot start at all.
   statusWindow?.webContents.send('need-folder');
-  showStatus('Could not find a Forge checkout. Pick the repository folder to continue.');
+  showStatus(prompt.status ?? 'Could not find a Forge checkout. Pick the repository folder to continue.');
   return new Promise((resolve) => {
     ipcMain.once('pick-folder', async () => {
       if (!statusWindow) return resolve(undefined);

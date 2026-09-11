@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { locateCheckout, looksLikeForgeRepo, type LocateFs } from '../locate-checkout';
+import { checkoutPrompt, locateCheckout, looksLikeForgeRepo, type LocateFs } from '../locate-checkout';
 
 function fsWith(existing: Set<string>): LocateFs {
   return { existsSync: (p: string) => existing.has(p) };
@@ -144,5 +144,31 @@ describe('locateCheckout never silently runs a directory nobody chose', () => {
   it('reports nothing configured as its own outcome, so the caller can still ask for a folder', () => {
     const fs = fsWith(new Set());
     expect(locateCheckout(fs, { env: {}, join }).kind).toBe('unconfigured');
+  });
+});
+
+/**
+ * Refusing to guess must never become an app that cannot start. The first cut of the
+ * refusal returned with no picker offered, while the page still said "or pick a folder
+ * above" and no folder button was shown -- a dead end whose only exit was editing
+ * machine state by hand.
+ */
+describe('checkoutPrompt', () => {
+  it('offers the folder picker on a refusal, and carries the refusal as the status', () => {
+    const prompt = checkoutPrompt({ kind: 'refused', refusal: 'they disagree' });
+    expect(prompt.pickFolder).toBe(true);
+    expect(prompt.status).toBe('they disagree');
+    expect(prompt.dir).toBeUndefined();
+  });
+
+  it('offers the picker when nothing is configured', () => {
+    expect(checkoutPrompt({ kind: 'unconfigured' }).pickFolder).toBe(true);
+  });
+
+  it('uses the directory and logs its source when one resolved, without a picker', () => {
+    const prompt = checkoutPrompt({ kind: 'ok', dir: '/repo', source: 'checkout-file' });
+    expect(prompt).toMatchObject({ dir: '/repo', pickFolder: false });
+    expect(prompt.log).toContain('/repo');
+    expect(prompt.log).toContain('checkout-file');
   });
 });
