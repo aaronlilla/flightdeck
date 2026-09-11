@@ -50,7 +50,7 @@ function threeAsks(): { lanes: Lane[]; cards: Message[] } {
 }
 
 function renderStrip(lanes: Lane[], cards: Message[], onCommand = vi.fn()) {
-  const items = buildNeeds(lanes, cards, now);
+  const items = buildNeeds(lanes, cards);
   render(<NeedsYou items={items} now={now} onCommand={onCommand} />);
   return { onCommand, items };
 }
@@ -70,7 +70,7 @@ describe('the Needs-you strip shows one thing at a time (R-75 item 3)', () => {
       ...cards,
       { k: 'confirm-1', type: 'confirm', text: 'confirm?', ts: now - 5_000, source: 'FLT-204', lane: 'FLT-204', title: 'Retire FLT-204', blast: 'its worktree and process are gone' },
     ];
-    const items = buildNeeds(lanes, withConfirm, now);
+    const items = buildNeeds(lanes, withConfirm);
     expect(items.map((item) => item.kind)).toEqual(['blocker', 'confirm', 'lane', 'lane']);
     // Oldest first inside the question kind: ask-a was asked 60s ago, ask-b 30s ago.
     expect(items.filter((item) => item.kind === 'lane').map((item) => item.askKey)).toEqual(['ask-a', 'ask-b']);
@@ -88,7 +88,7 @@ describe('the Needs-you strip shows one thing at a time (R-75 item 3)', () => {
   });
 
   it('collapses to one line when nothing needs a person', () => {
-    render(<NeedsYou items={buildNeeds([], [], now)} now={now} onCommand={vi.fn()} />);
+    render(<NeedsYou items={buildNeeds([], [])} now={now} onCommand={vi.fn()} />);
     expect(screen.getByTestId('needs-you-empty')).toHaveTextContent('Nothing needs you');
     expect(screen.queryByTestId('question-card')).not.toBeInTheDocument();
   });
@@ -128,7 +128,7 @@ describe('the strip answers by number key (R-75 item 3)', () => {
   it('a digit typed into a focused text field answers nothing', async () => {
     const { lanes, cards } = threeAsks();
     const onCommand = vi.fn();
-    const items = buildNeeds(lanes, cards, now);
+    const items = buildNeeds(lanes, cards);
     render(
       <>
         <NeedsYou items={items} now={now} onCommand={onCommand} />

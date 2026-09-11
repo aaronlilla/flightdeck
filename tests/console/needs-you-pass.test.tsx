@@ -42,7 +42,7 @@ function askLane(question: Partial<Lane['question']> = {}): Lane {
 type CommandFn = (laneId: string, command: string) => void | Promise<unknown>;
 
 function renderStrip(lanes: Lane[], cards: Message[] = [], onCommand: CommandFn = vi.fn()) {
-  const items = buildNeeds(lanes, cards, now);
+  const items = buildNeeds(lanes, cards);
   render(<NeedsYou items={items} now={now} onCommand={onCommand} />);
   return { onCommand };
 }

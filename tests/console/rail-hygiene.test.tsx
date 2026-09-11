@@ -123,7 +123,7 @@ describe('rail hygiene (W5)', () => {
     const question = conversationFixture().find((m) => m.type === 'question')!;
     render(
       <StoreContext.Provider value={{ state: { ...initialState(), links: { jiraSite: null, defaultRepo: null } }, dispatch: vi.fn() }}>
-        <NeedsYou items={buildNeeds([], [{ ...question, title: question.text, kicker: 'Question · FLT-9', btns: (question.opts ?? []).map((o) => ({ label: o, cmd: `answer ask-9 ${o}` })), type: 'blocker' }], Date.now())} now={Date.now()} onCommand={vi.fn()} />
+        <NeedsYou items={buildNeeds([], [{ ...question, title: question.text, kicker: 'Question · FLT-9', btns: (question.opts ?? []).map((o) => ({ label: o, cmd: `answer ask-9 ${o}` })), type: 'blocker' }])} now={Date.now()} onCommand={vi.fn()} />
       </StoreContext.Provider>,
     );
     const list = screen.getByTestId('question-options');

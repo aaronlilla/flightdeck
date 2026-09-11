@@ -87,7 +87,7 @@ describe('the Board', () => {
   it('a lane that asked something renders the question card with its options and a typed answer', async () => {
     const onLaneCommand = vi.fn();
     const asked = lane({ id: 'ABC-5', state: 'parked', question: { key: 'k5', text: 'A or B?', opts: ['A', 'B'], askedAt: now - 120_000 } });
-    const needs = buildNeeds([asked], [], now);
+    const needs = buildNeeds([asked], []);
     render(<NeedsYou items={needs} now={now} onCommand={onLaneCommand} />);
     expect(screen.queryByTestId('needs-you')).toBeInTheDocument();
     const card = within(screen.getByTestId('needs-you')).getByTestId('question-card');

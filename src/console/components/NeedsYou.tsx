@@ -2,7 +2,7 @@ import type { JSX } from 'react';
 import { useEffect, useRef, useState } from 'react';
 
 import { durationWords, laneHeadline } from '../laneVM.js';
-import type { Lane, Message } from '../../shared/console-model.js';
+import type { Blocker, Lane, Message } from '../../shared/console-model.js';
 import { QuestionCard } from './QuestionCard.js';
 
 /**
@@ -93,11 +93,20 @@ function cardEvidence(card: Message): string[] {
  * off the thread response's second field (R-75 item 1), and every lane with an open
  * question. A lane the fleet already retired is not waiting on anyone.
  */
-export function buildNeeds(lanes: Lane[], cards: Message[], _now?: number): Need[] {
+export function buildNeeds(lanes: Lane[], cards: Message[], blockers?: Blocker[]): Need[] {
+  // A blocker card is built from a `blocker.raised` journal row and never carries its own
+  // resolution, so blockers the fleet cleared days ago used to rank ahead of every real
+  // question and inflate the counter. The Blockers slice is the authority on which are
+  // still open. When it has not loaded, nothing is dropped: a card is never discarded on
+  // a guess about state the console has not read yet.
+  const openLanes = blockers === undefined ? null : new Set(
+    blockers.filter((blocker) => blocker.state !== 'resolved').flatMap((blocker) => blocker.blocks.map((b) => b.laneId)),
+  );
   const needs: Need[] = [];
   for (const card of cards) {
     if (card.type !== 'blocker' && card.type !== 'confirm') continue;
     if (card.resolved) continue;
+    if (card.type === 'blocker' && openLanes !== null && !openLanes.has(card.lane ?? card.source)) continue;
     const options: NeedOption[] = (card.btns ?? []).filter((button) => button.label.trim().length > 0).map((button) => ({ label: button.label, cmd: button.cmd }));
     needs.push({
       kind: card.type,
@@ -227,6 +236,9 @@ export function NeedsYou({ items, now, onCommand }: NeedsYouProps): JSX.Element 
     const target = event.target as HTMLElement | null;
     const tag = target?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target?.isContentEditable) return;
+    // A sheet traps focus on its own buttons, which are none of the tags above, so a
+    // digit pressed inside one used to answer and advance the strip behind it.
+    if (document.querySelector('[data-testid="sheet-scrim"], dialog[open], [role="dialog"]')) return;
     // A card that is out with a teammate, or already answered by one, shows no options;
     // a key must not answer what the reader cannot see.
     const state = passes[need.uid];

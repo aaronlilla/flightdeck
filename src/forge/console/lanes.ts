@@ -514,12 +514,27 @@ export interface LaneBuildInput {
   queueStateFor?: (id: string) => { state: string; reason: string | null } | undefined;
 }
 
-function questionFor(id: string, openAsks: InboxEntry[]): LaneQuestion | null {
+/** R-75 item 4: the four Pass to… fields the spec PR put on `LaneQuestion` travel with
+ *  the question. They used to stop here -- the console could render a pass, and the next
+ *  lanes read reverted it to un-passed, because nothing carried them to the browser.
+ *  R-76 writes them onto the ask; this is the seam between the two.
+ *
+ *  Null rather than undefined, so "not passed" is a value the client can read rather
+ *  than a missing key it has to guess at. */
+export function questionFor(id: string, openAsks: InboxEntry[]): LaneQuestion | null {
   const entry = openAsks.find((ask) => ask.runs.includes(id));
   if (!entry) return null;
+  const passed = entry as unknown as {
+    passedTo?: string | null; passedAt?: number | null;
+    passedThread?: string | null; answeredBy?: string | null;
+  };
   return {
     key: entry.key, text: entry.question, opts: entry.options, askedAt: entry.at,
     recommended: entry.recommended, optionSource: entry.optionSource,
+    passedTo: passed.passedTo ?? null,
+    passedAt: passed.passedAt ?? null,
+    passedThread: passed.passedThread ?? null,
+    answeredBy: passed.answeredBy ?? null,
   };
 }
 

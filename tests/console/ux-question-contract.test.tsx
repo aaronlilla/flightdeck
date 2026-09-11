@@ -64,7 +64,7 @@ describe('UX rule 2: every question renders through one shared, multiple-choice 
   // is asserted where the question is now asked, and the rail is asserted empty of it.
   it('the Needs-you strip renders a question through the shared question-card contract', () => {
     const asked = laneAsking('ask1', 'which fix round should run next?', ['round A', 'round B']);
-    render(<NeedsYou items={buildNeeds([asked], [], Date.now())} now={Date.now()} onCommand={vi.fn()} />);
+    render(<NeedsYou items={buildNeeds([asked], [])} now={Date.now()} onCommand={vi.fn()} />);
     assertQuestionCardContract();
   });
 
@@ -73,7 +73,7 @@ describe('UX rule 2: every question renders through one shared, multiple-choice 
       k: 'c1', type: 'confirm', text: 'Kill FLT-1?', ts: Date.now(), source: 'console', blast: 'discards the diff.',
       title: 'Kill FLT-1?', kicker: 'Confirm · FLT-1',
     };
-    render(<NeedsYou items={buildNeeds([], [confirm], Date.now())} now={Date.now()} onCommand={vi.fn()} />);
+    render(<NeedsYou items={buildNeeds([], [confirm])} now={Date.now()} onCommand={vi.fn()} />);
     assertQuestionCardContract();
   });
 
@@ -107,7 +107,7 @@ describe('UX rule 2: every question renders through one shared, multiple-choice 
     // `NeedsYou` builds plain data, not JSX -- rendering its own plate is out of scope
     // for this component-test file, so the contract is asserted directly on what it
     // hands the board: no options, no recommendation, just a single "Answer ->" CTA.
-    const [need] = buildNeeds([askedLane], [], Date.now());
+    const [need] = buildNeeds([askedLane], []);
     expect(need).toBeDefined();
     // A `question-card` contract on this need would carry its own options; today's
     // shape has none at all, only a truncated one-line `line` and a single `cta`.

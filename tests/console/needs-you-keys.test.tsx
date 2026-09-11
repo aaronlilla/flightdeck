@@ -45,7 +45,7 @@ function blocker(k: string, what: string, ts: number): Message {
 }
 
 function Harness({ lanes, cards, onCommand }: { lanes: Lane[]; cards: Message[]; onCommand: (id: string, cmd: string) => void | Promise<unknown> }) {
-  return <NeedsYou items={buildNeeds(lanes, cards, now)} now={now} onCommand={onCommand} />;
+  return <NeedsYou items={buildNeeds(lanes, cards)} now={now} onCommand={onCommand} />;
 }
 
 describe('a keypress answers the card on screen and no other (R-75 item 3)', () => {
@@ -150,5 +150,26 @@ describe('a keypress answers the card on screen and no other (R-75 item 3)', () 
     fireEvent.click(screen.getByTestId('needs-you-prev'));
     expect(screen.queryByTestId('question-passed')).not.toBeInTheDocument();
     expect(screen.getByTestId('question-options')).toBeInTheDocument();
+  });
+});
+
+describe('a number key is inert while a dialog is open (review finding 12)', () => {
+  it('does not answer the strip behind an open sheet', () => {
+    const onCommand = vi.fn();
+    render(
+      <>
+        <Harness lanes={[asking('FLT-460', 'ask-d', 'Which base?', ['main', 'develop'], now)]} cards={[]} onCommand={onCommand} />
+        <div data-testid="sheet-scrim"><button type="button">Close</button></div>
+      </>,
+    );
+    fireEvent.keyDown(document, { key: '1' });
+    expect(onCommand).not.toHaveBeenCalled();
+  });
+
+  it('answers again once the dialog is gone', () => {
+    const onCommand = vi.fn();
+    render(<Harness lanes={[asking('FLT-461', 'ask-e', 'Which base?', ['main', 'develop'], now)]} cards={[]} onCommand={onCommand} />);
+    fireEvent.keyDown(document, { key: '1' });
+    expect(onCommand).toHaveBeenCalledWith('FLT-461', 'answer ask-e main');
   });
 });
