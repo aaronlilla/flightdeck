@@ -513,6 +513,7 @@ export class ForgeServer {
     });
     const syncDeps: RunSyncDeps = options.syncDeps ?? {
       stages: productionStages!.stages,
+      onFailure: productionStages!.onFailure,
       journal: new Journal(this.journalPath),
       store: this.syncStore,
     };

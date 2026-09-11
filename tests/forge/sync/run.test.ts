@@ -68,6 +68,21 @@ describe('createSyncRunner', () => {
     expect(byName['resume']).toBe('skipped');
   });
 
+  it('a failed run calls onFailure exactly once; a clean run never does', async () => {
+    let calls = 0;
+    const okStages = Object.fromEntries(FULL_ORDER.map((name) => [name, okStage(name)]));
+    const okRunner = createSyncRunner({ stages: okStages, journal: tempJournal(), store: tempStore(), onFailure: async () => { calls += 1; } });
+    await okRunner.runSync('full');
+    expect(calls).toBe(0);
+
+    const badStages = Object.fromEntries(FULL_ORDER.map((name) => [name, okStage(name)]));
+    badStages['reconcile-prs'] = async () => { throw new Error('gh exploded'); };
+    const badRunner = createSyncRunner({ stages: badStages, journal: tempJournal(), store: tempStore(), onFailure: async () => { calls += 1; } });
+    const record = await badRunner.runSync('full');
+    expect(record.ok).toBe(false);
+    expect(calls).toBe(1);
+  });
+
   it('an absent stage is skipped, never failed, and the run still reads ok', async () => {
     const journal = tempJournal();
     const store = tempStore();

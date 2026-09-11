@@ -26,6 +26,10 @@ export interface RunSyncDeps {
   store: SyncStore;
   now?: () => number;
   id?: () => string;
+  /** Runs once, after the stage loop, only when a stage threw: the place to undo what an
+   *  earlier stage left half-done (the kill switch `stop-workers` engaged, for one). Its
+   *  own throw is journaled as `sync.cleanup-error` and never masks the run's result. */
+  onFailure?: () => Promise<void>;
 }
 
 /** `full`'s own nine stages, in the plan's order. Every other scope reuses the page-scope
@@ -127,6 +131,16 @@ export function createSyncRunner(deps: RunSyncDeps): SyncRunner {
       // run on its own -- only a stage that actually threw does. This is what keeps the
       // one permitted stream-B/C placeholder from reading the whole run as broken.
       record.ok = record.stages.every((stage) => stage.status !== 'failed');
+      if (!record.ok && deps.onFailure) {
+        try {
+          await deps.onFailure();
+        } catch (error) {
+          deps.journal.append({
+            event: 'sync.cleanup-error', actor: 'sync', scope, id,
+            message: error instanceof Error ? error.message : String(error),
+          } as never);
+        }
+      }
       record.endedAt = now();
       deps.journal.append({ event: 'sync.finished', actor: 'sync', scope, id, ok: record.ok } as never);
       deps.store.save(record);

@@ -44,6 +44,10 @@ export interface ProductionSyncDeps {
 
 export interface ProductionSyncStages {
   stages: Partial<Record<SyncStageName, SyncStageFn>>;
+  /** Undoes what `stop-workers` engaged when a later stage throws: the fleet-wide kill
+   *  switch. The queue stays paused and the watcher stays off (nothing was synced), so
+   *  a failed run leaves the fleet quiet, never dead. Live escape 2026-09-11 12:12. */
+  onFailure: () => Promise<void>;
   /** The `full` confirm blast's own dry-run worktree count -- a stale run's decision
    *  table with no `git worktree remove` or `git branch -D` call. `null` when it did
    *  not land inside the confirm dialog's own time budget. */
@@ -154,6 +158,7 @@ export function buildProductionSyncStages(deps: ProductionSyncDeps): ProductionS
 
   return {
     stages,
+    onFailure: async () => { clearKillSwitch(killSwitchPath()); },
     // A real sweep touches every worktree across every configured repo with real git
     // (`worktreeStatusFor`'s three synchronous git subprocesses per worktree) and, for
     // each eligible one, a real `gh pr list` call -- against this machine's actual
