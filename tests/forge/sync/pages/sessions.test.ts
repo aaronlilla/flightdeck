@@ -29,9 +29,9 @@ function makeIngest(): IngestDeps & { received: unknown[] } {
 describe('syncSessions', () => {
   test('two live and one dead row: ended:1, ingest receives the vanished row, sweep called once', async () => {
     const scan: SessionRow[] = [
-      { sessionId: 'a', cwd: 'C:/dev/a', name: 'a', pid: 1 },
-      { sessionId: 'b', cwd: 'C:/dev/b', name: 'b', pid: 2 },
-      { sessionId: 'c', cwd: 'C:/dev/c', name: 'c', pid: 3, vanished: true },
+      { sessionId: 'a', cwd: 'D:/work/a', name: 'a', pid: 1 },
+      { sessionId: 'b', cwd: 'D:/work/b', name: 'b', pid: 2 },
+      { sessionId: 'c', cwd: 'D:/work/c', name: 'c', pid: 3, vanished: true },
     ] as SessionRow[];
     const ingest = makeIngest();
     let sweepCalls = 0;
@@ -59,7 +59,7 @@ describe('syncSessions', () => {
 
   test('sweep throwing: counts still returned, message carries the error, no throw', async () => {
     const scan: SessionRow[] = [
-      { sessionId: 'a', cwd: 'C:/dev/a', name: 'a', pid: 1 },
+      { sessionId: 'a', cwd: 'D:/work/a', name: 'a', pid: 1 },
     ] as SessionRow[];
     const ingest = makeIngest();
     const sweep = vi.fn(async () => {
