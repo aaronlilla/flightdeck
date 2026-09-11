@@ -69,7 +69,7 @@ describe('the Board', () => {
     const onOpen = vi.fn();
     const ready = lane({ id: 'ABC-2', state: 'done', pr: { no: 4, url: 'https://x/4', draft: false, merged: false, checks: 'success', verdict: 'PASS' }, mergeable: { ok: true } });
     const blocked = lane({ id: 'ABC-3', state: 'blocked', reason: 'gate: FIX FIRST' });
-    render(<LanesGrid lanes={[lane({ id: 'ABC-1' }), ready, blocked]} blockers={[]} queue={queue} needs={[]} now={now} onOpen={onOpen} onCommand={onCommand} onLaneCommand={vi.fn()} onQueue={vi.fn()} />);
+    render(<LanesGrid lanes={[lane({ id: 'ABC-1' }), ready, blocked]} blockers={[]} queue={queue} now={now} onOpen={onOpen} onCommand={onCommand} onLaneCommand={vi.fn()} onQueue={vi.fn()} />);
     expect(screen.getAllByTestId('idle-slot')).toHaveLength(1);
     expect(screen.getByTestId('idle-slot')).toHaveTextContent('Waiting for a Ready ticket; nothing is in the queue.');
     await userEvent.click(within(screen.getByTestId('lane-ABC-1')).getByTestId('primary-action'));

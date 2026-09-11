@@ -39,7 +39,9 @@ function askLane(question: Partial<Lane['question']> = {}): Lane {
   });
 }
 
-function renderStrip(lanes: Lane[], cards: Message[] = [], onCommand = vi.fn()) {
+type CommandFn = (laneId: string, command: string) => void | Promise<unknown>;
+
+function renderStrip(lanes: Lane[], cards: Message[] = [], onCommand: CommandFn = vi.fn()) {
   const items = buildNeeds(lanes, cards, now);
   render(<NeedsYou items={items} now={now} onCommand={onCommand} />);
   return { onCommand };
@@ -60,7 +62,7 @@ describe('Pass to… hands the question to a teammate (R-75 item 4)', () => {
   it('shows the passed line with a pending mark before the server answers', async () => {
     // A command that never settles: the assertion runs with the request still open.
     const onCommand = vi.fn(() => new Promise<never>(() => {}));
-    renderStrip([askLane()], [], onCommand as unknown as ReturnType<typeof vi.fn>);
+    renderStrip([askLane()], [], onCommand as CommandFn);
     await userEvent.click(screen.getByTestId('question-pass'));
     await userEvent.click(within(screen.getByTestId('question-pass-menu')).getByText('Haiping'));
 
@@ -138,7 +140,7 @@ describe('answering is optimistic too (R-75 item 4)', () => {
         question: { key: 'ask-q', text: 'And this one?', opts: ['Yes', 'No'], askedAt: now - 1_000, recommended: 0, optionSource: 'worker' },
       }),
     ];
-    renderStrip(lanes, [], onCommand as unknown as ReturnType<typeof vi.fn>);
+    renderStrip(lanes, [], onCommand as CommandFn);
     expect(screen.getByTestId('needs-you-counter')).toHaveTextContent('1 of 2');
 
     await userEvent.click(screen.getAllByTestId('question-option')[0]!);
