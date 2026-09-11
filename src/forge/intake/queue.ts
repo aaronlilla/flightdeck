@@ -93,6 +93,33 @@ export interface QueuePlannedBrief {
   briefPath: string;
 }
 
+/** R-76: the planning hop is an interview before it is a brief, so it has two outcomes
+ *  besides a planned brief. `waiting` means the item asked a person something and is
+ *  holding at `planning` until it is answered -- one item held, never the queue.
+ *  `backend` means the ticket belongs to the backend and no worker should ever launch on
+ *  it. A planner that knows about neither still satisfies this union unchanged. */
+export type QueuePlanWaiting = { waiting: 'interview'; asks: number };
+export type QueuePlanBackend = { backend: true; ticket: string; ask: string };
+export type QueuePlanOutcome = QueuePlannedBrief | QueuePlanWaiting | QueuePlanBackend;
+
+/** The reason an item held on an interview answer carries. One string, read in two
+ *  places (the hop that writes it and the tick that excludes it from the width), so it
+ *  is named rather than spelled twice. */
+export const INTERVIEW_WAIT_REASON = 'interview';
+
+/** True while this item is parked on a person's answer rather than doing work. */
+export function isWaitingOnInterview(item: QueueItem): boolean {
+  return item.state === 'planning' && item.reason === INTERVIEW_WAIT_REASON;
+}
+
+export function isPlanWaiting(outcome: QueuePlanOutcome): outcome is QueuePlanWaiting {
+  return 'waiting' in outcome;
+}
+
+export function isPlanBackend(outcome: QueuePlanOutcome): outcome is QueuePlanBackend {
+  return 'backend' in outcome;
+}
+
 export interface QueuePlanner {
   /** `itemId` is this queue item's own id (`Q-xxxxxxxx`), folded into the brief file's
    *  name alongside the ticket. A re-queued ticket, a fresh item added after an earlier
@@ -100,7 +127,7 @@ export interface QueuePlanner {
    *  Without `itemId`, `runOutcome` (`chain-wire.ts`) folds the new run onto the old
    *  one's terminal journal state, as happened at 13:35 on 2026-09-08: BBZ-233's new
    *  item Q-2181b071 read the removed item Q-0fff83b0's `parked` verdict as its own. */
-  planTicket(ticket: string, itemId: string): Promise<QueuePlannedBrief>;
+  planTicket(ticket: string, itemId: string): Promise<QueuePlanOutcome>;
   /** A pasted brief carries no ticket of its own; the planner mints one (or the caller
    *  passes the queue item's own id) so the rest of the pipeline has something to name
    *  the branch and the run after. */
@@ -548,7 +575,7 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
     if (item.state !== 'planning') {
       item = writeTransition(item, { state: 'planning', reason: null, after: [] }, deps, 'queue.planning');
     }
-    let planned: QueuePlannedBrief;
+    let planned: QueuePlanOutcome;
     try {
       planned = item.source === 'brief'
         ? await deps.planner.planBrief(item.input)
@@ -558,9 +585,35 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
     } catch (error) {
       return writeTransition(item, { state: 'failed', reason: tailOf(messageOf(error)) }, deps, 'queue.failed', { hop: 'plan' });
     }
-    if (planned.repo === 'unknown') {
+    // R-76: the interview asked somebody something. The item HOLDS at `planning` rather
+    // than parking -- `runQueueTick` advances only `planning`, `running` and `queued`, so
+    // a parked item would wait for an operator's Retry click even after the answer
+    // arrived. Every other item on this tick is untouched: one question holds one row.
+    // The `queue.waiting` row is written once, on the tick the reason first changes, so
+    // an item held for a day does not write a row a minute.
+    if (isPlanWaiting(planned)) {
+      const reason = INTERVIEW_WAIT_REASON;
+      if (item.reason === reason) return item;
+      return writeTransition(item, { reason }, deps, 'queue.waiting', { hop: 'plan', asks: planned.asks });
+    }
+    // R-76: the ticket is the backend's. `terminalStateFor('backend')` is the same
+    // governance boundary the gate hop already reads -- a backend ticket stops at a draft
+    // PR and pings its owner, never merges -- and reaching that conclusion at planning
+    // means no worker should launch on it at all. It parks with the interviewer's own
+    // sentence as its reason, which is correct here in a way it is not for a question: a
+    // backend ticket is waiting on a person outside this queue, not on an answer that
+    // wakes it.
+    if (isPlanBackend(planned)) {
+      const terminal = terminalStateFor('backend');
       return writeTransition(
-        item, { ticket: planned.ticket, briefPath: planned.briefPath, repo: planned.repo, state: 'parked', reason: 'unrouted' },
+        item, { ticket: planned.ticket, repo: 'backend', state: 'parked', reason: `backend: ${planned.ask}` },
+        deps, 'queue.parked', { hop: 'plan', route: 'backend', pings: terminal.pings },
+      );
+    }
+    const brief: QueuePlannedBrief = planned;
+    if (brief.repo === 'unknown') {
+      return writeTransition(
+        item, { ticket: brief.ticket, briefPath: brief.briefPath, repo: brief.repo, state: 'parked', reason: 'unrouted' },
         deps, 'queue.parked', { hop: 'plan' },
       );
     }
@@ -569,8 +622,12 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
     // `chain.ts`'s own planning hop (`runChainTick`) never launches in the same pass
     // that wrote `intake.planned`.
     return writeTransition(
-      item, { ticket: planned.ticket, briefPath: planned.briefPath, repo: planned.repo, state: 'running' },
-      deps, 'queue.planned', { repo: planned.repo },
+      // `reason: null` clears the interview's own "waiting on an answer" line the moment
+      // the item stops waiting -- the same staleness the after-gate `reason` above had to
+      // be taught to clear, and this hop is the only place it can happen, because an item
+      // held at `planning` never re-enters `planning` and so never hits that clear.
+      item, { ticket: brief.ticket, briefPath: brief.briefPath, repo: brief.repo, state: 'running', reason: null },
+      deps, 'queue.planned', { repo: brief.repo },
     );
   }
 
@@ -914,7 +971,13 @@ export async function runQueueTick(deps: QueueRuntimeDeps, items: QueueItem[]): 
   items = items.filter((item) => !advancing.has(item.id));
   const inFlight = items.filter((item) => QUEUE_IN_FLIGHT_STATES.includes(item.state));
   const queued = items.filter((item) => item.state === 'queued');
-  let slots = Math.max(0, deps.maxInFlight() - inFlight.length);
+  // R-76: an item waiting on an interview answer is in `planning` and therefore counts as
+  // in flight, but it is not doing any work -- it is waiting on a person. Counting it
+  // against the width meant enough unanswered questions starved every queued item behind
+  // them, which is the opposite of "one question holds one item". It is still advanced
+  // below, so the tick that answers it still wakes it.
+  const waitingOnAnswer = inFlight.filter(isWaitingOnInterview);
+  let slots = Math.max(0, deps.maxInFlight() - (inFlight.length - waitingOnAnswer.length));
   const toAdvance = [...inFlight];
   let started = 0;
   for (const item of queued) {

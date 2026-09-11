@@ -181,6 +181,13 @@ export const FORGE_EVENT_NAMES = [
   // journaled, telling a connected board that one lane's own process just flipped
   // alive or dead between polls.
   'lane.live',
+  // R-76, the interview and Pass to… (`intake/interview.ts`, `intake/slack.ts`,
+  // `intake/slackReturn.ts`, `console/command.ts`): a fifth question dropped, a question
+  // handed to a teammate, a teammate's reply coming back, a Slack call that refused, and
+  // the accept-first trio a console click writes (accepted at once, then done or failed
+  // once the post has actually landed).
+  'interview.capped', 'ask.passed', 'ask.returned', 'slack.failed',
+  'action.accepted', 'action.done', 'action.failed',
   // The Governor stream's own (roadmap P4.2, `src/forge/governor.ts`): `result.usage`
   // carries the SDK result message's own `modelUsage` map, journaled by the engine on a
   // segment's end row; `burn.mismatch` is the reconciliation between that sum and B.3.6's

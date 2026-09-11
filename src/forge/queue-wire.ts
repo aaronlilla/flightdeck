@@ -21,7 +21,13 @@ import { autoMergeAllowed } from './council/risk.js';
 import { countAddDel, guardedCommentPr, REAL_GH } from './council/gh.js';
 import type { Packet, PollSourceName, Watermark } from './contracts.js';
 import { run as execRun } from './exec.js';
-import type { QueueMergeDeps, QueuePlannedBrief, QueuePlanner, QueuePromoteDeps, QueueRuntimeDeps, QueueTicketSearch } from './intake/queue.js';
+import type {
+  QueueMergeDeps, QueuePlannedBrief, QueuePlanner, QueuePlanOutcome, QueuePromoteDeps, QueueRuntimeDeps, QueueTicketSearch,
+} from './intake/queue.js';
+import { asksForItem, planTicketWithInterview } from './intake/interviewPlanner.js';
+import { InterviewStore } from './intake/interviewStore.js';
+import { scoutAnswer } from './intake/scout.js';
+import { Inbox } from './inbox.js';
 import { gitSquashMergeToBase, type GitRunFn } from './intake/gitMerge.js';
 import { developDeployVerifier } from './intake/otaVerify.js';
 import { appendRoutinesSection, loadRoutines, matchRoutines } from './self/routines.js';
@@ -29,12 +35,11 @@ import { routinesDir } from './paths.js';
 import { createJiraFeed, createJiraWriteClient, type JiraConfig } from './intake/jira.js';
 import { runQueueHandoff } from './intake/queueHandoff.js';
 import type { PollItemDetail } from './intake/poller.js';
-import { planFromPacket } from './intake/planner.js';
 import { resolvePlanProvider } from './intake/reasoner.js';
 import { parseRepoMap, routeRepo, repoFromBrief, ticketFromBrief } from './intake/repoRoute.js';
 import { Journal } from './journal.js';
 import { loadPolicy } from './policy.js';
-import { queueBriefsDir, journalPath, killSwitchPath } from './paths.js';
+import { inboxDir, interviewRecordsDir, queueBriefsDir, journalPath, killSwitchPath } from './paths.js';
 import { reasonerFor } from './reasoner-claude.js';
 import { readKillSwitch } from './supervisor.js';
 import { readQueuePaused } from './console/queue-pause.js';
@@ -127,12 +132,15 @@ function packetFor(ticket: string, repo: string, detail: PollItemDetail | undefi
 /**
  * `queuePlanner`: a ticket key becomes a routed brief the same way `chain-wire.ts`'s own
  * intake does -- one Jira lookup for the ticket's own text, `routeRepo` against
- * `FORGE_INTAKE_REPO_MAP`, then one `planFromPacket` call through the Reasoner. A pasted
+ * `FORGE_INTAKE_REPO_MAP`, then the interview hop (`intake/interviewPlanner.ts`). A pasted
  * brief skips both: there is no ticket to look up, so `routeRepo` runs against an empty
  * `labels`/`components`/`issuetype`, which only ever resolves through a `default` rule
  * in the map (or stays `'unknown'`, reported honestly rather than guessed at).
  */
-export function queuePlanner(configFn: () => JiraConfig | undefined = jiraConfigFromEnv): QueuePlanner {
+export function queuePlanner(
+  configFn: () => JiraConfig | undefined = jiraConfigFromEnv,
+  chainEnv?: ChainEnv,
+): QueuePlanner {
   const repoRules = parseRepoMap(process.env['FORGE_INTAKE_REPO_MAP']);
   const briefsDir = queueBriefsDir();
   mkdirSync(briefsDir, { recursive: true });
@@ -150,7 +158,16 @@ export function queuePlanner(configFn: () => JiraConfig | undefined = jiraConfig
   }
 
   return {
-    async planTicket(ticket, itemId): Promise<QueuePlannedBrief> {
+    async planTicket(ticket, itemId): Promise<QueuePlanOutcome> {
+      // An item already holding on an unanswered question is answered before the Jira
+      // lookup, not after it. Without this, a question left overnight on a 15-second tick
+      // made thousands of Jira reads whose result was thrown away, which also made the
+      // planner's own "a held item costs nothing per tick" claim false. Found by code
+      // review, 2026-09-11.
+      const held = asksForItem(new Inbox(inboxDir()), itemId);
+      if (held.length && held.some((ask) => ask.answer === undefined)) {
+        return { waiting: 'interview', asks: held.filter((ask) => ask.answer === undefined).length };
+      }
       const config = configFn();
       let repo = routeRepo(repoRules, { ticket, labels: [], components: [], issuetype: '' });
       let detail: PollItemDetail | undefined;
@@ -168,9 +185,40 @@ export function queuePlanner(configFn: () => JiraConfig | undefined = jiraConfig
       const journal = new Journal(journalPath());
       try {
         const reasoner = reasonerFor(resolvePlanProvider(loadPolicy().reasoner), { journal });
-        const planned = await planFromPacket(packet, reasoner, 'plan-ticket');
-        const briefPath = await writeBrief(briefIdFor(planned.packetId, itemId), planned.text);
-        return { ticket, repo, briefPath };
+        // R-76: planning a ticket is an interview first. `planTicketWithInterview` owns
+        // the whole hop -- it may answer `waiting` (a question is out with somebody) or
+        // `backend` (this ticket is not ours to build), and the queue handles both.
+        return await planTicketWithInterview(ticket, itemId, {
+          reasoner,
+          inbox: new Inbox(inboxDir()),
+          records: new InterviewStore(interviewRecordsDir()),
+          packetFor: async () => packet,
+          scout: async (question) => {
+            // The checkout comes from the repository map, never from the repository's
+            // name: `checkoutFor`'s own contract. Guessing it from `workspaceRoot()` plus
+            // the basename produced a real directory on this machine and nowhere else,
+            // and a grep in a directory that is not there answers "(no matches)" -- which
+            // reads as "the code says nothing", and lands in the brief as settled fact.
+            // Found by code review, 2026-09-11.
+            const checkout = chainEnv ? checkoutFor(chainEnv, repo) : undefined;
+            if (!checkout) {
+              return {
+                answered: false,
+                text: `no checkout is configured for ${repo}, so the code could not be searched`,
+              };
+            }
+            return scoutAnswer(question, {
+              cwd: checkout,
+              owner: `interview-${itemId}`,
+              reasoner,
+            });
+          },
+          writeBriefFile: async ({ text }: { text: string }) => ({
+            briefPath: await writeBrief(briefIdFor(packet.id, itemId), text),
+            repo,
+          }),
+          append: (row: { event: string; [key: string]: unknown }) => { journal.append(row as never); },
+        });
       } finally {
         journal.close();
       }
@@ -416,7 +464,7 @@ export function buildQueueRuntimeDeps(
   maxInFlight: () => number = readQueueWidth,
 ): QueueRuntimeDeps {
   return {
-    planner: queuePlanner(),
+    planner: queuePlanner(jiraConfigFromEnv, chainEnv),
     launcher: chainLauncher(chainEnv, configDirFor),
     launchGoal: chainLaunchGoal(configDirFor),
     gh: chainGh(),

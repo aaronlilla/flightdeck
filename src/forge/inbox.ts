@@ -44,7 +44,22 @@ export interface Ask {
   ticket?: string;
 }
 
-export interface InboxEntry {
+/** Pass to… (R-76): who an ask was handed to, when, which Slack thread carries it, and
+ *  who answered in that thread. Written by `Inbox.pass`/`clearPass`/`attachReply`, never
+ *  by `raise`, and projected onto `LaneQuestion` for the board to render. All four null
+ *  means the ask was never passed. */
+export interface PassFields {
+  passedTo?: string | null;
+  passedAt?: number | null;
+  passedThread?: string | null;
+  answeredBy?: string | null;
+  /** The teammate's own words, attached but not accepted: the ask stays open until a
+   *  person confirms it. */
+  reply?: string;
+  repliedAt?: number;
+}
+
+export interface InboxEntry extends PassFields {
   key: string;
   question: string;
   options: string[];
@@ -96,10 +111,24 @@ export interface InboxEntry {
  *  lane's question came back with empty text and sat at the top of the board forever). */
 const EMPTY_ASK_STALE_AGE_MS = 24 * 60 * 60_000;
 
+/** R-76: the `Ask.run` prefix an item-scoped question carries (`intake/interviewPlanner.ts`
+ *  mints these). Defined here because `isAskStale` is the one place the distinction
+ *  matters and importing intake from the inbox would invert the dependency. */
+export const ITEM_RUN_PREFIX = 'item:';
+
 export function isAskStale(entry: InboxEntry, hasRegistryRow: (run: string) => boolean, now: number = Date.now()): boolean {
   if (entry.answer !== undefined) return false;
   if (entry.question.trim() === '' && now - entry.at > EMPTY_ASK_STALE_AGE_MS) return true;
   if (!entry.runs.length) return false;
+  // R-76: an interview ask names the queue item it belongs to, not a launched process,
+  // and a queued item has no registry row until it launches two hops later. Without this,
+  // every interview question read as stale the moment it was raised: `forge status` filed
+  // it under "not worth your time" and `forge clear --all` retired it, which silently
+  // restarted the interview and abandoned any Slack thread already open on it. Whether
+  // the item still exists is the queue's knowledge, not the inbox's, so the honest answer
+  // here is "not stale" -- a question kept too long costs a line on a board, and one
+  // retired by mistake costs a person's answer.
+  if (entry.runs.some((run) => run.startsWith(ITEM_RUN_PREFIX))) return false;
   return entry.runs.every((run) => !hasRegistryRow(run));
 }
 
@@ -236,6 +265,48 @@ export class Inbox {
     if (ask.optionSource !== undefined) entry.optionSource = ask.optionSource;
     this.write(entry);
     return entry;
+  }
+
+  /**
+   * Pass to… (R-76): records that this ask was handed to a teammate in a Slack thread.
+   *
+   * Written before the post goes out, so the card shows "passed" the instant the
+   * operator clicks and the route can answer without waiting on Slack; `clearPass` rolls
+   * it back when the post turns out to have failed. `answeredBy` stays null -- a pass is
+   * not an answer.
+   */
+  pass(key: string, to: string, at: number, thread: string | null): InboxEntry | undefined {
+    const entry = this.entry(key);
+    if (!entry) return undefined;
+    const passed: InboxEntry = { ...entry, passedTo: to, passedAt: at, passedThread: thread, answeredBy: null };
+    this.write(passed);
+    return passed;
+  }
+
+  /** Undoes `pass` after a failed post, so the board rolls the card back rather than
+   *  showing a question as handed to someone who never saw it. */
+  clearPass(key: string): InboxEntry | undefined {
+    const entry = this.entry(key);
+    if (!entry) return undefined;
+    const cleared: InboxEntry = { ...entry, passedTo: null, passedAt: null, passedThread: null, answeredBy: null };
+    this.write(cleared);
+    return cleared;
+  }
+
+  /**
+   * A teammate's reply, read off the thread this ask was passed into.
+   *
+   * The reply is stored as the entry's answer and `answeredBy` names who typed it, but
+   * the ask stays OPEN: a sentence is not an option, and the machine never picks one on
+   * a person's behalf. The operator confirms or changes it from the board, and that
+   * click is what calls `answer`.
+   */
+  attachReply(key: string, from: string, text: string): InboxEntry | undefined {
+    const entry = this.entry(key);
+    if (!entry) return undefined;
+    const attached: InboxEntry = { ...entry, answeredBy: from, reply: text, repliedAt: Date.now() };
+    this.write(attached);
+    return attached;
   }
 
   /** Answer an entry. An answer to a key nobody asked is ignored rather than invented. */
