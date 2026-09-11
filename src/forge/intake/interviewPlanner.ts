@@ -71,15 +71,28 @@ export function answeredByOf(entry: InboxEntry): string {
  * auto-answer rule -- rather than from one route alone, so the row fires wherever the
  * shipped app actually delivers an answer, not only where a test happens to call in.
  */
-export function journalInterviewAnswer(append: JournalAppend | undefined, answered: InboxEntry): void {
+export function journalInterviewAnswer(
+  append: JournalAppend | undefined,
+  answered: InboxEntry,
+  answeredBy?: string,
+): void {
   const itemRun = answered.runs.find((run) => run.startsWith(ITEM_RUN_PREFIX));
   if (itemRun === undefined) return;
   append?.({
     event: 'interview.answered',
+    actor: 'console',
     itemId: itemRun.slice(ITEM_RUN_PREFIX.length),
     ticket: answered.ticket,
     askKey: answered.key,
-    answeredBy: answeredByOf(answered),
+    // Found by code review, 2026-09-11: `answeredByOf` falls through to the operator
+    // whenever `answeredBy` is unset, so an auto-answer rule's call was filed as Aaron's.
+    // Crediting him with a decision he did not make is the same fault the teammate branch
+    // of `answeredByOf` already guards against, so a caller that knows better says so.
+    answeredBy: answeredBy ?? answeredByOf(answered),
+    // The row said an answer landed and never what it was, so two corrections of the same
+    // ask were byte-identical apart from their sequence and a replay could not say which
+    // answer won.
+    answer: answered.answer ?? '',
   });
 }
 
