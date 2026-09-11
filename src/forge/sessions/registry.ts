@@ -9,7 +9,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import { accountsRegistryPath, loadAccounts } from '../accounts.js';
 
@@ -88,7 +88,19 @@ function resolveConfigDirs(deps: RegistryDeps): ConfigDirEntry[] {
   const fromRegistry = accounts
     .filter((account) => account.provider === 'claude')
     .map((account): ConfigDirEntry => ({ dir: account.configDir, accountLabel: account.label || account.id }));
-  return [...fixed, ...fromRegistry];
+  // Aaron's own login is both a fixed dir and an accounts-registry entry, so the same
+  // sessions dir was read twice and every session in it came back as two rows -- which
+  // the registry tick then journaled as two identical `session.started` rows. First
+  // entry wins, so a fixed dir keeps its fixed label.
+  const seen = new Set<string>();
+  const dirs: ConfigDirEntry[] = [];
+  for (const entry of [...fixed, ...fromRegistry]) {
+    const key = resolve(entry.dir).toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    dirs.push(entry);
+  }
+  return dirs;
 }
 
 function defaultReadSessionFiles(dir: string): Record<string, unknown>[] {
