@@ -57,6 +57,21 @@ const WHERE: Record<LocateSource, string> = {
   'install-dir': 'the directory the app is installed beside',
 };
 
+/**
+ * One directory, spelled two ways, is one directory. The folder picker writes Windows
+ * backslashes while `~/.forge/console.checkout` is hand-written and usually has forward
+ * slashes, so comparing raw strings would refuse a machine that is correctly configured
+ * -- worse than the silent ranking this replaced.
+ */
+function tidy(dir: string): string {
+  const forward = dir.replace(/\\/g, '/');
+  return forward.length > 1 ? forward.replace(/\/+$/, '') : forward;
+}
+
+function sameDirKey(dir: string): string {
+  return tidy(dir).toLowerCase();
+}
+
 export function locateCheckout(fs: LocateFs, candidates: LocateCandidates): LocateOutcome {
   const {
     env, rememberedCheckoutDir, checkoutFileDir, installDir, join,
@@ -65,9 +80,9 @@ export function locateCheckout(fs: LocateFs, candidates: LocateCandidates): Loca
   // The install directory is where the app happens to live, not something anybody
   // configured, so it is only consulted when nothing else is and it never conflicts.
   const configured: Array<{ source: LocateSource; dir: string }> = [];
-  if (env.FORGE_REPO_DIR) configured.push({ source: 'env', dir: env.FORGE_REPO_DIR });
-  if (rememberedCheckoutDir) configured.push({ source: 'remembered', dir: rememberedCheckoutDir });
-  if (checkoutFileDir) configured.push({ source: 'checkout-file', dir: checkoutFileDir });
+  if (env.FORGE_REPO_DIR) configured.push({ source: 'env', dir: tidy(env.FORGE_REPO_DIR) });
+  if (rememberedCheckoutDir) configured.push({ source: 'remembered', dir: tidy(rememberedCheckoutDir) });
+  if (checkoutFileDir) configured.push({ source: 'checkout-file', dir: tidy(checkoutFileDir) });
 
   // A configured candidate that is not a checkout is a broken setting, not a reason to
   // run a different directory. Refuse and name it.
@@ -82,7 +97,7 @@ export function locateCheckout(fs: LocateFs, candidates: LocateCandidates): Loca
 
   // Two settings that disagree mean nobody has decided which tree serves. Picking the
   // higher-ranked one is exactly the silent choice this function exists to stop making.
-  const distinct = [...new Set(configured.map((c) => c.dir))];
+  const distinct = [...new Set(configured.map((c) => sameDirKey(c.dir)))];
   if (distinct.length > 1) {
     const named = configured.map((c) => `${WHERE[c.source]} -> ${c.dir}`).join('; ');
     return {

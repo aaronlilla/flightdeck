@@ -172,3 +172,39 @@ describe('checkoutPrompt', () => {
     expect(prompt.log).toContain('checkout-file');
   });
 });
+
+/**
+ * Two settings can name the SAME folder in different spellings -- the folder picker
+ * writes Windows backslashes, while ~/.forge/console.checkout is hand-written and
+ * usually has forward slashes. Refusing those as a disagreement would refuse a machine
+ * that is correctly configured, which is worse than the bug this all started from.
+ */
+describe('locateCheckout treats one directory spelled two ways as one directory', () => {
+  const fs = fsWith(new Set(['C:/dev/flightdeck/package.json', 'C:/dev/flightdeck/dist/forge/cli.js']));
+  const winJoin = (...parts: string[]) => parts.join('/');
+
+  it('does not refuse when the separators differ', () => {
+    const result = locateCheckout(fs, {
+      env: { FORGE_REPO_DIR: 'C:\\dev\\flightdeck' },
+      checkoutFileDir: 'C:/dev/flightdeck',
+      join: winJoin,
+    });
+    expect(result.kind).toBe('ok');
+  });
+
+  it('does not refuse over a trailing separator', () => {
+    const result = locateCheckout(fs, {
+      env: { FORGE_REPO_DIR: 'C:/dev/flightdeck/' },
+      checkoutFileDir: 'C:/dev/flightdeck',
+      join: winJoin,
+    });
+    expect(result.kind).toBe('ok');
+  });
+
+  // Drive-letter case is deliberately NOT asserted here. This suite's filesystem is a
+  // case-sensitive Set, so `c:/...` reads as a missing directory and the candidate is
+  // refused as broken before the comparison is ever reached -- the test would be
+  // measuring the fake, not the resolver. Real Windows `existsSync` is case-insensitive,
+  // so `sameDirKey` case-folds and the comparison does hold there. Unproven by this
+  // suite; named so nobody reads its absence as coverage.
+});

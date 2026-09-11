@@ -36,10 +36,13 @@ describe('locateCheckout: the console.checkout fixture wins over the install dir
       installDir: '/install',
       join,
     });
-    expect(result).toEqual({ dir: '/from-file', source: 'checkout-file' });
+    expect(result).toEqual({ kind: 'ok', dir: '/from-file', source: 'checkout-file' });
   });
 
-  it('FORGE_REPO_DIR still wins over the checkout-file candidate', () => {
+  // Was "FORGE_REPO_DIR still wins over the checkout-file candidate". Ranking one
+  // configured setting above another is the silent choice removed on 2026-09-11: two
+  // settings naming different trees now refuse and name both.
+  it('two configured settings naming different trees refuse instead of ranking', () => {
     const fs: LocateFs = {
       existsSync: (p) => p === '/env/package.json' || p === '/env/dist/forge/cli.js'
         || p === '/from-file/package.json' || p === '/from-file/dist/forge/cli.js',
@@ -49,10 +52,16 @@ describe('locateCheckout: the console.checkout fixture wins over the install dir
       checkoutFileDir: '/from-file',
       join,
     });
-    expect(result).toEqual({ dir: '/env', source: 'env' });
+    expect(result.kind).toBe('refused');
+    const why = result.kind === 'refused' ? result.refusal : '';
+    expect(why).toContain('/env');
+    expect(why).toContain('/from-file');
   });
 
-  it('falls through to the install dir when the checkout-file candidate does not check out', () => {
+  // Was "falls through to the install dir when the checkout-file candidate does not
+  // check out". A configured setting pointing at a non-checkout is now a refusal, not a
+  // reason to run the install dir instead.
+  it('refuses when the checkout-file candidate does not check out, rather than using the install dir', () => {
     const fs: LocateFs = {
       existsSync: (p) => p === '/install/package.json' || p === '/install/dist/forge/cli.js',
     };
@@ -62,6 +71,7 @@ describe('locateCheckout: the console.checkout fixture wins over the install dir
       installDir: '/install',
       join,
     });
-    expect(result).toEqual({ dir: '/install', source: 'install-dir' });
+    expect(result.kind).toBe('refused');
+    expect(result.kind === 'refused' && result.refusal.includes('/not-a-repo')).toBe(true);
   });
 });
