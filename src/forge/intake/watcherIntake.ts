@@ -43,8 +43,10 @@ export interface WatcherIntakeDeps {
  *  or already `done`/`review` (nothing left running to send an instruction to). */
 const SEND_STATES = new Set(['running', 'parked', 'review']);
 
+/** R-68: includes a `done` item on purpose -- a ticket the queue has already handled
+ *  once must never be re-added as a fresh queue item just because Jira still lists it. */
 function ownedItem(store: QueueStore, ticket: string) {
-  return store.all().find((item) => item.ticket === ticket && item.state !== 'done');
+  return store.all().find((item) => item.ticket === ticket);
 }
 
 /**

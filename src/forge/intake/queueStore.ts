@@ -140,6 +140,22 @@ export class QueueStore {
     return [...(this.rowsById.get(id) ?? [])];
   }
 
+  /** R-68: removes every non-removed item through the same soft-delete path `remove()`
+   *  itself would use, then journals one `queue.wiped {count}` row on the fleet journal
+   *  passed in (absent means no journal row, for a caller with none wired). History on
+   *  this store's own log is never touched -- the log only ever grows, exactly like
+   *  every other transition here -- so a wipe is one more fold-visible event per item,
+   *  never a truncation. Returns how many items were wiped. */
+  wipe(journal?: { append(event: Record<string, unknown>): unknown }): number {
+    const items = this.all();
+    const at = Date.now();
+    for (const item of items) {
+      this.append({ id: item.id, at, removedAt: at, updatedAt: at });
+    }
+    journal?.append({ event: 'queue.wiped', actor: 'sync', count: items.length });
+    return items.length;
+  }
+
   /** Every row per id, in append order, for `history()`. Grown by the same fold. */
   private readonly rowsById = new Map<string, QueueRow[]>();
 }

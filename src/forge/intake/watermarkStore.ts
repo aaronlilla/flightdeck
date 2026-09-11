@@ -5,7 +5,7 @@
  * `cli.ts` so `chain-wire.ts` reads and writes the exact same files rather than keeping
  * a second, divergent copy of this logic.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { PollSourceName, Watermark } from '../contracts.js';
@@ -33,4 +33,18 @@ export function writeWatermark(source: string, mark: Watermark): void {
 
 export function fileWatermarkStore(): WatermarkStore {
   return { get: readWatermark, set: writeWatermark };
+}
+
+/** R-68: deletes every `*.watermark.json` in `dir` -- and nothing else in it -- so a
+ *  full re-sync re-observes every source from scratch. Returns the basenames it deleted,
+ *  never throws on a missing directory (there is nothing to reset). */
+export function resetWatermarks(dir: string): string[] {
+  if (!existsSync(dir)) return [];
+  const deleted: string[] = [];
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith('.watermark.json')) continue;
+    rmSync(join(dir, name));
+    deleted.push(name);
+  }
+  return deleted;
 }

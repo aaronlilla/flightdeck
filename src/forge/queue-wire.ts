@@ -168,7 +168,7 @@ export function queuePlanner(configFn: () => JiraConfig | undefined = jiraConfig
       const journal = new Journal(journalPath());
       try {
         const reasoner = reasonerFor(resolvePlanProvider(loadPolicy().reasoner), { journal });
-        const planned = await planFromPacket(packet, reasoner);
+        const planned = await planFromPacket(packet, reasoner, 'plan-ticket');
         const briefPath = await writeBrief(briefIdFor(planned.packetId, itemId), planned.text);
         return { ticket, repo, briefPath };
       } finally {
