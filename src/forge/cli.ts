@@ -19,7 +19,7 @@
  * nothing to stop. It parks rather than kills: the work survives and `forge up` continues
  * it. A stop that lost an afternoon is a stop nobody dares press.
  */
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
@@ -166,6 +166,28 @@ export interface ForgeDeps {
    *  round and asks `runCouncilRound` to run it regardless of diff size or path -- the
    *  chain's `FORGE_COUNCIL_CODEX=always` sets this on every chain council call. */
   forceCodexLane?: boolean;
+  /** Overrides `up`'s bind-failure pid lookup (item 3, 2026-09-10). Every specimen
+   *  injects a fake here so a test never shells out to `netstat`; production leaves
+   *  this unset and gets `findPortHolderPid`. */
+  portHolder?: (port: number) => number | undefined;
+}
+
+/**
+ * Best-effort: which pid holds `port` in LISTENING state, read from `netstat -ano`.
+ * `undefined` on any parse or spawn failure -- the exit-76 message degrades to
+ * "already in use" rather than the process failing to report the bind failure at all.
+ */
+function findPortHolderPid(port: number): number | undefined {
+  try {
+    const output = execFileSync('netstat', ['-ano'], { encoding: 'utf8' });
+    for (const line of output.split(/\r?\n/)) {
+      const match = /^\s*TCP\s+\S*:(\d+)\s+\S+\s+LISTENING\s+(\d+)\s*$/i.exec(line);
+      if (match && Number(match[1]) === port) return Number(match[2]);
+    }
+  } catch {
+    // best effort only
+  }
+  return undefined;
 }
 
 /** Item 4, 2026-09-05: how old a lane's own file has to be, with no live registry row
@@ -455,6 +477,25 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
     }
 
     case 'up': {
+      // Item 3, 2026-09-10: refuse a hand-run `forge up` when the console-of-record
+      // launcher script exists and this process was not started by it
+      // (FORGE_LAUNCHER=1, set by console.launch.cmd itself) -- a hand-started console
+      // from a stale checkout is exactly what 68932 was on 2026-09-10, answering
+      // /state in 15-33s with none of that day's merges. --here overrides for the
+      // rare deliberate case (reproducing a stale hand-start for a test, running from
+      // a checkout with no launcher installed yet).
+      const launcherPath = join(forgeHome(), 'console.launch.cmd');
+      if (existsSync(launcherPath) && process.env['FORGE_LAUNCHER'] !== '1' && !rest.includes('--here')) {
+        return {
+          code: 1,
+          lines: [
+            `a console-of-record launcher exists at ${launcherPath}; use it `
+              + `(cmd.exe /c "${launcherPath}") instead of running forge up by hand, `
+              + 'or pass --here to override',
+          ],
+        };
+      }
+
       // A supervisor of paid workers never dies on one stray promise. Node's default
       // for an unhandled rejection is to exit, and on 2026-09-08 one failed `gh` spawn
       // inside a background PR read took the console down four times in seven minutes,
@@ -661,7 +702,25 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         }
       };
 
-      const port = await server.listen();
+      // Item 3, 2026-09-10: the bind rejection used to reach only the global
+      // `unhandledRejection` handler above ("console stays up"), so a second `forge up`
+      // on an occupied port logged a line, drained, and exited 0 -- the launcher's loop
+      // (which only restarts on 75) saw a clean exit and never relaunched, and the app
+      // kept probing a port nothing answered. Caught here, before that handler ever
+      // sees it, so a held port is a loud, distinct failure instead of a silent one.
+      let port: number;
+      try {
+        port = await server.listen();
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== 'EADDRINUSE') throw error;
+        const targetPort = consolePort();
+        const holder = (deps.portHolder ?? findPortHolderPid)(targetPort);
+        const message = holder !== undefined
+          ? `${targetPort} is held by pid ${holder}`
+          : `${targetPort} is already in use`;
+        return { code: 76, lines: [message] };
+      }
       const tick = setInterval(() => {
         liveness.evaluate();
         void wardenTick.run();

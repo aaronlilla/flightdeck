@@ -18,6 +18,12 @@ export interface LocateEnv {
 export interface LocateCandidates {
   env: LocateEnv;
   rememberedCheckoutDir?: string;
+  /** `~/.forge/console.checkout`'s content (item 4, plan step 9), read by the
+   *  caller via `readCheckoutFile` -- ranked above the install dir, below
+   *  `FORGE_REPO_DIR` and the remembered setting: the canonical launcher-owned
+   *  checkout wins over an install dir that merely happens to look like a
+   *  repo, but an explicit override still wins over it. */
+  checkoutFileDir?: string;
   installDir?: string;
   join(...parts: string[]): string;
 }
@@ -34,7 +40,7 @@ export function looksLikeForgeRepo(fs: LocateFs, join: (...p: string[]) => strin
 
 export interface LocateResult {
   dir: string;
-  source: 'env' | 'remembered' | 'install-dir';
+  source: 'env' | 'remembered' | 'checkout-file' | 'install-dir';
 }
 
 /**
@@ -42,7 +48,9 @@ export interface LocateResult {
  * check out. Undefined means the caller should ask the user to pick one.
  */
 export function locateCheckout(fs: LocateFs, candidates: LocateCandidates): LocateResult | undefined {
-  const { env, rememberedCheckoutDir, installDir, join } = candidates;
+  const {
+    env, rememberedCheckoutDir, checkoutFileDir, installDir, join,
+  } = candidates;
 
   if (env.FORGE_REPO_DIR && looksLikeForgeRepo(fs, join, env.FORGE_REPO_DIR)) {
     return { dir: env.FORGE_REPO_DIR, source: 'env' };
@@ -50,6 +58,10 @@ export function locateCheckout(fs: LocateFs, candidates: LocateCandidates): Loca
 
   if (rememberedCheckoutDir && looksLikeForgeRepo(fs, join, rememberedCheckoutDir)) {
     return { dir: rememberedCheckoutDir, source: 'remembered' };
+  }
+
+  if (checkoutFileDir && looksLikeForgeRepo(fs, join, checkoutFileDir)) {
+    return { dir: checkoutFileDir, source: 'checkout-file' };
   }
 
   if (installDir && looksLikeForgeRepo(fs, join, installDir)) {

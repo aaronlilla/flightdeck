@@ -12,7 +12,10 @@ import {
 } from './settings';
 import { bringUpConsole, type Spawned, type SupervisorDeps } from './console-supervisor';
 import { createConsoleWatchdog, type ConsoleWatchdog, type ReviveResult } from './console-watchdog';
-import { probeConsole, waitUntilReachable } from './probe';
+import { probeConsole, probeHealth, waitUntilReachable } from './probe';
+import { createLoadLoop, type LoadLoop } from './load-loop';
+import { readQueueLockOwner } from './queue-lock';
+import { readCheckoutFile } from './checkout-file';
 import { decideQuitAction } from './quit-rule';
 import { hasLiveRun } from './fleet-state';
 import { readGitHead } from './git-head';
@@ -73,6 +76,41 @@ function spawnChild(command: string, args: string[], cwd: string, env: Record<st
   };
 }
 
+/**
+ * Item 4: runs a `BuildStep` (the vite console build) to completion, capturing
+ * combined stdout/stderr for the failure message. `ELECTRON_RUN_AS_NODE` is
+ * added the same way `buildStartCommand` adds it when the command is this
+ * app's own executable, so the build step works whether `nodeExecPath` came
+ * out packaged (this app's own exe) or unpackaged (a real Node binary, which
+ * ignores the variable).
+ */
+/** Item 3: a plain `process.kill(pid, 0)` signal probe, the same technique
+ *  `src/forge/registry.ts`'s `processAlive` uses server-side -- signal 0 sends
+ *  nothing, it only asks whether the pid exists and this process may signal it. */
+function pidIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function runBuildStep(step: { command: string; args: string[]; cwd: string }): Promise<{ ok: boolean; output: string }> {
+  return new Promise((resolve) => {
+    const child = nodeSpawn(step.command, step.args, {
+      cwd: step.cwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+    });
+    let output = '';
+    child.stdout?.on('data', (chunk: Buffer) => { output += chunk.toString(); });
+    child.stderr?.on('data', (chunk: Buffer) => { output += chunk.toString(); });
+    child.on('exit', (code) => resolve({ ok: code === 0, output }));
+    child.on('error', (error) => resolve({ ok: false, output: output + String(error) }));
+  });
+}
+
 let mainWindow: BrowserWindow | undefined;
 let statusWindow: BrowserWindow | undefined;
 let settingsWindow: BrowserWindow | undefined;
@@ -82,6 +120,7 @@ let spawnedProcess: Spawned | undefined;
 let currentLabel = 'Forge';
 let resolvedCheckoutDir: string | undefined;
 let watchdog: ConsoleWatchdog | undefined;
+let loadLoop: LoadLoop | undefined;
 
 function showStatus(text: string): void {
   statusWindow?.webContents.send('status', text);
@@ -89,6 +128,12 @@ function showStatus(text: string): void {
 
 function logToStatus(line: string): void {
   statusWindow?.webContents.send('log', line);
+  // G5, 2026-09-10: also on stdout, prefixed so it is grep-able, so a live
+  // end-to-end test can read the app's own health/action log lines without a
+  // renderer-side IPC listener -- the evidence the goal brief requires
+  // ("the app's own log lines naming the health value and the action taken").
+  // eslint-disable-next-line no-console
+  console.log(`[forge-console] ${line}`);
 }
 
 function createStatusWindow(): BrowserWindow {
@@ -202,6 +247,42 @@ function createMainWindow(): BrowserWindow {
   return win;
 }
 
+/**
+ * Binds a real `load-loop.ts` state machine to `win`'s actual navigation
+ * events: the main-frame response status via `onHeadersReceived` (never a
+ * sub-resource -- only `resourceType === 'mainFrame'` reaches the loop) and
+ * `did-fail-load`. `probeHealth()` is the loop's probe, so it never calls
+ * `loadURL` until `/health` (or the older-server fallback) reads healthy.
+ */
+function wireLoadLoop(win: BrowserWindow): LoadLoop {
+  const loop = createLoadLoop({
+    probe: () => probeHealth(),
+    loadURL: () => win.loadURL(`${CONSOLE_ORIGIN}/`),
+    onStatus: (text) => {
+      if (!statusWindow) statusWindow = createStatusWindow();
+      showStatus(text);
+    },
+    onLoaded: () => {
+      statusWindow?.close();
+      statusWindow = undefined;
+    },
+    setInterval: (handler, ms) => setInterval(handler, ms),
+    clearInterval: (handle) => clearInterval(handle as ReturnType<typeof setInterval>),
+  });
+
+  win.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+    if (details.resourceType === 'mainFrame' && details.url.startsWith(CONSOLE_ORIGIN)) {
+      loop.reportMainFrameStatus(details.statusCode);
+    }
+    callback({});
+  });
+  win.webContents.on('did-fail-load', (_event, _errorCode, _description, _validatedURL, isMainFrame) => {
+    if (isMainFrame) loop.reportFailLoad();
+  });
+
+  return loop;
+}
+
 function focusExisting(): void {
   if (!mainWindow) return;
   if (mainWindow.isMinimized()) mainWindow.restore();
@@ -215,6 +296,10 @@ async function resolveCheckoutDir(): Promise<string | undefined> {
   const found = locateCheckout(fsAdapter, {
     env: { FORGE_REPO_DIR: process.env['FORGE_REPO_DIR'] },
     rememberedCheckoutDir: settings.checkoutDir,
+    // Code-review finding, 2026-09-10: this call never read the canonical checkout
+    // file at all -- item 4's "one checkout every launcher reads" reached dev.cjs
+    // and dev-hidden.vbs but not the packaged app itself, the one users actually run.
+    checkoutFileDir: readCheckoutFile(fsAdapter, join, app.getPath('home')),
     installDir,
     join,
   });
@@ -238,8 +323,34 @@ function git(): { run(args: string[], cwd: string): string } {
   return { run: (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8' }) };
 }
 
+/** `wait`/`show-no-console` are transient by nature (a launcher mid-start, a
+ *  build not finished yet) -- e2e finding, 2026-09-10: the first version of
+ *  this handling dead-ended on these outcomes until a manual Retry click,
+ *  which fails the plan's own Verification case 2 ("the board loads on the
+ *  next poll", no click involved). Retries `bootstrap()` on a short interval
+ *  instead. Cleared whenever `bootstrap()` reaches any other outcome, so it
+ *  never keeps firing once a console actually comes up (or the user clicks
+ *  Retry themselves, which calls `bootstrap()` directly). */
+let bootstrapRetryTimer: NodeJS.Timeout | undefined;
+const BOOTSTRAP_RETRY_MS = 3_000;
+
+function clearBootstrapRetry(): void {
+  if (bootstrapRetryTimer !== undefined) {
+    clearTimeout(bootstrapRetryTimer);
+    bootstrapRetryTimer = undefined;
+  }
+}
+
+function scheduleBootstrapRetry(): void {
+  clearBootstrapRetry();
+  bootstrapRetryTimer = setTimeout(() => { void bootstrap(); }, BOOTSTRAP_RETRY_MS);
+}
+
 async function bootstrap(): Promise<void> {
-  statusWindow = createStatusWindow();
+  clearBootstrapRetry();
+  // Reuse the existing status window across retries rather than stacking a
+  // fresh one on every auto-retry.
+  if (!statusWindow || statusWindow.isDestroyed()) statusWindow = createStatusWindow();
   showStatus('Looking for a running console on 127.0.0.1:4120…');
 
   const checkoutDir = await resolveCheckoutDir();
@@ -269,6 +380,33 @@ async function bootstrap(): Promise<void> {
     statusWindow?.webContents.send('revive-failed');
     return;
   }
+  if (outcome.mode === 'wait') {
+    // A console (someone else's launch, most likely the launcher itself) is already
+    // starting or running under the queue lock -- never launch a second one into it.
+    // Auto-retries (e2e finding, 2026-09-10): a lock owner mid-launch resolves itself
+    // in seconds, and the plan's Verification cases never involve a click.
+    showStatus(`a console (pid ${outcome.ownerPid}) is already starting or running; waiting for it to become healthy…`);
+    statusWindow?.webContents.send('revive-failed');
+    scheduleBootstrapRetry();
+    return;
+  }
+  if (outcome.mode === 'show-no-console') {
+    // Same auto-retry reasoning as 'wait': the console answering with no page
+    // built yet is exactly the transient state Verification case 2 exercises
+    // (write index.html moments later, expect the board on the next poll).
+    showStatus('the console on 127.0.0.1:4120 is running but has not built its page yet…');
+    statusWindow?.webContents.send('revive-failed');
+    scheduleBootstrapRetry();
+    return;
+  }
+  if (outcome.mode === 'confirm-restart') {
+    // Proposal only: this app does not yet surface the confirm-gated restart dialog
+    // (that UI is not built), so the honest status here is "detected, not offered" --
+    // never a silent attach to a process this server-shape check does not trust.
+    showStatus('something on 127.0.0.1:4120 does not look like a forge console. A confirm-gated restart is not yet offered from this screen.');
+    statusWindow?.webContents.send('revive-failed');
+    return;
+  }
 
   startedByThisApp = outcome.mode === 'start';
   if (startedByThisApp) spawnedProcess = (outcome as { process: Spawned }).process;
@@ -279,11 +417,11 @@ async function bootstrap(): Promise<void> {
   showStatus('Loading the board…');
   mainWindow = createMainWindow();
   mainWindow.setTitle(currentLabel);
-  await mainWindow.loadURL(`${CONSOLE_ORIGIN}/`);
-
   tray?.setToolTip(currentLabel);
-  statusWindow?.close();
-  statusWindow = undefined;
+
+  loadLoop?.stop();
+  loadLoop = wireLoadLoop(mainWindow);
+  loadLoop.start();
 
   watchdog?.stop();
   watchdog = createConsoleWatchdog(buildWatchdogDeps());
@@ -294,13 +432,22 @@ async function bootstrap(): Promise<void> {
  *  built as its own function so the watchdog's revive can run the identical
  *  bring-up attempt later. */
 function buildSupervisorDeps(forgeEnv: Record<string, string> | undefined): SupervisorDeps {
+  const homeDir = app.getPath('home');
+  // Code-review finding, 2026-09-10: the queue lock the server actually writes lives
+  // under FORGE_HOME when it is set (src/forge/paths.ts's forgeHome()), not always
+  // <home>/.forge -- reading the wrong directory silently disables the wait/attach
+  // check this app just gained, with no error at all.
+  const forgeHomeDir = process.env['FORGE_HOME'] ?? join(homeDir, '.forge');
   return {
     probe: probeConsole,
+    probeHealth: () => probeHealth(),
+    queueLockOwner: () => readQueueLockOwner(fsAdapter, join, forgeHomeDir, pidIsAlive),
     spawn: (command, args, cwd, env) => spawnChild(command, args, cwd, { ...env, ...forgeEnv }),
     fs: fsAdapter,
     join,
     nodeExecPath: process.execPath,
-    homeDir: app.getPath('home'),
+    homeDir,
+    runBuild: runBuildStep,
     waitUntilReachable,
     onLog: logToStatus,
   };
@@ -319,6 +466,15 @@ async function reviveConsole(): Promise<ReviveResult> {
   if (outcome.mode === 'start-failed') {
     return { ok: false, reason: outcome.reason };
   }
+  if (outcome.mode === 'wait') {
+    return { ok: false, reason: `a console (pid ${outcome.ownerPid}) is already starting or running; waiting for it to become healthy` };
+  }
+  if (outcome.mode === 'show-no-console') {
+    return { ok: false, reason: 'the console is running but has not built its page yet' };
+  }
+  if (outcome.mode === 'confirm-restart') {
+    return { ok: false, reason: 'something on 127.0.0.1:4120 does not look like a forge console; a confirm-gated restart is not yet offered from this screen' };
+  }
 
   startedByThisApp = outcome.mode === 'start';
   spawnedProcess = startedByThisApp ? (outcome as { process: Spawned }).process : undefined;
@@ -328,15 +484,20 @@ async function reviveConsole(): Promise<ReviveResult> {
   tray?.setToolTip(currentLabel);
 
   if (mainWindow && !mainWindow.isDestroyed()) {
-    await mainWindow.loadURL(`${CONSOLE_ORIGIN}/`);
     mainWindow.setTitle(currentLabel);
+    // Route back through the load loop rather than a raw loadURL: the same
+    // health-poll-then-load discipline applies to a watchdog revive as to
+    // the first load, so a revive that races a still-not-quite-healthy
+    // console still ends on the board, never a stranded 404.
+    if (!loadLoop) loadLoop = wireLoadLoop(mainWindow);
+    loadLoop.restart();
   }
   return { ok: true };
 }
 
 function buildWatchdogDeps() {
   return {
-    probe: probeConsole,
+    probe: () => probeHealth(),
     revive: reviveConsole,
     onLog: logToStatus,
     onGone: (label: string) => {
@@ -448,7 +609,16 @@ if (process.platform === 'win32') app.setAppUserModelId('com.forge.console');
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on('second-instance', focusExisting);
+  app.on('second-instance', () => {
+    focusExisting();
+    // 2026-09-10 18:45 finding: a stale window still holding a 404 body from
+    // an earlier stale-dist episode never recovers on its own -- the window
+    // stays open, single-instance hands this click to focusExisting, and
+    // nothing re-checks what is actually on screen. Re-running the loop means
+    // a click on the shortcut always re-polls health and reloads if the page
+    // is not currently up-healthy, instead of only focusing whatever is there.
+    loadLoop?.restart();
+  });
 
   // The Retry button on the status window: while the watchdog is running,
   // this asks it to try again right now (bypassing its backoff); before the
@@ -478,5 +648,6 @@ if (!app.requestSingleInstanceLock()) {
   app.on('before-quit', () => {
     isQuitting = true;
     watchdog?.stop();
+    clearBootstrapRetry();
   });
 }
