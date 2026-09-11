@@ -31,7 +31,7 @@ export function readWatcherPollSeconds(env: NodeJS.ProcessEnv = process.env): nu
 
 /**
  * R-68: two clauses, not the whole board. Clause 1 is Aaron's own open work
- * (`assignee = currentUser()`), which is what `pullJira` (`sync/jira-pull.ts`) also
+ * (`assignee = currentUser()`, not Done, not In Review/QA), which is what `pullJira` (`sync/jira-pull.ts`) also
  * reads with no owned keys. Clause 2, `key in (...)`, is every ticket the queue already
  * owns, regardless of assignee or status -- a lane reassigned to QA at handoff, or moved
  * to Done in Jira, is exactly the case clause 1 alone would stop seeing. Never excludes
@@ -39,8 +39,13 @@ export function readWatcherPollSeconds(env: NodeJS.ProcessEnv = process.env): nu
  * close an owned lane.
  */
 export function watcherJql(project: string, ownedKeys: readonly string[] = []): string {
-  const mine = `project = ${project} AND assignee = currentUser()`;
-  const clause = ownedKeys.length ? `(${mine} OR key in (${ownedKeys.join(', ')}))` : mine;
+  // Clause 1 is NEW work only: Aaron's decision (2026-09-11) that a full re-sync and the
+  // watcher never queue a ticket that is already Done or already in review. The status
+  // name was read live from BBZ on 2026-09-11 ("In Review/QA", category In Progress).
+  // Clause 2 (owned keys) carries no status filter on purpose: an owned lane must stay
+  // visible after the QA handoff reassigns it and after a Done move, or it never closes.
+  const mine = `project = ${project} AND assignee = currentUser() AND statusCategory != Done AND status != "In Review/QA"`;
+  const clause = ownedKeys.length ? `((${mine}) OR key in (${ownedKeys.join(', ')}))` : mine;
   return `${clause} ORDER BY updated ASC`;
 }
 

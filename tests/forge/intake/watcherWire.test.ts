@@ -60,18 +60,16 @@ describe('readWatcherPollSeconds', () => {
 });
 
 describe('watcherJql', () => {
-  it('does not exclude Done -- a Done move is exactly what closes an owned lane', () => {
-    expect(watcherJql('BBZ')).not.toMatch(/Done/);
+  const MINE = 'project = BBZ AND assignee = currentUser() AND statusCategory != Done AND status != "In Review/QA"';
+
+  it('clause 1 excludes Done and In Review/QA -- new work only (Aaron, 2026-09-11: never queue a shipped or in-review ticket)', () => {
+    expect(watcherJql('BBZ')).toBe(`${MINE} ORDER BY updated ASC`);
+    expect(watcherJql('BBZ', [])).toBe(`${MINE} ORDER BY updated ASC`);
   });
 
-  it('with no owned keys, is clause 1 only', () => {
-    expect(watcherJql('BBZ')).toBe('project = BBZ AND assignee = currentUser() ORDER BY updated ASC');
-    expect(watcherJql('BBZ', [])).toBe('project = BBZ AND assignee = currentUser() ORDER BY updated ASC');
-  });
-
-  it('with two owned keys, adds a key-in clause', () => {
+  it('with two owned keys, clause 2 keeps owned tickets visible whatever their status, so a Done move still closes the lane', () => {
     expect(watcherJql('BBZ', ['BBZ-1', 'BBZ-2'])).toBe(
-      '(project = BBZ AND assignee = currentUser() OR key in (BBZ-1, BBZ-2)) ORDER BY updated ASC',
+      `((${MINE}) OR key in (BBZ-1, BBZ-2)) ORDER BY updated ASC`,
     );
   });
 
