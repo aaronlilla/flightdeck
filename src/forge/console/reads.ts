@@ -48,7 +48,7 @@ import { computeYou, youFactsFor } from './laneGlance.js';
 import { narrateLaneFields } from './lane-narrate.js';
 import { readAttestationAtPath } from '../council/attest.js';
 import {
-  computeBranchPr, computeQueuePr, computeRunPr, PR_CACHE_TTL_MS, prCachePath, readPrCache, writePrCache,
+  computeBranchPr, computeQueuePr, computeRunPr, PR_CACHE_TTL_MS, prCachePath, readPrCache, repoFromPrUrl, writePrCache,
   type AttestationReaderFn, type Cache, type GhBranchLookupFn, type GhBranchPr, type GhDetailLookupFn, type GhLookupFn,
   type GhPrDetail, type GhPrLookup,
 } from './pr.js';
@@ -798,12 +798,29 @@ export class ConsoleReads {
     // still-unresolved PR exactly one final re-check, sourced from the cache's own
     // last-known repo/PR rather than a live queueItem. Skipped entirely while a queue
     // item still exists (the ordinary polling above already covers that lane).
+    //
+    // Follow-up (2026-09-11 live finding, BBZ-226/PR#107): a lane whose worker died
+    // mid-tool with no `run.finished` never reaches `laneFinished` at all -- it sits
+    // `blocked` forever (Item 10's own abandoned-process rule). Nothing above ever
+    // re-checks such a lane's PR either: the queueItem-gated pollers need a queue item
+    // it doesn't have, and the chain-discovery gate only fires while `pr.no` is still
+    // unknown, never once it's already known and simply stale. That lane is still
+    // live on the board (not archived), so this keeps re-checking it on the same
+    // ongoing 60s cadence an active queue-item lane already gets -- never a one-shot
+    // `finalCheckAt` correction, since the lane itself hasn't terminated. `repo` falls
+    // back to parsing the PR's own `url` (`repoFromPrUrl`) so a legacy row written
+    // before the `repo` field existed needs no one-time hand migration either.
     if (!queueItem) {
       const cached = prCache[lane.id];
-      const alreadyChecked = cached?.finalCheckAt !== undefined;
+      const repo = cached?.repo ?? (cached?.pr?.url ? repoFromPrUrl(cached.pr.url) : null);
       const unresolved = cached?.pr?.no && cached.pr.merged !== true && !cached.pr.closed;
-      if (laneFinished(lane) && unresolved && cached?.repo && !alreadyChecked && now - cached.at >= PR_CACHE_TTL_MS) {
-        this.scheduleFinalPrCheck(lane.id, cached.repo, cached.pr!);
+      const stale = cached && now - cached.at >= PR_CACHE_TTL_MS;
+      if (unresolved && repo && stale) {
+        if (laneFinished(lane)) {
+          if (cached.finalCheckAt === undefined) this.scheduleFinalPrCheck(lane.id, repo, cached.pr!);
+        } else {
+          this.scheduleQueuePrRefresh(lane.id, repo, cached.pr!);
+        }
       }
     }
     // Item 9: `computeLanes` already stripped `plain`/`reason` once, but both of the

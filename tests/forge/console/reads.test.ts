@@ -892,6 +892,79 @@ describe('ConsoleReads.lanesResponse: title and sourceUrl', () => {
     expect(ghCalls).toBe(1);
   });
 
+  // Follow-up to R-61 (2026-09-11 live finding): BBZ-226's worker died mid-tool with
+  // no `run.finished` -- the lane sits `blocked` forever (Item 10's own
+  // abandoned-process rule), never `laneFinished`. R-61's final re-check only fires
+  // for a *finished* lane, so a `blocked` lane's known-but-stale PR fact (here,
+  // `merged: false` when the real PR merged days ago) is never touched by anything:
+  // not the queueItem-gated pollers (no queue item), not the chain-discovery gate
+  // (only fires while `pr.no` is still unknown), and not R-61's own final check
+  // (lane isn't finished). This must keep re-checking on an ongoing basis, like an
+  // active queue-item lane already does, since the lane itself hasn't terminated --
+  // never a one-shot `finalCheckAt` correction.
+  it('follow-up: a blocked (not finished) lane with a known, stale-unmerged PR keeps getting re-checked', async () => {
+    const forgeHomeDir = tempDir('console-reads-');
+    const runKey = 'jira_BBZ-226_1788543015139';
+    const queueStore = new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl'));
+
+    const longAgo = Date.now() - 20 * 60_000;
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'intake.planned', packetId: 'p1', repo: 'BOLTBETZ-LLC/v2-React-Native', at: longAgo });
+    journal.append({ event: 'chain.launched', packetId: 'p1', runKey, at: longAgo });
+    journal.append({
+      event: 'chain.provisioned', packetId: 'p1', worktreePath: 'w', branch: 'feature/bbz-226', at: longAgo,
+    });
+    journal.append({ event: 'run.started', run: runKey, actor: 'runner', at: longAgo });
+    // No `run.finished` -- the worker died mid-tool. `lastEventAt` stays at `longAgo`
+    // (20 minutes ago, past the 10-minute abandoned threshold), so the lane derives
+    // `state: 'blocked'` on its own, exactly like the live BBZ-226 lane.
+    journal.close();
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put(runKey, { column: 'BBZ-226' });
+
+    const { writePrCache, prCachePath } = await import('../../../src/forge/console/pr.js');
+    // A legacy cache row -- no `repo` field at all, only what every row has always
+    // carried: the PR's own `url`. Stale past TTL, `merged: false`, when the PR
+    // actually merged days ago.
+    writePrCache(prCachePath(forgeHomeDir), {
+      [runKey]: {
+        pr: { no: 107, url: 'https://github.com/BOLTBETZ-LLC/v2-React-Native/pull/107', draft: true, merged: false },
+        at: Date.now() - 10 * 60_000,
+      },
+    });
+
+    let ghCalls = 0;
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore, jiraSite: null,
+      ghDetailLookup: async (repo, pr) => {
+        ghCalls += 1;
+        expect(repo).toBe('BOLTBETZ-LLC/v2-React-Native');
+        expect(pr).toBe(107);
+        return { headSha: 'deadbeef', isDraft: true, merged: true, title: 'BBZ-226 fix', checks: 'success', mergedAt: 1_000 };
+      },
+    });
+
+    const before = reads.lanesResponse().lanes[0]!;
+    expect(before.state).toBe('blocked');
+    expect(before.pr?.merged).toBe(false);
+
+    const server = reads as unknown as { settlePrRefreshes(): Promise<void> };
+    await server.settlePrRefreshes();
+
+    const after = reads.lanesResponse().lanes[0]!;
+    expect(after.pr?.merged).toBe(true);
+    expect(after.state).toBe('merged');
+    expect(ghCalls).toBe(1);
+
+    // Ongoing, not one-shot: this is not R-61's terminal correction (the lane never
+    // reached a finished state), so nothing here should ever write `finalCheckAt`.
+    const { readPrCache } = await import('../../../src/forge/console/pr.js');
+    expect(readPrCache(prCachePath(forgeHomeDir))[runKey]?.finalCheckAt).toBeUndefined();
+  });
+
   it('R-61 item 1: a finished, archived lane with no PR number at all triggers no final re-check', async () => {
     const forgeHomeDir = tempDir('console-reads-');
     const queueStore = new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl'));

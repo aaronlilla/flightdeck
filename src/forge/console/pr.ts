@@ -14,6 +14,16 @@ import type { LanePr } from '../../shared/console-model.js';
 
 export const PR_CACHE_TTL_MS = 60_000;
 
+/** Follow-up to R-61 (2026-09-11 live finding): every cache row ever written, before
+ *  or after the `repo` field existed, carries the PR's own `url` -- so a legacy row
+ *  with no `repo` string still has everything needed to re-check it, no one-time hand
+ *  migration required. `null` for anything that isn't a `github.com/<owner>/<repo>/pull/<n>`
+ *  link. */
+export function repoFromPrUrl(url: string): string | null {
+  const match = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/\d+$/.exec(url);
+  return match ? match[1]! : null;
+}
+
 interface CacheRow {
   pr: LanePr | null;
   at: number;
