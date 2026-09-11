@@ -168,3 +168,23 @@ describe('the page wires the strip to a real command path (blocking findings 1 a
     expect(screen.queryByTestId('question-pass-error')).not.toBeInTheDocument();
   });
 });
+
+describe('a blocker card survives the first paint (regression on the fix for finding 2)', () => {
+  beforeEach(() => {
+    (globalThis as unknown as { WebSocket: unknown }).WebSocket = FakeSocket;
+    state.lanes = []; state.blockers = []; state.thread = []; state.cards = [];
+    mocks.sendCommand.mockReset();
+    mocks.sendCommand.mockResolvedValue({ cards: [] });
+  });
+
+  it('does not drop every blocker card while the blockers slice is still null', async () => {
+    // The page flattens a null blockers slice to an empty array for its own counting.
+    // Handing that empty array to the strip would read as "no blocker is open" and drop
+    // every card on first paint, before the fleet has said anything at all.
+    state.cards = [blockerCard('blk-1', 'FLT-520', 'Sentry is unreachable', now - 1_000)];
+    state.blockers = [blocker('b1', 'FLT-520', 'open')];
+    render(<App />);
+    await waitFor(() => expect(screen.getByTestId('needs-you')).toBeInTheDocument());
+    expect(screen.getByTestId('question-card').textContent).toContain('Sentry is unreachable');
+  });
+});

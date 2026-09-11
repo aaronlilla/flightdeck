@@ -464,7 +464,11 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
 
   // R-75 item 3: everything that needs a person, in one ordered list, rendered one at
   // a time by the strip above the tabs.
-  const needs = buildNeeds(state.lanes, state.cards, blockers);
+  // `state.blockers` is null until the slice lands, and the flattened `blockers` above
+  // is an empty array in that window. Handing THAT to the strip would read as "no
+  // blocker is open" and drop every blocker card on first paint, so the strip gets the
+  // raw slice: undefined means "not read yet", and nothing is dropped on a guess.
+  const needs = buildNeeds(state.lanes, state.cards, state.blockers?.blockers);
   const activeLanes = state.lanes.filter((l) => l.retiredAt === null && l.state !== 'merged' && l.state !== 'killed');
   // A slot is taken by any lane still on the board, working or waiting.
   const working = activeLanes.length;
