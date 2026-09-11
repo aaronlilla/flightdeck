@@ -103,6 +103,12 @@ export interface State {
   /** D2.4: `/state`'s own `queue_on` flag. Starts `true` so the "Queue is off" banner
    *  never flashes before the console's first `/state` fetch lands. */
   queueOn: boolean;
+  /** Queue-paused visibility fix: `/state`'s own `queue_paused` flag, independent of the
+   *  `/queue` slice's `queuePaused` (which the Queue view still uses). The header reads
+   *  this one so a failed `/queue` poll in a shared refresh cycle never leaves it stuck
+   *  on a stale value while `/state` keeps answering. Absent on `/state` (the stub
+   *  server) reads as `false`, same as `queueOn`'s own default. */
+  queuePausedOnState: boolean;
   /** R-71: the whole `GET /sync` response -- every scope's last run plus the watcher.
    *  `null` until the first fetch lands. */
   sync: SyncStateResponse | null;
@@ -179,6 +185,7 @@ export type Action =
   | { type: 'queue'; items: QueueItem[]; paused: boolean; maxInFlight: number; pauseReason?: string | null }
   | { type: 'blockers'; blockers: BlockersResponse }
   | { type: 'queue-on'; on: boolean }
+  | { type: 'queue-paused-on-state'; paused: boolean }
   | { type: 'sync'; sync: SyncStateResponse }
   | { type: 'conductor-timeout'; timeoutMs: number }
   | { type: 'toggle-probes' }
@@ -246,6 +253,7 @@ export function initialState(): State {
     queuePauseReason: null,
     queueMaxInFlight: 2,
     queueOn: true,
+    queuePausedOnState: false,
     sync: null,
     conductorTimeoutMs: 120_000,
     showProbes: false,
@@ -368,6 +376,8 @@ export function reducer(state: State, action: Action): State {
       return { ...state, conductorTimeoutMs: action.timeoutMs };
     case 'queue-on':
       return { ...state, queueOn: action.on };
+    case 'queue-paused-on-state':
+      return { ...state, queuePausedOnState: action.paused };
     case 'sync':
       return { ...state, sync: action.sync };
     case 'toggle-probes':

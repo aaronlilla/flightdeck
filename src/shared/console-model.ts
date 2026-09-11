@@ -916,6 +916,11 @@ export interface RunJournalResponse {
  */
 export interface ConsoleStateSummary {
   queue_on: boolean;
+  /** Queue-paused visibility fix: `readQueuePaused()`, read fresh off the flag file on
+   *  every `/state` call. Independent of `queue_on` -- a queue that is off can still
+   *  carry a stale pause flag on disk, and both are shown. Optional because the stub
+   *  server (`stub-server.ts`) does not yet serve it; absent reads as not-paused. */
+  queue_paused?: boolean;
   /** The Conductor agent behind the rail (2026-09-08): whether the rail routes to it
    *  and the class timeout after which the client says it did not answer. */
   conductor?: { enabled: boolean; timeoutMs: number; open?: boolean };

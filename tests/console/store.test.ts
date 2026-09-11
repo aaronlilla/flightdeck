@@ -108,3 +108,20 @@ describe('store reducer', () => {
     });
   });
 });
+
+describe('queue_paused off /state, independent of the /queue slice', () => {
+  it('sets queuePausedOnState off the state slice without touching the /queue slice\'s own queuePaused', () => {
+    let state = initialState();
+    state = reducer(state, { type: 'queue', items: [], paused: false, maxInFlight: 2 });
+    state = reducer(state, { type: 'queue-paused-on-state', paused: true });
+    expect(state.queuePausedOnState).toBe(true);
+    expect(state.queuePaused).toBe(false);
+  });
+
+  it('leaves queuePausedOnState alone when a later /queue slice update lands', () => {
+    let state = initialState();
+    state = reducer(state, { type: 'queue-paused-on-state', paused: true });
+    state = reducer(state, { type: 'queue', items: [], paused: false, maxInFlight: 2 });
+    expect(state.queuePausedOnState).toBe(true);
+  });
+});
