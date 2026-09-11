@@ -1,7 +1,7 @@
 import type { JSX } from 'react';
 
 import { runSummary, stageLine } from '../sync-text.js';
-import type { SyncRunRecord, SyncScope } from '../sync-types.js';
+import type { SyncRunRecord, SyncScope } from '../../shared/sync-contract.js';
 
 /** A computed class name, never a static word standing in a template literal --
  *  `class-coverage.test.ts` only checks literal class attribute text, the same reason

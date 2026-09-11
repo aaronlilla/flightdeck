@@ -24,7 +24,7 @@ import { WatcherStatus } from './components/WatcherStatus.js';
 import { focusableIn, trapTab } from './focus-trap.js';
 import { blockerFor, type BoardCommand } from './laneVM.js';
 import { initialState, reducer, StoreContext, type ActionLink, type View } from './store.js';
-import type { SyncScope } from './sync-types.js';
+import type { SyncScope } from '../shared/sync-contract.js';
 import { isSliceEvent, type SliceName } from '../shared/console-events.js';
 import type { Message } from '../shared/console-model.js';
 import { commandEcho } from '../shared/humanize.js';

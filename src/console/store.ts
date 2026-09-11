@@ -18,7 +18,7 @@ import type {
   QueueItem,
 } from '../shared/console-model.js';
 import type { MachineResponse } from './api.js';
-import type { SyncStateResponse } from './sync-types.js';
+import type { SyncStateResponse } from '../shared/sync-contract.js';
 
 export type View = 'board' | 'settings' | 'review' | 'queue' | 'blockers' | 'machine';
 export type Filter = 'all' | 'needs-me' | 'running' | 'finished' | string;

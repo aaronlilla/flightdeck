@@ -8,7 +8,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { WatcherStatus } from '../../src/console/components/WatcherStatus.js';
-import type { WatcherStatus as WatcherStatusModel } from '../../src/console/sync-types.js';
+import type { WatcherStatus as WatcherStatusModel } from '../../src/shared/sync-contract.js';
 
 function status(extra: Partial<WatcherStatusModel> = {}): WatcherStatusModel {
   return { on: true, project: 'BBZ', pollSeconds: 30, lastPollAt: Date.now(), lastCount: 3, ...extra };

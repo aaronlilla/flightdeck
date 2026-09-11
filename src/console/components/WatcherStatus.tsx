@@ -2,7 +2,7 @@ import type { JSX } from 'react';
 import { useEffect, useState } from 'react';
 
 import { watcherLine } from '../sync-text.js';
-import type { WatcherStatus as WatcherStatusModel } from '../sync-types.js';
+import type { WatcherStatus as WatcherStatusModel } from '../../shared/sync-contract.js';
 
 export interface WatcherStatusProps {
   status: WatcherStatusModel;

@@ -24,7 +24,7 @@ import { fmtTokens } from '../shared/format-tokens.js';
 import { commandEcho, shortenShas } from '../shared/humanize.js';
 import { tokenAmount } from '../forge/console/command.js';
 import { sliceEventsFor } from '../shared/console-events.js';
-import type { SyncRunRecord, SyncScope, SyncStage, WatcherStatus } from './sync-types.js';
+import type { SyncRunRecord, SyncScope, SyncStage, WatcherStatus } from '../shared/sync-contract.js';
 import { seedCaps } from './fixtures/caps.js';
 import { seedIntegrations } from './fixtures/integrations.js';
 import { seedJournal } from './fixtures/journal.js';
@@ -164,9 +164,10 @@ function seedDb(): Db {
 }
 
 /** R-71: the stages a real run of `scope` would take, in execution order --
- *  `full` runs every stage the contract names; a page scope runs its own probe stage
- *  plus the shared tail. The stub completes a run synchronously, since nothing here
- *  actually shells out to git/gh/Jira; the shape is what the fixtures and tests read. */
+ *  `full` runs every stage the contract names; a page scope runs its own single probe
+ *  stage (the contract names no per-page tail). The stub completes a run synchronously,
+ *  since nothing here actually shells out to git/gh/Jira; the shape is what the
+ *  fixtures and tests read. */
 function scopeStages(scope: SyncScope): SyncStage[] {
   const t0 = Date.now();
   const stage = (name: SyncStage['name'], counts: Record<string, number>, dt: number): SyncStage => ({
@@ -187,8 +188,10 @@ function scopeStages(scope: SyncScope): SyncStage[] {
   }
   const probe: Record<SyncScope, SyncStage | null> = {
     full: null,
-    lanes: stage('fetch-repos', { fetched: 3 }, 600),
-    queue: stage('recheck-lanes', { checked: db.queue.length }, 300),
+    lanes: stage('recheck-lanes', { checked: db.lanes.length }, 300),
+    // The contract names no queue-specific stage; the queue page's probe reuses the
+    // shared PR-reconcile name, the closest fit for rechecking queued items' own PRs.
+    queue: stage('reconcile-prs', { checked: db.queue.length }, 300),
     sessions: stage('scan-sessions', { scanned: 1 }, 200),
     accounts: stage('probe-accounts', { ok: 1, failed: 0 }, 200),
     machine: stage('snapshot-machine', {}, 150),

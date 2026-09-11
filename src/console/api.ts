@@ -5,7 +5,7 @@
  * goal brief: "all of that lives behind one `api.ts`").
  */
 import { redactErrorBody } from './redact.js';
-import type { SyncScope, SyncStateResponse, WatcherStatus as WatcherStatusModel } from './sync-types.js';
+import type { SyncScope, SyncStateResponse, WatcherStatus as WatcherStatusModel } from '../shared/sync-contract.js';
 import type {
   AccountProvider,
   AccountsResponse,

@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { runSummary, stageLine, watcherLine } from '../../src/console/sync-text.js';
-import type { SyncRunRecord, SyncStage, WatcherStatus } from '../../src/console/sync-types.js';
+import type { SyncRunRecord, SyncStage, WatcherStatus } from '../../src/shared/sync-contract.js';
 
 const POLL_A = new Date(2026, 8, 11, 7, 41, 0).getTime();
 const POLL_B = new Date(2026, 8, 11, 9, 5, 0).getTime();

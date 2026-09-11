@@ -7,7 +7,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { SyncCard } from '../../src/console/components/SyncCard.js';
-import type { SyncRunRecord } from '../../src/console/sync-types.js';
+import type { SyncRunRecord } from '../../src/shared/sync-contract.js';
 
 const okRun: SyncRunRecord = {
   scope: 'lanes', id: 'r-ok', startedAt: 1000, endedAt: 9000, ok: true,

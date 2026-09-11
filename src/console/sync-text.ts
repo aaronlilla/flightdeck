@@ -3,7 +3,7 @@
  * sync stage, and the card's run summary. No narration call, no `?verbose` register --
  * everything here renders straight from the value it is given.
  */
-import type { SyncRunRecord, SyncStage, WatcherStatus } from './sync-types.js';
+import type { SyncRunRecord, SyncStage, WatcherStatus } from '../shared/sync-contract.js';
 
 function hhmm(t: number): string {
   const d = new Date(t);

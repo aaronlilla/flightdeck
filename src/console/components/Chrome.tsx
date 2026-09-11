@@ -3,7 +3,7 @@ import type { JSX } from 'react';
 import { ACTIONS, useAction } from '../actions.js';
 import { WatcherStatus as WatcherStatusRow } from './WatcherStatus.js';
 import type { View } from '../store.js';
-import type { WatcherStatus as WatcherStatusModel } from '../sync-types.js';
+import type { WatcherStatus as WatcherStatusModel } from '../../shared/sync-contract.js';
 import type { Feed } from '../../shared/console-model.js';
 import { hm } from '../freshness.js';
 import icon from '../../../brand/flightdeck-icon.png';
