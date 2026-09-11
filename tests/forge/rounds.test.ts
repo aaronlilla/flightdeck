@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { QueueStore } from '../../src/forge/intake/queueStore.js';
-import { applyRounds, formatRoundsSheet, planRounds, relaunchItem } from '../../src/forge/rounds.js';
+import { DEFAULT_ROUNDS_PARAMS, applyRounds, formatRoundsSheet, planRounds, relaunchItem } from '../../src/forge/rounds.js';
 import type { Blocker, Lane, QueueItem } from '../../src/shared/console-model.js';
 
 const NOW = 10_000_000;
@@ -237,5 +237,44 @@ describe('applyRounds', () => {
     store.append({ ...item({ id: 'Q-x', state: 'running', runKey: 'r' }), at: NOW });
     expect(relaunchItem(store, 'Q-x', 'rounds: dead', NOW)).toMatchObject({ state: 'running', retriedAt: NOW, reason: null });
     expect(relaunchItem(store, 'Q-missing', 'rounds: dead', NOW)).toBeUndefined();
+  });
+});
+
+/**
+ * BBZ-223 relaunched every round for 12 hours straight: a `killed` lane took the
+ * dead-lane branch, which never read the relaunch count the sibling branch respects.
+ * The cap has to trip exactly at `maxRelaunches`, and not one round earlier.
+ */
+describe('planRounds: a killed lane stops relaunching at the cap', () => {
+  const planWithPrior = (prior: number, state: Lane['state'] = 'killed') => planRounds({
+    now: NOW,
+    items: [item({ id: 'Q-loop', ticket: 'BBZ-223', state: 'running', runKey: 'run-loop' })],
+    lanes: [lane({
+      id: 'run-loop', state, reason: 'killed by operator',
+      live: { alive: false, pid: null, lastEventAt: null, checkedAt: NOW },
+    })],
+    blockers: [],
+    priorRelaunches: () => prior,
+  });
+  const finding = (prior: number, state?: Lane['state']) =>
+    planWithPrior(prior, state).findings.find((f) => f.itemId === 'Q-loop');
+
+  it('still relaunches one round below the cap', () => {
+    expect(finding(DEFAULT_ROUNDS_PARAMS.maxRelaunches - 1)).toMatchObject({
+      kind: 'dead-worker', action: 'relaunch',
+    });
+  });
+
+  it('hands it to the judge at the cap, naming the lane state and the count', () => {
+    const f = finding(DEFAULT_ROUNDS_PARAMS.maxRelaunches);
+    expect(f).toMatchObject({ kind: 'dead-worker', action: 'judge' });
+    expect(f!.why).toContain('killed');
+    expect(f!.why).toContain(String(DEFAULT_ROUNDS_PARAMS.maxRelaunches));
+  });
+
+  it('caps an exhausted lane the same way', () => {
+    const f = finding(DEFAULT_ROUNDS_PARAMS.maxRelaunches, 'exhausted');
+    expect(f).toMatchObject({ action: 'judge' });
+    expect(f!.why).toContain('exhausted');
   });
 });

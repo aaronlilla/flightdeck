@@ -201,10 +201,18 @@ export function planRounds(input: RoundsInput): RoundsSheet {
         continue;
       }
       if (DEAD_LANE_STATES.has(lane.state)) {
-        findings.push({
-          kind: 'dead-worker', action: 'relaunch', itemId: item.id, laneId: lane.id, label,
-          why: `the row says running but its run is ${lane.state}${lane.reason ? ` (${lane.reason.slice(0, 80)})` : ''}`,
-        });
+        // Same brake as the silent-process branch below: relaunching a lane the launcher
+        // keeps killing is not a fix, and without this it repeated every round for hours.
+        const prior = input.priorRelaunches?.(item.id) ?? 0;
+        const why = `the row says running but its run is ${lane.state}${lane.reason ? ` (${lane.reason.slice(0, 80)})` : ''}`;
+        if (prior >= params.maxRelaunches) {
+          findings.push({
+            kind: 'dead-worker', action: 'judge', itemId: item.id, laneId: lane.id, label,
+            why: `${why}; rounds already relaunched it ${prior} time${prior === 1 ? '' : 's'}, so the cause is not the launch`,
+          });
+        } else {
+          findings.push({ kind: 'dead-worker', action: 'relaunch', itemId: item.id, laneId: lane.id, label, why });
+        }
         continue;
       }
       if (lane.state === 'blocked' && lane.blockedBy) {

@@ -123,3 +123,50 @@ describe('POST /command and the Conductor agent', () => {
     expect(messages.find((row) => row.type === 'reply')?.text).toBe('Kill and remove proposed.');
   });
 });
+
+/**
+ * The console restarts on its own cadence: `cli.ts` exits 75 and the supervisor starts a
+ * NEW process (`AppExit 75 Restart`), which replays the journal from scratch. A confirm
+ * card the operator has not clicked yet must survive that boundary -- before this, every
+ * pending token died with the process and the click came back
+ * `refused: nothing pending for <uuid>`.
+ */
+describe('a confirm survives the console restarting under it', () => {
+  async function restart(): Promise<string> {
+    await server!.close();
+    server = undefined;
+    return start(scriptedQuery([]));
+  }
+
+  it('a token minted before the restart still runs after it', async () => {
+    const base = await start(scriptedQuery([]));
+    const proposed = await command(base, `remove ${DEAD}`);
+    const card = proposed.find((row) => row.type === 'confirm')!;
+    const token = card.btns!.find((btn) => btn.cmd.startsWith('confirm '))!.cmd.split(' ')[1]!;
+
+    const fresh = await restart();
+    const after = await command(fresh, `confirm ${token}`);
+    expect(after.map((row) => row.type)).toEqual(['operator', 'receipt']);
+    expect(after[1]!.text).toBe(`retired ${DEAD}`);
+  });
+
+  it('still refuses a token nobody ever minted', async () => {
+    const base = await start(scriptedQuery([]));
+    await command(base, `remove ${DEAD}`);
+    const fresh = await restart();
+    const after = await command(fresh, 'confirm 00000000-0000-4000-8000-000000000000');
+    expect(after[1]!.type).toBe('refusal');
+  });
+
+  it('a token spent before the restart cannot be spent again after it', async () => {
+    const base = await start(scriptedQuery([]));
+    const proposed = await command(base, `remove ${DEAD}`);
+    const token = proposed.find((row) => row.type === 'confirm')!
+      .btns!.find((btn) => btn.cmd.startsWith('confirm '))!.cmd.split(' ')[1]!;
+    await command(base, `confirm ${token}`);
+
+    const fresh = await restart();
+    const again = await command(fresh, `confirm ${token}`);
+    expect(again[1]!.type).toBe('refusal');
+  });
+});
