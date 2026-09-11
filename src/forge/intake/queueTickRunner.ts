@@ -109,8 +109,16 @@ export class QueueTickRunner<T> {
   /** The message of the failure currently running, so a run of identical failures is
    *  recorded once rather than every fifteen seconds all night. */
   private failingWith: string | null = null;
-  private lastCompletionRowAt = 0;
+  /** When the last `queue.tick-error` row was written, 0 while no run of failures is
+   *  under way (null). Reset by a clean pass so a new run always records at once. */
+  private lastErrorRowAt: number | null = null;
+  /** Null until the first row. A zero sentinel is wrong here: a clock that starts at
+   *  zero would read every tick as 'no row yet'. */
+  private lastCompletionRowAt: number | null = null;
   private lastConsideredCount: number | null = null;
+  /** Whether the considered count has moved since the last row was written. Carried on
+   *  the next row rather than forcing one out of turn. */
+  private countMovedSinceRow = false;
   /** One pass at a time. Two overlapping passes over the same store double every hop. */
   private running = false;
   private current: Promise<void> | null = null;
@@ -134,9 +142,14 @@ export class QueueTickRunner<T> {
         return;
       }
       this.paused = false;
+      // Before the one-pass-at-a-time guard, deliberately. `cli.ts` passes the reply read
+      // here, and a queue pass that plans a ticket and runs a council routinely outlasts
+      // the fifteen second interval -- putting this behind the guard silently stopped
+      // reading replies for the whole of any real pass (/code-review high, 2026-09-11).
+      // It carries its own in-flight flag.
+      this.options.before?.();
       if (this.running) return;
       this.running = true;
-      this.options.before?.();
       const items = this.options.items();
       this.current = this.options.tick(items)
         .then(() => { this.onCompleted(items.length); })
@@ -229,20 +242,23 @@ export class QueueTickRunner<T> {
     this.lastOutcome = 'ok';
     this.lastError = null;
     this.failingWith = null;
+    this.lastErrorRowAt = null;
     this.tellBackoff(() => { this.options.backoff.onSuccess(); });
 
     // A held item writes no row of its own, by design. This is the row that proves the
-    // pass happened anyway -- rate limited so ten passes over one held item cannot
-    // flood the log, and written at once when the number of items changes, because a
-    // changed count is news and a repeated count is not.
+    // pass happened anyway. The ceiling is one row a minute and it binds unconditionally:
+    // exempting a changed count meant an ordinary busy queue, whose count moves every
+    // pass, wrote a row per tick forever -- the flood this ceiling exists to stop (two
+    // independent reviews, 2026-09-11). The row carries the count and whether it moved
+    // since the last row, so a change is still recorded, one minute later at worst.
     const countChanged = this.lastConsideredCount !== considered;
-    if (!countChanged && now - this.lastCompletionRowAt < this.completionEveryMs) {
-      this.lastConsideredCount = considered;
-      return;
-    }
     this.lastConsideredCount = considered;
+    if (countChanged) this.countMovedSinceRow = true;
+    if (this.lastCompletionRowAt !== null && now - this.lastCompletionRowAt < this.completionEveryMs) return;
+    const changed = this.countMovedSinceRow;
+    this.countMovedSinceRow = false;
     this.lastCompletionRowAt = now;
-    this.record({ event: 'queue.tick-complete', actor: 'queue', considered, at: now });
+    this.record({ event: 'queue.tick-complete', actor: 'queue', considered, changed, at: now });
   }
 
   private onFailed(error: unknown): void {
@@ -254,11 +270,16 @@ export class QueueTickRunner<T> {
     this.lastFailedAt = now;
     this.lastOutcome = 'failed';
     this.lastError = message;
-    // At most one row per run of consecutive identical failures. The backoff still sees
-    // every one of them, so its own pause still fires on the third.
-    const first = this.failingWith !== message;
+    // At most one row per run of consecutive identical failures -- and, since an error
+    // carrying a retry count, a port or a path is a different string every tick and
+    // defeated that outright (/critique and /code-review, 2026-09-11), never more than
+    // one row a minute whatever the message says. The backoff still sees every failure,
+    // so its own pause still fires on the third.
+    const changed = this.failingWith !== message;
     this.failingWith = message;
-    if (first) {
+    const lastRowAt = this.lastErrorRowAt;
+    if (changed && (lastRowAt === null || now - lastRowAt >= this.completionEveryMs)) {
+      this.lastErrorRowAt = now;
       this.record({ event: 'queue.tick-error', actor: 'queue', message });
     }
     this.tellBackoff(() => { this.options.backoff.onError(message); });

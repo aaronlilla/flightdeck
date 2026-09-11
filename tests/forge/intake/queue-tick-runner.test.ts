@@ -91,6 +91,32 @@ describe('QueueTickRunner: a pass that throws does not end the loop (item 1)', (
     expect(calls).toBe(1);
   });
 
+  it('still runs the pre-pass read while a pass is in flight', async () => {
+    // `cli.ts` passes the Slack reply read here. A queue pass that plans a ticket and
+    // runs a council outlasts the fifteen second interval, so putting this behind the
+    // one-pass-at-a-time guard stopped reading replies for the whole of any real pass
+    // (/code-review high, 2026-09-11). It carries its own in-flight flag.
+    const journal = fakeJournal();
+    const clock = fakeClock();
+    let reads = 0;
+    const runner = new QueueTickRunner<string>({
+      tick: () => new Promise<void>(() => {}),
+      items: () => [],
+      journal,
+      backoff: new QueueTickBackoff(journal, { now: clock.now }),
+      intervalMs: INTERVAL,
+      now: clock.now,
+      before: () => { reads += 1; },
+    });
+
+    for (let i = 0; i < 4; i += 1) {
+      runner.tick();
+      clock.advance(INTERVAL);
+    }
+
+    expect(reads).toBe(4);
+  });
+
   it('records at most one row per run of consecutive identical failures', async () => {
     const journal = fakeJournal();
     const clock = fakeClock();
@@ -114,7 +140,7 @@ describe('QueueTickRunner: a pass that throws does not end the loop (item 1)', (
     expect(journal.events.filter((row) => row['event'] === 'queue.tick-error')).toHaveLength(1);
   });
 
-  it('starts a new run of failures when the message changes', async () => {
+  it('records a changed message on the next minute, never on the next tick', async () => {
     const journal = fakeJournal();
     const clock = fakeClock();
     let message = 'cannot reach Jira';
@@ -129,10 +155,22 @@ describe('QueueTickRunner: a pass that throws does not end the loop (item 1)', (
 
     runner.tick();
     await runner.whenIdle();
+
+    // An error carrying a retry count, a port or a path is a different string every
+    // tick. Writing on every change was the same flood wearing a different hat.
+    message = 'connect ETIMEDOUT 10.0.0.7:443';
+    for (let i = 0; i < 3; i += 1) {
+      clock.advance(INTERVAL);
+      message = `connect ETIMEDOUT 10.0.0.7:${443 + i}`;
+      runner.tick();
+      await runner.whenIdle();
+    }
+    expect(journal.events.map((row) => row['message'])).toEqual(['cannot reach Jira']);
+
+    clock.advance(60_000);
     message = 'the worktree is gone';
     runner.tick();
     await runner.whenIdle();
-
     expect(journal.events.map((row) => row['message'])).toEqual([
       'cannot reach Jira', 'the worktree is gone',
     ]);
@@ -393,7 +431,7 @@ describe('QueueTickRunner: a held item still proves the loop ran (item 3)', () =
     expect(complete[0]).toMatchObject({ event: 'queue.tick-complete', actor: 'queue', considered: 1 });
   });
 
-  it('records at once when the number of items considered changes', async () => {
+  it('records a changed item count on the next row, and never more than one row a minute', async () => {
     const store = heldStore();
     const queueEvents: Record<string, unknown>[] = [];
     const deps = buildDeps(store, queueEvents);
@@ -416,12 +454,50 @@ describe('QueueTickRunner: a held item still proves the loop ran (item 3)', () =
     expect(journal.events.filter((row) => row['event'] === 'queue.tick-complete')).toHaveLength(1);
 
     appendHeld(store, 'q2', 'A-2');
+    // The count moves here. The ceiling still binds: exempting a changed count meant an
+    // ordinary busy queue wrote a row every single tick (two reviews, 2026-09-11).
     clock.advance(INTERVAL);
+    runner.tick();
+    await runner.whenIdle();
+    expect(journal.events.filter((row) => row['event'] === 'queue.tick-complete')).toHaveLength(1);
+
+    clock.advance(60_000);
     runner.tick();
     await runner.whenIdle();
 
     const complete = journal.events.filter((row) => row['event'] === 'queue.tick-complete');
     expect(complete).toHaveLength(2);
-    expect(complete[1]).toMatchObject({ considered: 2 });
+    expect(complete[1]).toMatchObject({ considered: 2, changed: true });
+  });
+
+  it('writes one row a minute even while the item count moves every single pass', async () => {
+    const store = heldStore();
+    const queueEvents: Record<string, unknown>[] = [];
+    const deps = buildDeps(store, queueEvents);
+    const journal = fakeJournal();
+    const clock = fakeClock();
+    let extra = false;
+    const runner = new QueueTickRunner<QueueItem>({
+      tick: (items) => runQueueTick(deps, items).then(() => undefined),
+      // One item, then two, then one again: the oscillation an active queue produces as
+      // items are added and drain.
+      items: () => (extra ? [...store.all(), store.all()[0]!] : store.all()),
+      journal,
+      backoff: new QueueTickBackoff(journal, { now: clock.now }),
+      intervalMs: INTERVAL,
+      now: clock.now,
+    });
+
+    for (let i = 0; i < 10; i += 1) {
+      extra = i % 2 === 1;
+      runner.tick();
+      await runner.whenIdle();
+      clock.advance(INTERVAL);
+    }
+
+    // Ten passes span two and a half minutes.
+    const complete = journal.events.filter((row) => row['event'] === 'queue.tick-complete');
+    expect(complete.length).toBeLessThanOrEqual(3);
+    expect(complete.length).toBeGreaterThanOrEqual(1);
   });
 });

@@ -270,6 +270,16 @@ export const FORGE_EVENT_NAMES = [
   // `queue.tick-error` for a worker tick that threw before any item advanced.
   'queue.planning', 'queue.planned', 'queue.launched', 'queue.parked', 'queue.failed',
   'queue.review', 'queue.tick-error',
+  // R-81: `queue.tick-complete` is the row a pass writes about itself, at most once a
+  // minute, carrying how many items it considered. It exists because a held item
+  // deliberately writes no row of its own, so without this the journal cannot tell a
+  // quiet loop from a dead one. Missing from this union it would be quarantined by
+  // `replayEvents` and counted as a torn tail whenever it was the last line.
+  'queue.tick-complete',
+  // `narration.capped` (`console/narrate-store.ts`) predates R-81 and was missing here
+  // for the same reason: the detector below only read `src/forge/*.ts` and never
+  // descended into `console/`, `intake/` or `council/`. It walks the tree now.
+  'narration.capped',
   // R-11 part 2: the Jira watcher bridge's own tick row (`intake/watcherWire.ts`) --
   // `watcher.poll` once per poll that added, sent, or closed at least one item, and
   // `watcher.tick-error` for a tick that threw before any of those.
