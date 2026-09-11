@@ -50,6 +50,10 @@ export interface LanePr {
    *  unset means the board does not know when it merged (or that it has not), never a
    *  guessed time. */
   mergedAt?: number | null;
+  /** R-61 item 2: the raw `gh` fact `state === 'CLOSED'` -- a PR closed without merging
+   *  (abandoned work). Never inferred from `merged` being false; `merged: false,
+   *  closed: false` is a PR still genuinely open. */
+  closed?: boolean | null;
 }
 
 /** One lane's record in order, as a person would tell it: what it is, what was done,

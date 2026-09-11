@@ -16,6 +16,15 @@ export function retiredPath(forgeHomeDir: string): string {
 
 const FINISHED_PROBE_STATES = new Set<Lane['state']>(['done', 'unverified', 'exhausted']);
 
+/** Whether a run is over by the journal's own definition -- shared with R-61 item 1's
+ *  final PR re-check, which must only ever fire for a lane that is actually finished,
+ *  never one still running/parked/blocked. */
+export function laneFinished(lane: Lane): boolean {
+  const finishedProbe = lane.kind === 'probe' && FINISHED_PROBE_STATES.has(lane.state);
+  return lane.state === 'done' || lane.state === 'merged' || lane.state === 'killed'
+    || lane.state === 'unverified' || finishedProbe;
+}
+
 /** Whether a lane is a candidate for `POST /run/:id/retire` or `POST /retire-finished`:
  *  done, merged, killed or unverified outright (a finished probe counts on `exhausted`
  *  too), with no unmerged PR still open on it and no live process behind it. A lane
@@ -30,11 +39,12 @@ const FINISHED_PROBE_STATES = new Set<Lane['state']>(['done', 'unverified', 'exh
  *  `exhausted` stays probe-only, since Kill and Reopen both still reach a non-probe
  *  exhausted run. */
 export function retireEligible(lane: Lane): boolean {
-  const finishedProbe = lane.kind === 'probe' && FINISHED_PROBE_STATES.has(lane.state);
-  const finished = lane.state === 'done' || lane.state === 'merged' || lane.state === 'killed'
-    || lane.state === 'unverified' || finishedProbe;
-  if (!finished) return false;
-  if (lane.pr && !lane.pr.merged) return false;
+  if (!laneFinished(lane)) return false;
+  // R-61 item 2: a PR closed without merging (abandoned work, `gh`'s own `state ===
+  // 'CLOSED'`) is finished-with-a-verdict too, exactly like a merged one -- only a
+  // genuinely still-open PR (`merged: false`, `closed` not true) keeps the lane on
+  // the board.
+  if (lane.pr && !lane.pr.merged && !lane.pr.closed) return false;
   if (lane.heart) return false;
   return true;
 }

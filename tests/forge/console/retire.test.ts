@@ -77,6 +77,21 @@ describe('retireEligible', () => {
   it('a lane with a live process is never eligible, whatever its state says', () => {
     expect(retireEligible(lane({ state: 'done', heart: true }))).toBe(false);
   });
+
+  // Item 2 (R-61): a PR closed without merging (abandoned work) is a dead lane with no
+  // future, same as one that merged -- `retireEligible` used to require
+  // `lane.pr.merged === true`, which a closed-unmerged PR can never satisfy, so it was
+  // stuck exactly like a stale-cache lane, forever. `closed` is the raw `gh` fact
+  // (`state === 'CLOSED'`), never inferred from the absence of `merged`.
+  it('a done lane whose PR closed without merging is eligible to retire', () => {
+    const withClosedPr = lane({ state: 'done', pr: { no: 80, url: 'x', files: 0, add: 0, del: 0, draft: false, merged: false, closed: true } });
+    expect(retireEligible(withClosedPr)).toBe(true);
+  });
+
+  it('a done lane with a genuinely still-open PR (not merged, not closed) stays on the board', () => {
+    const withOpenPr = lane({ state: 'done', pr: { no: 81, url: 'x', files: 0, add: 0, del: 0, draft: false, merged: false, closed: false } });
+    expect(retireEligible(withOpenPr)).toBe(false);
+  });
 });
 
 describe('retireRun / unretireRun / readRetired', () => {

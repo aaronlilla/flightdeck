@@ -112,13 +112,33 @@ describe('computeQueuePr', () => {
     expect(result.pr).toEqual({
       ...basic, checks: 'success', merged: false, title: 'add the merge chip', verdict: 'PASS WITH NOTES', mergedAt: null,
     });
-    expect(result.cache['queue-BBZ-96']).toEqual({ pr: result.pr, at: 1_000 });
+    expect(result.cache['queue-BBZ-96']).toEqual({ pr: result.pr, at: 1_000, repo: 'o/n' });
   });
 
   it('item 7: leaves the basic PR fields alone when the detail lookup finds nothing', async () => {
     const detailLookup: GhDetailLookupFn = async () => undefined;
     const result = await computeQueuePr('queue-BBZ-96', 'o/n', basic, {}, 1_000, detailLookup);
     expect(result.pr).toEqual(basic);
+  });
+
+  // R-61 item 2: `gh`'s raw `closed` fact (state === 'CLOSED', no merge) rides along on
+  // the same cached PR the merged flag already does, so `retireEligible` can tell a
+  // closed-unmerged PR apart from one still genuinely open.
+  it('R-61 item 2: carries the raw gh closed fact through to the cached PR', async () => {
+    const detailLookup: GhDetailLookupFn = async () => (
+      { headSha: 'deadbeef', isDraft: false, merged: false, title: 'abandoned work', checks: 'failure', closed: true }
+    );
+    const result = await computeQueuePr('queue-brief-x', 'o/n', basic, {}, 1_000, detailLookup);
+    expect(result.pr.merged).toBe(false);
+    expect(result.pr.closed).toBe(true);
+  });
+
+  it('R-61 item 1: writes the repo alongside the PR fact, for a lane with no queue item to read it from later', async () => {
+    const detailLookup: GhDetailLookupFn = async () => (
+      { headSha: 'deadbeef', isDraft: false, merged: true, title: 'shipped', checks: 'success', mergedAt: 2_000 }
+    );
+    const result = await computeQueuePr('queue-brief-y', 'aaronlilla/flightdeck', basic, {}, 1_000, detailLookup);
+    expect(result.cache['queue-brief-y']).toMatchObject({ repo: 'aaronlilla/flightdeck' });
   });
 });
 
@@ -137,7 +157,7 @@ describe('computeBranchPr', () => {
       no: 39, url: 'https://github.com/o/n/pull/39', draft: true, merged: false,
       title: 'dedupe warden.health on an open unregistered trip', mergedAt: null,
     });
-    expect(result.cache['S-b9d39bae548707e0']).toEqual({ pr: result.pr, at: 1_000 });
+    expect(result.cache['S-b9d39bae548707e0']).toEqual({ pr: result.pr, at: 1_000, repo: 'o/n' });
   });
 
   it('item 11: finds an already-merged PR too, off mergedAt', async () => {

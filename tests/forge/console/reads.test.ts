@@ -722,6 +722,201 @@ describe('ConsoleReads.lanesResponse: title and sourceUrl', () => {
     expect(still.state).toBe('parked');
     expect(still.reason).toBe('refused: checks are failure on head abc1234, not green.');
   });
+
+  // R-61 item 1: `scheduleQueuePrRefresh`/`scheduleBranchPrDiscovery` are gated on the
+  // run's queue item still being in the active queue log -- the moment it is archived
+  // (removed), `queueItem` is permanently undefined and no code path ever re-checks that
+  // lane's PR again, freezing whatever was last cached. A finished lane with a known PR
+  // number and a stale, cached `merged: false` gets exactly one final re-check sourced
+  // from the cache's own last-known repo/PR, never a live queueItem.
+  it('R-61 item 1: a finished lane whose queue item has been archived still gets one final PR re-check', async () => {
+    const forgeHomeDir = tempDir('console-reads-');
+    // No queue item at all for this run -- `queueStore.all().find(...)` answers
+    // undefined, simulating the item having aged out of the active queue log.
+    const queueStore = new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl'));
+
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'queue-brief-archived-1', actor: 'runner' });
+    journal.append({ event: 'run.finished', run: 'queue-brief-archived-1', actor: 'runner', verdict: 'done' });
+    journal.close();
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put('queue-brief-archived-1', { column: 'archived-1' });
+
+    const { writePrCache, prCachePath } = await import('../../../src/forge/console/pr.js');
+    writePrCache(prCachePath(forgeHomeDir), {
+      'queue-brief-archived-1': {
+        pr: { no: 80, url: 'https://github.com/aaronlilla/flightdeck/pull/80', draft: false, merged: false },
+        // Well past PR_CACHE_TTL_MS (60s) -- old and frozen, exactly what an archived
+        // lane's last-known fact looks like.
+        at: Date.now() - 10 * 60_000,
+        repo: 'aaronlilla/flightdeck',
+      },
+    });
+
+    let ghCalls = 0;
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore, jiraSite: null,
+      ghDetailLookup: async (repo, pr) => {
+        ghCalls += 1;
+        expect(repo).toBe('aaronlilla/flightdeck');
+        expect(pr).toBe(80);
+        return { headSha: 'deadbeef', isDraft: false, merged: true, title: 'shipped', checks: 'success', mergedAt: 1_000 };
+      },
+    });
+
+    // No queue item present at read time -- confirmed by the falsifier the brief calls
+    // out: red on the unmodified gate, because the fake `gh` answer never gets consulted
+    // when the refresh is gated on a queue item that no longer exists.
+    const before = reads.lanesResponse().lanes[0]!;
+    expect(before.pr?.merged).toBe(false);
+
+    const server = reads as unknown as { settlePrRefreshes(): Promise<void> };
+    await server.settlePrRefreshes();
+
+    const after = reads.lanesResponse().lanes[0]!;
+    expect(after.pr?.merged).toBe(true);
+    expect(ghCalls).toBe(1);
+
+    // Terminal, not a perpetual poll: another finished poll past the same stale TTL
+    // must not fire a second `gh` call now that the lane has its answer.
+    reads.lanesResponse();
+    await server.settlePrRefreshes();
+    expect(ghCalls).toBe(1);
+  });
+
+  // /critique (2026-09-10): every cache writer here reads the whole file at task start
+  // and writes the whole thing back after `gh` resolves -- a sibling task for a
+  // DIFFERENT lane that reads-then-writes while this one's `gh` call is still pending
+  // must not silently revert this lane's `finalCheckAt` once it lands.
+  it('R-61 item 1: a sibling cache write landing mid-await does not revert this lane\'s finalCheckAt', async () => {
+    const forgeHomeDir = tempDir('console-reads-');
+    const queueStore = new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl'));
+
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'queue-brief-archived-race', actor: 'runner' });
+    journal.append({ event: 'run.finished', run: 'queue-brief-archived-race', actor: 'runner', verdict: 'done' });
+    journal.close();
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put('queue-brief-archived-race', { column: 'archived-race' });
+
+    const { writePrCache, readPrCache, prCachePath } = await import('../../../src/forge/console/pr.js');
+    const cachePath = prCachePath(forgeHomeDir);
+    writePrCache(cachePath, {
+      'queue-brief-archived-race': {
+        pr: { no: 90, url: 'https://github.com/aaronlilla/flightdeck/pull/90', draft: false, merged: false },
+        at: Date.now() - 10 * 60_000,
+        repo: 'aaronlilla/flightdeck',
+      },
+    });
+
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore, jiraSite: null,
+      ghDetailLookup: async () => {
+        // A sibling task for a different lane writes the whole cache file -- captured
+        // at a point in time before this lane's own re-check has resolved -- while this
+        // one's `gh` call is still pending.
+        const sibling = readPrCache(cachePath);
+        writePrCache(cachePath, {
+          ...sibling,
+          'some-other-lane': { pr: { no: 1, url: 'x', draft: false, merged: true }, at: Date.now() },
+        });
+        return { headSha: 'deadbeef', isDraft: false, merged: true, title: 'shipped', checks: 'success', mergedAt: 1_000 };
+      },
+    });
+
+    reads.lanesResponse();
+    const server = reads as unknown as { settlePrRefreshes(): Promise<void> };
+    await server.settlePrRefreshes();
+
+    const cache = readPrCache(cachePath);
+    expect(cache['queue-brief-archived-race']?.pr?.merged).toBe(true);
+    expect(cache['queue-brief-archived-race']?.finalCheckAt).toBeDefined();
+    expect(cache['some-other-lane']).toBeDefined();
+  });
+
+  // Code review (2026-09-10): `GET /run/:id/pr` called `computeRunPr` unconditionally
+  // first. For a queue-sourced, archived lane (no chain packet, ever), `computeRunPr`'s
+  // only answer once TTL passes is a destructive `{ pr: null, at }` overwrite that drops
+  // `repo`/`closed`/`finalCheckAt` -- silently undoing item 1's final re-check the very
+  // next time an operator opens the PR panel for that lane.
+  it('R-61 item 1: GET /run/:id/pr does not destroy an archived lane\'s resolved PR cache row', async () => {
+    const forgeHomeDir = tempDir('console-reads-');
+    const queueStore = new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl'));
+
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'queue-brief-resolved-1', actor: 'runner' });
+    journal.append({ event: 'run.finished', run: 'queue-brief-resolved-1', actor: 'runner', verdict: 'done' });
+    journal.close();
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put('queue-brief-resolved-1', { column: 'resolved-1' });
+
+    const { writePrCache, readPrCache, prCachePath } = await import('../../../src/forge/console/pr.js');
+    const cachePath = prCachePath(forgeHomeDir);
+    // Already resolved by a prior final re-check (item 1): merged, repo captured,
+    // finalCheckAt stamped -- but stale past TTL, exactly the state an operator would
+    // find days later when opening the PR panel.
+    writePrCache(cachePath, {
+      'queue-brief-resolved-1': {
+        pr: { no: 77, url: 'https://github.com/aaronlilla/flightdeck/pull/77', draft: true, merged: true, mergedAt: 1_000 },
+        at: Date.now() - 10 * 60_000,
+        repo: 'aaronlilla/flightdeck',
+        finalCheckAt: Date.now() - 10 * 60_000,
+      },
+    });
+
+    let ghCalls = 0;
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore, jiraSite: null,
+      ghDetailLookup: async () => {
+        ghCalls += 1;
+        return { headSha: 'deadbeef', isDraft: true, merged: true, title: 'shipped', checks: 'success', mergedAt: 1_000 };
+      },
+    });
+
+    const server = reads as unknown as { runPrResponse(run: string): Promise<{ pr: { merged?: boolean | null } | null }> };
+    const result = await server.runPrResponse('queue-brief-resolved-1');
+    expect(result.pr?.merged).toBe(true);
+
+    const cacheAfter = readPrCache(cachePath);
+    expect(cacheAfter['queue-brief-resolved-1']?.pr?.merged).toBe(true);
+    expect(cacheAfter['queue-brief-resolved-1']?.repo).toBe('aaronlilla/flightdeck');
+    expect(ghCalls).toBe(1);
+  });
+
+  it('R-61 item 1: a finished, archived lane with no PR number at all triggers no final re-check', async () => {
+    const forgeHomeDir = tempDir('console-reads-');
+    const queueStore = new QueueStore(join(forgeHomeDir, 'console', 'queue.jsonl'));
+
+    const journalPath = join(forgeHomeDir, 'fleet.jsonl');
+    const journal = new Journal(journalPath);
+    journal.append({ event: 'run.started', run: 'queue-brief-archived-2', actor: 'runner' });
+    journal.append({ event: 'run.finished', run: 'queue-brief-archived-2', actor: 'runner', verdict: 'done' });
+    journal.close();
+
+    const lanes = new Lanes(join(forgeHomeDir, 'lanes'));
+    lanes.put('queue-brief-archived-2', { column: 'archived-2' });
+
+    let ghCalls = 0;
+    const reads = new ConsoleReads({
+      forgeHomeDir, journalPath, lanes, registry: new Registry(join(forgeHomeDir, 'registry')),
+      inbox: new Inbox(join(forgeHomeDir, 'inbox')), queueStore, jiraSite: null,
+      ghDetailLookup: async () => { ghCalls += 1; return undefined; },
+    });
+
+    reads.lanesResponse();
+    const server = reads as unknown as { settlePrRefreshes(): Promise<void> };
+    await server.settlePrRefreshes();
+    expect(ghCalls).toBe(0);
+  });
 });
 
 describe('ConsoleReads.runSummaryResponse / runRecheckResponse (2026-09-07)', () => {
