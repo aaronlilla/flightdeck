@@ -31,6 +31,12 @@ export interface NeedOption {
 
 export interface Need {
   kind: 'blocker' | 'confirm' | 'lane';
+  /** This need's own id, unique across kinds. `askKey` alone is not: a card uses its
+   *  own key or its message key, a lane uses the inbox ask key, and the two id spaces
+   *  are not namespaced against each other. Everything the strip remembers about a
+   *  card -- which one is on screen, which is out with a teammate, which has a command
+   *  in the air -- is keyed on this, never on `askKey`. */
+  uid: string;
   /** The lane the command is about, for the page's own topic tracking. */
   id: string;
   key: string;
@@ -92,9 +98,10 @@ export function buildNeeds(lanes: Lane[], cards: Message[], _now?: number): Need
   for (const card of cards) {
     if (card.type !== 'blocker' && card.type !== 'confirm') continue;
     if (card.resolved) continue;
-    const options: NeedOption[] = (card.btns ?? []).map((button) => ({ label: button.label, cmd: button.cmd }));
+    const options: NeedOption[] = (card.btns ?? []).filter((button) => button.label.trim().length > 0).map((button) => ({ label: button.label, cmd: button.cmd }));
     needs.push({
       kind: card.type,
+      uid: `card:${card.k}`,
       id: card.lane ?? card.source,
       // The kicker IS the head for a card ("Blocked · NWR-178"); repeating the headline
       // in both lines read as a stutter in the 2026-09-11 screenshot.
@@ -118,11 +125,12 @@ export function buildNeeds(lanes: Lane[], cards: Message[], _now?: number): Need
     const opts = recommendedFirst(question.opts, question.recommended);
     needs.push({
       kind: 'lane',
+      uid: `lane:${lane.id}:${question.key}`,
       id: lane.id,
       key: lane.ticket ?? '',
       title: lane.title?.trim() || head.main,
       line: question.text,
-      options: opts.map((option) => ({ label: option, cmd: `answer ${question.key} ${option}` })),
+      options: opts.filter((option) => option.trim().length > 0).map((option) => ({ label: option, cmd: `answer ${question.key} ${option}` })),
       askKey: question.key,
       askedAt: question.askedAt,
       evidence: laneEvidence(lane),
@@ -154,59 +162,88 @@ interface PassState {
 }
 
 export function NeedsYou({ items, now, onCommand }: NeedsYouProps): JSX.Element {
-  const [index, setIndex] = useState(0);
+  // The card on screen is tracked by its OWN id, never by its position. A blocker
+  // arriving on a poll sorts to the front and shifts every later card down a slot; with
+  // a position, the reader's next keypress would answer whatever slid underneath them
+  // (found by the 2026-09-11 critique).
+  const [currentId, setCurrentId] = useState<string | null>(null);
   const [pending, setPending] = useState(0);
   const [passes, setPasses] = useState<Record<string, PassState>>({});
   const stripRef = useRef<HTMLElement | null>(null);
+  /** Ask ids whose command is in the air, so a held key or a double click cannot post
+   *  the same answer twice or skip the card behind it. */
+  const inFlight = useRef<Set<string>>(new Set());
 
   const total = items.length;
-  const at = Math.min(index, Math.max(total - 1, 0));
+  const found = currentId === null ? -1 : items.findIndex((item) => item.uid === currentId);
+  // The tracked card is gone (answered, or the server closed it): fall back to the top
+  // of the list, which is the worst thing still waiting.
+  const at = found >= 0 ? found : 0;
   const need = items[at];
 
+  const goTo = (next: number): void => {
+    const target = items[Math.max(0, Math.min(total - 1, next))];
+    setCurrentId(target ? target.uid : null);
+  };
+
   const post = (target: Need, command: string): void => {
+    if (inFlight.current.has(target.uid)) return;
+    inFlight.current.add(target.uid);
     setPending((n) => n + 1);
     Promise.resolve(onCommand(target.id, command))
       .catch(() => undefined)
-      .finally(() => setPending((n) => Math.max(0, n - 1)));
+      .finally(() => {
+        inFlight.current.delete(target.uid);
+        setPending((n) => Math.max(0, n - 1));
+      });
   };
 
   const answer = (target: Need, text: string): void => {
+    if (inFlight.current.has(target.uid)) return;
     const option = target.options.find((o) => o.label === text);
     post(target, option ? option.cmd : `answer ${target.askKey} ${text}`);
     // Optimistic (spec §10): move on now, do not wait for the server.
-    setIndex((i) => Math.min(i + 1, Math.max(total - 1, 0)));
+    goTo(items.findIndex((item) => item.uid === target.uid) + 1);
   };
 
   const pass = (target: Need, name: string): void => {
-    setPasses((map) => ({ ...map, [target.askKey]: { name, pending: true, error: null } }));
+    setPasses((map) => ({ ...map, [target.uid]: { name, pending: true, error: null } }));
     Promise.resolve(onCommand(target.id, `pass ${target.askKey} ${name}`))
-      .then(() => setPasses((map) => ({ ...map, [target.askKey]: { name, pending: false, error: null } })))
+      .then(() => setPasses((map) => ({ ...map, [target.uid]: { name, pending: false, error: null } })))
       .catch((error: unknown) => {
         const reason = error instanceof Error ? error.message : String(error);
         // Rolled back: the card goes back to its options with the reason and a Retry.
-        setPasses((map) => ({ ...map, [target.askKey]: { name, pending: false, error: reason } }));
+        setPasses((map) => ({ ...map, [target.uid]: { name, pending: false, error: reason } }));
       });
   };
 
   // Number keys answer the card on screen. Bound on the document rather than on the
   // strip, so a reader does not have to click the strip first -- and skipped whenever
-  // the keystroke belongs to something a person is typing in.
+  // the keystroke belongs to something a person is typing in. Held through a ref so the
+  // listener is subscribed once rather than on every clock tick.
+  const keyHandler = useRef<(event: KeyboardEvent) => void>(() => undefined);
+  keyHandler.current = (event: KeyboardEvent): void => {
+    if (!need || event.repeat || event.metaKey || event.ctrlKey || event.altKey) return;
+    const target = event.target as HTMLElement | null;
+    const tag = target?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target?.isContentEditable) return;
+    // A card that is out with a teammate, or already answered by one, shows no options;
+    // a key must not answer what the reader cannot see.
+    const state = passes[need.uid];
+    const passedTo = state?.error ? null : state?.name ?? need.passedTo;
+    if (passedTo !== null || need.answeredBy !== null) return;
+    const digit = Number(event.key);
+    if (!Number.isInteger(digit) || digit < 1 || digit > KEYED_OPTIONS) return;
+    const option = need.options[digit - 1];
+    if (!option) return;
+    event.preventDefault();
+    answer(need, option.label);
+  };
   useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (!need || event.metaKey || event.ctrlKey || event.altKey) return;
-      const target = event.target as HTMLElement | null;
-      const tag = target?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target?.isContentEditable) return;
-      const digit = Number(event.key);
-      if (!Number.isInteger(digit) || digit < 1 || digit > KEYED_OPTIONS) return;
-      const option = need.options[digit - 1];
-      if (!option) return;
-      event.preventDefault();
-      answer(need, option.label);
-    };
+    const onKeyDown = (event: KeyboardEvent): void => keyHandler.current(event);
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  });
+  }, []);
 
   if (!need) {
     return (
@@ -219,7 +256,7 @@ export function NeedsYou({ items, now, onCommand }: NeedsYouProps): JSX.Element 
     );
   }
 
-  const passState = passes[need.askKey];
+  const passState = passes[need.uid];
   const passedTo = passState?.error ? null : passState?.name ?? need.passedTo;
   const passPending = passState?.pending ?? false;
   const stamp = need.kind === 'lane' ? `asked ${durationWords(now - need.askedAt)} ago` : durationWords(now - need.askedAt);
@@ -239,7 +276,7 @@ export function NeedsYou({ items, now, onCommand }: NeedsYouProps): JSX.Element 
           <button
             type="button" data-testid="needs-you-prev" className="btn ghost" disabled={at === 0}
             style={{ fontSize: 'var(--fs-meta)', padding: '2px 8px' }}
-            onClick={() => setIndex((i) => Math.max(0, i - 1))}
+            onClick={() => goTo(at - 1)}
           >
             Previous
           </button>
@@ -247,14 +284,14 @@ export function NeedsYou({ items, now, onCommand }: NeedsYouProps): JSX.Element 
           <button
             type="button" data-testid="needs-you-next" className="btn ghost" disabled={at >= total - 1}
             style={{ fontSize: 'var(--fs-meta)', padding: '2px 8px' }}
-            onClick={() => setIndex((i) => Math.min(total - 1, i + 1))}
+            onClick={() => goTo(at + 1)}
           >
             Next
           </button>
         </div>
       </div>
       <QuestionCard
-        key={need.askKey}
+        key={need.uid}
         head={need.key && need.title !== need.key ? `${need.key} · ${need.title}` : need.title}
         stamp={stamp}
         text={need.line}
