@@ -170,3 +170,33 @@ describe('a confirm survives the console restarting under it', () => {
     expect(again[1]!.type).toBe('refusal');
   });
 });
+
+/**
+ * A confirm rebuilt after a restart must report the action's REAL outcome. The rebuilt
+ * path has no entry in the in-memory map, so an `outcome ?? 200` fallback answered
+ * `{ok: true}` for a kill the fleet had already refused.
+ */
+describe('a rebuilt confirm reports what the action actually did', () => {
+  const GONE = '2026-09-04-no-such-run';
+
+  it('answers the refusal, not a 200, when the rebuilt kill is refused', async () => {
+    const base = await start(scriptedQuery([]));
+    const propose = await fetch(`${base}/run/${GONE}/kill`, {
+      method: 'POST', headers: { 'x-forge-token': server!.token, 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(propose.status).toBe(202);
+    const { token } = (await propose.json()) as { token: string };
+
+    await server!.close();
+    server = undefined;
+    const fresh = await start(scriptedQuery([]));
+
+    // No such run, so the kill underneath this confirm is refused by the fleet.
+    const confirmed = await fetch(`${fresh}/run/${GONE}/kill`, {
+      method: 'POST', headers: { 'x-forge-token': server!.token, 'content-type': 'application/json' },
+      body: JSON.stringify({ confirm: token }),
+    });
+    expect(confirmed.status).not.toBe(200);
+  });
+});

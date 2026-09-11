@@ -361,8 +361,14 @@ const CONFIRM_MAX = 200;
 /**
  * The pending confirms that outlive the process, as one small JSON file rewritten whole.
  * Rewritten rather than appended so a spent token leaves no row to replay: the file IS
- * the set of tokens that may still be spent, which is what makes double-spend impossible
- * across a restart as well as within one.
+ * the set of tokens that may still be spent, so a token spent before a restart is gone
+ * after it.
+ *
+ * The guarantee is one-writer-at-a-time, not a lock: read-modify-write with two consoles
+ * live on the same forge home could lose a row or spend one twice. Nothing runs two --
+ * the port bind and the queue lock allow one console, and a cutover exits the old process
+ * before the supervisor starts the new one -- so the window is closed by the callers, not
+ * by this file. Say so rather than claim an atomicity it does not have.
  */
 class PendingConfirmStore {
   constructor(private readonly path: string) {}
@@ -386,7 +392,9 @@ class PendingConfirmStore {
   }
 
   put(row: PersistedConfirm): void {
-    this.write([...this.read().filter((r) => r.token !== row.token), row], row.at);
+    // Prune against the wall clock, never the incoming row's own stamp: a caller passing
+    // an older `at` must not move the TTL window every other row is measured against.
+    this.write([...this.read().filter((r) => r.token !== row.token), row], Date.now());
   }
 
   /** Reads a token AND spends it in one step, so the same token can never run twice. */
@@ -732,37 +740,45 @@ export class ConsoleWrites {
    * gone. Only the descriptor kinds above can be rebuilt; anything else was never
    * written to the durable store in the first place.
    */
-  private rebuild(row: PersistedConfirm): () => Promise<Message[]> {
+  private rebuild(row: PersistedConfirm): PendingConfirm {
     const { descriptor: d, source } = row;
-    if (d.kind === 'retire') {
-      return async () => {
-        const outcome = retireLane(d.laneId, true, this.retireDeps());
-        return [outcome.status === 200
-          ? receiptCard(source, outcome.body)
-          : refusalCard(source, outcome.body.error)];
-      };
-    }
-    return async () => {
-      const outcome = await killRun(d.laneId, d.reason, this.runActionsDeps());
-      const cards: Message[] = [outcome.status === 200
-        ? receiptCard(source, outcome.body as ActionResult)
-        : refusalCard(source, actionFailureText(outcome.body, `could not kill ${d.label}`))];
-      if (d.andRetire && outcome.status === 200) {
-        const retired = retireLane(d.laneId, true, this.retireDeps());
-        cards.push(retired.status === 200 ? receiptCard(source, retired.body) : refusalCard(source, retired.body.error));
-      }
-      return cards;
+    // The rebuilt action records its own `outcome` exactly as the closure path does, so a
+    // route confirming after a restart answers what the kill or the retire really did
+    // instead of falling through to a hard-coded 200.
+    const pending: PendingConfirm = {
+      blast: row.blast, descriptor: d,
+      run: async () => {
+        if (d.kind === 'retire') {
+          const outcome = retireLane(d.laneId, true, this.retireDeps());
+          pending.outcome = outcome;
+          return [outcome.status === 200
+            ? receiptCard(source, outcome.body)
+            : refusalCard(source, outcome.body.error)];
+        }
+        const outcome = await killRun(d.laneId, d.reason, this.runActionsDeps());
+        pending.outcome = outcome;
+        const cards: Message[] = [outcome.status === 200
+          ? receiptCard(source, outcome.body as ActionResult)
+          : refusalCard(source, actionFailureText(outcome.body, `could not kill ${d.label}`))];
+        if (d.andRetire && outcome.status === 200) {
+          const retired = retireLane(d.laneId, true, this.retireDeps());
+          pending.outcome = retired;
+          cards.push(retired.status === 200 ? receiptCard(source, retired.body) : refusalCard(source, retired.body.error));
+        }
+        return cards;
+      },
     };
+    return pending;
   }
 
   /** The pending action for a token, from this process or from the one before it. The
    *  lookup SPENDS the token either way, so no path can run the same confirm twice. */
-  private takeConfirm(token: string): (() => Promise<Message[]>) | undefined {
+  private takeConfirm(token: string): PendingConfirm | undefined {
     const live = this.pendingConfirms.get(token);
     if (live) {
       this.pendingConfirms.delete(token);
       this.durableConfirms.drop(token, Date.now());
-      return live.run;
+      return live;
     }
     const row = this.durableConfirms.take(token, Date.now());
     return row ? this.rebuild(row) : undefined;
@@ -787,12 +803,11 @@ export class ConsoleWrites {
   ): Promise<RouteOutcome> {
     const token = body?.['confirm'];
     if (typeof token === 'string') {
-      const live = this.pendingConfirms.get(token);
-      const run = this.takeConfirm(token);
-      if (!run) return { status: 409, body: { error: `nothing pending for ${token}` } };
-      const cards = await run();
+      const pending = this.takeConfirm(token);
+      if (!pending) return { status: 409, body: { error: `nothing pending for ${token}` } };
+      const cards = await pending.run();
       for (const card of cards) appendThread(card);
-      return live?.outcome ?? { status: 200, body: { ok: true, jid: null, message: cards[0]?.text ?? 'done', undoable: false } };
+      return pending.outcome ?? { status: 200, body: { ok: true, jid: null, message: cards[0]?.text ?? 'done', undoable: false } };
     }
     const pending: PendingConfirm = {
       blast,
@@ -845,9 +860,9 @@ export class ConsoleWrites {
         return [replyCard(source, 'cancelled')];
 
       case 'confirm': {
-        const run = this.takeConfirm(intent.token);
-        if (!run) return [refusalCard(source, `nothing pending for ${intent.token}`)];
-        return run();
+        const pending = this.takeConfirm(intent.token);
+        if (!pending) return [refusalCard(source, `nothing pending for ${intent.token}`)];
+        return pending.run();
       }
 
       case 'run-plan': {
