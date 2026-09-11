@@ -13,7 +13,7 @@
  * one level up: `Run plan` sends `run <token>`.
  */
 import { randomUUID } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { dirname, join } from 'node:path';
 
@@ -351,9 +351,11 @@ interface PersistedConfirm {
   descriptor: ConfirmDescriptor;
 }
 
-/** A pending confirm is stale after this long; the operator is not coming back to a card
- *  from yesterday, and an unbounded store is the bug this fix replaced, not a new one. */
-const CONFIRM_TTL_MS = 12 * 60 * 60_000;
+/** A pending confirm is stale after this long. Short on purpose: a card that survives a
+ *  restart also survives the board moving on underneath it, and the shorter the window the
+ *  less there is to move. The restart cadence is minutes, so this still covers many of
+ *  them; a card older than this is refused and the operator re-issues the action. */
+const CONFIRM_TTL_MS = 2 * 60 * 60_000;
 
 /** Newest-first hard ceiling, so a wedged proposer cannot grow the file without end. */
 const CONFIRM_MAX = 200;
@@ -388,7 +390,11 @@ class PendingConfirmStore {
   private write(rows: PersistedConfirm[], now: number): void {
     const live = rows.filter((row) => now - row.at < CONFIRM_TTL_MS).slice(-CONFIRM_MAX);
     mkdirSync(dirname(this.path), { recursive: true });
-    writeFileSync(this.path, JSON.stringify(live), 'utf8');
+    // Temp file then rename: the store is rewritten whole, so a torn write would lose
+    // EVERY pending confirm (read() treats unparseable as empty), not the one row.
+    const tmp = `${this.path}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(live), 'utf8');
+    renameSync(tmp, this.path);
   }
 
   put(row: PersistedConfirm): void {
@@ -760,10 +766,14 @@ export class ConsoleWrites {
         const cards: Message[] = [outcome.status === 200
           ? receiptCard(source, outcome.body as ActionResult)
           : refusalCard(source, actionFailureText(outcome.body, `could not kill ${d.label}`))];
-        if (d.andRetire && outcome.status === 200) {
+        if (d.andRetire) {
+          // "Kill and remove" is one instruction. A kill refused because the run already
+          // ended on its own removes the only obstacle to the remove -- skipping it there
+          // leaves the row on the board, which is the opposite of what was confirmed. The
+          // kill's own outcome stays the answer whenever the kill itself succeeded.
           const retired = retireLane(d.laneId, true, this.retireDeps());
-          pending.outcome = retired;
           cards.push(retired.status === 200 ? receiptCard(source, retired.body) : refusalCard(source, retired.body.error));
+          if (outcome.status !== 200 && retired.status === 200) pending.outcome = retired;
         }
         return cards;
       },

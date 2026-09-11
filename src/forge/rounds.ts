@@ -191,10 +191,17 @@ export function planRounds(input: RoundsInput): RoundsSheet {
       const sinceUpdate = now - item.updatedAt;
       if (!lane) {
         if (sinceUpdate > params.silentAfterMs) {
-          findings.push({
-            kind: 'dead-worker', action: 'relaunch', itemId: item.id, laneId: item.runKey, label,
-            why: `${item.state} for ${minutes(sinceUpdate)} with no run on the board`,
-          });
+          // The same brake the other two dead-worker branches carry. An item whose launch
+          // never registered a lane relaunched every round with nothing counting it, and
+          // it writes the very `rounds:` park rows the other branches budget against.
+          const prior = input.priorRelaunches?.(item.id) ?? 0;
+          const why = `${item.state} for ${minutes(sinceUpdate)} with no run on the board`;
+          findings.push(prior >= params.maxRelaunches
+            ? {
+              kind: 'dead-worker', action: 'judge', itemId: item.id, laneId: item.runKey, label,
+              why: `${why}; rounds already relaunched it ${prior} time${prior === 1 ? '' : 's'}, so the cause is not the launch`,
+            }
+            : { kind: 'dead-worker', action: 'relaunch', itemId: item.id, laneId: item.runKey, label, why });
         } else {
           healthy.push({ itemId: item.id, label, state: item.state, note: `${item.state} ${minutes(sinceUpdate)}, run not on the board yet` });
         }

@@ -200,3 +200,30 @@ describe('a rebuilt confirm reports what the action actually did', () => {
     expect(confirmed.status).not.toBe(200);
   });
 });
+
+/**
+ * "Kill and remove" is one instruction. Across a restart, the run ending on its own in
+ * between is the normal case, not a rare one -- and a lane that already ended cannot be
+ * killed (`killed` is not a kill-allowed state) while it CAN be removed. Skipping the
+ * remove there leaves the row on the board, the opposite of what was confirmed.
+ */
+describe('a rebuilt kill-and-remove still removes when the run ended on its own', () => {
+  it('removes the lane even though the kill half is refused', async () => {
+    const fake = scriptedQuery([{ tools: [{ tool: 'kill', input: { lane: DEAD, andRetire: true } }], reply: 'Kill and remove proposed.' }]);
+    const base = await start(fake);
+    const proposed = await command(base, 'kill and remove it', DEAD);
+    const token = proposed.find((row) => row.type === 'confirm')!
+      .btns!.find((btn) => btn.cmd.startsWith('confirm '))!.cmd.split(' ')[1]!;
+
+    await server!.close();
+    server = undefined;
+    // The run ends on its own while the card sits unclicked: now unkillable, still removeable.
+    const journal = new Journal(join(dir, 'fleet.jsonl'));
+    journal.append({ event: 'run.finished', run: DEAD, verdict: 'killed' });
+    journal.close();
+    const fresh = await start(scriptedQuery([]));
+
+    const after = await command(fresh, `confirm ${token}`);
+    expect(JSON.stringify(after)).toContain(`retired ${DEAD}`);
+  });
+});

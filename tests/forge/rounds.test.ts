@@ -278,3 +278,31 @@ describe('planRounds: a killed lane stops relaunching at the cap', () => {
     expect(f!.why).toContain('exhausted');
   });
 });
+
+/**
+ * The third branch: an item whose launch never registered a lane at all (bad brief,
+ * missing worktree) has no lane to read a state off, and it relaunched every round with
+ * no brake -- the same shape as the killed-lane loop, on the branch the first fix missed.
+ */
+describe('planRounds: an item with no run on the board stops relaunching at the cap', () => {
+  const finding = (prior: number) => planRounds({
+    now: NOW,
+    items: [item({ id: 'Q-nolane', ticket: 'BBZ-224', state: 'running', runKey: 'run-nolane', updatedAt: NOW - 90 * MIN })],
+    lanes: [],
+    blockers: [],
+    priorRelaunches: () => prior,
+  }).findings.find((f) => f.itemId === 'Q-nolane');
+
+  it('still relaunches one round below the cap', () => {
+    expect(finding(DEFAULT_ROUNDS_PARAMS.maxRelaunches - 1)).toMatchObject({
+      kind: 'dead-worker', action: 'relaunch',
+    });
+  });
+
+  it('hands it to the judge at the cap, naming the relaunch count', () => {
+    const f = finding(DEFAULT_ROUNDS_PARAMS.maxRelaunches);
+    expect(f).toMatchObject({ kind: 'dead-worker', action: 'judge' });
+    expect(f!.why).toContain(String(DEFAULT_ROUNDS_PARAMS.maxRelaunches));
+    expect(f!.why).toContain('no run on the board');
+  });
+});
