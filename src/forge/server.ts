@@ -47,7 +47,8 @@ import { runtimeVersion } from './launcher.js';
 import { readQueuePaused, writeQueuePaused } from './console/queue-pause.js';
 import { writeQueueWidth } from './console/queue-width.js';
 import type { Actuator, Reasoner } from './contracts.js';
-import { isAskStale, projectStaleness, type Inbox } from './inbox.js';
+import { isAskStale, ITEM_RUN_PREFIX, projectStaleness, type Inbox } from './inbox.js';
+import { answeredByOf } from './intake/interviewPlanner.js';
 import { appendOnce, Journal, JournalCache, type RangeReader } from './journal.js';
 import type { StuckSignal } from './liveness.js';
 import { WardenActuator } from './warden.js';
@@ -1329,6 +1330,20 @@ export class ForgeServer {
         // this always rides the cross-process inbox queue.
         await deliverAnswer(answered, parsed.key, parsed.answer);
         this.publish({ event: 'ask.answered', key: answered.key, runs: answered.runs });
+        // R-76 follow-up: only an interview ask names an item (`item:<id>`, minted by
+        // `interviewPlanner.ts`'s `askRunFor`) rather than a launched worker. That is the
+        // one case the Flow page needs to know an answer landed for -- an ordinary
+        // worker ask gets no row here.
+        const itemRun = answered.runs.find((run) => run.startsWith(ITEM_RUN_PREFIX));
+        if (itemRun !== undefined) {
+          appendOnce(this.journalPath, {
+            event: 'interview.answered',
+            itemId: itemRun.slice(ITEM_RUN_PREFIX.length),
+            ticket: answered.ticket,
+            askKey: answered.key,
+            answeredBy: answeredByOf(answered),
+          });
+        }
         json(response, 200, answered);
       })();
     });

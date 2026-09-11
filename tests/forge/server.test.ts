@@ -711,6 +711,81 @@ describe('POST /answer', () => {
     expect(response.status).toBe(413);
     expect(server.inbox.entry(entry.key)?.answer).toBeUndefined();
   });
+
+  function journalRows(): Record<string, unknown>[] {
+    return readFileSync(join(dir, 'fleet.jsonl'), 'utf8')
+      .split('\n')
+      .filter((line) => line.trim().length > 0)
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+  }
+
+  it('writes an interview.answered row when the run answered is an item: run', async () => {
+    const entry = server.inbox.raise({
+      run: 'item:Q-abc123', question: 'hide the row or show a zero?', ticket: 'BBZ-277',
+    });
+    const response = await fetch(`${base}/answer`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forge-token': server.token },
+      body: JSON.stringify({ key: entry.key, answer: 'hide' }),
+    });
+    expect(response.status).toBe(200);
+
+    const rows = journalRows().filter((row) => row['event'] === 'interview.answered');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!['itemId']).toBe('Q-abc123');
+    expect(rows[0]!['ticket']).toBe('BBZ-277');
+    expect(rows[0]!['askKey']).toBe(entry.key);
+    expect(rows[0]!['answeredBy']).toBe('the operator');
+  });
+
+  // Edge case: an answer for a run that is NOT an item: run (an ordinary worker ask) must
+  // never get an interview.answered row -- that name is reserved for the planning-hop
+  // interview, and a plain worker ask is a different thing entirely.
+  it('writes no interview.answered row when the run answered is not an item: run', async () => {
+    const entry = server.inbox.raise({ run: 'alpha', question: 'Which environment?' });
+    const response = await fetch(`${base}/answer`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forge-token': server.token },
+      body: JSON.stringify({ key: entry.key, answer: 'staging' }),
+    });
+    expect(response.status).toBe(200);
+    expect(journalRows().some((row) => row['event'] === 'interview.answered')).toBe(false);
+  });
+
+  // Edge case: an answer arriving for an ask that is already answered (a stale retry, or
+  // a person clicking twice) is rejected by `Inbox.answer`... except `Inbox.answer` does
+  // not itself refuse a re-answer -- it just overwrites. So a second POST still succeeds
+  // and still journals a second interview.answered row: each POST that lands is one
+  // answer event, whether or not it is the first for that key. Documented here rather
+  // than treated as a bug -- fixing double-answer semantics is a separate concern from
+  // journaling that an answer arrived.
+  it('a second answer to the same item: ask still writes its own interview.answered row', async () => {
+    const entry = server.inbox.raise({ run: 'item:Q-xyz', question: 'hide or zero?', ticket: 'BBZ-1' });
+    await fetch(`${base}/answer`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forge-token': server.token },
+      body: JSON.stringify({ key: entry.key, answer: 'hide' }),
+    });
+    await fetch(`${base}/answer`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forge-token': server.token },
+      body: JSON.stringify({ key: entry.key, answer: 'zero' }),
+    });
+    expect(journalRows().filter((row) => row['event'] === 'interview.answered')).toHaveLength(2);
+  });
+
+  // Edge case: an empty answer string is still a real answer (the operator explicitly
+  // chose "nothing"), not a no-op -- it must still be journaled.
+  it('an empty-string answer to an item: ask still writes an interview.answered row', async () => {
+    const entry = server.inbox.raise({ run: 'item:Q-empty', question: 'anything to add?', ticket: 'BBZ-2' });
+    const response = await fetch(`${base}/answer`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forge-token': server.token },
+      body: JSON.stringify({ key: entry.key, answer: '' }),
+    });
+    expect(response.status).toBe(200);
+    expect(journalRows().filter((row) => row['event'] === 'interview.answered')).toHaveLength(1);
+  });
 });
 
 describe('POST /stop', () => {
