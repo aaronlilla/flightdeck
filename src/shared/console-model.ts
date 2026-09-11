@@ -162,6 +162,13 @@ export interface LaneQuestion {
   /** Whether `opts` came from the worker's `forge_ask` call as-is, or got padded out
    *  by the reasoner (`completeAskOptions`, W1). */
   optionSource?: 'worker' | 'drafted';
+  /** Pass to… (spec `doctrine/design/operator-experience.md` §3, R-75 renders, R-76
+   *  writes): the teammate the question was handed to, when, the Slack thread `ts` that
+   *  carries it, and who answered. Absent or null means not passed. */
+  passedTo?: string | null;
+  passedAt?: number | null;
+  passedThread?: string | null;
+  answeredBy?: string | null;
 }
 
 /**
