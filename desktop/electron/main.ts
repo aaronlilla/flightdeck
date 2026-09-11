@@ -89,7 +89,27 @@ function spawnChild(command: string, args: string[], cwd: string, env: Record<st
       child.stdout?.on('data', (chunk: Buffer) => handler(chunk.toString()));
       child.stderr?.on('data', (chunk: Buffer) => handler(chunk.toString()));
     },
-    kill: () => child.kill(),
+    // Code-review finding, 2026-09-11: when `shell` wraps the command in
+    // cmd.exe (the .cmd/.bat case above), child.kill() only signals the
+    // cmd.exe wrapper -- the actual npm/node process it launched keeps
+    // running, orphaned and still bound to the port, blocking every later
+    // launch attempt. This is a tree-kill of a process THIS app itself
+    // spawned (the console-supervisor start/timeout path), not the
+    // confirm-restart's pid-only-never-/T rule, which governs killing a
+    // possibly-foreign process this app never started.
+    kill: () => {
+      if (shell && child.pid !== undefined) {
+        try {
+          execFileSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+        } catch {
+          // Already exited, or taskkill itself failed -- child.kill() below
+          // is the same best-effort fallback the non-shell path already is.
+          child.kill();
+        }
+      } else {
+        child.kill();
+      }
+    },
   };
 }
 

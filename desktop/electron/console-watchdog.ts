@@ -122,7 +122,20 @@ export function createConsoleWatchdog(deps: WatchdogDeps): ConsoleWatchdog {
     // (guards the revive attempt itself, not the routine probe).
     if (stopped || reviving || probing) return;
     probing = true;
-    const result = await deps.probe();
+    // Code-review finding, 2026-09-11: unlike `goneAndRevive`'s own
+    // try/catch around `deps.revive()` two lines below in this diff, a
+    // rejection from `deps.probe()` (e.g. a malformed FORGE_CONSOLE_ORIGIN
+    // throwing inside probeHealth()'s default-port argument) left `probing`
+    // stuck true forever -- every future tick() no-ops at the guard above,
+    // silently wedging the watchdog with no log and no recovery.
+    let result: HealthProbeResult;
+    try {
+      result = await deps.probe();
+    } catch (error) {
+      probing = false;
+      deps.onLog(`probe failed: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
     probing = false;
     if (stopped || reviving) return;
     if (result.health === 'up-healthy') {

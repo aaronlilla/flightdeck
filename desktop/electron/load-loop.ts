@@ -79,7 +79,20 @@ export function createLoadLoop(deps: LoadLoopDeps): LoadLoop {
     // probe returns, each starting its own overlapping `probeHealth()` call.
     // Setting it here, before the probe even starts, closes that window.
     awaitingResponse = true;
-    const result = await deps.probe();
+    // Code-review finding, 2026-09-11: a rejection from deps.probe() (e.g.
+    // consoleOrigin() throwing synchronously on a malformed
+    // FORGE_CONSOLE_ORIGIN inside probeHealth()'s default-port argument) left
+    // awaitingResponse stuck true forever -- every future tick() returned
+    // immediately at the top guard, silently freezing the status window with
+    // no log and no recovery short of an app restart.
+    let result;
+    try {
+      result = await deps.probe();
+    } catch {
+      awaitingResponse = false;
+      deps.onStatus(STATUS_NOT_SERVING);
+      return;
+    }
     if (stopped) { awaitingResponse = false; return; }
     if (result.health !== 'up-healthy') {
       awaitingResponse = false;
@@ -90,7 +103,15 @@ export function createLoadLoop(deps: LoadLoopDeps): LoadLoop {
     // probe again until this navigation resolves) until reportMainFrameStatus
     // or reportFailLoad settles it.
     clearPoll();
-    await deps.loadURL();
+    try {
+      await deps.loadURL();
+    } catch {
+      // loadURL()'s promise rejects on a failed navigation (did-fail-load);
+      // reportFailLoad is the real recovery path (main.ts wires it to the
+      // webContents event), but a rejection here must never leave polling
+      // paused with nothing left to resume it.
+      backToStatusAndKeepPolling();
+    }
   }
 
   function backToStatusAndKeepPolling(): void {
