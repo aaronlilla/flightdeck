@@ -41,7 +41,10 @@ the R-74 to R-78 briefs build to. The goal paragraph in `../ROADMAP.md` outranks
 - The answer comes back on its own: flightdeck reads the Slack thread reply.
 - The graph is drawn with React Flow (xyflow).
 - First wave: the rail and the strip (R-75) with the interview and the Slack pass (R-76),
-  in parallel. The Flow page (R-74) is the second wave.
+  in parallel. The Flow page (R-74) with its manual stage gates (R-79) is the second wave.
+- Manual first: every stage is a button with an auto toggle, off by default (§9).
+- Frontend only: backend questions default to Joe, product questions to Jason, and a
+  backend-only ticket goes to the backend handoff instead of the interview (§9).
 
 ## 1. Screens
 
@@ -180,6 +183,42 @@ session the stall detector doubts is marked there before it is parked.
 A new Needs-you card raises a Windows toast from the desktop app. Nothing else ever does.
 Phone delivery is a later item.
 
+## 9. Manual first, automation later
+
+Aaron, 2026-09-11, on the re-sync and start button: "i highly doubt the internal process is
+actually how im envisioning it. these steps need to be manually triggered i think for the
+most part, and then maybe later we can automate the entire thing completely." What he
+needs to do today, in his words: "ingest jira, get 4 tickets loaded, get them planned out
+in a planning session, a goal created, the goal automatically loaded up into a new agent,
+goal finished, merged, pushed."
+
+So every stage of a row is a gate with a button, and the default is manual:
+
+| stage | button | what it does | auto later |
+| --- | --- | --- | --- |
+| Ingest | Pull tickets | reads Jira with the watcher's scope, loads up to the width (4 today), nothing else runs | the 30 s watcher |
+| Plan | Plan | runs the interview (§4); the row waits at Plan until every question is answered | on ingest |
+| Goal | Write goal | writes the brief from the answers; shows it in the evidence sheet | on last answer |
+| Launch | Launch agent | provisions the worktree and starts the worker on the brief | on goal written |
+| Work | none | the worker runs; the node shows step and context | |
+| Verify, PR, CI, Council | none | the gates run as today | |
+| Merge | Merge | merges through git (R-22) | allow-listed repos |
+| Deploy | none | OTA or rebuild verified as today | |
+| Handoff | Hand off | Jira comment, assign, transition | on merge |
+
+Each stage has an auto toggle beside its button, off by default, per board. A stage with
+auto on fires when the previous stage completes. Turning every toggle on is the fully
+automated pipeline; nothing else changes. The Flow header keeps the width stepper and one
+"Auto: N of 9" summary.
+
+**Frontend only (Aaron, 2026-09-11).** "right now i was just given the directive that i need
+to focus fully on the frontend, and defer all backend questions and implementation and
+issues to joe and jason." So: a ticket the interviewer judges backend-only is not planned
+here; it goes to the existing backend handoff (Joe) with the exact ask commented, and its
+row stops at Plan with "backend: handed to Joe". A backend question inside a frontend
+ticket is tagged `teammate` with Joe as the default name; a product question defaults to
+Jason. The strip's Pass to… keeps all four names.
+
 ## Program
 
 | id | stream | touches |
@@ -189,8 +228,10 @@ Phone delivery is a later item.
 | R-76 | interview and Slack pass | `planner.ts` two calls and scout, `inbox.ts` `passed` state, a Slack client (`src/forge/intake/slack.ts`): post on click, thread read-back |
 | R-77 | Machine wiring graph | `MachineView.tsx` |
 | R-78 | scrubber and push | Flow row scrubber, desktop toast |
+| R-79 | manual stage gates | a button and an auto toggle per stage on every row, default manual; Pull tickets, Plan, Write goal, Launch agent, Merge, Hand off; the backend-only route at Plan |
 
-R-75 and R-76 run first, in parallel; they touch disjoint files. R-74 follows.
+R-75 and R-76 run first, in parallel; they touch disjoint files. R-74 and R-79 follow
+together: the graph and its buttons are one page.
 
 The channel is `#fd-questions`, private, created by Aaron on 2026-09-11. R-76 needs a
 Slack app with a bot token carrying `chat:write`, `groups:history` and `groups:read` (the
