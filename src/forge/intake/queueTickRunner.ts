@@ -151,6 +151,31 @@ export class QueueTickRunner<T> {
     }
   };
 
+  /**
+   * Write one row, and never let the writing of it change what happened. A journal append
+   * that throws (a full disk, a handle closed under a shutdown) used to propagate out of
+   * `onCompleted`, land in the promise's own `.catch`, and report a clean pass as a tick
+   * failure -- a record that swallows itself and takes the truth with it. Found by
+   * `/code-review high`, 2026-09-11.
+   */
+  private record(row: Record<string, unknown>): void {
+    try {
+      this.options.journal.append(row);
+    } catch {
+      // Nothing durable can be written right now. The in-memory status this class serves
+      // on `/state` is the sensor that is left, and it is already correct.
+    }
+  }
+
+  /** Same reasoning for the backoff, which journals its own pause row. */
+  private tellBackoff(run: () => void): void {
+    try {
+      run();
+    } catch {
+      // The backoff's own bookkeeping is best effort; the pass itself already happened.
+    }
+  }
+
   /** Resolves once the pass in flight, if any, has finished. The shutdown path and any
    *  caller that must observe a pass it started await this rather than guessing at a
    *  timer. */
@@ -204,7 +229,7 @@ export class QueueTickRunner<T> {
     this.lastOutcome = 'ok';
     this.lastError = null;
     this.failingWith = null;
-    this.options.backoff.onSuccess();
+    this.tellBackoff(() => { this.options.backoff.onSuccess(); });
 
     // A held item writes no row of its own, by design. This is the row that proves the
     // pass happened anyway -- rate limited so ten passes over one held item cannot
@@ -217,9 +242,7 @@ export class QueueTickRunner<T> {
     }
     this.lastConsideredCount = considered;
     this.lastCompletionRowAt = now;
-    this.options.journal.append({
-      event: 'queue.tick-complete', actor: 'queue', considered, at: now,
-    });
+    this.record({ event: 'queue.tick-complete', actor: 'queue', considered, at: now });
   }
 
   private onFailed(error: unknown): void {
@@ -236,9 +259,9 @@ export class QueueTickRunner<T> {
     const first = this.failingWith !== message;
     this.failingWith = message;
     if (first) {
-      this.options.journal.append({ event: 'queue.tick-error', actor: 'queue', message });
+      this.record({ event: 'queue.tick-error', actor: 'queue', message });
     }
-    this.options.backoff.onError(message);
+    this.tellBackoff(() => { this.options.backoff.onError(message); });
   }
 }
 

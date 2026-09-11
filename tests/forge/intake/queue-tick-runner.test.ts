@@ -139,6 +139,50 @@ describe('QueueTickRunner: a pass that throws does not end the loop (item 1)', (
   });
 });
 
+describe('QueueTickRunner: a journal that cannot be written (code review, 2026-09-11)', () => {
+  it('does not turn a clean pass into a reported failure when the completion row will not write', async () => {
+    const clock = fakeClock();
+    const journal = { append: (): void => { throw new Error('ENOSPC: no space left on device'); } };
+    const runner = new QueueTickRunner<string>({
+      tick: async () => {},
+      items: () => [],
+      journal,
+      backoff: new QueueTickBackoff(journal, { now: clock.now }),
+      intervalMs: INTERVAL,
+      now: clock.now,
+    });
+
+    runner.tick();
+    await expect(runner.whenIdle()).resolves.toBeUndefined();
+
+    const status = runner.status();
+    expect(status.lastOutcome).toBe('ok');
+    expect(status.lastCompletedAt).toBe(clock.now());
+    expect(status.lastError).toBeNull();
+  });
+
+  it('still finishes the pass when the failure row itself will not write', async () => {
+    const clock = fakeClock();
+    const journal = { append: (): void => { throw new Error('ENOSPC: no space left on device'); } };
+    const runner = new QueueTickRunner<string>({
+      tick: async () => { throw new Error('cannot reach Jira'); },
+      items: () => [],
+      journal,
+      backoff: new QueueTickBackoff(journal, { now: clock.now }),
+      intervalMs: INTERVAL,
+      now: clock.now,
+    });
+
+    runner.tick();
+    await expect(runner.whenIdle()).resolves.toBeUndefined();
+
+    // The journal is the record that is gone. The in-memory sensor is the one left, and
+    // it must still say what happened.
+    expect(runner.status().lastOutcome).toBe('failed');
+    expect(runner.status().lastError).toBe('cannot reach Jira');
+  });
+});
+
 describe('QueueTickRunner: a stopped loop is visible without reading records (item 2)', () => {
   it('reads overdue and names the gap after four intervals with no completed pass', () => {
     const journal = fakeJournal();
