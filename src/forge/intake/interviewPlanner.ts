@@ -46,8 +46,21 @@ export interface InterviewPlannerDeps {
   append?: JournalAppend;
 }
 
+/**
+ * Who the brief says decided this.
+ *
+ * `answeredBy` names whoever replied in Slack, and that reply is attached WITHOUT being
+ * accepted -- the operator still confirms or changes it. So a teammate is credited only
+ * when the stored answer is the teammate's own words; the moment the operator types
+ * something else, the decision is the operator's and the brief has to say so. Crediting a
+ * teammate with a call they did not make is worse than saying nothing: the worker reads
+ * `## Decisions` as settled and never asks again. Found by code review, 2026-09-11.
+ */
 function answeredByOf(entry: InboxEntry): string {
-  return entry.answeredBy ?? 'Aaron';
+  if (entry.answeredBy && entry.reply !== undefined && entry.answer === entry.reply) {
+    return entry.answeredBy;
+  }
+  return 'the operator';
 }
 
 function answersFrom(entries: InboxEntry[]): InterviewAnswer[] {

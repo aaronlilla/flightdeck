@@ -48,7 +48,8 @@ import { capsOverridesPath, effectiveHardTokens, readCapsOverrides } from './cap
 import { restoreCaps, writeCaps, type CapsWriteDeps } from './caps-write.js';
 import { IntegrationsRegistry, type IntegrationsDeps } from './integrations.js';
 import {
-  missingEnvSentence, missingSlackEnv, postQuestion, slackConfigFromEnv, type SlackConfig,
+  MAX_OPEN_PASSES, missingEnvSentence, missingSlackEnv, openPassCount, postQuestion,
+  slackConfigFromEnv, type SlackConfig,
 } from '../intake/slack.js';
 import { labelFor as laneLabelFor, laneStateNowFor, meaningfulEvents, tokensToday } from './lanes.js';
 import { signalPhrase } from './journal-narrative.js';
@@ -906,6 +907,18 @@ export class ConsoleWrites {
       return [refusalCard(
         source,
         `I can't pass that on: I don't know who ${name} is.${known.length ? ` I know ${known.join(', ')}.` : ''}`,
+      )];
+    }
+
+    // The cap belongs HERE, not in the poster. Accepting first means `passedTo` is
+    // already set by the time the poster looks, and the poster skips its own cap for an
+    // ask that is already passed -- so on the real path the cap could never fire, while
+    // the poster's own specimen (which calls it on an un-passed ask) stayed green. Found
+    // by code review, 2026-09-11.
+    if (!entry.passedTo && openPassCount(this.deps.inbox) >= MAX_OPEN_PASSES) {
+      return [refusalCard(
+        source,
+        `I can't pass that on: ${MAX_OPEN_PASSES} questions are already out with the team.`,
       )];
     }
 

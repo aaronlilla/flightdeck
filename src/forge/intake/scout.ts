@@ -125,7 +125,23 @@ export async function scoutAnswer(question: InterviewQuestion, deps: ScoutDeps):
   const execRun = deps.execRun ?? execRunDefault;
   const readFile = deps.readFile ?? ((path: string) => readFileSync(path, 'utf8'));
   const argv = ['git', 'grep', '-n', '-I', '-i', ...terms.flatMap((term) => ['-e', term])];
-  const grep = await execRun({ argv, cwd: deps.cwd, owner: deps.owner, cls: 'script', raw: true });
+  // `fullOutput` matters: without it `full` is always undefined and the whole grep is cut
+  // to its last 4 KB, so "the first five files it named" silently became "the last five",
+  // and the tail's first line is a mid-line fragment the file regex can match wrongly.
+  // Found by code review, 2026-09-11.
+  const grep = await execRun({
+    argv, cwd: deps.cwd, owner: deps.owner, cls: 'script', raw: true, fullOutput: true,
+  });
+  // `git grep` exits 1 for "no matches" and 128 for a cwd that is not a repository, and
+  // `exec.run` resolves on both. Treating them alike let a broken checkout path read as
+  // "the code says nothing about this", which is exactly the answer nobody should get
+  // from a directory that was never searched.
+  if (grep.returncode !== 0 && grep.returncode !== 1) {
+    return {
+      answered: false,
+      text: `could not search the checkout at ${deps.cwd} (git grep exited ${grep.returncode ?? 'without a code'})`,
+    };
+  }
   const output = grep.full ?? grep.tail ?? '';
 
   const files: { path: string; text: string }[] = [];

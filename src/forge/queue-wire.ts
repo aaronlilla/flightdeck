@@ -12,7 +12,7 @@
  * just triggered by an operator's own add instead of a poll cycle.
  */
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { join } from 'node:path';
 
 import { chainCouncil, chainGate, chainGh, chainRebase, chainLauncher, chainLaunchGoal } from './chain-wire.js';
 import { checkoutFor, repoKindFor as repoKindForEnv, type ChainEnv } from './chain-env.js';
@@ -24,7 +24,7 @@ import { run as execRun } from './exec.js';
 import type {
   QueueMergeDeps, QueuePlannedBrief, QueuePlanner, QueuePlanOutcome, QueuePromoteDeps, QueueRuntimeDeps, QueueTicketSearch,
 } from './intake/queue.js';
-import { planTicketWithInterview } from './intake/interviewPlanner.js';
+import { asksForItem, planTicketWithInterview } from './intake/interviewPlanner.js';
 import { InterviewStore } from './intake/interviewStore.js';
 import { scoutAnswer } from './intake/scout.js';
 import { Inbox } from './inbox.js';
@@ -39,7 +39,7 @@ import { resolvePlanProvider } from './intake/reasoner.js';
 import { parseRepoMap, routeRepo, repoFromBrief, ticketFromBrief } from './intake/repoRoute.js';
 import { Journal } from './journal.js';
 import { loadPolicy } from './policy.js';
-import { inboxDir, interviewRecordsDir, queueBriefsDir, journalPath, killSwitchPath, workspaceRoot } from './paths.js';
+import { inboxDir, interviewRecordsDir, queueBriefsDir, journalPath, killSwitchPath } from './paths.js';
 import { reasonerFor } from './reasoner-claude.js';
 import { readKillSwitch } from './supervisor.js';
 import { readQueuePaused } from './console/queue-pause.js';
@@ -137,7 +137,10 @@ function packetFor(ticket: string, repo: string, detail: PollItemDetail | undefi
  * `labels`/`components`/`issuetype`, which only ever resolves through a `default` rule
  * in the map (or stays `'unknown'`, reported honestly rather than guessed at).
  */
-export function queuePlanner(configFn: () => JiraConfig | undefined = jiraConfigFromEnv): QueuePlanner {
+export function queuePlanner(
+  configFn: () => JiraConfig | undefined = jiraConfigFromEnv,
+  chainEnv?: ChainEnv,
+): QueuePlanner {
   const repoRules = parseRepoMap(process.env['FORGE_INTAKE_REPO_MAP']);
   const briefsDir = queueBriefsDir();
   mkdirSync(briefsDir, { recursive: true });
@@ -156,6 +159,15 @@ export function queuePlanner(configFn: () => JiraConfig | undefined = jiraConfig
 
   return {
     async planTicket(ticket, itemId): Promise<QueuePlanOutcome> {
+      // An item already holding on an unanswered question is answered before the Jira
+      // lookup, not after it. Without this, a question left overnight on a 15-second tick
+      // made thousands of Jira reads whose result was thrown away, which also made the
+      // planner's own "a held item costs nothing per tick" claim false. Found by code
+      // review, 2026-09-11.
+      const held = asksForItem(new Inbox(inboxDir()), itemId);
+      if (held.length && held.some((ask) => ask.answer === undefined)) {
+        return { waiting: 'interview', asks: held.filter((ask) => ask.answer === undefined).length };
+      }
       const config = configFn();
       let repo = routeRepo(repoRules, { ticket, labels: [], components: [], issuetype: '' });
       let detail: PollItemDetail | undefined;
@@ -181,13 +193,26 @@ export function queuePlanner(configFn: () => JiraConfig | undefined = jiraConfig
           inbox: new Inbox(inboxDir()),
           records: new InterviewStore(interviewRecordsDir()),
           packetFor: async () => packet,
-          scout: (question) => scoutAnswer(question, {
-            // The repository's own checkout, not a worktree: a worktree for this item
-            // does not exist until provisioning, two hops later.
-            cwd: join(workspaceRoot(), basename(repo)),
-            owner: `interview-${itemId}`,
-            reasoner,
-          }),
+          scout: async (question) => {
+            // The checkout comes from the repository map, never from the repository's
+            // name: `checkoutFor`'s own contract. Guessing it from `workspaceRoot()` plus
+            // the basename produced a real directory on this machine and nowhere else,
+            // and a grep in a directory that is not there answers "(no matches)" -- which
+            // reads as "the code says nothing", and lands in the brief as settled fact.
+            // Found by code review, 2026-09-11.
+            const checkout = chainEnv ? checkoutFor(chainEnv, repo) : undefined;
+            if (!checkout) {
+              return {
+                answered: false,
+                text: `no checkout is configured for ${repo}, so the code could not be searched`,
+              };
+            }
+            return scoutAnswer(question, {
+              cwd: checkout,
+              owner: `interview-${itemId}`,
+              reasoner,
+            });
+          },
           writeBriefFile: async ({ text }: { text: string }) => ({
             briefPath: await writeBrief(briefIdFor(packet.id, itemId), text),
             repo,
@@ -439,7 +464,7 @@ export function buildQueueRuntimeDeps(
   maxInFlight: () => number = readQueueWidth,
 ): QueueRuntimeDeps {
   return {
-    planner: queuePlanner(),
+    planner: queuePlanner(jiraConfigFromEnv, chainEnv),
     launcher: chainLauncher(chainEnv, configDirFor),
     launchGoal: chainLaunchGoal(configDirFor),
     gh: chainGh(),

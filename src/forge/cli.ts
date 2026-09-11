@@ -872,7 +872,13 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         // than losing a reply.
         const slackWatermarks = fileWatermarkStore();
         const slackInbox = new Inbox(inboxDir());
+        // One poll at a time. Two overlapping polls read the same watermark, attach the
+        // same reply twice, and the later-finishing one can persist the older mark.
+        // Found by code review, 2026-09-11.
+        let slackPolling = false;
         const readSlack = (): void => {
+          if (slackPolling) return;
+          slackPolling = true;
           void readSlackReplies(slackWatermarks.get('slack'), {
             config: slackConfigFromEnv(),
             inbox: slackInbox,
@@ -884,7 +890,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
               event: 'slack.failed', actor: 'intake',
               reason: error instanceof Error ? error.message : String(error),
             });
-          });
+          }).finally(() => { slackPolling = false; });
         };
 
         const queueTick = setInterval(() => {

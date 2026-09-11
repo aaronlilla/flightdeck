@@ -109,7 +109,14 @@ function parseQuestion(raw: unknown): InterviewQuestion | null {
   const options = Array.isArray(row['options'])
     ? row['options'].filter((o): o is string => typeof o === 'string')
     : [];
-  const recommended = typeof row['recommended'] === 'number' ? row['recommended'] : null;
+  // Bounds-checked against the options it indexes into: an out-of-range number reaches
+  // the question card's recommendation badge and `answer-by-number`, both of which index
+  // straight into `options`. `null` means "nobody picked one", which those already handle.
+  // Found by code review, 2026-09-11.
+  const pick = row['recommended'];
+  const recommended = typeof pick === 'number' && Number.isInteger(pick) && pick >= 0 && pick < options.length
+    ? pick
+    : null;
   const topic = textOf(row['topic']).trim();
   const named = textOf(row['who']).trim();
   const who = named || (answerableBy === 'teammate' ? TOPIC_OWNERS[topic] ?? '' : '');

@@ -105,6 +105,23 @@ export interface PassOutcome {
   ts?: string;
 }
 
+/**
+ * A refusal that also undoes the console's optimistic "passed" mark.
+ *
+ * Accept-first means the route writes `passedTo` before this function is reached, so a
+ * refusal that only returns a sentence leaves the ask marked as handed to somebody who
+ * never saw it: counted against the cap forever and never polled for a reply. Found by
+ * code review, 2026-09-11.
+ *
+ * An ask that already carries a live `passedThread` is left alone. That thread belongs to
+ * an earlier pass that DID land, and clearing it would abandon a question a teammate can
+ * still answer -- a failed second pass must not destroy a working first one.
+ */
+function refuse(askKey: string, entry: InboxEntry, deps: PostQuestionDeps, reason: string): PassOutcome {
+  if (!entry.passedThread) deps.inbox.clearPass(askKey);
+  return { ok: false, reason };
+}
+
 /** How many asks are passed and still waiting on a teammate. */
 export function openPassCount(inbox: Inbox): number {
   return inbox.all().filter((entry) => entry.passedTo && entry.answer === undefined).length;
@@ -158,9 +175,9 @@ export async function postQuestion(askKey: string, name: string, deps: PostQuest
 
   const text = buildPassMessage(entry, name, userId);
   const voice = (deps.voice ?? voiceGuard)(text);
-  if (!voice.ok) return { ok: false, reason: `I can't pass this on: ${voice.reason}` };
+  if (!voice.ok) return refuse(askKey, entry, deps, `I can't pass this on: ${voice.reason}`);
   const readable = (deps.readability ?? defaultReadability)(text);
-  if (readable.verdict === 'DENY') return { ok: false, reason: `I can't pass this on: ${readable.reason}` };
+  if (readable.verdict === 'DENY') return refuse(askKey, entry, deps, `I can't pass this on: ${readable.reason}`);
 
   const now = deps.now ?? Date.now;
   const body = { channel: config.channel, text };
@@ -196,7 +213,9 @@ export async function postQuestion(askKey: string, name: string, deps: PostQuest
   const failed = write.state !== 'complete' || !response?.ok;
   if (failed) {
     const reason = response?.error ?? write.cause ?? 'slack did not accept the post';
-    deps.inbox.clearPass(askKey);
+    // Same rule as `refuse`: a failed pass never nulls a `passedThread` an earlier pass
+    // won, or a teammate's reply in that live thread is never read back.
+    if (!entry.passedThread) deps.inbox.clearPass(askKey);
     deps.append({ event: 'slack.failed', actor: 'intake', askKey, to: name, reason });
     deps.append({ event: 'action.failed', actor: 'console', action: 'pass', askKey, to: name, reason });
     return { ok: false, reason: `I couldn't pass this on: ${reason}` };
