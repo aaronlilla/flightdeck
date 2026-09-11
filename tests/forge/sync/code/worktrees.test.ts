@@ -105,7 +105,7 @@ function buildDeps(rows: Row[], opts?: { dryRun?: boolean }) {
       }
       return rows.filter((r) => r.claimed || r.claimedAfterSnapshot).map((r) => r.path);
     },
-    worktreeStatus(path) {
+    async worktreeStatus(path) {
       return rowByPath.get(path)?.status;
     },
     now: () => 0,

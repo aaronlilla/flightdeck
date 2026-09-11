@@ -26,7 +26,7 @@ function buildDeps(byBranch: Map<string, RepoPr[]>, ghErrorBranches: Set<string>
       { repo: 'aaronlilla/backend-api', checkout: 'D:/work/backend-api', base: 'develop' },
     ],
     claimedPaths: () => [],
-    worktreeStatus: () => undefined,
+    worktreeStatus: async () => undefined,
     now: () => 0,
   };
   return { deps, ghCalls };

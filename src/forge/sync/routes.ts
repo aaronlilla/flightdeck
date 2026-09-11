@@ -37,11 +37,6 @@ export interface SyncRoutesOptions {
    *  wiped and how many workers are running right now. Absent reads as `0, 0` -- a bare
    *  specimen still gets a real sentence shape, just with nothing live behind the count. */
   blastCounts?: () => { queueItems: number; runningWorkers: number };
-  /** R-73: `sweepWorktrees(deps, { dryRun: true })`'s count, named in the same blast
-   *  sentence. `null` when it did not land in time (the production wiring bounds it to
-   *  4s -- a real sweep across every configured repo's worktrees can run past a minute).
-   *  Absent or `null` reads as "the sweep will run", never a guessed number. */
-  staleWorktreeCount?: () => Promise<number | null>;
 }
 
 function respond(response: ServerResponse, status: number, body: unknown): void {
@@ -120,13 +115,12 @@ export class SyncRoutes {
         let blast = '';
         if (!confirmed) {
           const { queueItems, runningWorkers } = this.opts.blastCounts?.() ?? { queueItems: 0, runningWorkers: 0 };
-          const staleWorktrees = (await this.opts.staleWorktreeCount?.()) ?? null;
-          const worktreeClause = staleWorktrees === null
-            ? 'worktree sweep: will run (count not ready in time)'
-            : `worktree sweep: remove ${staleWorktrees} stale worktree${staleWorktrees === 1 ? '' : 's'}`;
+          // No worktree count here: it would need a full dry-run sweep, and this route
+          // must never block on one (operator-experience.md §10). The `sweep-worktrees`
+          // stage reports the real removed count live once the operator confirms.
           blast = `wipe ${queueItems} queue items, stop ${runningWorkers} running workers `
             + '(this engages the kill switch and blocks every launch until the run\'s resume stage '
-            + `clears it), reset watermarks, ${worktreeClause}`;
+            + 'clears it), reset watermarks, and sweep merged and closed worktrees';
         }
         const outcome = await gate(body, 'console', blast, start);
         respond(response, outcome.status, outcome.body);

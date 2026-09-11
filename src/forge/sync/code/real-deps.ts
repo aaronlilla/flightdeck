@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { baseFor, readChainEnv } from '../../chain-env.js';
 import { run as defaultExecRun, type RunRequest, type RunResult } from '../../exec.js';
 import { workspaceRoot } from '../../paths.js';
-import { worktreeStatusFor } from '../../sessions/cleanup.js';
+import { worktreeStatusForAsync } from '../../sessions/cleanup.js';
 import type { CodeSyncDeps } from './index.js';
 
 const CLAIM_FRESH_MS = 10 * 60 * 1000;
@@ -88,7 +88,7 @@ export function buildCodeSyncDeps(
     gh,
     repos,
     claimedPaths: () => readClaimedPaths(sessionsDir, Date.now()),
-    worktreeStatus: (path) => worktreeStatusFor('sync-code', path),
+    worktreeStatus: (path) => worktreeStatusForAsync('sync-code', path, execRun),
     now: () => Date.now(),
   };
 }

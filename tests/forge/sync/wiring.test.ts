@@ -29,6 +29,7 @@ vi.mock('../../../src/forge/sessions/cleanup.js', async (importOriginal) => {
     ...actual,
     sweepAndCollectLocks: vi.fn(() => ({ releasedLocks: [] })),
     worktreeStatusFor: vi.fn(() => ({ clean: true, pushed: true })),
+    worktreeStatusForAsync: vi.fn(async () => ({ clean: true, pushed: true })),
   };
 });
 vi.mock('../../../src/forge/accounts-service.js', async (importOriginal) => {
@@ -183,7 +184,6 @@ describe('production sync wiring: nine full-scope stages', () => {
       watcher: { status: () => ({ on: false, project: null, pollSeconds: 300 }), start: async () => {}, stop: () => {} } as never,
       authorized: () => true,
       blastCounts: () => ({ queueItems: 0, runningWorkers: 0 }),
-      staleWorktreeCount: wiring.staleWorktreeCount,
       confirmGate: async (_body, _source, blast) => ({ status: 202, body: { ok: false, pending: true, blast, token: 'test-token' } }),
     });
 
@@ -195,34 +195,8 @@ describe('production sync wiring: nine full-scope stages', () => {
     await routes.handle('/sync/full', { method: 'POST', on: (event: string, cb: (...a: unknown[]) => void) => { if (event === 'end') cb(); } } as never, response as never);
 
     const blast = (captured?.body as { blast: string }).blast;
-    expect(blast).toContain('remove 2 stale worktrees');
+    expect(blast).toContain('sweep merged and closed worktrees');
     expect(blast).not.toContain('not wired yet');
-  });
-
-  it('bounds the dry-run worktree sweep so a slow real sweep can never block the confirm dialog', async () => {
-    vi.useFakeTimers();
-    try {
-      const slowExecRun: (request: RunRequest) => Promise<RunResult> = async ({ argv }) => {
-        if (argv[0] === 'git' && argv[1] === 'worktree' && argv[2] === 'list') {
-          // A real sweep across every configured repo's worktrees measured over two
-          // minutes end to end on the live console (2026-09-11) -- Aaron clicked "Full
-          // re-sync and start" and got no feedback at all because the confirm dialog
-          // waited on this call before it could render.
-          await new Promise((resolve) => { setTimeout(resolve, 120_000); });
-        }
-        return fakeExecRun()({ argv } as RunRequest);
-      };
-      const wiring = buildWiring(slowExecRun);
-
-      let settled: number | null | undefined;
-      let pending = true;
-      wiring.staleWorktreeCount().then((value) => { settled = value; pending = false; });
-
-      await vi.advanceTimersByTimeAsync(4_000);
-      expect(pending, 'staleWorktreeCount must resolve within its own bound, not the sweep\'s').toBe(false);
-      expect(settled).toBeNull();
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(blast).not.toContain('not ready in time');
   });
 });
