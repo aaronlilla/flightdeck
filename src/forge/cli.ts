@@ -77,6 +77,9 @@ import { runQueueTick } from './intake/queue.js';
 import { acquireQueueLock } from './intake/queueLock.js';
 import { QueueStore } from './intake/queueStore.js';
 import { buildQueueRuntimeDeps, queueMergeDeps, queuePromoteDeps, jiraConfigFromEnv } from './queue-wire.js';
+import { slackConfigFromEnv } from './intake/slack.js';
+import { readSlackReplies } from './intake/slackReturn.js';
+import { fileWatermarkStore } from './intake/watermarkStore.js';
 import { readWatcherState, shouldAutoStartWatcher, writeWatcherState } from './sync/watcher-state.js';
 import { buildSelfLoop } from './self-wire.js';
 import { QueueTickBackoff } from './queue-backoff.js';
@@ -862,8 +865,31 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         // 10 minute drip rather than retrying every pollSeconds all night on the same
         // dead Jira token; any change in the error resumes it at once.
         const queueBackoff = new QueueTickBackoff(queueJournal);
+        // R-76: every question out with a teammate is read back on the same cadence the
+        // queue already ticks on -- one `conversations.replies` per open pass, at most
+        // ten of those, and nothing at all when Slack is not configured. The watermark
+        // is persisted only on a clean read, so a refused call re-reads next tick rather
+        // than losing a reply.
+        const slackWatermarks = fileWatermarkStore();
+        const slackInbox = new Inbox(inboxDir());
+        const readSlack = (): void => {
+          void readSlackReplies(slackWatermarks.get('slack'), {
+            config: slackConfigFromEnv(),
+            inbox: slackInbox,
+            append: (row) => { queueJournal.append(row as never); },
+          }).then((result) => {
+            if (result.ok) slackWatermarks.set('slack', result.watermark);
+          }).catch((error: unknown) => {
+            queueJournal.append({
+              event: 'slack.failed', actor: 'intake',
+              reason: error instanceof Error ? error.message : String(error),
+            });
+          });
+        };
+
         const queueTick = setInterval(() => {
           if (!queueBackoff.dueToRun()) return;
+          readSlack();
           void runQueueTick(queueDeps, queueStore.all())
             .then(() => queueBackoff.onSuccess())
             .catch((error) => {

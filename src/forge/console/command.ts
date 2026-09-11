@@ -47,6 +47,9 @@ import {
 import { capsOverridesPath, effectiveHardTokens, readCapsOverrides } from './caps-read.js';
 import { restoreCaps, writeCaps, type CapsWriteDeps } from './caps-write.js';
 import { IntegrationsRegistry, type IntegrationsDeps } from './integrations.js';
+import {
+  missingEnvSentence, missingSlackEnv, postQuestion, slackConfigFromEnv, type SlackConfig,
+} from '../intake/slack.js';
 import { labelFor as laneLabelFor, laneStateNowFor, meaningfulEvents, tokensToday } from './lanes.js';
 import { signalPhrase } from './journal-narrative.js';
 import { plainEventText } from './thread.js';
@@ -187,6 +190,7 @@ export type Intent =
   | { kind: 'what-stuck' }
   | { kind: 'spend-today' }
   | { kind: 'status' }
+  | { kind: 'pass'; askKey: string; name: string }
   | { kind: 'answer'; askKey: string | null; text: string }
   | { kind: 'answer-by-number'; askKey: string | null; optionNumber: number }
   | { kind: 'confirm'; token: string }
@@ -241,6 +245,14 @@ export function parseIntent(raw: string): Intent {
   if (/^what'?s\s+stuck\??$/i.test(text)) return { kind: 'what-stuck' };
   if (/^spend\s+today$/i.test(text)) return { kind: 'spend-today' };
   if (/^status$/i.test(text)) return { kind: 'status' };
+  // R-76: Pass to… is a click on the question card, which sends exactly this. There is
+  // no other path to a Slack post -- no tag, no keyword, no automatic hand-off.
+  if ((match = text.match(/^pass\s+(\S+)\s+to\s+(.+)$/i))) {
+    return { kind: 'pass', askKey: match[1]!, name: match[2]!.trim() };
+  }
+  if ((match = text.match(/^pass\s+(\S+)\s+(.+)$/i))) {
+    return { kind: 'pass', askKey: match[1]!, name: match[2]!.trim() };
+  }
   // `answer <askKey> <text>` (deliverable 3): the first token is an ask key -- an id at
   // least 8 hex characters long -- and only the text after it is the answer. Matching
   // it here, ahead of the plain free-text form below, is what stops the whole tail
@@ -303,6 +315,12 @@ export interface ConsoleWritesDeps {
   /** Overrides where the account registry lives. A specimen only; production reads
    *  `accounts.ts`'s own default under `forgeHome()`. */
   accountsRegistryPath?: string;
+  /** R-76, Pass to…: the Slack config, read fresh on every click so a token exported
+   *  after the console started still works, and the poster itself. Both injected, so no
+   *  specimen reaches Slack and a console with no Slack configured refuses with a
+   *  sentence instead of failing somewhere quieter. */
+  slackConfig?: () => SlackConfig | undefined;
+  postQuestion?: typeof postQuestion;
 }
 
 function readBody<T>(request: IncomingMessage): Promise<T | null> {
@@ -864,8 +882,74 @@ export class ConsoleWrites {
     })];
   }
 
+  /**
+   * Pass to… (R-76, spec §10): accept first, work second.
+   *
+   * The click sets the three passed fields and journals `action.accepted` with this
+   * action's own id, then returns. The Slack post runs after the response, on a detached
+   * promise that no route ever waits on, and journals `action.done` or -- through
+   * `postQuestion` itself -- `slack.failed` and `action.failed`, rolling the fields back
+   * so the board un-passes the card. A Slack API call can take seconds; a board that
+   * freezes for them is a board nobody trusts.
+   */
+  private async passAsk(intent: { askKey: string; name: string }, source: string): Promise<Message[]> {
+    const entry = this.deps.inbox.entry(intent.askKey);
+    if (!entry) return [refusalCard(source, `I can't pass that on: there is no open question ${intent.askKey}.`)];
+    const config = (this.deps.slackConfig ?? slackConfigFromEnv)();
+    if (!config) {
+      const missing = missingSlackEnv();
+      return [refusalCard(source, missingEnvSentence(missing.length ? missing : ['FORGE_SLACK_BOT_TOKEN']))];
+    }
+    const name = intent.name.trim();
+    if (!config.users[name.toLowerCase()]) {
+      const known = Object.keys(config.users);
+      return [refusalCard(
+        source,
+        `I can't pass that on: I don't know who ${name} is.${known.length ? ` I know ${known.join(', ')}.` : ''}`,
+      )];
+    }
+
+    const post = this.deps.postQuestion ?? postQuestion;
+    this.deps.inbox.pass(intent.askKey, name, Date.now(), null);
+    const { jid } = recordAction(this.deps.journalPath, this.ledger, {
+      kind: 'pass', text: `passed ${intent.askKey} to ${name}`, undo: null,
+      extra: { askKey: intent.askKey, to: name },
+    });
+    appendOnce(this.deps.journalPath, {
+      event: 'action.accepted', actor: 'console', action: 'pass', actionId: jid,
+      askKey: intent.askKey, to: name,
+    });
+
+    // Detached on purpose: no route waits on Slack. Every outcome is journaled from
+    // inside, so nothing about this post is invisible just because nobody awaited it.
+    void post(intent.askKey, name, {
+      config,
+      inbox: this.deps.inbox,
+      append: (row) => { appendOnce(this.deps.journalPath, row); },
+    }).then((outcome) => {
+      appendOnce(this.deps.journalPath, {
+        event: outcome.ok ? 'action.done' : 'action.failed', actor: 'console', action: 'pass',
+        actionId: jid, askKey: intent.askKey, to: name,
+        ...(outcome.ok ? {} : { reason: outcome.reason ?? 'the post did not land' }),
+      });
+    }).catch((error: unknown) => {
+      this.deps.inbox.clearPass(intent.askKey);
+      appendOnce(this.deps.journalPath, {
+        event: 'action.failed', actor: 'console', action: 'pass', actionId: jid,
+        askKey: intent.askKey, to: name, reason: (error as Error).message,
+      });
+    });
+
+    return [receiptCard(source, {
+      ok: true, jid, message: `Passed to ${name}. I'll bring the reply back here.`, undoable: false,
+    })];
+  }
+
   private async executeIntent(intent: Intent, source: string): Promise<Message[]> {
     switch (intent.kind) {
+      case 'pass':
+        return this.passAsk(intent, source);
+
       case 'cancel':
         return [replyCard(source, 'cancelled')];
 

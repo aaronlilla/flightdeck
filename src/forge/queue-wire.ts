@@ -12,7 +12,7 @@
  * just triggered by an operator's own add instead of a poll cycle.
  */
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 import { chainCouncil, chainGate, chainGh, chainRebase, chainLauncher, chainLaunchGoal } from './chain-wire.js';
 import { checkoutFor, repoKindFor as repoKindForEnv, type ChainEnv } from './chain-env.js';
@@ -21,7 +21,13 @@ import { autoMergeAllowed } from './council/risk.js';
 import { countAddDel, guardedCommentPr, REAL_GH } from './council/gh.js';
 import type { Packet, PollSourceName, Watermark } from './contracts.js';
 import { run as execRun } from './exec.js';
-import type { QueueMergeDeps, QueuePlannedBrief, QueuePlanner, QueuePromoteDeps, QueueRuntimeDeps, QueueTicketSearch } from './intake/queue.js';
+import type {
+  QueueMergeDeps, QueuePlannedBrief, QueuePlanner, QueuePlanOutcome, QueuePromoteDeps, QueueRuntimeDeps, QueueTicketSearch,
+} from './intake/queue.js';
+import { planTicketWithInterview } from './intake/interviewPlanner.js';
+import { InterviewStore } from './intake/interviewStore.js';
+import { scoutAnswer } from './intake/scout.js';
+import { Inbox } from './inbox.js';
 import { gitSquashMergeToBase, type GitRunFn } from './intake/gitMerge.js';
 import { developDeployVerifier } from './intake/otaVerify.js';
 import { appendRoutinesSection, loadRoutines, matchRoutines } from './self/routines.js';
@@ -29,12 +35,11 @@ import { routinesDir } from './paths.js';
 import { createJiraFeed, createJiraWriteClient, type JiraConfig } from './intake/jira.js';
 import { runQueueHandoff } from './intake/queueHandoff.js';
 import type { PollItemDetail } from './intake/poller.js';
-import { planFromPacket } from './intake/planner.js';
 import { resolvePlanProvider } from './intake/reasoner.js';
 import { parseRepoMap, routeRepo, repoFromBrief, ticketFromBrief } from './intake/repoRoute.js';
 import { Journal } from './journal.js';
 import { loadPolicy } from './policy.js';
-import { queueBriefsDir, journalPath, killSwitchPath } from './paths.js';
+import { inboxDir, interviewRecordsDir, queueBriefsDir, journalPath, killSwitchPath, workspaceRoot } from './paths.js';
 import { reasonerFor } from './reasoner-claude.js';
 import { readKillSwitch } from './supervisor.js';
 import { readQueuePaused } from './console/queue-pause.js';
@@ -127,7 +132,7 @@ function packetFor(ticket: string, repo: string, detail: PollItemDetail | undefi
 /**
  * `queuePlanner`: a ticket key becomes a routed brief the same way `chain-wire.ts`'s own
  * intake does -- one Jira lookup for the ticket's own text, `routeRepo` against
- * `FORGE_INTAKE_REPO_MAP`, then one `planFromPacket` call through the Reasoner. A pasted
+ * `FORGE_INTAKE_REPO_MAP`, then the interview hop (`intake/interviewPlanner.ts`). A pasted
  * brief skips both: there is no ticket to look up, so `routeRepo` runs against an empty
  * `labels`/`components`/`issuetype`, which only ever resolves through a `default` rule
  * in the map (or stays `'unknown'`, reported honestly rather than guessed at).
@@ -150,7 +155,7 @@ export function queuePlanner(configFn: () => JiraConfig | undefined = jiraConfig
   }
 
   return {
-    async planTicket(ticket, itemId): Promise<QueuePlannedBrief> {
+    async planTicket(ticket, itemId): Promise<QueuePlanOutcome> {
       const config = configFn();
       let repo = routeRepo(repoRules, { ticket, labels: [], components: [], issuetype: '' });
       let detail: PollItemDetail | undefined;
@@ -168,9 +173,27 @@ export function queuePlanner(configFn: () => JiraConfig | undefined = jiraConfig
       const journal = new Journal(journalPath());
       try {
         const reasoner = reasonerFor(resolvePlanProvider(loadPolicy().reasoner), { journal });
-        const planned = await planFromPacket(packet, reasoner, 'plan-ticket');
-        const briefPath = await writeBrief(briefIdFor(planned.packetId, itemId), planned.text);
-        return { ticket, repo, briefPath };
+        // R-76: planning a ticket is an interview first. `planTicketWithInterview` owns
+        // the whole hop -- it may answer `waiting` (a question is out with somebody) or
+        // `backend` (this ticket is not ours to build), and the queue handles both.
+        return await planTicketWithInterview(ticket, itemId, {
+          reasoner,
+          inbox: new Inbox(inboxDir()),
+          records: new InterviewStore(interviewRecordsDir()),
+          packetFor: async () => packet,
+          scout: (question) => scoutAnswer(question, {
+            // The repository's own checkout, not a worktree: a worktree for this item
+            // does not exist until provisioning, two hops later.
+            cwd: join(workspaceRoot(), basename(repo)),
+            owner: `interview-${itemId}`,
+            reasoner,
+          }),
+          writeBriefFile: async ({ text }: { text: string }) => ({
+            briefPath: await writeBrief(briefIdFor(packet.id, itemId), text),
+            repo,
+          }),
+          append: (row: { event: string; [key: string]: unknown }) => { journal.append(row as never); },
+        });
       } finally {
         journal.close();
       }
