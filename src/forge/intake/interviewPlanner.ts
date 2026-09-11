@@ -77,6 +77,11 @@ function answersFrom(entries: InboxEntry[]): InterviewAnswer[] {
  * returns `waiting` without a single reasoner call, so an item held for a day costs
  * nothing per tick.
  */
+/** How long one item's interview lease holds off a re-entering hop. An interview plus
+ *  its scouting takes about a minute; a lease left behind by a crashed process expires
+ *  rather than holding the ticket forever. */
+export const INTERVIEW_LEASE_MS = 10 * 60 * 1000;
+
 export async function planTicketWithInterview(
   ticket: string, itemId: string, deps: InterviewPlannerDeps,
 ): Promise<QueuePlanOutcome> {
@@ -89,9 +94,27 @@ export async function planTicketWithInterview(
     return finishBrief(packet, [...settled, ...answersFrom(existing)], ticket, itemId, deps);
   }
 
+  // The lease: a hop that re-enters this item while its interview is still out (the
+  // same process on a later tick, or a restarted process replaying `planning` items)
+  // must not start a second interview. Nothing has been raised yet, so the ask check
+  // above cannot catch it; this record can.
+  const now = Date.now();
+  const prior = deps.records.get(itemId);
+  if (prior?.inFlightAt !== undefined && now - prior.inFlightAt < INTERVIEW_LEASE_MS) {
+    return { waiting: 'interview', asks: 0 };
+  }
+  deps.records.put({ itemId, ticket, at: now, answers: prior?.answers ?? [], inFlightAt: now });
+
   const packet = await deps.packetFor(ticket);
-  const result = await interview(packet, deps.reasoner, { ...(deps.append ? { append: deps.append } : {}) });
+  let result: Awaited<ReturnType<typeof interview>>;
+  try {
+    result = await interview(packet, deps.reasoner, { ...(deps.append ? { append: deps.append } : {}) });
+  } catch (error) {
+    deps.records.clear(itemId);
+    throw error;
+  }
   if (result.route === 'backend') {
+    deps.records.clear(itemId);
     return { backend: true, ticket, ask: result.ask ?? '' };
   }
 
@@ -131,10 +154,12 @@ export async function planTicketWithInterview(
   if (raised > 0) {
     // The scout's findings outlive this tick: the tick that writes the brief runs after
     // the answer arrives, and re-deriving them there would cost a second grep and could
-    // cite different evidence than the interview saw.
+    // cite different evidence than the interview saw. The lease ends here: the asks on
+    // disk are what hold the item from now on.
     deps.records.put({ itemId, ticket, at: Date.now(), answers });
     return { waiting: 'interview', asks: raised };
   }
+  deps.records.clear(itemId);
   return finishBrief(packet, answers, ticket, itemId, deps);
 }
 

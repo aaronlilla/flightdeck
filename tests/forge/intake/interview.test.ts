@@ -53,7 +53,7 @@ describe('interview', () => {
     );
     const result = await interview(packet(), reasoner);
 
-    expect(seen.classes).toEqual(['plan']);
+    expect(seen.classes).toEqual(['plan-ticket']);
     expect(seen.prompts[0]).toContain('BBZ-277');
     expect(seen.prompts[0]).toContain(UNIQUE_FACT);
     expect(result.route).toBe('frontend');
@@ -160,7 +160,7 @@ describe('writeBrief', () => {
     expect(prompt).toContain('## Decisions');
   });
 
-  it('calls the reasoner once on the plan class and returns its brief text', async () => {
+  it('calls the reasoner once on the plan-ticket class (Sonnet, Aaron 2026-09-11) and returns its brief text', async () => {
     const seen = { prompts: [] as string[], classes: [] as string[] };
     const reasoner: Reasoner = {
       provider: 'claude',
@@ -171,7 +171,7 @@ describe('writeBrief', () => {
       },
     };
     const brief = await writeBrief(packet(), answers, reasoner);
-    expect(seen.classes).toEqual(['plan']);
+    expect(seen.classes).toEqual(['plan-ticket']);
     expect(seen.prompts).toHaveLength(1);
     expect(seen.prompts[0]).toContain('hide it entirely');
     expect(brief.ticket).toBe('BBZ-277');
