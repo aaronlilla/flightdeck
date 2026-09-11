@@ -165,6 +165,27 @@ describe('enforceRulesOnce', () => {
     const answered = inbox.open();
     expect(answered).toHaveLength(0);
   });
+
+  // Found by code review, 2026-09-11: the rule's answer was journalled as the operator's,
+  // because `answeredByOf` falls through to the operator whenever `answeredBy` is unset.
+  // A rule answered, not Aaron, and the `decision.made` row beside it already says so.
+  it('credits the rule, not the operator, when an auto-answer closes an interview ask', async () => {
+    inbox.raise({ run: 'item:Q-abc123', ticket: 'BBZ-169', question: 'value cannot be NOT NULL, what now?' });
+    writeRule({
+      id: 'r2', kind: 'auto-answer', title: 't', summary: 's', evidence: 'NOT NULL',
+      effect: 'skip nulls', status: 'open', jid: null, prUrl: null,
+    });
+
+    await enforceRulesOnce({ journalPath, rulesPath: rulesFile, inbox, runActions });
+
+    const rows = readFileSync(journalPath, 'utf8').trim().split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((row) => row['event'] === 'interview.answered');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!['answeredBy']).toBe('rule:r2');
+    expect(rows[0]!['answer']).toBe('skip nulls');
+    expect(rows[0]!['itemId']).toBe('Q-abc123');
+  });
 });
 
 describe('startEnforcementTick', () => {

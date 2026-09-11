@@ -165,7 +165,7 @@ export async function enforceRulesOnce(deps: EnforcementDeps): Promise<void> {
         const answered = deps.inbox.answer(ask.key, rule.effect);
         if (answered) {
           await deliverAnswer(answered, ask.key, rule.effect);
-          journalInterviewAnswer((row) => appendOnce(deps.runActions.journalPath, row), answered);
+          journalInterviewAnswer((row) => appendOnce(deps.runActions.journalPath, row), answered, `rule:${rule.id}`);
           appendOnce(deps.runActions.journalPath, {
             event: 'decision.made', actor: 'console', action: 'rule.enforced', ruleId: rule.id,
             text: `auto-answer enforced on ${ask.key}`,
