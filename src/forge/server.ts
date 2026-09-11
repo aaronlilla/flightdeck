@@ -255,6 +255,18 @@ export interface ForgeServerOptions {
    *  `MACHINE_READ_INTERVAL_MS` (10 s, measured 2026-09-10 -- see
    *  `src/forge/machine/snapshot.ts`). A specimen sets this low with fake timers. */
   machineTickMs?: number;
+  /** R-68: the Jira watcher engine `POST /watcher/on|off` and `GET /state.watcher` both
+   *  read. Defaults to a real `JiraWatcher` wired against this server's own queue store
+   *  and journal, reading Jira credentials fresh from the environment on every poll. A
+   *  specimen overrides this with its own fake feed. */
+  watcher?: JiraWatcher;
+  /** R-68: the last run per scope (`GET /sync`, `POST /sync/:scope`). Defaults to a real
+   *  `SyncStore` over `syncStatePath()`, which follows `FORGE_HOME`. A specimen only. */
+  syncStore?: SyncStore;
+  /** R-68: the stage functions `POST /sync/:scope` actually runs. Defaults to the
+   *  production wiring in `sync/index.ts`, which passes stream B and C's real
+   *  `not wired yet` placeholders until those streams merge. A specimen injects fakes. */
+  syncDeps?: RunSyncDeps;
 }
 
 export class ForgeServer {
