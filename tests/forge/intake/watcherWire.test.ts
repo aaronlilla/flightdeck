@@ -61,19 +61,63 @@ describe('readWatcherPollSeconds', () => {
 
 describe('watcherJql', () => {
   it('does not exclude Done -- a Done move is exactly what closes an owned lane', () => {
-    expect(watcherJql('BBZ')).toBe('project = BBZ ORDER BY updated ASC');
     expect(watcherJql('BBZ')).not.toMatch(/Done/);
+  });
+
+  it('with no owned keys, is clause 1 only', () => {
+    expect(watcherJql('BBZ')).toBe('project = BBZ AND assignee = currentUser() ORDER BY updated ASC');
+    expect(watcherJql('BBZ', [])).toBe('project = BBZ AND assignee = currentUser() ORDER BY updated ASC');
+  });
+
+  it('with two owned keys, adds a key-in clause', () => {
+    expect(watcherJql('BBZ', ['BBZ-1', 'BBZ-2'])).toBe(
+      '(project = BBZ AND assignee = currentUser() OR key in (BBZ-1, BBZ-2)) ORDER BY updated ASC',
+    );
+  });
+
+  it('never equals the bare whole-board query the R-68 fix replaces', () => {
+    expect(watcherJql('BBZ')).not.toBe('project = BBZ ORDER BY updated ASC');
+    expect(watcherJql('BBZ', ['BBZ-1'])).not.toBe('project = BBZ ORDER BY updated ASC');
   });
 });
 
 describe('watcherTick', () => {
+  it('builds its feed from that tick\'s own owned keys', async () => {
+    const store = tempStore();
+    addTicketItem(store, 'BBZ-9', 1000);
+    const watermarks = memoryWatermarks();
+    const { journal } = tempJournal();
+    let seen: string[] | undefined;
+
+    await watcherTick({
+      feedFor: (ownedKeys) => { seen = ownedKeys; return feedOf([]); },
+      watermarks, store, journal,
+    });
+
+    expect(seen).toEqual(['BBZ-9']);
+  });
+
+  it('a done item is never re-added: ownedItem covers done items too', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'BBZ-1', 1000);
+    store.append({ id: item.id, at: 1000, state: 'done', updatedAt: 1000 });
+    const watermarks = memoryWatermarks();
+    const feed = feedOf([{ id: 'BBZ-1', updated: 2000 }]);
+    const { journal } = tempJournal();
+
+    const result = await watcherTick({ feedFor: () => feed, watermarks, store, journal });
+
+    expect(result.addedTickets).toEqual([]);
+    expect(store.all().filter((i) => i.ticket === 'BBZ-1')).toHaveLength(1);
+  });
+
   it('under a fake feed, the first poll adds a queue item for a new ticket', async () => {
     const store = tempStore();
     const watermarks = memoryWatermarks();
     const feed = feedOf([{ id: 'BBZ-1', updated: 100 }]);
     const { journal } = tempJournal();
 
-    const result = await watcherTick({ feed, watermarks, store, journal });
+    const result = await watcherTick({ feedFor: () => feed, watermarks, store, journal });
 
     expect(result.addedTickets).toEqual(['BBZ-1']);
     expect(store.all().map((i) => i.ticket)).toEqual(['BBZ-1']);
@@ -95,7 +139,7 @@ describe('watcherTick', () => {
     const sent: Array<{ run: string; text: string }> = [];
 
     const result = await watcherTick({
-      feed, watermarks, store, journal, sendTo: (run, text) => { sent.push({ run, text }); },
+      feedFor: () => feed, watermarks, store, journal, sendTo: (run, text) => { sent.push({ run, text }); },
     });
 
     expect(result.sends).toEqual([{ itemId: item.id, ticket: 'BBZ-1', text: 'Jason: try again' }]);
@@ -116,7 +160,7 @@ describe('watcherTick', () => {
     }]);
     const { journal } = tempJournal();
 
-    const result = await watcherTick({ feed, watermarks, store, journal, now: () => 5000 });
+    const result = await watcherTick({ feedFor: () => feed, watermarks, store, journal, now: () => 5000 });
 
     expect(result.closed).toEqual([{ itemId: item.id, ticket: 'BBZ-1', reason: 'closed in Jira' }]);
     expect(store.get(item.id)?.state).toBe('done');
@@ -128,7 +172,7 @@ describe('watcherTick', () => {
     const feed = feedOf([{ id: 'BBZ-1', updated: 100 }]);
     const { journal, path } = tempJournal();
 
-    await watcherTick({ feed, watermarks, store, journal });
+    await watcherTick({ feedFor: () => feed, watermarks, store, journal });
     journal.close?.();
 
     const lines = readFileSync(path, 'utf8').trim().split('\n').filter(Boolean);
@@ -143,7 +187,7 @@ describe('watcherTick', () => {
     const feed = feedOf([]);
     const { journal, path } = tempJournal();
 
-    await watcherTick({ feed, watermarks, store, journal });
+    await watcherTick({ feedFor: () => feed, watermarks, store, journal });
     journal.close?.();
 
     // Nothing was ever appended, so the file itself is never created -- that absence

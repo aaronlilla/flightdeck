@@ -52,7 +52,7 @@ import type { FakePollFeed } from './intake/poller.js';
 import { planFromPacket } from './intake/planner.js';
 import { parseRepoMap } from './intake/repoRoute.js';
 import { resolvePlanProvider } from './intake/reasoner.js';
-import { readWatermark, writeWatermark, fileWatermarkStore } from './intake/watermarkStore.js';
+import { readWatermark, writeWatermark } from './intake/watermarkStore.js';
 import { fetchInboxIssues, classifyInbox } from './intake/inbox.js';
 import { serverRequest } from './server-request.js';
 import { readProcessList, watchedProcesses, probeProcessListCached } from './fleetwatch.js';
@@ -71,13 +71,13 @@ import { loadConsoleEnv } from './console-env.js';
 import { titleFromHeading } from './console/lanes.js';
 import {
   ensureHome, fleetConfigDirChoice, forgeHome, gotchasDir, inboxDir, intakeBriefsDir, journalPath,
-  killSwitchPath, lanesDir, operatorConfigDir, queuePath, registryDir, runsDir,
+  killSwitchPath, lanesDir, operatorConfigDir, queuePath, registryDir, runsDir, watcherStatePath,
 } from './paths.js';
 import { runQueueTick } from './intake/queue.js';
 import { acquireQueueLock } from './intake/queueLock.js';
 import { QueueStore } from './intake/queueStore.js';
 import { buildQueueRuntimeDeps, queueMergeDeps, queuePromoteDeps, jiraConfigFromEnv } from './queue-wire.js';
-import { readWatcherPollSeconds, watcherFeed, watcherTick } from './intake/watcherWire.js';
+import { readWatcherState, shouldAutoStartWatcher, writeWatcherState } from './sync/watcher-state.js';
 import { buildSelfLoop } from './self-wire.js';
 import { QueueTickBackoff } from './queue-backoff.js';
 import { loadPolicy, maxWallMsFor, modelFor, modelIdFor, tierOfBrief } from './policy.js';
@@ -888,34 +888,30 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         journal: shutdownJournal,
       });
 
-      // R-11 part 2: the Jira watcher bridge -- FORGE_BACKLOG_PROJECT names the project it
-      // watches, the same variable buildBacklogJql already reads for a backlog add. Its own
-      // timer at FORGE_CHAIN_POLL_S seconds (default 30, not the chain's 300s default),
-      // since a comment or a status move on an owned ticket should reach the queue fast.
+      // R-68: the Jira watcher now runs through `server.watcher` (`sync/watcher-state.ts`'s
+      // `JiraWatcher`), which `POST /watcher/on|off` can start and stop later with no
+      // restart. Boot still starts it automatically -- from `watcher.json`'s own `on`
+      // flag once that file exists, falling back to the old `FORGE_BACKLOG_PROJECT`-is-set
+      // rule only for a machine that has never flipped the switch. `existsSync` rather
+      // than `watcherFileState.on` alone is load-bearing (/code-review medium finding):
+      // without it, an explicit `POST /watcher/off` writes `{on:false}` and the very next
+      // `forge up` silently overrides it back on whenever FORGE_BACKLOG_PROJECT is still
+      // set in the environment -- the ordinary case, since nothing unsets that env var
+      // when a person flips the switch off from the console.
       let watcherLine = '';
-      const watcherProject = process.env['FORGE_BACKLOG_PROJECT'];
-      const watcherJiraConfig = jiraConfigFromEnv();
-      if (!watcherProject) {
+      const watcherFileState = readWatcherState();
+      const watcherProject = watcherFileState.project ?? process.env['FORGE_BACKLOG_PROJECT'] ?? null;
+      const shouldStartWatcher = shouldAutoStartWatcher(
+        existsSync(watcherStatePath()), watcherFileState, process.env['FORGE_BACKLOG_PROJECT'],
+      );
+      if (!shouldStartWatcher || !watcherProject) {
         watcherLine = 'jira watcher NOT started: no FORGE_BACKLOG_PROJECT';
-      } else if (!watcherJiraConfig) {
+      } else if (!jiraConfigFromEnv()) {
         watcherLine = 'jira watcher NOT started: no Jira credentials';
       } else {
-        const watcherJournal = new Journal(journalPath());
-        const watcherPollSeconds = readWatcherPollSeconds();
-        const watermarks = fileWatermarkStore();
-        const feed = watcherFeed(watcherProject, watcherJiraConfig);
-        const watcherTickTimer = setInterval(() => {
-          void watcherTick({
-            feed, watermarks, store: queueStore, journal: watcherJournal,
-          }).catch((error: unknown) => {
-            watcherJournal.append({
-              event: 'watcher.tick-error', actor: 'watcher',
-              message: error instanceof Error ? error.message : String(error),
-            } as never);
-          });
-        }, watcherPollSeconds * 1000);
-        watcherTickTimer.unref();
-        watcherLine = `jira watcher on for ${watcherProject}, every ${watcherPollSeconds}s`;
+        void server.watcher.start(watcherProject);
+        if (!watcherFileState.on) writeWatcherState({ on: true, project: watcherProject });
+        watcherLine = `jira watcher on for ${watcherProject}, every ${server.watcher.status().pollSeconds}s`;
       }
 
       // The self loop (`self-wire.ts`): findings about the fleet become queue items on

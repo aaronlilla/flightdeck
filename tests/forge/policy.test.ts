@@ -44,6 +44,8 @@ describe('the policy file', () => {
       'audit-lens', 'audit-judge', 'research', 'evaluate', 'sweep', 'narrate',
       // always-on-warden R-54: the drift judge's two classes.
       'drift-judge', 'drift-confirm',
+      // R-68: the queue's own ticket planner, sonnet/medium, distinct from `plan`.
+      'plan-ticket',
     ];
     expect(classNames().sort()).toEqual(wanted.sort());
   });

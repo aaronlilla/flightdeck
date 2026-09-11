@@ -81,6 +81,13 @@ import {
 } from './machine/snapshot.js';
 import { realProcessTable } from './service/process-table.js';
 import type { ProcessRow } from './sweep.js';
+import { jiraConfigFromEnv } from './queue-wire.js';
+import { fileWatermarkStore } from './intake/watermarkStore.js';
+import { createSyncRunner, type RunSyncDeps, type SyncRunner } from './sync/run.js';
+import { SyncStore } from './sync/store.js';
+import { SyncRoutes } from './sync/routes.js';
+import { buildProductionSyncStages } from './sync/index.js';
+import { JiraWatcher, writeWatcherState } from './sync/watcher-state.js';
 
 /** Reads the server's own bearer token, minting one on first use. */
 export function ensureServerToken(path: string = serverTokenPath()): string {
@@ -255,6 +262,18 @@ export interface ForgeServerOptions {
    *  `MACHINE_READ_INTERVAL_MS` (10 s, measured 2026-09-10 -- see
    *  `src/forge/machine/snapshot.ts`). A specimen sets this low with fake timers. */
   machineTickMs?: number;
+  /** R-68: the Jira watcher engine `POST /watcher/on|off` and `GET /state.watcher` both
+   *  read. Defaults to a real `JiraWatcher` wired against this server's own queue store
+   *  and journal, reading Jira credentials fresh from the environment on every poll. A
+   *  specimen overrides this with its own fake feed. */
+  watcher?: JiraWatcher;
+  /** R-68: the last run per scope (`GET /sync`, `POST /sync/:scope`). Defaults to a real
+   *  `SyncStore` over `syncStatePath()`, which follows `FORGE_HOME`. A specimen only. */
+  syncStore?: SyncStore;
+  /** R-68: the stage functions `POST /sync/:scope` actually runs. Defaults to the
+   *  production wiring in `sync/index.ts`, which passes stream B and C's real
+   *  `not wired yet` placeholders until those streams merge. A specimen injects fakes. */
+  syncDeps?: RunSyncDeps;
 }
 
 export class ForgeServer {
@@ -368,6 +387,17 @@ export class ForgeServer {
   /** Set by `forge up` once the self loop exists; read fresh on every `/state`. */
   selfStatus: (() => unknown) | undefined;
 
+  /** R-68: the Jira watcher engine. Public so `cli.ts`'s boot can start it without this
+   *  class needing to know about `FORGE_BACKLOG_PROJECT` or `watcher.json` itself --
+   *  that decision belongs to whoever is bringing the process up, not to the server. */
+  readonly watcher: JiraWatcher;
+
+  private readonly syncStore: SyncStore;
+
+  private readonly syncRunner: SyncRunner;
+
+  private readonly syncRoutes: SyncRoutes;
+
   constructor(options: ForgeServerOptions) {
     this.lanes = options.lanes;
     this.inbox = options.inbox;
@@ -460,6 +490,39 @@ export class ForgeServer {
       confirmGate: (body, source, blast, act) => this.consoleWrites.confirmGate(body, source, blast, act),
       ...(options.queueMergeDeps ? { mergeDeps: options.queueMergeDeps } : {}),
       ...(options.queuePromoteDeps ? { promoteDeps: options.queuePromoteDeps } : {}),
+    });
+    // R-68: the watcher engine and the sync runner/store/routes. `watcher` is public --
+    // `cli.ts`'s boot block starts it, `POST /watcher/on|off` stops and starts it, and
+    // both read its `status()`. The production stage wiring (`buildProductionSyncStages`)
+    // omits stream B's three stages entirely; `run.ts`'s own absent-stage handling marks
+    // each `skipped` rather than `ok`, which is this brief's one permitted placeholder.
+    this.watcher = options.watcher ?? new JiraWatcher({
+      jiraConfig: jiraConfigFromEnv,
+      watermarks: fileWatermarkStore(),
+      store: this.queueStoreForMerge,
+      journal: new Journal(this.journalPath),
+    });
+    this.syncStore = options.syncStore ?? new SyncStore();
+    const syncDeps: RunSyncDeps = options.syncDeps ?? {
+      stages: buildProductionSyncStages({
+        queueStore: this.queueStoreForMerge, watcher: this.watcher, journal: new Journal(this.journalPath),
+      }),
+      journal: new Journal(this.journalPath),
+      store: this.syncStore,
+    };
+    this.syncRunner = createSyncRunner(syncDeps);
+    this.syncRoutes = new SyncRoutes({
+      runner: this.syncRunner,
+      store: this.syncStore,
+      watcher: this.watcher,
+      authorized: (request, response) => this.authorized(request, response),
+      confirmGate: (body, source, blast, act) => this.consoleWrites.confirmGate(body, source, blast, act),
+      writeWatcherState: (state) => writeWatcherState(state),
+      defaultProject: () => process.env['FORGE_BACKLOG_PROJECT'] ?? null,
+      blastCounts: () => ({
+        queueItems: this.queueStoreForMerge.all().length,
+        runningWorkers: this.registry.all().filter((row) => this.isAliveFn(row.pid)).length,
+      }),
     });
     this.conductor = new ConductorAgent({
       writes: this.consoleWrites, reads: this.consoleReads, queue: this.queueRoutes,
@@ -874,6 +937,9 @@ export class ForgeServer {
       // every call -- present whether or not FORGE_CHAIN is on, since a packet already
       // in flight still belongs on the console.
       chain: { value: chainStatusRows(foldChainState(fleet.events)), verified_at: journalMtime },
+      // R-68: read fresh on every call, same as router_enabled -- a POST /watcher/on|off
+      // from another request takes effect on this server's very next /state poll.
+      watcher: this.watcher.status(),
     };
   }
 
@@ -1074,6 +1140,7 @@ export class ForgeServer {
 
     if (await this.integrationsConnectRoutes.handle(path, request, response)) return;
     if (await this.queueRoutes.handle(path, request, response)) return;
+    if (await this.syncRoutes.handle(path, request, response)) return;
     if (await this.blockersRoutes.handle(path, request, response)) return;
     if (await this.rounds.handle(path, request, response)) return;
     if (request.method === 'GET') {

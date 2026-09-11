@@ -73,6 +73,9 @@ const SAMPLES: Sample[] = [
   { path: '/queue/ghost/promote', body: { version: '1.0.0', message: 'm' }, slices: ['queue'] },
   { path: '/blockers/ghost/resolve', slices: ['blockers'] },
   { path: '/blockers/ghost/check', slices: ['blockers'] },
+  { path: '/sync/queue', slices: ['sync'] },
+  { path: '/watcher/on', body: { project: 'BBZ' }, slices: ['sync'] },
+  { path: '/watcher/off', slices: ['sync'] },
 ];
 
 const idleActuator: Actuator = {
@@ -89,6 +92,13 @@ let published: Record<string, unknown>[];
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'forge-server-events-'));
   process.env['FORGE_HOME'] = dir;
+  // R-68: `/watcher/on` builds a real `JiraWatcher` on a bare specimen; with no Jira
+  // credentials it answers "no Jira credentials" from its own poll rather than ever
+  // calling `fetch`. Cleared here so a real FORGE_JIRA_* set in the ambient shell (this
+  // machine's console token) never lets this test reach the network.
+  delete process.env['FORGE_JIRA_SITE'];
+  delete process.env['FORGE_JIRA_EMAIL'];
+  delete process.env['FORGE_JIRA_TOKEN'];
   const journal = new Journal(join(dir, 'fleet.jsonl'));
   journal.close();
   // `implement` is the class the Conductor reasons on (`CONDUCTOR_CLASS`), and a class

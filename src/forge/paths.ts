@@ -97,6 +97,18 @@ export function queuePausedPath(): string {
   return join(consoleDir(), 'queue-paused.json');
 }
 
+/** R-68: the last `SyncRunRecord` per scope, `sync/store.ts#SyncStore`. */
+export function syncStatePath(): string {
+  return join(consoleDir(), 'sync.json');
+}
+
+/** R-68: the Jira watcher's runtime on/off switch and last-poll status,
+ *  `sync/watcher-state.ts`. Separate from `queuePausedPath()`: this is a Jira poll, not
+ *  the intake queue's own worker. */
+export function watcherStatePath(): string {
+  return join(consoleDir(), 'watcher.json');
+}
+
 /** The queue's own width setting: `{ maxInFlight: N }` or absent. Separate from
  *  `queuePausedPath()`: pausing stops every start, this only caps how many run at once.
  *  Read fresh on every tick and every `GET /queue`, never cached, so `POST /queue/width`

@@ -29,20 +29,30 @@ export function readWatcherPollSeconds(env: NodeJS.ProcessEnv = process.env): nu
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_WATCHER_POLL_SECONDS;
 }
 
-/** The watcher's own feed: every issue in the project, newest first filter aside --
- *  unlike `queue-wire.ts#buildBacklogJql` this deliberately does not exclude a Done
- *  status, since a status move into Done is exactly what `runWatcherIntake` needs to see
- *  to close an owned lane. */
-export function watcherJql(project: string): string {
-  return `project = ${project} ORDER BY updated ASC`;
+/**
+ * R-68: two clauses, not the whole board. Clause 1 is Aaron's own open work
+ * (`assignee = currentUser()`), which is what `pullJira` (`sync/jira-pull.ts`) also
+ * reads with no owned keys. Clause 2, `key in (...)`, is every ticket the queue already
+ * owns, regardless of assignee or status -- a lane reassigned to QA at handoff, or moved
+ * to Done in Jira, is exactly the case clause 1 alone would stop seeing. Never excludes
+ * a Done status: a status move into Done is what `runWatcherIntake` needs to see to
+ * close an owned lane.
+ */
+export function watcherJql(project: string, ownedKeys: readonly string[] = []): string {
+  const mine = `project = ${project} AND assignee = currentUser()`;
+  const clause = ownedKeys.length ? `(${mine} OR key in (${ownedKeys.join(', ')}))` : mine;
+  return `${clause} ORDER BY updated ASC`;
 }
 
-export function watcherFeed(project: string, config: JiraConfig): FakePollFeed {
-  return createJiraFeed({ ...config, jql: watcherJql(project) });
+export function watcherFeed(project: string, config: JiraConfig, ownedKeys: readonly string[] = []): FakePollFeed {
+  return createJiraFeed({ ...config, jql: watcherJql(project, ownedKeys) });
 }
 
 export interface WatcherTickDeps {
-  feed: FakePollFeed;
+  /** R-68: built fresh every tick from that tick's own owned keys (`store.all()` at the
+   *  top of the tick), so a ticket the queue picked up since the last poll is covered by
+   *  clause 2 on this very poll rather than the next one. */
+  feedFor: (ownedKeys: string[]) => FakePollFeed;
   watermarks: WatermarkStore;
   store: QueueStore;
   journal: Journal;
@@ -56,6 +66,13 @@ const defaultSendTo = (run: string, text: string): void => {
   new RunInbox(run).send(text, 'jira');
 };
 
+/** Every ticket key the queue already has an item for, done or not (R-68: `ownedItem`
+ *  itself now includes done items, and the watcher's JQL needs the same widened set so a
+ *  ticket that just moved to Done keeps being fetched long enough for the poll to see it). */
+function ownedKeysOf(store: QueueStore): string[] {
+  return [...new Set(store.all().map((item) => item.ticket).filter((ticket): ticket is string => Boolean(ticket)))];
+}
+
 /**
  * One poll cycle: runs `runWatcherIntake`, delivers every send to the owning run's
  * inbox (an item with no `runKey` yet has nothing running to send to, and is skipped),
@@ -65,8 +82,9 @@ const defaultSendTo = (run: string, text: string): void => {
 export async function watcherTick(deps: WatcherTickDeps): Promise<WatcherIntakeResult> {
   const now = deps.now ?? Date.now;
   const sendTo = deps.sendTo ?? defaultSendTo;
+  const feed = deps.feedFor(ownedKeysOf(deps.store));
   const result = await runWatcherIntake({
-    feed: deps.feed, watermarks: deps.watermarks, store: deps.store, now,
+    feed, watermarks: deps.watermarks, store: deps.store, now,
   });
 
   for (const send of result.sends) {

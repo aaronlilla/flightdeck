@@ -87,7 +87,8 @@
     "narrate": {"model": "haiku", "effort": "low", "maxContext": 20000, "maxTurns": 1, "provider": "claude", "timeoutMs": 180000, "maxCallsPerHour": 300, "maxWallMs": 120000},
     "sweep": {"model": "sonnet", "effort": "low", "maxContext": 80000, "maxTurns": 20, "provider": "claude", "maxWallMs": 1800000},
     "drift-judge": {"model": "haiku", "effort": "low", "maxContext": 30000, "maxTurns": 1, "provider": "claude", "timeoutMs": 60000, "maxWallMs": 120000},
-    "drift-confirm": {"model": "sonnet", "effort": "medium", "maxContext": 30000, "maxTurns": 1, "provider": "claude", "timeoutMs": 120000, "maxWallMs": 120000}
+    "drift-confirm": {"model": "sonnet", "effort": "medium", "maxContext": 30000, "maxTurns": 1, "provider": "claude", "timeoutMs": 120000, "maxWallMs": 120000},
+    "plan-ticket": {"model": "sonnet", "effort": "medium", "maxContext": 60000, "maxTurns": 1, "provider": "claude", "maxWallMs": 1800000}
   },
   "_governor_comment": [
     "P4.2: budgets Aaron sets, that the Governor queues against and never silently",
@@ -112,7 +113,8 @@
       "narrate": 2,
       "sweep": 10,
       "drift-judge": 2,
-      "drift-confirm": 5
+      "drift-confirm": 5,
+      "plan-ticket": 5
     }
   },
   "brief_tiers": {
