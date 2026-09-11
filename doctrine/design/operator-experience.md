@@ -43,6 +43,8 @@ the R-74 to R-78 briefs build to. The goal paragraph in `../ROADMAP.md` outranks
 - First wave: the rail and the strip (R-75) with the interview and the Slack pass (R-76),
   in parallel. The Flow page (R-74) with its manual stage gates (R-79) is the second wave.
 - Manual first: every stage is a button with an auto toggle, off by default (§9).
+- Optimistic everywhere: the click lands before the round trip, the server accepts then
+  works, a failure rolls back inline with the reason (§10, R-80).
 - Frontend only: backend questions default to Joe, product questions to Jason, and a
   backend-only ticket goes to the backend handoff instead of the interview (§9).
 
@@ -219,6 +221,40 @@ row stops at Plan with "backend: handed to Joe". A backend question inside a fro
 ticket is tagged `teammate` with Joe as the default name; a product question defaults to
 Jason. The strip's Pass to… keeps all four names.
 
+## 10. Optimistic everywhere, with the standard fallback
+
+Aaron, 2026-09-11: "we need to have fully optimistic ui with the standard fallback routes.
+when i interact with any action item, i want immediate obvious feedback. this also isn't
+just a purely design visually, it's also changes to functionality in how we actually
+ingest and the steps into actual implementation with the whole goal system and such."
+
+The rule, for every action on every surface (a strip answer, Pass to…, a stage button, a
+merge, a re-sync, a send in the rail):
+
+1. **The click lands before the round trip.** The UI applies the expected result at once:
+   the card advances to the next question, the node turns `requested`, the row moves, the
+   message appears in the rail. A small pending mark (a dot on the element, never a
+   spinner that blocks) says the server has not confirmed yet.
+2. **The server accepts in one step and does the work in another.** Every command carries
+   an `actionId`. The server journals `action.accepted` before doing anything and answers
+   within 200 ms; the work itself runs on the tick or a worker and journals `action.done`
+   or `action.failed` with a reason. No route ever blocks on a Jira read, a git call, a
+   Slack post or a process sweep (the re-sync confirm dialog that blocked two minutes on a
+   worktree sweep is the specimen this rule was written against).
+3. **The fallback is standard.** `action.done` clears the mark. `action.failed` rolls the
+   element back to its previous state and shows the reason inline on that element with
+   Retry and, where the action was reversible, Undo. No acceptance within 2 s shows "not
+   confirmed" on the element and keeps the optimistic state; the next slice read settles
+   it either way.
+4. **The stages follow the same shape.** Pull tickets, Plan, Write goal, Launch agent,
+   Merge and Hand off are each an accepted intent: the node goes `requested` on the click,
+   `active` on the tick that picks it up, then `done` or `failed`. The row is never frozen
+   waiting on a modal.
+
+The console store already tracks a pending key per control (`src/console/store.ts:147`,
+`pending`, `action-pending`); today it renders "Working…" and waits. The change is that
+the pending key applies the expected state and the journal rows reconcile it.
+
 ## Program
 
 | id | stream | touches |
@@ -228,10 +264,12 @@ Jason. The strip's Pass to… keeps all four names.
 | R-76 | interview and Slack pass | `planner.ts` two calls and scout, `inbox.ts` `passed` state, a Slack client (`src/forge/intake/slack.ts`): post on click, thread read-back |
 | R-77 | Machine wiring graph | `MachineView.tsx` |
 | R-78 | scrubber and push | Flow row scrubber, desktop toast |
+| R-80 | optimistic actions | `actionId` on every command, `action.accepted/done/failed` rows, the store applies expected state on click and reconciles on the rows, inline rollback with reason, Retry and Undo; every route answers within 200 ms |
 | R-79 | manual stage gates | a button and an auto toggle per stage on every row, default manual; Pull tickets, Plan, Write goal, Launch agent, Merge, Hand off; the backend-only route at Plan |
 
-R-75 and R-76 run first, in parallel; they touch disjoint files. R-74 and R-79 follow
-together: the graph and its buttons are one page.
+R-75 and R-76 run first, in parallel; they touch disjoint files, and the actions they add
+(answer, pass) are optimistic from the start (§10). R-80 lands the general mechanism
+before R-74 and R-79, which follow together: the graph and its buttons are one page.
 
 The channel is `#fd-questions`, private, created by Aaron on 2026-09-11. R-76 needs a
 Slack app with a bot token carrying `chat:write`, `groups:history` and `groups:read` (the
