@@ -67,7 +67,7 @@ describe('live-idle-grace: a registry-confirmed-live run gets the wider idle bud
     expect(trips.some((t) => t.signal === 'idle')).toBe(false);
   });
 
-  it('still trips idle at 120s for the same silence when the registry says the process is not live', () => {
+  it('never trips idle for the same silence when the registry says the process is not live, at any duration', () => {
     const trips = assess(baseInput({
       runs: [{
         run: 'r1', className: 'implement',
