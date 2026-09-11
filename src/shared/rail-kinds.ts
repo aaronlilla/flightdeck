@@ -6,10 +6,14 @@ import type { MessageType } from './console-model.js';
  * spam." Status left the chat.
  *
  * The rail carries conversation: what a person said (`operator`), what came back
- * (`reply`), and the receipt for what ran (`receipt`). `event` and `activity` ride the
- * same list because the rail's closed Activity drawer reads them off it and draws them
- * nowhere else. Every other kind is status, and reaches the console through the thread
- * response's `cards` field instead.
+ * (`reply`), the receipt for what ran (`receipt`), the answer when the fleet would not
+ * do it (`refusal`), and the line that says it is working on it (`thinking`). Those last
+ * two are the Conductor answering the operator directly, and the R-75 roadmap row names
+ * exactly which kinds leave -- status, PR, event, activity, plan, confirm, blocker and
+ * decision -- without either of them. A refusal drawn nowhere is a command that failed
+ * in silence. `event` and `activity` ride the same list because the rail's closed
+ * Activity drawer reads them off it and draws them nowhere else. Every other kind is
+ * status, and reaches the console through the thread response's `cards` field instead.
  *
  * One list, three readers: the thread builder splits on it, the stub server answers the
  * same shape, and the rail itself filters on it so a card appended by any other path --
@@ -20,7 +24,7 @@ import type { MessageType } from './console-model.js';
  * must never pull in the server's own modules.
  */
 export const RAIL_TYPES: ReadonlySet<MessageType> = new Set<MessageType>([
-  'operator', 'reply', 'receipt', 'event', 'activity',
+  'operator', 'reply', 'receipt', 'refusal', 'thinking', 'event', 'activity',
 ]);
 
 export function isRailKind(type: MessageType): boolean {

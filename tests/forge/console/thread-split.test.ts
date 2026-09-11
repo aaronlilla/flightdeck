@@ -128,6 +128,11 @@ describe('computeThread splits the rail from the cards (R-75 item 1)', () => {
     expect(railKinds.has('operator')).toBe(true);
     expect(railKinds.has('reply')).toBe(true);
     expect(railKinds.has('receipt')).toBe(true);
+    // A refusal is the Conductor answering the operator, and the R-75 roadmap row does
+    // not list it among the kinds that leave; drawn nowhere, it is a command that failed
+    // in silence.
+    expect(railKinds.has('refusal')).toBe(true);
+    expect(railKinds.has('thinking')).toBe(true);
   });
 
   it('puts the status kinds in the second field, blocker and question included', () => {
@@ -139,7 +144,7 @@ describe('computeThread splits the rail from the cards (R-75 item 1)', () => {
     const { persisted } = fixture();
     const result = computeThread(persisted, fleet.events, 500, [openAsk()]);
     const cardKinds = new Set(result.cards.map((m) => m.type));
-    for (const kind of ['question', 'plan', 'confirm', 'refusal', 'pr', 'thinking', 'blocker', 'decision'] as MessageType[]) {
+    for (const kind of ['question', 'plan', 'confirm', 'pr', 'blocker', 'decision'] as MessageType[]) {
       expect(cardKinds.has(kind), `${kind} must reach the console through cards`).toBe(true);
     }
   });

@@ -50,13 +50,13 @@ describe('a status card cannot reach the rail by any path (R-75 item 1)', () => 
         />
       </StoreContext.Provider>,
     );
-    // The exact card from the screenshot: a refusal, rendered as an action card.
-    expect(screen.queryByTestId('card-refusal')).not.toBeInTheDocument();
     for (const type of EVERY_KIND.filter((t) => !RAIL_TYPES.has(t))) {
       expect(screen.queryByTestId(`card-${type}`), `card-${type} is in the rail`).not.toBeInTheDocument();
     }
     expect(screen.queryByTestId('question-card')).not.toBeInTheDocument();
-    // And conversation still renders.
+    // And conversation still renders, the refusal from the screenshot included -- it is
+    // the Conductor answering the operator, and it has to be somewhere.
     expect(screen.getByText('operator text for the rail')).toBeInTheDocument();
+    expect(screen.getByTestId('card-refusal')).toBeInTheDocument();
   });
 });

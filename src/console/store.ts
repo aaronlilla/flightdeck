@@ -283,7 +283,14 @@ export function reducer(state: State, action: Action): State {
       const cutoff = Date.now() - LOCAL_CARD_TTL_MS;
       const localCards = state.localCards.filter((card) => card.ts >= cutoff);
       let thread = action.thread;
-      for (const card of localCards) {
+      // R-75: a local card that is not a rail kind belongs to `cards`. Re-merging every
+      // local card into `thread` alone dropped a confirm gate the page had just put up:
+      // the poll replaced `cards`, and the rail filtered the re-merged copy straight out.
+      let cards = action.cards ?? state.cards;
+      for (const card of localCards.filter((m) => !RAIL_TYPES.has(m.type))) {
+        if (!cards.some((m) => m.k === card.k)) cards = [...cards, card];
+      }
+      for (const card of localCards.filter((m) => RAIL_TYPES.has(m.type))) {
         if (thread.some((m) => m.k === card.k)) continue;
         // The server persists the operator's own card too (`ConsoleWrites.command`),
         // under its own key: once that copy arrives, the local bubble for the same
@@ -291,7 +298,7 @@ export function reducer(state: State, action: Action): State {
         if (card.type === 'operator' && thread.some((m) => m.type === 'operator' && m.text === card.text && Math.abs(m.ts - card.ts) < LOCAL_CARD_TTL_MS)) continue;
         thread = [...thread, card];
       }
-      return { ...state, thread, localCards, ...(action.cards ? { cards: action.cards } : {}) };
+      return { ...state, thread, cards, localCards };
     }
     case 'local-card-drop':
       return {

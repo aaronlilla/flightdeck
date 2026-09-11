@@ -142,8 +142,9 @@ describe('computeThread: plain mode (deliverable 8)', () => {
     ];
     const result = computeThread(persisted, [], 10_000);
     const reply = result.messages.find((m) => m.type === 'reply');
-    // R-75 item 1: a refusal is status; the humanizing it gets is unchanged.
-    const refusal = result.cards.find((m) => m.type === 'refusal');
+    // R-75 item 1: a refusal stays on the rail -- it is the Conductor answering the
+    // operator. Its humanizing is unchanged.
+    const refusal = result.messages.find((m) => m.type === 'refusal');
     expect(reply?.text).not.toMatch(/S-[0-9a-f]{12,}/);
     expect(refusal?.text).not.toMatch(/jira_/);
   });
