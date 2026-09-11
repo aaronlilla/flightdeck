@@ -22,18 +22,28 @@ export type ConsoleAction = 'attach' | 'start' | 'wait' | 'show-no-console' | 'c
  * `up-healthy` into the same "attach" outcome (found live 2026-09-10: 68932
  * answered `/state` in 15-33s and both apps attached to it happily -- reachable
  * was never the right question). This is what replaces it wherever a caller can
- * reach the queue lock's own alive-ness: an alive lock owner always yields
- * `wait` first (never launch a second console into an occupied port, whatever
- * health currently reads -- the owner is mid-launch and has not answered yet),
- * `up-healthy` attaches, `up-no-console` shows the no-console status rather
- * than silently attaching to a server with nothing to serve, `up-foreign`
- * proposes the confirm-gated restart (something not launcher-managed holds the
- * port), and `down` with no lock owner starts a fresh one.
+ * reach the queue lock's own alive-ness: an alive lock owner yields `wait` for
+ * every state except `up-healthy` (never launch a second console into an
+ * occupied port while the owner may still be mid-launch), `up-no-console`
+ * shows the no-console status rather than silently attaching to a server with
+ * nothing to serve, `up-foreign` proposes the confirm-gated restart (something
+ * not launcher-managed holds the port), and `down` with no lock owner starts a
+ * fresh one.
+ *
+ * Live finding, 2026-09-11: `up-healthy` always attaches, lock owner or not.
+ * The lock owner check exists to stop a SECOND console from starting into an
+ * occupied port -- attach starts nothing, so it can never create that second
+ * console. A live console this app itself did not start (launched by a
+ * separate script with its own environment) can hold the intake queue lock
+ * for its entire lifetime, not only while starting; wedging every future
+ * attach behind that lock left a fully healthy, fully serving console
+ * unreachable forever, auto-retrying "wait" every 3s with no way out short of
+ * a forced restart.
  */
 export function decideConsoleAction(health: ConsoleHealth, lockOwnerAlive: boolean): ConsoleAction {
+  if (health === 'up-healthy') return 'attach';
   if (lockOwnerAlive) return 'wait';
   switch (health) {
-    case 'up-healthy': return 'attach';
     case 'up-no-console': return 'show-no-console';
     case 'up-foreign': return 'confirm-restart';
     case 'down': return 'start';

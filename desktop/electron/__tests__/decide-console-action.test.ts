@@ -5,9 +5,18 @@ import { readQueueLockOwner, type QueueLockFs } from '../queue-lock';
 const join = (...parts: string[]) => parts.join('/');
 
 describe('decideConsoleAction', () => {
-  it('an alive lock owner always yields wait, whatever health reads', () => {
+  // Live finding, 2026-09-11: this app's own env and the already-running console's env
+  // can disagree on FORGE_QUEUE (the launcher script sourced its own console.env.cmd,
+  // the app read only its own process env plus Settings) -- a healthy console can hold
+  // the intake queue lock for its entire lifetime, not just while starting. Wait was
+  // meant to protect against launching a second console into a port someone else is
+  // mid-launching; a console that already answers up-healthy is not mid-launching, and
+  // attaching to it can never create a second console (attach starts nothing). Only the
+  // genuinely ambiguous states -- someone else may still be mid-launch -- defer to the
+  // lock.
+  it('an alive lock owner yields wait for every health EXCEPT up-healthy, which always attaches', () => {
     expect(decideConsoleAction('down', true)).toBe('wait');
-    expect(decideConsoleAction('up-healthy', true)).toBe('wait');
+    expect(decideConsoleAction('up-healthy', true)).toBe('attach');
     expect(decideConsoleAction('up-no-console', true)).toBe('wait');
     expect(decideConsoleAction('up-foreign', true)).toBe('wait');
   });
