@@ -118,7 +118,14 @@ the card to `passed`, showing who holds it and for how long. Nothing is posted w
 click.
 
 When the teammate replies in the thread, flightdeck reads the reply, attaches it to the ask
-as the answer, and the node resumes. The card reads "Answered by Joe 14:02" with the reply.
+as the answer, and the node resumes. **It answers them in the same thread** (Aaron,
+2026-09-11: "the person who replied needs to get feedback that the system got their
+reply"): one sentence saying it has the answer and what happens next, naming the ticket in
+plain words. A reply it cannot read as one of the options gets the other sentence, saying a
+person is reading it. One acknowledgement per reply, never two, and none for a reply from
+somebody the question was not passed to. A reaction would be cheaper and is not used: the
+bot holds `chat:write`, `groups:history` and `groups:read`, so adding one fails at run time
+for a missing scope, while a threaded message needs none. The card reads "Answered by Joe 14:02" with the reply.
 A reply that is not a clean answer to the options comes back to Aaron with the reply
 attached; the machine never guesses which option a sentence meant.
 
