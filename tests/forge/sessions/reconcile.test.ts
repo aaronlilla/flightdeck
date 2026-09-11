@@ -110,6 +110,26 @@ describe('planRegistryRows', () => {
     expect(planRegistryRows([], known, () => undefined)).toEqual([]);
   });
 
+  // Measured on the live console 2026-09-11 05:25:01. A real Ctrl-C into a throwaway
+  // terminal fired SessionEnd, the fold went `ended` at 05:25:02.972 -- and 31 ms later
+  // this rule brought it back, because the process had not finished exiting yet. Two
+  // seconds on, the pid was gone and it was journalled `session.vanished` and classified
+  // `killed`. A deliberate interrupt was recorded as a hard kill. Coming back is only ever
+  // right for a session the tick itself wrongly marked vanished, and that session has no
+  // `lastStop`: a real SessionEnd always writes one.
+  it('never brings back a session a real SessionEnd ended, even while its process is still exiting', () => {
+    const known: Record<string, KnownSession> = {
+      'sess-1': { status: 'ended', lastStop: { at: 1 }, pid: 4242, name: 'dev-e2', cwd: WORKSPACE },
+    };
+    expect(planRegistryRows([scanned()], known, () => true)).toEqual([]);
+  });
+
+  it('still brings back a session the tick itself wrongly marked vanished, which has no lastStop', () => {
+    const known: Record<string, KnownSession> = { 'sess-1': { status: 'ended', pid: 4242 } };
+    const rows = planRegistryRows([scanned()], known, () => true);
+    expect(rows).toMatchObject([{ event: 'session.started', session: 'sess-1' }]);
+  });
+
   it('skips a malformed record that names no session', () => {
     expect(planRegistryRows([scanned({ sessionId: '' })], {}, () => true)).toEqual([]);
   });

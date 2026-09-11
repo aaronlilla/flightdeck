@@ -32,6 +32,9 @@ export interface KnownSession {
   pid?: number;
   name?: string;
   cwd?: string;
+  /** Set by the fold only when a real `SessionEnd` row arrived (journal.ts:367). Its
+   *  absence on an `ended` session is what marks an end this tick invented itself. */
+  lastStop?: { at: number };
 }
 
 export interface VanishedRow {
@@ -80,10 +83,23 @@ export function planRegistryRows(
       continue;
     }
     // The process is alive. Say so when the fold has never heard of it, when the fold has
-    // it dead, or when the fold is missing identity only this scan can supply. A fold that
-    // already agrees gets no row -- this runs every tick, and a row per tick per session
-    // is how the ledger reached 24 MB.
-    if (!current || current.status === 'ended' || identityIsStale(current, row)) {
+    // it dead for a reason this tick invented, or when the fold is missing identity only
+    // this scan can supply. A fold that already agrees gets no row -- this runs every tick,
+    // and a row per tick per session is how the ledger reached 24 MB.
+    if (!current) {
+      rows.push(sessionStartedRow(row));
+      continue;
+    }
+    if (current.status === 'ended') {
+      // Coming back is only ever right for a session this tick wrongly marked vanished.
+      // A real `SessionEnd` writes `lastStop`, and a session that ended on purpose must
+      // stay ended: on 2026-09-11 a Ctrl-C was folded `ended` and brought back 31 ms later
+      // because the process had not finished exiting, then journalled `killed` two seconds
+      // on -- turning a deliberate interrupt into a hard kill.
+      if (!current.lastStop) rows.push(sessionStartedRow(row));
+      continue;
+    }
+    if (identityIsStale(current, row)) {
       rows.push(sessionStartedRow(row));
     }
   }
