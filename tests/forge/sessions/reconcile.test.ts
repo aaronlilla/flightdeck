@@ -51,9 +51,22 @@ describe('planRegistryRows', () => {
   it('brings a session back when the fold says ended but the process is alive', () => {
     // The 2026-09-10 escape: 24 `session.vanished` rows were written for dev-75 by the
     // pre-#140 probe. Its pid stayed alive the whole time, and no later tick ever said so.
-    const known: Record<string, KnownSession> = { 'sess-1': { status: 'ended', name: 'dev-e2', pid: 4242 } };
+    // The specimen carries `exitClass: 'killed'` because that is what the fold actually
+    // holds for a vanished session -- `journal.ts:381` sets it unconditionally on every
+    // `session.vanished` row, so a wrongly-vanished session can never be in any other state.
+    const known: Record<string, KnownSession> = {
+      'sess-1': { status: 'ended', exitClass: 'killed', name: 'dev-e2', pid: 4242 },
+    };
     const rows = planRegistryRows([scanned()], known, () => true);
     expect(rows).toMatchObject([{ event: 'session.started', session: 'sess-1', pid: 4242, name: 'dev-e2' }]);
+  });
+
+  // Rows journalled before the exit class rode the terminal row carry none. Reading that
+  // as a real end leaves the session dead, which is the safe direction: the alternative
+  // resurrects every cleanly-ended session in the ledger's history.
+  it('leaves an ended session from before exit classes were recorded dead', () => {
+    const known: Record<string, KnownSession> = { 'sess-1': { status: 'ended', name: 'dev-e2', pid: 4242 } };
+    expect(planRegistryRows([scanned()], known, () => true)).toEqual([]);
   });
 
   it('fills in identity the hook never carried, for a session already folded live', () => {
@@ -119,15 +132,30 @@ describe('planRegistryRows', () => {
   // `lastStop`: a real SessionEnd always writes one.
   it('never brings back a session a real SessionEnd ended, even while its process is still exiting', () => {
     const known: Record<string, KnownSession> = {
-      'sess-1': { status: 'ended', lastStop: { at: 1 }, pid: 4242, name: 'dev-e2', cwd: WORKSPACE },
+      'sess-1': { status: 'ended', exitClass: 'unknown', pid: 4242, name: 'dev-e2', cwd: WORKSPACE },
     };
     expect(planRegistryRows([scanned()], known, () => true)).toEqual([]);
   });
 
-  it('still brings back a session the tick itself wrongly marked vanished, which has no lastStop', () => {
-    const known: Record<string, KnownSession> = { 'sess-1': { status: 'ended', pid: 4242 } };
+  // The regression guard for the first cut of this rule, which keyed on `lastStop` instead.
+  // `lastStop` is written by `session.stop` (journal.ts:367), which fires at the end of every
+  // turn, and is never cleared -- so nearly every real session carries one, and keying on it
+  // would have refused to bring back exactly the sessions #142 exists to rescue. A session
+  // the tick wrongly marked vanished has `exitClass: 'killed'` (journal.ts:381), and
+  // `classifyExit` never returns `killed` for a real SessionEnd (exit.ts:15-30).
+  it('still brings back a session the tick wrongly marked vanished, even though it had stopped a turn before', () => {
+    const known: Record<string, KnownSession> = {
+      'sess-1': { status: 'ended', exitClass: 'killed', lastStop: { at: 1 }, pid: 4242 },
+    };
     const rows = planRegistryRows([scanned()], known, () => true);
     expect(rows).toMatchObject([{ event: 'session.started', session: 'sess-1' }]);
+  });
+
+  it('leaves a cleanly ended session dead even though it too had stopped a turn before', () => {
+    const known: Record<string, KnownSession> = {
+      'sess-1': { status: 'ended', exitClass: 'done', lastStop: { at: 1 }, pid: 4242, name: 'dev-e2' },
+    };
+    expect(planRegistryRows([scanned()], known, () => true)).toEqual([]);
   });
 
   it('skips a malformed record that names no session', () => {
@@ -136,6 +164,10 @@ describe('planRegistryRows', () => {
 });
 
 describe('journalRegistryRows', () => {
+  function deps2() {
+    const d = deps();
+    return { deps: d, swept: d.swept };
+  }
   function deps() {
     const appended: Record<string, unknown>[] = [];
     const swept: string[] = [];
@@ -154,6 +186,35 @@ describe('journalRegistryRows', () => {
       worktreeStatusFor: () => undefined,
     };
   }
+
+  // `coordlib.py sweep` is global, not session-scoped (cleanup.ts:26-29) -- one run
+  // releases every dead session's locks at once. Running it per row meant a tick that found
+  // 28 orphans, which is exactly what the live console produced after a restart, spawned 28
+  // synchronous Python processes on the server's own thread on a 5 s timer.
+  it('sweeps once for a tick, however many sessions it found gone', () => {
+    const { deps, swept } = deps2();
+    journalRegistryRows([
+      { event: 'session.vanished', actor: 'registry', session: 'a', cwd: WORKSPACE },
+      { event: 'session.vanished', actor: 'registry', session: 'b', cwd: WORKSPACE },
+      { event: 'session.vanished', actor: 'registry', session: 'c', cwd: WORKSPACE },
+    ], deps);
+    expect(swept).toHaveLength(1);
+  });
+
+  // Same burst, the other shell-out: `worktreeStatusFor` runs up to three `git` calls per
+  // row. The 22 console workers stranded by a restart all share one cwd, so asking git the
+  // same question 22 times is pure cost.
+  it('asks git about a given directory once per tick, not once per session', () => {
+    const asked: string[] = [];
+    const base = deps();
+    const d = { ...base, worktreeStatusFor: (_s: string, cwd?: string) => { asked.push(cwd ?? ''); return undefined; } };
+    journalRegistryRows([
+      { event: 'session.vanished', actor: 'registry', session: 'a', cwd: WORKSPACE },
+      { event: 'session.vanished', actor: 'registry', session: 'b', cwd: WORKSPACE },
+      { event: 'session.vanished', actor: 'registry', session: 'c', cwd: WORKSPACE },
+    ], d);
+    expect(asked).toEqual([WORKSPACE]);
+  });
 
   it('releases the claims and locks of a session the scan found gone', () => {
     // The escape: the tick appended its vanished row raw, so nothing ever swept a

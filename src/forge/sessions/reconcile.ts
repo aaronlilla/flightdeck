@@ -32,8 +32,15 @@ export interface KnownSession {
   pid?: number;
   name?: string;
   cwd?: string;
-  /** Set by the fold only when a real `SessionEnd` row arrived (journal.ts:367). Its
-   *  absence on an `ended` session is what marks an end this tick invented itself. */
+  /** How the fold recorded this session's end. `session.vanished` always folds to
+   *  `'killed'` (journal.ts:381) and `classifyExit` never returns `'killed'` for a real
+   *  SessionEnd (exit.ts:15-30), so `'killed'` marks an end this tick invented itself.
+   *  A row journalled before the exit class rode the terminal row carries none, which
+   *  reads as a real end and is the safe direction. */
+  exitClass?: string;
+  /** Written by `session.stop` at the end of every turn (journal.ts:367) and never
+   *  cleared, so it says nothing about how a session ended. Declared only so nothing
+   *  mistakes it for that again. */
   lastStop?: { at: number };
 }
 
@@ -91,12 +98,17 @@ export function planRegistryRows(
       continue;
     }
     if (current.status === 'ended') {
-      // Coming back is only ever right for a session this tick wrongly marked vanished.
-      // A real `SessionEnd` writes `lastStop`, and a session that ended on purpose must
-      // stay ended: on 2026-09-11 a Ctrl-C was folded `ended` and brought back 31 ms later
-      // because the process had not finished exiting, then journalled `killed` two seconds
-      // on -- turning a deliberate interrupt into a hard kill.
-      if (!current.lastStop) rows.push(sessionStartedRow(row));
+      // Coming back is only ever right for a session this tick wrongly marked vanished,
+      // which the fold records as `exitClass: 'killed'`. A session that ended on purpose
+      // must stay ended: on 2026-09-11 a Ctrl-C was folded `ended` and brought back 31 ms
+      // later because the process had not finished exiting, then journalled `killed` two
+      // seconds on -- turning a deliberate interrupt into a hard kill.
+      //
+      // The first cut of this rule keyed on `lastStop`, which `session.stop` writes at the
+      // end of every turn and nothing ever clears: on this machine's ledger that would have
+      // made 25 of 198 sessions permanently unresurrectable, while 5 of the 17 with a real
+      // SessionEnd carried none and would still have been resurrected. Wrong both ways.
+      if (current.exitClass === 'killed') rows.push(sessionStartedRow(row));
       continue;
     }
     if (identityIsStale(current, row)) {
@@ -158,9 +170,28 @@ export function journalRegistryRows(
   rows: RegistryRow[],
   deps: IngestDeps & { append: (row: Partial<ForgeEvent>) => ForgeEvent },
 ): void {
+  // `coordlib.py sweep` is global rather than session-scoped (cleanup.ts:26-29): one run
+  // releases every dead session's locks, so running it once per terminal row is waste, and
+  // on a burst it is harm. A tick that finds 28 orphans -- what the live console produced
+  // after a restart -- would otherwise spawn 28 synchronous Python processes on the thread
+  // serving every route, on a 5 s timer. The first row's sweep answers for all of them.
+  let swept: ReturnType<IngestDeps['sweep']> | undefined;
+  // `worktreeStatusFor` is the other shell-out, up to three `git` calls a row, and it asks
+  // about a directory rather than a session. The workers a restart strands all share one
+  // cwd, so the answer is the same every time.
+  const worktreeByCwd = new Map<string, ReturnType<IngestDeps['worktreeStatusFor']>>();
+  const sweepOncePerTick: typeof deps = {
+    ...deps,
+    sweep: (sessionId: string) => (swept ??= deps.sweep(sessionId)),
+    worktreeStatusFor: (sessionId: string, cwd: string | undefined) => {
+      const key = cwd ?? '';
+      if (!worktreeByCwd.has(key)) worktreeByCwd.set(key, deps.worktreeStatusFor(sessionId, cwd));
+      return worktreeByCwd.get(key);
+    },
+  };
   for (const row of rows) {
     if (row.event === 'session.vanished') {
-      ingestOne(deps, { event: row.event, session: row.session, cwd: row.cwd });
+      ingestOne(sweepOncePerTick, { event: row.event, session: row.session, cwd: row.cwd });
     } else {
       deps.append(row);
     }
