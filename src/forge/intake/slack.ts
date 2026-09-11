@@ -145,22 +145,39 @@ export async function postThreadReply(
   if (!voice.ok) return { ok: false, reason: voice.reason ?? 'the voice guard refused it' };
   const readable = (deps.readability ?? defaultReadability)(text);
   if (readable.verdict === 'DENY') return { ok: false, reason: readable.reason ?? 'readability refused it' };
-  try {
-    const doFetch = config.fetchFn ?? fetch;
-    const raw = await doFetch('https://slack.com/api/chat.postMessage', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json; charset=utf-8',
-        Authorization: `Bearer ${config.token}`,
-      },
-      body: JSON.stringify({ channel: config.channel, thread_ts: thread, text }),
-    });
-    const response = await raw.json() as { ok?: boolean; error?: string };
-    if (!response.ok) return { ok: false, reason: response.error ?? 'slack did not accept it' };
-    return { ok: true };
-  } catch (error) {
-    return { ok: false, reason: (error as Error).message };
+  // Through `performExternalWrite` like every other write in this file. It went straight
+  // to `fetch` when first written, which made this module's own header claim -- "every
+  // Slack write records intent before the call" -- false, and left a crash mid-request
+  // with no `external.unknown` row to show an attempt had ever been made. Found by an
+  // adversarial review, 2026-09-11.
+  let response: { ok?: boolean; error?: string } | undefined;
+  const write = await performExternalWrite(
+    { id: randomUUID(), kind: 'slack.acknowledgement', idempotencyKey: `ack:${thread}` },
+    async () => {
+      const doFetch = config.fetchFn ?? fetch;
+      const raw = await doFetch('https://slack.com/api/chat.postMessage', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          Authorization: `Bearer ${config.token}`,
+        },
+        body: JSON.stringify({ channel: config.channel, thread_ts: thread, text }),
+      });
+      response = await raw.json() as { ok?: boolean; error?: string };
+    },
+    (state) => {
+      const event = state === 'complete' ? 'external.complete'
+        : state === 'unknown' ? 'external.unknown'
+          : state === 'intent' ? 'external.intent' : null;
+      if (!event) return;
+      deps.append({ event, actor: 'intake', kind: 'slack.acknowledgement', thread, state });
+    },
+  );
+  if (write.state !== 'complete') {
+    return { ok: false, reason: write.cause ?? 'the acknowledgement did not reach slack' };
   }
+  if (!response?.ok) return { ok: false, reason: response?.error ?? 'slack did not accept it' };
+  return { ok: true };
 }
 
 /** How many asks are passed and still waiting on a teammate. */

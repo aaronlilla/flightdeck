@@ -13,7 +13,7 @@ import { describe, expect, it } from 'vitest';
 import type { Watermark } from '../../../src/forge/contracts.js';
 import { Inbox } from '../../../src/forge/inbox.js';
 import type { SlackConfig } from '../../../src/forge/intake/slack.js';
-import { openPasses, readSlackReplies } from '../../../src/forge/intake/slackReturn.js';
+import { openPasses, optionMatching, readSlackReplies } from '../../../src/forge/intake/slackReturn.js';
 
 const THREAD_TS = '1757600000.000100';
 
@@ -276,6 +276,55 @@ describe('readSlackReplies', () => {
     expect(entry.answeredBy).toBe('Joe');
     expect(entry.reply).toBe('hide it, the endpoint returns null there');
     expect(rows.map((row) => row['event'])).toContain('ask.returned');
+  });
+
+  // Found by an adversarial review of the acknowledgement, 2026-09-11, after it had
+  // already merged. `optionMatching` read the reply with a bare substring test, so a
+  // negated answer matched the thing it was negating: "not hide" against an option
+  // "hide". The acknowledgement then told the teammate the opposite of what they wrote.
+  // The recorded answer was never affected -- but a message whose whole job is to
+  // reassure somebody their answer landed must not lie back at them.
+  it('never reads a negated reply as agreement with the option it negates', () => {
+    expect(optionMatching(['hide', 'zero'], 'not hide')).toBeUndefined();
+    expect(optionMatching(['hide', 'zero'], 'definitely not hide')).toBeUndefined();
+    expect(optionMatching(['no', 'yes'], 'not sure')).toBeUndefined();
+    expect(optionMatching(['hide the row', 'show a zero'], "don't hide the row")).toBeUndefined();
+  });
+
+  it('still reads the answers a person plainly gives', () => {
+    expect(optionMatching(['hide', 'zero'], 'hide')).toBe('hide');
+    expect(optionMatching(['hide', 'zero'], '  ZERO ')).toBe('zero');
+    expect(optionMatching(['hide the row', 'show a zero'], '2')).toBe('show a zero');
+    expect(optionMatching(['hide', 'zero'], '1')).toBe('hide');
+  });
+
+  it('says it cannot tell rather than guessing at anything else', () => {
+    expect(optionMatching(['hide', 'zero'], 'depends on the endpoint')).toBeUndefined();
+    expect(optionMatching(['hide', 'zero'], '0')).toBeUndefined();
+    expect(optionMatching(['hide', 'zero'], '-1')).toBeUndefined();
+    expect(optionMatching(['hide', 'zero'], '1.5')).toBeUndefined();
+    expect(optionMatching(['', 'zero'], '')).toBeUndefined();
+  });
+
+  it('a negated reply gets the "I cannot tell" sentence, not a claim about the option', async () => {
+    const inbox = tempInbox();
+    passedAsk(inbox);
+    const log: FetchLog = { urls: [] };
+    const acks: string[] = [];
+
+    await readSlackReplies(emptyMark(), {
+      config: configWith({
+        ok: true,
+        messages: [TWO_USER_THREAD.messages[0], { user: 'U0JOE', text: 'not hide', ts: '1757600200.000300' }],
+      }, log),
+      inbox,
+      append: () => {},
+      acknowledge: async (_thread, text) => { acks.push(text); return { ok: true }; },
+    });
+
+    expect(acks).toHaveLength(1);
+    expect(acks[0]!.toLowerCase()).toContain("can't tell which");
+    expect(acks[0]).not.toContain('"hide"');
   });
 
   it('reads nothing at all when Slack is not configured', async () => {

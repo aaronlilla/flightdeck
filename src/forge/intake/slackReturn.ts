@@ -32,18 +32,27 @@ export interface SlackReturnDeps {
  * This decides WHAT TO SAY BACK, never what the answer is. The answer stays the person's
  * own words and the ask stays open for the operator either way -- reading "1" as the
  * first option here would be a courtesy in a sentence, not a decision recorded anywhere.
+ *
+ * Only an exact answer or a plain option number counts. There used to be a substring
+ * test here, and it read a negation as agreement with the very thing being negated:
+ * "not hide" matched the option "hide", and the acknowledgement told the teammate the
+ * opposite of what they had written. Nothing downstream was wrong -- the recorded answer
+ * was always their own words -- but a message whose entire job is to reassure somebody
+ * that their answer landed must never lie back at them. Anything short of an exact match
+ * now gets the honest "I can't tell which" sentence, which costs nothing: a person reads
+ * the reply either way.
  */
 export function optionMatching(options: string[], reply: string): string | undefined {
   const trimmed = reply.trim();
   if (!trimmed) return undefined;
-  const asNumber = Number(trimmed);
-  if (Number.isInteger(asNumber) && asNumber >= 1 && asNumber <= options.length) {
-    return options[asNumber - 1];
+  if (/^\d+$/.test(trimmed)) {
+    const picked = Number(trimmed);
+    return picked >= 1 && picked <= options.length ? options[picked - 1] : undefined;
   }
   const lower = trimmed.toLowerCase();
   return options.find((option) => {
     const candidate = option.trim().toLowerCase();
-    return candidate.length > 0 && (lower === candidate || lower.includes(candidate));
+    return candidate.length > 0 && lower === candidate;
   });
 }
 
@@ -166,9 +175,14 @@ export async function readSlackReplies(mark: Watermark, deps: SlackReturnDeps): 
   );
 
   // The acknowledgement goes out after the answer is attached, never before: a failed
-  // acknowledgement must not un-attach an answer that did arrive. Once per attached
-  // reply, and the watermark that stops a reply being read twice is what stops this being
-  // said twice.
+  // acknowledgement must not un-attach an answer that did arrive.
+  //
+  // What stops it being said twice is `answeredBy`, which `attachReply` has already
+  // written to disk by the time this loop runs -- an entry carrying one drops out of
+  // `openPasses` and is never read again. The watermark is a second, weaker guard and was
+  // wrongly described as the primary one when this was written. The difference matters: a
+  // crash between the attach and the send loses the acknowledgement permanently, because
+  // the entry no longer looks open. The answer is safe; only the courtesy is lost.
   for (const row of attached) {
     const entry = deps.inbox.entry(row.askKey);
     if (!entry) continue;
