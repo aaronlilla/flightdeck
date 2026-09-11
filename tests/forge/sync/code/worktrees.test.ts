@@ -174,4 +174,80 @@ describe('sweepWorktrees', () => {
     await expect(deps.git(CHECKOUT, ['worktree', 'remove', dirty.path])).rejects.toThrow();
     await expect(deps.git(CHECKOUT, ['worktree', 'remove', dirty.path, '--force'])).rejects.toThrow('--force');
   });
+
+  it('a worktreeStatus throw for one worktree keeps that worktree and never aborts the whole sweep', async () => {
+    const rows = buildRows();
+    const badPath = rows.find((r) => r.reason === 'merged-clean')!.path;
+    const { deps } = buildDeps(rows);
+    const realStatus = deps.worktreeStatus;
+    deps.worktreeStatus = (path: string) => {
+      if (path === badPath) throw new Error('ENOENT: worktree gone from disk');
+      return realStatus(path);
+    };
+
+    const result = await sweepWorktrees(deps);
+
+    const bad = result.kept.find((r) => r.path === badPath);
+    expect(bad, 'the throwing worktree should be kept, not crash the sweep').toBeDefined();
+    expect(bad?.reason).toBe('status-error');
+    // every other row still got decided
+    const closed = rows.find((r) => r.reason === 'closed-clean')!;
+    expect(result.removed.some((r) => r.path === closed.path)).toBe(true);
+  });
+
+  it('picks the OPEN row over a stale merged/closed row when a reused branch name has both', async () => {
+    const rows = buildRows();
+    const { deps } = buildDeps(rows);
+    const realGh = deps.gh;
+    const target = rows.find((r) => r.reason === 'no-pr')!;
+    deps.gh = async (argv: string[], cwd?: string) => {
+      const branchIdx = argv.indexOf('--head');
+      const branch = branchIdx === -1 ? undefined : argv[branchIdx + 1];
+      if (branch === target.branch) {
+        return JSON.stringify([
+          { number: 99, state: 'CLOSED', mergedAt: '2026-01-01T00:00:00Z' },
+          { number: 100, state: 'OPEN', mergedAt: null },
+        ]);
+      }
+      return realGh(argv, cwd);
+    };
+
+    const result = await sweepWorktrees(deps);
+
+    expect(result.kept.find((r) => r.path === target.path)?.reason).toBe('pr-open');
+    expect(result.removed.some((r) => r.path === target.path)).toBe(false);
+  });
+
+  it('normalizes claimed-path comparison across backslashes, trailing slash and case', async () => {
+    const rows = buildRows();
+    const target = rows.find((r) => r.reason === 'merged-clean')!;
+    const { deps } = buildDeps(rows);
+    const realClaimedPaths = deps.claimedPaths;
+    deps.claimedPaths = () => [...realClaimedPaths(), target.path.toUpperCase().replace(/\//g, '\\') + '\\'];
+
+    const result = await sweepWorktrees(deps);
+
+    expect(result.kept.find((r) => r.path === target.path)?.reason).toBe('claimed');
+    expect(result.removed.some((r) => r.path === target.path)).toBe(false);
+  });
+
+  it('labels a genuinely detached-HEAD worktree distinctly from the main checkout', async () => {
+    const rows = buildRows();
+    const { deps, gitCalls } = buildDeps(rows);
+    const realGit = deps.git;
+    deps.git = async (checkout: string, argv: string[]) => {
+      if (argv[0] === 'worktree' && argv[1] === 'list') {
+        const base = await realGit(checkout, argv);
+        return `${base}\n\nworktree C:/dev/worktrees/flightdeck--detached\nHEAD deadbeef\ndetached`;
+      }
+      return realGit(checkout, argv);
+    };
+
+    const result = await sweepWorktrees(deps);
+
+    const detached = result.kept.find((r) => r.path === 'C:/dev/worktrees/flightdeck--detached');
+    expect(detached, 'expected a kept row for the detached worktree').toBeDefined();
+    expect(detached?.reason).toBe('detached');
+    void gitCalls;
+  });
 });

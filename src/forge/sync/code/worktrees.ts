@@ -46,6 +46,15 @@ interface GhPrRow {
   mergedAt: string | null;
 }
 
+/** A branch name can be reused after a worktree is removed and re-created, so `gh pr
+ *  list --head` can return more than one PR for it. An OPEN row -- the branch's current
+ *  state -- always outranks a stale merged/closed row from an earlier PR of the same
+ *  name; otherwise the first row (gh's own ordering) stands. */
+function pickPrRow(rows: GhPrRow[]): GhPrRow | null {
+  if (rows.length === 0) return null;
+  return rows.find((row) => row.state === 'OPEN') ?? rows[0]!;
+}
+
 async function lookupPr(deps: CodeSyncDeps, repo: string, cwd: string, branch: string): Promise<GhPrRow | null | 'error'> {
   try {
     const out = await deps.gh(
@@ -53,10 +62,22 @@ async function lookupPr(deps: CodeSyncDeps, repo: string, cwd: string, branch: s
       cwd,
     );
     const rows = JSON.parse(out) as GhPrRow[];
-    return rows[0] ?? null;
+    return pickPrRow(rows);
   } catch {
     return 'error';
   }
+}
+
+function normalizePath(path: string): string {
+  return path.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+function isClaimed(path: string, claimed: Iterable<string>): boolean {
+  const target = normalizePath(path);
+  for (const claim of claimed) {
+    if (normalizePath(claim) === target) return true;
+  }
+  return false;
 }
 
 export async function sweepWorktrees(
@@ -66,22 +87,35 @@ export async function sweepWorktrees(
   const dryRun = opts?.dryRun ?? false;
   const removed: SweptWorktree[] = [];
   const kept: SweptWorktree[] = [];
-  const claimedAtStart = new Set(deps.claimedPaths());
+  const claimedAtStart = deps.claimedPaths();
 
   for (const { repo, checkout } of deps.repos) {
     const listing = await deps.git(checkout, ['worktree', 'list', '--porcelain']);
     const entries = parsePorcelain(listing);
     if (entries.length === 0) continue;
-    const [, ...rest] = entries; // first entry is the main checkout
+    const [mainEntry, ...rest] = entries;
+    const mainCheckoutPaths = new Set(
+      [mainEntry?.path, checkout].filter((p): p is string => Boolean(p)).map(normalizePath),
+    );
 
     for (const entry of rest) {
       const branch = entry.branch ?? '';
-      if (!entry.branch) {
+      if (mainCheckoutPaths.has(normalizePath(entry.path))) {
         kept.push({ path: entry.path, branch, reason: 'main-checkout' });
         continue;
       }
+      if (!entry.branch) {
+        kept.push({ path: entry.path, branch, reason: 'detached' });
+        continue;
+      }
 
-      const status = deps.worktreeStatus(entry.path);
+      let status: { clean: boolean; pushed: boolean } | undefined;
+      try {
+        status = deps.worktreeStatus(entry.path);
+      } catch {
+        kept.push({ path: entry.path, branch, reason: 'status-error' });
+        continue;
+      }
       if (!status || !status.clean) {
         kept.push({ path: entry.path, branch, reason: 'dirty' });
         continue;
@@ -90,7 +124,7 @@ export async function sweepWorktrees(
         kept.push({ path: entry.path, branch, reason: 'unpushed' });
         continue;
       }
-      if (claimedAtStart.has(entry.path)) {
+      if (isClaimed(entry.path, claimedAtStart)) {
         kept.push({ path: entry.path, branch, reason: 'claimed' });
         continue;
       }
@@ -117,7 +151,7 @@ export async function sweepWorktrees(
 
       // Re-read claims immediately before removal: a claim can appear while the sweep
       // is mid-way through dozens of gh calls.
-      if (deps.claimedPaths().includes(entry.path)) {
+      if (isClaimed(entry.path, deps.claimedPaths())) {
         kept.push({ path: entry.path, branch, reason: 'claimed-after-snapshot' });
         continue;
       }
