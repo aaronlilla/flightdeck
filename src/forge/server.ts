@@ -131,6 +131,11 @@ function defaultConsoleDistDir(): string {
   return join(repoRoot(here), 'dist', 'console');
 }
 
+function defaultCheckoutDir(): string {
+  const here = dirname(fileURLToPath(import.meta.url));
+  return repoRoot(here);
+}
+
 export interface ForgeServerOptions {
   lanes: Lanes;
   inbox: Inbox;
@@ -165,6 +170,9 @@ export interface ForgeServerOptions {
   /** Overrides where `/` serves the built console from. Defaults to `dist/console/`
    *  found by walking up to the repo root. A specimen only. */
   consoleDistDir?: string;
+  /** Overrides the checkout directory `/state.checkoutDir` reports. Defaults to the
+   *  repo root walked up from this file. A specimen only. */
+  checkoutDir?: string;
   /** Overrides where `GET /run/:id` reads a handoff packet from. Defaults to
    *  `packetsDir()`, which itself follows `FORGE_HOME`. A specimen only. */
   packetsDir?: string;
@@ -269,6 +277,7 @@ export class ForgeServer {
   private readonly registry: Registry;
 
   private readonly consoleDistDir: string;
+  private readonly checkoutDirPath: string;
 
   private readonly packetsDirPath: string;
 
@@ -376,6 +385,7 @@ export class ForgeServer {
     this.processTableFn = options.processTable ?? realProcessTable;
     this.machineTickMs = options.machineTickMs ?? MACHINE_READ_INTERVAL_MS;
     this.consoleDistDir = options.consoleDistDir ?? defaultConsoleDistDir();
+    this.checkoutDirPath = options.checkoutDir ?? defaultCheckoutDir();
     this.packetsDirPath = options.packetsDir ?? defaultPacketsDir();
     this.forgeHomeDir = options.forgeHomeDir ?? forgeHome();
     this.modelPolicyPathOpt = options.modelPolicyPath;
@@ -851,6 +861,9 @@ export class ForgeServer {
       // not running at all, distinct from a running queue that is merely paused.
       queue_on: process.env['FORGE_QUEUE'] === '1',
       build: runtimeVersion(),
+      checkoutDir: this.checkoutDirPath,
+      consoleDistDir: this.consoleDistDir,
+      consoleBuilt: this.consoleBuilt(),
       // The chrome's project label: the key this fleet works and, once Jira has answered
       // for it, its name. Absent when no project is configured.
       ...(process.env['FORGE_BACKLOG_PROJECT'] ? { project: { key: process.env['FORGE_BACKLOG_PROJECT'], name: this.projectName } } : {}),
@@ -862,6 +875,14 @@ export class ForgeServer {
       // in flight still belongs on the console.
       chain: { value: chainStatusRows(foldChainState(fleet.events)), verified_at: journalMtime },
     };
+  }
+
+  /** Whether `/` would serve the built console right now: `index.html` present in
+   *  `consoleDistDir`. Cheap and synchronous on purpose -- both `/state`'s
+   *  `consoleBuilt` field and `GET /health` read it, and `/health` in particular
+   *  must never touch the journal or the registry. */
+  private consoleBuilt(): boolean {
+    return existsSync(join(this.consoleDistDir, 'index.html'));
   }
 
   private journalSize(): number {
@@ -918,6 +939,15 @@ export class ForgeServer {
 
     if (path === '/state' && request.method === 'GET') {
       return json(response, 200, this.state());
+    }
+    // Cheap on purpose (order 6, sensor validity): no journal replay, no registry
+    // read -- a probe deciding whether to launch a second console cannot depend on
+    // a slow sensor built from the same subsystems it is trying not to duplicate.
+    // No token required, same as /state: the probe runs before the app has any
+    // reason to trust this server yet.
+    if (path === '/health' && request.method === 'GET') {
+      const built = this.consoleBuilt();
+      return json(response, built ? 200 : 503, { consoleBuilt: built });
     }
     if (path === '/machine' && request.method === 'GET') {
       if (!this.authorized(request, response)) return;

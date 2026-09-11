@@ -97,6 +97,11 @@ describe('planStart', () => {
       cwd: '/repo',
       env: {},
       envFileVarsCount: 0,
+      buildStep: {
+        command: '/usr/bin/node',
+        args: ['/repo/node_modules/vite/bin/vite.js', 'build', '--config', 'vite.console.config.ts'],
+        cwd: '/repo',
+      },
     });
   });
 
@@ -114,6 +119,20 @@ describe('planStart', () => {
       cwd: '/repo',
       env: { ELECTRON_RUN_AS_NODE: '1', FORGE_QUEUE: 'on', FORGE_JIRA_TOKEN: 'abc=def' },
       envFileVarsCount: 2,
+      buildStep: {
+        command: '/apps/Console.exe',
+        args: ['/repo/node_modules/vite/bin/vite.js', 'build', '--config', 'vite.console.config.ts'],
+        cwd: '/repo',
+      },
     });
+  });
+
+  it('the fallback plan always carries the build entry before up, regardless of whether dist/forge/cli.js already exists', () => {
+    const fs: StartCommandFs = { existsSync: (p) => p === '/repo/dist/forge/cli.js' };
+    const plan = planStart(fs, join, '/repo', '/apps/Console.exe', '/h', 'win32');
+    expect(plan.kind).toBe('command');
+    if (plan.kind !== 'command') throw new Error('expected command plan');
+    expect(plan.buildStep).toBeDefined();
+    expect(plan.buildStep.args).toContain('build');
   });
 });

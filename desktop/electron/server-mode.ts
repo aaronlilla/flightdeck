@@ -10,6 +10,36 @@ export function decideServerMode(alreadyAnswering: boolean): ServerMode {
   return alreadyAnswering ? 'attach' : 'start';
 }
 
+/** The four-state health probe's own health type, duplicated here rather than
+ *  imported from `./probe` to keep this module's only dependency its own
+ *  decision inputs -- `decideConsoleAction` has no I/O in it either. */
+export type ConsoleHealth = 'down' | 'up-no-console' | 'up-healthy' | 'up-foreign';
+
+export type ConsoleAction = 'attach' | 'start' | 'wait' | 'show-no-console' | 'confirm-restart';
+
+/**
+ * Item 3, 2026-09-10: `decideServerMode`'s boolean collapsed `up-no-console` and
+ * `up-healthy` into the same "attach" outcome (found live 2026-09-10: 68932
+ * answered `/state` in 15-33s and both apps attached to it happily -- reachable
+ * was never the right question). This is what replaces it wherever a caller can
+ * reach the queue lock's own alive-ness: an alive lock owner always yields
+ * `wait` first (never launch a second console into an occupied port, whatever
+ * health currently reads -- the owner is mid-launch and has not answered yet),
+ * `up-healthy` attaches, `up-no-console` shows the no-console status rather
+ * than silently attaching to a server with nothing to serve, `up-foreign`
+ * proposes the confirm-gated restart (something not launcher-managed holds the
+ * port), and `down` with no lock owner starts a fresh one.
+ */
+export function decideConsoleAction(health: ConsoleHealth, lockOwnerAlive: boolean): ConsoleAction {
+  if (lockOwnerAlive) return 'wait';
+  switch (health) {
+    case 'up-healthy': return 'attach';
+    case 'up-no-console': return 'show-no-console';
+    case 'up-foreign': return 'confirm-restart';
+    case 'down': return 'start';
+  }
+}
+
 export interface StartCommand {
   command: string;
   args: string[];
@@ -88,6 +118,12 @@ export interface LauncherPlan {
   scriptPath: string;
 }
 
+export interface BuildStep {
+  command: string;
+  args: string[];
+  cwd: string;
+}
+
 export interface CommandPlan {
   kind: 'command';
   command: string;
@@ -96,6 +132,16 @@ export interface CommandPlan {
   env: Record<string, string>;
   /** How many settings were merged in from `console.env.cmd`, for logging; 0 when there was no such file. */
   envFileVarsCount: number;
+  /**
+   * Item 4, plan step 5, 2026-09-10: the fallback path (no launcher script) runs this
+   * before `up` -- `vite.console.config.ts` has `emptyOutDir: true`, and the whole
+   * point of item 5's finding is that rebuilding under a live server transiently wipes
+   * the page a running console is serving. The fallback command path has no live
+   * server to protect (it is the path taken specifically because nothing answered),
+   * so building first here is safe; `launcher-plan.ts`'s pre-check is what keeps this
+   * from ever running against a console that is already healthy.
+   */
+  buildStep: BuildStep;
 }
 
 export type StartPlan = LauncherPlan | CommandPlan;
@@ -160,5 +206,10 @@ export function planStart(
     cwd: built.cwd,
     env: { ...built.env, ...envFromFile },
     envFileVarsCount: Object.keys(envFromFile).length,
+    buildStep: {
+      command: nodeExecPath,
+      args: [join(checkoutDir, 'node_modules', 'vite', 'bin', 'vite.js'), 'build', '--config', 'vite.console.config.ts'],
+      cwd: checkoutDir,
+    },
   };
 }

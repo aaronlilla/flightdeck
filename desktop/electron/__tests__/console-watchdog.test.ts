@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
-  createConsoleWatchdog, PROBE_INTERVAL_MS, REVIVE_BACKOFF_MS, type ProbeResult, type ReviveResult, type WatchdogDeps,
+  createConsoleWatchdog, PROBE_INTERVAL_MS, REVIVE_BACKOFF_MS, type HealthProbeResult, type ReviveResult, type WatchdogDeps,
 } from '../console-watchdog';
 
 type MockedWatchdogDeps = WatchdogDeps & {
@@ -12,7 +12,7 @@ type MockedWatchdogDeps = WatchdogDeps & {
 
 function makeDeps(overrides: Partial<WatchdogDeps> = {}): MockedWatchdogDeps {
   const base = {
-    probe: vi.fn(async (): Promise<ProbeResult> => ({ reachable: true })),
+    probe: vi.fn(async (): Promise<HealthProbeResult> => ({ health: 'up-healthy' })),
     revive: vi.fn(async (): Promise<ReviveResult> => ({ ok: true })),
     onLog: vi.fn(),
     onGone: vi.fn(),
@@ -37,7 +37,7 @@ describe('createConsoleWatchdog', () => {
   });
 
   it('two failed probes then a success: never declares the console gone', async () => {
-    const results: ProbeResult[] = [{ reachable: false }, { reachable: false }, { reachable: true }];
+    const results: HealthProbeResult[] = [{ health: 'down' }, { health: 'down' }, { health: 'up-healthy' }];
     const probe = vi.fn(async () => results.shift()!);
     const revive = vi.fn(async (): Promise<ReviveResult> => ({ ok: true }));
     const deps = makeDeps({ probe, revive });
@@ -54,7 +54,7 @@ describe('createConsoleWatchdog', () => {
   });
 
   it('three consecutive failures declares the console gone and revives exactly once', async () => {
-    const probe = vi.fn(async (): Promise<ProbeResult> => ({ reachable: false }));
+    const probe = vi.fn(async (): Promise<HealthProbeResult> => ({ health: 'down' }));
     let resolveRevive: (result: ReviveResult) => void = () => {};
     const revive = vi.fn(() => new Promise<ReviveResult>((resolve) => { resolveRevive = resolve; }));
     const deps = makeDeps({ probe, revive });
@@ -81,7 +81,7 @@ describe('createConsoleWatchdog', () => {
 
   it('revive success calls onRevived once and probing resumes afterward', async () => {
     let failing = true;
-    const probe = vi.fn(async (): Promise<ProbeResult> => ({ reachable: !failing }));
+    const probe = vi.fn(async (): Promise<HealthProbeResult> => ({ health: failing ? 'down' : 'up-healthy' }));
     const revive = vi.fn(async (): Promise<ReviveResult> => {
       failing = false;
       return { ok: true };
@@ -102,7 +102,7 @@ describe('createConsoleWatchdog', () => {
   });
 
   it('revive failure reports the reason and does not probe again before the backoff', async () => {
-    const probe = vi.fn(async (): Promise<ProbeResult> => ({ reachable: false }));
+    const probe = vi.fn(async (): Promise<HealthProbeResult> => ({ health: 'down' }));
     const revive = vi.fn(async (): Promise<ReviveResult> => ({ ok: false, reason: 'the console did not answer within 600s' }));
     const deps = makeDeps({ probe, revive });
     const watchdog = createConsoleWatchdog(deps);
@@ -122,7 +122,7 @@ describe('createConsoleWatchdog', () => {
   });
 
   it('stop() cancels probing so no further probes or revives happen', async () => {
-    const probe = vi.fn(async (): Promise<ProbeResult> => ({ reachable: false }));
+    const probe = vi.fn(async (): Promise<HealthProbeResult> => ({ health: 'down' }));
     const revive = vi.fn(async (): Promise<ReviveResult> => ({ ok: true }));
     const deps = makeDeps({ probe, revive });
     const watchdog = createConsoleWatchdog(deps);
@@ -138,7 +138,7 @@ describe('createConsoleWatchdog', () => {
   });
 
   it('retryNow() triggers an immediate revive attempt, bypassing backoff', async () => {
-    const probe = vi.fn(async (): Promise<ProbeResult> => ({ reachable: false }));
+    const probe = vi.fn(async (): Promise<HealthProbeResult> => ({ health: 'down' }));
     const revive = vi.fn(async (): Promise<ReviveResult> => ({ ok: false, reason: 'still down' }));
     const deps = makeDeps({ probe, revive });
     const watchdog = createConsoleWatchdog(deps);

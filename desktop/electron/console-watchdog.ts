@@ -20,12 +20,23 @@ export interface ProbeResult {
   reachable: boolean;
 }
 
+/** The four-state probe (item 1, 2026-09-10): `down` and `up-no-console` both
+ *  count as a miss toward the revive threshold (a console that answers but has
+ *  no page built is exactly as stranded as one that does not answer at all);
+ *  `up-foreign` never does -- something else owns the port, and reviving would
+ *  mean either killing a process this app has no business killing or piling a
+ *  second console on top of it. `up-healthy` is the only state that resets the
+ *  failure count. */
+export interface HealthProbeResult {
+  health: 'down' | 'up-no-console' | 'up-healthy' | 'up-foreign';
+}
+
 export type ReviveResult =
   | { ok: true }
   | { ok: false; reason: string };
 
 export interface WatchdogDeps {
-  probe(): Promise<ProbeResult>;
+  probe(): Promise<HealthProbeResult>;
   /** Runs a full bring-up attempt again (the same one bootstrap used) and
    *  reports whether the console answered. */
   revive(): Promise<ReviveResult>;
@@ -77,6 +88,7 @@ export function createConsoleWatchdog(deps: WatchdogDeps): ConsoleWatchdog {
   let backoffHandle: unknown;
   let consecutiveFailures = 0;
   let reviving = false;
+  let probing = false;
   let stopped = true;
 
   function clearProbeInterval(): void {
@@ -100,13 +112,47 @@ export function createConsoleWatchdog(deps: WatchdogDeps): ConsoleWatchdog {
   }
 
   async function tick(): Promise<void> {
+    // Code-review finding, 2026-09-10: `reviving` alone does not guard a normal
+    // probe -- it is only set once three misses have already been counted. Two
+    // ticks whose probes both take longer than PROBE_INTERVAL_MS (the exact
+    // slow-console case this diff targets: probeHealth()'s own worst case is up
+    // to three sequential 10s legs against a 5s interval) could otherwise both
+    // resolve and race on `consecutiveFailures`. `probing` closes that window
+    // independently of `reviving`, which keeps its own, different meaning
+    // (guards the revive attempt itself, not the routine probe).
+    if (stopped || reviving || probing) return;
+    probing = true;
+    // Code-review finding, 2026-09-11: unlike `goneAndRevive`'s own
+    // try/catch around `deps.revive()` two lines below in this diff, a
+    // rejection from `deps.probe()` (e.g. a malformed FORGE_CONSOLE_ORIGIN
+    // throwing inside probeHealth()'s default-port argument) left `probing`
+    // stuck true forever -- every future tick() no-ops at the guard above,
+    // silently wedging the watchdog with no log and no recovery.
+    let result: HealthProbeResult;
+    try {
+      result = await deps.probe();
+    } catch (error) {
+      probing = false;
+      deps.onLog(`probe failed: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+    probing = false;
     if (stopped || reviving) return;
-    const result = await deps.probe();
-    if (stopped || reviving) return;
-    if (result.reachable) {
+    if (result.health === 'up-healthy') {
       consecutiveFailures = 0;
       return;
     }
+    if (result.health === 'up-foreign') {
+      // Something else holds the port. Not this app's console to revive or
+      // kill -- resetting the counter here (rather than counting it as a
+      // miss) means a foreign process squatting on the port can never itself
+      // trigger a revive attempt against it.
+      consecutiveFailures = 0;
+      return;
+    }
+    // 'down' and 'up-no-console' both count: a console that answers but has
+    // no built page to serve is exactly as stranded as one that is not
+    // answering at all.
     consecutiveFailures += 1;
     if (consecutiveFailures >= FAILURE_THRESHOLD) {
       await goneAndRevive();
@@ -121,7 +167,30 @@ export function createConsoleWatchdog(deps: WatchdogDeps): ConsoleWatchdog {
     deps.onLog(`the console at 127.0.0.1:4120 has not answered for ${PROBE_INTERVAL_MS * FAILURE_THRESHOLD / 1000}s; declaring it gone at ${label} and bringing it back`);
     deps.onGone(label);
 
-    const result = await deps.revive();
+    // /critique finding, 2026-09-10: a `revive()` that throws (rather than resolving
+    // `{ok: false, reason}`) used to leave `reviving` stuck true forever -- no further
+    // probe, no backoff, no log, a permanently dead watchdog with no recovery path.
+    // `revive()`'s real implementation (`reviveConsole` in main.ts) calls `readGitHead`,
+    // which shells out to `git` and can throw synchronously if the binary is missing or
+    // the checkout is in a bad state.
+    let result: ReviveResult;
+    try {
+      result = await deps.revive();
+    } catch (error) {
+      consecutiveFailures = 0;
+      reviving = false;
+      if (stopped) return;
+      const reason = error instanceof Error ? error.message : String(error);
+      deps.onLog(`bringing the console back threw instead of resolving: ${reason}`);
+      deps.onFailed(reason);
+      backoffHandle = deps.setTimeout(() => {
+        backoffHandle = undefined;
+        if (stopped) return;
+        scheduleProbing();
+        void tick();
+      }, REVIVE_BACKOFF_MS);
+      return;
+    }
     consecutiveFailures = 0;
     reviving = false;
     if (stopped) return;

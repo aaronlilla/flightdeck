@@ -9,7 +9,8 @@
 
 Option Explicit
 
-Dim fso, sh, wmi, procs, p, root, repo, userData, running
+Dim fso, sh, wmi, procs, p, root, repo, userData, running, checkoutFile, ts, checkoutDir
+
 Set fso = CreateObject("Scripting.FileSystemObject")
 Set sh = CreateObject("WScript.Shell")
 
@@ -17,6 +18,18 @@ root = fso.GetParentFolderName(fso.GetParentFolderName(WScript.ScriptFullName))
 repo = fso.GetParentFolderName(root)
 userData = root & "\.dev-userdata"
 If Not fso.FolderExists(userData) Then fso.CreateFolder userData
+
+' Item 4, plan step 9, 2026-09-10: the canonical checkout file wins over this
+' repo, same rule as checkout-file.ts / dev.cjs's own read of it.
+checkoutDir = repo
+checkoutFile = sh.ExpandEnvironmentStrings("%USERPROFILE%") & "\.forge\console.checkout"
+If fso.FileExists(checkoutFile) Then
+  Set ts = fso.OpenTextFile(checkoutFile, 1)
+  Dim fileContent
+  fileContent = Trim(ts.ReadAll())
+  ts.Close
+  If Len(fileContent) > 0 Then checkoutDir = fileContent
+End If
 
 running = False
 Set wmi = GetObject("winmgmts:\\.\root\cimv2")
@@ -31,7 +44,7 @@ sh.CurrentDirectory = root
 
 If running Then
   sh.Environment("Process")("FORGE_USER_DATA_DIR") = userData
-  sh.Environment("Process")("FORGE_REPO_DIR") = repo
+  sh.Environment("Process")("FORGE_REPO_DIR") = checkoutDir
   sh.Run """" & root & "\node_modules\electron\dist\electron.exe"" """ & root & """", 0, False
 Else
   sh.Run "cmd /c node scripts\dev.cjs > """ & userData & "\dev.log"" 2>&1", 0, False
