@@ -102,6 +102,22 @@ describe('POST /sync/full', () => {
     release?.();
   });
 
+  it('names live queue and worker counts in the confirm blast text', async () => {
+    await fetch(`${base}/queue`, {
+      method: 'POST', headers: { 'x-forge-token': server.token, 'content-type': 'application/json' },
+      body: JSON.stringify({ source: 'ticket', input: 'BBZ-1' }),
+    });
+
+    const res = await fetch(`${base}/sync/full`, {
+      method: 'POST', headers: { 'x-forge-token': server.token, 'content-type': 'application/json' }, body: '{}',
+    });
+    const body = await res.json() as { blast: string };
+    expect(body.blast).toContain('wipe 1 queue items');
+    expect(body.blast).toContain('stop 0 running workers');
+    expect(body.blast).toContain('worktree sweep: not wired yet');
+    release?.();
+  });
+
   it('confirmed runs the sync and journals sync.started', async () => {
     const first = await fetch(`${base}/sync/full`, {
       method: 'POST', headers: { 'x-forge-token': server.token, 'content-type': 'application/json' }, body: '{}',

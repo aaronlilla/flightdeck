@@ -519,6 +519,10 @@ export class ForgeServer {
       confirmGate: (body, source, blast, act) => this.consoleWrites.confirmGate(body, source, blast, act),
       writeWatcherState: (state) => writeWatcherState(state),
       defaultProject: () => process.env['FORGE_BACKLOG_PROJECT'] ?? null,
+      blastCounts: () => ({
+        queueItems: this.queueStoreForMerge.all().length,
+        runningWorkers: this.registry.all().filter((row) => this.isAliveFn(row.pid)).length,
+      }),
     });
     this.conductor = new ConductorAgent({
       writes: this.consoleWrites, reads: this.consoleReads, queue: this.queueRoutes,
