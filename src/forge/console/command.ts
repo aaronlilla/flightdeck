@@ -13,7 +13,7 @@
  * one level up: `Run plan` sends `run <token>`.
  */
 import { randomUUID } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { dirname, join } from 'node:path';
 
@@ -328,9 +328,106 @@ function respond(response: ServerResponse, status: number, body: unknown): void 
   response.end(text);
 }
 
+/**
+ * A confirm the operator has not clicked yet, in a form a process that never saw the
+ * proposal can rebuild. The console restarts on its own cadence -- `cli.ts` exits 75 and
+ * the supervisor starts a NEW process -- and a captured closure cannot cross that, so
+ * every pending token used to die there and the click came back "nothing pending".
+ *
+ * Only the two irreversible actions the board actually re-proposes for hours carry a
+ * descriptor. Everything else proposed with a bare closure (merge, caps, queue removal,
+ * the agent's plan cards) is still in-memory only and still dies on a restart -- a named
+ * follow-up, not something this type silently claims to cover.
+ */
+export type ConfirmDescriptor =
+  | { kind: 'kill'; laneId: string; reason: string; andRetire: boolean; label: string }
+  | { kind: 'retire'; laneId: string; label: string };
+
+interface PersistedConfirm {
+  token: string;
+  blast: string;
+  source: string;
+  at: number;
+  descriptor: ConfirmDescriptor;
+}
+
+/** A pending confirm is stale after this long. Short on purpose: a card that survives a
+ *  restart also survives the board moving on underneath it, and the shorter the window the
+ *  less there is to move. The restart cadence is minutes, so this still covers many of
+ *  them; a card older than this is refused and the operator re-issues the action. */
+const CONFIRM_TTL_MS = 2 * 60 * 60_000;
+
+/** Newest-first hard ceiling, so a wedged proposer cannot grow the file without end. */
+const CONFIRM_MAX = 200;
+
+/**
+ * The pending confirms that outlive the process, as one small JSON file rewritten whole.
+ * Rewritten rather than appended so a spent token leaves no row to replay: the file IS
+ * the set of tokens that may still be spent, so a token spent before a restart is gone
+ * after it.
+ *
+ * The guarantee is one-writer-at-a-time, not a lock: read-modify-write with two consoles
+ * live on the same forge home could lose a row or spend one twice. Nothing runs two --
+ * the port bind and the queue lock allow one console, and a cutover exits the old process
+ * before the supervisor starts the new one -- so the window is closed by the callers, not
+ * by this file. Say so rather than claim an atomicity it does not have.
+ */
+class PendingConfirmStore {
+  constructor(private readonly path: string) {}
+
+  private read(): PersistedConfirm[] {
+    if (!existsSync(this.path)) return [];
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(this.path, 'utf8'));
+      return Array.isArray(parsed) ? (parsed as PersistedConfirm[]) : [];
+    } catch {
+      // A half-written or hand-edited file must not take the console down with it: an
+      // unreadable store means no token survives, which is today's behaviour anyway.
+      return [];
+    }
+  }
+
+  private write(rows: PersistedConfirm[], now: number): void {
+    const live = rows.filter((row) => now - row.at < CONFIRM_TTL_MS).slice(-CONFIRM_MAX);
+    mkdirSync(dirname(this.path), { recursive: true });
+    // Temp file then rename: the store is rewritten whole, so a torn write would lose
+    // EVERY pending confirm (read() treats unparseable as empty), not the one row.
+    const tmp = `${this.path}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(live), 'utf8');
+    renameSync(tmp, this.path);
+  }
+
+  put(row: PersistedConfirm): void {
+    // Prune against the wall clock, never the incoming row's own stamp: a caller passing
+    // an older `at` must not move the TTL window every other row is measured against.
+    this.write([...this.read().filter((r) => r.token !== row.token), row], Date.now());
+  }
+
+  /** Reads a token AND spends it in one step, so the same token can never run twice. */
+  take(token: string, now: number): PersistedConfirm | undefined {
+    const rows = this.read();
+    const found = rows.find((row) => row.token === token);
+    if (!found) return undefined;
+    this.write(rows.filter((row) => row.token !== token), now);
+    return now - found.at < CONFIRM_TTL_MS ? found : undefined;
+  }
+
+  has(token: string, now: number): boolean {
+    const found = this.read().find((row) => row.token === token);
+    return found !== undefined && now - found.at < CONFIRM_TTL_MS;
+  }
+
+  drop(token: string, now: number): void {
+    const rows = this.read();
+    if (rows.some((row) => row.token === token)) this.write(rows.filter((row) => row.token !== token), now);
+  }
+}
+
 interface PendingConfirm {
   blast: string;
   run: () => Promise<Message[]>;
+  /** Present when this confirm can be rebuilt after a restart; see ConfirmDescriptor. */
+  descriptor?: ConfirmDescriptor;
   /** Set by a route-registered pending once it has run: the HTTP outcome the route
    *  answers with when the confirm arrives as `{ confirm: token }` in a body. */
   outcome?: RouteOutcome;
@@ -382,6 +479,9 @@ export class ConsoleWrites {
 
   private readonly pendingConfirms = new Map<string, PendingConfirm>();
 
+  /** The subset of `pendingConfirms` that survives this process; see PendingConfirmStore. */
+  private readonly durableConfirms: PendingConfirmStore;
+
   private readonly pendingPlans = new Map<string, PendingPlan>();
 
   private enforcement: { stop(): void } | undefined;
@@ -392,6 +492,7 @@ export class ConsoleWrites {
 
   constructor(private readonly deps: ConsoleWritesDeps) {
     this.ledger = new ActionsLedger(deps.ledgerPath ?? actionsLedgerPath());
+    this.durableConfirms = new PendingConfirmStore(join(deps.forgeHomeDir ?? forgeHome(), 'pending-confirms.json'));
     this.integrations = new IntegrationsRegistry({
       journalPath: deps.journalPath, ledger: this.ledger,
       ...(deps.integrationsConfigPath ? { configPath: deps.integrationsConfigPath } : {}),
@@ -631,15 +732,71 @@ export class ConsoleWrites {
    * (W2) go through this one map, so a typed or clicked `confirm <token>` finds the
    * pending action wherever it was proposed.
    */
-  propose(source: string, blast: string, run: () => Promise<Message[]>): { token: string; card: Message } {
+  propose(
+    source: string, blast: string, run: () => Promise<Message[]>, descriptor?: ConfirmDescriptor,
+  ): { token: string; card: Message } {
     const token = randomUUID();
-    this.pendingConfirms.set(token, { blast, run });
+    this.pendingConfirms.set(token, { blast, run, ...(descriptor ? { descriptor } : {}) });
+    if (descriptor) this.durableConfirms.put({ token, blast, source, at: Date.now(), descriptor });
     return { token, card: confirmCard(source, blast, token) };
+  }
+
+  /**
+   * Rebuilds the action behind a confirm the operator minted against a process that is
+   * gone. Only the descriptor kinds above can be rebuilt; anything else was never
+   * written to the durable store in the first place.
+   */
+  private rebuild(row: PersistedConfirm): PendingConfirm {
+    const { descriptor: d, source } = row;
+    // The rebuilt action records its own `outcome` exactly as the closure path does, so a
+    // route confirming after a restart answers what the kill or the retire really did
+    // instead of falling through to a hard-coded 200.
+    const pending: PendingConfirm = {
+      blast: row.blast, descriptor: d,
+      run: async () => {
+        if (d.kind === 'retire') {
+          const outcome = retireLane(d.laneId, true, this.retireDeps());
+          pending.outcome = outcome;
+          return [outcome.status === 200
+            ? receiptCard(source, outcome.body)
+            : refusalCard(source, outcome.body.error)];
+        }
+        const outcome = await killRun(d.laneId, d.reason, this.runActionsDeps());
+        pending.outcome = outcome;
+        const cards: Message[] = [outcome.status === 200
+          ? receiptCard(source, outcome.body as ActionResult)
+          : refusalCard(source, actionFailureText(outcome.body, `could not kill ${d.label}`))];
+        if (d.andRetire) {
+          // "Kill and remove" is one instruction. A kill refused because the run already
+          // ended on its own removes the only obstacle to the remove -- skipping it there
+          // leaves the row on the board, which is the opposite of what was confirmed. The
+          // kill's own outcome stays the answer whenever the kill itself succeeded.
+          const retired = retireLane(d.laneId, true, this.retireDeps());
+          cards.push(retired.status === 200 ? receiptCard(source, retired.body) : refusalCard(source, retired.body.error));
+          if (outcome.status !== 200 && retired.status === 200) pending.outcome = retired;
+        }
+        return cards;
+      },
+    };
+    return pending;
+  }
+
+  /** The pending action for a token, from this process or from the one before it. The
+   *  lookup SPENDS the token either way, so no path can run the same confirm twice. */
+  private takeConfirm(token: string): PendingConfirm | undefined {
+    const live = this.pendingConfirms.get(token);
+    if (live) {
+      this.pendingConfirms.delete(token);
+      this.durableConfirms.drop(token, Date.now());
+      return live;
+    }
+    const row = this.durableConfirms.take(token, Date.now());
+    return row ? this.rebuild(row) : undefined;
   }
 
   /** Whether `confirm <token>` would still find something to run. */
   hasPending(token: string): boolean {
-    return this.pendingConfirms.has(token);
+    return this.pendingConfirms.has(token) || this.durableConfirms.has(token, Date.now());
   }
 
   /**
@@ -652,13 +809,12 @@ export class ConsoleWrites {
    */
   async confirmGate(
     body: Record<string, unknown> | null | undefined, source: string, blast: string,
-    act: () => Promise<RouteOutcome>,
+    act: () => Promise<RouteOutcome>, descriptor?: ConfirmDescriptor,
   ): Promise<RouteOutcome> {
     const token = body?.['confirm'];
     if (typeof token === 'string') {
-      const pending = this.pendingConfirms.get(token);
+      const pending = this.takeConfirm(token);
       if (!pending) return { status: 409, body: { error: `nothing pending for ${token}` } };
-      this.pendingConfirms.delete(token);
       const cards = await pending.run();
       for (const card of cards) appendThread(card);
       return pending.outcome ?? { status: 200, body: { ok: true, jid: null, message: cards[0]?.text ?? 'done', undoable: false } };
@@ -670,9 +826,11 @@ export class ConsoleWrites {
         pending.outcome = outcome;
         return [outcomeCard(source, outcome)];
       },
+      ...(descriptor ? { descriptor } : {}),
     };
     const fresh = randomUUID();
     this.pendingConfirms.set(fresh, pending);
+    if (descriptor) this.durableConfirms.put({ token: fresh, blast, source, at: Date.now(), descriptor });
     const reply: ConfirmPendingBody = { ok: false, pending: true, token: fresh, blast, card: confirmCard(source, blast, fresh) };
     return { status: 202, body: reply };
   }
@@ -712,9 +870,8 @@ export class ConsoleWrites {
         return [replyCard(source, 'cancelled')];
 
       case 'confirm': {
-        const pending = this.pendingConfirms.get(intent.token);
+        const pending = this.takeConfirm(intent.token);
         if (!pending) return [refusalCard(source, `nothing pending for ${intent.token}`)];
-        this.pendingConfirms.delete(intent.token);
         return pending.run();
       }
 
@@ -729,7 +886,9 @@ export class ConsoleWrites {
       // rather than the untargeted `cancel`, so one dismiss can never resolve a
       // different pending card than the one its button was on.
       case 'dismiss': {
-        if (this.pendingConfirms.delete(intent.token) || this.pendingPlans.delete(intent.token)) {
+        const durable = this.durableConfirms.has(intent.token, Date.now());
+        if (durable) this.durableConfirms.drop(intent.token, Date.now());
+        if (this.pendingConfirms.delete(intent.token) || durable || this.pendingPlans.delete(intent.token)) {
           return [replyCard(source, 'dismissed')];
         }
         return [refusalCard(source, `nothing pending for ${intent.token}`)];
@@ -781,7 +940,7 @@ export class ConsoleWrites {
           return [outcome.status === 200
             ? receiptCard(source, outcome.body as ActionResult)
             : refusalCard(source, (outcome.body as { message?: string }).message ?? `could not kill ${label}`)];
-        });
+        }, { kind: 'kill', laneId, reason: 'killed from the console', andRetire: false, label });
         return [card];
       }
 
@@ -796,7 +955,7 @@ export class ConsoleWrites {
           return [outcome.status === 200
             ? receiptCard(source, outcome.body)
             : refusalCard(source, outcome.body.error)];
-        });
+        }, { kind: 'retire', laneId, label });
         return [card];
       }
 
@@ -1124,7 +1283,8 @@ export class ConsoleWrites {
       switch (action) {
         case 'kill':
           outcome = await this.confirmGate(body, 'console', `kills ${label}: discards the working diff and stops the sandbox.`,
-            () => killRun(run, String(body?.['reason'] ?? 'killed from the console'), deps));
+            () => killRun(run, String(body?.['reason'] ?? 'killed from the console'), deps),
+            { kind: 'kill', laneId: run, reason: String(body?.['reason'] ?? 'killed from the console'), andRetire: false, label });
           break;
         case 'pause':
           outcome = await pauseRun(run, String(body?.['reason'] ?? 'paused from the console'), deps);

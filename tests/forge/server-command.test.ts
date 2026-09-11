@@ -123,3 +123,107 @@ describe('POST /command and the Conductor agent', () => {
     expect(messages.find((row) => row.type === 'reply')?.text).toBe('Kill and remove proposed.');
   });
 });
+
+/**
+ * The console restarts on its own cadence: `cli.ts` exits 75 and the supervisor starts a
+ * NEW process (`AppExit 75 Restart`), which replays the journal from scratch. A confirm
+ * card the operator has not clicked yet must survive that boundary -- before this, every
+ * pending token died with the process and the click came back
+ * `refused: nothing pending for <uuid>`.
+ */
+describe('a confirm survives the console restarting under it', () => {
+  async function restart(): Promise<string> {
+    await server!.close();
+    server = undefined;
+    return start(scriptedQuery([]));
+  }
+
+  it('a token minted before the restart still runs after it', async () => {
+    const base = await start(scriptedQuery([]));
+    const proposed = await command(base, `remove ${DEAD}`);
+    const card = proposed.find((row) => row.type === 'confirm')!;
+    const token = card.btns!.find((btn) => btn.cmd.startsWith('confirm '))!.cmd.split(' ')[1]!;
+
+    const fresh = await restart();
+    const after = await command(fresh, `confirm ${token}`);
+    expect(after.map((row) => row.type)).toEqual(['operator', 'receipt']);
+    expect(after[1]!.text).toBe(`retired ${DEAD}`);
+  });
+
+  it('still refuses a token nobody ever minted', async () => {
+    const base = await start(scriptedQuery([]));
+    await command(base, `remove ${DEAD}`);
+    const fresh = await restart();
+    const after = await command(fresh, 'confirm 00000000-0000-4000-8000-000000000000');
+    expect(after[1]!.type).toBe('refusal');
+  });
+
+  it('a token spent before the restart cannot be spent again after it', async () => {
+    const base = await start(scriptedQuery([]));
+    const proposed = await command(base, `remove ${DEAD}`);
+    const token = proposed.find((row) => row.type === 'confirm')!
+      .btns!.find((btn) => btn.cmd.startsWith('confirm '))!.cmd.split(' ')[1]!;
+    await command(base, `confirm ${token}`);
+
+    const fresh = await restart();
+    const again = await command(fresh, `confirm ${token}`);
+    expect(again[1]!.type).toBe('refusal');
+  });
+});
+
+/**
+ * A confirm rebuilt after a restart must report the action's REAL outcome. The rebuilt
+ * path has no entry in the in-memory map, so an `outcome ?? 200` fallback answered
+ * `{ok: true}` for a kill the fleet had already refused.
+ */
+describe('a rebuilt confirm reports what the action actually did', () => {
+  const GONE = '2026-09-04-no-such-run';
+
+  it('answers the refusal, not a 200, when the rebuilt kill is refused', async () => {
+    const base = await start(scriptedQuery([]));
+    const propose = await fetch(`${base}/run/${GONE}/kill`, {
+      method: 'POST', headers: { 'x-forge-token': server!.token, 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(propose.status).toBe(202);
+    const { token } = (await propose.json()) as { token: string };
+
+    await server!.close();
+    server = undefined;
+    const fresh = await start(scriptedQuery([]));
+
+    // No such run, so the kill underneath this confirm is refused by the fleet.
+    const confirmed = await fetch(`${fresh}/run/${GONE}/kill`, {
+      method: 'POST', headers: { 'x-forge-token': server!.token, 'content-type': 'application/json' },
+      body: JSON.stringify({ confirm: token }),
+    });
+    expect(confirmed.status).not.toBe(200);
+  });
+});
+
+/**
+ * "Kill and remove" is one instruction. Across a restart, the run ending on its own in
+ * between is the normal case, not a rare one -- and a lane that already ended cannot be
+ * killed (`killed` is not a kill-allowed state) while it CAN be removed. Skipping the
+ * remove there leaves the row on the board, the opposite of what was confirmed.
+ */
+describe('a rebuilt kill-and-remove still removes when the run ended on its own', () => {
+  it('removes the lane even though the kill half is refused', async () => {
+    const fake = scriptedQuery([{ tools: [{ tool: 'kill', input: { lane: DEAD, andRetire: true } }], reply: 'Kill and remove proposed.' }]);
+    const base = await start(fake);
+    const proposed = await command(base, 'kill and remove it', DEAD);
+    const token = proposed.find((row) => row.type === 'confirm')!
+      .btns!.find((btn) => btn.cmd.startsWith('confirm '))!.cmd.split(' ')[1]!;
+
+    await server!.close();
+    server = undefined;
+    // The run ends on its own while the card sits unclicked: now unkillable, still removeable.
+    const journal = new Journal(join(dir, 'fleet.jsonl'));
+    journal.append({ event: 'run.finished', run: DEAD, verdict: 'killed' });
+    journal.close();
+    const fresh = await start(scriptedQuery([]));
+
+    const after = await command(fresh, `confirm ${token}`);
+    expect(JSON.stringify(after)).toContain(`retired ${DEAD}`);
+  });
+});

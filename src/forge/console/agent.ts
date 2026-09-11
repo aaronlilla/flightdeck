@@ -44,7 +44,7 @@ import type { RoundsRoutes } from './rounds-route.js';
 import type { QueueRoutes } from './queue-route.js';
 import { amendRunBrief, type AmendDeps } from './amend.js';
 import { assertRunListening } from './listening.js';
-import { appendThread as appendThreadDefault, actionFailureText, parseIntent, type ConsoleWrites } from './command.js';
+import { appendThread as appendThreadDefault, actionFailureText, parseIntent, type ConfirmDescriptor, type ConsoleWrites } from './command.js';
 import {
   killRun, pauseRun, reauditRun, reopenRun, resumeRun, setRunCap,
 } from './run-actions.js';
@@ -282,8 +282,10 @@ export class ConductorAgent {
 
   /** The proposal path every irreversible tool takes: a confirm card the reply carries,
    *  and nothing run until the operator clicks it. */
-  private propose(blast: string, run: () => Promise<Message[]>, receipt: string): ToolOutcome {
-    const { card } = this.deps.writes.propose('conductor', blast, run);
+  private propose(
+    blast: string, run: () => Promise<Message[]>, receipt: string, descriptor?: ConfirmDescriptor,
+  ): ToolOutcome {
+    const { card } = this.deps.writes.propose('conductor', blast, run, descriptor);
     this.turnCards.push(card);
     return { text: `${receipt}. A Confirm card is waiting for the operator; nothing has run yet.`, receipt, cards: [card] };
   }
@@ -356,7 +358,8 @@ export class ConductorAgent {
             cards.push(retired.status === 200 ? receiptRow(retired.body.message) : refusalRow(retired.body.error));
           }
           return cards;
-        }, andRetire ? `kill and remove proposed for ${label}, waiting on Confirm` : `kill proposed for ${label}, waiting on Confirm`);
+        }, andRetire ? `kill and remove proposed for ${label}, waiting on Confirm` : `kill proposed for ${label}, waiting on Confirm`,
+        { kind: 'kill', laneId: lane.id, reason: reason ?? 'killed from the console', andRetire: andRetire ?? false, label });
       },
       retire: async ({ lane: token }) => {
         const lane = this.resolveLane(token);
@@ -365,7 +368,7 @@ export class ConductorAgent {
         return this.propose(`${label} leaves the board; it stays under Archived and can be brought back.`, async () => {
           const outcome = retireLane(lane.id, true, writes.retireDeps());
           return [outcome.status === 200 ? receiptRow(outcome.body.message) : refusalRow(outcome.body.error)];
-        }, `remove proposed for ${label}, waiting on Confirm`);
+        }, `remove proposed for ${label}, waiting on Confirm`, { kind: 'retire', laneId: lane.id, label });
       },
       unretire: async ({ lane: token }) => {
         const lane = this.resolveLane(token);
