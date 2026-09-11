@@ -39,7 +39,7 @@ describe('buildProductionSyncStages: watcher-on', () => {
       store: queueStore, journal,
     });
     process.env['FORGE_BACKLOG_PROJECT'] = 'BBZ';
-    const stages = buildProductionSyncStages({ queueStore, watcher, journal });
+    const { stages } = buildProductionSyncStages({ queueStore, watcher, journal });
 
     await stages['watcher-on']!({ now: Date.now });
     journal.close();

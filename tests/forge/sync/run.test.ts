@@ -80,7 +80,7 @@ describe('createSyncRunner', () => {
 
     const pullJira = record.stages.find((s) => s.name === 'pull-jira');
     expect(pullJira?.status).toBe('skipped');
-    expect(pullJira?.message).toBe('not wired yet: stream B');
+    expect(pullJira?.message).toBe('stage not configured: pull-jira');
     expect(record.ok).toBe(true);
     journal.close();
   });
