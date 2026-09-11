@@ -180,13 +180,13 @@ describe('checkoutPrompt', () => {
  * that is correctly configured, which is worse than the bug this all started from.
  */
 describe('locateCheckout treats one directory spelled two ways as one directory', () => {
-  const fs = fsWith(new Set(['C:/dev/flightdeck/package.json', 'C:/dev/flightdeck/dist/forge/cli.js']));
+  const fs = fsWith(new Set(['D:/work/repo/package.json', 'D:/work/repo/dist/forge/cli.js']));
   const winJoin = (...parts: string[]) => parts.join('/');
 
   it('does not refuse when the separators differ', () => {
     const result = locateCheckout(fs, {
-      env: { FORGE_REPO_DIR: 'C:\\dev\\flightdeck' },
-      checkoutFileDir: 'C:/dev/flightdeck',
+      env: { FORGE_REPO_DIR: 'D:\\work\\repo' },
+      checkoutFileDir: 'D:/work/repo',
       join: winJoin,
     });
     expect(result.kind).toBe('ok');
@@ -194,8 +194,8 @@ describe('locateCheckout treats one directory spelled two ways as one directory'
 
   it('does not refuse over a trailing separator', () => {
     const result = locateCheckout(fs, {
-      env: { FORGE_REPO_DIR: 'C:/dev/flightdeck/' },
-      checkoutFileDir: 'C:/dev/flightdeck',
+      env: { FORGE_REPO_DIR: 'D:/work/repo/' },
+      checkoutFileDir: 'D:/work/repo',
       join: winJoin,
     });
     expect(result.kind).toBe('ok');

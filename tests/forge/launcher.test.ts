@@ -223,7 +223,7 @@ describe('what a refusal says', () => {
  */
 describe('runtimeCheckout', () => {
   it('reports the repository root git names', () => {
-    expect(runtimeCheckout(() => 'C:/dev/flightdeck\n')).toBe('C:/dev/flightdeck');
+    expect(runtimeCheckout(() => 'D:/work/repo\n')).toBe('D:/work/repo');
   });
 
   it('falls back to its own directory rather than saying nothing when git cannot answer', () => {
