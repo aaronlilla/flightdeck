@@ -14,7 +14,7 @@ import { join } from 'node:path';
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { Journal, JournalCache, appendOnce, replay, type ForgeEvent, type RangeReader } from '../../src/forge/journal.js';
+import { Journal, JournalCache, appendOnce, replay, replayFresh, type ForgeEvent, type RangeReader } from '../../src/forge/journal.js';
 
 let dir: string;
 let path: string;
@@ -390,5 +390,35 @@ describe('replayed usage rows are deduped against the SDK\'s per-block repeat', 
     );
     const state = replay(path);
     expect(state.runs['alpha']?.tokensUsed).toBe(160 + 1_109);
+  });
+});
+
+describe('session fold: which pid the fold keeps', () => {
+  // Read off the live console on 2026-09-11. Session 3f2b2681 wrote five `session.started`
+  // rows in thirteen seconds, alternating `actor: registry` pid 48768 (the terminal's, from
+  // its session file) with `actor: session` pid 39688 (the hook's own short-lived process).
+  // `identityIsStale` in reconcile.ts sees the mismatch and corrects it, the next hook event
+  // undoes the correction, and the two write a ledger row each way round for as long as the
+  // session lives. It also leaves the fold holding a dead pid much of the time, which the
+  // orphan sweep probes -- two different sessions were folded onto the same pid 23648.
+  it('keeps the registry pid when a hook row reports its own process instead', () => {
+    write(
+      { event: 'session.started', actor: 'registry', session: 's1', pid: 48768, name: 'dev-b5' },
+      { event: 'session.started', actor: 'session', session: 's1', pid: 39688 },
+    );
+    expect(replayFresh(path).sessions['s1']?.pid).toBe(48768);
+  });
+
+  it('takes a hook pid when the registry has never supplied one', () => {
+    write({ event: 'session.started', actor: 'session', session: 's2', pid: 39688 });
+    expect(replayFresh(path).sessions['s2']?.pid).toBe(39688);
+  });
+
+  it('still lets the registry correct a pid it supplied earlier', () => {
+    write(
+      { event: 'session.started', actor: 'registry', session: 's3', pid: 1 },
+      { event: 'session.started', actor: 'registry', session: 's3', pid: 2 },
+    );
+    expect(replayFresh(path).sessions['s3']?.pid).toBe(2);
   });
 });

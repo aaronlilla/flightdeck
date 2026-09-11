@@ -81,15 +81,23 @@ export function ingestOne(deps: IngestDeps, incoming: IncomingSessionEvent): For
     throw new Error(`unknown session event kind: ${incoming.event}`);
   }
   const { event, session, ...rest } = incoming;
-  const rows: ForgeEvent[] = [deps.append({ event, actor: 'session', session, ...rest })];
-
-  if (!TERMINAL_KINDS.has(event)) return rows;
+  if (!TERMINAL_KINDS.has(event)) {
+    return [deps.append({ event, actor: 'session', session, ...rest })];
+  }
 
   const lastStop = deps.lastStopFor(session);
   const closedWithComplete = lastStop?.closedWithComplete ?? false;
   const exitClass: ExitClass = event === 'session.vanished'
     ? classifyVanished()
     : classifyExit((incoming.reason as SessionEndReason) ?? 'other', closedWithComplete);
+
+  // The class goes on the terminal row itself. It used to be written only onto a
+  // `session.cleanup` row, and cleanup runs for `killed` and `interrupted` alone -- so a
+  // session that ended cleanly had its class computed and thrown away, and the fold, which
+  // reads the class off this row (journal.ts:376), never had one. A real Ctrl-C on the live
+  // console reaches here as `reason: other` with `closed_with_complete` false, classifies
+  // `unknown`, and was journalled with no class at all.
+  const rows: ForgeEvent[] = [deps.append({ event, actor: 'session', session, ...rest, exitClass })];
 
   if (CLEANUP_CLASSES.has(exitClass)) {
     rows.push(...runCleanup(deps, session, incoming.cwd, exitClass));

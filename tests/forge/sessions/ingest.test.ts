@@ -94,6 +94,18 @@ describe('ingestOne', () => {
     expect(appended).toHaveLength(1);
   });
 
+  // Read off the live console 2026-09-11 05:30:59: a real Ctrl-C reaches the console as
+  // SessionEnd `reason: other` with `closed_with_complete` false, which classifies
+  // `unknown`. `unknown` is not a cleanup class, so the class was computed and dropped --
+  // the journalled row carried none, and `journal.ts:376` reads the class off that row, so
+  // the fold ended up with no exit class for any session that ended cleanly.
+  it('records the exit class on the terminal row itself, not only on a cleanup row', () => {
+    const { deps, appended } = fakeDeps({ lastStopFor: () => ({ closedWithComplete: false }) });
+    ingestOne(deps, { event: 'session.ended', session: 's1', reason: 'other' });
+    expect(appended).toHaveLength(1);
+    expect(appended[0]).toMatchObject({ event: 'session.ended', exitClass: 'unknown' });
+  });
+
   it('rejects an unknown event kind', () => {
     const { deps } = fakeDeps();
     expect(() => ingestOne(deps, { event: 'session.mystery', session: 's1' })).toThrow();

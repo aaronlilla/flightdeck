@@ -350,7 +350,17 @@ function foldSessionEvent(state: FleetState, row: ForgeEvent): void {
   switch (row.event) {
     case 'session.started':
       session.startedAt = row.at;
-      if (typeof row['pid'] === 'number') session.pid = row['pid'] as number;
+      // The registry reads the terminal's own pid out of its session file. A hook reports
+      // its own short-lived process instead, so letting a hook row overwrite a registry pid
+      // leaves the fold holding a pid that is dead within the second -- and the registry
+      // tick, seeing the mismatch, journals a correcting row that the next hook undoes. On
+      // 2026-09-11 one session wrote five `session.started` rows in thirteen seconds that
+      // way, and two different sessions were folded onto the same pid. A hook pid still
+      // fills an empty slot, because on first contact it is the only pid anyone has.
+      if (typeof row['pid'] === 'number'
+        && (row['actor'] === 'registry' || typeof session.pid !== 'number')) {
+        session.pid = row['pid'] as number;
+      }
       if (typeof row['cwd'] === 'string') session.cwd = row['cwd'] as string;
       if (typeof row['configDir'] === 'string') session.configDir = row['configDir'] as string;
       if (typeof row['repo'] === 'string') session.repo = row['repo'] as string;
