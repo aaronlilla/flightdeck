@@ -231,6 +231,11 @@ export function mergeableFor(input: MergeableInput): { ok: true } | { ok: false;
   const { pr } = input;
   if (!pr) return { ok: false, why: 'no PR yet' };
   if (pr.merged) return { ok: false, why: 'already merged' };
+  // Follow-up to R-61: a PR closed without merging is exactly as dead an end as a
+  // merged one -- Merge can only fail on it. Checked before checks/verdict for the
+  // same reason `merged` is: a closed PR's stale checks/verdict facts should never
+  // be read as if the PR were still live.
+  if (pr.closed) return { ok: false, why: 'closed without merging' };
   if (pr.checks === 'failure') return { ok: false, why: 'checks failed' };
   if (pr.checks !== 'success') return { ok: false, why: 'checks pending' };
   if (!pr.verdict || !CLEARING_VERDICTS.has(pr.verdict)) {
@@ -254,7 +259,7 @@ export function mergeReadyReportFrom(lanes: Lane[]): MergeReadyReport {
   const ready: MergeReadyReport['ready'] = [];
   const notReady: MergeReadyReport['notReady'] = [];
   for (const lane of lanes) {
-    if (!lane.pr || lane.pr.merged) continue;
+    if (!lane.pr || lane.pr.merged || lane.pr.closed) continue;
     if (lane.mergeable?.ok) {
       ready.push({ id: lane.id, title: lane.title, pr: lane.pr });
     } else {

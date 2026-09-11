@@ -816,6 +816,15 @@ describe('mergeableFor', () => {
     const pr = { no: 1, url: 'x', files: 0, add: 0, del: 0, draft: false, merged: false, checks: 'success' as const, verdict: 'PASS WITH NOTES' };
     expect(mergeableFor({ pr, repo: 'o/n', mergeAllowed: allow(['o/n']) })).toEqual({ ok: true });
   });
+
+  // Follow-up to R-61: a PR closed without merging is a dead end for Merge exactly
+  // like an already-merged one is -- clicking Merge on it can only fail. `closed` is
+  // checked before `checks`/`verdict` for the same reason `merged` is: a closed PR's
+  // stale checks/verdict facts should never be read as if the PR were still live.
+  it('closed without merging', () => {
+    const pr = { no: 1, url: 'x', files: 0, add: 0, del: 0, draft: false, merged: false, closed: true, checks: 'success' as const, verdict: 'PASS' };
+    expect(mergeableFor({ pr, repo: 'o/n', mergeAllowed: allow(['o/n']) })).toEqual({ ok: false, why: 'closed without merging' });
+  });
 });
 
 describe('mergeReadyReportFrom', () => {
@@ -840,6 +849,17 @@ describe('mergeReadyReportFrom', () => {
 
   it('an already-merged PR is left out of both lists', () => {
     const lane = laneWithPr({ pr: { no: 1, url: 'x', files: 0, add: 0, del: 0, draft: false, merged: true }, mergeable: { ok: false, why: 'already merged' } });
+    expect(mergeReadyReportFrom([lane])).toEqual({ ready: [], notReady: [] });
+  });
+
+  // Follow-up to R-61: a closed-without-merging PR is just as dead an end as a merged
+  // one -- it must never show up in `notReady` inviting an operator to chase a fix
+  // that could never land.
+  it('a closed-without-merging PR is left out of both lists', () => {
+    const lane = laneWithPr({
+      pr: { no: 1, url: 'x', files: 0, add: 0, del: 0, draft: false, merged: false, closed: true },
+      mergeable: { ok: false, why: 'closed without merging' },
+    });
     expect(mergeReadyReportFrom([lane])).toEqual({ ready: [], notReady: [] });
   });
 

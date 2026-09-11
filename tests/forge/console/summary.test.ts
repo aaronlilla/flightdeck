@@ -253,6 +253,18 @@ describe('computeReadiness', () => {
     });
     expect(readiness).toEqual({ ok: false, why: 'already merged', checks: 'failure', behindBase: null, headMoved: false });
   });
+
+  // Follow-up to R-61: same reasoning as "already merged" -- a PR closed without
+  // merging is also done, and checks/audit facts about it are no longer the reason
+  // it isn't going anywhere. Without this, the ticket sheet said "checks are
+  // failure; not audited yet" about a PR that was permanently closed three days ago.
+  it('is "closed without merging" alone once the PR has closed unmerged, with no checks or audit clauses', () => {
+    const readiness = computeReadiness({
+      pr: { ...okPr, checks: 'failure', merged: false, closed: true }, attestation: null,
+      mergeable: { ok: false, why: 'closed without merging' }, drift: noDrift(),
+    });
+    expect(readiness).toEqual({ ok: false, why: 'closed without merging', checks: 'failure', behindBase: null, headMoved: false });
+  });
 });
 
 describe('computeLaneSummary', () => {

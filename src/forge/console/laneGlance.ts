@@ -138,7 +138,9 @@ export function nextCategoryFor(lane: Lane, ready: boolean): NextCategory {
     case 'unverified':
       return lane.pr ? 'verify-pr' : 'verify-no-pr';
     case 'done':
-      return lane.pr && !lane.pr.merged ? 'not-ready' : 'done-cleanup';
+      // Follow-up to R-61: a PR closed without merging has nothing left to wait
+      // on, same as a merged one -- only a genuinely still-open PR reads not-ready.
+      return lane.pr && !lane.pr.merged && !lane.pr.closed ? 'not-ready' : 'done-cleanup';
     case 'merged':
       return 'merged-cleanup';
     case 'killed':

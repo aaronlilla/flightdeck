@@ -275,10 +275,14 @@ export function planRounds(input: RoundsInput): RoundsSheet {
     if (claimedLanes.has(lane.id) || lane.retiredAt) continue;
     if (TERMINAL_LANE_STATES.has(lane.state)) {
       const endedAt = lane.endedAt ?? lane.observedAt;
-      if (now - endedAt > params.orphanAfterMs && (!lane.pr || lane.pr.merged) && !lane.heart) {
+      // Follow-up to R-61: a PR closed without merging is a dead end, same as one
+      // that merged -- both leave nothing for an operator to act on.
+      if (now - endedAt > params.orphanAfterMs && (!lane.pr || lane.pr.merged || lane.pr.closed) && !lane.heart) {
         findings.push({
           kind: 'orphan-lane', action: 'retire', itemId: null, laneId: lane.id, label: lane.title ?? lane.id,
-          why: `${lane.state} ${minutes(now - endedAt)} ago, no queue row, ${lane.pr ? 'PR merged' : 'no PR'}`,
+          why: `${lane.state} ${minutes(now - endedAt)} ago, no queue row, ${
+            lane.pr ? (lane.pr.merged ? 'PR merged' : 'PR closed without merging') : 'no PR'
+          }`,
         });
       }
       continue;

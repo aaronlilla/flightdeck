@@ -1197,7 +1197,7 @@ export class ConsoleReads {
         headSha = detail.headSha;
         pr = {
           title: detail.title || lane.pr?.title || null, body: detail.body ?? null,
-          checks: detail.checks, merged: detail.merged,
+          checks: detail.checks, merged: detail.merged, closed: detail.closed ?? null,
         };
         attestation = readAttestation(repo, prNo, detail.headSha);
         // Fresh, off the same `gh` read and attestation this summary already made --
@@ -1233,7 +1233,9 @@ export class ConsoleReads {
       const queueItem = this.queueStore.all().find((row) => row.runKey === id);
       const repo = queueItem?.repo ?? null;
       const baseBranch = queueItem?.base ?? null;
-      const prFacts: PrFacts = { title: pr.title ?? null, body: null, checks: pr.checks ?? null, merged: pr.merged ?? null };
+      const prFacts: PrFacts = {
+        title: pr.title ?? null, body: null, checks: pr.checks ?? null, merged: pr.merged ?? null, closed: pr.closed ?? null,
+      };
       const attestationPath = repo ? newestAttestationPath(repo, pr.no) : null;
       const attestation = attestationPath ? readAttestationAtPath(attestationPath) : undefined;
       const drift = repo && baseBranch

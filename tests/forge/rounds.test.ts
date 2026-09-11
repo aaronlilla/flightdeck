@@ -80,6 +80,9 @@ const board = {
     lane({ id: 'orphan-fresh', state: 'killed', endedAt: NOW - 2 * 60 * MIN, live: { alive: false, pid: null, lastEventAt: null, checkedAt: NOW } }),
     lane({ id: 'orphan-retired', state: 'killed', endedAt: NOW - 30 * 60 * MIN, retiredAt: NOW - 60 * MIN }),
     lane({ id: 'orphan-open-pr', state: 'done', endedAt: NOW - 30 * 60 * MIN, pr: { no: 5, url: 'u', draft: true, merged: false } }),
+    // Follow-up to R-61: a PR closed without merging is a dead end, same as merged --
+    // the automatic sweep must catch it, not just an operator's manual retire.
+    lane({ id: 'orphan-closed-pr', state: 'done', endedAt: NOW - 30 * 60 * MIN, pr: { no: 6, url: 'u', draft: true, merged: false, closed: true } }),
     lane({ id: 'zombie', state: 'running', observedAt: NOW - 3 * 60 * MIN, live: { alive: false, pid: null, lastEventAt: null, checkedAt: NOW } }),
     lane({ id: 'zombie-parked', state: 'parked', observedAt: NOW - 3 * 60 * MIN, live: { alive: false, pid: null, lastEventAt: null, checkedAt: NOW } }),
     lane({ id: 'run-blocked-dead', state: 'blocked', reason: 'its process is gone and it never reported finishing', live: { alive: false, pid: null, lastEventAt: null, checkedAt: NOW } }),
@@ -156,6 +159,10 @@ describe('planRounds', () => {
     expect(byLane('run-done')).toBeUndefined();
   });
 
+  it('also archives an orphan lane whose PR closed without merging -- dead, same as merged', () => {
+    expect(byLane('orphan-closed-pr')).toMatchObject({ kind: 'orphan-lane', action: 'retire' });
+  });
+
   it('names a lane that reads running with no process as a judge call, never a kill', () => {
     expect(byLane('zombie')).toMatchObject({ kind: 'zombie-lane', action: 'judge' });
     expect(byLane('zombie-parked')).toMatchObject({ kind: 'zombie-lane', action: 'judge' });
@@ -214,11 +221,11 @@ describe('applyRounds', () => {
     expect(store.get('Q-cleared')).toMatchObject({ state: 'running', reason: null });
     expect(store.get('Q-transient')).toMatchObject({ state: 'queued', reason: null });
     expect(store.get('Q-ask')).toMatchObject({ state: 'parked' });
-    expect(retired).toEqual(['orphan-old']);
+    expect(retired).toEqual(['orphan-old', 'orphan-closed-pr']);
 
     const applied = receipts.filter((r) => r.applied).map((r) => r.finding.itemId ?? r.finding.laneId);
-    expect(applied).toEqual(['Q-merged', 'Q-dead', 'Q-killed', 'Q-cleared', 'Q-nobody', 'Q-transient', 'Q-blocked-dead', 'Q-paused-dead', 'orphan-old']);
-    expect(journal.map((e) => e['event'])).toEqual(Array(9).fill('rounds.applied'));
+    expect(applied).toEqual(['Q-merged', 'Q-dead', 'Q-killed', 'Q-cleared', 'Q-nobody', 'Q-transient', 'Q-blocked-dead', 'Q-paused-dead', 'orphan-old', 'orphan-closed-pr']);
+    expect(journal.map((e) => e['event'])).toEqual(Array(10).fill('rounds.applied'));
     expect(store.get('Q-capped')!.state).toBe('running');
     expect(store.get('Q-capped')!.retriedAt).toBeUndefined();
     expect(receipts.find((r) => r.finding.kind === 'ask')).toMatchObject({ applied: false });

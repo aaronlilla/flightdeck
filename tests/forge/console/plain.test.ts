@@ -74,6 +74,30 @@ describe('plainStatus', () => {
     expect(text).toBe('The session ended without finishing its checklist, but its PR #119 is open; the council reviews it next.');
   });
 
+  // Follow-up to R-61 (live finding, PR #80): a PR closed without merging is not
+  // "open" -- the board read "PR #80 is open; the council reviews it next" for three
+  // days after the PR actually closed, telling the operator to wait on a review that
+  // was never going to happen.
+  it('unverified with a closed-without-merging PR: says it closed, never "is open"', () => {
+    const text = plainStatus(lane({
+      state: 'unverified',
+      pr: { no: 80, url: 'https://x/pull/80', files: 1, add: 1, del: 0, draft: true, merged: false, closed: true },
+    }), context);
+    expect(text).not.toContain('is open');
+    expect(text).toContain('#80');
+    expect(text).toContain('closed');
+  });
+
+  it('review with a closed-without-merging draft PR: says it closed, never "is open"', () => {
+    const text = plainStatus(lane({
+      state: 'done',
+      pr: { no: 80, url: 'https://x/pull/80', files: 1, add: 1, del: 0, draft: true, checks: 'success', merged: false, closed: true },
+    }), context);
+    expect(text).not.toContain('is open');
+    expect(text).toContain('#80');
+    expect(text).toContain('closed');
+  });
+
   it('killed: names who stopped it, when, and why', () => {
     const text = plainStatus(lane({ state: 'killed', reason: 'runaway spend', since: 44_640_000 - 2 * 60_000 }), context);
     expect(text).toContain('Stopped by you');
@@ -139,6 +163,20 @@ describe('plainForQueueItem (H1.2 fix): the queue\'s own state and reason win ov
     expect(plainForQueueItem(item, null)).toBe(
       'Draft PR #118 is open; the queue never merges on its own, so it is waiting for your Merge.',
     );
+  });
+
+  // Follow-up to R-61: same reasoning as the `merged` branch just above -- a PR closed
+  // without merging is done, never "open" or "waiting for your Merge."
+  it('done with a closed-without-merging PR: says it closed, never "is open" or "waiting for your Merge"', () => {
+    const item = queueItem({
+      state: 'done',
+      pr: { no: 118, url: 'https://github.com/o/n/pull/118', files: 2, add: 10, del: 1, draft: true, merged: false, closed: true },
+    });
+    const text = plainForQueueItem(item, null);
+    expect(text).not.toContain('is open');
+    expect(text).not.toContain('waiting for your Merge');
+    expect(text).toContain('#118');
+    expect(text).toContain('closed');
   });
 
   it('parked: the item\'s own reason, in words', () => {

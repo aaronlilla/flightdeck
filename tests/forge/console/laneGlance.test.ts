@@ -166,4 +166,13 @@ describe('computeYou agrees with computeNext, per state', () => {
     const l = lane({ state: 'done', pr, mergeable: { ok: true } });
     expect(computeYou(l)).toBe('Merge it.');
   });
+
+  // Follow-up to R-61: a done lane whose PR closed without merging has nothing left
+  // to wait on -- same as a merged one -- so it must read `done-cleanup`, never
+  // `not-ready` (which implies there is still something to wait for).
+  it('a done lane whose PR closed without merging reads done-cleanup, not not-ready', () => {
+    const pr = { no: 5, url: 'x', draft: false, merged: false, closed: true } as never;
+    const l = lane({ state: 'done', pr, mergeable: { ok: false, why: 'closed without merging' } });
+    expect(nextCategoryFor(l, false)).toBe('done-cleanup');
+  });
 });
