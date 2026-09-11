@@ -96,8 +96,15 @@ export interface LivenessInput {
 }
 
 export interface LivenessThresholds {
-  /** No worker event mid-turn. */
+  /** No worker event mid-turn, for a run whose registry liveness is false or unknown. */
   idleMs: number;
+  /**
+   * No worker event mid-turn, for a run the registry has confirmed is backed by a live
+   * pid. Wider than `idleMs`: a model composing a long turn, or waiting out a rate
+   * limit, crosses 120s routinely while genuinely alive. Only `registryLive === true`
+   * earns this; `false` and `undefined` both fall back to `idleMs`.
+   */
+  liveIdleMs: number;
   /** A fleet-account session file that has not been touched. */
   staleSessionMs: number;
   /** A login process still alive after its credentials were written. */
@@ -106,6 +113,7 @@ export interface LivenessThresholds {
 
 export const DEFAULT_THRESHOLDS: LivenessThresholds = {
   idleMs: 120_000,
+  liveIdleMs: 600_000,
   staleSessionMs: 5 * 60_000,
   loginGraceMs: 10 * 60_000,
 };
@@ -144,9 +152,10 @@ export function assess(input: LivenessInput, thresholds: LivenessThresholds = DE
     // that stays silent for minutes, and the tool-budget signal below owns that case
     // with the command class's own wall budget. Idle only judges a run between calls.
     const idleFor = input.now - run.lastEventAt;
-    if (idleFor >= thresholds.idleMs && !run.currentTool) {
+    const idleBudget = run.registryLive === true ? thresholds.liveIdleMs : thresholds.idleMs;
+    if (idleFor >= idleBudget && !run.currentTool) {
       trips.push({
-        key: run.run, signal: 'idle', threshold: thresholds.idleMs, observed: idleFor,
+        key: run.run, signal: 'idle', threshold: idleBudget, observed: idleFor,
         since: run.lastEventAt,
         hint: `run ${run.run} has produced no event for ${Math.round(idleFor / 1000)}s; `
           + 'check its lane log for what it is doing',

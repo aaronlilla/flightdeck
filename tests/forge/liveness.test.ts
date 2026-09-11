@@ -50,6 +50,95 @@ describe('the idle signal while a tool call is in flight', () => {
   });
 });
 
+describe('live-idle-grace: a registry-confirmed-live run gets the wider idle budget', () => {
+  // The specimen from the 2026-09-11 incident: warden.parked and idle both tripped on a
+  // registry-confirmed-live worker that was 124,328ms between tool calls, mid-turn, and
+  // still alive by every other measure. The queue then parked the row, a second actor
+  // retried it, and the original run finished with verdict `stopped` having produced no
+  // commit, branch or PR.
+  it('does not trip idle for a live run silent 124,328ms between calls, past the old 120s idle budget '
+    + 'but inside the wider live-idle budget', () => {
+    const trips = assess(baseInput({
+      runs: [{
+        run: 'queue-BBZ-169-Q-c578de30', className: 'implement',
+        lastEventAt: NOW - 124_328, context: 0, registryLive: true,
+      }],
+    }));
+    expect(trips.some((t) => t.signal === 'idle')).toBe(false);
+  });
+
+  it('still trips idle at 120s for the same silence when the registry says the process is not live', () => {
+    const trips = assess(baseInput({
+      runs: [{
+        run: 'r1', className: 'implement',
+        lastEventAt: NOW - DEFAULT_THRESHOLDS.idleMs, context: 0, registryLive: false,
+      }],
+    }));
+    // registryLive: false with no dangling tool call takes the I15 early-return path and
+    // trips nothing at all — this is the pre-existing behaviour and must not regress.
+    expect(trips.some((t) => t.signal === 'idle')).toBe(false);
+  });
+
+  it('trips idle at 120s for the same silence when the registry was never consulted (undefined)', () => {
+    // undefined means "the caller never asked the registry" — read as live for I15's
+    // dangling-tool-call purposes, but NOT as registry-confirmed-live for the wider idle
+    // budget: only an explicit `registryLive === true` earns the extra grace.
+    const trips = assess(baseInput({
+      runs: [{
+        run: 'r1', className: 'implement',
+        lastEventAt: NOW - DEFAULT_THRESHOLDS.idleMs, context: 0,
+      }],
+    }));
+    const trip = trips.find((t) => t.signal === 'idle');
+    expect(trip).toBeTruthy();
+    expect(trip?.threshold).toBe(DEFAULT_THRESHOLDS.idleMs);
+  });
+
+  it('trips idle for a live run silent past the live budget, reporting the live threshold it actually used', () => {
+    const trips = assess(baseInput({
+      runs: [{
+        run: 'r1', className: 'implement',
+        lastEventAt: NOW - DEFAULT_THRESHOLDS.liveIdleMs, context: 0, registryLive: true,
+      }],
+    }));
+    const trip = trips.find((t) => t.signal === 'idle');
+    expect(trip).toBeTruthy();
+    expect(trip?.threshold).toBe(DEFAULT_THRESHOLDS.liveIdleMs);
+    expect(trip?.observed).toBe(DEFAULT_THRESHOLDS.liveIdleMs);
+  });
+
+  it('does not trip idle for a live run inside a tool call past the live budget; tool-budget owns it', () => {
+    const trips = assess(baseInput({
+      runs: [{
+        run: 'r1', className: 'implement', lastEventAt: NOW - (DEFAULT_THRESHOLDS.liveIdleMs + 60_000),
+        context: 0, registryLive: true,
+        currentTool: { name: 'Bash', startedAt: NOW - (DEFAULT_THRESHOLDS.liveIdleMs + 60_000), cls: 'test' },
+      }],
+    }));
+    expect(trips.some((t) => t.signal === 'idle')).toBe(false);
+  });
+
+  it('is silent one millisecond inside the live budget and trips one millisecond past it: the exact crossing', () => {
+    const quiet = assess(baseInput({
+      runs: [{
+        run: 'r1', className: 'implement',
+        lastEventAt: NOW - (DEFAULT_THRESHOLDS.liveIdleMs - 1), context: 0, registryLive: true,
+      }],
+    }));
+    expect(quiet.some((t) => t.signal === 'idle')).toBe(false);
+
+    const tripped = assess(baseInput({
+      runs: [{
+        run: 'r1', className: 'implement',
+        lastEventAt: NOW - (DEFAULT_THRESHOLDS.liveIdleMs + 1), context: 0, registryLive: true,
+      }],
+    }));
+    const trip = tripped.find((t) => t.signal === 'idle');
+    expect(trip).toBeTruthy();
+    expect(trip?.threshold).toBe(DEFAULT_THRESHOLDS.liveIdleMs);
+  });
+});
+
 describe('the tool-budget signal', () => {
   it('is silent one second inside the class budget', () => {
     const trips = assess(baseInput({
