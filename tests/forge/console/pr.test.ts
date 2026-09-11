@@ -1,12 +1,28 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ChainPacketState } from '../../../src/forge/chain.js';
-import { computeBranchPr, computeQueuePr, computeRunPr, PR_CACHE_TTL_MS } from '../../../src/forge/console/pr.js';
+import { computeBranchPr, computeQueuePr, computeRunPr, PR_CACHE_TTL_MS, repoFromPrUrl } from '../../../src/forge/console/pr.js';
 import type { AttestationReaderFn, GhBranchLookupFn, GhDetailLookupFn } from '../../../src/forge/console/pr.js';
 
 function chainWith(row: ChainPacketState): Map<string, ChainPacketState> {
   return new Map([[row.packetId, row]]);
 }
+
+// Follow-up to R-61: a blocked (not finished) lane's cache row can predate the
+// `repo` field entirely -- every row this repo ever wrote before this fix carried a
+// PR `url` but no separate `repo` string. Parsing it back out of the URL means a
+// legacy row never needs a one-time hand migration to become re-checkable.
+describe('repoFromPrUrl', () => {
+  it('extracts owner/repo from a real PR url', () => {
+    expect(repoFromPrUrl('https://github.com/acme/widgets/pull/107')).toBe('acme/widgets');
+    expect(repoFromPrUrl('https://github.com/aaronlilla/flightdeck/pull/80')).toBe('aaronlilla/flightdeck');
+  });
+
+  it('answers null for a url that is not a github PR link', () => {
+    expect(repoFromPrUrl('not a url')).toBeNull();
+    expect(repoFromPrUrl('https://github.com/aaronlilla/flightdeck/issues/80')).toBeNull();
+  });
+});
 
 describe('computeRunPr', () => {
   it('is null with no chain packet at all, and never calls gh', async () => {
