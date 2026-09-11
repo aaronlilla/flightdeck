@@ -21,7 +21,8 @@ export type SliceName =
   | 'blockers'
   | 'caps'
   | 'proposals'
-  | 'machine';
+  | 'machine'
+  | 'sync';
 
 /** A type alias rather than an interface on purpose: an object type written this way
  *  is assignable to the server's `Record<string, unknown>` publish parameter. */
@@ -81,6 +82,8 @@ export const MUTATING_ROUTES: readonly MutatingRoute[] = [
   { name: 'blocker', pattern: /^\/blockers\/([^/]+)\/(?:resolve|check)$/, slices: ['blockers', 'lanes'] },
   { name: 'accounts-connect', pattern: /^\/accounts\/connect$/, slices: ['accounts'] },
   { name: 'accounts-disconnect', pattern: /^\/accounts\/([^/]+)\/disconnect$/, slices: ['accounts'] },
+  { name: 'sync-start', pattern: /^\/sync\/([^/]+)$/, slices: ['sync'] },
+  { name: 'watcher-toggle', pattern: /^\/watcher\/(?:on|off)$/, slices: ['sync'] },
 ];
 
 /**
