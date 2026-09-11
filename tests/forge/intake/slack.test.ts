@@ -2,8 +2,10 @@
  * The Slack question client (`intake/slack.ts`) against an injected `fetch` -- nothing in
  * this file reaches the network, and nothing in it carries a real token.
  *
- * The token in these fixtures is the literal string `test-token`: a `grep` for the shape
- * a real bot token has (`xoxb-`) over this repository must return nothing.
+ * The token in these fixtures is the literal string `test-token`. A grep for the prefix a
+ * real Slack bot token starts with must return nothing anywhere in this repository, so
+ * that prefix is not written here either -- a fixture that spells it out defeats the very
+ * check it is meant to survive.
  */
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
