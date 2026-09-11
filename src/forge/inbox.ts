@@ -111,10 +111,24 @@ export interface InboxEntry extends PassFields {
  *  lane's question came back with empty text and sat at the top of the board forever). */
 const EMPTY_ASK_STALE_AGE_MS = 24 * 60 * 60_000;
 
+/** R-76: the `Ask.run` prefix an item-scoped question carries (`intake/interviewPlanner.ts`
+ *  mints these). Defined here because `isAskStale` is the one place the distinction
+ *  matters and importing intake from the inbox would invert the dependency. */
+export const ITEM_RUN_PREFIX = 'item:';
+
 export function isAskStale(entry: InboxEntry, hasRegistryRow: (run: string) => boolean, now: number = Date.now()): boolean {
   if (entry.answer !== undefined) return false;
   if (entry.question.trim() === '' && now - entry.at > EMPTY_ASK_STALE_AGE_MS) return true;
   if (!entry.runs.length) return false;
+  // R-76: an interview ask names the queue item it belongs to, not a launched process,
+  // and a queued item has no registry row until it launches two hops later. Without this,
+  // every interview question read as stale the moment it was raised: `forge status` filed
+  // it under "not worth your time" and `forge clear --all` retired it, which silently
+  // restarted the interview and abandoned any Slack thread already open on it. Whether
+  // the item still exists is the queue's knowledge, not the inbox's, so the honest answer
+  // here is "not stale" -- a question kept too long costs a line on a board, and one
+  // retired by mistake costs a person's answer.
+  if (entry.runs.some((run) => run.startsWith(ITEM_RUN_PREFIX))) return false;
   return entry.runs.every((run) => !hasRegistryRow(run));
 }
 

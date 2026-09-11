@@ -14,7 +14,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { ChainGh, ChainLauncher, ChainRunStatus } from '../../../src/forge/chain.js';
 import type { Packet, Reasoner } from '../../../src/forge/contracts.js';
-import { Inbox } from '../../../src/forge/inbox.js';
+import { Inbox, isAskStale } from '../../../src/forge/inbox.js';
 import type { RunRequest, RunResult } from '../../../src/forge/exec.js';
 import {
   addTicketItem, runQueueTick, type QueueRuntimeDeps,
@@ -297,6 +297,50 @@ describe('the planning hop as an interview', () => {
     expect(after.reason).toContain('returns null for an empty wallet');
     expect(asksForItem(h.inbox, item.id)).toHaveLength(0);
     expect(h.events.some((row) => row['event'] === 'queue.planned')).toBe(false);
+  });
+
+  // Found by /critique, 2026-09-11. An interview ask names its item, not a launched
+  // process, so no registry row will ever exist for it -- `isAskStale` read every one of
+  // them as stale from birth, `forge status` filed them under "not worth your time", and
+  // `forge clear --all` retired them, which silently restarted the interview and
+  // abandoned any Slack thread already open on the question.
+  it('an interview ask is never stale: it belongs to an item, not to a live process', async () => {
+    const reasoner = scriptedReasoner([ONE_REPO_ONE_AARON, SCOUT_ANSWERS]);
+    const h = harness(reasoner);
+    const item = addTicketItem(h.store, 'BBZ-277');
+    await runQueueTick(h.deps, [item]);
+
+    const ask = asksForItem(h.inbox, item.id)[0]!;
+    expect(ask.runs).toEqual([`item:${item.id}`]);
+    // No run in this ask has a registry row, and it must still not read as stale.
+    expect(isAskStale(ask, () => false)).toBe(false);
+  });
+
+  // Found by /critique, 2026-09-11. `QUEUE_IN_FLIGHT_STATES` counts `planning`, so a
+  // held item used to eat a concurrency slot for as long as its question went
+  // unanswered; enough of them starved every queued item behind them.
+  it('a held item does not hold a concurrency slot against the queued items behind it', async () => {
+    const reasoner: Reasoner = {
+      provider: 'claude',
+      async call(input) {
+        if (input.className === 'research') return { text: JSON.stringify(SCOUT_ANSWERS) };
+        if (input.prompt.includes('BBZ-277')) return { text: JSON.stringify(ONE_REPO_ONE_AARON) };
+        if (input.prompt.includes('already interviewed')) return { text: '# Goal: fix BBZ-500\n' };
+        return { text: JSON.stringify({ route: 'frontend', questions: [] }) };
+      },
+    };
+    const h = harness(reasoner);
+    h.deps.maxInFlight = () => 1;
+
+    const held = addTicketItem(h.store, 'BBZ-277');
+    await runQueueTick(h.deps, [held]);
+    expect(h.store.get(held.id)!.state).toBe('planning');
+    expect(h.store.get(held.id)!.reason).toBe('interview');
+
+    const behind = addTicketItem(h.store, 'BBZ-500');
+    await runQueueTick(h.deps, [h.store.get(held.id)!, behind]);
+
+    expect(h.store.get(behind.id)!.state).toBe('running');
   });
 
   it('a held item costs no reasoner call on the ticks it spends waiting', async () => {

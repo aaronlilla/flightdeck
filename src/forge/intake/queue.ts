@@ -102,6 +102,16 @@ export type QueuePlanWaiting = { waiting: 'interview'; asks: number };
 export type QueuePlanBackend = { backend: true; ticket: string; ask: string };
 export type QueuePlanOutcome = QueuePlannedBrief | QueuePlanWaiting | QueuePlanBackend;
 
+/** The reason an item held on an interview answer carries. One string, read in two
+ *  places (the hop that writes it and the tick that excludes it from the width), so it
+ *  is named rather than spelled twice. */
+export const INTERVIEW_WAIT_REASON = 'interview';
+
+/** True while this item is parked on a person's answer rather than doing work. */
+export function isWaitingOnInterview(item: QueueItem): boolean {
+  return item.state === 'planning' && item.reason === INTERVIEW_WAIT_REASON;
+}
+
 export function isPlanWaiting(outcome: QueuePlanOutcome): outcome is QueuePlanWaiting {
   return 'waiting' in outcome;
 }
@@ -582,7 +592,7 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
     // The `queue.waiting` row is written once, on the tick the reason first changes, so
     // an item held for a day does not write a row a minute.
     if (isPlanWaiting(planned)) {
-      const reason = 'interview';
+      const reason = INTERVIEW_WAIT_REASON;
       if (item.reason === reason) return item;
       return writeTransition(item, { reason }, deps, 'queue.waiting', { hop: 'plan', asks: planned.asks });
     }
@@ -961,7 +971,13 @@ export async function runQueueTick(deps: QueueRuntimeDeps, items: QueueItem[]): 
   items = items.filter((item) => !advancing.has(item.id));
   const inFlight = items.filter((item) => QUEUE_IN_FLIGHT_STATES.includes(item.state));
   const queued = items.filter((item) => item.state === 'queued');
-  let slots = Math.max(0, deps.maxInFlight() - inFlight.length);
+  // R-76: an item waiting on an interview answer is in `planning` and therefore counts as
+  // in flight, but it is not doing any work -- it is waiting on a person. Counting it
+  // against the width meant enough unanswered questions starved every queued item behind
+  // them, which is the opposite of "one question holds one item". It is still advanced
+  // below, so the tick that answers it still wakes it.
+  const waitingOnAnswer = inFlight.filter(isWaitingOnInterview);
+  let slots = Math.max(0, deps.maxInFlight() - (inFlight.length - waitingOnAnswer.length));
   const toAdvance = [...inFlight];
   let started = 0;
   for (const item of queued) {

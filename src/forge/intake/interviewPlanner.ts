@@ -13,7 +13,7 @@
  * `planning`, `running` and `queued`) and would wait for a person to click Retry.
  */
 import type { Packet, Reasoner } from '../contracts.ts';
-import type { Inbox, InboxEntry } from '../inbox.ts';
+import { ITEM_RUN_PREFIX, type Inbox, type InboxEntry } from '../inbox.ts';
 import { interview, writeBrief, type InterviewAnswer, type InterviewQuestion, type JournalAppend } from './interview.ts';
 import type { InterviewRecords } from './interviewStore.ts';
 import type { QueuePlanOutcome } from './queue.ts';
@@ -23,7 +23,7 @@ import type { ScoutAnswer } from './scout.ts';
  *  downstream is keyed to a run, so an item borrows the shape rather than changing it:
  *  `askKey`, the board's strip and `POST /answer` all work unchanged. */
 export function askRunFor(itemId: string): string {
-  return `item:${itemId}`;
+  return `${ITEM_RUN_PREFIX}${itemId}`;
 }
 
 export function asksForItem(inbox: Inbox, itemId: string): InboxEntry[] {
