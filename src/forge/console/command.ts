@@ -21,6 +21,7 @@ import type { Actuator } from '../contracts.js';
 import { foldChainState } from '../chain.js';
 import type { Inbox, InboxEntry } from '../inbox.js';
 import { deliverAnswer } from '../runinbox.js';
+import { journalInterviewAnswer } from '../intake/interviewPlanner.js';
 import { appendOnce, replay } from '../journal.js';
 import type { StuckSignal } from '../liveness.js';
 import { processAlive, type Registry } from '../registry.js';
@@ -874,6 +875,7 @@ export class ConsoleWrites {
     const answered = this.deps.inbox.answer(match.key, text);
     if (!answered) return [refusalCard(source, `could not answer ${match.key}`)];
     await deliverAnswer(answered, match.key, text);
+    journalInterviewAnswer((row) => appendOnce(this.deps.journalPath, row), answered);
     const { jid } = recordAction(this.deps.journalPath, this.ledger, {
       kind: 'answer', text: `answered ${match.key}: ${text}`, undo: null, extra: { askKey: match.key },
     });
