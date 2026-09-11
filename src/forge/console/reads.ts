@@ -26,7 +26,7 @@ import { RunInbox } from '../runinbox.js';
 import type {
   Caps, JournalResponse, Lane, LanePr, LaneStory, LanesResponse, LaneSummary, NarrationBag, NarrationFacts,
   ProposalsResponse, QueueItem,
-  RunCostResponse, RunJournalResponse, RunPrResponse, RunSandboxResponse, RunThreadResponse, ThreadResponse,
+  RunCostResponse, RunJournalResponse, RunPrResponse, RunSandboxResponse, RunThreadResponse,
 } from '../../shared/console-model.js';
 import { capsOverridesPath, computeCaps, readCapsOverrides } from './caps-read.js';
 import { ensureHardTokens } from './caps-write.js';
@@ -56,6 +56,7 @@ import { computeProposals, readRules, rulesPath } from './proposals.js';
 import { narrateReview } from './review-narrate.js';
 import { computeSandbox, newestLogFile, packetForRun, tailLogWithSeverity } from './sandbox.js';
 import { computeRunThread, computeThread, readThread, threadPath } from './thread.js';
+import type { ThreadSplit } from './thread.js';
 import { narrateThread } from './thread-narrate.js';
 import { computeLaneSummary, computeReadiness, type PrFacts } from './summary.js';
 import type { MergeReadyReport } from '../../shared/console-model.js';
@@ -906,7 +907,7 @@ export class ConsoleReads {
     };
   }
 
-  private threadResponse(verbose = false): ThreadResponse {
+  private threadResponse(verbose = false): ThreadSplit {
     const now = Date.now();
     const persisted = readThread(threadPath(this.forgeHomeDir));
     const fleet = this.journalCache.read(this.journalPath);
@@ -936,7 +937,11 @@ export class ConsoleReads {
     const thread = computeThread(persisted, fleet.events, now, this.inbox.open(), titleFor, {
       verbose, allAsks: this.inbox.all(),
     });
-    return { ...thread, messages: narrateThread(thread.messages, this.narrator) };
+    return {
+      ...thread,
+      messages: narrateThread(thread.messages, this.narrator),
+      cards: narrateThread(thread.cards, this.narrator),
+    };
   }
 
   private journalResponse(query: { since?: number; run?: string; limit?: number }): JournalResponse {

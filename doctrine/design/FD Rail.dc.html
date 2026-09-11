@@ -73,12 +73,15 @@
   </div>
 </aside>
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:400,&quot;height&quot;:820},&quot;messages&quot;:{&quot;editor&quot;:null,&quot;default&quot;:[],&quot;tsType&quot;:&quot;Array&lt;object&gt;&quot;},&quot;topic&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;stickToEnd&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;commands&quot;:{&quot;editor&quot;:null,&quot;default&quot;:null,&quot;tsType&quot;:&quot;string[]&quot;}}">
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:400,&quot;height&quot;:820},&quot;messages&quot;:{&quot;editor&quot;:null,&quot;default&quot;:[],&quot;tsType&quot;:&quot;Array&lt;object&gt;&quot;},&quot;topic&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;stickToEnd&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;},&quot;commands&quot;:{&quot;editor&quot;:null,&quot;default&quot;:null,&quot;tsType&quot;:&quot;string[]&quot;}}">
 class Component extends DCLogic {
   listRef = React.createRef();
-  componentDidMount() { this.scrollEnd(); }
-  componentDidUpdate() { this.scrollEnd(); }
-  scrollEnd() { const el = this.listRef.current; if (el && this.props.stickToEnd) el.scrollTop = el.scrollHeight; }
+  // 1a (R-75, 2026-09-11): the rail OPENS at the bottom and stays pinned there,
+  // chatroom style -- it used to open at the top and only follow once the
+  // conversation moved. Mount always goes to the end; updates follow while pinned.
+  componentDidMount() { this.toEnd(); }
+  componentDidUpdate() { if (this.props.stickToEnd) this.toEnd(); }
+  toEnd() { const el = this.listRef.current; if (el) el.scrollTop = el.scrollHeight - el.clientHeight; }
   renderVals() {
     const K = {
       primary: { bBg: 'var(--acc)', bInk: 'var(--accInk)', bBd: 'var(--acc)' },

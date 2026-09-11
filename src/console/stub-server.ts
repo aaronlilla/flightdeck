@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { CONSOLE_ROUTES, HEARTBEAT_MS } from '../shared/console-model.js';
 import { computeNext } from '../forge/console/summary.js';
 import { orderChains } from '../forge/console/blockers.js';
+import { RAIL_TYPES } from '../forge/console/thread.js';
 import type {
   ActionResult, Blocker, Caps, Integration, JournalEntry, Lane, LaneSummary, Message, QueueAddRequest,
   QueueAddResponse, QueueItem, QueueSource, ReauditResponse, Rule,
@@ -32,7 +33,7 @@ import { seedLanes } from './fixtures/lanes.js';
 import { seedRules } from './fixtures/proposals.js';
 import {
   bigLanes, emptyLanes, emptyRules, galleryThread, healthyIntegrations, humanBoardLanes, matrixQueue, raceThread,
-  refusalLanes, resumedRaceLanes, statesLanes, UNBUILT_REPO, longThread } from './fixtures/scenarios.js';
+  refusalLanes, resumedRaceLanes, statesLanes, UNBUILT_REPO, longThread, longConversation } from './fixtures/scenarios.js';
 import { seedThread } from './fixtures/thread.js';
 import { parityBlockers, parityLanes, parityQueue, parityThread } from './fixtures/design-parity.js';
 
@@ -284,6 +285,7 @@ const FIXTURES: Record<string, () => Db> = {
   'resume-race': () => ({ ...seedDb(), lanes: resumedRaceLanes(), thread: raceThread() }),
   'message-gallery': () => ({ ...seedDb(), thread: galleryThread() }),
   'long-thread': () => ({ ...seedDb(), thread: longThread() }),
+  'long-conversation': () => ({ ...seedDb(), thread: longConversation() }),
   'big-fleet': () => ({ ...seedDb(), lanes: bigLanes() }),
   // H2.7: the human-UI board -- 31 lanes shaped like the real one this whole
   // stream was reported against, for every H2.1-H2.6 spec to share.
@@ -974,7 +976,12 @@ export function createStubServer() {
         return;
       }
       if (urlPath === '/thread' && method === 'GET') {
-        json(response, 200, { messages: db.thread });
+        // R-75 item 1: the same split the real builder does, so the console under test
+        // reads the shipped contract rather than a stub's own shape.
+        json(response, 200, {
+          messages: db.thread.filter((m) => RAIL_TYPES.has(m.type)),
+          cards: db.thread.filter((m) => !RAIL_TYPES.has(m.type)),
+        });
         return;
       }
       if (urlPath === '/journal' && method === 'GET') {

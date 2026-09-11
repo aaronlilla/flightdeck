@@ -4,7 +4,6 @@ import { hm } from '../freshness.js';
 import { blockerFor, boardCta, boardStateWord, durationWords, groupLanesByTicket, idleReason, IDLE_STATE, laneHeadline, type BoardCommand } from '../laneVM.js';
 import type { Blocker, Lane, QueueItem } from '../../shared/console-model.js';
 import { LaneGroupTile } from './LaneGroupTile.js';
-import { NeedsYou, type Need } from './NeedsYou.js';
 import { Marks } from './QuestionCard.js';
 
 /**
@@ -16,7 +15,6 @@ export interface LanesGridProps {
   lanes: Lane[];
   blockers: Blocker[];
   queue: { items: QueueItem[]; paused: boolean; pauseReason: string | null; maxInFlight: number; on: boolean };
-  needs: Need[];
   now: number;
   onOpen: (id: string) => void;
   onCommand: (id: string, cmd: BoardCommand) => void;
@@ -46,7 +44,7 @@ function mergeLine(lane: Lane): string {
 }
 
 export function LanesGrid(props: LanesGridProps): JSX.Element {
-  const { lanes, blockers, queue, needs, now, onOpen, onCommand, onLaneCommand, onQueue } = props;
+  const { lanes, blockers, queue, now, onOpen, onCommand, onLaneCommand, onQueue } = props;
   const active = lanes.filter(isActive);
   const groups = groupLanesByTicket(active);
   const idleCount = Math.max(0, queue.maxInFlight - groups.length);
@@ -79,8 +77,6 @@ export function LanesGrid(props: LanesGridProps): JSX.Element {
           </div>
         ))}
       </div>
-
-      <NeedsYou items={needs} now={now} onCommand={onLaneCommand} />
 
       {ready.length > 0 ? (
         <section data-testid="waiting-for-merge" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>

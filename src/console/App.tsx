@@ -15,7 +15,7 @@ import { ConductorRail, DEFAULT_COMMANDS, type RailCommand } from './components/
 import { FlightReview } from './components/FlightReview.js';
 import { LanesGrid } from './components/LanesGrid.js';
 import { MachineView } from './components/MachineView.js';
-import { buildNeeds } from './components/NeedsYou.js';
+import { NeedsYou, buildNeeds } from './components/NeedsYou.js';
 import { QueueView } from './components/QueueView.js';
 import { Settings } from './components/Settings.js';
 import { SyncCard } from './components/SyncCard.js';
@@ -75,7 +75,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
         }
         case 'conductor': {
           const thread = await api.getThread();
-          if (mounted.current) dispatch({ type: 'thread', thread: applyResolved(thread.messages) });
+          if (mounted.current) dispatch({ type: 'thread', thread: applyResolved(thread.messages), cards: applyResolved(thread.cards ?? []) });
           break;
         }
         case 'integrations': {
@@ -155,7 +155,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       const sync = settled(syncR, 'sync');
       failCount.current = failedSlices.length > 0 ? failCount.current + 1 : 0;
       if (lanes) dispatch({ type: 'lanes', lanes: lanes.lanes, links: lanes.links, tokensToday: lanes.tokensToday });
-      if (thread) dispatch({ type: 'thread', thread: applyResolved(thread.messages) });
+      if (thread) dispatch({ type: 'thread', thread: applyResolved(thread.messages), cards: applyResolved(thread.cards ?? []) });
       if (integrations) dispatch({ type: 'integrations', integrations: integrations.items });
       if (caps) dispatch({ type: 'caps', caps });
       if (proposals) dispatch({ type: 'proposals', proposals });
@@ -437,12 +437,16 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     return () => container.removeEventListener('keydown', onKeyDown);
   }, [state.sheet]);
 
-  const needs = buildNeeds(state.lanes, state.integrations, (_kind, id) => openLane(id));
+  // R-75 item 3: everything that needs a person, in one ordered list, rendered one at
+  // a time by the strip above the tabs.
+  const needs = buildNeeds(state.lanes, state.cards, state.now);
   const activeLanes = state.lanes.filter((l) => l.retiredAt === null && l.state !== 'merged' && l.state !== 'killed');
   // A slot is taken by any lane still on the board, working or waiting.
   const working = activeLanes.length;
   const blockersBadge = blockers.filter((b) => b.state !== 'resolved').length;
-  const badges: Partial<Record<View, number>> = { blockers: blockersBadge || undefined, board: needs.length || undefined };
+  // R-75 item 3: no tab badge carries the ask count any more -- the strip's own
+  // "1 of N" counter is the indicator, and two of them disagreed on sight.
+  const badges: Partial<Record<View, number>> = { blockers: blockersBadge || undefined };
   // A topic is usually a lane on the board; a card about a queued ticket that has not
   // started yet names the ticket itself.
   const topic = state.topic ? { id: state.topic, label: labelFor(state.topic) ?? (/^[A-Z][A-Z0-9_]*-\d+$/.test(state.topic) ? state.topic : 'this lane') } : null;
@@ -456,13 +460,13 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     <StoreContext.Provider value={{ state, dispatch }}>
       <ActionsContext.Provider value={actionsHost}>
         <div className="app" data-theme={state.theme} data-testid="app">
-          <Chrome view={state.view} badges={badges} feed={state.feed} project={state.project} queueOn={state.queueOn} syncFullRunning={syncFullRunning} watcher={state.sync?.watcher ?? null} onWatcherToggle={onWatcherToggle} now={state.now} onNav={(view) => dispatch({ type: 'view', view })} />
+          <Chrome view={state.view} badges={badges} feed={state.feed} project={state.project} queueOn={state.queueOn} syncFullRunning={syncFullRunning} watcher={state.sync?.watcher ?? null} onWatcherToggle={onWatcherToggle} now={state.now} onNav={(view) => dispatch({ type: 'view', view })} strip={<NeedsYou items={needs} now={state.now} onCommand={onLaneCommand} />} />
           <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
             {state.view === 'board' ? (
               <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
                 <SyncCard scope="lanes" run={state.sync?.runs.lanes ?? null} busy={syncBusy('lanes')} onResync={onResync} />
                 <div style={{ flex: 1, minWidth: 0, position: 'relative', display: 'flex' }}>
-                  <LanesGrid lanes={state.lanes} blockers={blockers} queue={queue} needs={needs} now={state.now} onOpen={openLane} onCommand={onBoardCommand} onLaneCommand={onLaneCommand} onQueue={() => dispatch({ type: 'view', view: 'queue' })} />
+                  <LanesGrid lanes={state.lanes} blockers={blockers} queue={queue} now={state.now} onOpen={openLane} onCommand={onBoardCommand} onLaneCommand={onLaneCommand} onQueue={() => dispatch({ type: 'view', view: 'queue' })} />
                   {sheet?.type === 'ticket' && sheetLane ? (
                     <div ref={sheetContainerRef} tabIndex={-1} data-testid="sheet-scrim" style={{ position: 'absolute', inset: 0, background: 'var(--scrim)', outline: 'none' }} onClick={() => dispatch({ type: 'sheet', sheet: null })}>
                       <TicketSheet lane={sheetLane} now={state.now} onClose={() => dispatch({ type: 'sheet', sheet: null })} onCommand={onLaneCommand} onSendLane={onSendLane} verbose={state.verbose} />

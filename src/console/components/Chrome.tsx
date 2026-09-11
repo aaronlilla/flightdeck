@@ -59,6 +59,10 @@ export interface ChromeProps {
   onWatcherToggle?: (on: boolean) => void;
   now: number;
   onNav: (view: View) => void;
+  /** R-75 item 3: the Needs-you strip, rendered above the tab bar on every view (spec
+   *  `doctrine/design/operator-experience.md` §5). A render slot rather than the data,
+   *  so the chrome stays ignorant of what needs a person. */
+  strip?: JSX.Element;
 }
 
 const TABS: { view: View; label: string }[] = [
@@ -70,7 +74,7 @@ const TABS: { view: View; label: string }[] = [
   { view: 'settings', label: 'Settings' },
 ];
 
-export function Chrome({ view, badges, feed, project, queueOn = true, syncFullRunning = false, watcher = null, onWatcherToggle, now, onNav }: ChromeProps): JSX.Element {
+export function Chrome({ view, badges, feed, project, queueOn = true, syncFullRunning = false, watcher = null, onWatcherToggle, now, onNav, strip }: ChromeProps): JSX.Element {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 'none', fontFamily: 'Barlow,system-ui,sans-serif', color: 'var(--ink)', background: 'var(--bg)' }}>
       <div style={{ height: 32, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 0 0 10px', background: 'var(--panel)', borderBottom: '1px solid var(--line)', fontSize: 'var(--fs-meta)', color: 'var(--ink2)' }}>
@@ -84,6 +88,7 @@ export function Chrome({ view, badges, feed, project, queueOn = true, syncFullRu
           <span style={{ width: 46, display: 'grid', placeItems: 'center', fontSize: 'var(--fs-key)' }}>✕</span>
         </div>
       </div>
+      {strip ?? null}
       <div style={{ height: 48, display: 'flex', alignItems: 'center', gap: 28, padding: '0 20px', borderBottom: '1px solid var(--line)' }}>
         <span className="hd" style={{ fontSize: 'var(--fs-heading)', letterSpacing: '.06em', textTransform: 'uppercase' }}>Flightdeck</span>
         <nav style={{ display: 'flex', gap: 22, alignItems: 'center', height: 48 }}>

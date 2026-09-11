@@ -12,7 +12,14 @@ import { existsSync, readFileSync } from 'node:fs';
 import type { ForgeEvent } from '../journal.js';
 import type { InboxEntry } from '../inbox.js';
 import type { RunMessage } from '../runinbox.js';
-import type { Message, ThreadResponse } from '../../shared/console-model.js';
+import type { Message, MessageType, ThreadResponse } from '../../shared/console-model.js';
+
+/** `GET /thread`'s response since R-75: the rail's own list, plus the status cards that
+ *  left it. Declared here rather than in `src/shared/console-model.ts` so the shared
+ *  model stays exactly as stream C's `LaneQuestion` work left it. */
+export interface ThreadSplit extends ThreadResponse {
+  cards: Message[];
+}
 import { jidFor, textFor } from './journal-route.js';
 import { collapseWardenChips, railChipText, type TitleForFn } from './journal-narrative.js';
 import { clock, commandEcho, humanizeParkReason, receiptText, stripMachineIds } from '../../shared/humanize.js';
@@ -163,16 +170,31 @@ function humanizeMessage(message: Message, labelFor: TitleForFn, questionFor: (k
 }
 
 /**
+ * R-75 item 1: the rail is conversation only. `operator`, `reply` and `receipt` are what
+ * a person said and what came back; `event` and `activity` stay on the same list because
+ * the rail's closed Activity drawer reads them off it and draws them nowhere else. Every
+ * other kind is status, and status left the chat (spec §3): it reaches the console
+ * through the response's `cards` field, which the Needs-you strip, the Board and the
+ * future Flow page read.
+ */
+export const RAIL_TYPES: ReadonlySet<MessageType> = new Set<MessageType>([
+  'operator', 'reply', 'receipt', 'event', 'activity',
+]);
+
+/**
  * The board-wide thread: every persisted rail message, one system chip per matching
  * journal row since the earliest persisted message (or since `now` when the thread is
  * still empty, so a fresh console does not replay the fleet's whole history as chips on
  * its very first read), plus one answerable question card per still-open inbox ask that
  * has not already been persisted under the same key.
+ *
+ * Split per `RAIL_TYPES` into `messages` (the rail) and `cards` (everything else); no
+ * row is dropped, and no row lands on both sides.
  */
 export function computeThread(
   persisted: Message[], events: ForgeEvent[], now: number, openAsks: InboxEntry[] = [],
   titleFor: TitleForFn = () => null, options: ComputeThreadOptions = {},
-): ThreadResponse {
+): ThreadSplit {
   const earliest = persisted.length ? Math.min(...persisted.map((message) => message.ts)) : now;
   const windowed = events.filter((row) => row.at >= earliest);
   const ordinaryChips = windowed
@@ -195,8 +217,11 @@ export function computeThread(
     // its own run id or ask key sitting in plain view.
     questions = questions.map((message) => humanizeMessage(message, titleFor, questionFor));
   }
-  const messages = [...persistedRows, ...chips, ...questions].sort((a, b) => a.ts - b.ts);
-  return { messages };
+  const all = [...persistedRows, ...chips, ...questions].sort((a, b) => a.ts - b.ts);
+  return {
+    messages: all.filter((message) => RAIL_TYPES.has(message.type)),
+    cards: all.filter((message) => !RAIL_TYPES.has(message.type)),
+  };
 }
 
 /** `forge_report`'s own text fields (`ForgeReportInputSchema` in `contracts.ts`), joined

@@ -84,6 +84,10 @@ export interface State {
   localCards: Message[];
   feed: Feed;
   thread: Message[];
+  /** R-75 item 1: the status cards that left the rail -- blockers, confirms, plans,
+   *  decisions, PRs and open questions -- off `GET /thread`'s second field. The
+   *  Needs-you strip reads them; the rail never does. */
+  cards: Message[];
   journal: JournalEntry[];
   integrations: Integration[];
   accounts: AccountItem[];
@@ -149,7 +153,7 @@ export interface State {
 
 export type Action =
   | { type: 'lanes'; lanes: Lane[]; tokensToday?: number; links?: State['links'] }
-  | { type: 'thread'; thread: Message[] }
+  | { type: 'thread'; thread: Message[]; cards?: Message[] }
   | { type: 'thread-append'; messages: Message[]; local?: boolean }
   /** Drops a card the page put up itself, from the thread and from the local list
    *  both. Filtering the thread alone puts it straight back: the `thread` case
@@ -228,6 +232,7 @@ export function initialState(): State {
     lanes: [],
     feed: { live: true, lostAt: null, reason: null, retryInS: null, lastHeartbeatAt: null },
     thread: [],
+    cards: [],
     journal: [],
     integrations: [],
     accounts: [],
@@ -285,7 +290,7 @@ export function reducer(state: State, action: Action): State {
         if (card.type === 'operator' && thread.some((m) => m.type === 'operator' && m.text === card.text && Math.abs(m.ts - card.ts) < LOCAL_CARD_TTL_MS)) continue;
         thread = [...thread, card];
       }
-      return { ...state, thread, localCards };
+      return { ...state, thread, localCards, ...(action.cards ? { cards: action.cards } : {}) };
     }
     case 'local-card-drop':
       return {

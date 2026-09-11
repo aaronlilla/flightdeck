@@ -117,6 +117,44 @@ function ActionCard({ message, tone, kicker, title, body, onCommand, onTopic, co
   );
 }
 
+/** R-75 item 2: a reply longer than two lines folds to its first sentence behind a
+ *  disclosure. Aaron, 2026-09-11: "the chat needs to be much more readable and usable
+ *  without the constant verbose spam." Nothing is thrown away -- the disclosure opens
+ *  the reply whole. */
+const FOLD_LINES = 2;
+const FOLD_CHARS = 220;
+
+export function isFoldable(text: string): boolean {
+  return text.split('\n').length > FOLD_LINES || text.length > FOLD_CHARS;
+}
+
+export function firstSentence(text: string): string {
+  const line = (text.split('\n')[0] ?? '').trim();
+  const end = /[.!?](\s|$)/.exec(line);
+  const sentence = end ? line.slice(0, end.index + 1) : line;
+  return sentence.length > FOLD_CHARS ? `${sentence.slice(0, FOLD_CHARS).trimEnd()}…` : sentence;
+}
+
+/** Wraps whatever a reply row would normally render. Short text passes straight
+ *  through, so nothing about a one-line reply changes. */
+function Folded({ text, children }: { text: string; children: JSX.Element }): JSX.Element {
+  const [open, setOpen] = useState(false);
+  if (!isFoldable(text)) return children;
+  return (
+    <>
+      {open ? children : <p style={{ margin: 0, color: 'var(--ink)', whiteSpace: 'pre-wrap' }}>{firstSentence(text)}</p>}
+      <button
+        type="button" data-testid="reply-disclosure" className="disc"
+        onClick={() => setOpen((o) => !o)}
+        style={{ alignSelf: 'flex-start', background: 'transparent', border: 0, padding: 0, cursor: 'pointer', font: 'inherit', fontSize: 'var(--fs-meta)', color: 'var(--ink3)', display: 'flex', alignItems: 'center', gap: 4 }}
+      >
+        <span className="tri" style={{ transform: open ? 'rotate(90deg)' : undefined }} />
+        {open ? 'Less' : 'More'}
+      </button>
+    </>
+  );
+}
+
 export function MessageCard({ message, labelFor, onCommand, onUndo, onTopic, composerId, verbose }: {
   message: Message; labelFor?: (id: string) => string | null; onCommand: (text: string) => void;
   onUndo: (jid: string) => void; onTopic?: (laneId: string) => void; composerId: string;
@@ -143,7 +181,9 @@ export function MessageCard({ message, labelFor, onCommand, onUndo, onTopic, com
           <Row ts={message.ts}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
               <span className="kick" style={{ letterSpacing: '.08em' }}><span className="hd" style={{ fontSize: 'var(--fs-ui)', color: 'var(--ink2)', letterSpacing: 0, textTransform: 'none' }}>{label(message.source) ?? 'An agent'}</span> · the agent</span>
-              <p style={{ margin: 0, color: 'var(--ink)', paddingLeft: 10, borderLeft: '2px dashed var(--line2)', whiteSpace: 'pre-wrap' }}>{message.text}</p>
+              <Folded text={message.text}>
+                <p style={{ margin: 0, color: 'var(--ink)', paddingLeft: 10, borderLeft: '2px dashed var(--line2)', whiteSpace: 'pre-wrap' }}>{message.text}</p>
+              </Folded>
               {message.btns && message.btns.length > 0 && !message.resolved ? (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
                   {message.btns.map((button) => <button key={button.label} type="button" className={buttonClass(button)} style={{ textAlign: 'left', whiteSpace: 'normal' }} onClick={() => onCommand(button.cmd)}>{button.label}</button>)}
@@ -156,7 +196,9 @@ export function MessageCard({ message, labelFor, onCommand, onUndo, onTopic, com
       return (
         <Row ts={message.ts}>
           <div>
-            <p data-testid="status-row" style={{ margin: 0, color: 'var(--ink)', whiteSpace: 'pre-wrap' }}><NarratedLine bag={message.narration} field="text" glance={message.text} testid="rail" {...(verbose === undefined ? {} : { verbose })} /></p>
+            <Folded text={message.text}>
+              <p data-testid="status-row" style={{ margin: 0, color: 'var(--ink)', whiteSpace: 'pre-wrap' }}><NarratedLine bag={message.narration} field="text" glance={message.text} testid="rail" {...(verbose === undefined ? {} : { verbose })} /></p>
+            </Folded>
             {message.btns && message.btns.length > 0 && !message.resolved ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 6 }}>
                 {message.btns.map((button) => <button key={button.label} type="button" className={buttonClass(button)} style={{ textAlign: 'left', whiteSpace: 'normal' }} onClick={() => onCommand(button.cmd)}>{button.label}</button>)}
@@ -283,23 +325,30 @@ export function ConductorRail(props: ConductorRailProps): JSX.Element {
   const busy = composerAction?.pending ?? false;
   const conversation = thread.filter((message) => !isObservation(message));
   const observations = thread.filter(isObservation);
-  // The list opens at the top (the design's 1a). Once the conversation moves (2a to
-  // 2d, `stickToEnd`) it follows the newest message, but only while the reader is
-  // already at the bottom; a reader who scrolled up keeps their place and gets a
-  // count of what arrived below.
+  // R-75 item 2 (`FD Rail.dc.html` 1a, rewritten 2026-09-11): the list OPENS at the
+  // bottom and stays pinned there, chatroom style. Scrolling up unpins and keeps the
+  // reader's place; what arrives below is counted on one jump button that re-pins.
   const listRef = useRef<HTMLDivElement | null>(null);
   const seen = useRef<number | null>(null);
   const pinned = useRef(true);
   const [unread, setUnread] = useState(0);
   const atBottom = (el: HTMLDivElement): boolean => el.scrollHeight - el.scrollTop - el.clientHeight <= 24;
+  // The exact bottom, rather than `scrollHeight`: the browser would clamp an
+  // over-large `scrollTop` for us, but then nothing here could be asserted on without
+  // asserting on the clamp instead of on this component.
+  const toBottom = (el: HTMLDivElement): void => { el.scrollTop = el.scrollHeight - el.clientHeight; };
   useLayoutEffect(() => {
     const el = listRef.current;
-    const grew = seen.current !== null && seen.current > 0 && conversation.length > seen.current;
-    if (grew && el) {
-      if (pinned.current) el.scrollTop = el.scrollHeight;
-      else setUnread((n) => n + (conversation.length - (seen.current ?? 0)));
+    if (!el) return;
+    const first = seen.current === null;
+    const grew = !first && conversation.length > (seen.current ?? 0);
+    if (first || (grew && pinned.current)) {
+      toBottom(el);
+      pinned.current = true;
+    } else if (grew) {
+      setUnread((n) => n + (conversation.length - (seen.current ?? 0)));
     }
-    if (conversation.length > 0 || seen.current === null) seen.current = conversation.length;
+    seen.current = conversation.length;
   }, [conversation.length]);
   const onScroll = (): void => {
     const el = listRef.current;
@@ -310,7 +359,7 @@ export function ConductorRail(props: ConductorRailProps): JSX.Element {
   const jump = (): void => {
     const el = listRef.current;
     if (!el) return;
-    el.scrollTop = el.scrollHeight;
+    toBottom(el);
     pinned.current = true;
     setUnread(0);
   };
@@ -338,13 +387,13 @@ export function ConductorRail(props: ConductorRailProps): JSX.Element {
       <div style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex', flexDirection: 'column' }}>
         <div ref={listRef} onScroll={onScroll} data-testid="rail-thread" className="scroll" style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
           {conversation.map((message) => (
-            <div key={message.k} id={`rail-msg-${message.k}`}>
+            <div key={message.k} id={`rail-msg-${message.k}`} data-testid="rail-row">
               <MessageCard message={message} labelFor={labelFor} onCommand={onCommand} onUndo={onUndo} onTopic={onTopic} composerId={composerId} {...(verbose === undefined ? {} : { verbose })} />
             </div>
           ))}
         </div>
         {unread > 0 ? (
-          <button type="button" className="btn primary" data-testid="rail-jump" style={{ position: 'absolute', left: '50%', bottom: 10, transform: 'translateX(-50%)', fontSize: 'var(--fs-meta)', padding: '4px 10px' }} onClick={jump}>{unread} new below</button>
+          <button type="button" className="btn primary" data-testid="rail-jump" style={{ position: 'absolute', left: '50%', bottom: 10, transform: 'translateX(-50%)', fontSize: 'var(--fs-meta)', padding: '4px 10px' }} onClick={jump}>{`↓ ${unread} new`}</button>
         ) : null}
       </div>
       <ActivityDrawer observations={observations} {...(verbose === undefined ? {} : { verbose })} />
