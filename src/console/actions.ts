@@ -22,7 +22,7 @@ import { useStore } from './store.js';
 import type { SliceName } from '../shared/console-events.js';
 import type { AccountProvider, ActionResult, Message } from '../shared/console-model.js';
 
-export type Effect = 'lane' | 'queue' | 'integration' | 'account' | 'caps' | 'conductor' | 'proposal' | 'blocker' | 'journal' | 'none';
+export type Effect = 'lane' | 'queue' | 'integration' | 'account' | 'caps' | 'conductor' | 'proposal' | 'blocker' | 'journal' | 'sync' | 'none';
 
 /** Which slices an effect makes stale, for the refetch that follows a result. The
  *  server publishes the same slices over `/events`; this is the page's own copy so a
@@ -37,6 +37,7 @@ export const EFFECT_SLICES: Record<Effect, SliceName[]> = {
   proposal: ['proposals', 'journal'],
   blocker: ['blockers', 'lanes'],
   journal: ['journal', 'lanes', 'caps', 'proposals'],
+  sync: ['sync'],
   none: [],
 };
 
@@ -325,6 +326,38 @@ export const ACTIONS = {
     call: ([id, version, message], confirm) => api.promoteQueueItem(id, version, message, confirm),
     text: gatedText, ok: gatedOk, jid: gatedJid,
     link: () => viewLink('queue', 'queue'),
+  }),
+  fullResync: spec<[], Gated<{ started: boolean; id: string }>>({
+    id: 'fullResync', label: 'Full re-sync and start', reversible: false, effect: 'sync',
+    call: (_args, confirm) => api.fullResync(confirm),
+    text: (result) => (api.isConfirmPending(result) ? 'awaiting confirm' : 're-sync started'),
+    ok: (result) => (api.isConfirmPending(result) ? false : result.started),
+    jid: () => null,
+    link: () => null,
+  }),
+  resyncPage: spec<[Parameters<typeof api.resyncPage>[0]], Awaited<ReturnType<typeof api.resyncPage>>>({
+    id: 'resyncPage', label: 'Re-sync', reversible: true, effect: 'sync',
+    call: ([scope]) => api.resyncPage(scope),
+    text: () => 're-sync started',
+    ok: (result) => result.started,
+    jid: () => null,
+    link: () => null,
+  }),
+  watcherOn: spec<[], Awaited<ReturnType<typeof api.watcherOn>>>({
+    id: 'watcherOn', label: 'Watcher on', reversible: true, effect: 'sync',
+    call: () => api.watcherOn(),
+    text: (status) => `watching ${status.project ?? 'no project'}`,
+    ok: () => true,
+    jid: () => null,
+    link: () => null,
+  }),
+  watcherOff: spec<[], Awaited<ReturnType<typeof api.watcherOff>>>({
+    id: 'watcherOff', label: 'Watcher off', reversible: true, effect: 'sync',
+    call: () => api.watcherOff(),
+    text: () => 'watcher off',
+    ok: () => true,
+    jid: () => null,
+    link: () => null,
   }),
 } as const;
 

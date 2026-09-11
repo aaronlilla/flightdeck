@@ -1,9 +1,41 @@
 import type { JSX } from 'react';
 
+import { ACTIONS, useAction } from '../actions.js';
+import { WatcherStatus as WatcherStatusRow } from './WatcherStatus.js';
 import type { View } from '../store.js';
+import type { WatcherStatus as WatcherStatusModel } from '../../shared/sync-contract.js';
 import type { Feed } from '../../shared/console-model.js';
 import { hm } from '../freshness.js';
 import icon from '../../../brand/flightdeck-icon.png';
+
+/** The Full re-sync button (R-71): confirm-gated through the same `useAction` machinery
+ *  every other irreversible action uses. First click posts without a token and shows the
+ *  server's own blast text; a second, explicit click sends the token back. */
+function FullResyncButton({ running }: { running: boolean }): JSX.Element {
+  const action = useAction(ACTIONS.fullResync);
+  const confirming = action.result?.kind === 'confirm';
+  const disabled = action.pending || running;
+  const onClick = (): void => {
+    if (confirming) void action.confirm();
+    else void action.run();
+  };
+  return (
+    <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      {confirming ? <span data-testid="full-resync-gate">{(action.result as { kind: 'confirm'; blast: string }).blast}</span> : null}
+      <button
+        type="button"
+        data-testid={confirming ? 'full-resync-confirm' : 'full-resync'}
+        onClick={onClick}
+        disabled={disabled}
+        title={running ? 'a full re-sync is already running' : undefined}
+        style={{ font: 'inherit', color: 'inherit', background: 'none', border: '1px solid var(--line)', padding: '1px 6px', cursor: disabled ? 'default' : 'pointer' }}
+      >
+        {confirming ? 'Confirm' : 'Full re-sync and start'}
+      </button>
+      {!confirming && action.result?.kind === 'done' ? <span data-testid="full-resync-result">{action.result.text}</span> : null}
+    </span>
+  );
+}
 
 /** `FD Chrome.dc.html`: the window strip and the tab bar. Tabs are the design's five in
  *  its order; a badge is a real count (open blockers a person can clear, questions
@@ -18,6 +50,13 @@ export interface ChromeProps {
   /** `/state`'s `queue_on`: false means the queue subsystem is not running at all, so
    *  nothing starts however many slots are free. Shown beside the feed state. */
   queueOn?: boolean;
+  /** R-71: true while the `full` sync scope is `running`, off the `sync` slice. Disables
+   *  the Full re-sync button rather than letting a second run race the first. */
+  syncFullRunning?: boolean;
+  /** R-71: the header's watcher line, off the `sync` slice's `watcher` field. `null`
+   *  before the first `/sync` fetch lands -- the row is left out rather than guessed. */
+  watcher?: WatcherStatusModel | null;
+  onWatcherToggle?: (on: boolean) => void;
   now: number;
   onNav: (view: View) => void;
 }
@@ -31,7 +70,7 @@ const TABS: { view: View; label: string }[] = [
   { view: 'settings', label: 'Settings' },
 ];
 
-export function Chrome({ view, badges, feed, project, queueOn = true, now, onNav }: ChromeProps): JSX.Element {
+export function Chrome({ view, badges, feed, project, queueOn = true, syncFullRunning = false, watcher = null, onWatcherToggle, now, onNav }: ChromeProps): JSX.Element {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 'none', fontFamily: 'Barlow,system-ui,sans-serif', color: 'var(--ink)', background: 'var(--bg)' }}>
       <div style={{ height: 32, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 0 0 10px', background: 'var(--panel)', borderBottom: '1px solid var(--line)', fontSize: 'var(--fs-meta)', color: 'var(--ink2)' }}>
@@ -76,6 +115,8 @@ export function Chrome({ view, badges, feed, project, queueOn = true, now, onNav
           </span>
           {!queueOn ? <span data-testid="queue-off" style={{ color: 'var(--warn)' }}>Queue off</span> : null}
           {project ? <span data-testid="project-label" title={project.name ?? project.key} style={{ minWidth: 0, maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis' }}>{project.name ? `${project.key} · ${project.name}` : project.key}</span> : null}
+          {watcher ? <WatcherStatusRow status={watcher} onToggle={onWatcherToggle ?? (() => undefined)} /> : null}
+          <FullResyncButton running={syncFullRunning} />
           <span style={{ flex: 'none', fontVariantNumeric: 'tabular-nums', color: 'var(--ink)' }}>{hm(now)}</span>
         </div>
       </div>

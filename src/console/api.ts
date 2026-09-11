@@ -5,6 +5,7 @@
  * goal brief: "all of that lives behind one `api.ts`").
  */
 import { redactErrorBody } from './redact.js';
+import type { SyncScope, SyncStateResponse, WatcherStatus as WatcherStatusModel } from '../shared/sync-contract.js';
 import type {
   AccountProvider,
   AccountsResponse,
@@ -433,6 +434,32 @@ export function updateAccount(id: string, patch: AccountUpdateRequest): Promise<
 
 export function getLeftovers(): Promise<LeftoversResponse> {
   return call<LeftoversResponse>('/accounts/leftovers');
+}
+
+/** R-71: the board's own sync/watcher surfaces. `GET /sync` is the whole
+ *  `SyncStateResponse`; the console never learns anything about a run beyond it. */
+export function getSync(): Promise<SyncStateResponse> {
+  return call<SyncStateResponse>('/sync');
+}
+
+/** The confirm-gated full re-sync: the first call posts without a token and gets
+ *  back the same `ConfirmPending` shape every other irreversible action uses; the
+ *  second call carries the server-issued token. */
+export function fullResync(confirm?: string): Promise<Gated<{ started: boolean; id: string }>> {
+  return post<Gated<{ started: boolean; id: string }>>('/sync/full', withConfirm({}, confirm));
+}
+
+/** A single page's re-sync. Never gated -- only the full wipe-and-restart is. */
+export function resyncPage(scope: Exclude<SyncScope, 'full'>): Promise<{ started: boolean; id: string }> {
+  return post<{ started: boolean; id: string }>(`/sync/${scope}`, {});
+}
+
+export function watcherOn(): Promise<WatcherStatusModel> {
+  return post<WatcherStatusModel>('/watcher/on', {});
+}
+
+export function watcherOff(): Promise<WatcherStatusModel> {
+  return post<WatcherStatusModel>('/watcher/off', {});
 }
 
 /** Removes one unlinked login's files. Takes the directory's NAME, never a path -- the

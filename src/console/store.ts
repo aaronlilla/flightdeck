@@ -18,6 +18,7 @@ import type {
   QueueItem,
 } from '../shared/console-model.js';
 import type { MachineResponse } from './api.js';
+import type { SyncStateResponse } from '../shared/sync-contract.js';
 
 export type View = 'board' | 'settings' | 'review' | 'queue' | 'blockers' | 'machine';
 export type Filter = 'all' | 'needs-me' | 'running' | 'finished' | string;
@@ -97,6 +98,9 @@ export interface State {
   /** D2.4: `/state`'s own `queue_on` flag. Starts `true` so the "Queue is off" banner
    *  never flashes before the console's first `/state` fetch lands. */
   queueOn: boolean;
+  /** R-71: the whole `GET /sync` response -- every scope's last run plus the watcher.
+   *  `null` until the first fetch lands. */
+  sync: SyncStateResponse | null;
   /** How long the rail waits for the Conductor before its working row says it did not
    *  answer; `/state`'s own `conductor.timeoutMs`. */
   conductorTimeoutMs: number;
@@ -170,6 +174,7 @@ export type Action =
   | { type: 'queue'; items: QueueItem[]; paused: boolean; maxInFlight: number; pauseReason?: string | null }
   | { type: 'blockers'; blockers: BlockersResponse }
   | { type: 'queue-on'; on: boolean }
+  | { type: 'sync'; sync: SyncStateResponse }
   | { type: 'conductor-timeout'; timeoutMs: number }
   | { type: 'toggle-probes' }
   | { type: 'archived-lanes'; lanes: Lane[] }
@@ -235,6 +240,7 @@ export function initialState(): State {
     queuePauseReason: null,
     queueMaxInFlight: 2,
     queueOn: true,
+    sync: null,
     conductorTimeoutMs: 120_000,
     showProbes: false,
     archivedLanes: [],
@@ -339,6 +345,8 @@ export function reducer(state: State, action: Action): State {
       return { ...state, conductorTimeoutMs: action.timeoutMs };
     case 'queue-on':
       return { ...state, queueOn: action.on };
+    case 'sync':
+      return { ...state, sync: action.sync };
     case 'toggle-probes':
       return { ...state, showProbes: !state.showProbes };
     case 'archived-lanes':

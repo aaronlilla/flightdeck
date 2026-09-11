@@ -24,6 +24,7 @@ import { fmtTokens } from '../shared/format-tokens.js';
 import { commandEcho, shortenShas } from '../shared/humanize.js';
 import { tokenAmount } from '../forge/console/command.js';
 import { sliceEventsFor } from '../shared/console-events.js';
+import type { SyncRunRecord, SyncScope, SyncStage, WatcherStatus } from '../shared/sync-contract.js';
 import { seedCaps } from './fixtures/caps.js';
 import { seedIntegrations } from './fixtures/integrations.js';
 import { seedJournal } from './fixtures/journal.js';
@@ -92,6 +93,12 @@ interface Db {
    *  scenarios have nothing to show there, and the `blockers-chain` fixture is what
    *  seeds a real three-step chain for its own Playwright coverage. */
   blockers: Blocker[];
+  /** R-71: the last run of each sync scope, and the watcher's own state. `endedAt`
+   *  absent means the run is still going -- the console's own "already running" and
+   *  "disable while running" checks read off exactly that. */
+  sync: Record<SyncScope, SyncRunRecord | null>;
+  watcher: WatcherStatus;
+  syncRunN: number;
 }
 
 /** The billing -> checks -> question chain the Blockers view spec (`tests/e2e/blockers.spec.ts`)
@@ -129,6 +136,10 @@ function seedBlockersChain(): Blocker[] {
   ];
 }
 
+function emptySync(): Record<SyncScope, SyncRunRecord | null> {
+  return { full: null, queue: null, sessions: null, accounts: null, machine: null, inbox: null, lanes: null };
+}
+
 function seedDb(): Db {
   return {
     lanes: seedLanes(),
@@ -146,7 +157,56 @@ function seedDb(): Db {
     queueOn: true,
     staleAuditLane: null,
     blockers: [],
+    sync: emptySync(),
+    watcher: { on: false, project: null, pollSeconds: 30 },
+    syncRunN: 0,
   };
+}
+
+/** R-71: the stages a real run of `scope` would take, in execution order --
+ *  `full` runs every stage the contract names; a page scope runs its own single probe
+ *  stage (the contract names no per-page tail). The stub completes a run synchronously,
+ *  since nothing here actually shells out to git/gh/Jira; the shape is what the
+ *  fixtures and tests read. */
+function scopeStages(scope: SyncScope): SyncStage[] {
+  const t0 = Date.now();
+  const stage = (name: SyncStage['name'], counts: Record<string, number>, dt: number): SyncStage => ({
+    name, status: 'ok', startedAt: t0, endedAt: t0 + dt, counts,
+  });
+  if (scope === 'full') {
+    return [
+      stage('stop-workers', { stopped: 2 }, 200),
+      stage('wipe-queue', { wiped: 14 }, 100),
+      stage('reset-watermarks', {}, 50),
+      stage('fetch-repos', { fetched: 3 }, 900),
+      stage('reconcile-prs', { shipped: 2, open: 1 }, 700),
+      stage('sweep-worktrees', { removed: 1, kept: 4 }, 400),
+      stage('pull-jira', { pulled: 6 }, 500),
+      stage('watcher-on', {}, 50),
+      stage('resume', {}, 50),
+    ];
+  }
+  const probe: Record<SyncScope, SyncStage | null> = {
+    full: null,
+    lanes: stage('recheck-lanes', { checked: db.lanes.length }, 300),
+    // The contract names no queue-specific stage; the queue page's probe reuses the
+    // shared PR-reconcile name, the closest fit for rechecking queued items' own PRs.
+    queue: stage('reconcile-prs', { checked: db.queue.length }, 300),
+    sessions: stage('scan-sessions', { scanned: 1 }, 200),
+    accounts: stage('probe-accounts', { ok: 1, failed: 0 }, 200),
+    machine: stage('snapshot-machine', {}, 150),
+    inbox: stage('refresh-inbox', { open: 0 }, 200),
+  };
+  return [probe[scope] ?? stage('fetch-repos', {}, 200)];
+}
+
+function runSyncScope(scope: SyncScope): SyncRunRecord {
+  db.syncRunN += 1;
+  const startedAt = Date.now();
+  const stages = scopeStages(scope);
+  const record: SyncRunRecord = { scope, id: `sync-${db.syncRunN}`, startedAt, endedAt: startedAt + 1000, stages, ok: true };
+  db.sync[scope] = record;
+  return record;
 }
 
 let db = seedDb();
@@ -847,7 +907,52 @@ export function createStubServer() {
       // D2.4: the one field of the real server's own `/state` the web console needs.
       // Not in `CONSOLE_ROUTES` (same as the real server: `/state` carries no token).
       if (urlPath === '/state' && method === 'GET') {
-        json(response, 200, { queue_on: db.queueOn, build: stubBuild, conductor: { enabled: true, timeoutMs: 120_000, open: false }, project: { key: 'NWR', name: 'Northwind Rewards' } });
+        json(response, 200, { queue_on: db.queueOn, build: stubBuild, conductor: { enabled: true, timeoutMs: 120_000, open: false }, project: { key: 'NWR', name: 'Northwind Rewards' }, watcher: db.watcher });
+        return;
+      }
+
+      if (urlPath === '/sync' && method === 'GET') {
+        json(response, 200, { runs: db.sync, watcher: db.watcher });
+        return;
+      }
+      if (urlPath === '/sync/full' && method === 'POST') {
+        if (db.sync.full && db.sync.full.endedAt === undefined) {
+          json(response, 409, { error: 'already running' });
+          return;
+        }
+        const fullBody = await readJson<Record<string, unknown>>(request);
+        const gated = gate(fullBody, 'stops every worker, wipes the queue, and resets the watermarks before fetching, reconciling and sweeping every repo.', () => {
+          const record = runSyncScope('full');
+          return { status: 202, body: { started: true, id: record.id, message: 're-sync started' } };
+        });
+        json(response, gated.status, gated.body);
+        return;
+      }
+      const SYNC_SCOPES: Exclude<SyncScope, 'full'>[] = ['queue', 'sessions', 'accounts', 'machine', 'inbox', 'lanes'];
+      const syncScopeMatch = /^\/sync\/([a-z]+)$/.exec(urlPath);
+      if (syncScopeMatch && method === 'POST' && SYNC_SCOPES.includes(syncScopeMatch[1] as Exclude<SyncScope, 'full'>)) {
+        const scope = syncScopeMatch[1] as Exclude<SyncScope, 'full'>;
+        if (db.sync[scope] && db.sync[scope]?.endedAt === undefined) {
+          json(response, 409, { error: 'already running' });
+          return;
+        }
+        const record = runSyncScope(scope);
+        json(response, 202, { started: true, id: record.id });
+        return;
+      }
+      if (urlPath === '/watcher/on' && method === 'POST') {
+        const onBody = await readJson<{ project?: string }>(request);
+        const now = Date.now();
+        db.watcher = {
+          on: true, project: onBody.project ?? db.watcher.project ?? 'BBZ', pollSeconds: 30,
+          lastPollAt: now, nextPollAt: now + 30_000, lastCount: db.watcher.lastCount ?? 0,
+        };
+        json(response, 200, db.watcher);
+        return;
+      }
+      if (urlPath === '/watcher/off' && method === 'POST') {
+        db.watcher = { ...db.watcher, on: false, nextPollAt: undefined };
+        json(response, 200, db.watcher);
         return;
       }
 
