@@ -52,6 +52,7 @@ import { appendOnce, Journal, JournalCache, type RangeReader } from './journal.j
 import type { StuckSignal } from './liveness.js';
 import { WardenActuator } from './warden.js';
 import { QueueStore } from './intake/queueStore.js';
+import type { QueueLoopStatus } from './intake/queueTickRunner.js';
 import { mergeItem, type QueueMergeDeps, type QueuePromoteDeps, type QueueTicketSearch } from './intake/queue.js';
 import {
   forgeHome, killSwitchPath as defaultKillSwitchPath, packetsDir as defaultPacketsDir, queuePath as defaultQueuePath,
@@ -387,6 +388,11 @@ export class ForgeServer {
   private readonly queueMergeDepsOpt: QueueMergeDeps | undefined;
   /** Set by `forge up` once the self loop exists; read fresh on every `/state`. */
   selfStatus: (() => unknown) | undefined;
+
+  /** R-81: set by `forge up` once the queue timer exists; read fresh on every `/state`.
+   *  Absent means this process is not the one ticking the queue, which is a different
+   *  thing from a loop that has stopped and must not read as either healthy or overdue. */
+  queueLoop: (() => QueueLoopStatus) | undefined;
 
   /** R-68: the Jira watcher engine. Public so `cli.ts`'s boot can start it without this
    *  class needing to know about `FORGE_BACKLOG_PROJECT` or `watcher.json` itself --
@@ -934,6 +940,11 @@ export class ForgeServer {
       // window and the console's top bar both need to say when the queue subsystem is
       // not running at all, distinct from a running queue that is merely paused.
       queue_on: process.env['FORGE_QUEUE'] === '1',
+      // R-81: whether the queue loop is still finishing passes, in a plain sentence and
+      // in raw numbers beside it. Null when this process does not hold the queue lock
+      // and therefore ticks nothing -- silence from a process that was never ticking is
+      // not evidence of a stopped loop.
+      queue_loop: this.queueLoop?.() ?? null,
       build: runtimeVersion(),
       checkoutDir: this.checkoutDirPath,
       consoleDistDir: this.consoleDistDir,

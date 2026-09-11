@@ -75,6 +75,7 @@ import {
 } from './paths.js';
 import { runQueueTick } from './intake/queue.js';
 import { acquireQueueLock } from './intake/queueLock.js';
+import { QueueTickRunner } from './intake/queueTickRunner.js';
 import { QueueStore } from './intake/queueStore.js';
 import { buildQueueRuntimeDeps, queueMergeDeps, queuePromoteDeps, jiraConfigFromEnv } from './queue-wire.js';
 import { slackConfigFromEnv } from './intake/slack.js';
@@ -893,17 +894,21 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           }).finally(() => { slackPolling = false; });
         };
 
-        const queueTick = setInterval(() => {
-          if (!queueBackoff.dueToRun()) return;
-          readSlack();
-          void runQueueTick(queueDeps, queueStore.all())
-            .then(() => queueBackoff.onSuccess())
-            .catch((error) => {
-              const message = error instanceof Error ? error.message : String(error);
-              queueJournal.append({ event: 'queue.tick-error', actor: 'queue', message });
-              queueBackoff.onError(message);
-            });
-        }, pollSeconds * 1000);
+        // R-81: the timer callback is the runner's own `tick`, not a closure beside it.
+        // It never throws, records a failure once per run of consecutive failures,
+        // remembers when a pass last finished so `/state` can say the loop is overdue,
+        // and writes one completion row a minute so a held item -- which deliberately
+        // writes no row of its own -- still proves the loop ran.
+        const queueRunner = new QueueTickRunner({
+          tick: (items) => runQueueTick(queueDeps, items).then(() => undefined),
+          items: () => queueStore.all(),
+          journal: { append: (row) => { queueJournal.append(row as never); } },
+          backoff: queueBackoff,
+          intervalMs: pollSeconds * 1000,
+          before: readSlack,
+        });
+        server.queueLoop = () => queueRunner.status();
+        const queueTick = setInterval(queueRunner.tick, pollSeconds * 1000);
         queueTick.unref();
         queueLine = `queue on, polling every ${pollSeconds}s`;
       }
