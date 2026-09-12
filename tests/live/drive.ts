@@ -557,6 +557,12 @@ async function main(): Promise<void> {
   console.log(`walked       ${inventory.walkedViews.join(', ') || '(none)'}`);
   console.log(`UNKNOWN      ${unwalked.join(', ') || '(none)'}   <- never "clean"`);
   console.log(`asks offered ${offered.length}`);
+  // D2 coverage, said out loud. The safe-control allowlist is narrow on purpose, so
+  // "no dead controls" means "none among the few that were clicked" and must never be
+  // read as "none on the screen". Standing order 1: unprobed is unknown, not clean.
+  const probed = inventory.screens.flatMap((screen) => screen.controls);
+  const clicked = probed.filter((control) => control.skipped === undefined).length;
+  console.log(`clicked      ${clicked} of ${probed.length} controls seen; the rest are UNKNOWN, not clean`);
   console.log(`defects      ${inventory.defects.length}  ${JSON.stringify(byId)}`);
   for (const defect of inventory.defects.slice(0, 25)) {
     console.log(`  ${defect.id} [${defect.view}] ${defect.what}`);
