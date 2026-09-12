@@ -104,6 +104,7 @@ import {
   chainStatusLines, foldChainState, runChainTick, runKeyForBrief,
 } from './chain.js';
 import { readChainEnv, repoKindFor } from './chain-env.js';
+import { checkOutwardDraft, draftReportLines, type OutwardDraft } from './intake/draftCheck.js';
 import { buildChainDeps, hasRunRegistered } from './chain-wire.js';
 import { isGoalFile } from './intake/goalFile.js';
 import { installShutdown } from './service/shutdown.js';
@@ -1404,6 +1405,30 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       };
     }
 
+    /**
+     * One pass over every outward text a work item is about to write, before any of them
+     * is attempted. Takes a JSON file of the shape `OutwardDraft` -- the commit message,
+     * the pull request title and body and the issue comment together -- and reports every
+     * refusal the write-time gates would raise, each naming its own ceiling and count.
+     * Exit 1 when any surface would be refused, so a script can stop before it writes.
+     */
+    case 'draft': {
+      const file = rest[0];
+      if (!file) return { code: 2, lines: ['forge draft needs a path to a draft JSON file'] };
+      let draft: OutwardDraft;
+      try {
+        draft = JSON.parse(readFileSync(file, 'utf8')) as OutwardDraft;
+      } catch (err) {
+        return { code: 2, lines: [`cannot read ${file}: ${err instanceof Error ? err.message : String(err)}`] };
+      }
+      if (typeof draft !== 'object' || draft === null || typeof draft.texts !== 'object' || draft.texts === null) {
+        return { code: 2, lines: [`${file} must be an object with a "texts" object`] };
+      }
+      const report = checkOutwardDraft(draft, new Date().toISOString().slice(0, 10));
+      const refused = report.findings.some((f) => f.verdict === 'DENY');
+      return { code: refused ? 1 : 0, lines: draftReportLines(report) };
+    }
+
     case 'gotchas': {
       const filed = new Gotchas(gotchasDir(), journalPath()).all();
       return {
@@ -2395,7 +2420,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         code: 2,
         lines: [
           'forge up | status | run BRIEF | send RUN TEXT | answer KEY ANSWER | stop --all '
-            + '| gotchas | clear LANE | accounts [list|add ID DIR [N]|remove ID] | cutover [--from DIR] | intake --dry-run | reason --class CLASS '
+            + '| gotchas | draft FILE | clear LANE | accounts [list|add ID DIR [N]|remove ID] | cutover [--from DIR] | intake --dry-run | reason --class CLASS '
             + '| council --repo O/N --pr N | gate --repo O/N --pr N [--merge] [--handoff FILE] '
             + '| chain [retry PACKET [--reason "<why>"]] | [skip PACKET [--reason "<why>"]]',
           `the server listens on ${FORGE_PORT}`,
