@@ -89,6 +89,19 @@ describe('item 3: the rounds sweep leaves an item held on an interview answer al
     expect(sheet.findings.filter((f) => f.itemId === 'Q-failed').map((f) => f.action)).toContain('retry');
   });
 
+  it('still offers a retry for a file overlap, which clears when the other item finishes', () => {
+    // The overlap park is written when another item holds the same files. It clears on
+    // its own the moment that item is done, so refusing it in both passes leaves the only
+    // self-clearing park in the system waiting on a person.
+    const row = item({
+      id: 'Q-overlap', state: 'parked', reason: 'overlaps Q-other on src/a.ts',
+      updatedAt: NOW - 90 * MIN,
+    });
+    const sheet = planRounds({ now: NOW, items: [row], lanes: [], blockers: [] });
+
+    expect(sheet.findings.filter((f) => f.itemId === 'Q-overlap').map((f) => f.action)).toContain('retry');
+  });
+
   it('still offers a retry for a park a machine could clear', () => {
     const row = item({ id: 'Q-stopped', state: 'parked', reason: 'stopped', updatedAt: NOW - 90 * MIN });
     const sheet = planRounds({ now: NOW, items: [row], lanes: [], blockers: [] });

@@ -171,6 +171,48 @@ describe('item 4: a merge confirm survives the console restarting under it', () 
     expect(String(after.body['error'])).toMatch(/expired/i);
   });
 
+  it('keeps a queue merge token spendable when the process that rebuilt it cannot act', async () => {
+    // The rebuilt action spent the token before it knew it could run, so a confirm that
+    // landed on a process with no merge wiring lost the click AND the token.
+    const queueStore = new QueueStore(join(dir, 'queue.jsonl'));
+    queueStore.append({
+      id: 'Q-2', at: 1, source: 'ticket', input: 'ABC-9', ticket: 'ABC-9', repo: 'owner/name',
+      briefPath: null, branch: 'feature/abc-9', worktreePath: null, base: 'develop',
+      state: 'review', reason: null, runKey: null,
+      pr: { no: 9, url: 'https://github.com/owner/name/pull/9', draft: false },
+      journalIds: [], createdAt: 1, updatedAt: 1,
+    } as never);
+    server = new ForgeServer({
+      lanes: new Lanes(join(dir, 'lanes')), inbox: new Inbox(join(dir, 'inbox')),
+      journalPath: join(dir, 'fleet.jsonl'), registry: new Registry(join(dir, 'registry')),
+      port: 0, queueStore, queueMergeDeps: {} as never,
+    });
+    const withWiring = `http://127.0.0.1:${await server.listen()}`;
+    const proposed = await fetch(`${withWiring}/queue/Q-2/merge`, {
+      method: 'POST', headers: { 'x-forge-token': server.token, 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const token = String(((await proposed.json()) as Record<string, unknown>)['token']);
+
+    // Restart WITHOUT the merge wiring, the way a console started from a different
+    // environment comes up.
+    await server.close();
+    server = new ForgeServer({
+      lanes: new Lanes(join(dir, 'lanes')), inbox: new Inbox(join(dir, 'inbox')),
+      journalPath: join(dir, 'fleet.jsonl'), registry: new Registry(join(dir, 'registry')),
+      port: 0, queueStore,
+    });
+    const noWiring = `http://127.0.0.1:${await server.listen()}`;
+
+    await fetch(`${noWiring}/queue/Q-2/merge`, {
+      method: 'POST', headers: { 'x-forge-token': server.token, 'content-type': 'application/json' },
+      body: JSON.stringify({ confirm: token }),
+    });
+
+    const rows = JSON.parse(readFileSync(join(dir, 'pending-confirms.json'), 'utf8')) as Array<{ token: string }>;
+    expect(rows.map((row) => row.token)).toContain(token);
+  });
+
   it('still refuses a token nobody ever minted, with the unchanged sentence', async () => {
     const base = await start();
     const after = await postMerge(base, { confirm: '00000000-0000-4000-8000-000000000000' });

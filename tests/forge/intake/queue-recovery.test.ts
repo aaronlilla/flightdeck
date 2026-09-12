@@ -393,6 +393,72 @@ describe('item 1: a parked item recovers on its own when the park reason was tra
     expect(held.length).toBeLessThanOrEqual(ids.length * 2);
   });
 
+  it('gives the read budget back when a person retries the item', async () => {
+    // Without this the 20-read cap is a life sentence: a retry sends the item back
+    // through the gate, it parks on checks again, and the recovery pass declines on the
+    // first tick forever -- silently, because the decline row is suppressed for a reason
+    // it has already seen.
+    const store = tempStore();
+    const item = parkedItem(store, 'checks never settled after 20 polls');
+    store.append({ id: item.id, at: 1_000, checksReads: 20, checksReadAt: 900, recoveryDeclinedFor: 'checks never settled after 20 polls' });
+
+    retryItem(store, item.id, 2_000);
+
+    const row = store.get(item.id)!;
+    expect(row.checksReads ?? 0).toBe(0);
+    expect(row.recoveryDeclinedFor ?? null).toBeNull();
+  });
+
+  it('clears the last read time on disk, not only in memory', async () => {
+    // `QueueStore.append` serialises with `JSON.stringify`, which drops undefined-valued
+    // keys, and the fold is a spread -- so writing `checksReadAt: undefined` left the old
+    // timestamp in place and the next park skipped its first re-read.
+    const store = tempStore();
+    const item = parkedItem(store, 'checks never settled after 20 polls');
+    let now = 1_000;
+    const { deps } = buildDeps(store, {
+      checksConclusion: async () => conclusionOf([{ conclusion: 'SUCCESS' }]),
+      clock: () => now,
+    });
+
+    await runQueueTick(deps, store.all());
+    expect(store.get(item.id)!.checksReadAt ?? 0).toBe(0);
+
+    now += 1_000;
+    store.append({ id: item.id, at: now, state: 'parked', reason: 'checks never settled after 20 polls', updatedAt: now });
+    await runQueueTick(deps, store.all());
+
+    expect(store.get(item.id)!.state).not.toBe('parked');
+  });
+
+  it('journals the width hold once per park, and again after a person retries', async () => {
+    const store = tempStore();
+    const row = addTicketItem(store, 'ABC-W', 1_000);
+    store.append({
+      id: row.id, at: 1_000, updatedAt: 1_000, state: 'parked', reason: 'stopped',
+      repo: 'owner/name', runKey: 'r-w', briefPath: 'C:/b.md', ticket: 'ABC-W',
+    });
+    let width = 0;
+    let alive: number | undefined = 999;
+    const { deps, events } = buildDeps(store, { runPid: () => alive, maxInFlight: () => width });
+
+    await runQueueTick(deps, store.all());          // held on the width
+    width = 2;
+    await runQueueTick(deps, store.all());          // held on the live process
+    width = 0;
+    await runQueueTick(deps, store.all());          // width again: already said, stays quiet
+
+    expect(events.filter((e) => e['found'] === 'no room at this width')).toHaveLength(1);
+
+    // A person's retry hands the budget back, so the next park says it again.
+    retryItem(store, row.id, 3_000);
+    store.append({ id: row.id, at: 4_000, state: 'parked', reason: 'stopped', updatedAt: 4_000 });
+    alive = 999;
+    await runQueueTick(deps, store.all());
+
+    expect(events.filter((e) => e['found'] === 'no room at this width')).toHaveLength(2);
+  });
+
   it('holds when no checks reader is wired rather than guessing the checks are green', async () => {
     const store = tempStore();
     const item = parkedItem(store, 'checks never settled after 20 polls');

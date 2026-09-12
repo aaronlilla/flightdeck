@@ -105,7 +105,10 @@ export function parkRecoverability(reason: string | null | undefined): ParkRecov
   }
   if (/^unrouted$/i.test(text)) return { recoverable: false, why: 'nothing routed the ticket to a repository', personsCall: true };
   if (/^backend:/i.test(text)) return { recoverable: false, why: 'the ticket was handed to the backend', personsCall: true };
-  if (/^overlaps /i.test(text)) return { recoverable: false, why: 'another item holds the same files', personsCall: true };
+  // Not a person's call: the overlap clears itself the moment the item holding those
+  // files reaches `done`. This pass has nothing to re-read that would tell it so, but the
+  // board sweep does, and marking it a person's call took away the only automatic path.
+  if (/^overlaps /i.test(text)) return { recoverable: false, why: 'another item holds the same files' };
   if (/checks (never settled|are pending)/i.test(text)) return { recoverable: true, reRead: 'checks' };
   // Every run verdict `relaunchOnRetryOrPark` passes through (`stopped`, `exhausted`,
   // `parked`, `unknown`) plus the launcher's own stale-liveness refusal: all of them are
@@ -328,7 +331,16 @@ export function retryItem(store: QueueStore, id: string, now: number = Date.now(
   // tell a retry of a run that finished with no PR apart from the ordinary first read of
   // that same status, so the retry can clear the stale runKey and launch again instead of
   // reporting the same old verdict back to a person a second time.
-  const patch: Partial<QueueItem> = { state, reason: null, updatedAt: now, ...(item.runKey ? { retriedAt: now } : {}) };
+  // A person's retry gives the item its whole recovery budget back. Without this the
+  // read cap is a life sentence: the item parks on checks again and the recovery pass
+  // declines on the first tick, silently, because the decline row is suppressed for a
+  // reason it has already written once.
+  const patch: Partial<QueueItem> = {
+    state, reason: null, updatedAt: now,
+    recoveryAttempts: 0, recoveryHeldOn: null, recoveryDeclinedFor: null,
+    recoveryWidthHeld: false, checksReads: 0, checksReadAt: 0,
+    ...(item.runKey ? { retriedAt: now } : {}),
+  };
   store.append({ id, at: now, ...patch });
   return { ...item, ...patch };
 }
@@ -1131,7 +1143,9 @@ async function recoverParkedItems(deps: QueueRuntimeDeps, items: QueueItem[], sl
       // nothing was decided, so there is no decision to journal. The window is what keeps
       // this off the rate limit; a row per skipped tick would be four an hour per item
       // saying "did not look yet".
-      if (item.checksReadAt !== undefined && deps.clock() - item.checksReadAt < PARK_CHECKS_RECHECK_MS) continue;
+      // `0` means never read -- `JSON.stringify` drops an undefined value, so a reset
+      // writes 0 rather than removing the field, and 0 must not read as a recent timestamp.
+      if (item.checksReadAt && deps.clock() - item.checksReadAt < PARK_CHECKS_RECHECK_MS) continue;
       if (!deps.checksConclusion || !item.repo || !item.pr) {
         found = 'no checks reader wired';
       } else {
@@ -1158,6 +1172,8 @@ async function recoverParkedItems(deps: QueueRuntimeDeps, items: QueueItem[], sl
       // would bury the journal, and a cap on holds would abandon the item.
       if (item.recoveryHeldOn !== found) {
         writeTransition(
+          // The width marker clears here: an item held on the width, then on a real
+          // reading, then on the width again has to say so the second time.
           item, { recoveryHeldOn: found, ...readMarks }, deps, 'queue.recovery-held',
           { reRead: verdict.reRead, found, parkReason: item.reason },
         );
@@ -1179,7 +1195,7 @@ async function recoverParkedItems(deps: QueueRuntimeDeps, items: QueueItem[], sl
         // The read budget belongs to THIS park, not to the item's whole life: an item
         // that parks on checks three times over a week must not be refused on the third
         // for reads it spent on the first.
-        checksReads: 0, checksReadAt: undefined,
+        checksReads: 0, checksReadAt: 0,
         // `retriedAt` means "a person asked for this run to be looked at again", and
         // `relaunchOnRetryOrPark` answers it by provisioning a NEW worker. That is right
         // for a run that died and wrong for checks that went green: there the run
