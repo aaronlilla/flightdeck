@@ -79,39 +79,39 @@ describe('worktreePathFor', () => {
   });
 
   // Item 12 (2026-09-11): a checkout that is itself a worktree (the mobile repo's
-  // configured checkout, C:/dev/worktrees/v2-react-native--merge-base) used to double
+  // configured checkout, a worktree beside its siblings) used to double
   // the "worktrees" segment, landing new trees at .../worktrees/worktrees/... --
   // invisible to the coordination board and cleanup, both of which scan
-  // C:/dev/worktrees/* only.
+  // the workspace's own worktrees directory only.
   it('item 12: a checkout that is itself a worktree does not double the "worktrees" segment', () => {
     const path = worktreePathFor(
-      'C:/dev/worktrees/v2-react-native--merge-base', 'owner/v2-react-native', 'BBZ-169',
+      'D:/ws/worktrees/thing--merge-base', 'owner/thing', 'ABC-1',
     );
-    expect(path).toBe('C:/dev/worktrees/v2-react-native--bbz-169');
+    expect(path).toBe('D:/ws/worktrees/thing--abc-1');
   });
 
   it('item 12: a plain checkout (not itself a worktree) still resolves exactly today\'s path', () => {
-    const path = worktreePathFor('C:/dev/v2-React-Native', 'owner/v2-react-native', 'BBZ-169');
-    expect(path).toBe('C:/dev/worktrees/v2-react-native--bbz-169');
+    const path = worktreePathFor('D:/ws/Thing', 'owner/thing', 'ABC-1');
+    expect(path).toBe('D:/ws/worktrees/thing--abc-1');
   });
 
   it('item 12: backslash paths through the same doubled-worktree checkout resolve without doubling', () => {
     const path = worktreePathFor(
-      'C:\\dev\\worktrees\\v2-react-native--merge-base', 'owner/v2-react-native', 'BBZ-169',
+      'D:\\ws\\worktrees\\thing--merge-base', 'owner/thing', 'ABC-1',
     );
-    expect(path).toBe('C:\\dev\\worktrees\\v2-react-native--bbz-169');
+    expect(path).toBe('D:\\ws\\worktrees\\thing--abc-1');
   });
 
   it('item 12: a trailing slash on the worktree checkout does not confuse the parent lookup', () => {
     const path = worktreePathFor(
-      'C:/dev/worktrees/v2-react-native--merge-base/', 'owner/v2-react-native', 'BBZ-169',
+      'D:/ws/worktrees/thing--merge-base/', 'owner/thing', 'ABC-1',
     );
-    expect(path).toBe('C:/dev/worktrees/v2-react-native--bbz-169');
+    expect(path).toBe('D:/ws/worktrees/thing--abc-1');
   });
 
   it('item 12: a repo literally named "worktrees" still lands under one worktrees directory', () => {
-    const path = worktreePathFor('C:/dev/worktrees', 'owner/worktrees', 'BBZ-1');
-    expect(path).toBe('C:/dev/worktrees/worktrees--bbz-1');
+    const path = worktreePathFor('D:/ws/worktrees', 'owner/worktrees', 'ABC-1');
+    expect(path).toBe('D:/ws/worktrees/worktrees--abc-1');
   });
 });
 

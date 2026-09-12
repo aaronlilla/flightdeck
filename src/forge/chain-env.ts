@@ -116,13 +116,13 @@ export function mergeAllowedFor(chainEnv: ChainEnv, repo: string): boolean {
  *  every other repository's worktrees. `checkout` is the local clone's own path
  *  (`FORGE_REPO_CHECKOUTS`'s value for this repo), never derived from the repository
  *  name alone. */
-/** Item 12 (2026-09-11): the doc comment above assumed a checkout always sits at
- *  `C:/dev/<repo>`, so the worktrees directory was always "the checkout's parent, plus
- *  `worktrees`". That breaks when the configured checkout is ITSELF a worktree (the
- *  mobile repo's checkout is `C:/dev/worktrees/v2-react-native--merge-base`) -- its
- *  parent is already `C:/dev/worktrees`, and appending `worktrees` again doubled the
- *  segment, landing new worker trees at `C:/dev/worktrees/worktrees/...`, invisible to
- *  the coordination board and the cleanup that scan `C:/dev/worktrees/*` only.
+/** Item 12 (2026-09-11): the doc comment above assumed a checkout always sits one
+ *  level under the workspace root, so the worktrees directory was always "the
+ *  checkout's parent, plus `worktrees`". That breaks when the configured checkout is
+ *  ITSELF a worktree -- its parent is already the worktrees directory, and appending
+ *  `worktrees` again doubled the segment, landing new worker trees one level too deep,
+ *  invisible to the coordination board and the cleanup, which scan the workspace's own
+ *  worktrees directory and nothing below it. Seen live on a real ticket that day.
  *
  *  Fix: if the checkout's parent directory already ends in a `worktrees` segment, that
  *  IS the worktrees directory -- do not append a second one. A plain checkout (parent
