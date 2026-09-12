@@ -146,6 +146,11 @@ export function queuePlanner(
   configFn: () => JiraConfig | undefined = jiraConfigFromEnv,
   chainEnv?: ChainEnv,
 ): QueuePlanner {
+  // F.6 defect, 2026-09-12: every brief was written with `repoKind` left undefined, so a
+  // routine tagged `frontend` could never match one and a mobile worker was handed the
+  // general routines only. The kind comes from the repository map, the same declaration
+  // `chain-env.ts` already reads, never guessed from the repository's name.
+  const kindOf = (repo: string): string | undefined => (chainEnv ? declaredRepoKind(chainEnv, repo) : undefined);
   const repoRules = parseRepoMap(process.env['FORGE_INTAKE_REPO_MAP']);
   const briefsDir = queueBriefsDir();
   mkdirSync(briefsDir, { recursive: true });
@@ -233,7 +238,7 @@ export function queuePlanner(
             });
           },
           writeBriefFile: async ({ text }: { text: string }) => ({
-            briefPath: await writeBrief(briefIdFor(packet.id, itemId), text),
+            briefPath: await writeBrief(briefIdFor(packet.id, itemId), text, kindOf(repo)),
             repo,
           }),
           append: (row: { event: string; [key: string]: unknown }) => { journal.append(row as never); },
@@ -254,7 +259,7 @@ export function queuePlanner(
       const ticket = ticketFromBrief(text) ?? id;
       const repo = repoFromBrief(text)
         ?? routeRepo(repoRules, { ticket, labels: [], components: [], issuetype: '' });
-      const briefPath = await writeBrief(id, text);
+      const briefPath = await writeBrief(id, text, kindOf(repo));
       return { ticket, repo, briefPath };
     },
 
@@ -271,6 +276,7 @@ export function queuePlanner(
         id,
         `${text}\n\nThis is a hotfix: it ships to dev on Merge and to production only on a `
           + 'separate Promote click.',
+        kindOf(repo),
       );
       return { ticket, repo, briefPath };
     },
