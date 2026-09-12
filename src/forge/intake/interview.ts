@@ -54,6 +54,18 @@ export interface InterviewAnswer {
 
 export type JournalAppend = (row: { event: string; [key: string]: unknown }) => void;
 
+/**
+ * Item 10, 2026-09-11: a budget shared across every `interview` call in one poll, so a
+ * pass that interviews many items at once cannot raise more questions in total than the
+ * queue's own width -- the flood observed live on 2026-09-11 was 92 open questions from
+ * one pass, each item capped at `MAX_QUESTIONS` but nothing capping the sum across items.
+ * A plain mutable object rather than a class: the caller owns it, decrements it across
+ * calls, and decides when a new poll starts a fresh one.
+ */
+export interface InterviewPollBudget {
+  remaining: number;
+}
+
 /** A teammate question the model left unnamed. Backend questions go to the backend lead,
  *  product questions to the product owner; anything else stays unnamed and reads as an
  *  operator question the operator can pass by hand. */
@@ -136,7 +148,8 @@ function parseQuestion(raw: unknown): InterviewQuestion | null {
  * worse outcome than a brief written without the extra facts.
  */
 export async function interview(
-  packet: Packet, reasoner: Reasoner, opts: { append?: JournalAppend } = {},
+  packet: Packet, reasoner: Reasoner,
+  opts: { append?: JournalAppend; budget?: InterviewPollBudget } = {},
 ): Promise<InterviewResult> {
   const reply = await reasoner.call({ className: 'plan-ticket', prompt: buildInterviewPrompt(packet) });
   let parsed: unknown;
@@ -161,7 +174,22 @@ export async function interview(
       packetId: packet.id, asked: all.length, kept: kept.length, dropped: all.length - kept.length,
     });
   }
-  return { route, questions: kept };
+  // Item 10, 2026-09-11: the per-ticket cap above is `MAX_QUESTIONS`; this is the
+  // cross-item cap, applied only when a caller shares a budget across the whole poll.
+  // Deducted from whatever this ticket already had capped to, never re-adding what
+  // `interview.capped` above already dropped.
+  if (!opts.budget) return { route, questions: kept };
+  const allowed = Math.max(0, opts.budget.remaining);
+  const final = kept.slice(0, allowed);
+  const deferredHere = kept.length - final.length;
+  opts.budget.remaining = allowed - final.length;
+  if (deferredHere > 0) {
+    opts.append?.({
+      event: 'interview.deferred', actor: 'intake', ticket: packet.ticket,
+      packetId: packet.id, raised: kept.length, kept: final.length, deferred: deferredHere,
+    });
+  }
+  return { route, questions: final };
 }
 
 export function buildBriefPrompt(packet: Packet, answers: InterviewAnswer[]): string {

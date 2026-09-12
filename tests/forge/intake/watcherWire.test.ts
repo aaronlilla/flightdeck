@@ -179,6 +179,72 @@ describe('watcherTick', () => {
     expect(pollLines[0]).toContain('added 1, sent 0, closed 0');
   });
 
+  it('item 9 (2026-09-11): 15 new tickets, width 4, inFlight 0 -- one poll adds 4 and defers 11', async () => {
+    const store = tempStore();
+    const watermarks = memoryWatermarks();
+    const items = Array.from({ length: 15 }, (_, i) => ({ id: `BBZ-${i + 1}`, updated: 100 + i }));
+    const feed = feedOf(items);
+    const { journal, path } = tempJournal();
+
+    const result = await watcherTick({ feedFor: () => feed, watermarks, store, journal, maxInFlight: () => 4 });
+    journal.close?.();
+
+    expect(result.addedTickets).toHaveLength(4);
+    expect(store.all()).toHaveLength(4);
+    const lines = readFileSync(path, 'utf8').trim().split('\n').filter(Boolean);
+    const deferredLines = lines.filter((line) => line.includes('"event":"watcher.deferred"'));
+    expect(deferredLines).toHaveLength(1);
+    expect(deferredLines[0]).toContain('deferred 11');
+  });
+
+  it('edge: width 0 defers every brand-new ticket and adds none', async () => {
+    const store = tempStore();
+    const watermarks = memoryWatermarks();
+    const items = Array.from({ length: 5 }, (_, i) => ({ id: `BBZ-${i + 1}`, updated: 100 + i }));
+    const feed = feedOf(items);
+    const { journal, path } = tempJournal();
+
+    const result = await watcherTick({ feedFor: () => feed, watermarks, store, journal, maxInFlight: () => 0 });
+    journal.close?.();
+
+    expect(result.addedTickets).toEqual([]);
+    const lines = readFileSync(path, 'utf8').trim().split('\n').filter(Boolean);
+    const deferredLines = lines.filter((line) => line.includes('"event":"watcher.deferred"'));
+    expect(deferredLines[0]).toContain('deferred 5');
+  });
+
+  it('edge: tickets already queued are never budgeted -- only brand-new ones defer', async () => {
+    const store = tempStore();
+    for (let i = 1; i <= 15; i += 1) addTicketItem(store, `BBZ-${i}`, 1000);
+    const watermarks = memoryWatermarks();
+    const feed = feedOf(Array.from({ length: 15 }, (_, i) => ({ id: `BBZ-${i + 1}`, updated: 2000 + i })));
+    const { journal, path } = tempJournal();
+
+    const result = await watcherTick({ feedFor: () => feed, watermarks, store, journal, maxInFlight: () => 4 });
+    journal.close?.();
+
+    expect(result.addedTickets).toEqual([]);
+    expect(() => readFileSync(path, 'utf8')).toThrow(/ENOENT/);
+  });
+
+  it('edge: a ticket deferred on one poll and gone from the feed on the next causes no error', async () => {
+    const store = tempStore();
+    const watermarks = memoryWatermarks();
+    const { journal } = tempJournal();
+    const firstFeed = feedOf(Array.from({ length: 6 }, (_, i) => ({ id: `BBZ-${i + 1}`, updated: 100 + i })));
+
+    const first = await watcherTick({ feedFor: () => firstFeed, watermarks, store, journal, maxInFlight: () => 4 });
+    expect(first.addedTickets).toHaveLength(4);
+
+    // BBZ-5 and BBZ-6 were deferred; the feed no longer returns BBZ-6 on the next poll
+    // (removed from Jira, or no longer matches the JQL) -- the second poll must not
+    // error and must not add it.
+    const secondFeed = feedOf([{ id: 'BBZ-5', updated: 300 }]);
+    const second = await watcherTick({ feedFor: () => secondFeed, watermarks, store, journal, maxInFlight: () => 4 });
+    expect(second.addedTickets).toEqual(['BBZ-5']);
+    expect(store.all().map((i) => i.ticket)).not.toContain('BBZ-6');
+  });
+
   it('journals nothing on an idle poll -- an unchanged board costs no journal growth', async () => {
     const store = tempStore();
     const watermarks = memoryWatermarks();
