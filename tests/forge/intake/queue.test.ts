@@ -1125,6 +1125,54 @@ describe('Jira write-back at review: A.3', () => {
     expect(current.handoffAt).toBeTypeOf('number');
   });
 
+  // Item 16, 2026-09-12: the pull request reaching review stayed a draft and its body
+  // said nothing about whether merging publishes an update or triggers a rebuild,
+  // though the decide job had already resolved one. Whoever merged it could not tell.
+  it('marks the pull request ready at review and writes the ship prediction into it', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'BBZ-226', 1000);
+    const calls: { pr: number; prediction: string }[] = [];
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS' }),
+    });
+    deps.prSnapshot = async () => ({ files: ['android/app/build.gradle', 'src/app/store.ts'], add: 3, del: 1 });
+    deps.readyPrWithPrediction = async (input) => { calls.push({ pr: input.pr.no, prediction: input.prediction }); };
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('review');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.prediction).toMatch(/Android: predicted rebuild/);
+    expect(calls[0]!.prediction).toMatch(/iOS: predicted over-the-air update/);
+    expect(current.pr?.draft).toBe(false);
+  });
+
+  it('journals a refusal to mark ready, and never silently skips it', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'BBZ-226', 1000);
+    const { deps, events } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS' }),
+    });
+    deps.prSnapshot = async () => ({ files: ['src/app/store.ts'], add: 1, del: 0 });
+    deps.readyPrWithPrediction = async () => { throw new Error('gh: draft conversion refused'); };
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('review');
+    const refusal = events.find((row) => row['event'] === 'queue.pr-ready-failed');
+    expect(refusal).toBeDefined();
+    expect(String(refusal!['error'])).toContain('draft conversion refused');
+    expect(current.pr?.draft).toBe(true);
+  });
+
   it('a failing handoff never keeps the item off review, and leaves handoffAt unset', async () => {
     const store = tempStore();
     const item = addTicketItem(store, 'BBZ-226', 1000);

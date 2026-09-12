@@ -47,6 +47,10 @@ export interface GhWriteResult {
  *  intent/call/complete cycle (`externalize.ts`) rather than fired and forgotten.
  *  `readyPr` (F5) is called first when the PR is still a draft: a passing gate is by
  *  construction what makes a draft ready to merge. */
+/** Marks where the ship prediction was appended, so a second pass does not stack a
+ *  second copy onto the body. */
+export const SHIP_PREDICTION_MARKER = '<!-- forge:ship-prediction -->';
+
 export interface GhWriter {
   mergePr(repo: string, pr: number, subject: string, body: string): Promise<GhWriteResult>;
   readyPr(repo: string, pr: number): Promise<GhWriteResult>;
@@ -59,6 +63,10 @@ export interface GhWriter {
   /** A.4: `gh pr edit --add-reviewer`, for the backend handoff -- requesting the backend
    *  owner as a reviewer on a draft PR this queue will never merge itself. */
   requestReviewer(repo: string, pr: number, reviewer: string): Promise<GhWriteResult>;
+  /** Item 16, 2026-09-12: appends the ship prediction to a pull request body at review.
+   *  Appends rather than replaces -- the body is the author's, and a prediction is a
+   *  footnote on it, not a substitute for it. */
+  appendPrBody(repo: string, pr: number, addition: string): Promise<GhWriteResult>;
 }
 
 /** One row per refusal, for whatever caller wants to surface it (the queue journal). */
@@ -236,6 +244,29 @@ export const REAL_GH: GhReader & GhWriter = {
   async commentPr(repo, pr, body) {
     const result = await execRun({
       argv: ['gh', 'pr', 'comment', String(pr), '--repo', repo, '--body', body],
+      cwd: process.cwd(), owner: 'council', cls: 'script',
+    });
+    return { returncode: result.returncode ?? -1, stderr: result.tail };
+  },
+
+  async appendPrBody(repo, pr, addition) {
+    const current = await execRun({
+      argv: ['gh', 'pr', 'view', String(pr), '--repo', repo, '--json', 'body', '--jq', '.body'],
+      cwd: process.cwd(), owner: 'council', cls: 'script',
+    });
+    if ((current.returncode ?? -1) !== 0) {
+      return { returncode: current.returncode ?? -1, stderr: current.tail };
+    }
+    // Appending twice would stack two predictions on a re-run; the marker makes the
+    // write idempotent without reading a second source of truth.
+    if (current.tail.includes(SHIP_PREDICTION_MARKER)) return { returncode: 0, stderr: '' };
+    const body = `${current.tail.trimEnd()}
+
+${SHIP_PREDICTION_MARKER}
+${addition}
+`;
+    const result = await execRun({
+      argv: ['gh', 'pr', 'edit', String(pr), '--repo', repo, '--body', body],
       cwd: process.cwd(), owner: 'council', cls: 'script',
     });
     return { returncode: result.returncode ?? -1, stderr: result.tail };

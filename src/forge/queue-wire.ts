@@ -18,7 +18,7 @@ import { chainCouncil, chainGate, chainGh, chainRebase, chainLauncher, chainLaun
 import { checkoutFor, repoKindFor as repoKindForEnv, type ChainEnv } from './chain-env.js';
 import type { CliResult, ForgeDeps } from './cli.js';
 import { autoMergeAllowed } from './council/risk.js';
-import { conclusionOf, countAddDel, guardedCommentPr, REAL_GH } from './council/gh.js';
+import { conclusionOf, countAddDel, guardedCommentPr, REAL_GH, type GhWriter } from './council/gh.js';
 import type { Packet, PollSourceName, Watermark } from './contracts.js';
 import { run as execRun } from './exec.js';
 import type {
@@ -299,6 +299,29 @@ export function queueBackendHandoff(
   };
 }
 
+/**
+ * Item 16, 2026-09-12: at review, mark the pull request ready and append the ship
+ * prediction to its body. Both are writes a person would otherwise do by hand, and
+ * leaving the pull request a draft means nobody can merge it at all. `readyPr` on an
+ * already-ready pull request is a no-op, and the body append carries its own marker,
+ * so a second pass over the same item changes nothing.
+ */
+export function queueReadyPrWithPrediction(
+  gh: Pick<GhWriter, 'readyPr' | 'appendPrBody'> = REAL_GH,
+): NonNullable<QueueRuntimeDeps['readyPrWithPrediction']> {
+  return async ({ item, pr, prediction }) => {
+    if (!item.repo) return;
+    const ready = await gh.readyPr(item.repo, pr.no);
+    if (ready.returncode !== 0) {
+      throw new Error(`gh pr ready failed: ${ready.stderr.slice(0, 300)}`);
+    }
+    const appended = await gh.appendPrBody(item.repo, pr.no, prediction);
+    if (appended.returncode !== 0) {
+      throw new Error(`gh pr edit failed: ${appended.stderr.slice(0, 300)}`);
+    }
+  };
+}
+
 /** A.3: the Jira write-back at review -- a comment in Aaron's voice, a QA assign/
  *  transition when those variables are set, and a remote link to the PR. Skipped
  *  honestly (never a guessed write) when no Jira credential is configured. */
@@ -498,6 +521,7 @@ export function buildQueueRuntimeDeps(
     mergeCheckRepos: chainEnv.checkouts.map((entry) => entry.repo),
     backendHandoff: queueBackendHandoff(),
     jiraHandoff: queueJiraHandoff(),
+    readyPrWithPrediction: queueReadyPrWithPrediction(),
     prSnapshot: queuePrSnapshot(),
     // BBZ, 2026-09-08: read fresh every tick (`autoMergeAllowed` re-reads
     // `FORGE_COUNCIL_AUTOMERGE` off `councilPolicy()` on each call), the same allow-list

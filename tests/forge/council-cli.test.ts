@@ -90,6 +90,7 @@ function fakeGh(snapshots: PrSnapshot[], overrides: Partial<GhWriter> = {}): GhR
       return snapshot;
     },
     async mergePr() { return { returncode: 0, stderr: '' }; /* overridden per test when exercised */ },
+    async appendPrBody() { return { returncode: 0, stderr: '' }; },
     async readyPr() { return { returncode: 0, stderr: '' }; },
     async viewPrState() { return { prState: 'OPEN' }; },
     async commentPr() { return { returncode: 0, stderr: '' }; },
