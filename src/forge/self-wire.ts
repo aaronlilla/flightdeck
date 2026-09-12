@@ -15,7 +15,7 @@ import { REAL_GH } from './council/gh.js';
 import { run as execRun } from './exec.js';
 import { Gotchas } from './gotcha.js';
 import type { QueueMergeDeps } from './intake/queue.js';
-import { queueBusy, QUEUE_IN_FLIGHT_STATES } from './intake/queue.js';
+import { queueBusy } from './intake/queue.js';
 import type { QueueStore } from './intake/queueStore.js';
 import { Journal, JournalCache } from './journal.js';
 
