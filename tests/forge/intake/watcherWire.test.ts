@@ -245,6 +245,29 @@ describe('watcherTick', () => {
     expect(store.all().map((i) => i.ticket)).not.toContain('BBZ-6');
   });
 
+  it('code review, 2026-09-11: a later-updated owned ticket must not push the watermark past a deferred new one', async () => {
+    const store = tempStore();
+    addTicketItem(store, 'BBZ-OWNED', 1);
+    const watermarks = memoryWatermarks();
+    const { journal } = tempJournal();
+    // The feed ignores the watermark on every call, same as a real one -- `FakePollFeed`'s
+    // own contract. BBZ-NEW is far older than BBZ-OWNED's own latest comment.
+    const feed = feedOf([
+      { id: 'BBZ-NEW', updated: 100 },
+      { id: 'BBZ-OWNED', updated: 9999, detail: { summary: 'x', description: '', status: 'In Progress', issuetype: 'Bug', priority: 'High', latestComment: { author: 'Jason', body: 'ping' } } },
+    ]);
+
+    // Budget exhausted: BBZ-NEW defers. Before this fix, BBZ-OWNED (admitted, uncapped)
+    // still carried its 9999 into `advanceWatermark`, committing the watermark past
+    // BBZ-NEW's own 100 forever.
+    const first = await watcherTick({ feedFor: () => feed, watermarks, store, journal, maxInFlight: () => 0 });
+    expect(first.addedTickets).toEqual([]);
+
+    // Budget opens up on the next poll -- the same feed, unchanged, is polled again.
+    const second = await watcherTick({ feedFor: () => feed, watermarks, store, journal, maxInFlight: () => 5 });
+    expect(second.addedTickets).toEqual(['BBZ-NEW']);
+  });
+
   it('journals nothing on an idle poll -- an unchanged board costs no journal growth', async () => {
     const store = tempStore();
     const watermarks = memoryWatermarks();

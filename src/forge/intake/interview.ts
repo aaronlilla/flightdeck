@@ -184,20 +184,26 @@ export async function interview(
   }
   // Item 10, 2026-09-11: the per-ticket cap above is `MAX_QUESTIONS`; this is the
   // cross-item cap, applied only when a caller shares a budget across the whole poll.
-  // Deducted from whatever this ticket already had capped to, never re-adding what
-  // `interview.capped` above already dropped.
-  if (!opts.budget) return { route, questions: kept };
+  //
+  // All-or-nothing per ticket, never a partial slice: an earlier version kept whatever
+  // fraction of `kept` fit the remaining budget, which meant a ticket that raised 2 of
+  // its 4 questions had the other 2 silently dropped forever -- `planTicketWithInterview`
+  // only knows how to retry a ticket whose interview raised NOTHING (`result.deferred`
+  // with `questions: []`); a partial raise reads as "this is everything" and writes a
+  // brief with those decisions never asked. So a ticket either fits the whole of `kept`
+  // in what budget remains, or none of it goes out this poll and the whole ticket waits
+  // for the next one -- found by code review, 2026-09-11.
+  if (!opts.budget || !kept.length) return { route, questions: kept };
   const allowed = Math.max(0, opts.budget.remaining);
-  const final = kept.slice(0, allowed);
-  const deferredHere = kept.length - final.length;
-  opts.budget.remaining = allowed - final.length;
-  if (deferredHere > 0) {
-    opts.append?.({
-      event: 'interview.deferred', actor: 'intake', ticket: packet.ticket,
-      packetId: packet.id, raised: kept.length, kept: final.length, deferred: deferredHere,
-    });
+  if (allowed >= kept.length) {
+    opts.budget.remaining = allowed - kept.length;
+    return { route, questions: kept };
   }
-  return { route, questions: final, ...(deferredHere > 0 ? { deferred: deferredHere } : {}) };
+  opts.append?.({
+    event: 'interview.deferred', actor: 'intake', ticket: packet.ticket,
+    packetId: packet.id, raised: kept.length, kept: 0, deferred: kept.length,
+  });
+  return { route, questions: [], deferred: kept.length };
 }
 
 export function buildBriefPrompt(packet: Packet, answers: InterviewAnswer[]): string {

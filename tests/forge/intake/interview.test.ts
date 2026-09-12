@@ -182,17 +182,26 @@ describe('interview -- cross-item poll budget (item 10, 2026-09-11)', () => {
     expect(budget.remaining).toBe(0);
   });
 
-  it('edge: a width smaller than one item\'s own question count still caps that single item', async () => {
+  // Updated 2026-09-11 (code review, item 10 follow-up): a width smaller than one
+  // item's own question count used to keep whatever fraction fit and silently drop the
+  // rest -- the dropped ones never got asked and never got retried, since
+  // `planTicketWithInterview`'s retry path only fires when an item raises NOTHING. Now
+  // the whole item defers rather than splitting: a ticket either gets everything it
+  // asked for out of the remaining budget, or none of it goes out this poll.
+  it('edge: a width smaller than one item\'s own question count defers the whole item, not a partial slice', async () => {
     const seen = { prompts: [] as string[], classes: [] as string[] };
     const rows: { event: string; [k: string]: unknown }[] = [];
     const budget: InterviewPollBudget = { remaining: 2 };
     const result = await interview(packet(), fourQuestionsReasoner(seen), {
       append: (row) => { rows.push(row); }, budget,
     });
-    expect(result.questions).toHaveLength(2);
-    expect(budget.remaining).toBe(0);
+    expect(result.questions).toHaveLength(0);
+    expect(result.deferred).toBe(4);
+    // Nothing of this item's own questions went out, so nothing was spent -- a later,
+    // smaller item on the same poll can still fit in the 2 that are left.
+    expect(budget.remaining).toBe(2);
     const deferred = rows.filter((row) => row.event === 'interview.deferred');
-    expect(deferred[0]!['deferred']).toBe(2);
+    expect(deferred[0]!['deferred']).toBe(4);
   });
 
   it('edge: no budget passed means the old per-ticket-only cap, unchanged', async () => {

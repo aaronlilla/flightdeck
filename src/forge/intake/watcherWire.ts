@@ -108,20 +108,38 @@ function widthLimitedFeed(feed: FakePollFeed, ownedKeys: ReadonlySet<string>, bu
     async fetchSince(mark) {
       const page = await feed.fetchSince(mark);
       let remaining = budget;
-      const kept: RawPollItem[] = [];
+      const admitted: RawPollItem[] = [];
+      const heldBack: RawPollItem[] = [];
       for (const item of page) {
         if (ownedKeys.has(item.id)) {
-          kept.push(item);
+          admitted.push(item);
           continue;
         }
         if (remaining > 0) {
-          kept.push(item);
+          admitted.push(item);
           remaining -= 1;
         } else {
-          deferred.count += 1;
+          heldBack.push(item);
         }
       }
-      return kept;
+      if (!heldBack.length) return admitted;
+      deferred.count += heldBack.length;
+      // Found by code review, 2026-09-11: `runPoll` (`poller.ts`) commits the watermark
+      // off `advanceWatermark(mark, page)` -- the MAX `updated` across whatever this call
+      // returns, every admitted item included, owned ones too. An owned ticket's own
+      // comment or status move (never budgeted, always admitted above) carrying a later
+      // `updated` than a held-back new ticket would commit the watermark past that new
+      // ticket's own timestamp; `filterNewItems` then reads the new ticket as no longer
+      // new on every future poll, since its `updated` never changes again on its own --
+      // gone from intake for good, which is worse than the flood this item set out to
+      // fix. So nothing in the page this call returns may carry an `updated` later than
+      // the oldest held-back ticket's own: an admitted item that would violate that is
+      // held back too. It costs that item's send/close this one poll -- the real feed's
+      // own `fetchSince` ignores the watermark and returns it again next poll unharmed,
+      // and once the watermark is capped below it, `filterNewItems` reads it as fresh
+      // again there.
+      const floor = Math.min(...heldBack.map((item) => item.updated));
+      return admitted.filter((item) => item.updated <= floor);
     },
   };
 }
