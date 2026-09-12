@@ -225,6 +225,28 @@ describe('enforceRulesOnce', () => {
     expect(answeredByOf(inbox.entry(key)!)).toBe('the operator');
   });
 
+  // Found by code review, 2026-09-12: `enforceRulesOnce` iterates every OPEN ask, and
+  // an ask with a teammate's reply attached is still open on purpose -- the operator
+  // confirms or changes it. A rule firing there overwrote the teammate's name on disk,
+  // which is the only record that they replied at all, and left the brief crediting the
+  // operator while the journal row beside it named the rule.
+  it('leaves an ask alone once a teammate has replied and the operator has not confirmed', async () => {
+    inbox.raise({ run: 'item:Q-pass1', ticket: 'BBZ-7', question: 'value cannot be NOT NULL, what now?' });
+    const key = inbox.open()[0]!.key;
+    inbox.attachReply(key, 'joe', 'use the default');
+    writeRule({
+      id: 'r4', kind: 'auto-answer', title: 't', summary: 's', evidence: 'NOT NULL',
+      effect: 'skip nulls', status: 'open', jid: null, prUrl: null,
+    });
+
+    await enforceRulesOnce({ journalPath, rulesPath: rulesFile, inbox, runActions });
+
+    const entry = inbox.entry(key)!;
+    expect(entry.answeredBy).toBe('joe');
+    expect(entry.answer).toBeUndefined();
+    expect(inbox.open().map((row) => row.key)).toContain(key);
+  });
+
   it('still credits the operator for a plain typed answer with no author', () => {
     inbox.raise({ run: 'item:Q-edge3', ticket: 'BBZ-3', question: 'which env?' });
     const key = inbox.open()[0]!.key;

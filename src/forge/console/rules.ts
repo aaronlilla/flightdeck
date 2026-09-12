@@ -162,6 +162,13 @@ export async function enforceRulesOnce(deps: EnforcementDeps): Promise<void> {
       const pattern = rule.evidence;
       for (const ask of deps.inbox.open()) {
         if (!pattern || !ask.question.includes(pattern)) continue;
+        // Found by code review, 2026-09-12: an ask with a teammate's reply attached is
+        // still open on purpose -- `attachReply` never accepts the reply, the operator
+        // does. A rule answering it overwrote the teammate's name, which is the only
+        // record that they replied at all, and left the brief crediting the operator
+        // while the journal row beside it named the rule. A person is already on this
+        // one; the rule stands down.
+        if (ask.reply !== undefined) continue;
         const answered = deps.inbox.answer(ask.key, rule.effect, `rule:${rule.id}`);
         if (answered) {
           await deliverAnswer(answered, ask.key, rule.effect);
