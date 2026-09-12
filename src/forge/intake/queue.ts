@@ -1010,7 +1010,6 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
   // draft-pr-open and the owner ping below assumes a draft, so readying it here would
   // hand a backend owner a pull request the queue had already made mergeable (code
   // review, 2026-09-12). The mobile prediction is meaningless on those repos anyway.
-  let readied = false;
   // Whether this repo builds a mobile app, read off the checkout rather than off
   // configuration (code review, 2026-09-12, twice). `repoKindFor` means "not backend"
   // and put an Android and iOS ship path on every Node repo; the declared kind is
@@ -1018,34 +1017,45 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
   // said anything, so a skip is journaled now.
   // Not once the gate has merged (code review, 2026-09-12). `gh pr ready` is then
   // spent on a merged pull request, and a comment saying what MERGING will cost lands
-  // after the merge.
+  // after the merge. Nor twice: a FIX FIRST round leaves the item `running` and the
+  // next tick re-enters this hop, and where `gh pr ready` is idempotent a comment is
+  // not -- two predictions, which can disagree, since the file list is re-fetched each
+  // pass. `predictionAt` is the mark that it has already been posted.
+  let readied = false;
   const alreadyMerged = merge && gateResult.merged === true;
-  const isMobile = !alreadyMerged && (deps.mobileRepo?.(item.repo!) ?? false);
-  if (deps.readyPrWithPrediction && item.repo && !isMobile && !alreadyMerged) {
-    deps.append({
-      event: 'queue.pr-ready-skipped', actor: 'queue', itemId: item.id, pr: pr.number,
-      reason: 'no mobile build found for this repo, so no ship path to predict',
-    });
-  }
-  if (deps.readyPrWithPrediction && item.repo && isMobile) {
-    const prediction = renderShipPrediction(shipPredictionFor(item.changedFiles ?? []));
-    try {
-      const outcome = await deps.readyPrWithPrediction({ item, pr: { no: pr.number, url: pr.url }, prediction });
-      // A wiring that returns nothing did nothing, so it did not ready anything
-      // (code review, 2026-09-12). Mapping `void` to "ready" recorded a still-draft
-      // pull request as mergeable.
-      readied = outcome?.readied === true;
-      if (outcome?.predictionError) {
+  const alreadyPredicted = item.predictionAt !== undefined && item.predictionAt !== null;
+  const isMobile = deps.mobileRepo?.(item.repo!) ?? false;
+  let predictionAt = item.predictionAt;
+  if (deps.readyPrWithPrediction && item.repo && !alreadyPredicted) {
+    // Every branch that does not run says why. A silent skip is how a feature that
+    // never runs looks exactly like one that did, which is the fault the row exists to
+    // remove -- and the first version of this block skipped the row too on the
+    // auto-merge path, so the case most likely to hide was the one left uncovered.
+    const skip = alreadyMerged
+      ? 'the gate already merged this pull request, so there is nothing to ready and no merge to predict'
+      : (!isMobile ? 'no mobile build found for this repo, so no ship path to predict' : null);
+    if (skip) {
+      deps.append({
+        event: 'queue.pr-ready-skipped', actor: 'queue', itemId: item.id, pr: pr.number, reason: skip,
+      });
+    } else {
+      const prediction = renderShipPrediction(shipPredictionFor(item.changedFiles ?? []));
+      try {
+        const outcome = await deps.readyPrWithPrediction({ item, pr: { no: pr.number, url: pr.url }, prediction });
+        readied = outcome?.readied === true;
+        predictionAt = deps.clock();
+        if (outcome?.predictionError) {
+          deps.append({
+            event: 'queue.pr-prediction-failed', actor: 'queue', itemId: item.id,
+            pr: pr.number, error: outcome.predictionError,
+          });
+        }
+      } catch (error) {
         deps.append({
-          event: 'queue.pr-prediction-failed', actor: 'queue', itemId: item.id,
-          pr: pr.number, error: outcome.predictionError,
+          event: 'queue.pr-ready-failed', actor: 'queue', itemId: item.id,
+          pr: pr.number, error: messageOf(error),
         });
       }
-    } catch (error) {
-      deps.append({
-        event: 'queue.pr-ready-failed', actor: 'queue', itemId: item.id,
-        pr: pr.number, error: messageOf(error),
-      });
     }
   }
 
@@ -1087,6 +1097,7 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
           ...(prDel !== undefined ? { del: prDel } : {}),
         },
         ...(handoffAt ? { handoffAt } : {}),
+        ...(predictionAt ? { predictionAt } : {}),
         ...(council.attestationPath ? { attestationPath: council.attestationPath } : {}),
       },
       deps, 'queue.done', { hop: 'gate', ...(gateResult.mergeSha ? { mergeSha: gateResult.mergeSha } : {}) },
@@ -1125,6 +1136,7 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
         ...(prDel !== undefined ? { del: prDel } : {}),
       },
       ...(handoffAt ? { handoffAt } : {}),
+      ...(predictionAt ? { predictionAt } : {}),
       ...(council.attestationPath ? { attestationPath: council.attestationPath } : {}),
     },
     deps, 'queue.review', {},

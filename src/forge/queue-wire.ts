@@ -325,7 +325,17 @@ export function queueBackendHandoff(
  */
 export function mobileRepoAt(chainEnv: ChainEnv | undefined, repo: string): boolean {
   if (!chainEnv) return false;
-  if (declaredRepoKind(chainEnv, repo) === 'frontend') return true;
+  // The declaration is NOT evidence (code review, 2026-09-12). `frontend` means only
+  // "not backend" -- it is what picks the terminal state in `terminalStateFor` -- so
+  // an operator declaring `owner/web-app=frontend` to get the frontend hand-off would
+  // have got an Android and iOS prediction on a repo with no mobile build. That is the
+  // defect this function exists to remove, re-entering through the declaration branch.
+  // Only the checkout decides.
+  // A declared backend is never readied out of draft, whatever its checkout holds
+  // (code review, 2026-09-12). It stops at draft-pr-open by design and its owner is
+  // pinged on the assumption it is still a draft, so readying it hands them a pull
+  // request the queue has already made mergeable.
+  if (declaredRepoKind(chainEnv, repo) === 'backend') return false;
   const checkout = checkoutFor(chainEnv, repo);
   if (!checkout) return false;
   return existsSync(join(checkout, 'android')) || existsSync(join(checkout, 'ios'));
@@ -364,9 +374,15 @@ export function queueReadyPrWithPrediction(
     // Through `guardedCommentPr`, which `council/gh.ts` states is the one gate every
     // pull request comment goes through; calling `commentPr` directly skipped the
     // readability verdict and its refusal row (code review, 2026-09-12).
+    let refusedReason: string | undefined;
     const commented = await guardedCommentPr(gh, item.repo, pr.no, prediction, (refusal) => {
-      onRefused?.(refusal.reason);
+      refusedReason = refusal.reason;
+      onRefused?.(`${item.repo}#${pr.no}: ${refusal.reason}`);
     });
+    // The reason travels with the error: it used to be dropped here and journaled on a
+    // row carrying no pull request, so correlating the two meant matching timestamps
+    // (code review, 2026-09-12).
+    if (refusedReason !== undefined) return { readied, predictionError: `refused by readability: ${refusedReason}` };
     if (commented === null) return { readied, predictionError: 'refused by readability' };
     if (commented.returncode !== 0) {
       return { readied, predictionError: commented.stderr.slice(0, 300) };
@@ -586,7 +602,7 @@ export function buildQueueRuntimeDeps(
     readyPrWithPrediction: queueReadyPrWithPrediction(REAL_GH, (reason) => {
       const journal = new Journal(journalPath());
       try {
-        journal.append({ event: 'readability.refused', actor: 'queue', reason } as never);
+        journal.append({ event: 'readability.refused', actor: 'queue', reason });
       } finally {
         journal.close();
       }

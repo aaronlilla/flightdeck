@@ -23,6 +23,11 @@ export interface ShipPrediction {
   /** The paths the prediction rests on, so a reader can check it rather than trust it.
    *  Empty when nothing in the diff moved either platform off an update. */
   signals: string[];
+  /** The file list was a full page, so it is a prefix and the absence of a native path
+   *  in it proves nothing. Distinct from an empty list, where nothing was read at all
+   *  -- the two are different facts about how much the silence is worth (code review,
+   *  2026-09-12). */
+  truncated?: boolean;
 }
 
 /** A path that rebuilds Android and nothing else. */
@@ -44,6 +49,13 @@ const BOTH = /^patches[/\\]|^(package\.json|package-lock\.json|yarn\.lock|pnpm-l
  *  exactly this length is a prefix, not the whole diff, so the absence of a native
  *  path in it proves nothing (code review, 2026-09-12). */
 const FILE_LIST_PAGE = 100;
+
+/** How many signal paths the comment lists before it stops naming them. The readability
+ *  check counts the separators between backticked spans as prose words, so a hundred
+ *  paths came to 121 words against a ceiling of 80 and the comment was refused outright
+ *  -- on exactly the pull requests where the prediction matters most (code review,
+ *  2026-09-12). Backticking alone did not fix it; the count had to come down. */
+const MAX_SIGNALS_LISTED = 6;
 
 export function shipPredictionFor(changedFiles: readonly string[]): ShipPrediction {
   if (changedFiles.length === 0) return { android: 'unknown', ios: 'unknown', signals: [] };
@@ -71,7 +83,7 @@ export function shipPredictionFor(changedFiles: readonly string[]): ShipPredicti
   // guess presented as a reading, so say so instead -- unless something in the prefix
   // already forced a rebuild, which no unseen file can undo.
   if (changedFiles.length >= FILE_LIST_PAGE && android === 'update' && ios === 'update') {
-    return { android: 'unknown', ios: 'unknown', signals };
+    return { android: 'unknown', ios: 'unknown', signals, truncated: true };
   }
   return { android, ios, signals };
 }
@@ -84,6 +96,11 @@ function sentenceFor(platform: string, action: ShipAction): string {
 /** The block appended to a pull request body at review. Both platforms are always
  *  named, because a prediction that mentions one reads as silence about the other. */
 export function renderShipPrediction(prediction: ShipPrediction): string {
+  if (prediction.truncated) {
+    return `Ship path: the changed-file list came back at its ${FILE_LIST_PAGE}-file limit,`
+      + ' so it is a prefix and neither platform is predicted here. The build fingerprint'
+      + ' decides.';
+  }
   if (prediction.android === 'unknown' || prediction.ios === 'unknown') {
     return 'Ship path: could not read the changed files, so neither platform is predicted here.'
       + ' The build fingerprint decides.';
@@ -94,7 +111,14 @@ export function renderShipPrediction(prediction: ShipPrediction): string {
     `- ${sentenceFor('iOS', prediction.ios)}`,
   ];
   if (prediction.signals.length) {
-    lines.push(`Read from: ${prediction.signals.join(', ')}.`);
+    // Backticked: this text goes through a readability check that DENIES a comment over
+    // a prose-word ceiling, and a denied comment posts nothing at all. A prebuild that
+    // regenerates `android/` and `ios/` yields a hundred signals, which as prose refused
+    // the comment on exactly the pull requests that needed it (code review, 2026-09-12).
+    const shown = prediction.signals.slice(0, MAX_SIGNALS_LISTED)
+      .map((path) => `\`${path}\``).join(', ');
+    const rest = prediction.signals.length - MAX_SIGNALS_LISTED;
+    lines.push(`Read from: ${shown}${rest > 0 ? `, and ${rest} more` : ''}.`);
   } else {
     lines.push('Read from: no native paths, patches or dependency manifests in this diff.');
   }
