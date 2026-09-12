@@ -19,7 +19,11 @@ describe('SessionClock', () => {
     });
     expect(park).toHaveBeenCalledTimes(1);
     expect(park.mock.calls[0]?.[0]).toBe('alpha');
-    expect(String(park.mock.calls[0]?.[1])).toMatch(/wall clock/);
+    // Plain words, not the name of the measurement: what a person reads off the board
+    // says how long it has run and how long it was meant to (Aaron, 2026-09-12).
+    const reason = String(park.mock.calls[0]?.[1]);
+    expect(reason).toMatch(/^Running .+, expected .+$/);
+    expect(reason).not.toMatch(/wall clock/);
   });
 
   it('does not park a run under budget', () => {

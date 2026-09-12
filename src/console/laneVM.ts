@@ -5,6 +5,7 @@
  * state" without rendering anything.
  */
 import type { Blocker, Lane, LaneKind, QueueItem } from '../shared/console-model.js';
+import { runName } from '../shared/runName.js';
 
 export interface BoardStateWord {
   word: 'Working' | 'Needs you' | 'Ready to merge' | 'Blocked' | 'Idle';
@@ -164,12 +165,19 @@ export interface LaneHeadline {
 }
 
 /** What a lane's headline says, shared by the tile, the ticket sheet band, and
- *  the needs-you plates: a ticket outranks a title, which outranks the fallback
- *  "Untitled run" -- the run id never appears as visible text, only in `runId`,
- *  for a `title` attribute (2026-09-08: the id was still the fallback here, the
- *  one machine string the rest of the board was built to hide). */
+ *  the needs-you plates: a ticket outranks a title, which outranks the words in the
+ *  run's own id, which outranks the fallback "Untitled run". The run id itself never
+ *  appears as visible text, only in `runId`, for a `title` attribute (2026-09-08: the
+ *  id was still the fallback here, the one machine string the rest of the board was
+ *  built to hide).
+ *
+ *  The id's WORDS are not the id (2026-09-12). Two tiles both read "Untitled run" on
+ *  the live board, so there was no telling which `Resume` belonged to which; the words
+ *  somebody wrote when they named the work were sitting in the id the whole time, with
+ *  only the date stamp and the product's own name around them. `runName` answers null
+ *  when an id is a key rather than a name, and the fallback still covers that. */
 export function laneHeadline(lane: Lane): LaneHeadline {
-  return { main: lane.ticket ?? lane.title ?? 'Untitled run', runId: lane.id };
+  return { main: lane.ticket ?? lane.title ?? runName(lane.id) ?? 'Untitled run', runId: lane.id };
 }
 
 /** H2.1: the tile's headline in three parts -- a bold `key` (the ticket), a plain
@@ -183,7 +191,16 @@ export interface TileHeadline {
 }
 
 export function tileHeadlineParts(lane: Lane): TileHeadline {
-  return { key: lane.ticket, title: lane.title, runId: lane.id };
+  // `title` falls through to the words in the run's own id, for the same reason
+  // `laneHeadline` does: two tiles both reading "Untitled run" tell a person nothing
+  // about which is which (Aaron, 2026-09-12). The id itself still never renders.
+  //
+  // A title that only repeats the ticket key is dropped rather than printed twice. The
+  // server sets it that way for a ticket it has not read a summary for yet, and the tile
+  // came out reading "BBZ-123" over "BBZ-123", which says half as much as it looks like.
+  const given = lane.title?.trim();
+  const title = given && given !== lane.ticket ? given : runName(lane.id);
+  return { key: lane.ticket, title, runId: lane.id };
 }
 
 const KIND_LABEL: Record<LaneKind, string> = {

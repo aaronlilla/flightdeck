@@ -23,6 +23,7 @@ import { TicketSheet } from './components/TicketSheet.js';
 import { WatcherStatus } from './components/WatcherStatus.js';
 import { focusableIn, trapTab } from './focus-trap.js';
 import { blockerFor, type BoardCommand } from './laneVM.js';
+import { applyLocalResolutions, type LocalResolution } from './cardResolution.js';
 import { initialState, reducer, StoreContext, type ActionLink, type View } from './store.js';
 import type { SyncScope } from '../shared/sync-contract.js';
 import { isSliceEvent, type SliceName } from '../shared/console-events.js';
@@ -49,21 +50,13 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   const mounted = useRef(true);
   const stateRef = useRef(state);
   stateRef.current = state;
-  const resolvedOverridesRef = useRef<Map<string, { resolved: 'confirmed' | 'declined'; at: number }>>(new Map());
-  const LOCAL_CARD_TTL_MS = 30_000;
+  const resolvedOverridesRef = useRef<Map<string, LocalResolution>>(new Map());
   const refreshing = useRef(false);
 
-  const applyResolved = useCallback((messages: Message[]): Message[] => {
-    const cutoff = Date.now() - LOCAL_CARD_TTL_MS;
-    for (const [k, override] of [...resolvedOverridesRef.current]) {
-      if (override.at < cutoff) resolvedOverridesRef.current.delete(k);
-    }
-    if (resolvedOverridesRef.current.size === 0) return messages;
-    return messages.map((m) => {
-      const override = resolvedOverridesRef.current.get(m.k);
-      return override && m.resolved === undefined ? { ...m, resolved: override.resolved } : m;
-    });
-  }, []);
+  const applyResolved = useCallback(
+    (messages: Message[]): Message[] => applyLocalResolutions(messages, resolvedOverridesRef.current, Date.now()),
+    [],
+  );
 
   const refreshSlice = useCallback(async (slice: SliceName) => {
     try {

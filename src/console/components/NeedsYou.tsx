@@ -30,7 +30,7 @@ export interface NeedOption {
 }
 
 export interface Need {
-  kind: 'blocker' | 'confirm' | 'lane';
+  kind: 'blocker' | 'confirm' | 'question' | 'lane';
   /** This need's own id, unique across kinds. `askKey` alone is not: a card uses its
    *  own key or its message key, a lane uses the inbox ask key, and the two id spaces
    *  are not namespaced against each other. Everything the strip remembers about a
@@ -59,9 +59,38 @@ export interface Need {
   passable: boolean;
 }
 
-/** The kind order is the strip's order: what is stopping an agent outranks what is
- *  waiting on a yes, which outranks a question the agent can still work around. */
-const KIND_RANK: Record<Need['kind'], number> = { blocker: 0, confirm: 1, lane: 2 };
+/** The kind order, applied only between two cards a person can actually answer: what is
+ *  stopping an agent outranks what is waiting on a yes, which outranks a question the
+ *  agent can still work around. */
+const KIND_RANK: Record<Need['kind'], number> = { blocker: 0, confirm: 1, question: 2, lane: 3 };
+
+/**
+ * Whether a person could answer this card if it were on screen right now.
+ *
+ * The strip's whole job is to put the next answerable thing in front of someone, and
+ * kind alone does not say which those are. Measured on the live console, 2026-09-12:
+ * 67 cards on the strip, every title the string `confirm?`, every one of them ranked
+ * ahead of the real questions by kind. Aaron: "the UI is totally worthless, how am i
+ * going to answer questions when they look like this".
+ *
+ * Two things make a card answerable, and it needs both. It has to carry words a person
+ * can read -- a card whose only text is a fallback constant asks nothing. And it has to
+ * offer a way to reply. Everything else about it, its kind included, is a tie-break.
+ *
+ * The title is deliberately NOT one of the fields read here. It is a kicker the strip
+ * supplies ("Confirm"), so counting it would make every card look readable -- which is
+ * what happened on the first draft of this function, and the contentless cards kept
+ * their place at the front. Only `line` and `evidence` are the card's own words.
+ */
+export function answerable(need: Need): boolean {
+  const readable = [need.line, ...need.evidence]
+    .some((text) => text.trim().length > 0 && text.trim() !== FALLBACK_TEXT);
+  return readable && need.options.length > 0;
+}
+
+/** What a card falls back to when it has no words of its own: the literal text the
+ *  server's `confirmCard` writes into every confirm it mints. */
+const FALLBACK_TEXT = 'confirm?';
 
 /** The recommended option first (spec §5), the rest in the order the pipeline gave
  *  them. A recommendation the ask does not carry leaves the order alone. */
@@ -89,6 +118,22 @@ function cardEvidence(card: Message): string[] {
 }
 
 /**
+ * What sits behind a question card's disclosure. The question text itself is already the
+ * card's own line, so repeating it here would read as a stutter.
+ *
+ * The run this is waiting on is deliberately NOT here. `source` is a raw internal id
+ * (`item:Q-fc2090a8`), which the board is built to keep off the screen, and putting it in
+ * the evidence had a second cost: `answerable` reads the evidence as the card's own
+ * words, so a question with no text at all would have ranked answerable on the strength
+ * of an identifier (found in review, 2026-09-12).
+ */
+function questionEvidence(card: Message): string[] {
+  const lines: string[] = [];
+  if (card.optionSource === 'drafted') lines.push('Options drafted, not the agent’s own');
+  return lines;
+}
+
+/**
  * Everything that needs a person, in one ordered list: the blocker and confirm cards
  * off the thread response's second field (R-75 item 1), and every lane with an open
  * question. A lane the fleet already retired is not waiting on anyone.
@@ -103,9 +148,42 @@ export function buildNeeds(lanes: Lane[], cards: Message[], blockers?: Blocker[]
     blockers.filter((blocker) => blocker.state !== 'resolved').flatMap((blocker) => blocker.blocks.map((b) => b.laneId)),
   );
   const needs: Need[] = [];
+  /** Ask keys already on the strip as a question card, so the lane pass below does not
+   *  add the same ask a second time. Both come off the one inbox. */
+  const questionKeys = new Set<string>();
   for (const card of cards) {
-    if (card.type !== 'blocker' && card.type !== 'confirm') continue;
     if (card.resolved) continue;
+    // R-75 shipped with the strip accepting `blocker` and `confirm` cards only. Every
+    // open question reaches the console as a `question` card on the same list, so all
+    // 92 of them were dropped on the floor: the strip is the console's answer to "what
+    // needs me", and it was the one surface that never showed a question (measured
+    // 2026-09-12). They were reachable on the Blockers screen and nowhere the strip
+    // pointed.
+    if (card.type === 'question') {
+      const options = recommendedFirst(card.opts ?? [], card.recommended)
+        .filter((option) => option.trim().length > 0);
+      if (options.length === 0) continue;
+      const key = card.askKey ?? card.k;
+      questionKeys.add(key);
+      needs.push({
+        kind: 'question',
+        uid: `card:${card.k}`,
+        id: card.lane ?? card.source,
+        key: '',
+        title: card.kicker ?? 'Question',
+        line: card.title ?? card.text,
+        options: options.map((option) => ({ label: option, cmd: `answer ${key} ${option}` })),
+        askKey: key,
+        askedAt: card.ts,
+        evidence: questionEvidence(card),
+        passedTo: null,
+        passedAt: null,
+        answeredBy: null,
+        passable: true,
+      });
+      continue;
+    }
+    if (card.type !== 'blocker' && card.type !== 'confirm') continue;
     if (card.type === 'blocker' && openLanes !== null && !openLanes.has(card.lane ?? card.source)) continue;
     const options: NeedOption[] = (card.btns ?? []).filter((button) => button.label.trim().length > 0).map((button) => ({ label: button.label, cmd: button.cmd }));
     needs.push({
@@ -115,8 +193,13 @@ export function buildNeeds(lanes: Lane[], cards: Message[], blockers?: Blocker[]
       // The kicker IS the head for a card ("Blocked · NWR-178"); repeating the headline
       // in both lines read as a stutter in the 2026-09-11 screenshot.
       key: '',
-      title: card.kicker ?? card.text,
-      line: card.title ?? card.text,
+      // The blast is the card's own account of what the click will do -- "BBZ-182 is
+      // killed immediately; its worktree and process are gone". A confirm card's `text`
+      // is the constant `confirm?` every time, so reading `text` first put that string
+      // in both lines and left the one sentence that says anything in the disclosure,
+      // closed (2026-09-12). Prefer the words, fall back to the constant.
+      title: card.kicker ?? (card.type === 'confirm' ? 'Confirm' : card.text),
+      line: card.title ?? card.blast ?? card.text,
       options: options.length > 0 ? options : [{ label: 'Confirm', cmd: `confirm ${card.k}` }, { label: 'Not now', cmd: `dismiss ${card.k}` }],
       askKey: card.askKey ?? card.k,
       askedAt: card.ts,
@@ -129,6 +212,9 @@ export function buildNeeds(lanes: Lane[], cards: Message[], blockers?: Blocker[]
   }
   for (const lane of lanes) {
     if (!lane.question || lane.retiredAt !== null) continue;
+    // The same ask, already on the strip as a card. Both lists are built from the one
+    // inbox, so an ask with a live lane behind it arrives twice.
+    if (questionKeys.has(lane.question.key)) continue;
     const head = laneHeadline(lane);
     const question = lane.question;
     const opts = recommendedFirst(question.opts, question.recommended);
@@ -149,7 +235,12 @@ export function buildNeeds(lanes: Lane[], cards: Message[], blockers?: Blocker[]
       passable: true,
     });
   }
-  needs.sort((a, b) => (KIND_RANK[a.kind] - KIND_RANK[b.kind]) || (a.askedAt - b.askedAt));
+  // Answerable first, then worst-first inside each group, then oldest first. A card
+  // nobody can answer never sits in front of one somebody can: that ordering is the
+  // difference between a strip a person works through and a strip they give up on.
+  needs.sort((a, b) => (Number(answerable(b)) - Number(answerable(a)))
+    || (KIND_RANK[a.kind] - KIND_RANK[b.kind])
+    || (a.askedAt - b.askedAt));
   return needs;
 }
 

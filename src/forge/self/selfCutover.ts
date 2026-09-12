@@ -43,12 +43,43 @@ export const CUTOVER_BLOCKING_STATES: readonly QueueItemState[] = ['planning', '
  */
 export const REVIEW_BLOCKS_CUTOVER_MS = 2 * 60 * 60_000;
 
+/**
+ * The reason an item parked on a person's answer carries. Spelled out here for the same
+ * reason `CUTOVER_BLOCKING_STATES` is: importing `intake/queue.ts` closes a cycle that
+ * leaves the constant undefined at module load. `tests/forge/cutover-review.test.ts`
+ * pins it against `INTERVIEW_WAIT_REASON` so the two cannot drift apart unnoticed.
+ */
+export const INTERVIEW_REASON = 'interview';
+
+/**
+ * Whether this item is parked on somebody answering a question, rather than working.
+ *
+ * `planning` was treated as work in flight however long it took, on the reasoning that
+ * a restart under a planner loses the plan. That is right for a planner that is running
+ * and wrong for one that is not: an item held for an interview has no process behind it
+ * at all, and a restart costs it nothing.
+ *
+ * Measured on the live console, 2026-09-12: one item had sat at `planning` with
+ * `reason: 'interview'`, no repo, no brief and no run key since 2026-09-11 17:39,
+ * and had been declining every console upgrade for 44 hours -- long enough that the
+ * console could not take its own fixes at all.
+ *
+ * This is a reason, not a timer, and that is the point. A plan that legitimately takes
+ * hours carries no interview reason and goes on blocking a restart for as long as it
+ * runs; an age bound would have cleared the working one and the parked one alike.
+ */
+function waitingOnAPerson(item: QueueItem): boolean {
+  return item.state === 'planning' && item.reason === INTERVIEW_REASON;
+}
+
 /** Whether nothing on the board would lose anything if the process restarted now. */
 export function cutoverIdle(input: { items: QueueItem[]; queueBusy: boolean; now?: number }): boolean {
   if (input.queueBusy) return false;
   const now = input.now ?? Date.now();
   return !input.items.some((item) => {
     if (!CUTOVER_BLOCKING_STATES.includes(item.state)) return false;
+    // Parked on an answer: no process to restart out from under, whatever its state says.
+    if (waitingOnAPerson(item)) return false;
     // Only `review` is time-bounded. `planning` and `running` are work in flight however
     // long they have taken, and a restart under either loses it.
     if (item.state !== 'review') return true;

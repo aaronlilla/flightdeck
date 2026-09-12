@@ -13,9 +13,9 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { QUEUE_IN_FLIGHT_STATES } from '../../src/forge/intake/queue.js';
+import { INTERVIEW_WAIT_REASON, QUEUE_IN_FLIGHT_STATES } from '../../src/forge/intake/queue.js';
 import {
-  CUTOVER_BLOCKING_STATES, REVIEW_BLOCKS_CUTOVER_MS, cutoverDue, cutoverIdle,
+  CUTOVER_BLOCKING_STATES, INTERVIEW_REASON, REVIEW_BLOCKS_CUTOVER_MS, cutoverDue, cutoverIdle,
 } from '../../src/forge/self/selfCutover.js';
 import type { QueueItem } from '../../src/shared/console-model.js';
 
@@ -100,5 +100,44 @@ describe('item 5: an item at review blocks a cutover', () => {
     // what stops the two lists drifting apart.
     for (const state of QUEUE_IN_FLIGHT_STATES) expect(CUTOVER_BLOCKING_STATES).toContain(state);
     expect(CUTOVER_BLOCKING_STATES).toContain('review');
+  });
+});
+
+/**
+ * An item parked on somebody's answer is not work a restart can interrupt.
+ *
+ * The escape, measured live on 2026-09-12: one item had sat at `planning` with
+ * `reason: 'interview'`, no repo, no brief and no run key since 2026-09-11 17:39, and
+ * had been declining every console upgrade for 44 hours. Nothing was running behind it.
+ */
+describe('an item held for an interview does not block a cutover', () => {
+  function parked(updatedAt: number = NOW): QueueItem {
+    return { ...item('planning', updatedAt), reason: INTERVIEW_REASON };
+  }
+
+  it('reads a fleet holding only a parked item as idle', () => {
+    expect(cutoverIdle({ items: [parked()], queueBusy: false, now: NOW })).toBe(true);
+  });
+
+  it('stays idle however long the item has been parked', () => {
+    expect(cutoverIdle({ items: [parked(NOW - 500 * 60 * 60_000)], queueBusy: false, now: NOW })).toBe(true);
+  });
+
+  it('still blocks on a plan that is genuinely being worked, however long it takes', () => {
+    const working = item('planning', NOW - 500 * 60 * 60_000);
+    expect(cutoverIdle({ items: [working], queueBusy: false, now: NOW })).toBe(false);
+  });
+
+  it('still blocks when something else on the board is in flight', () => {
+    expect(cutoverIdle({ items: [parked(), item('running')], queueBusy: false, now: NOW })).toBe(false);
+  });
+
+  it('blocks on a parked item at any other state, since only planning parks this way', () => {
+    const oddly = { ...item('running'), reason: INTERVIEW_REASON };
+    expect(cutoverIdle({ items: [oddly], queueBusy: false, now: NOW })).toBe(false);
+  });
+
+  it('reads the same reason string the queue hop writes', () => {
+    expect(INTERVIEW_REASON).toBe(INTERVIEW_WAIT_REASON);
   });
 });

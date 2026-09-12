@@ -1,4 +1,12 @@
 /**
+ * How long a confirm token stays good. Lives here rather than beside the write path
+ * because both sides need it: `command.ts` refuses a token past it, and the thread
+ * builder uses it to decide that a replayed confirm card can no longer be answered by
+ * anyone. `thread.ts` importing `command.ts` would close an import cycle.
+ */
+export const CONFIRM_TTL_MS = 2 * 60 * 60_000;
+
+/**
  * The console model: the shapes the Flightdeck board renders and the routes that
  * carry them. Shared by the server (`src/forge/console/**`, which computes them from
  * the journal, the registry and the policy) and the browser console (`src/console/**`,
@@ -384,7 +392,9 @@ export interface Message {
   /** One line of blast radius on a confirm card. */
   blast?: string;
   pr?: LanePr;
-  resolved?: 'confirmed' | 'declined' | 'ran' | 'answered';
+  /** `expired` (2026-09-12): the confirm's token is gone, so the card can no longer be
+   *  answered by anyone. It stays in the history and stops being an ask. */
+  resolved?: 'confirmed' | 'declined' | 'ran' | 'answered' | 'expired';
   undoable?: boolean;
   undone?: boolean;
   /** Freshness of the fact behind an event chip. */

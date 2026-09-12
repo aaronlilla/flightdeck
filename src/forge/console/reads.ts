@@ -69,6 +69,13 @@ export interface ConsoleReadsOptions {
    *  narrated field serves its own template in all three registers -- never a blank
    *  screen and never a model call. */
   narrator?: Narrator | null;
+  /** Whether `confirm <token>` would still find something to run. Wired by `server.ts`
+   *  to the write path's own pending map, which is the only authority: a token can be
+   *  live in this process's memory without ever having reached the durable store. Left
+   *  unset (a specimen, a test), the thread builder falls back to the token's lifetime.
+   *  Read through a callback rather than held, because the write path is constructed
+   *  after this class. */
+  confirmPending?: (token: string) => boolean;
   lanes?: Lanes;
   registry?: Registry;
   inbox?: Inbox;
@@ -293,6 +300,8 @@ function defaultAttestationReader(): AttestationReaderFn {
 const RUN_SUBROUTE = /^\/run\/([^/]+)\/(thread|pr|sandbox|cost|journal|story|summary)$/;
 
 export class ConsoleReads {
+  private readonly confirmPendingFn: ((token: string) => boolean) | undefined;
+
   private readonly lanes: Lanes;
 
   private readonly registry: Registry;
@@ -380,6 +389,7 @@ export class ConsoleReads {
 
   constructor(options: ConsoleReadsOptions = {}) {
     this.narrator = options.narrator ?? null;
+    this.confirmPendingFn = options.confirmPending;
     this.forgeHomeDir = options.forgeHomeDir ?? forgeHome();
     this.lanes = options.lanes ?? new Lanes(lanesDir());
     this.registry = options.registry ?? new Registry(registryDir());
@@ -936,6 +946,7 @@ export class ConsoleReads {
     const titleFor = (id: string): string | null => titles.get(id) ?? null;
     const thread = computeThread(persisted, fleet.events, now, this.inbox.open(), titleFor, {
       verbose, allAsks: this.inbox.all(),
+      ...(this.confirmPendingFn ? { confirmPending: this.confirmPendingFn } : {}),
     });
     return {
       ...thread,

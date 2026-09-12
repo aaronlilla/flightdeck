@@ -448,6 +448,10 @@ export class ForgeServer {
     this.consoleReads = options.consoleReads
       ?? new ConsoleReads({
         narrator: this.narrator,
+        // Read lazily: `consoleWrites` owns the pending map and is built a few lines
+        // below this one. Without it, `GET /thread` cannot tell a confirm a person can
+        // still answer from one whose token went with a restart days ago.
+        confirmPending: (token: string) => this.consoleWrites.hasPending(token),
         ...(options.modelPolicyPath ? { modelPolicyPath: options.modelPolicyPath } : {}),
       });
     this.queueStoreForMerge = options.queueStore ?? new QueueStore(defaultQueuePath());
