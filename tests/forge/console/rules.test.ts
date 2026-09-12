@@ -225,47 +225,6 @@ describe('enforceRulesOnce', () => {
     expect(answeredByOf(inbox.entry(key)!)).toBe('the operator');
   });
 
-  // Found by code review, 2026-09-12: `enforceRulesOnce` iterates every OPEN ask, and
-  // an ask with a teammate's reply attached is still open on purpose -- the operator
-  // confirms or changes it. A rule firing there overwrote the teammate's name on disk,
-  // which is the only record that they replied at all, and left the brief crediting the
-  // operator while the journal row beside it named the rule.
-  it('leaves an ask alone once a teammate has replied and the operator has not confirmed', async () => {
-    inbox.raise({ run: 'item:Q-pass1', ticket: 'BBZ-7', question: 'value cannot be NOT NULL, what now?' });
-    const key = inbox.open()[0]!.key;
-    inbox.attachReply(key, 'joe', 'use the default');
-    writeRule({
-      id: 'r4', kind: 'auto-answer', title: 't', summary: 's', evidence: 'NOT NULL',
-      effect: 'skip nulls', status: 'open', jid: null, prUrl: null,
-    });
-
-    await enforceRulesOnce({ journalPath, rulesPath: rulesFile, inbox, runActions });
-
-    const entry = inbox.entry(key)!;
-    expect(entry.answeredBy).toBe('joe');
-    expect(entry.answer).toBeUndefined();
-    expect(inbox.open().map((row) => row.key)).toContain(key);
-  });
-
-  // Found by code review, 2026-09-12: the stand-down guard covered a teammate's reply
-  // but not a pass still waiting for one. The pass window is hours; a rule closing it
-  // drops the teammate's reply with no acknowledgement.
-  it('leaves an ask alone while it is out with a teammate who has not replied', async () => {
-    inbox.raise({ run: 'item:Q-pass2', ticket: 'BBZ-8', question: 'value cannot be NOT NULL, what now?' });
-    const key = inbox.open()[0]!.key;
-    inbox.pass(key, 'joe', Date.now(), 'thread-1');
-    writeRule({
-      id: 'r5', kind: 'auto-answer', title: 't', summary: 's', evidence: 'NOT NULL',
-      effect: 'skip nulls', status: 'open', jid: null, prUrl: null,
-    });
-
-    await enforceRulesOnce({ journalPath, rulesPath: rulesFile, inbox, runActions });
-
-    const entry = inbox.entry(key)!;
-    expect(entry.answer).toBeUndefined();
-    expect(entry.passedTo).toBe('joe');
-  });
-
   // Found by code review, 2026-09-12: `Inbox.answer` spreads the existing entry, so a
   // prior author survived a SECOND answer. A rule closes the ask, the operator
   // disagrees and answers again through any of the four routes -- none of which passes
@@ -278,41 +237,14 @@ describe('enforceRulesOnce', () => {
     expect(answeredByOf(inbox.entry(key)!)).toBe('the operator');
   });
 
-  // Found by code review, 2026-09-12: the stand-down had no expiry. Nothing clears a
-  // pass on its own, so a question passed to somebody on holiday blocked the rule on
-  // every tick, forever, with no row saying why. The rule used to unblock that run.
-  it('enforces once a pass has gone stale, and says so', async () => {
-    inbox.raise({ run: 'item:Q-stale', ticket: 'BBZ-11', question: 'value cannot be NOT NULL, what now?' });
-    const key = inbox.open()[0]!.key;
-    const longAgo = Date.now() - 25 * 60 * 60 * 1000;
-    inbox.pass(key, 'joe', longAgo, 'thread-old');
-    writeRule({
-      id: 'r7', kind: 'auto-answer', title: 't', summary: 's', evidence: 'NOT NULL',
-      effect: 'skip nulls', status: 'open', jid: null, prUrl: null,
-    });
-
-    await enforceRulesOnce({ journalPath, rulesPath: rulesFile, inbox, runActions });
-
-    expect(inbox.entry(key)!.answer).toBe('skip nulls');
-    const rows = readFileSync(journalPath, 'utf8').trim().split('\n')
-      .map((line) => JSON.parse(line) as Record<string, unknown>);
-    const overtook = rows.find((row) => row['event'] === 'decision.made'
-      && String(row['text'] ?? '').includes('stale pass'));
-    expect(overtook).toBeDefined();
-  });
-
-  // Found by code review, 2026-09-12: the window overtook a teammate's attached REPLY
-  // too, so a real human answer sitting on disk was discarded in favour of the rule's
-  // canned effect and the operator was never asked. A reply means the answer already
-  // exists and only the confirming click is missing -- that is a person the board shows,
-  // not a stall. Only a pass with no reply ages out.
-  it('never overtakes an attached reply, however old', async () => {
+  // 2026-09-12: there is no stand-down. Four review rounds alternated between "the
+  // guard lets a rule discard a real reply" and "the guard blocks the rule forever",
+  // which makes it a policy call rather than a defect. What the guard was added for --
+  // a rule erasing the teammate's name -- is closed by the author fields instead.
+  it('answers over a held question without destroying what the teammate left', async () => {
     inbox.raise({ run: 'item:Q-ot', ticket: 'BBZ-13', question: 'value cannot be NOT NULL, what now?' });
     const key = inbox.open()[0]!.key;
     inbox.attachReply(key, 'joe', 'use the default');
-    const entryPath = join(dir, 'inbox', `${key}.json`);
-    const aged = { ...JSON.parse(readFileSync(entryPath, 'utf8')), repliedAt: Date.now() - 25 * 60 * 60 * 1000 };
-    writeFileSync(entryPath, JSON.stringify(aged), 'utf8');
     writeRule({
       id: 'r9', kind: 'auto-answer', title: 'nulls', summary: 's', evidence: 'NOT NULL',
       effect: 'skip nulls', status: 'open', jid: null, prUrl: null,
@@ -321,45 +253,27 @@ describe('enforceRulesOnce', () => {
     await enforceRulesOnce({ journalPath, rulesPath: rulesFile, inbox, runActions });
 
     const after = inbox.entry(key)!;
-    expect(after.answer).toBeUndefined();
+    expect(after.answer).toBe('skip nulls');
     expect(after.reply).toBe('use the default');
     expect(after.answeredBy).toBe('joe');
+    expect(answeredByOf(after)).toBe('the auto-answer rule "nulls"');
   });
 
-  // Found by code review, 2026-09-12: with no timestamp on the hold at all, `stale` was
-  // permanently false and the rule stood down forever with no row -- the same permanent
-  // stall the window exists to remove, re-entering through a field with no value.
-  it('ages a pass that carries no timestamp off the entry own age', async () => {
-    inbox.raise({ run: 'item:Q-nots', ticket: 'BBZ-14', question: 'value cannot be NOT NULL, what now?' });
+  it('journals that it answered over a person, so the overtake is not silent', async () => {
+    inbox.raise({ run: 'item:Q-ot2', ticket: 'BBZ-15', question: 'value cannot be NOT NULL, what now?' });
     const key = inbox.open()[0]!.key;
-    inbox.pass(key, 'joe', Date.now(), 'thread-x');
-    const entryPath = join(dir, 'inbox', `${key}.json`);
-    const raw = JSON.parse(readFileSync(entryPath, 'utf8'));
-    delete raw.passedAt;
-    raw.at = Date.now() - 25 * 60 * 60 * 1000;
-    writeFileSync(entryPath, JSON.stringify(raw), 'utf8');
+    inbox.pass(key, 'joe', Date.now(), 'thread-y');
     writeRule({
-      id: 'r10', kind: 'auto-answer', title: 'nulls', summary: 's', evidence: 'NOT NULL',
+      id: 'r11', kind: 'auto-answer', title: 'nulls', summary: 's', evidence: 'NOT NULL',
       effect: 'skip nulls', status: 'open', jid: null, prUrl: null,
     });
 
     await enforceRulesOnce({ journalPath, rulesPath: rulesFile, inbox, runActions });
 
-    expect(inbox.entry(key)!.answer).toBe('skip nulls');
-  });
-
-  it('still stands down while the pass is fresh', async () => {
-    inbox.raise({ run: 'item:Q-fresh', ticket: 'BBZ-12', question: 'value cannot be NOT NULL, what now?' });
-    const key = inbox.open()[0]!.key;
-    inbox.pass(key, 'joe', Date.now(), 'thread-new');
-    writeRule({
-      id: 'r8', kind: 'auto-answer', title: 't', summary: 's', evidence: 'NOT NULL',
-      effect: 'skip nulls', status: 'open', jid: null, prUrl: null,
-    });
-
-    await enforceRulesOnce({ journalPath, rulesPath: rulesFile, inbox, runActions });
-
-    expect(inbox.entry(key)!.answer).toBeUndefined();
+    const rows = readFileSync(journalPath, 'utf8').trim().split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    const overtook = rows.find((row) => String(row['text'] ?? '').includes('answered over a question held by joe'));
+    expect(overtook).toBeDefined();
   });
 
   it('still credits the operator for a plain typed answer with no author', () => {

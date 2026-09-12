@@ -111,11 +111,6 @@ export function setRuleStatus(id: string, status: Rule['status'], deps: RulesDep
   writeRules(path, file);
 }
 
-/** How long a question may sit with a person before an auto-answer rule takes it
- *  anyway. Nothing clears a pass on its own, so without a window the stand-down was
- *  permanent and the lane never moved again (code review, 2026-09-12). */
-const PERSON_HOLD_MS = 24 * 60 * 60 * 1000;
-
 export interface EnforcementDeps {
   journalPath: string;
   rulesPath?: string;
@@ -188,27 +183,30 @@ export async function enforceRulesOnce(deps: EnforcementDeps): Promise<void> {
         // `passedTo` is a question out with a teammate who has not replied yet; closing
         // it by heuristic discards their reply with no acknowledgement, and the pass
         // window is hours where the reply window is seconds.
-        // An attached reply is never overtaken, whatever its age (code review,
-        // 2026-09-12). The answer already exists on disk and only the confirming click
-        // is missing, so the board shows a person one action away -- discarding a
-        // teammate's real words in favour of a substring match is not an unstick.
-        if (fresh.reply !== undefined) continue;
-        // A pass with nobody replying does age out, or a question handed to somebody on
-        // holiday blocks the rule on every tick, forever. `fresh.at` is the last
-        // fallback: with no timestamp at all the age was unknowable, `stale` was
-        // permanently false, and the guard became the silent stall it exists to prevent.
-        const heldSince = fresh.passedTo ? (fresh.passedAt ?? fresh.at) : null;
-        if (heldSince !== null && Date.now() - heldSince < PERSON_HOLD_MS) continue;
-        const overtookAfterMs = heldSince === null ? null : Date.now() - heldSince;
+        // No stand-down here, deliberately (2026-09-12). One was added when a review
+        // found a rule overwriting a teammate's name, and four rounds then alternated
+        // between two harms: guard the ask and a question held by somebody on holiday
+        // blocks the rule forever; age the guard out and the rule discards a real reply
+        // the operator never saw. Both reviews were right, which makes it a policy call
+        // and not a defect to patch again.
+        //
+        // The harm that started it is closed elsewhere: `answeredDirectlyBy` is its own
+        // field, so a rule answering over a reply credits itself and leaves `answeredBy`
+        // and `reply` exactly as the teammate left them. Nothing is destroyed, and the
+        // rule unblocks the run the way it did before this branch. Whether it SHOULD
+        // defer to a waiting person is Aaron's to decide, and it wants a window on both
+        // sides rather than a bare skip on one.
         const answered = deps.inbox.answer(ask.key, rule.effect, `the auto-answer rule "${rule.title}"`);
         if (answered) {
-          // Written only once the answer actually landed, so a failed answer leaves no
-          // row claiming an overtake that never happened (code review, 2026-09-12).
-          if (overtookAfterMs !== null) {
+          // A rule answering over a person's open pass or reply says so, once the answer
+          // has actually landed. The person is not told -- the Slack thread stops being
+          // polled the moment an answer is set -- so the row is the only record that a
+          // teammate was asked and then overtaken. Named in the finishing work.
+          if (fresh.passedTo || fresh.reply !== undefined) {
             appendOnce(deps.runActions.journalPath, {
               event: 'decision.made', actor: 'rule', action: 'rule.enforced', ruleId: rule.id,
-              text: `auto-answer overtook a stale pass on ${ask.key} to ${fresh.passedTo}, `
-                + `held ${Math.round(overtookAfterMs / 3_600_000)}h with no reply`,
+              text: `auto-answer answered over a question held by ${fresh.passedTo ?? fresh.answeredBy}`
+                + ` on ${ask.key}${fresh.reply === undefined ? ', who had not replied' : ', whose reply was waiting'}`,
             });
           }
           await deliverAnswer(answered, ask.key, rule.effect);
