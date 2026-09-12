@@ -116,27 +116,13 @@ export function mergeAllowedFor(chainEnv: ChainEnv, repo: string): boolean {
  *  every other repository's worktrees. `checkout` is the local clone's own path
  *  (`FORGE_REPO_CHECKOUTS`'s value for this repo), never derived from the repository
  *  name alone. */
-/** Item 12 (2026-09-11): the doc comment above assumed a checkout always sits one
- *  level under the workspace root, so the worktrees directory was always "the
- *  checkout's parent, plus `worktrees`". That breaks when the configured checkout is
- *  ITSELF a worktree -- its parent is already the worktrees directory, and appending
- *  `worktrees` again doubled the segment, landing new worker trees one level too deep,
- *  invisible to the coordination board and the cleanup, which scan the workspace's own
- *  worktrees directory and nothing below it. Seen live on a real ticket that day.
- *
- *  Fix: if the checkout's parent directory already ends in a `worktrees` segment, that
- *  IS the worktrees directory -- do not append a second one. A plain checkout (parent
- *  not named `worktrees`) still gets `<parent>/worktrees` exactly as before. This does
- *  not move any tree that already exists under the doubled path; a live worker's path
- *  there must keep resolving. */
 export function worktreePathFor(checkout: string, repo: string, ticket: string): string {
   const sep = checkout.includes('\\') && !checkout.includes('/') ? '\\' : '/';
   const parent = checkout.replace(/[/\\]+$/, '');
   const lastSep = Math.max(parent.lastIndexOf('/'), parent.lastIndexOf('\\'));
   const parentDir = lastSep === -1 ? '' : parent.slice(0, lastSep);
   const name = repo.split('/').pop()!.toLowerCase();
-  const worktreesDir = /(^|[/\\])worktrees$/i.test(parentDir) ? parentDir : `${parentDir}${sep}worktrees`;
-  return `${worktreesDir}${sep}${name}--${ticket.toLowerCase()}`;
+  return `${parentDir}${sep}worktrees${sep}${name}--${ticket.toLowerCase()}`;
 }
 
 const HOTFIX_TICKET_PREFIX = 'hotfix-';

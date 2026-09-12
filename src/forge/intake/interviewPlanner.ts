@@ -223,6 +223,21 @@ const CONTRADICTION_MARKER = 'single-tap-vs-shared-component contradiction';
  * differently-worded version of the same conflict, and it never inspects the
  * repository -- it reads the collected decisions only.
  */
+/**
+ * Whether an answer ASKS FOR a second tap, rather than ruling one out. The distinction
+ * is the whole check: "do not require a second tap" is the conflict, and "require a
+ * second tap to activate" is the conflict already resolved. Matching the phrase either
+ * way made the detector negation-blind and parked items on a settled decision -- found
+ * by code review, 2026-09-12.
+ */
+function requiresASecondTap(answer: string): boolean {
+  const mentions = /(second tap|two taps|tap again)/i.test(answer);
+  if (!mentions) return false;
+  const ruledOut = /(do not|don'?t|never|no|without|rather than|instead of)[^.]{0,40}(second tap|two taps|tap again)/i
+    .test(answer);
+  return !ruledOut;
+}
+
 export function findKnownContradiction(answers: InterviewAnswer[]): string | undefined {
   if (answers.some((a) => a.question.includes(CONTRADICTION_MARKER))) return undefined;
   const buildsDismissalIntoSharedComponent = answers.some(
@@ -230,10 +245,17 @@ export function findKnownContradiction(answers: InterviewAnswer[]): string | und
       && /component/i.test(a.answer)
       && /(outside[- ]press|backdrop|dismiss)/i.test(a.answer),
   );
+  // `second tap` was in the positive alternation until code review, 2026-09-12, which
+  // made the check negation-blind: an interview that had already settled on resolution
+  // (a) -- "a single tap closes it, a second tap activates" -- matched every half and
+  // parked the item on a follow-up nobody needed. That answer is the conflict RESOLVED,
+  // not the conflict. The conflict is one tap doing both, so any wording that hands the
+  // activation to a second tap disqualifies the match.
   const wantsSingleTapThrough = answers.some(
     (a) => /single tap/i.test(a.answer)
       && /(close|dismiss)/i.test(a.answer)
-      && /(activate|go through|second tap)/i.test(a.answer),
+      && /(activate|go through)/i.test(a.answer)
+      && !requiresASecondTap(a.answer),
   );
   if (!buildsDismissalIntoSharedComponent || !wantsSingleTapThrough) return undefined;
   return `${CONTRADICTION_MARKER}: two earlier decisions conflict. One says the `
@@ -255,7 +277,13 @@ async function finishBrief(
     const entry = deps.inbox.raise({
       run: askRunFor(itemId),
       question: contradiction,
-      options: [],
+      // The question spells out two choices in prose; without them as options the card
+      // showed nothing selectable and answer-by-number was dead (code review,
+      // 2026-09-12).
+      options: [
+        'keep the dismissal in the shared component and accept that a second tap activates the element',
+        'move the dismiss listener above the component so one tap does both',
+      ],
       recommended: null,
       optionSource: 'drafted',
       kind: 'question',

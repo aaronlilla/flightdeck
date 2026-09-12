@@ -509,6 +509,26 @@ describe('findKnownContradiction: item 11', () => {
     expect(found).toBeUndefined();
   });
 
+  // Found by code review, 2026-09-12: the two predicates are negation-blind, so an
+  // interview that had ALREADY settled on option (a) matched both halves and parked the
+  // item on a follow-up nobody needed. That is the false positive the docblock warns
+  // against, and it is worse than the bug: it holds a ticket on an imagined conflict.
+  it('says nothing when the answers already settled on the second-tap resolution', () => {
+    const answers = [
+      {
+        question: 'where does dismissal live?',
+        answer: 'build the outside-press backdrop into the shared component',
+        answeredBy: 'aaron',
+      },
+      {
+        question: 'what does a tap outside do?',
+        answer: 'a single tap closes the drop-down; require a second tap to activate whatever is under it',
+        answeredBy: 'aaron',
+      },
+    ];
+    expect(findKnownContradiction(answers)).toBeUndefined();
+  });
+
   it('does not re-raise once its own follow-up question is already among the answers', () => {
     const resolved = {
       question: 'single-tap-vs-shared-component contradiction: ...',

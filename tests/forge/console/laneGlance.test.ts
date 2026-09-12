@@ -180,19 +180,23 @@ describe('computeYou agrees with computeNext, per state', () => {
 
 /**
  * 2026-09-11: the tool digest sentence climbs on every poll -- "Ran 3 commands.", then
- * "Ran 4 commands." -- while meaning the same thing. `narrationKey` only folds a
- * template digit that the facts themselves carry, so a tally left out of the facts
- * bought a fresh model call every poll. Measured on the live console driving ONE ticket:
- * 164 calls, 9,995 seconds of model time. These are the real sentences it produced.
+ * "Ran 4 commands." -- and folding the tally out of the cache key was tried to stop it
+ * buying a fresh model call each time. Withdrawn 2026-09-12: the cache then serves the
+ * FIRST sentence for the life of the run, so a lane that has run 400 commands keeps
+ * reading "Ran 2 commands." and an active lane looks stalled. A number that lies costs
+ * more than the call it saves. These are the real sentences the live console produced.
  */
-describe('didFactsFor mirrors its tool tally so the same sentence is not paid for twice', () => {
-  it('gives two polls that differ only in the tally one key', () => {
+describe('didFactsFor never declares its own digits noise', () => {
+  // Found by code review, 2026-09-12: flattening the tally out of the key means the
+  // cache serves the FIRST sentence for the life of the run. A lane that has since run
+  // 400 commands keeps reading "Ran 2 commands.", and a number that never moves makes
+  // an active lane look like a stalled one. Saving a model call is not worth telling
+  // the operator the lane stopped working.
+  it('does not fold a tally that has moved by two orders of magnitude into one key', () => {
     const l = lane({ ticket: 'BBZ-169' });
-    const third = didFactsFor(l, 'Ran 3 commands.');
-    const fourth = didFactsFor(l, 'Ran 4 commands.');
-    expect(third).not.toBeNull();
-    expect(fourth).not.toBeNull();
-    expect(narrationKey(fourth!)).toBe(narrationKey(third!));
+    const early = didFactsFor(l, 'Ran 2 commands.');
+    const later = didFactsFor(l, 'Ran 400 commands.');
+    expect(narrationKey(later!)).not.toBe(narrationKey(early!));
   });
 
   it('still separates two polls whose sentence shape actually changed', () => {

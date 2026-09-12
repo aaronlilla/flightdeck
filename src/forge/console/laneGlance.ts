@@ -62,14 +62,6 @@ function toolDigest(runEvents: ForgeEvent[]): string | null {
   return `Ran ${parts.join(', ')}.`;
 }
 
-/** The exact shape `toolDigest` above writes, and the only sentence `didFactsFor` is
- *  willing to call its digits noise. Anchored end to end and built from the same
- *  category words, so an agent's own free-text report ("Backfilled 3 shards.") and the
- *  pull request sentence below never match it however they are worded. */
-const TOOL_DIGEST_CATEGORY = '(?:commands?|file reads?|edits?|searche?s?|skills?|other tool calls?)';
-const TOOL_DIGEST_SENTENCE = new RegExp(
-  `^Ran [0-9]+ ${TOOL_DIGEST_CATEGORY}(?:, [0-9]+ ${TOOL_DIGEST_CATEGORY})*[.]$`,
-);
 
 function prDidSentence(pr: LanePr): string {
   const filesKnown = pr.files !== undefined && pr.add !== undefined && pr.del !== undefined;
@@ -235,24 +227,7 @@ export function didFactsFor(lane: Lane, did: string | null): NarrationFacts | nu
     if (pr.checks) facts['checks'] = pr.checks;
     if (pr.verdict) facts['verdict'] = pr.verdict;
   }
-  // 2026-09-11: a tool digest -- "Ran 3 commands.", "Ran 4 commands, 1 search." -- has a
-  // tally that climbs on every poll while the sentence means the same thing.
-  // `narrationKey` only folds a template digit the facts themselves carry, so a tally
-  // left out of the facts bought a fresh model call every poll: 164 calls and 9,995
-  // seconds of model time across ONE ticket on 2026-09-11.
-  //
-  // Found by code review, 2026-09-11: the first version declared EVERY digit not already
-  // spoken for by a fact to be noise, which swept in a pull request sentence's own diff
-  // stats ("7 files +240 -31") and an agent report's own numbers. A growing pull request
-  // then kept serving the stale sentence as fact -- a wrong card read as fact, the same
-  // collision from the other side. So the claim is made only for the one sentence shape
-  // this file composes itself, matched whole against the grammar `toolDigest` writes;
-  // every other `did` sentence declares nothing.
-  const noisyDigits = TOOL_DIGEST_SENTENCE.test(did) ? (did.match(/\d+/g) ?? []) : [];
-  return {
-    surface: 'lane.did', facts: facts as NarrationFacts['facts'], template: did,
-    ...(noisyDigits.length > 0 ? { noisyDigits } : {}),
-  };
+  return { surface: 'lane.did', facts: facts as NarrationFacts['facts'], template: did };
 }
 
 /**
