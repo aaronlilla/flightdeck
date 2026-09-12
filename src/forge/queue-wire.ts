@@ -35,6 +35,8 @@ import { developDeployVerifier } from './intake/otaVerify.js';
 import { briefWithRoutines, loadRoutines } from './self/routines.js';
 import { routinesDir } from './paths.js';
 import { createJiraFeed, createJiraWriteClient, type JiraConfig } from './intake/jira.js';
+import { fetchIssueComments, fetchIssueRemoteLinks } from './intake/jira.js';
+import { checkTicketInFlight } from './intake/inFlight.js';
 import { runQueueHandoff } from './intake/queueHandoff.js';
 import type { PollItemDetail } from './intake/poller.js';
 import { resolvePlanProvider } from './intake/reasoner.js';
@@ -170,6 +172,22 @@ export function queuePlanner(
         return { waiting: 'interview', asks: held.filter((ask) => ask.answer === undefined).length };
       }
       const config = configFn();
+
+      // Before anything else costs a turn: does this ticket already have a pull request?
+      // The status field is not asked, because the status field is what lied -- a ticket
+      // read Backlog, unassigned, while carrying a draft pull request opened that
+      // morning. Its own comments and remote links are read instead.
+      if (config) {
+        const verdict = await checkTicketInFlight(ticket, {
+          comments: (key) => fetchIssueComments(config, key),
+          remoteLinks: (key) => fetchIssueRemoteLinks(config, key),
+          stateOf: async (repoSlug, pr) => (await REAL_GH.viewPrState(repoSlug, pr)).prState,
+        });
+        if (!verdict.start) {
+          return { inFlight: true, ticket, prUrl: verdict.pr?.url ?? '', reason: verdict.reason };
+        }
+      }
+
       let repo = routeRepo(repoRules, { ticket, labels: [], components: [], issuetype: '' });
       let detail: PollItemDetail | undefined;
       if (config) {

@@ -263,3 +263,39 @@ export function createJiraWriteClient(config: Pick<JiraConfig, 'site' | 'email' 
     },
   };
 }
+
+/**
+ * A ticket's own comment bodies, as plain text. Read before work starts on the ticket:
+ * a pull request opened for it is visible here long before the status field moves (see
+ * `inFlight.ts`). Atlassian Document Format bodies are flattened to text, because all
+ * this caller wants out of them is a URL.
+ */
+export async function fetchIssueComments(
+  config: Pick<JiraConfig, 'site' | 'email' | 'token' | 'fetchFn'>,
+  key: string,
+): Promise<string[]> {
+  const fetchFn = config.fetchFn ?? fetch;
+  const response = await fetchFn(`${config.site}/rest/api/3/issue/${key}/comment`, {
+    headers: { authorization: basicAuth(config.email, config.token) },
+  });
+  if (!response.ok) throw await jiraErrorFor(response);
+  const data = (await response.json()) as { comments?: { body?: unknown }[] };
+  return (data.comments ?? []).map((comment) => (
+    typeof comment.body === 'string' ? comment.body : flattenAdf(comment.body)
+  ));
+}
+
+/** A ticket's remote issue links, as URLs. The other place a pull request shows up on a
+ *  ticket whose status has not moved. */
+export async function fetchIssueRemoteLinks(
+  config: Pick<JiraConfig, 'site' | 'email' | 'token' | 'fetchFn'>,
+  key: string,
+): Promise<string[]> {
+  const fetchFn = config.fetchFn ?? fetch;
+  const response = await fetchFn(`${config.site}/rest/api/3/issue/${key}/remotelink`, {
+    headers: { authorization: basicAuth(config.email, config.token) },
+  });
+  if (!response.ok) throw await jiraErrorFor(response);
+  const data = (await response.json()) as { object?: { url?: string } }[];
+  return (Array.isArray(data) ? data : []).map((link) => link.object?.url ?? '').filter(Boolean);
+}
