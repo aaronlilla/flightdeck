@@ -187,11 +187,6 @@ export const FORGE_EVENT_NAMES = [
   // the accept-first trio a console click writes (accepted at once, then done or failed
   // once the post has actually landed).
   'interview.capped', 'ask.passed', 'ask.returned', 'slack.failed',
-  // Item 9/10, 2026-09-11: `watcher.deferred` is a poll that found more brand-new
-  // tickets than the queue's own width had room for (`intake/watcherWire.ts`), and
-  // `interview.deferred` is a poll that raised more questions than the width across
-  // all the items it interviewed in that pass (`intake/interview.ts`).
-  'watcher.deferred', 'interview.deferred',
   'action.accepted', 'action.done', 'action.failed',
   // The Governor stream's own (roadmap P4.2, `src/forge/governor.ts`): `result.usage`
   // carries the SDK result message's own `modelUsage` map, journaled by the engine on a

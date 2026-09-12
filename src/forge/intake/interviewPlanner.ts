@@ -15,7 +15,7 @@
 import type { Packet, Reasoner } from '../contracts.ts';
 import { ITEM_RUN_PREFIX, type Inbox, type InboxEntry } from '../inbox.ts';
 import {
-  interview, writeBrief, type InterviewAnswer, type InterviewPollBudget, type InterviewQuestion, type JournalAppend,
+  interview, writeBrief, type InterviewAnswer, type InterviewQuestion, type JournalAppend,
 } from './interview.ts';
 import type { InterviewRecords } from './interviewStore.ts';
 import type { QueuePlanOutcome } from './queue.ts';
@@ -46,12 +46,6 @@ export interface InterviewPlannerDeps {
   /** Holds what the scout settled while the item waits on a person. */
   records: InterviewRecords;
   append?: JournalAppend;
-  /** Item 10, 2026-09-11: shared across every item one `runQueueTick` pass advances
-   *  (`queue.ts#runQueueTick` builds one and passes it down through `advanceItem` and
-   *  `QueuePlanner.planTicket`), so the total questions raised across all of them in one
-   *  tick cannot exceed the queue's own width. Absent means no cross-item cap, same as
-   *  before this existed. */
-  budget?: InterviewPollBudget;
 }
 
 /**
@@ -138,7 +132,6 @@ export async function planTicketWithInterview(
   try {
     result = await interview(packet, deps.reasoner, {
       ...(deps.append ? { append: deps.append } : {}),
-      ...(deps.budget ? { budget: deps.budget } : {}),
     });
   } catch (error) {
     deps.records.clear(itemId);
@@ -204,18 +197,6 @@ export async function planTicketWithInterview(
     return { waiting: 'interview', asks: raised };
   }
 
-  // Item 10, 2026-09-11: this item's own interview may have asked something real that
-  // the poll's shared budget cut before it ever reached `result.questions` -- `raised`
-  // is 0 not because this ticket had nothing to ask, but because every one of its
-  // questions was deferred. Writing the brief now would settle the ticket with none of
-  // those decisions ever asked. The lease is cleared (not held) so the NEXT tick, once
-  // the budget resets, re-enters this item at the top and runs a fresh interview call --
-  // the one documented exception to "one interview call per item": a throttled retry,
-  // never a second round chasing new questions the model just thought of.
-  if (result.deferred) {
-    deps.records.clear(itemId);
-    return { waiting: 'interview', asks: 0 };
-  }
   deps.records.clear(itemId);
   return finishBrief(packet, answers, ticket, itemId, deps);
 }

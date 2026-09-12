@@ -14,7 +14,6 @@ import { describe, expect, it } from 'vitest';
 
 import type { ChainGh, ChainLauncher, ChainRunStatus } from '../../../src/forge/chain.js';
 import type { Packet, Reasoner } from '../../../src/forge/contracts.js';
-import type { InterviewPollBudget } from '../../../src/forge/intake/interview.js';
 import { Inbox, isAskStale } from '../../../src/forge/inbox.js';
 import type { RunRequest, RunResult } from '../../../src/forge/exec.js';
 import {
@@ -92,7 +91,7 @@ function harness(reasoner: Reasoner, grepOutput = 'src/VoucherList.tsx:42:  cons
   let seq = 0;
 
   const planner = {
-    planTicket: (ticket: string, itemId: string, interviewBudget?: InterviewPollBudget) => planTicketWithInterview(ticket, itemId, {
+    planTicket: (ticket: string, itemId: string) => planTicketWithInterview(ticket, itemId, {
       reasoner,
       inbox,
       packetFor: async (key: string) => packetFor(key),
@@ -107,7 +106,6 @@ function harness(reasoner: Reasoner, grepOutput = 'src/VoucherList.tsx:42:  cons
       },
       records,
       append: (row) => { events.push({ id: `x${events.length}`, ...row }); },
-      ...(interviewBudget ? { budget: interviewBudget } : {}),
     }),
     planBrief: async () => ({ ticket: 'BRIEF-1', repo: 'owner/name', briefPath: 'C:/briefs/brief-1.md' }),
   };
@@ -244,40 +242,6 @@ describe('the planning hop as an interview', () => {
     expect(h.execSeen[0]!.cwd).toBe('C:/checkout');
     // The scout answered, so it never became an ask: only the operator's question did.
     expect(asksForItem(h.inbox, item.id)).toHaveLength(1);
-  });
-
-  it('item 10 (2026-09-11): two items with four questions each, width 4 -- one tick raises 4 total and defers the rest', async () => {
-    const FOUR_AARON_QUESTIONS = {
-      route: 'frontend',
-      questions: [
-        { text: 'q1', options: [], recommended: null, answerableBy: 'aaron' },
-        { text: 'q2', options: [], recommended: null, answerableBy: 'aaron' },
-        { text: 'q3', options: [], recommended: null, answerableBy: 'aaron' },
-        { text: 'q4', options: [], recommended: null, answerableBy: 'aaron' },
-      ],
-    };
-    const reasoner = scriptedReasoner([FOUR_AARON_QUESTIONS, FOUR_AARON_QUESTIONS]);
-    const h = harness(reasoner);
-    const item1 = addTicketItem(h.store, 'BBZ-501');
-    const item2 = addTicketItem(h.store, 'BBZ-502');
-
-    await runQueueTick(h.deps, [item1, item2]);
-
-    const asks1 = asksForItem(h.inbox, item1.id);
-    const asks2 = asksForItem(h.inbox, item2.id);
-    expect(asks1).toHaveLength(4);
-    expect(asks2).toHaveLength(0);
-
-    const deferred = h.events.filter((row) => row['event'] === 'interview.deferred');
-    expect(deferred).toHaveLength(1);
-    expect(deferred[0]!['deferred']).toBe(4);
-    expect(deferred[0]!['ticket']).toBe('BBZ-502');
-
-    // item2 was fully throttled, not answered -- it must still be holding at planning,
-    // never carrying a written brief with its real questions silently skipped.
-    const item2After = h.store.get(item2.id)!;
-    expect(item2After.state).toBe('planning');
-    expect(h.briefsWritten.some((text) => text.includes('BBZ-502'))).toBe(false);
   });
 
   it('a second item on the same tick advances normally while the first waits', async () => {

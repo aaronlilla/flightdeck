@@ -25,7 +25,6 @@ import type {
   QueueMergeDeps, QueuePlannedBrief, QueuePlanner, QueuePlanOutcome, QueuePromoteDeps, QueueRuntimeDeps, QueueTicketSearch,
 } from './intake/queue.js';
 import { asksForItem, planTicketWithInterview } from './intake/interviewPlanner.js';
-import type { InterviewPollBudget } from './intake/interview.js';
 import { InterviewStore } from './intake/interviewStore.js';
 import { scoutAnswer } from './intake/scout.js';
 import { Inbox } from './inbox.js';
@@ -159,7 +158,7 @@ export function queuePlanner(
   }
 
   return {
-    async planTicket(ticket, itemId, interviewBudget?: InterviewPollBudget): Promise<QueuePlanOutcome> {
+    async planTicket(ticket, itemId): Promise<QueuePlanOutcome> {
       // An item already holding on an unanswered question is answered before the Jira
       // lookup, not after it. Without this, a question left overnight on a 15-second tick
       // made thousands of Jira reads whose result was thrown away, which also made the
@@ -219,7 +218,6 @@ export function queuePlanner(
             repo,
           }),
           append: (row: { event: string; [key: string]: unknown }) => { journal.append(row as never); },
-          ...(interviewBudget ? { budget: interviewBudget } : {}),
         });
       } finally {
         journal.close();

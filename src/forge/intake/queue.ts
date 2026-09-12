@@ -31,7 +31,6 @@ import { parseAfterLines, repoFromBrief, roadmapFromBrief } from './repoRoute.js
 import type { QueueStore } from './queueStore.js';
 import { workspaceRoot } from '../paths.js';
 import { roadmapIdOpen } from '../roadmap.js';
-import type { InterviewPollBudget } from './interview.js';
 
 /**
  * A.1: `ChainCouncilResult` (`chain.ts`) carries no findings text, only a verdict and an
@@ -128,12 +127,7 @@ export interface QueuePlanner {
    *  Without `itemId`, `runOutcome` (`chain-wire.ts`) folds the new run onto the old
    *  one's terminal journal state, as happened at 13:35 on 2026-09-08: BBZ-233's new
    *  item Q-2181b071 read the removed item Q-0fff83b0's `parked` verdict as its own. */
-  /** Item 10, 2026-09-11: `interviewBudget`, when passed, is shared across every item
-   *  `runQueueTick` advances on one tick -- the cross-item cap on how many questions one
-   *  poll may raise in total, on top of `interview.ts#MAX_QUESTIONS`'s per-ticket cap.
-   *  Absent (every specimen before this stream) means no cross-item cap, the same
-   *  unbounded-per-tick behaviour as before this existed. */
-  planTicket(ticket: string, itemId: string, interviewBudget?: InterviewPollBudget): Promise<QueuePlanOutcome>;
+  planTicket(ticket: string, itemId: string): Promise<QueuePlanOutcome>;
   /** A pasted brief carries no ticket of its own; the planner mints one (or the caller
    *  passes the queue item's own id) so the rest of the pipeline has something to name
    *  the branch and the run after. */
@@ -520,7 +514,7 @@ async function unresolvedAfterReason(
  * hops picks up exactly where it stopped rather than repeating work already done.
  */
 export async function advanceItem(
-  itemIn: QueueItem, deps: QueueRuntimeDeps, interviewBudget?: InterviewPollBudget,
+  itemIn: QueueItem, deps: QueueRuntimeDeps,
 ): Promise<QueueItem> {
   let item = itemIn;
 
@@ -589,7 +583,7 @@ export async function advanceItem(
         ? await deps.planner.planBrief(item.input)
         : item.source === 'hotfix'
           ? await (deps.planner.planHotfix ?? deps.planner.planBrief)(item.input)
-          : await deps.planner.planTicket(item.ticket ?? item.input, item.id, interviewBudget);
+          : await deps.planner.planTicket(item.ticket ?? item.input, item.id);
     } catch (error) {
       return writeTransition(item, { state: 'failed', reason: tailOf(messageOf(error)) }, deps, 'queue.failed', { hop: 'plan' });
     }
@@ -1026,20 +1020,13 @@ export async function runQueueTick(deps: QueueRuntimeDeps, items: QueueItem[]): 
     }
   }
 
-  // Item 10, 2026-09-11: one budget for the whole tick, shared across every item this
-  // tick advances -- `interview()`'s own per-ticket cap (`MAX_QUESTIONS`) already bounds
-  // one item; this is what stops many items planning on the same tick from summing past
-  // the queue's own width the way the 92-question flood did. Sized off the same width
-  // `slots` above already reads, so an operator's width change reaches this the same
-  // tick it reaches admission.
-  const interviewBudget: InterviewPollBudget = { remaining: deps.maxInFlight() };
 
   let advanced = 0;
   for (const item of toAdvance) {
     advancing.add(item.id);
     const before = JSON.stringify(item);
     try {
-      const next = await advanceItem(item, deps, interviewBudget);
+      const next = await advanceItem(item, deps);
       if (JSON.stringify(next) !== before) advanced += 1;
     } finally {
       advancing.delete(item.id);

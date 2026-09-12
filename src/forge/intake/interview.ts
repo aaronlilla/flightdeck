@@ -42,14 +42,6 @@ export interface InterviewResult {
   questions: InterviewQuestion[];
   /** Present on the backend route: the exact sentence the handoff carries. */
   ask?: string;
-  /** Item 10, 2026-09-11: how many questions this item actually asked (tagged and kept
-   *  under `MAX_QUESTIONS`) but never made it into `questions` because the poll's shared
-   *  `budget` ran out first. Absent when no `budget` was passed, or when nothing was cut.
-   *  The caller (`interviewPlanner.ts`) reads this to tell "this item genuinely has
-   *  nothing to ask" apart from "this item was throttled" -- the two outcomes cannot
-   *  share a code path, or a throttled item silently gets a brief with its real
-   *  questions never asked. */
-  deferred?: number;
 }
 
 export interface InterviewAnswer {
@@ -61,18 +53,6 @@ export interface InterviewAnswer {
 }
 
 export type JournalAppend = (row: { event: string; [key: string]: unknown }) => void;
-
-/**
- * Item 10, 2026-09-11: a budget shared across every `interview` call in one poll, so a
- * pass that interviews many items at once cannot raise more questions in total than the
- * queue's own width -- the flood observed live on 2026-09-11 was 92 open questions from
- * one pass, each item capped at `MAX_QUESTIONS` but nothing capping the sum across items.
- * A plain mutable object rather than a class: the caller owns it, decrements it across
- * calls, and decides when a new poll starts a fresh one.
- */
-export interface InterviewPollBudget {
-  remaining: number;
-}
 
 /** A teammate question the model left unnamed. Backend questions go to the backend lead,
  *  product questions to the product owner; anything else stays unnamed and reads as an
@@ -156,8 +136,7 @@ function parseQuestion(raw: unknown): InterviewQuestion | null {
  * worse outcome than a brief written without the extra facts.
  */
 export async function interview(
-  packet: Packet, reasoner: Reasoner,
-  opts: { append?: JournalAppend; budget?: InterviewPollBudget } = {},
+  packet: Packet, reasoner: Reasoner, opts: { append?: JournalAppend } = {},
 ): Promise<InterviewResult> {
   const reply = await reasoner.call({ className: 'plan-ticket', prompt: buildInterviewPrompt(packet) });
   let parsed: unknown;
@@ -182,28 +161,7 @@ export async function interview(
       packetId: packet.id, asked: all.length, kept: kept.length, dropped: all.length - kept.length,
     });
   }
-  // Item 10, 2026-09-11: the per-ticket cap above is `MAX_QUESTIONS`; this is the
-  // cross-item cap, applied only when a caller shares a budget across the whole poll.
-  //
-  // All-or-nothing per ticket, never a partial slice: an earlier version kept whatever
-  // fraction of `kept` fit the remaining budget, which meant a ticket that raised 2 of
-  // its 4 questions had the other 2 silently dropped forever -- `planTicketWithInterview`
-  // only knows how to retry a ticket whose interview raised NOTHING (`result.deferred`
-  // with `questions: []`); a partial raise reads as "this is everything" and writes a
-  // brief with those decisions never asked. So a ticket either fits the whole of `kept`
-  // in what budget remains, or none of it goes out this poll and the whole ticket waits
-  // for the next one -- found by code review, 2026-09-11.
-  if (!opts.budget || !kept.length) return { route, questions: kept };
-  const allowed = Math.max(0, opts.budget.remaining);
-  if (allowed >= kept.length) {
-    opts.budget.remaining = allowed - kept.length;
-    return { route, questions: kept };
-  }
-  opts.append?.({
-    event: 'interview.deferred', actor: 'intake', ticket: packet.ticket,
-    packetId: packet.id, raised: kept.length, kept: 0, deferred: kept.length,
-  });
-  return { route, questions: [], deferred: kept.length };
+  return { route, questions: kept };
 }
 
 export function buildBriefPrompt(packet: Packet, answers: InterviewAnswer[]): string {

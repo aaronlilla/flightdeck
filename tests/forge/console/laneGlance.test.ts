@@ -202,6 +202,23 @@ describe('didFactsFor mirrors its tool tally so the same sentence is not paid fo
     expect(narrationKey(searched!)).not.toBe(narrationKey(ran!));
   });
 
+  // Found by code review, 2026-09-11: declaring every unspoken digit noise swept in a
+  // pull request's own diff stats, so a growing pull request kept serving the stale
+  // numbers as fact. The tally rule must match the tool digest and nothing else.
+  it('keeps a pull request sentence apart when only its diff stats moved', () => {
+    const l = lane({ ticket: 'BBZ-169', pr: { no: 159, url: 'u' } as Lane['pr'] });
+    const small = didFactsFor(l, 'Opened draft PR #159: add the fee cap, 2 files +79 -12');
+    const grown = didFactsFor(l, 'Opened draft PR #159: add the fee cap, 7 files +240 -31');
+    expect(narrationKey(grown!)).not.toBe(narrationKey(small!));
+  });
+
+  it('keeps an agent report apart when only its own numbers moved', () => {
+    const l = lane({ ticket: 'BBZ-169' });
+    const a = didFactsFor(l, 'Backfilled 3 shards.');
+    const b = didFactsFor(l, 'Backfilled 9 shards.');
+    expect(narrationKey(b!)).not.toBe(narrationKey(a!));
+  });
+
   it('leaves a pull request number alone, since another fact already speaks for it', () => {
     const l = lane({ ticket: 'BBZ-169', pr: { no: 159, url: 'u' } as Lane['pr'] });
     const a = didFactsFor(l, 'Opened #159.');
