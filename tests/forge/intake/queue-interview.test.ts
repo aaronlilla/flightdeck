@@ -20,7 +20,9 @@ import {
   addTicketItem, runQueueTick, type QueueRuntimeDeps,
 } from '../../../src/forge/intake/queue.js';
 import { QueueStore } from '../../../src/forge/intake/queueStore.js';
-import { asksForItem, planTicketWithInterview } from '../../../src/forge/intake/interviewPlanner.js';
+import {
+  askRunFor, asksForItem, planTicketWithInterview,
+} from '../../../src/forge/intake/interviewPlanner.js';
 import { scoutAnswer } from '../../../src/forge/intake/scout.js';
 import { MemoryInterviewStore } from '../../../src/forge/intake/interviewStore.js';
 
@@ -473,5 +475,116 @@ describe('the planning hop as an interview', () => {
     // A held item's ask was raised once, on the first tick; the ticks it spends waiting
     // never re-raise it, so no repeat interview.asked row appears.
     expect(h.events.filter((row) => row['event'] === 'interview.asked')).toHaveLength(1);
+  });
+});
+
+// Item 11 (2026-09-11): a worker discovered mid-implementation that two settled
+// decisions could not both be true, and had to go back to the operator. The specimen
+// below is the exact pair from that incident.
+const OUTSIDE_PRESS_INTO_SHARED_COMPONENT = {
+  question: 'Where does the outside-press dismissal belong?',
+  answer: 'It is the shared component src/ui/common/Cards.tsx ... Build outside-press '
+    + 'dismissal into that shared component so every screen using it gets the fix.',
+  answeredBy: 'the operator',
+};
+const SINGLE_TAP_DISMISS_AND_ACTIVATE = {
+  question: 'Should dismissing the drop-down also activate the tapped element?',
+  answer: 'Dismiss and let the tap go through to the element. A single tap should both '
+    + 'close the drop-down and activate whatever was tapped; do not require a second tap.',
+  answeredBy: 'the operator',
+};
+
+describe('the planning hop holds the item when the planner reports a conflict', () => {
+  function answeredAsk(inbox: Inbox, itemId: string, ticket: string, question: string, answer: string): void {
+    const entry = inbox.raise({
+      run: askRunFor(itemId), question, options: [], recommended: null, optionSource: 'drafted',
+      kind: 'question', ticket, actionTarget: 'interview',
+    });
+    inbox.answer(entry.key, answer);
+  }
+
+  function minimalDeps(inbox: Inbox, briefsWritten: string[]) {
+    return {
+      reasoner: {
+        provider: 'claude',
+        async call({ prompt }: { prompt: string }) {
+          // The planner reads every settled answer in its own prompt and refuses there.
+          const collides = prompt.includes(OUTSIDE_PRESS_INTO_SHARED_COMPONENT.answer)
+            && prompt.includes(SINGLE_TAP_DISMISS_AND_ACTIVATE.answer);
+          if (!collides) return { text: '# Goal: fix it\n' };
+          return {
+            text: 'CONTRADICTION: decisions 1 and 2 cannot both hold; a backdrop inside the '
+              + 'shared component swallows the tap it closes on. Which do you want?\n'
+              + 'OPTIONS: keep it in the component and accept a second tap | move the listener above it',
+          };
+        },
+      } as unknown as Reasoner,
+      inbox,
+      records: new MemoryInterviewStore(),
+      packetFor: async (ticket: string) => packetFor(ticket),
+      scout: async () => ({ answered: true, text: 'unused', citation: 'a.ts:1' }),
+      writeBriefFile: async ({ text }: { text: string }) => {
+        briefsWritten.push(text);
+        return { briefPath: 'C:/briefs/x.md', repo: 'owner/repo' };
+      },
+    };
+  }
+
+  it('holds the item and asks a follow-up instead of writing the brief, when the two decisions collide', async () => {
+    const inbox = tempInbox();
+    const briefsWritten: string[] = [];
+    answeredAsk(
+      inbox, 'ITEM-1', 'BBZ-999',
+      OUTSIDE_PRESS_INTO_SHARED_COMPONENT.question, OUTSIDE_PRESS_INTO_SHARED_COMPONENT.answer,
+    );
+    answeredAsk(
+      inbox, 'ITEM-1', 'BBZ-999',
+      SINGLE_TAP_DISMISS_AND_ACTIVATE.question, SINGLE_TAP_DISMISS_AND_ACTIVATE.answer,
+    );
+
+    const out = await planTicketWithInterview('BBZ-999', 'ITEM-1', minimalDeps(inbox, briefsWritten));
+
+    expect('waiting' in out).toBe(true);
+    expect(briefsWritten).toHaveLength(0);
+    const asks = asksForItem(inbox, 'ITEM-1');
+    expect(asks).toHaveLength(3);
+    expect(asks.some((a) => a.question.includes('cannot both hold'))).toBe(true);
+  });
+
+  it('writes the brief unchanged when the collected answers do not conflict', async () => {
+    const inbox = tempInbox();
+    const briefsWritten: string[] = [];
+    answeredAsk(inbox, 'ITEM-2', 'BBZ-998', 'Which field crashes?', 'data.vouchers');
+    answeredAsk(inbox, 'ITEM-2', 'BBZ-998', 'Hide the row or show a zero?', 'Hide the row entirely.');
+
+    const out = await planTicketWithInterview('BBZ-998', 'ITEM-2', minimalDeps(inbox, briefsWritten));
+
+    expect('briefPath' in out).toBe(true);
+    expect(briefsWritten).toHaveLength(1);
+  });
+
+  it('answering the follow-up lets the next hop write the brief instead of asking again', async () => {
+    const inbox = tempInbox();
+    const briefsWritten: string[] = [];
+    answeredAsk(
+      inbox, 'ITEM-3', 'BBZ-997',
+      OUTSIDE_PRESS_INTO_SHARED_COMPONENT.question, OUTSIDE_PRESS_INTO_SHARED_COMPONENT.answer,
+    );
+    answeredAsk(
+      inbox, 'ITEM-3', 'BBZ-997',
+      SINGLE_TAP_DISMISS_AND_ACTIVATE.question, SINGLE_TAP_DISMISS_AND_ACTIVATE.answer,
+    );
+    const deps = minimalDeps(inbox, briefsWritten);
+    const first = await planTicketWithInterview('BBZ-997', 'ITEM-3', deps);
+    expect('waiting' in first).toBe(true);
+
+    const followUp = asksForItem(inbox, 'ITEM-3').find(
+      (a) => a.question.includes('cannot both hold'),
+    )!;
+    inbox.answer(followUp.key, 'Keep it in the shared component; accept a second tap.');
+
+    const second = await planTicketWithInterview('BBZ-997', 'ITEM-3', deps);
+    expect('briefPath' in second).toBe(true);
+    expect(briefsWritten).toHaveLength(1);
   });
 });

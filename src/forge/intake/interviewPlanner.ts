@@ -14,7 +14,10 @@
  */
 import type { Packet, Reasoner } from '../contracts.ts';
 import { ITEM_RUN_PREFIX, type Inbox, type InboxEntry } from '../inbox.ts';
-import { interview, writeBrief, type InterviewAnswer, type InterviewQuestion, type JournalAppend } from './interview.ts';
+import {
+  interview, writeBrief, readConflictSignal,
+  type InterviewAnswer, type InterviewQuestion, type JournalAppend,
+} from './interview.ts';
 import type { InterviewRecords } from './interviewStore.ts';
 import type { QueuePlanOutcome } from './queue.ts';
 import type { ScoutAnswer } from './scout.ts';
@@ -155,7 +158,9 @@ export async function planTicketWithInterview(
   const packet = await deps.packetFor(ticket);
   let result: Awaited<ReturnType<typeof interview>>;
   try {
-    result = await interview(packet, deps.reasoner, { ...(deps.append ? { append: deps.append } : {}) });
+    result = await interview(packet, deps.reasoner, {
+      ...(deps.append ? { append: deps.append } : {}),
+    });
   } catch (error) {
     deps.records.clear(itemId);
     throw error;
@@ -219,15 +224,79 @@ export async function planTicketWithInterview(
     deps.records.put({ itemId, ticket, at: Date.now(), answers });
     return { waiting: 'interview', asks: raised };
   }
+
   deps.records.clear(itemId);
   return finishBrief(packet, answers, ticket, itemId, deps);
 }
 
+/** Marks the follow-up ask `findKnownContradiction` raises, and doubles as the guard
+ *  against re-raising it: once that ask is answered, its own question text (carrying
+ *  this marker) is itself one of the settled answers on the next hop, so the same two
+ *  original decisions never fire the check twice. */
+const CONTRADICTION_MARKER = 'single-tap-vs-shared-component contradiction';
+
+/**
+ * Item 11 (2026-09-11): a live round trip cost twenty minutes into implementation
+ * because two settled decisions read as fine independently and were incompatible
+ * together -- "build outside-press dismissal into the shared component" and "a single
+ * tap should both close the drop-down and activate whatever was tapped". Whatever view
+ * sits under the finger at those coordinates is the only touch target in React Native,
+ * so a backdrop confined to the shared component necessarily swallows the tap it closes
+ * on; true single-tap dismiss-and-activate needs a listener placed ABOVE the component.
+ *
+ * This is ONE narrow, evidenced rule for that one known-shape conflict, not a general
+ * contradiction detector -- a false positive that parks every ticket on an imagined
+ * contradiction is worse than the bug this fixes. It matches only when both halves of
+ * the specific conflict are present in the answer text; it will not catch a
+ * differently-worded version of the same conflict, and it never inspects the
+ * repository -- it reads the collected decisions only.
+ */
 async function finishBrief(
   packet: Packet, answers: InterviewAnswer[], ticket: string, itemId: string, deps: InterviewPlannerDeps,
 ): Promise<QueuePlanOutcome> {
   const brief = await writeBrief(packet, answers, deps.reasoner);
+
+  // The planner read every settled decision against every other one and refused to write
+  // a brief over a conflict. Judgement lives there because that call already carries all
+  // the answers; this side only spots the signal and holds the item. The previous version
+  // matched two hardcoded patterns here, caught one conflict in one phrasing, and needed
+  // two review fixes for false positives before it shipped.
+  const signal = alreadyAskedAboutAConflict(answers) ? null : readConflictSignal(brief.text);
+  if (signal) {
+    const entry = deps.inbox.raise({
+      run: askRunFor(itemId),
+      question: `${CONTRADICTION_MARKER}: ${signal.question}`,
+      options: signal.options,
+      recommended: null,
+      optionSource: 'drafted',
+      kind: 'question',
+      ticket,
+      actionTarget: 'interview',
+    });
+    if (entry.asked === 1) {
+      deps.append?.({
+        event: 'interview.asked', itemId, ticket, askKey: entry.key,
+        answerableBy: 'aaron', question: entry.question,
+      });
+    }
+    // Carry forward only what never touched the inbox: whatever is already an inbox
+    // entry for this item comes back through `asksForItem` on its own next hop, and
+    // re-storing it here would double it up in the merged answer list.
+    const inboxQuestions = new Set(asksForItem(deps.inbox, itemId).map((e) => e.question));
+    deps.records.put({
+      itemId, ticket, at: Date.now(),
+      answers: answers.filter((a) => !inboxQuestions.has(a.question)),
+    });
+    return { waiting: 'interview', asks: 1 };
+  }
+
   const written = await deps.writeBriefFile({ ticket, itemId, text: brief.text });
   deps.records.clear(itemId);
   return { ticket, repo: written.repo, briefPath: written.briefPath };
+}
+
+/** Once the conflict follow-up is answered its own question is among the settled answers,
+ *  so the same pair never holds the item twice. */
+function alreadyAskedAboutAConflict(answers: InterviewAnswer[]): boolean {
+  return answers.some((a) => a.question.includes(CONTRADICTION_MARKER));
 }

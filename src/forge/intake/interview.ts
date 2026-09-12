@@ -164,6 +164,47 @@ export async function interview(
   return { route, questions: kept };
 }
 
+/**
+ * The word the planner emits INSTEAD OF a brief when two settled decisions cannot both
+ * hold. It has to be a word a brief would never open with, because the signal is
+ * recognised by position: first non-blank line only. A sentinel matched anywhere in the
+ * document would let a brief that merely discusses a contradiction hold the ticket, which
+ * is a worse failure than missing one.
+ */
+export const CONFLICT_SENTINEL = 'CONTRADICTION';
+
+export interface ConflictSignal {
+  question: string;
+  options: string[];
+}
+
+/**
+ * Reads a planner reply that refused to write a brief. Returns null for every ordinary
+ * brief, which is the common case and must never be held.
+ *
+ * Shape, both lines optional after the first:
+ *   CONTRADICTION: <why the two decisions cannot both hold, ending in a question>
+ *   OPTIONS: <one choice> | <another choice>
+ */
+export function readConflictSignal(text: string): ConflictSignal | null {
+  const lines = text.split(/\r?\n/);
+  const firstIndex = lines.findIndex((line) => line.trim().length > 0);
+  if (firstIndex < 0) return null;
+  const first = lines[firstIndex]!.trim();
+  if (!first.startsWith(`${CONFLICT_SENTINEL}:`)) return null;
+
+  const question = first.slice(CONFLICT_SENTINEL.length + 1).trim();
+  // A sentinel with nothing after it is not a question a person can answer; treat it as
+  // no signal rather than raising an empty ask nobody can act on.
+  if (!question) return null;
+
+  const optionLine = lines.slice(firstIndex + 1).find((line) => line.trim().startsWith('OPTIONS:'));
+  const options = optionLine
+    ? optionLine.trim().slice('OPTIONS:'.length).split('|').map((o) => o.trim()).filter(Boolean)
+    : [];
+  return { question, options };
+}
+
 export function buildBriefPrompt(packet: Packet, answers: InterviewAnswer[]): string {
   const decisions = answers.length
     ? answers.map((a, i) => `${i + 1}. ${a.question}\n   Answer (${a.answeredBy}): ${a.answer}`)
@@ -193,6 +234,20 @@ export function buildBriefPrompt(packet: Packet, answers: InterviewAnswer[]): st
     '',
     'Set your `text` field to the full brief as Markdown, starting with a "# Goal:"',
     'heading.',
+    '',
+    'One check before you write it. Read the settled answers against each other and ask',
+    'whether any two of them are incompatible -- not merely different, but impossible to',
+    'satisfy at the same time, so that building one breaks the other. This is the thing',
+    'that is cheap to see now and expensive to discover halfway through the work.',
+    '',
+    'If two are incompatible, write NO brief. Set your `text` field so that its first',
+    `line is \`${CONFLICT_SENTINEL}: \` followed by which decisions collide, why they`,
+    'cannot both hold, and a question asking which one to keep. Nothing may come before',
+    'that first line. On the next line write',
+    '`OPTIONS: ` and the concrete choices separated by `|`. Write nothing else.',
+    '',
+    'If they are compatible, say nothing about it and write the brief. Most tickets have',
+    'no conflict, and holding one on an imagined conflict costs more than it saves.',
   ].join('\n');
 }
 
