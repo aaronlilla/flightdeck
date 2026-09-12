@@ -9,6 +9,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { shipPredictionFor, renderShipPrediction } from '../../../src/forge/intake/shipPrediction.js';
+import { proseWordCount } from '../../../src/forge/intake/readability.js';
 
 describe('shipPredictionFor', () => {
   it('predicts an update on both platforms for a change with no native files', () => {
@@ -80,6 +81,36 @@ describe('renderShipPrediction', () => {
     expect(body).toMatch(/ios/i);
     expect(body).toMatch(/predict/i);
     expect(body).toMatch(/fingerprint/i);
+  });
+
+  // Found by code review, 2026-09-12: the signal paths went out as plain prose, and
+  // every prediction goes through a readability check that DENIES a comment over 80
+  // prose words -- so a React Native upgrade or a prebuild regenerating android/ and
+  // ios/ refused the comment outright, on exactly the pull requests where rebuild or
+  // update matters most. Code in backticks is exempt from the count.
+  it('stays well inside the prose ceiling with a hundred signal paths', () => {
+    const files = Array.from({ length: 100 }, (_, i) => `android/app/src/f${i}.kt`);
+    const body = renderShipPrediction(shipPredictionFor(files));
+    // The counter that decides, not a copy of it: a hand-rolled strip counted the
+    // separating commas as words and would have failed a comment that passes.
+    expect(proseWordCount(body)).toBeLessThan(80);
+  });
+
+  it('backticks every signal path', () => {
+    const body = renderShipPrediction(shipPredictionFor(['patches/react-native-svg+15.0.0.patch']));
+    expect(body).toContain('`patches/react-native-svg+15.0.0.patch`');
+  });
+
+  // Found by code review, 2026-09-12: the unknown message said the files could not be
+  // read. True when the list was empty, false when 100 were read and the list was a
+  // prefix -- a different fact about how much the silence is worth.
+  it('says the list was truncated, not that it could not be read', () => {
+    const truncated = renderShipPrediction(shipPredictionFor(
+      Array.from({ length: 100 }, (_, i) => `src/f${i}.ts`),
+    ));
+    expect(truncated).toMatch(/first 100|truncated|prefix/i);
+    expect(truncated).not.toMatch(/could not read/i);
+    expect(renderShipPrediction(shipPredictionFor([]))).toMatch(/could not read/i);
   });
 
   it('lists the signals it read, so the prediction can be checked', () => {

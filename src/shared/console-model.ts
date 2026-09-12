@@ -748,6 +748,11 @@ export interface QueueItem {
   /** A.3: when the Jira write-back at review ran for this item -- absent means it
    *  hasn't fired yet. Set once, alongside the transition into `review`. */
   handoffAt?: number;
+  /** Item 16, 2026-09-12: when the ship prediction was posted, so a second pass over
+   *  the same item does not post a second one. A FIX FIRST round leaves the item
+   *  `running` and the next tick re-enters the review hop; marking the pull request
+   *  ready again is harmless, commenting again is not (code review, 2026-09-12). */
+  predictionAt?: number;
   /** A.8/A.9: the PR's own changed-file paths, fetched once the item has a PR and
    *  before the council reads it -- shared by A.8's real figures at `review` and A.9's
    *  overlap check against every other item running or in review on the same repo. */
