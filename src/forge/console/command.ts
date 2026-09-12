@@ -13,7 +13,7 @@
  * one level up: `Run plan` sends `run <token>`.
  */
 import { randomUUID } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { dirname, join } from 'node:path';
 
@@ -412,16 +412,36 @@ const CONFIRM_MAX = 200;
  * by this file. Say so rather than claim an atomicity it does not have.
  */
 class PendingConfirmStore {
+  /** The last parse, keyed on the file's own mtime and size. `has()` is now called once
+   *  per unresolved confirm card on every `/thread` read, and the console polls every
+   *  five seconds: with the 67 cards measured on 2026-09-12 that was around 800
+   *  synchronous whole-file reads a minute on the server's event loop (found in review,
+   *  2026-09-12). A write through this class rewrites the file, so the stamp moves and
+   *  the next read re-parses; a write by anything else moves it too. */
+  private cache: { key: string; rows: PersistedConfirm[] } | null = null;
+
   constructor(private readonly path: string) {}
 
   private read(): PersistedConfirm[] {
-    if (!existsSync(this.path)) return [];
+    if (!existsSync(this.path)) { this.cache = null; return []; }
+    let key: string;
+    try {
+      const stat = statSync(this.path);
+      key = `${stat.mtimeMs}:${stat.size}`;
+    } catch {
+      key = String(Date.now());
+    }
+    if (this.cache?.key === key) return this.cache.rows;
     try {
       const parsed: unknown = JSON.parse(readFileSync(this.path, 'utf8'));
-      return Array.isArray(parsed) ? (parsed as PersistedConfirm[]) : [];
+      const rows = Array.isArray(parsed) ? (parsed as PersistedConfirm[]) : [];
+      this.cache = { key, rows };
+      return rows;
     } catch {
       // A half-written or hand-edited file must not take the console down with it: an
       // unreadable store means no token survives, which is today's behaviour anyway.
+      // Not cached: the next read should see the file once it is whole again.
+      this.cache = null;
       return [];
     }
   }

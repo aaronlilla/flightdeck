@@ -27,6 +27,28 @@ export const FALLBACK_STRINGS = [
   '—',
 ] as const;
 
+/**
+ * The subset of the above that must still appear verbatim in the components' source, so
+ * a renamed constant fails the run loudly instead of retiring D1 in silence.
+ *
+ * Each is spelled the way it is actually WRITTEN, which is not the same for all three.
+ * `confirm?` is pinned with its quotes because the bare word also matches every
+ * TypeScript optional property named `confirm` -- three of those live in the same file,
+ * so the bare form passed while the minted string had been renamed away. The other two
+ * carry no punctuation that collides with anything and one of them is JSX text rather
+ * than a literal, so they are pinned bare.
+ *
+ * The two dashes are deliberately NOT here. They are what a component renders when it has
+ * no value, not literals anyone wrote, and `--` occurs in ordinary comment punctuation
+ * 64 times across the files that get grepped -- so including them made the guard read as
+ * satisfied no matter what else had been renamed (found in review, 2026-09-12).
+ */
+export const SOURCE_PINNED_FALLBACKS = [
+  "'confirm?'",
+  'No question text',
+  'Nothing needs you',
+] as const;
+
 /** How old an offered item may be before D6 asks whether its own action still works.
  *  24h is the bound: the console polls every 5s and the fleet turns work over in
  *  minutes, so anything a person has been offered for a day has outlived its context. */
@@ -268,14 +290,22 @@ export function detectD7(offered: OfferedAsk[]): Defect[] {
   const firstEmpty = offered.findIndex((ask) => contentless.includes(ask));
   const lastFull = offered.reduce((acc, ask, i) => (withContent.includes(ask) ? i : acc), -1);
   if (firstEmpty === -1 || lastFull === -1 || firstEmpty > lastFull) return [];
-  const aheadOfFirstReal = offered.findIndex((ask) => withContent.includes(ask));
+  // Every contentless item ranked ahead of the LAST readable one. Counting only the ones
+  // ahead of the FIRST readable one reported "0 contentless items rank ahead" for an
+  // interleaved order -- a defect whose own number said nothing was wrong (found in
+  // review, 2026-09-12).
+  const buried = offered.slice(0, lastFull).filter((ask) => contentless.includes(ask)).length;
+  // What it costs a person: how many cards they page past before one they can read.
+  const clicksToFirstReadable = offered.findIndex((ask) => withContent.includes(ask));
   return [{
     id: 'D7', view: '*',
-    what: `${aheadOfFirstReal} contentless item(s) rank ahead of the first item a person can read`,
+    what: `${buried} contentless item(s) rank ahead of an item a person can read`
+      + (clicksToFirstReadable > 0 ? `; ${clicksToFirstReadable} of them before the first one` : ''),
     evidence: {
       contentless: contentless.length,
       withContent: withContent.length,
-      clicksToFirstReadable: aheadOfFirstReal,
+      buried,
+      clicksToFirstReadable,
       firstContentlessAt: firstEmpty,
       lastReadableAt: lastFull,
     },

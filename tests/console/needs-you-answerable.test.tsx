@@ -145,6 +145,16 @@ describe('open questions reach the strip', () => {
     expect(need?.evidence.some((line) => line.includes('drafted'))).toBe(true);
   });
 
+  it('keeps the run id out of the evidence, so no identifier stands in for content', () => {
+    const [need] = buildNeeds([], [questionCard('k1')]);
+    expect(need?.evidence.join(' ')).not.toContain('item:Q-fc2090a8');
+  });
+
+  it('does not rank a question answerable on the strength of an identifier alone', () => {
+    const [need] = buildNeeds([], [questionCard('k1', { text: '', optionSource: 'worker' })]);
+    expect(need === undefined || answerable(need)).toBe(false);
+  });
+
   it('skips a question carrying nothing to choose between', () => {
     expect(buildNeeds([], [questionCard('k1', { opts: [] })])).toEqual([]);
   });

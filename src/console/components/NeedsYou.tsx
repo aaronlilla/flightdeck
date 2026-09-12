@@ -117,12 +117,18 @@ function cardEvidence(card: Message): string[] {
   return lines.length > 0 ? lines : [card.text];
 }
 
-/** What sits behind a question card's disclosure: which run is waiting on it, and
- *  whether anyone stands behind the options it offers. The question text itself is
- *  already the card's own line, so repeating it here would read as a stutter. */
+/**
+ * What sits behind a question card's disclosure. The question text itself is already the
+ * card's own line, so repeating it here would read as a stutter.
+ *
+ * The run this is waiting on is deliberately NOT here. `source` is a raw internal id
+ * (`item:Q-fc2090a8`), which the board is built to keep off the screen, and putting it in
+ * the evidence had a second cost: `answerable` reads the evidence as the card's own
+ * words, so a question with no text at all would have ranked answerable on the strength
+ * of an identifier (found in review, 2026-09-12).
+ */
 function questionEvidence(card: Message): string[] {
   const lines: string[] = [];
-  if (card.source && card.source !== 'system') lines.push(`Waiting: ${card.source}`);
   if (card.optionSource === 'drafted') lines.push('Options drafted, not the agent’s own');
   return lines;
 }

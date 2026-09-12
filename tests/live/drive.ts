@@ -23,7 +23,7 @@ import { join, dirname } from 'node:path';
 import { chromium, type Browser, type Page, type ElementHandle } from '@playwright/test';
 
 import {
-  FALLBACK_STRINGS, runDetectors,
+  SOURCE_PINNED_FALLBACKS, runDetectors,
   type Claim, type ControlProbe, type Inventory, type OfferedAsk,
   type RenderedCard, type RequiredRegion, type ScreenCapture,
 } from './model.js';
@@ -137,7 +137,10 @@ function offeredAsks(thread: any, lanes: any, blockers: any): OfferedAsk[] {
       ? (card.opts ?? []).length > 0
       : card.type === 'confirm'
         ? targets.length > 0
-        : targets.length > 0 && targets.every((t) => liveKeys.has(t));
+        // A blocker card's buttons are `open blockers` and `open lane <id>` -- navigation,
+        // which always works. Checking their second word against the message keys made
+        // every blocker over 24h old report as unanswerable (found in review, 2026-09-12).
+        : (card.btns ?? []).length > 0;
     out.push({
       uid: `card:${card.k}`,
       kind: card.type,
@@ -290,7 +293,11 @@ async function probeControls(page: Page, base: string, token: string): Promise<C
       probes.push({ testid, label, domChanged: false, requests: 0, journalDelta: 0, skipped: 'not on the safe-control allowlist' });
       continue;
     }
-    const button = (await page.$$(selector))[index];
+    // Re-located by its OWN test id, never by its position in the list. Earlier clicks
+    // and the 5s poll both re-render, so index `i` can be a different control by the time
+    // it is reached -- including one the allowlist check above had excluded, which would
+    // break this file's only real promise (found in review, 2026-09-12).
+    const button = await page.$(`[data-testid="${testid}"]`);
     if (!button || !(await button.isEnabled().catch(() => false))) {
       probes.push({ testid, label, domChanged: false, requests: 0, journalDelta: 0, skipped: 'gone or disabled by the time it was reached' });
       continue;
@@ -409,7 +416,7 @@ async function walkScreen(
  * the real system to produce the defect. Standing order 2: a detector that has never
  * fired is not a detector.
  */
-async function injectBreak(breakId: string, page: Page, capture: Partial<ScreenCapture>, offered: OfferedAsk[]): Promise<void> {
+async function injectBreak(breakId: string, page: Page, offered: OfferedAsk[]): Promise<void> {
   if (breakId === 'D1') {
     await page.evaluate(() => {
       const doc = (globalThis as { document?: any }).document;
@@ -430,10 +437,8 @@ async function injectBreak(breakId: string, page: Page, capture: Partial<ScreenC
       doc.body.insertBefore(dud, doc.body.firstChild);
     });
   }
-  if (breakId === 'D4') {
-    // The page has already rendered; move the server's number underneath it.
-    capture.claims = [{ label: 'Specimen count', rendered: '4', expected: '5', source: '/lanes (moved underneath the render)' }];
-  }
+  // D4's specimen is applied at the call site instead: the claim it replaces is produced
+  // by `walkScreen`, which has not run yet when this function is called.
   if (breakId === 'D3') {
     // Hide one nav control. The route stays declared and stays in the DOM; a person can
     // no longer click their way to it, which is exactly what D3 claims to catch.
@@ -463,12 +468,24 @@ async function main(): Promise<void> {
   // Fail loudly if a fallback constant was renamed out from under D1.
   const componentSource = ['src/console/components/NeedsYou.tsx', 'src/console/components/QuestionCard.tsx', 'src/forge/console/command.ts']
     .map((p) => readFileSync(join(repoRoot, p), 'utf8')).join('\n');
-  const missing = FALLBACK_STRINGS.filter((s) => !componentSource.includes(s));
-  if (missing.length === FALLBACK_STRINGS.length) {
-    throw new Error('None of the fallback constants D1 watches for still exist in source; D1 is blind.');
+  // Any one of them gone is enough: D1 recognises a placeholder by matching these exact
+  // strings, so a single rename blinds it for that case while every other case goes on
+  // passing. The first version of this check required ALL of them to be missing, which
+  // never happened, so it could not fire (found in review, 2026-09-12).
+  const missing = SOURCE_PINNED_FALLBACKS.filter((fallback) => !componentSource.includes(fallback));
+  if (missing.length > 0) {
+    throw new Error(
+      `D1 is blind to ${missing.map((m) => JSON.stringify(m)).join(', ')}: no longer in the components' source. `
+      + 'Update FALLBACK_STRINGS and SOURCE_PINNED_FALLBACKS in tests/live/model.ts to whatever replaced it.',
+    );
   }
 
   const token = await readToken(args.base);
+  // The revision the server was serving when this ran, so an inventory can be attributed
+  // to a build rather than floating free of one.
+  const servedHead: string | null = await getJson(args.base, token, '/state')
+    .then((state: any) => state?.head ?? state?.build?.head ?? state?.version ?? null)
+    .catch(() => null);
   const payloads: Record<string, any> = {};
   for (const path of ['thread', 'lanes', 'blockers', 'queue', 'proposals', 'caps', 'integrations']) {
     payloads[path] = await getJson(args.base, token, '/' + path).catch((e: Error) => ({ __error: e.message }));
@@ -486,19 +503,27 @@ async function main(): Promise<void> {
     // The preview server (tests/live/preview.ts) proxies reads and nothing else, so the
     // page's live-feed socket cannot connect there. That failure is the harness's, and
     // counting it as a console defect would make every preview run look broken.
-    const HARNESS_NOISE = /WebSocket connection to 'ws:\/\/[^']*\/events'/;
+    // The preview server proxies reads and refuses everything else, so its own live-feed
+    // handshake failure and its 405s are the harness doing its job. Counting either as a
+    // console defect would make every preview run look broken.
+    const HARNESS_NOISE = /WebSocket connection to 'ws:\/\/[^']*\/events'|405 \(Method Not Allowed\)/;
     page.on('console', (message) => {
       if (message.type() === 'error' && !HARNESS_NOISE.test(message.text())) errors.console.push(message.text());
     });
     page.on('pageerror', (error) => errors.page.push(error.message));
 
     await page.goto(args.base + '/', { waitUntil: 'networkidle' });
-    if (args.breakId) await injectBreak(args.breakId, page, {}, offered);
+    if (args.breakId) await injectBreak(args.breakId, page, offered);
 
     // The landing page, then every declared view by clicking its own nav control. A view
     // whose nav control is not there, or whose click does not land, stays unreached --
     // and an unreached view reads as unknown, never as clean.
-    const landingView = (await page.$('[data-testid="nav-board"][aria-current="page"]')) ? 'board' : 'board';
+    // Whichever nav control the page marks as current. Both arms of this used to be the
+    // literal 'board', so a console landing anywhere else filed its capture under `board`
+    // and the real board was then skipped as already-walked -- neither walked nor listed
+    // as unknown (found in review, 2026-09-12).
+    const current = await page.$('[data-testid^="nav-"][aria-current="page"]');
+    const landingView = ((await current?.getAttribute('data-testid')) ?? 'nav-board').replace(/^nav-/, '');
     const landing = await walkScreen(landingView, 'landing', page, args.base, token, payloads, offered, errors, args.shots);
     if (args.breakId === 'D4') landing.claims = [{ label: 'Specimen count', rendered: '4', expected: '5', source: '/lanes (moved underneath the render)' }];
     screens.push(landing);
@@ -548,7 +573,7 @@ async function main(): Promise<void> {
   const partial: Omit<Inventory, 'defects'> = {
     at: new Date().toISOString(),
     target: args.base,
-    head: null,
+    head: servedHead,
     declaredViews: views,
     walkedViews: screens.filter((s) => s.reached === 'landing' || s.reached === 'click').map((s) => s.view),
     screens, offered, renderedOrder,

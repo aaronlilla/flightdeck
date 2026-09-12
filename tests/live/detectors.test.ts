@@ -174,5 +174,19 @@ describe('D7 — buried', () => {
     ]);
     expect(found).toHaveLength(1);
     expect(found[0]?.evidence['clicksToFirstReadable']).toBe(2);
+    expect(found[0]?.evidence['buried']).toBe(2);
+  });
+
+  it('counts every buried item, not only the ones before the first readable one', () => {
+    // Interleaved: one readable card leads, so nothing is "ahead of the first readable
+    // one", but a contentless card still sits in front of the last readable one.
+    const found = detectD7([
+      ask({ uid: 'real1' }),
+      ask({ uid: 'e1', content: 'confirm?' }),
+      ask({ uid: 'real2' }),
+    ]);
+    expect(found).toHaveLength(1);
+    expect(found[0]?.evidence['buried']).toBe(1);
+    expect(found[0]?.what).not.toMatch(/^0 /);
   });
 });
