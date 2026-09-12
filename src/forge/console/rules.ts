@@ -111,6 +111,11 @@ export function setRuleStatus(id: string, status: Rule['status'], deps: RulesDep
   writeRules(path, file);
 }
 
+/** How long a question may sit with a person before an auto-answer rule takes it
+ *  anyway. Nothing clears a pass on its own, so without a window the stand-down was
+ *  permanent and the lane never moved again (code review, 2026-09-12). */
+const PERSON_HOLD_MS = 24 * 60 * 60 * 1000;
+
 export interface EnforcementDeps {
   journalPath: string;
   rulesPath?: string;
@@ -169,18 +174,35 @@ export async function enforceRulesOnce(deps: EnforcementDeps): Promise<void> {
         // argument the operator's own click was then journalled as the rule's.
         const fresh = deps.inbox.entry(ask.key);
         if (!fresh || fresh.answer !== undefined) continue;
-        // A person is already on this one, so the rule stands down. `reply` is a
+        // A person is already on this one, so the rule stands down -- but only while
+        // that is still true of a person who might act. Nothing clears a pass on its
+        // own, so a question passed to somebody on holiday blocked the rule on every
+        // tick, forever, with no row saying why, where before the guard the rule
+        // unblocked the run (code review, 2026-09-12). Past the window the rule takes
+        // it and journals that it overtook a person, so the stand-down can never be
+        // the silent stall it was meant to prevent.
+        //
+        // `reply` is a
         // teammate's words waiting on the operator to confirm them -- answering over it
         // overwrote the teammate's name, the only record that they replied at all.
         // `passedTo` is a question out with a teammate who has not replied yet; closing
         // it by heuristic discards their reply with no acknowledgement, and the pass
         // window is hours where the reply window is seconds.
-        if (fresh.reply !== undefined || fresh.passedTo) continue;
-        const answered = deps.inbox.answer(ask.key, rule.effect, `rule:${rule.id}`);
+        const heldSince = fresh.repliedAt ?? fresh.passedAt ?? null;
+        const heldByPerson = fresh.reply !== undefined || Boolean(fresh.passedTo);
+        const stale = heldSince !== null && Date.now() - heldSince >= PERSON_HOLD_MS;
+        if (heldByPerson && !stale) continue;
+        if (heldByPerson && stale) {
+          appendOnce(deps.runActions.journalPath, {
+            event: 'decision.made', actor: 'rule', action: 'rule.enforced', ruleId: rule.id,
+            text: `auto-answer overtook a stale pass on ${ask.key}, held ${Math.round((Date.now() - heldSince) / 3_600_000)}h`,
+          });
+        }
+        const answered = deps.inbox.answer(ask.key, rule.effect, `the auto-answer rule "${rule.title}"`);
         if (answered) {
           await deliverAnswer(answered, ask.key, rule.effect);
           journalInterviewAnswer(
-            (row) => appendOnce(deps.runActions.journalPath, row), answered, `rule:${rule.id}`, 'rule',
+            (row) => appendOnce(deps.runActions.journalPath, row), answered, undefined, 'rule',
           );
           appendOnce(deps.runActions.journalPath, {
             event: 'decision.made', actor: 'rule', action: 'rule.enforced', ruleId: rule.id,

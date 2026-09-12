@@ -183,7 +183,7 @@ describe('enforceRulesOnce', () => {
       .map((line) => JSON.parse(line) as Record<string, unknown>)
       .filter((row) => row['event'] === 'interview.answered');
     expect(rows).toHaveLength(1);
-    expect(rows[0]!['answeredBy']).toBe('rule:r2');
+    expect(rows[0]!['answeredBy']).toBe('the auto-answer rule "t"');
     expect(rows[0]!['answer']).toBe('skip nulls');
     expect(rows[0]!['itemId']).toBe('Q-abc123');
   });
@@ -204,7 +204,7 @@ describe('enforceRulesOnce', () => {
 
     const entry = inbox.all().find((row) => row.question.includes('NOT NULL'))!;
     expect(entry.answer).toBe('skip nulls');
-    expect(answeredByOf(entry)).toBe('rule:r3');
+    expect(answeredByOf(entry)).toBe('the auto-answer rule "t"');
   });
 
   // Edge cases neighbouring the new direct-author branch, 2026-09-12. Each is a state
@@ -273,9 +273,46 @@ describe('enforceRulesOnce', () => {
   it('drops the previous author when the operator answers over a rule', () => {
     inbox.raise({ run: 'item:Q-again', ticket: 'BBZ-10', question: 'which env?' });
     const key = inbox.open()[0]!.key;
-    inbox.answer(key, 'skip nulls', 'rule:r6');
+    inbox.answer(key, 'skip nulls', 'the auto-answer rule "t"');
     inbox.answer(key, 'production');
     expect(answeredByOf(inbox.entry(key)!)).toBe('the operator');
+  });
+
+  // Found by code review, 2026-09-12: the stand-down had no expiry. Nothing clears a
+  // pass on its own, so a question passed to somebody on holiday blocked the rule on
+  // every tick, forever, with no row saying why. The rule used to unblock that run.
+  it('enforces once a pass has gone stale, and says so', async () => {
+    inbox.raise({ run: 'item:Q-stale', ticket: 'BBZ-11', question: 'value cannot be NOT NULL, what now?' });
+    const key = inbox.open()[0]!.key;
+    const longAgo = Date.now() - 25 * 60 * 60 * 1000;
+    inbox.pass(key, 'joe', longAgo, 'thread-old');
+    writeRule({
+      id: 'r7', kind: 'auto-answer', title: 't', summary: 's', evidence: 'NOT NULL',
+      effect: 'skip nulls', status: 'open', jid: null, prUrl: null,
+    });
+
+    await enforceRulesOnce({ journalPath, rulesPath: rulesFile, inbox, runActions });
+
+    expect(inbox.entry(key)!.answer).toBe('skip nulls');
+    const rows = readFileSync(journalPath, 'utf8').trim().split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    const overtook = rows.find((row) => row['event'] === 'decision.made'
+      && String(row['text'] ?? '').includes('stale pass'));
+    expect(overtook).toBeDefined();
+  });
+
+  it('still stands down while the pass is fresh', async () => {
+    inbox.raise({ run: 'item:Q-fresh', ticket: 'BBZ-12', question: 'value cannot be NOT NULL, what now?' });
+    const key = inbox.open()[0]!.key;
+    inbox.pass(key, 'joe', Date.now(), 'thread-new');
+    writeRule({
+      id: 'r8', kind: 'auto-answer', title: 't', summary: 's', evidence: 'NOT NULL',
+      effect: 'skip nulls', status: 'open', jid: null, prUrl: null,
+    });
+
+    await enforceRulesOnce({ journalPath, rulesPath: rulesFile, inbox, runActions });
+
+    expect(inbox.entry(key)!.answer).toBeUndefined();
   });
 
   it('still credits the operator for a plain typed answer with no author', () => {
@@ -333,7 +370,7 @@ describe('a reopened ask starts with no author', () => {
     const inbox = new Inbox(dir);
     inbox.raise({ run: 'item:Q-r1', ticket: 'BBZ-9', question: 'which env?' });
     const key = inbox.open()[0]!.key;
-    inbox.answer(key, 'skip nulls', 'rule:r1');
+    inbox.answer(key, 'skip nulls', 'the auto-answer rule "t"');
     inbox.raise({ run: 'item:Q-r1', ticket: 'BBZ-9', question: 'which env?' });
     inbox.answer(key, 'production');
     expect(answeredByOf(inbox.entry(key)!)).toBe('the operator');

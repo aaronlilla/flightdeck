@@ -332,8 +332,10 @@ export class Inbox {
   /** Answer an entry. An answer to a key nobody asked is ignored rather than invented.
    *
    *  `answeredBy` names a non-operator author that answered DIRECTLY rather than by
-   *  attaching a reply for the operator to confirm -- today only an auto-answer rule
-   *  (`console/rules.ts`). Found by code review, 2026-09-12: without it the entry
+   *  attaching a reply for the operator to confirm. Only `console/rules.ts` passes one
+   *  today; `worker.ts`'s `--auto-answer` and the mergeable-branch clear in
+   *  `sdkengine.ts` also answer directly and pass nothing, so both still read as the
+   *  operator. Found by code review, 2026-09-12: without it the entry
    *  reaches `answeredByOf` with no author at all, so the brief's `## Decisions` credits
    *  the operator with a call a heuristic made, while the journal row beside it already
    *  names the rule. Two records of one event that disagree is worse than either alone.
