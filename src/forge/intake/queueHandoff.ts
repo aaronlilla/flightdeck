@@ -40,13 +40,14 @@ export interface QueueHandoffInput {
  */
 const VIEW_FILE = /\.(tsx|jsx)$/i;
 /** Tests and snapshots render nothing a person opens. */
-const NOT_A_VIEW = /\.(test|spec|stories)\.(tsx|jsx)$|\.snap$|(^|\/)(__tests__|__mocks__|test-utils)\//i;
+const NOT_A_VIEW = /\.(test|spec|stories)\.(tsx|jsx)$|\.snap$|(^|\/)(__tests__|__mocks__|test-utils|jest)\//i;
 /** A file every screen renders under, so a change here is not one screen's problem.
  *  Anchored to the repository root (code review, 2026-09-12): matching a bare
  *  `Navigation.tsx` or any directory named `navigation` anywhere claimed "this
- *  reaches every screen" for one feature's own nav file, which is the same kind of
- *  false claim this file exists to remove. */
-const APP_ROOT_PATH = /^(src\/)?(app\/)?(App|AppRoot|RootNavigator|RootStack)\.(tsx|jsx)$|^(src\/)?navigation\/[^/]+\.(tsx|jsx)$/i;
+ *  reaches every screen" for one feature's own nav file. Named explicitly for the
+ *  same reason: `AuthStack` and `RegistrationStack` live beside the real wrappers
+ *  and wrap one flow, not the app, so matching the directory said it of them too. */
+const APP_ROOT_PATH = /^(src\/)?(app\/)?(App|AppRoot|RootNavigator|RootStack)\.(tsx|jsx)$|^(src\/)?navigation\/(index|MainStack|MainTabs|CustomTabBar)\.(tsx|jsx)$/i;
 /** At most this many names before the list stops being read. The comment is checked
  *  against a prose-word ceiling that DENIES, and a denied comment posts nothing at
  *  all -- so the biggest diffs, which most need the warning, got silence. */
@@ -84,9 +85,9 @@ function viewNamesIn(files: readonly string[]): string[] {
     }
     // Widening runs out of segments on a shallow path, and the loop then pushed the
     // colliding name unchanged -- two files printed as one name, which is the thing
-    // this loop exists to prevent (code review, 2026-09-12). The full path always
-    // tells them apart.
-    if (taken.has(rendered)) rendered = path;
+    // this loop exists to prevent (code review, 2026-09-12). The path without its
+    // extension always tells them apart, and keeps the format of every other entry.
+    if (taken.has(rendered)) rendered = path.replace(/\.(tsx|jsx)$/i, '');
     taken.add(rendered);
     // Backticked: the readability contract counts prose words and scans them for
     // banned words, so a path segment could deny the whole comment and post nothing

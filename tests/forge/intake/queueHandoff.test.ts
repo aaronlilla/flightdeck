@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import { buildQueueHandoffComment, runQueueHandoff, type QueueHandoffEvent } from '../../../src/forge/intake/queueHandoff.js';
 import type { JiraCallResult, JiraWriteClient } from '../../../src/forge/intake/jira.js';
+import { readabilityVerdict } from '../../../src/forge/intake/readability.js';
 
 function fakeClient(overrides: Partial<JiraWriteClient> = {}): JiraWriteClient {
   return {
@@ -277,18 +278,58 @@ describe('the handoff makes no claim about the rendered result', () => {
     expect(new Set(matches).size).toBe(2);
   });
 
-  // Found by code review, 2026-09-12: the long sentence plus a supplied plan came to
-  // 98 prose words against a ceiling of 80, and a denied comment posts nothing at all.
-  it('stays inside the prose ceiling with a plan and a full list', () => {
+  // Found by code review, 2026-09-12, twice. First: the long sentence plus a supplied
+  // plan came to 98 prose words against a ceiling of 80, and a comment over the
+  // ceiling is DENIED and posts nothing at all. Then: the test re-implemented the word
+  // count instead of importing the one that decides, so it could go green while the
+  // write was refused. It asks the real check now.
+  it('stays inside the real ceiling with a plan and a full list', () => {
     const files = Array.from({ length: 30 }, (_, i) => `src/features/f${i}/Thing${i}.tsx`);
     const body = buildQueueHandoffComment({
       ticket: 'BBZ-18', prUrl: 'https://github.com/acme/app/pull/18',
       what: 'the drop-down closes on an outside tap.',
-      testPlan: ['open the player card', 'tap outside it', 'check the row underneath'],
+      testPlan: ['open the player card', 'tap outside it', 'check the row underneath',
+        'reopen it', 'tap the same row again'],
       changedFiles: ['src/navigation/MainStack.tsx', ...files],
     });
-    const prose = body.replace(/`[^`]*`/g, '').replace(/https?:\S+/g, '');
-    expect(prose.split(/\s+/).filter(Boolean).length).toBeLessThan(80);
+    expect(readabilityVerdict('jira-comment', null, '', body, undefined, '2026-09-12').verdict)
+      .not.toBe('DENY');
+  });
+
+  // Found by code review, 2026-09-12, against the real mobile repo: matching every
+  // file directly under the navigation directory said "reaches every screen" of
+  // `AuthStack` and `RegistrationStack`, which wrap one flow, not the app.
+  it.each(['src/navigation/AuthStack.tsx', 'src/navigation/RegistrationStack.tsx'])(
+    'does not call %s the app root', (file) => {
+      const body = buildQueueHandoffComment({
+        ticket: 'BBZ-19', prUrl: 'https://github.com/acme/app/pull/19', what: 'x.', testPlan: [],
+        changedFiles: [file],
+      });
+      expect(body).not.toMatch(/every screen/i);
+    },
+  );
+
+  // Found by code review, 2026-09-12: the fallback kept the extension, so one entry in
+  // a comma list read in a different format from the rest, and the widened name
+  // claimed a path that does not exist.
+  it('keeps every entry in one format when a shallow collision falls back', () => {
+    const body = buildQueueHandoffComment({
+      ticket: 'BBZ-20', prUrl: 'https://github.com/acme/app/pull/20', what: 'x.', testPlan: [],
+      changedFiles: ['Header.tsx', 'src/Header.tsx'],
+    });
+    expect(body).not.toMatch(/\.tsx/);
+    const matches = body.match(/`[^`]+`/g) ?? [];
+    expect(new Set(matches).size).toBe(2);
+  });
+
+  // Found by code review, 2026-09-12: the mobile repo keeps a render mock at
+  // jest/svgMock.tsx, which is not a screen.
+  it('leaves a render mock under jest out of the list', () => {
+    const body = buildQueueHandoffComment({
+      ticket: 'BBZ-21', prUrl: 'https://github.com/acme/app/pull/21', what: 'x.', testPlan: [],
+      changedFiles: ['jest/svgMock.tsx'],
+    });
+    expect(body).not.toContain('svgMock');
   });
 
   // Edge: an empty list is not proof of anything -- the file list pages at 100 and can
