@@ -59,9 +59,38 @@ export interface Need {
   passable: boolean;
 }
 
-/** The kind order is the strip's order: what is stopping an agent outranks what is
- *  waiting on a yes, which outranks a question the agent can still work around. */
+/** The kind order, applied only between two cards a person can actually answer: what is
+ *  stopping an agent outranks what is waiting on a yes, which outranks a question the
+ *  agent can still work around. */
 const KIND_RANK: Record<Need['kind'], number> = { blocker: 0, confirm: 1, lane: 2 };
+
+/**
+ * Whether a person could answer this card if it were on screen right now.
+ *
+ * The strip's whole job is to put the next answerable thing in front of someone, and
+ * kind alone does not say which those are. Measured on the live console, 2026-09-12:
+ * 67 cards on the strip, every title the string `confirm?`, every one of them ranked
+ * ahead of the real questions by kind. Aaron: "the UI is totally worthless, how am i
+ * going to answer questions when they look like this".
+ *
+ * Two things make a card answerable, and it needs both. It has to carry words a person
+ * can read -- a card whose only text is a fallback constant asks nothing. And it has to
+ * offer a way to reply. Everything else about it, its kind included, is a tie-break.
+ *
+ * The title is deliberately NOT one of the fields read here. It is a kicker the strip
+ * supplies ("Confirm"), so counting it would make every card look readable -- which is
+ * what happened on the first draft of this function, and the contentless cards kept
+ * their place at the front. Only `line` and `evidence` are the card's own words.
+ */
+export function answerable(need: Need): boolean {
+  const readable = [need.line, ...need.evidence]
+    .some((text) => text.trim().length > 0 && text.trim() !== FALLBACK_TEXT);
+  return readable && need.options.length > 0;
+}
+
+/** What a card falls back to when it has no words of its own: the literal text the
+ *  server's `confirmCard` writes into every confirm it mints. */
+const FALLBACK_TEXT = 'confirm?';
 
 /** The recommended option first (spec §5), the rest in the order the pipeline gave
  *  them. A recommendation the ask does not carry leaves the order alone. */
@@ -115,8 +144,13 @@ export function buildNeeds(lanes: Lane[], cards: Message[], blockers?: Blocker[]
       // The kicker IS the head for a card ("Blocked · NWR-178"); repeating the headline
       // in both lines read as a stutter in the 2026-09-11 screenshot.
       key: '',
-      title: card.kicker ?? card.text,
-      line: card.title ?? card.text,
+      // The blast is the card's own account of what the click will do -- "BBZ-182 is
+      // killed immediately; its worktree and process are gone". A confirm card's `text`
+      // is the constant `confirm?` every time, so reading `text` first put that string
+      // in both lines and left the one sentence that says anything in the disclosure,
+      // closed (2026-09-12). Prefer the words, fall back to the constant.
+      title: card.kicker ?? (card.type === 'confirm' ? 'Confirm' : card.text),
+      line: card.title ?? card.blast ?? card.text,
       options: options.length > 0 ? options : [{ label: 'Confirm', cmd: `confirm ${card.k}` }, { label: 'Not now', cmd: `dismiss ${card.k}` }],
       askKey: card.askKey ?? card.k,
       askedAt: card.ts,
@@ -149,7 +183,12 @@ export function buildNeeds(lanes: Lane[], cards: Message[], blockers?: Blocker[]
       passable: true,
     });
   }
-  needs.sort((a, b) => (KIND_RANK[a.kind] - KIND_RANK[b.kind]) || (a.askedAt - b.askedAt));
+  // Answerable first, then worst-first inside each group, then oldest first. A card
+  // nobody can answer never sits in front of one somebody can: that ordering is the
+  // difference between a strip a person works through and a strip they give up on.
+  needs.sort((a, b) => (Number(answerable(b)) - Number(answerable(a)))
+    || (KIND_RANK[a.kind] - KIND_RANK[b.kind])
+    || (a.askedAt - b.askedAt));
   return needs;
 }
 
