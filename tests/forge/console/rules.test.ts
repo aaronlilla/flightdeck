@@ -301,15 +301,15 @@ describe('enforceRulesOnce', () => {
     expect(overtook).toBeDefined();
   });
 
-  // Found by code review, 2026-09-12: overtaking a stale hold overwrote `answeredBy`,
-  // so the teammate's credit was destroyed AND `answeredByOf` fell back to the operator
-  // -- the rule's call filed as Aaron's, the exact fault this branch removes.
-  it('credits the rule and keeps the teammate words when it overtakes a stale reply', async () => {
+  // Found by code review, 2026-09-12: the window overtook a teammate's attached REPLY
+  // too, so a real human answer sitting on disk was discarded in favour of the rule's
+  // canned effect and the operator was never asked. A reply means the answer already
+  // exists and only the confirming click is missing -- that is a person the board shows,
+  // not a stall. Only a pass with no reply ages out.
+  it('never overtakes an attached reply, however old', async () => {
     inbox.raise({ run: 'item:Q-ot', ticket: 'BBZ-13', question: 'value cannot be NOT NULL, what now?' });
     const key = inbox.open()[0]!.key;
     inbox.attachReply(key, 'joe', 'use the default');
-    // Age the reply on disk. The inbox has no public way to backdate one, and the
-    // window is what this specimen is about.
     const entryPath = join(dir, 'inbox', `${key}.json`);
     const aged = { ...JSON.parse(readFileSync(entryPath, 'utf8')), repliedAt: Date.now() - 25 * 60 * 60 * 1000 };
     writeFileSync(entryPath, JSON.stringify(aged), 'utf8');
@@ -321,10 +321,31 @@ describe('enforceRulesOnce', () => {
     await enforceRulesOnce({ journalPath, rulesPath: rulesFile, inbox, runActions });
 
     const after = inbox.entry(key)!;
-    expect(after.answer).toBe('skip nulls');
+    expect(after.answer).toBeUndefined();
     expect(after.reply).toBe('use the default');
     expect(after.answeredBy).toBe('joe');
-    expect(answeredByOf(after)).toBe('the auto-answer rule "nulls"');
+  });
+
+  // Found by code review, 2026-09-12: with no timestamp on the hold at all, `stale` was
+  // permanently false and the rule stood down forever with no row -- the same permanent
+  // stall the window exists to remove, re-entering through a field with no value.
+  it('ages a pass that carries no timestamp off the entry own age', async () => {
+    inbox.raise({ run: 'item:Q-nots', ticket: 'BBZ-14', question: 'value cannot be NOT NULL, what now?' });
+    const key = inbox.open()[0]!.key;
+    inbox.pass(key, 'joe', Date.now(), 'thread-x');
+    const entryPath = join(dir, 'inbox', `${key}.json`);
+    const raw = JSON.parse(readFileSync(entryPath, 'utf8'));
+    delete raw.passedAt;
+    raw.at = Date.now() - 25 * 60 * 60 * 1000;
+    writeFileSync(entryPath, JSON.stringify(raw), 'utf8');
+    writeRule({
+      id: 'r10', kind: 'auto-answer', title: 'nulls', summary: 's', evidence: 'NOT NULL',
+      effect: 'skip nulls', status: 'open', jid: null, prUrl: null,
+    });
+
+    await enforceRulesOnce({ journalPath, rulesPath: rulesFile, inbox, runActions });
+
+    expect(inbox.entry(key)!.answer).toBe('skip nulls');
   });
 
   it('still stands down while the pass is fresh', async () => {

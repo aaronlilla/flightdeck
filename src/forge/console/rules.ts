@@ -188,18 +188,29 @@ export async function enforceRulesOnce(deps: EnforcementDeps): Promise<void> {
         // `passedTo` is a question out with a teammate who has not replied yet; closing
         // it by heuristic discards their reply with no acknowledgement, and the pass
         // window is hours where the reply window is seconds.
-        const heldSince = fresh.repliedAt ?? fresh.passedAt ?? null;
-        const heldByPerson = fresh.reply !== undefined || Boolean(fresh.passedTo);
-        const stale = heldSince !== null && Date.now() - heldSince >= PERSON_HOLD_MS;
-        if (heldByPerson && !stale) continue;
-        if (heldByPerson && stale) {
-          appendOnce(deps.runActions.journalPath, {
-            event: 'decision.made', actor: 'rule', action: 'rule.enforced', ruleId: rule.id,
-            text: `auto-answer overtook a stale pass on ${ask.key}, held ${Math.round((Date.now() - heldSince) / 3_600_000)}h`,
-          });
-        }
+        // An attached reply is never overtaken, whatever its age (code review,
+        // 2026-09-12). The answer already exists on disk and only the confirming click
+        // is missing, so the board shows a person one action away -- discarding a
+        // teammate's real words in favour of a substring match is not an unstick.
+        if (fresh.reply !== undefined) continue;
+        // A pass with nobody replying does age out, or a question handed to somebody on
+        // holiday blocks the rule on every tick, forever. `fresh.at` is the last
+        // fallback: with no timestamp at all the age was unknowable, `stale` was
+        // permanently false, and the guard became the silent stall it exists to prevent.
+        const heldSince = fresh.passedTo ? (fresh.passedAt ?? fresh.at) : null;
+        if (heldSince !== null && Date.now() - heldSince < PERSON_HOLD_MS) continue;
+        const overtookAfterMs = heldSince === null ? null : Date.now() - heldSince;
         const answered = deps.inbox.answer(ask.key, rule.effect, `the auto-answer rule "${rule.title}"`);
         if (answered) {
+          // Written only once the answer actually landed, so a failed answer leaves no
+          // row claiming an overtake that never happened (code review, 2026-09-12).
+          if (overtookAfterMs !== null) {
+            appendOnce(deps.runActions.journalPath, {
+              event: 'decision.made', actor: 'rule', action: 'rule.enforced', ruleId: rule.id,
+              text: `auto-answer overtook a stale pass on ${ask.key} to ${fresh.passedTo}, `
+                + `held ${Math.round(overtookAfterMs / 3_600_000)}h with no reply`,
+            });
+          }
           await deliverAnswer(answered, ask.key, rule.effect);
           journalInterviewAnswer(
             (row) => appendOnce(deps.runActions.journalPath, row), answered, undefined, 'rule',
