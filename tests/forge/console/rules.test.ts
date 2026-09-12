@@ -247,6 +247,25 @@ describe('enforceRulesOnce', () => {
     expect(inbox.open().map((row) => row.key)).toContain(key);
   });
 
+  // Found by code review, 2026-09-12: the stand-down guard covered a teammate's reply
+  // but not a pass still waiting for one. The pass window is hours; a rule closing it
+  // drops the teammate's reply with no acknowledgement.
+  it('leaves an ask alone while it is out with a teammate who has not replied', async () => {
+    inbox.raise({ run: 'item:Q-pass2', ticket: 'BBZ-8', question: 'value cannot be NOT NULL, what now?' });
+    const key = inbox.open()[0]!.key;
+    inbox.pass(key, 'joe', Date.now(), 'thread-1');
+    writeRule({
+      id: 'r5', kind: 'auto-answer', title: 't', summary: 's', evidence: 'NOT NULL',
+      effect: 'skip nulls', status: 'open', jid: null, prUrl: null,
+    });
+
+    await enforceRulesOnce({ journalPath, rulesPath: rulesFile, inbox, runActions });
+
+    const entry = inbox.entry(key)!;
+    expect(entry.answer).toBeUndefined();
+    expect(entry.passedTo).toBe('joe');
+  });
+
   it('still credits the operator for a plain typed answer with no author', () => {
     inbox.raise({ run: 'item:Q-edge3', ticket: 'BBZ-3', question: 'which env?' });
     const key = inbox.open()[0]!.key;

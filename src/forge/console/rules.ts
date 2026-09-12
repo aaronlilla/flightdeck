@@ -162,13 +162,25 @@ export async function enforceRulesOnce(deps: EnforcementDeps): Promise<void> {
       const pattern = rule.evidence;
       for (const ask of deps.inbox.open()) {
         if (!pattern || !ask.question.includes(pattern)) continue;
-        // Found by code review, 2026-09-12: an ask with a teammate's reply attached is
-        // still open on purpose -- `attachReply` never accepts the reply, the operator
-        // does. A rule answering it overwrote the teammate's name, which is the only
-        // record that they replied at all, and left the brief crediting the operator
-        // while the journal row beside it named the rule. A person is already on this
-        // one; the rule stands down.
-        if (ask.reply !== undefined) continue;
+        // Re-read off disk rather than trusting the snapshot `open()` took before the
+        // first `await deliverAnswer` (code review, 2026-09-12). An answer or a reply
+        // that lands during one of those awaits -- the HTTP route, the Slack poller, a
+        // separate `forge answer` process -- was overwritten, and with the author
+        // argument the operator's own click was then journalled as the rule's.
+        const fresh = deps.inbox.entry(ask.key);
+        if (!fresh || fresh.answer !== undefined) continue;
+        // A person is already on this one, so the rule stands down. `reply` is a
+        // teammate's words waiting on the operator to confirm them; `passedTo` is a
+        // question out with a teammate who has not replied yet. Answering either
+        // discards a person's work: a pass closed by a heuristic drops the teammate's
+        // reply with no acknowledgement, and the pass window is hours.
+        // A person is already on this one, so the rule stands down. `reply` is a
+        // teammate's words waiting on the operator to confirm them -- answering over it
+        // overwrote the teammate's name, the only record that they replied at all.
+        // `passedTo` is a question out with a teammate who has not replied yet; closing
+        // it by heuristic discards their reply with no acknowledgement, and the pass
+        // window is hours where the reply window is seconds.
+        if (fresh.reply !== undefined || fresh.passedTo) continue;
         const answered = deps.inbox.answer(ask.key, rule.effect, `rule:${rule.id}`);
         if (answered) {
           await deliverAnswer(answered, ask.key, rule.effect);

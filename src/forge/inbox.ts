@@ -258,6 +258,15 @@ export class Inbox {
       delete entry.answeredBy;
       delete entry.reply;
       delete entry.repliedAt;
+      // The pass goes with them (code review, 2026-09-12). Leaving `passedThread` put a
+      // reopened ask back into `openPasses` (`intake/slackReturn.ts:93`), so the poller
+      // resumed reading the OLD thread and attached a message from it as the reply to
+      // the new question -- the same "a reply to the old one is not an answer to this
+      // one" failure, re-entering through the field that was not cleared. The card also
+      // kept rendering "Passed to joe" with its options hidden.
+      delete entry.passedTo;
+      delete entry.passedAt;
+      delete entry.passedThread;
     } else {
       entry = {
         key,
