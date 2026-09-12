@@ -260,7 +260,7 @@ describe('item 1: a parked item recovers on its own when the park reason was tra
     const { deps, events } = buildDeps(store);
 
     await runQueueTick(deps, store.all());
-    store.append({ id: item.id, at: 2_000, state: 'parked', reason: 'overlaps Q-other on src/a.ts', updatedAt: 2_000 });
+    store.append({ id: item.id, at: 2_000, state: 'parked', reason: 'backend: this belongs to the management system', updatedAt: 2_000 });
     await runQueueTick(deps, store.all());
 
     expect(events.filter((e) => e['event'] === 'queue.recovery-declined')).toHaveLength(2);
@@ -393,6 +393,65 @@ describe('item 1: a parked item recovers on its own when the park reason was tra
     expect(held.length).toBeLessThanOrEqual(ids.length * 2);
   });
 
+  it('gives the gate its polls back too, so a retry is not spent on one council round', async () => {
+    // The pending-checks counter lives on the item as well. Resetting every other budget
+    // and not this one means a retry re-enters the gate, spends a real council round, and
+    // parks again on the first pass because the counter is already at its cap.
+    const store = tempStore();
+    const item = parkedItem(store, 'checks never settled after 20 polls');
+    store.append({ id: item.id, at: 1_000, pendingGatePolls: 19 });
+
+    retryItem(store, item.id, 2_000, { askedByAPerson: true });
+
+    expect(store.get(item.id)!.pendingGatePolls ?? 0).toBe(0);
+  });
+
+  it('does not hand the budgets back to a machine retry, which would make the caps unreachable', async () => {
+    // `retryItem` is the sweep's path as well as a person's. Resetting the read budget on
+    // every automatic retry means: retry, spend twenty GitHub reads, park, retry, twenty
+    // more, forever -- the rate-limit bound removed by the thing meant to restore it.
+    const store = tempStore();
+    const item = parkedItem(store, 'checks never settled after 20 polls');
+    store.append({ id: item.id, at: 1_000, checksReads: 20, pendingGatePolls: 19 });
+
+    retryItem(store, item.id, 2_000);
+
+    expect(store.get(item.id)!.checksReads).toBe(20);
+  });
+
+  it('recovers a file overlap on its own once the item holding those files is done', async () => {
+    // The overlap park is the one park that clears itself. It belongs in this pass, which
+    // is bounded and costs no network call, rather than in a sweep that retries forever.
+    const store = tempStore();
+    const holder = addTicketItem(store, 'ABC-HOLD', 900);
+    store.append({
+      id: holder.id, at: 900, updatedAt: 900, state: 'done', repo: 'owner/name',
+      ticket: 'ABC-HOLD', changedFiles: ['src/a.ts'],
+    });
+    const item = parkedItem(store, `overlaps ${holder.id} on src/a.ts`);
+    const { deps } = buildDeps(store);
+
+    await runQueueTick(deps, store.all());
+
+    expect(store.get(item.id)!.state).not.toBe('parked');
+  });
+
+  it('leaves a file overlap parked while the other item is still holding those files', async () => {
+    const store = tempStore();
+    const holder = addTicketItem(store, 'ABC-HOLD', 900);
+    store.append({
+      id: holder.id, at: 900, updatedAt: 900, state: 'running', repo: 'owner/name',
+      ticket: 'ABC-HOLD', changedFiles: ['src/a.ts'],
+    });
+    const item = parkedItem(store, `overlaps ${holder.id} on src/a.ts`);
+    const { deps, events } = buildDeps(store);
+
+    await runQueueTick(deps, store.all());
+
+    expect(store.get(item.id)!.state).toBe('parked');
+    expect(events.find((e) => e['event'] === 'queue.recovery-held')).toMatchObject({ reRead: 'overlap' });
+  });
+
   it('gives the read budget back when a person retries the item', async () => {
     // Without this the 20-read cap is a life sentence: a retry sends the item back
     // through the gate, it parks on checks again, and the recovery pass declines on the
@@ -402,7 +461,7 @@ describe('item 1: a parked item recovers on its own when the park reason was tra
     const item = parkedItem(store, 'checks never settled after 20 polls');
     store.append({ id: item.id, at: 1_000, checksReads: 20, checksReadAt: 900, recoveryDeclinedFor: 'checks never settled after 20 polls' });
 
-    retryItem(store, item.id, 2_000);
+    retryItem(store, item.id, 2_000, { askedByAPerson: true });
 
     const row = store.get(item.id)!;
     expect(row.checksReads ?? 0).toBe(0);
@@ -451,7 +510,7 @@ describe('item 1: a parked item recovers on its own when the park reason was tra
     expect(events.filter((e) => e['found'] === 'no room at this width')).toHaveLength(1);
 
     // A person's retry hands the budget back, so the next park says it again.
-    retryItem(store, row.id, 3_000);
+    retryItem(store, row.id, 3_000, { askedByAPerson: true });
     store.append({ id: row.id, at: 4_000, state: 'parked', reason: 'stopped', updatedAt: 4_000 });
     alive = 999;
     await runQueueTick(deps, store.all());

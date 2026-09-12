@@ -89,17 +89,19 @@ describe('item 3: the rounds sweep leaves an item held on an interview answer al
     expect(sheet.findings.filter((f) => f.itemId === 'Q-failed').map((f) => f.action)).toContain('retry');
   });
 
-  it('still offers a retry for a file overlap, which clears when the other item finishes', () => {
-    // The overlap park is written when another item holds the same files. It clears on
-    // its own the moment that item is done, so refusing it in both passes leaves the only
-    // self-clearing park in the system waiting on a person.
+  it('does not retry a file overlap on every tick while the other item still holds the files', () => {
+    // The overlap clears itself, so it needs an automatic path -- but not this one. This
+    // sweep runs on a ticker and calls retry directly, so it flipped the item to running
+    // and back on every tick for as long as the other item held those files, spending a
+    // width slot and a GitHub call each time. The queue's own recovery pass owns it now,
+    // where it is bounded and free.
     const row = item({
       id: 'Q-overlap', state: 'parked', reason: 'overlaps Q-other on src/a.ts',
       updatedAt: NOW - 90 * MIN,
     });
     const sheet = planRounds({ now: NOW, items: [row], lanes: [], blockers: [] });
 
-    expect(sheet.findings.filter((f) => f.itemId === 'Q-overlap').map((f) => f.action)).toContain('retry');
+    expect(sheet.findings.filter((f) => f.itemId === 'Q-overlap').map((f) => f.action)).not.toContain('retry');
   });
 
   it('still offers a retry for a park a machine could clear', () => {
