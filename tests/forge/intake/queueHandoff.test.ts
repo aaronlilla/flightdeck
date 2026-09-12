@@ -145,6 +145,54 @@ describe('the handoff makes no claim about the rendered result', () => {
     expect(body).not.toContain('Thing29');
   });
 
+  // Found by code review, 2026-09-12: the fix removed one unearned claim and added
+  // another a line below it. Nothing in the input carries a test or typecheck result,
+  // and an item whose worker was parked reaches this handoff anyway.
+  it('claims nothing about the tests, which it has no result for', () => {
+    const body = buildQueueHandoffComment({
+      ticket: 'BBZ-8', prUrl: 'https://github.com/acme/app/pull/8', what: 'x.', testPlan: [],
+      changedFiles: ['src/features/wallet/WalletScreen.tsx'],
+    });
+    expect(body).not.toMatch(/tests pass/i);
+    expect(body).not.toMatch(/types are clean/i);
+    expect(body).toMatch(/nobody has looked at this on a screen/i);
+  });
+
+  // The names are counted by a prose-word ceiling that denies the whole comment, and
+  // scanned for banned words. Code in backticks is exempt from both.
+  it('wraps every name in backticks so a path cannot deny the comment', () => {
+    const body = buildQueueHandoffComment({
+      ticket: 'BBZ-9', prUrl: 'https://github.com/acme/app/pull/9', what: 'x.', testPlan: [],
+      changedFiles: ['src/features/camera/Lens.tsx'],
+    });
+    expect(body).toContain('`camera/Lens`');
+  });
+
+  // The real app-wide files in the mobile repo are the navigators, and none of them
+  // matched the first pattern.
+  it.each([
+    'src/navigation/MainStack.tsx',
+    'src/navigation/MainTabs.tsx',
+    'src/navigation/CustomTabBar.tsx',
+    'src/navigation/index.tsx',
+  ])('says %s reaches every screen', (file) => {
+    const body = buildQueueHandoffComment({
+      ticket: 'BBZ-10', prUrl: 'https://github.com/acme/app/pull/10', what: 'x.', testPlan: [],
+      changedFiles: [file],
+    });
+    expect(body).toMatch(/every screen/i);
+  });
+
+  // The file list includes deletions, so the heading may not promise the file exists.
+  it('does not claim a listed file renders, since the list includes deletions', () => {
+    const body = buildQueueHandoffComment({
+      ticket: 'BBZ-11', prUrl: 'https://github.com/acme/app/pull/11', what: 'drop the old screen.',
+      testPlan: [], changedFiles: ['src/features/legacy/OldWallet.tsx'],
+    });
+    expect(body).not.toMatch(/files that render/i);
+    expect(body).toMatch(/adds, changes or removes/i);
+  });
+
   // Edge: an empty list is not proof of anything -- the file list pages at 100 and can
   // come back empty when the JSON lacks the field.
   it('claims nothing from an empty file list', () => {

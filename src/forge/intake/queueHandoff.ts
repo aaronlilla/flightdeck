@@ -28,8 +28,10 @@ export interface QueueHandoffInput {
   /** Item 13, 2026-09-12: the repo-relative paths this pull request changes, so the
    *  comment can name the screens rather than guess whether anyone needs to look.
    *  Absent means the caller does not know, which is never the same as "nothing to
-   *  see". */
+   *  see". It includes deletions and renames, which is why the heading below says
+   *  "adds, changes or removes" rather than promising each file still exists. */
   changedFiles?: string[];
+
 }
 
 /**
@@ -41,7 +43,7 @@ const VIEW_FILE = /\.(tsx|jsx)$/i;
 /** Tests and snapshots render nothing a person opens. */
 const NOT_A_VIEW = /\.(test|spec|stories)\.(tsx|jsx)$|\.snap$/i;
 /** A file every screen renders under, so a change here is not one screen's problem. */
-const APP_ROOT_PATH = /(^|\/)(App|AppRoot|RootNavigator|RootStack|Navigation)\.(tsx|jsx)$/i;
+const APP_ROOT_PATH = /(^|\/)(App|AppRoot|RootNavigator|RootStack|Navigation)\.(tsx|jsx)$|(^|\/)navigation\/[^/]+\.(tsx|jsx)$|(^|\/)(MainStack|MainTabs|AuthStack|CustomTabBar)\.(tsx|jsx)$/i;
 /** At most this many names before the list stops being read. The comment is checked
  *  against a prose-word ceiling that DENIES, and a denied comment posts nothing at
  *  all -- so the biggest diffs, which most need the warning, got silence. */
@@ -68,7 +70,10 @@ function viewNamesIn(files: readonly string[]): string[] {
     // that tells them apart.
     while (parts.length && GENERIC_DIR.test(parts[parts.length - 1]!)) parts.pop();
     const parent = parts.pop();
-    names.push(parent && parent !== 'src' ? `${parent}/${base}` : base);
+    // Backticked: the readability contract counts prose words and scans them for
+    // banned words, so a path segment could deny the whole comment and post nothing
+    // at all. Code in backticks is exempt from both (code review, 2026-09-12).
+    names.push(parent && parent !== 'src' ? `\`${parent}/${base}\`` : `\`${base}\``);
   }
   return names;
 }
@@ -101,11 +106,19 @@ export function buildQueueHandoffComment(input: QueueHandoffInput): string {
   if (names.length) {
     const shown = names.slice(0, MAX_NAMED).join(', ');
     const rest = names.length - MAX_NAMED;
-    lines.push(`Files that render, in this diff: ${shown}${rest > 0 ? `, and ${rest} more` : ''}.`);
+        // "adds, changes or removes", never "files that render": the list comes from the
+    // pull request's own file list, which includes deletions, and pointing somebody at
+    // a screen that no longer exists wastes the look (code review, 2026-09-12).
+    lines.push(`Screens this diff adds, changes or removes: ${shown}${rest > 0 ? `, and ${rest} more` : ''}.`);
   }
-  lines.push('The tests pass and the types are clean. Nobody has looked at this on a screen,'
-    + ' so the rendered result is unverified -- including anything the file list above does'
-    + ' not name.');
+  // The one sentence. It says what is NOT known, and claims nothing that is.
+  // A first draft said "the tests pass and the types are clean", which nothing in this
+  // input carries: an item whose worker was parked reaches this handoff anyway, and a
+  // repo whose only green check is a build would have had the same sentence written
+  // about it (code review, 2026-09-12). Removing an unearned claim and adding one a
+  // line below it is the same defect twice.
+  lines.push('Nobody has looked at this on a screen, so the rendered result is unverified'
+    + ' -- including anything the file list above does not name.');
   return lines.join('\n');
 }
 
