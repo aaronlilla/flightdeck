@@ -104,6 +104,8 @@ import {
   chainStatusLines, foldChainState, runChainTick, runKeyForBrief,
 } from './chain.js';
 import { readChainEnv, repoKindFor } from './chain-env.js';
+import { checkOutwardDraft, draftReportLines, type OutwardDraft } from './intake/draftCheck.js';
+import { runPrOpenedHandoff } from './intake/prOpened.js';
 import { buildChainDeps, hasRunRegistered } from './chain-wire.js';
 import { isGoalFile } from './intake/goalFile.js';
 import { installShutdown } from './service/shutdown.js';
@@ -1404,6 +1406,67 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       };
     }
 
+    /**
+     * One pass over every outward text a work item is about to write, before any of them
+     * is attempted. Takes a JSON file of the shape `OutwardDraft` -- the commit message,
+     * the pull request title and body and the issue comment together -- and reports every
+     * refusal the write-time gates would raise, each naming its own ceiling and count.
+     * Exit 1 when any surface would be refused, so a script can stop before it writes.
+     */
+    case 'draft': {
+      const file = rest[0];
+      if (!file) return { code: 2, lines: ['forge draft needs a path to a draft JSON file'] };
+      let draft: OutwardDraft;
+      try {
+        draft = JSON.parse(readFileSync(file, 'utf8')) as OutwardDraft;
+      } catch (err) {
+        return { code: 2, lines: [`cannot read ${file}: ${err instanceof Error ? err.message : String(err)}`] };
+      }
+      if (typeof draft !== 'object' || draft === null || typeof draft.texts !== 'object' || draft.texts === null) {
+        return { code: 2, lines: [`${file} must be an object with a "texts" object`] };
+      }
+      const report = checkOutwardDraft(draft, new Date().toISOString().slice(0, 10));
+      const refused = report.findings.some((f) => f.verdict === 'DENY');
+      return { code: refused ? 1 : 0, lines: draftReportLines(report) };
+    }
+
+    /**
+     * Move the ticket a pull request names, the moment the pull request opens. The queue
+     * already does this for work it drove itself; a pull request opened by hand left the
+     * ticket reading Backlog with the work already done, which is how the board came to
+     * offer finished work. Run it right after `gh pr create`.
+     */
+    case 'pr-opened': {
+      const repoIdx = rest.indexOf('--repo');
+      const prIdx = rest.indexOf('--pr');
+      const repoArg = repoIdx >= 0 ? rest[repoIdx + 1] : undefined;
+      const prArg = prIdx >= 0 ? rest[prIdx + 1] : undefined;
+      if (!repoArg || !prArg) return { code: 2, lines: ['forge pr-opened needs --repo OWNER/NAME and --pr NUMBER'] };
+      const prNumber = Number(prArg);
+      if (!Number.isInteger(prNumber) || prNumber <= 0) return { code: 2, lines: [`--pr must be a positive number, got ${prArg}`] };
+      const jiraConfig = jiraConfigFromEnv();
+      if (!jiraConfig) return { code: 2, lines: ['no issue-tracker credentials configured; nothing to move'] };
+      const snapshot = await REAL_GH.viewPr(repoArg, prNumber);
+      const prJournal = new Journal(journalPath());
+      try {
+        const result = await runPrOpenedHandoff(
+          createJiraWriteClient(jiraConfig),
+          { prUrl: `https://github.com/${repoArg}/pull/${prNumber}`, title: snapshot.title },
+          {
+            wipAccountId: process.env['FORGE_JIRA_WIP_ACCOUNT'],
+            wipTransitionId: process.env['FORGE_JIRA_WIP_TRANSITION'],
+          },
+          (event) => prJournal.append({ ...event, actor: 'queue' }),
+        );
+        // Non-zero on any refused write. A script runs this straight after `gh pr create`
+        // and cannot see the ticket; reporting success while it still reads Backlog is
+        // the very defect this command exists to stop (review, 2026-09-12).
+        return { code: result.failed > 0 ? 1 : 0, lines: result.lines };
+      } finally {
+        prJournal.close();
+      }
+    }
+
     case 'gotchas': {
       const filed = new Gotchas(gotchasDir(), journalPath()).all();
       return {
@@ -2395,7 +2458,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         code: 2,
         lines: [
           'forge up | status | run BRIEF | send RUN TEXT | answer KEY ANSWER | stop --all '
-            + '| gotchas | clear LANE | accounts [list|add ID DIR [N]|remove ID] | cutover [--from DIR] | intake --dry-run | reason --class CLASS '
+            + '| gotchas | draft FILE | pr-opened --repo O/N --pr N | clear LANE | accounts [list|add ID DIR [N]|remove ID] | cutover [--from DIR] | intake --dry-run | reason --class CLASS '
             + '| council --repo O/N --pr N | gate --repo O/N --pr N [--merge] [--handoff FILE] '
             + '| chain [retry PACKET [--reason "<why>"]] | [skip PACKET [--reason "<why>"]]',
           `the server listens on ${FORGE_PORT}`,

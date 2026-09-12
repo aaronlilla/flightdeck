@@ -182,7 +182,11 @@ export interface QueuePlannedBrief {
  *  it. A planner that knows about neither still satisfies this union unchanged. */
 export type QueuePlanWaiting = { waiting: 'interview'; asks: number };
 export type QueuePlanBackend = { backend: true; ticket: string; ask: string };
-export type QueuePlanOutcome = QueuePlannedBrief | QueuePlanWaiting | QueuePlanBackend;
+/** `inFlight` means the ticket already has a pull request open or merged for it, found
+ *  in its own comments or remote links rather than in its status field -- which is the
+ *  field that lied. No worker launches on it: the work exists. */
+export type QueuePlanInFlight = { inFlight: true; ticket: string; prUrl: string; reason: string };
+export type QueuePlanOutcome = QueuePlannedBrief | QueuePlanWaiting | QueuePlanBackend | QueuePlanInFlight;
 
 /** The reason an item held on an interview answer carries. One string, read in two
  *  places (the hop that writes it and the tick that excludes it from the width), so it
@@ -200,6 +204,10 @@ export function isPlanWaiting(outcome: QueuePlanOutcome): outcome is QueuePlanWa
 
 export function isPlanBackend(outcome: QueuePlanOutcome): outcome is QueuePlanBackend {
   return 'backend' in outcome;
+}
+
+export function isPlanInFlight(outcome: QueuePlanOutcome): outcome is QueuePlanInFlight {
+  return 'inFlight' in outcome;
 }
 
 export interface QueuePlanner {
@@ -754,6 +762,16 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
       return writeTransition(
         item, { ticket: planned.ticket, repo: 'backend', state: 'parked', reason: `backend: ${planned.ask}` },
         deps, 'queue.parked', { hop: 'plan', route: 'backend', pings: terminal.pings },
+      );
+    }
+    // The ticket already carries a pull request. Parking rather than planning is the
+    // whole point: a status field that never moved when the work landed is what offered
+    // this ticket in the first place, and the reason line quotes the pull request so a
+    // person can see what is already there.
+    if (isPlanInFlight(planned)) {
+      return writeTransition(
+        item, { ticket: planned.ticket, state: 'parked', reason: planned.reason },
+        deps, 'queue.parked', { hop: 'plan', route: 'in-flight', pr: planned.prUrl },
       );
     }
     const brief: QueuePlannedBrief = planned;

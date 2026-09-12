@@ -14,7 +14,7 @@
 import { readFileSync } from 'node:fs';
 import { deny, allow } from './types.ts';
 import type { ProposedAction, RuleVerdict } from './types.ts';
-import { readabilityVerdict, getReadabilityContractState } from '../intake/readability.ts';
+import { readabilityVerdict, getReadabilityContractState, repoNameFrom } from '../intake/readability.ts';
 
 const RULE_NAME = 'readability';
 
@@ -51,9 +51,12 @@ export function normalizeRepo(repo: string | null | undefined): string | null {
 function repoFromCommand(command: string, cwd: string): string | null {
   const flagged = argValue(command, '--repo');
   if (flagged) return normalizeRepo(flagged);
-  const segments = cwd.replace(/\\/g, '/').split('/').filter(Boolean);
-  const last = segments[segments.length - 1] ?? '';
-  return last ? last.replace(/^.*--/, '').toLowerCase() : null;
+  // `repoNameFrom` rather than a strip written here: this stripped `^.*--`, which on a
+  // worktree named `<repo>--<slug>` returns the SLUG. The slug is in no contract's
+  // `outward_repos`, so every check below went quiet for all work done in a worktree --
+  // which is where all of it is done. Found by a review on 2026-09-12, in the function
+  // whose own comment warns that a failed repo match makes every gate a no-op.
+  return repoNameFrom(cwd);
 }
 
 /** `null` when the command is not a `gh pr create|comment|edit` this rule has an

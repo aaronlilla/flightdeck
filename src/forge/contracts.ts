@@ -372,6 +372,11 @@ export const FORGE_EVENT_NAMES = [
   // is written when `/answer` closes an ask whose run names an item (`item:<id>`), never
   // for an ordinary worker ask.
   'interview.asked', 'interview.answered',
+  // A pull request opened by hand naming a ticket key: the ticket is assigned,
+  // transitioned and linked (`intake/prOpened.ts`), so the board stops offering work that
+  // already exists. `pr-opened.no-key` records a pull request that named none, and
+  // `pr-opened.failed` a write the issue tracker refused.
+  'pr-opened.assigned', 'pr-opened.transitioned', 'pr-opened.failed', 'pr-opened.no-key',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];

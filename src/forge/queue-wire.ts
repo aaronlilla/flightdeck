@@ -35,6 +35,8 @@ import { developDeployVerifier } from './intake/otaVerify.js';
 import { briefWithRoutines, loadRoutines } from './self/routines.js';
 import { routinesDir } from './paths.js';
 import { createJiraFeed, createJiraWriteClient, type JiraConfig } from './intake/jira.js';
+import { fetchIssueComments, fetchIssueRemoteLinks } from './intake/jira.js';
+import { checkTicketInFlight } from './intake/inFlight.js';
 import { runQueueHandoff } from './intake/queueHandoff.js';
 import type { PollItemDetail } from './intake/poller.js';
 import { resolvePlanProvider } from './intake/reasoner.js';
@@ -143,7 +145,16 @@ function packetFor(ticket: string, repo: string, detail: PollItemDetail | undefi
 export function queuePlanner(
   configFn: () => JiraConfig | undefined = jiraConfigFromEnv,
   chainEnv?: ChainEnv,
+  // Injected rather than reached for, so a specimen can drive the in-flight gate without
+  // a real `gh` on the machine. Referencing REAL_GH inside left this whole path untested
+  // (review, 2026-09-12), against the rule that no specimen calls it.
+  prState: GhWriter['viewPrState'] = REAL_GH.viewPrState,
 ): QueuePlanner {
+  // F.6 defect, 2026-09-12: every brief was written with `repoKind` left undefined, so a
+  // routine tagged `frontend` could never match one and a mobile worker was handed the
+  // general routines only. The kind comes from the repository map, the same declaration
+  // `chain-env.ts` already reads, never guessed from the repository's name.
+  const kindOf = (repo: string): string | undefined => (chainEnv ? declaredRepoKind(chainEnv, repo) : undefined);
   const repoRules = parseRepoMap(process.env['FORGE_INTAKE_REPO_MAP']);
   const briefsDir = queueBriefsDir();
   mkdirSync(briefsDir, { recursive: true });
@@ -182,6 +193,24 @@ export function queuePlanner(
           });
         }
       }
+      // Does this ticket already have a pull request? Asked after routing, because only a
+      // pull request in the ticket's OWN repository is a claim on it -- a URL from
+      // somewhere else is somebody else's work, and treating it as unmeasured parked the
+      // item with no way out. The status field is never asked: the status field is what
+      // lied. A ticket read Backlog, unassigned, while carrying a draft pull request
+      // opened that morning.
+      if (config) {
+        const verdict = await checkTicketInFlight(ticket, {
+          comments: (key) => fetchIssueComments(config, key),
+          remoteLinks: (key) => fetchIssueRemoteLinks(config, key),
+          stateOf: async (repoSlug, pr) => (await prState(repoSlug, pr)).prState,
+          ownRepo: repo,
+        });
+        if (!verdict.start) {
+          return { inFlight: true, ticket, prUrl: verdict.pr?.url ?? '', reason: verdict.reason };
+        }
+      }
+
       const packet = packetFor(ticket, repo, detail);
       const journal = new Journal(journalPath());
       try {
@@ -215,7 +244,7 @@ export function queuePlanner(
             });
           },
           writeBriefFile: async ({ text }: { text: string }) => ({
-            briefPath: await writeBrief(briefIdFor(packet.id, itemId), text),
+            briefPath: await writeBrief(briefIdFor(packet.id, itemId), text, kindOf(repo)),
             repo,
           }),
           append: (row: { event: string; [key: string]: unknown }) => { journal.append(row as never); },
@@ -236,7 +265,7 @@ export function queuePlanner(
       const ticket = ticketFromBrief(text) ?? id;
       const repo = repoFromBrief(text)
         ?? routeRepo(repoRules, { ticket, labels: [], components: [], issuetype: '' });
-      const briefPath = await writeBrief(id, text);
+      const briefPath = await writeBrief(id, text, kindOf(repo));
       return { ticket, repo, briefPath };
     },
 
@@ -253,6 +282,7 @@ export function queuePlanner(
         id,
         `${text}\n\nThis is a hotfix: it ships to dev on Merge and to production only on a `
           + 'separate Promote click.',
+        kindOf(repo),
       );
       return { ticket, repo, briefPath };
     },
