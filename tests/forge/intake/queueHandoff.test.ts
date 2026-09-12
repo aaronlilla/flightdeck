@@ -36,16 +36,19 @@ describe('buildQueueHandoffComment', () => {
       ticket: 'BBZ-1', prUrl: 'https://github.com/acme/app/pull/1', what: 'fixes a null check.', testPlan: [],
     });
     expect(body).not.toContain('Quick visual check:');
-    expect(body).toMatch(/nothing here was looked at on a screen/i);
+    expect(body).toMatch(/nobody has looked at this on a screen/i);
   });
 });
 
 // Item 13, 2026-09-12: the comment posted at 16:01 on 2026-09-11 told QA "No visual
 // check needed here -- this one is covered by the suite." No agent had looked at a
 // screen, and the change installed a touch handler at the app root, so every screen
-// was affected. The text is generated, so it keeps saying it.
-describe('the handoff never claims a visual check is unnecessary', () => {
-  it('names the screens a UI diff touches and says nothing was looked at', () => {
+// was affected. The first fix replaced it with "there is nothing on screen to
+// compare", which a review showed was the same unearned claim in new words.
+describe('the handoff makes no claim about the rendered result', () => {
+  const NOTHING_LOOKED = /nobody has looked at this on a screen/i;
+
+  it('names the files that render and says nobody looked', () => {
     const body = buildQueueHandoffComment({
       ticket: 'BBZ-169', prUrl: 'https://github.com/acme/app/pull/12',
       what: 'the player card drop-down closes on an outside tap.', testPlan: [],
@@ -58,10 +61,10 @@ describe('the handoff never claims a visual check is unnecessary', () => {
     expect(body).not.toContain('No visual check needed');
     expect(body).toContain('WalletScreen');
     expect(body).toContain('RewardsHomeScreen');
-    expect(body).toMatch(/nothing here was looked at on a screen/i);
+    expect(body).toMatch(NOTHING_LOOKED);
   });
 
-  it('says a root-level touch handler reaches every screen', () => {
+  it('says a root-level change reaches every screen', () => {
     const body = buildQueueHandoffComment({
       ticket: 'BBZ-169', prUrl: 'https://github.com/acme/app/pull/12',
       what: 'captures taps at the app root.', testPlan: [],
@@ -70,33 +73,87 @@ describe('the handoff never claims a visual check is unnecessary', () => {
     expect(body).toMatch(/every screen/i);
   });
 
-  it('gives the honest short form for a diff with no screens in it', () => {
+  // The review's own specimen: a colour token and a navigator repaint every screen and
+  // look like neither. Saying "nothing to compare" here is the original defect.
+  it('claims nothing about a diff whose files do not look like views', () => {
     const body = buildQueueHandoffComment({
-      ticket: 'BBZ-1', prUrl: 'https://github.com/acme/app/pull/1', what: 'fixes a null check.',
-      testPlan: [], changedFiles: ['src/forge/intake/queue.ts'],
+      ticket: 'BBZ-1', prUrl: 'https://github.com/acme/app/pull/1', what: 'new palette.',
+      testPlan: [], changedFiles: ['src/theme/colors.ts'],
     });
-    expect(body).not.toContain('No visual check needed');
-    expect(body).toMatch(/no screen changes in this diff/i);
+    expect(body).not.toMatch(/nothing (on screen )?to compare/i);
+    expect(body).not.toMatch(/no screen changes/i);
+    expect(body).toMatch(NOTHING_LOOKED);
   });
 
-  it('still carries a test plan when the brief supplied one', () => {
+  it('keeps the unverified sentence even when the brief supplied a test plan', () => {
     const body = buildQueueHandoffComment({
       ticket: 'BBZ-2', prUrl: 'https://github.com/acme/app/pull/2', what: 'timestamps in UTC.',
       testPlan: ['open transaction history', 'check the timestamps'],
-      changedFiles: ['src/features/wallet/screens/HistoryScreen.tsx'],
+      changedFiles: ['src/forge/queue.ts'],
     });
     expect(body).toContain('open transaction history');
-    expect(body).toMatch(/nothing here was looked at on a screen/i);
+    expect(body).toMatch(NOTHING_LOOKED);
   });
 
-  // Edge: the caller knows nothing about the diff. Saying a check is unnecessary is
-  // still the one thing the comment may never do.
   it('never claims a check is unnecessary when the changed files are unknown', () => {
     const body = buildQueueHandoffComment({
       ticket: 'BBZ-3', prUrl: 'https://github.com/acme/app/pull/3', what: 'something.', testPlan: [],
     });
     expect(body).not.toContain('No visual check needed');
-    expect(body).toMatch(/nothing here was looked at on a screen/i);
+    expect(body).toMatch(NOTHING_LOOKED);
+  });
+
+  // Edge: slices, barrels, types, tests and snapshots render nothing a person opens,
+  // and a list padded with them trains a reader to skim past it.
+  it('leaves slices, barrels, tests and snapshots out of the list', () => {
+    const body = buildQueueHandoffComment({
+      ticket: 'BBZ-4', prUrl: 'https://github.com/acme/app/pull/4', what: 'wallet state.',
+      testPlan: [],
+      changedFiles: [
+        'src/features/wallet/walletSlice.ts', 'src/features/wallet/index.ts',
+        'src/features/wallet/types.ts', 'src/features/wallet/WalletScreen.test.tsx',
+        'src/features/wallet/__snapshots__/WalletScreen.test.tsx.snap',
+      ],
+    });
+    expect(body).not.toContain('walletSlice');
+    expect(body).not.toContain('wallet/types');
+    expect(body).not.toContain('.test');
+  });
+
+  // Edge: two files of the same name under different features are two files.
+  it('keeps two same-named components apart', () => {
+    const body = buildQueueHandoffComment({
+      ticket: 'BBZ-5', prUrl: 'https://github.com/acme/app/pull/5', what: 'headers.', testPlan: [],
+      changedFiles: [
+        'src/features/wallet/components/Header.tsx',
+        'src/features/rewards/components/Header.tsx',
+      ],
+    });
+    expect(body).toContain('wallet/Header');
+    expect(body).toContain('rewards/Header');
+  });
+
+  // Edge: the comment is checked against a prose-word ceiling that DENIES, and a denied
+  // comment posts nothing at all -- so the biggest diffs got silence.
+  it('caps the list so a large diff still posts a comment', () => {
+    const files = Array.from({ length: 30 }, (_, i) => `src/features/f${i}/Thing${i}.tsx`);
+    const body = buildQueueHandoffComment({
+      ticket: 'BBZ-6', prUrl: 'https://github.com/acme/app/pull/6', what: 'lots.', testPlan: [],
+      changedFiles: files,
+    });
+    expect(body).toMatch(/and 22 more/);
+    expect(body).not.toContain('Thing29');
+  });
+
+  // Edge: an empty list is not proof of anything -- the file list pages at 100 and can
+  // come back empty when the JSON lacks the field.
+  it('claims nothing from an empty file list', () => {
+    const body = buildQueueHandoffComment({
+      ticket: 'BBZ-7', prUrl: 'https://github.com/acme/app/pull/7', what: 'x.', testPlan: [],
+      changedFiles: [],
+    });
+    expect(body).toMatch(NOTHING_LOOKED);
+    expect(body).not.toMatch(/nothing (on screen )?to compare/i);
   });
 });
 

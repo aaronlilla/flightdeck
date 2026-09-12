@@ -32,31 +32,59 @@ export interface QueueHandoffInput {
   changedFiles?: string[];
 }
 
-/** A path that puts something on a screen. Deliberately generous -- a false "look at
- *  this" costs a minute, and a missed one costs a defect reaching a person who was
- *  told not to look. */
-const SCREEN_PATH = /(^|[/\\])(screens?|components?|features)[/\\]|(Screen|Card|Modal|Sheet|Header|Button)\.(tsx|jsx)$/i;
-
+/**
+ * A file that renders something. Extension-gated on purpose (code review, 2026-09-12):
+ * matching any path under `features/` swept in slices, barrels, types, tests and
+ * snapshots, and a list padded with those trains a reader to skim past it.
+ */
+const VIEW_FILE = /\.(tsx|jsx)$/i;
+/** Tests and snapshots render nothing a person opens. */
+const NOT_A_VIEW = /\.(test|spec|stories)\.(tsx|jsx)$|\.snap$/i;
 /** A file every screen renders under, so a change here is not one screen's problem. */
-const APP_ROOT_PATH = /(^|[/\\])(App|AppRoot|RootNavigator|Navigation)\.(tsx|jsx)$|(^|[/\\])src[/\\]app[/\\].*\.(tsx|jsx)$/i;
+const APP_ROOT_PATH = /(^|\/)(App|AppRoot|RootNavigator|RootStack|Navigation)\.(tsx|jsx)$/i;
+/** At most this many names before the list stops being read. The comment is checked
+ *  against a prose-word ceiling that DENIES, and a denied comment posts nothing at
+ *  all -- so the biggest diffs, which most need the warning, got silence. */
+const MAX_NAMED = 8;
 
-function screenNamesIn(files: readonly string[]): string[] {
-  const names = files
-    .filter((file) => SCREEN_PATH.test(file) || APP_ROOT_PATH.test(file))
-    .map((file) => file.split(/[/\\]/).pop()!.replace(/\.(tsx|jsx|ts|js)$/i, ''));
-  return [...new Set(names)];
+/** Folder names that tell two files apart from nothing. */
+const GENERIC_DIR = /^(components?|screens?|views?|containers?|ui|src|app)$/i;
+
+/** Names in the diff that render something, deduped by full path rather than by
+ *  basename: two `Header.tsx` under different features are two files, and collapsing
+ *  them told a reader one screen changed when two did. */
+function viewNamesIn(files: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const file of files) {
+    const path = file.split('\\').join('/');
+    if (!VIEW_FILE.test(path) || NOT_A_VIEW.test(path)) continue;
+    if (seen.has(path)) continue;
+    seen.add(path);
+    const parts = path.split('/');
+    const base = parts.pop()!.replace(/\.(tsx|jsx)$/i, '');
+    // Skip the generic folder names -- `components/Header` and `components/Header`
+    // read as one file when they are two. The nearest meaningful parent is the one
+    // that tells them apart.
+    while (parts.length && GENERIC_DIR.test(parts[parts.length - 1]!)) parts.pop();
+    const parent = parts.pop();
+    names.push(parent && parent !== 'src' ? `${parent}/${base}` : base);
+  }
+  return names;
 }
 
 /**
- * Item 13, 2026-09-12. The comment posted at 16:01 on 2026-09-11 told QA "No visual
- * check needed here -- this one is covered by the suite." Nobody had looked at a
- * screen, and the change installed a touch handler at the app root, so every screen
- * was affected. The text is generated, so it kept saying it.
+ * Item 13, 2026-09-12. The comment posted at 16:01 on 2026-09-11 said "No visual check
+ * needed here -- this one is covered by the suite." Nobody had looked at a screen, and
+ * the change installed a touch handler at the app root, so every screen was affected.
+ * The text is generated, so it kept saying it.
  *
- * The comment now states what was checked and by what, states plainly that no agent
- * looked at a screen, and lists the screens the diff touches. It never says a visual
- * check is unnecessary -- that is a claim only somebody who looked can make, and no
- * agent here has.
+ * The rule this file now holds: **no sentence makes a claim about the rendered result.**
+ * A file list can say what is IN a diff. It can never say that what is missing from the
+ * list does not render -- a colour token or a navigator changes every screen and looks
+ * like neither. So the comment names what it found, says nobody looked, and asserts
+ * nothing about the rest. Rewritten after a review found the first version saying "there
+ * is nothing on screen to compare", which is the same unearned claim in new words.
  */
 export function buildQueueHandoffComment(input: QueueHandoffInput): string {
   const lines: string[] = [`Opened ${input.prUrl}.`, input.what];
@@ -65,23 +93,19 @@ export function buildQueueHandoffComment(input: QueueHandoffInput): string {
     input.testPlan.forEach((step, index) => lines.push(`${index + 1}. ${step}`));
   }
 
-  const screens = input.changedFiles ? screenNamesIn(input.changedFiles) : null;
-  const touchesRoot = (input.changedFiles ?? []).some((file) => APP_ROOT_PATH.test(file));
-
-  if (screens !== null && screens.length === 0) {
-    lines.push('The tests pass and the types are clean. No screen changes in this diff,'
-      + ' so there is nothing on screen to compare.');
-    return lines.join('\n');
+  const files = input.changedFiles ?? [];
+  if (files.some((file) => APP_ROOT_PATH.test(file.split('\\').join('/')))) {
+    lines.push('This touches the app root, so it reaches every screen.');
   }
-
-  if (touchesRoot) {
-    lines.push('This touches the app root, so it reaches every screen, not only the ones below.');
+  const names = viewNamesIn(files);
+  if (names.length) {
+    const shown = names.slice(0, MAX_NAMED).join(', ');
+    const rest = names.length - MAX_NAMED;
+    lines.push(`Files that render, in this diff: ${shown}${rest > 0 ? `, and ${rest} more` : ''}.`);
   }
-  if (screens?.length) {
-    lines.push(`Screens in this diff: ${screens.join(', ')}.`);
-  }
-  lines.push('The tests pass and the types are clean, and nothing here was looked at on a screen'
-    + ' by an agent -- so the rendered result is unverified either way.');
+  lines.push('The tests pass and the types are clean. Nobody has looked at this on a screen,'
+    + ' so the rendered result is unverified -- including anything the file list above does'
+    + ' not name.');
   return lines.join('\n');
 }
 
