@@ -89,13 +89,13 @@ import { loadPolicy, maxWallMsFor, modelFor, modelIdFor, tierOfBrief } from './p
 import { attestationCoversHead, checkHandoff, providerFor, redact, verified } from './contracts.js';
 import type { CouncilAttestation, HaipingHandoff, JoeHandoff } from './contracts.js';
 import { evaluateAction } from './rules/index.js';
-import { readParkRecord } from './parkrecord.js';
+import { clearParkRecord, readParkRecord } from './parkrecord.js';
 import { processAlive, reconcileRegistry, Registry, relaunchAbandonedGoal } from './registry.js';
 import { reasonerFor } from './reasoner-claude.js';
 import { deliverAnswer, RunInbox } from './runinbox.js';
 import { SdkEngine } from './sdkengine.js';
 import { FORGE_PORT, ForgeServer } from './server.js';
-import { Breaker, clearKillSwitch, Fleet, Lanes, readKillSwitch } from './supervisor.js';
+import { Breaker, clearKillSwitch, clearStaleBlock, Fleet, Lanes, readKillSwitch } from './supervisor.js';
 import { WardenActuator } from './warden.js';
 import { DriftCadenceTracker, WardenTick, type WardenTickRun } from './warden-tick.js';
 import { renderToolCall } from './tool-target.js';
@@ -1094,6 +1094,25 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         };
       }
 
+      if (breaker.blocked(slug)) {
+        // Item 6 (2026-09-11): a warden reading about a process that is now gone is
+        // history, not a reason to refuse the next launch. `clearStaleBlock` drops only
+        // those, only while no process is alive for the run, and journals what it
+        // dropped; every other block (the zero-turn-start streak above all) still stands
+        // and still needs a person.
+        const blockJournal = new Journal(journalPath());
+        try {
+          clearStaleBlock(slug, {
+            lanes, breaker, append: (row) => { blockJournal.append(row); }, clearPark: clearParkRecord,
+            runAlive: (key) => {
+              const row = new Registry(registryDir()).get(key);
+              return Boolean(row && processAlive(row.pid));
+            },
+          });
+        } finally {
+          blockJournal.close();
+        }
+      }
       if (breaker.blocked(slug)) {
         return {
           code: 1,

@@ -269,6 +269,10 @@ export const FORGE_EVENT_NAMES = [
   // for a hop that threw outright, `queue.review` once a draft PR exists, and
   // `queue.tick-error` for a worker tick that threw before any item advanced.
   'queue.planning', 'queue.planned', 'queue.launched', 'queue.parked', 'queue.failed',
+  // Phase A of the pipeline-hardening brief (2026-09-11): every decision the recovery
+  // pass and the relaunch guard make is journalled, so each one is a literal here.
+  'queue.recovered', 'queue.recovery-held', 'queue.recovery-declined', 'queue.relaunch-refused',
+  'lane.block-cleared',
   'queue.review', 'queue.tick-error',
   // R-81: `queue.tick-complete` is the row a pass writes about itself, at most once a
   // minute, carrying how many items it considered. It exists because a held item

@@ -19,7 +19,7 @@
  * do" and never as "did not look".
  */
 import type { Blocker, Lane, QueueItem } from '../shared/console-model.js';
-import { removeItem, retryItem } from './intake/queue.js';
+import { isWaitingOnInterview, removeItem, retryItem } from './intake/queue.js';
 import type { QueueStore } from './intake/queueStore.js';
 
 export type RoundsKind =
@@ -186,6 +186,15 @@ export function planRounds(input: RoundsInput): RoundsSheet {
       }
       if (openQuestion) {
         findings.push(askFinding(item, lane, { key: openQuestion.id.replace(/^question:/, ''), text: openQuestion.title }, label));
+        continue;
+      }
+      // Item 3 (2026-09-11): an item held on an interview answer has no lane and no
+      // Blocker -- an interview ask registers none -- so the dead-worker branch below
+      // read it as a worker that died and relaunched it. It fired on the player-card
+      // ticket during the 2026-09-11 run. `isWaitingOnInterview` is the queue's own
+      // predicate, read rather than a string match here, so the two can never drift.
+      if (isWaitingOnInterview(item)) {
+        waiting.push({ itemId: item.id, label, on: 'an answer to its planning questions' });
         continue;
       }
       const sinceUpdate = now - item.updatedAt;

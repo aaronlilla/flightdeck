@@ -39,7 +39,8 @@ import { resolvePlanProvider } from './intake/reasoner.js';
 import { parseRepoMap, routeRepo, repoFromBrief, ticketFromBrief } from './intake/repoRoute.js';
 import { Journal } from './journal.js';
 import { loadPolicy } from './policy.js';
-import { inboxDir, interviewRecordsDir, queueBriefsDir, journalPath, killSwitchPath } from './paths.js';
+import { inboxDir, interviewRecordsDir, queueBriefsDir, journalPath, killSwitchPath, registryDir } from './paths.js';
+import { processAlive, Registry } from './registry.js';
 import { reasonerFor } from './reasoner-claude.js';
 import { readKillSwitch } from './supervisor.js';
 import { readQueuePaused } from './console/queue-pause.js';
@@ -511,6 +512,23 @@ export function buildQueueRuntimeDeps(
       });
       if (!result.ok) throw new Error('gh could not read the PR');
       return Boolean((JSON.parse(result.full ?? result.tail) as { mergedAt?: string | null }).mergedAt);
+    },
+    // Item 1 (2026-09-11): the same `gh pr view` read the self loop already uses for its
+    // own merge decision. A throw is an unreadable sensor, never a green check, so it
+    // answers undefined and the recovery pass holds the item.
+    checksConclusion: async (repo, pr) => {
+      try {
+        return (await REAL_GH.viewPr(repo, pr)).checks.conclusion;
+      } catch {
+        return undefined;
+      }
+    },
+    // Items 1 and 2: the registry row's pid, and only when that process is actually
+    // alive. `hasRunRegistered` is not this question -- it answers "did this run ever
+    // start", which stays true for a run that died an hour ago.
+    runPid: (runKey) => {
+      const row = new Registry(registryDir()).get(runKey);
+      return row && processAlive(row.pid) ? row.pid : undefined;
     },
   };
 }

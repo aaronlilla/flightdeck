@@ -14,6 +14,48 @@
  * what actually exits the process with code 75 so the supervising loop restarts it. This
  * file never kills a worker and never touches a run in flight.
  */
+import type { QueueItem, QueueItemState } from '../../shared/console-model.js';
+
+/**
+ * Item 5 (2026-09-11): the fleet states that must block a cutover. Deliberately WIDER
+ * than `QUEUE_IN_FLIGHT_STATES`, which answers a different question -- how many items the
+ * queue may work at once. `review` is the one state where a PERSON is being waited on,
+ * and restarting under a pending merge click is the loss this guards.
+ *
+ * Of the two shapes the brief offered -- count `review` as in flight, or refuse a
+ * cutover while any confirm is pending -- this is the first, because it does not depend
+ * on a confirm having been minted yet: the click that gets voided is often one that has
+ * not been made. The cost is that a row left at `review` delays a self-restart until it
+ * is merged or removed, which is a delay, never lost work.
+ */
+// Spelled out rather than imported from `intake/queue.ts`: that module pulls in the
+// whole intake graph, and importing it here closes a cycle that leaves this constant
+// undefined at module load. `tests/forge/cutover-review.test.ts` pins it against
+// `QUEUE_IN_FLIGHT_STATES` so the two cannot drift apart unnoticed.
+export const CUTOVER_BLOCKING_STATES: readonly QueueItemState[] = ['planning', 'running', 'review'];
+
+/**
+ * How long a row at `review` holds a cutover back. The block exists to protect one thing:
+ * a merge confirm the operator has not clicked yet. Those tokens live two hours
+ * (`console/command.ts` `CONFIRM_TTL_MS`), so past that there is no click left to void,
+ * and holding a restart forever would stop the console taking its own fixes for as long
+ * as one row sits in review -- which, with the self-merge switch off, is indefinitely.
+ */
+export const REVIEW_BLOCKS_CUTOVER_MS = 2 * 60 * 60_000;
+
+/** Whether nothing on the board would lose anything if the process restarted now. */
+export function cutoverIdle(input: { items: QueueItem[]; queueBusy: boolean; now?: number }): boolean {
+  if (input.queueBusy) return false;
+  const now = input.now ?? Date.now();
+  return !input.items.some((item) => {
+    if (!CUTOVER_BLOCKING_STATES.includes(item.state)) return false;
+    // Only `review` is time-bounded. `planning` and `running` are work in flight however
+    // long they have taken, and a restart under either loses it.
+    if (item.state !== 'review') return true;
+    return now - item.updatedAt < REVIEW_BLOCKS_CUTOVER_MS;
+  });
+}
+
 export interface CutoverCheckoutGit {
   /** `git fetch`, run before every comparison so a stale local ref (this machine has
    *  not fetched in a while) never reads as "nothing moved". */
