@@ -406,6 +406,22 @@ describe('item 1: a parked item recovers on its own when the park reason was tra
     expect(store.get(item.id)!.pendingGatePolls ?? 0).toBe(0);
   });
 
+  it('lets a machine retry say something new, because the row markers are not budgets', async () => {
+    // `recoveryHeldOn` and the decline marker answer "have I already written this row",
+    // not "how much budget is left". Gating them behind a person's click meant a machine
+    // retry carried the previous park's markers forward and the next row was suppressed --
+    // the silent branch this pass promises not to have.
+    const store = tempStore();
+    const item = parkedItem(store, 'stopped', { runKey: 'abc-1' });
+    store.append({ id: item.id, at: 1_000, recoveryHeldOn: 'run still alive (pid 4242)', recoveryDeclinedFor: 'stopped' });
+
+    retryItem(store, item.id, 2_000);
+
+    const row = store.get(item.id)!;
+    expect(row.recoveryHeldOn ?? null).toBeNull();
+    expect(row.recoveryDeclinedFor ?? null).toBeNull();
+  });
+
   it('does not hand the budgets back to a machine retry, which would make the caps unreachable', async () => {
     // `retryItem` is the sweep's path as well as a person's. Resetting the read budget on
     // every automatic retry means: retry, spend twenty GitHub reads, park, retry, twenty
@@ -419,28 +435,17 @@ describe('item 1: a parked item recovers on its own when the park reason was tra
     expect(store.get(item.id)!.checksReads).toBe(20);
   });
 
-  it('recovers a file overlap on its own once the item holding those files is done', async () => {
-    // The overlap park is the one park that clears itself. It belongs in this pass, which
-    // is bounded and costs no network call, rather than in a sweep that retries forever.
+  it('leaves a file overlap for a person, whatever the other item is doing', async () => {
+    // Reading "has the holder released these files" off the store looked cheap and was
+    // not: a parked holder still owns its worktree and its file list, the reason string
+    // is matched by a regex that fails OPEN when it misses, one ticket key can name two
+    // live items, and when a hot file's queue drains every item behind it unparks on one
+    // tick. Four separate ways to unpark an item onto files somebody else is editing.
+    // The park costs a click; getting it wrong costs two workers on one tree.
     const store = tempStore();
     const holder = addTicketItem(store, 'ABC-HOLD', 900);
     store.append({
       id: holder.id, at: 900, updatedAt: 900, state: 'done', repo: 'owner/name',
-      ticket: 'ABC-HOLD', changedFiles: ['src/a.ts'],
-    });
-    const item = parkedItem(store, `overlaps ${holder.id} on src/a.ts`);
-    const { deps } = buildDeps(store);
-
-    await runQueueTick(deps, store.all());
-
-    expect(store.get(item.id)!.state).not.toBe('parked');
-  });
-
-  it('leaves a file overlap parked while the other item is still holding those files', async () => {
-    const store = tempStore();
-    const holder = addTicketItem(store, 'ABC-HOLD', 900);
-    store.append({
-      id: holder.id, at: 900, updatedAt: 900, state: 'running', repo: 'owner/name',
       ticket: 'ABC-HOLD', changedFiles: ['src/a.ts'],
     });
     const item = parkedItem(store, `overlaps ${holder.id} on src/a.ts`);
@@ -449,7 +454,17 @@ describe('item 1: a parked item recovers on its own when the park reason was tra
     await runQueueTick(deps, store.all());
 
     expect(store.get(item.id)!.state).toBe('parked');
-    expect(events.find((e) => e['event'] === 'queue.recovery-held')).toMatchObject({ reRead: 'overlap' });
+    expect(String(events.find((e) => e['event'] === 'queue.recovery-declined')?.['why'] ?? '')).toMatch(/files/i);
+  });
+
+  it('does not unpark an overlap whose reason it cannot parse, which is how a fail-open reads', async () => {
+    const store = tempStore();
+    const item = parkedItem(store, 'overlaps  on src/a.ts');
+    const { deps } = buildDeps(store);
+
+    await runQueueTick(deps, store.all());
+
+    expect(store.get(item.id)!.state).toBe('parked');
   });
 
   it('gives the read budget back when a person retries the item', async () => {

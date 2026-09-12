@@ -299,14 +299,11 @@ export function planRounds(input: RoundsInput): RoundsSheet {
       // reason nobody classified -- a failed launch's error tail, say -- still gets the
       // retry it always got, because refusing it here would make a network blip a
       // human's job for good with no second automatic path.
-      // A park the queue's own recovery pass re-reads off its store -- a file overlap --
-      // is left to it entirely. Retrying it here runs on a ticker and would flip the item
-      // to running and back on every tick while the other item still holds those files.
-      if (!transientReason && recoverable.recoverable && recoverable.reRead === 'overlap' && !resolved.length) {
-        waiting.push({ itemId: item.id, label, on: `${item.reason ?? 'an overlap'}; the queue clears this one itself` });
-        continue;
-      }
-      if (!transientReason && !recoverable.recoverable && recoverable.personsCall && !resolved.length) {
+      // No `resolved.length` exemption: a resolved blocker stays on the board for the
+      // rest of the day, and letting it wave the guard through meant every item that was
+      // ever blocked and unblocked fell back to an automatic retry of a park the queue
+      // refuses on purpose.
+      if (!transientReason && !recoverable.recoverable && recoverable.personsCall) {
         findings.push({
           kind: 'unblocked', action: 'judge', itemId: item.id, laneId: lane?.id ?? null, label,
           why: `parked on "${item.reason ?? 'no reason'}": ${recoverable.why}`,

@@ -81,7 +81,7 @@ export const PARK_CHECKS_RECHECK_CAP = 20;
 /** What re-reading would have to say before a parked item may move again. `checks` means
  *  the park is about a pull request's checks; `run` means it is about a worker process
  *  that may or may not still be alive. */
-export type ParkRecheck = 'checks' | 'run' | 'overlap';
+export type ParkRecheck = 'checks' | 'run';
 
 export type ParkRecoverability =
   | { recoverable: true; reRead: ParkRecheck }
@@ -105,12 +105,16 @@ export function parkRecoverability(reason: string | null | undefined): ParkRecov
   }
   if (/^unrouted$/i.test(text)) return { recoverable: false, why: 'nothing routed the ticket to a repository', personsCall: true };
   if (/^backend:/i.test(text)) return { recoverable: false, why: 'the ticket was handed to the backend', personsCall: true };
-  // The one park that clears itself: it ends the moment the item holding those files is
-  // done. That is a question this pass can answer off its own store, for free, under the
-  // same attempt cap -- which is where it belongs. The board sweep must NOT retry it,
-  // because that path runs on a ticker and would flip the item to running and back on
-  // every tick for as long as the other item held the files.
-  if (/^overlaps /i.test(text)) return { recoverable: true, reRead: 'overlap' };
+  // A person's call, after trying twice to make it automatic (2026-09-11). Reading "has
+  // the holder released these files" off the store looked free and was not: a PARKED
+  // holder still owns its worktree and its file list; the reason is matched by a regex
+  // that unparked the item when it MISSED; one ticket key can name two live items, so the
+  // wrong row can answer; and when a hot file's queue drains, every item behind it unparks
+  // on one tick and takes the width with it. The park costs a click. Getting it wrong puts
+  // two workers on one working tree, which is the thing this park exists to prevent.
+  if (/^overlaps /i.test(text)) {
+    return { recoverable: false, why: 'another item holds the same files', personsCall: true };
+  }
   if (/checks (never settled|are pending)/i.test(text)) return { recoverable: true, reRead: 'checks' };
   // Every run verdict `relaunchOnRetryOrPark` passes through (`stopped`, `exhausted`,
   // `parked`, `unknown`) plus the launcher's own stale-liveness refusal: all of them are
@@ -348,14 +352,15 @@ export function retryItem(
   // reason it has already written once.
   const patch: Partial<QueueItem> = {
     state, reason: null, updatedAt: now,
-    // `pendingGatePolls` belongs to this list too: leaving it at its cap means the retry
-    // re-enters the gate, spends a real council round, and parks again on the first pass.
-    ...(opts.askedByAPerson
-      ? {
-        recoveryAttempts: 0, recoveryHeldOn: null, recoveryDeclinedFor: null,
-        recoveryWidthHeld: false, checksReads: 0, checksReadAt: 0, pendingGatePolls: 0,
-      }
-      : {}),
+    // Always cleared: these three answer "have I already written this row", not "how much
+    // budget is left". Carrying them across a retry suppresses the next row about the next
+    // park, which is the silent branch `recoverParkedItems` promises not to have.
+    recoveryHeldOn: null, recoveryDeclinedFor: null, recoveryWidthHeld: false,
+    // Cleared only for a person. These three are budgets, and `retryItem` is the board
+    // sweep's path as well as a button: handing them back on every automatic retry makes
+    // every cap here unreachable. `pendingGatePolls` belongs with them -- left at its cap,
+    // the retry re-enters the gate, spends a real review round, and parks on the first pass.
+    ...(opts.askedByAPerson ? { recoveryAttempts: 0, checksReads: 0, checksReadAt: 0, pendingGatePolls: 0 } : {}),
     ...(item.runKey ? { retriedAt: now } : {}),
   };
   store.append({ id, at: now, ...patch });
@@ -1173,16 +1178,6 @@ async function recoverParkedItems(deps: QueueRuntimeDeps, items: QueueItem[], sl
         // whole branch dead in production while the specimen stayed green.
         clear = found.toLowerCase() === 'success';
       }
-    } else if (verdict.reRead === 'overlap') {
-      // The reason names the item holding the files. Still holding means still in a state
-      // that can be writing to them; anything else (done, removed, parked) releases them.
-      const holder = /^overlaps (\S+) on /i.exec(reason)?.[1];
-      const row = holder
-        ? deps.store.all().find((other) => other.id === holder || other.ticket === holder)
-        : undefined;
-      const holding = row !== undefined && (row.state === 'running' || row.state === 'review');
-      found = holding ? `${holder} still holds those files` : 'the other item released those files';
-      clear = !holding;
     } else if (!deps.runPid) {
       found = 'no liveness reader wired';
     } else {
