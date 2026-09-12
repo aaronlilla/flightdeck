@@ -193,6 +193,60 @@ describe('the handoff makes no claim about the rendered result', () => {
     expect(body).toMatch(/adds, changes or removes/i);
   });
 
+  // Found by code review, 2026-09-12: the closing clause pointed at a list that is
+  // only printed when something in the diff renders. Most of what the queue ships is
+  // backend or plain TypeScript, which names nothing.
+  it('does not refer to a list it did not print', () => {
+    const body = buildQueueHandoffComment({
+      ticket: 'BBZ-12', prUrl: 'https://github.com/acme/app/pull/12', what: 'a null check.',
+      testPlan: [], changedFiles: ['src/forge/intake/queue.ts'],
+    });
+    expect(body).not.toMatch(/list above/i);
+    expect(body).toMatch(/nobody has looked at this on a screen/i);
+  });
+
+  // Found by code review, 2026-09-12: matching a bare Navigation file anywhere, or any
+  // directory named navigation, claimed "reaches every screen" for one feature's own
+  // nav file -- the same false claim this file removes.
+  it.each([
+    'src/features/wallet/Navigation.tsx',
+    'src/components/ui/navigation/Tabs.tsx',
+  ])('does not call %s the app root', (file) => {
+    const body = buildQueueHandoffComment({
+      ticket: 'BBZ-13', prUrl: 'https://github.com/acme/app/pull/13', what: 'x.', testPlan: [],
+      changedFiles: [file],
+    });
+    expect(body).not.toMatch(/every screen/i);
+  });
+
+  // Found by code review, 2026-09-12: stripping the generic segment could collapse two
+  // paths the full path had told apart, so the list printed the same name twice.
+  it('keeps two files apart when stripping the generic folder would collide them', () => {
+    const body = buildQueueHandoffComment({
+      ticket: 'BBZ-14', prUrl: 'https://github.com/acme/app/pull/14', what: 'x.', testPlan: [],
+      changedFiles: [
+        'src/features/wallet/components/Header.tsx',
+        'src/features/wallet/screens/Header.tsx',
+      ],
+    });
+    const matches = body.match(/`[^`]*Header`/g) ?? [];
+    expect(matches).toHaveLength(2);
+    expect(new Set(matches).size).toBe(2);
+  });
+
+  // Found by code review, 2026-09-12: a render helper is not a screen.
+  it('leaves render helpers under __tests__ and test-utils out', () => {
+    const body = buildQueueHandoffComment({
+      ticket: 'BBZ-15', prUrl: 'https://github.com/acme/app/pull/15', what: 'x.', testPlan: [],
+      changedFiles: [
+        'src/features/wallet/__tests__/renderWallet.tsx',
+        'src/test-utils/renderWithStore.tsx',
+      ],
+    });
+    expect(body).not.toContain('renderWallet');
+    expect(body).not.toContain('renderWithStore');
+  });
+
   // Edge: an empty list is not proof of anything -- the file list pages at 100 and can
   // come back empty when the JSON lacks the field.
   it('claims nothing from an empty file list', () => {

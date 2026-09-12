@@ -31,7 +31,6 @@ export interface QueueHandoffInput {
    *  see". It includes deletions and renames, which is why the heading below says
    *  "adds, changes or removes" rather than promising each file still exists. */
   changedFiles?: string[];
-
 }
 
 /**
@@ -41,9 +40,13 @@ export interface QueueHandoffInput {
  */
 const VIEW_FILE = /\.(tsx|jsx)$/i;
 /** Tests and snapshots render nothing a person opens. */
-const NOT_A_VIEW = /\.(test|spec|stories)\.(tsx|jsx)$|\.snap$/i;
-/** A file every screen renders under, so a change here is not one screen's problem. */
-const APP_ROOT_PATH = /(^|\/)(App|AppRoot|RootNavigator|RootStack|Navigation)\.(tsx|jsx)$|(^|\/)navigation\/[^/]+\.(tsx|jsx)$|(^|\/)(MainStack|MainTabs|AuthStack|CustomTabBar)\.(tsx|jsx)$/i;
+const NOT_A_VIEW = /\.(test|spec|stories)\.(tsx|jsx)$|\.snap$|(^|\/)(__tests__|__mocks__|test-utils)\//i;
+/** A file every screen renders under, so a change here is not one screen's problem.
+ *  Anchored to the repository root (code review, 2026-09-12): matching a bare
+ *  `Navigation.tsx` or any directory named `navigation` anywhere claimed "this
+ *  reaches every screen" for one feature's own nav file, which is the same kind of
+ *  false claim this file exists to remove. */
+const APP_ROOT_PATH = /^(src\/)?(app\/)?(App|AppRoot|RootNavigator|RootStack)\.(tsx|jsx)$|^(src\/)?navigation\/[^/]+\.(tsx|jsx)$/i;
 /** At most this many names before the list stops being read. The comment is checked
  *  against a prose-word ceiling that DENIES, and a denied comment posts nothing at
  *  all -- so the biggest diffs, which most need the warning, got silence. */
@@ -57,6 +60,7 @@ const GENERIC_DIR = /^(components?|screens?|views?|containers?|ui|src|app)$/i;
  *  them told a reader one screen changed when two did. */
 function viewNamesIn(files: readonly string[]): string[] {
   const seen = new Set<string>();
+  const taken = new Set<string>();
   const names: string[] = [];
   for (const file of files) {
     const path = file.split('\\').join('/');
@@ -65,15 +69,24 @@ function viewNamesIn(files: readonly string[]): string[] {
     seen.add(path);
     const parts = path.split('/');
     const base = parts.pop()!.replace(/\.(tsx|jsx)$/i, '');
-    // Skip the generic folder names -- `components/Header` and `components/Header`
-    // read as one file when they are two. The nearest meaningful parent is the one
-    // that tells them apart.
-    while (parts.length && GENERIC_DIR.test(parts[parts.length - 1]!)) parts.pop();
-    const parent = parts.pop();
+    // Skip the generic folder names -- `components/Header` and `screens/Header` read
+    // as one file when they are two. Then widen back out until the rendered name is
+    // unique: stripping a generic segment could collapse two paths the full path had
+    // told apart, and the list then printed the same name twice (code review,
+    // 2026-09-12).
+    const meaningful = [...parts];
+    while (meaningful.length && GENERIC_DIR.test(meaningful[meaningful.length - 1]!)) meaningful.pop();
+    let rendered = meaningful.length ? `${meaningful[meaningful.length - 1]}/${base}` : base;
+    let depth = 1;
+    while (taken.has(rendered) && depth < parts.length) {
+      depth += 1;
+      rendered = `${parts.slice(-depth).join('/')}/${base}`;
+    }
+    taken.add(rendered);
     // Backticked: the readability contract counts prose words and scans them for
     // banned words, so a path segment could deny the whole comment and post nothing
     // at all. Code in backticks is exempt from both (code review, 2026-09-12).
-    names.push(parent && parent !== 'src' ? `\`${parent}/${base}\`` : `\`${base}\``);
+    names.push(`\`${rendered}\``);
   }
   return names;
 }
@@ -106,7 +119,7 @@ export function buildQueueHandoffComment(input: QueueHandoffInput): string {
   if (names.length) {
     const shown = names.slice(0, MAX_NAMED).join(', ');
     const rest = names.length - MAX_NAMED;
-        // "adds, changes or removes", never "files that render": the list comes from the
+    // "adds, changes or removes", never "files that render": the list comes from the
     // pull request's own file list, which includes deletions, and pointing somebody at
     // a screen that no longer exists wastes the look (code review, 2026-09-12).
     lines.push(`Screens this diff adds, changes or removes: ${shown}${rest > 0 ? `, and ${rest} more` : ''}.`);
@@ -117,8 +130,13 @@ export function buildQueueHandoffComment(input: QueueHandoffInput): string {
   // repo whose only green check is a build would have had the same sentence written
   // about it (code review, 2026-09-12). Removing an unearned claim and adding one a
   // line below it is the same defect twice.
-  lines.push('Nobody has looked at this on a screen, so the rendered result is unverified'
-    + ' -- including anything the file list above does not name.');
+  // The clause about the list is only true when a list was printed (code review,
+  // 2026-09-12). Most of what the queue ships is backend or plain TypeScript, which
+  // names nothing, and the sentence then pointed at a list that was never there.
+  lines.push(names.length
+    ? 'Nobody has looked at this on a screen, so the rendered result is unverified'
+      + ' -- including anything the list above does not name.'
+    : 'Nobody has looked at this on a screen, so the rendered result is unverified.');
   return lines.join('\n');
 }
 
