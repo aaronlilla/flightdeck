@@ -32,7 +32,7 @@ import { scoutAnswer } from './intake/scout.js';
 import { Inbox } from './inbox.js';
 import { gitSquashMergeToBase, type GitRunFn } from './intake/gitMerge.js';
 import { developDeployVerifier } from './intake/otaVerify.js';
-import { appendRoutinesSection, loadRoutines, matchRoutines } from './self/routines.js';
+import { briefWithRoutines, loadRoutines } from './self/routines.js';
 import { routinesDir } from './paths.js';
 import { createJiraFeed, createJiraWriteClient, type JiraConfig } from './intake/jira.js';
 import { runQueueHandoff } from './intake/queueHandoff.js';
@@ -154,9 +154,7 @@ export function queuePlanner(
   const routines = loadRoutines(routinesDir());
   async function writeBrief(id: string, text: string, repoKind?: string): Promise<string> {
     const path = join(briefsDir, `${id.replace(/[^A-Za-z0-9._-]/g, '_')}.md`);
-    const keywords = [...new Set(text.toLowerCase().match(/[a-z][a-z0-9-]{2,}/g) ?? [])];
-    const matched = matchRoutines({ ...(repoKind ? { repoKind } : {}), keywords: ['general', ...keywords] }, routines);
-    writeFileSync(path, appendRoutinesSection(text, matched), 'utf8');
+    writeFileSync(path, briefWithRoutines(text, routines, repoKind), 'utf8');
     return path;
   }
 
