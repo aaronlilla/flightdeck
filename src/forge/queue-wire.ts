@@ -15,7 +15,9 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { chainCouncil, chainGate, chainGh, chainRebase, chainLauncher, chainLaunchGoal } from './chain-wire.js';
-import { checkoutFor, repoKindFor as repoKindForEnv, type ChainEnv } from './chain-env.js';
+import {
+  checkoutFor, declaredRepoKind, repoKindFor as repoKindForEnv, type ChainEnv,
+} from './chain-env.js';
 import type { CliResult, ForgeDeps } from './cli.js';
 import { autoMergeAllowed } from './council/risk.js';
 import { conclusionOf, countAddDel, guardedCommentPr, REAL_GH, type GhWriter } from './council/gh.js';
@@ -536,6 +538,7 @@ export function buildQueueRuntimeDeps(
     mergeCheckRepos: chainEnv.checkouts.map((entry) => entry.repo),
     backendHandoff: queueBackendHandoff(),
     jiraHandoff: queueJiraHandoff(),
+    declaredRepoKindFor: (repo) => declaredRepoKind(chainEnv, repo),
     readyPrWithPrediction: queueReadyPrWithPrediction(),
     prSnapshot: queuePrSnapshot(),
     // BBZ, 2026-09-08: read fresh every tick (`autoMergeAllowed` re-reads

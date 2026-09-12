@@ -430,6 +430,10 @@ export interface QueueRuntimeDeps {
    *  and the pull request stays a draft exactly as before. A refusal is journalled
    *  (`queue.pr-ready-failed`) rather than swallowed: a pull request nobody can merge
    *  because it is still a draft is the stall this item exists to remove. */
+  /** Item 16, 2026-09-12: the kind this repo DECLARES, or undefined for one that
+   *  declares none. Distinct from `repoKindFor`, which defaults to `frontend`. Absent
+   *  means no repo declares a kind, so no pull request gets a ship prediction. */
+  declaredRepoKindFor?: (repo: string) => 'backend' | 'frontend' | undefined;
   readyPrWithPrediction?: (input: {
     item: QueueItem; pr: { no: number; url: string }; prediction: string;
   }) => Promise<{ readied: boolean; predictionError?: string } | void>;
@@ -1004,11 +1008,12 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
   // hand a backend owner a pull request the queue had already made mergeable (code
   // review, 2026-09-12). The mobile prediction is meaningless on those repos anyway.
   let readied = false;
-  // An explicit frontend kind, never the default (code review, 2026-09-12).
-  // `repoKindFor` answers `frontend` for any repo with no entry of its own, including
-  // this queue's own repository, so the permissive reading put an Android and iOS ship
-  // path into the body of a pull request on a Node repo with no mobile build at all.
-  const frontendRepo = deps.repoKindFor !== undefined && deps.repoKindFor(item.repo!) === 'frontend';
+  // A DECLARED frontend kind (code review, 2026-09-12). `repoKindFor` answers
+  // `frontend` for any repo with no entry of its own -- it means "not backend", not
+  // "this builds a mobile app" -- so reading it here put an Android and iOS ship path
+  // into the body of a pull request on a Node repository with no mobile build at all,
+  // this queue's own repository included.
+  const frontendRepo = deps.declaredRepoKindFor?.(item.repo!) === 'frontend';
   if (deps.readyPrWithPrediction && item.repo && frontendRepo) {
     const prediction = renderShipPrediction(shipPredictionFor(item.changedFiles ?? []));
     try {

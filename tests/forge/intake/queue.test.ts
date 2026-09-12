@@ -1073,7 +1073,7 @@ describe('backend path: A.4', () => {
       launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
       council: async () => ({ verdict: 'PASS' }),
     });
-    deps.repoKindFor = () => 'frontend';
+    deps.declaredRepoKindFor = () => 'frontend';
     deps.backendHandoff = async () => { calls += 1; };
 
     let current = item;
@@ -1137,7 +1137,7 @@ describe('Jira write-back at review: A.3', () => {
       council: async () => ({ verdict: 'PASS' }),
     });
     deps.prSnapshot = async () => ({ files: ['android/app/build.gradle', 'src/app/store.ts'], add: 3, del: 1 });
-    deps.repoKindFor = () => 'frontend';
+    deps.declaredRepoKindFor = () => 'frontend';
     deps.readyPrWithPrediction = async (input) => { calls.push({ pr: input.pr.no, prediction: input.prediction }); };
 
     let current = item;
@@ -1160,7 +1160,7 @@ describe('Jira write-back at review: A.3', () => {
       council: async () => ({ verdict: 'PASS' }),
     });
     deps.prSnapshot = async () => ({ files: ['src/app/store.ts'], add: 1, del: 0 });
-    deps.repoKindFor = () => 'frontend';
+    deps.declaredRepoKindFor = () => 'frontend';
     deps.readyPrWithPrediction = async () => { throw new Error('gh: draft conversion refused'); };
 
     let current = item;
@@ -1187,6 +1187,10 @@ describe('Jira write-back at review: A.3', () => {
       council: async () => ({ verdict: 'PASS' }),
     });
     deps.prSnapshot = async () => ({ files: ['src/app/store.ts'], add: 1, del: 0 });
+    // Wired the way production wires it: `repoKindFor` answers `frontend` for any repo
+    // with no entry of its own, so a guard reading THAT would fire here. The guard
+    // reads the declared kind, which this repo has none of.
+    deps.repoKindFor = () => 'frontend';
     deps.readyPrWithPrediction = async () => { called = true; };
 
     let current = item;
