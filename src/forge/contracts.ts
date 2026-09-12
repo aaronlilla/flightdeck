@@ -281,6 +281,10 @@ export const FORGE_EVENT_NAMES = [
   // The pull request was readied but the prediction could not be written into its
   // body. Kept apart from the row above so neither claims the other's failure.
   'queue.pr-prediction-failed',
+  // The repo builds no mobile app, so there is no ship path to predict and the
+  // pull request is left alone. Journaled because a silent skip is how a feature
+  // that never runs looks exactly like one that does.
+  'queue.pr-ready-skipped',
   // R-81: `queue.tick-complete` is the row a pass writes about itself, at most once a
   // minute, carrying how many items it considered. It exists because a held item
   // deliberately writes no row of its own, so without this the journal cannot tell a

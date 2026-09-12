@@ -1137,7 +1137,7 @@ describe('Jira write-back at review: A.3', () => {
       council: async () => ({ verdict: 'PASS' }),
     });
     deps.prSnapshot = async () => ({ files: ['android/app/build.gradle', 'src/app/store.ts'], add: 3, del: 1 });
-    deps.declaredRepoKindFor = () => 'frontend';
+    deps.mobileRepo = () => true;
     deps.readyPrWithPrediction = async (input) => {
       calls.push({ pr: input.pr.no, prediction: input.prediction });
       return { readied: true };
@@ -1163,7 +1163,7 @@ describe('Jira write-back at review: A.3', () => {
       council: async () => ({ verdict: 'PASS' }),
     });
     deps.prSnapshot = async () => ({ files: ['src/app/store.ts'], add: 1, del: 0 });
-    deps.declaredRepoKindFor = () => 'frontend';
+    deps.mobileRepo = () => true;
     deps.readyPrWithPrediction = async () => { throw new Error('gh: draft conversion refused'); };
 
     let current = item;
@@ -1181,19 +1181,20 @@ describe('Jira write-back at review: A.3', () => {
   // Found by code review, 2026-09-12: `repoKindFor` answers `frontend` for any repo
   // with no entry of its own, so the permissive reading put an Android and iOS ship
   // path into a pull request on a Node repo with no mobile build at all.
-  it('leaves a repo with no declared kind alone', async () => {
+  it('leaves a repo with no mobile build alone, and journals the skip', async () => {
     const store = tempStore();
     const item = addTicketItem(store, 'BBZ-226', 1000);
     let called = false;
-    const { deps } = buildDeps(store, {
+    const { deps, events } = buildDeps(store, {
       launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
       council: async () => ({ verdict: 'PASS' }),
     });
     deps.prSnapshot = async () => ({ files: ['src/app/store.ts'], add: 1, del: 0 });
     // Wired the way production wires it: `repoKindFor` answers `frontend` for any repo
     // with no entry of its own, so a guard reading THAT would fire here. The guard
-    // reads the declared kind, which this repo has none of.
+    // reads whether the repo has a mobile build, which this one does not.
     deps.repoKindFor = () => 'frontend';
+    deps.mobileRepo = () => false;
     deps.readyPrWithPrediction = async () => { called = true; };
 
     let current = item;
@@ -1204,6 +1205,8 @@ describe('Jira write-back at review: A.3', () => {
     expect(current.state).toBe('review');
     expect(called).toBe(false);
     expect(current.pr?.draft).toBe(true);
+    // A silent skip is how a feature that never runs looks exactly like one that does.
+    expect(events.find((row) => row['event'] === 'queue.pr-ready-skipped')).toBeDefined();
   });
 
   it('a failing handoff never keeps the item off review, and leaves handoffAt unset', async () => {

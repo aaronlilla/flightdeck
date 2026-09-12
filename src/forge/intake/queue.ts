@@ -430,10 +430,13 @@ export interface QueueRuntimeDeps {
    *  and the pull request stays a draft exactly as before. A refusal is journalled
    *  (`queue.pr-ready-failed`) rather than swallowed: a pull request nobody can merge
    *  because it is still a draft is the stall this item exists to remove. */
-  /** Item 16, 2026-09-12: the kind this repo DECLARES, or undefined for one that
-   *  declares none. Distinct from `repoKindFor`, which defaults to `frontend`. Absent
-   *  means no repo declares a kind, so no pull request gets a ship prediction. */
-  declaredRepoKindFor?: (repo: string) => 'backend' | 'frontend' | undefined;
+  /** Item 16, 2026-09-12: whether this repo builds a mobile app, so a ship prediction
+   *  means anything for it. Evidence, not configuration: `repoKindFor` answers
+   *  `frontend` for anything not named as backend, and the declared kind is unset in
+   *  the common case, so reading either one had the prediction land on every Node repo
+   *  or on none at all. Absent means the caller cannot tell, and the skip is journaled
+   *  rather than silent. */
+  mobileRepo?: (repo: string) => boolean;
   readyPrWithPrediction?: (input: {
     item: QueueItem; pr: { no: number; url: string }; prediction: string;
   }) => Promise<{ readied: boolean; predictionError?: string } | void>;
@@ -1008,13 +1011,23 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
   // hand a backend owner a pull request the queue had already made mergeable (code
   // review, 2026-09-12). The mobile prediction is meaningless on those repos anyway.
   let readied = false;
-  // A DECLARED frontend kind (code review, 2026-09-12). `repoKindFor` answers
-  // `frontend` for any repo with no entry of its own -- it means "not backend", not
-  // "this builds a mobile app" -- so reading it here put an Android and iOS ship path
-  // into the body of a pull request on a Node repository with no mobile build at all,
-  // this queue's own repository included.
-  const frontendRepo = deps.declaredRepoKindFor?.(item.repo!) === 'frontend';
-  if (deps.readyPrWithPrediction && item.repo && frontendRepo) {
+  // Whether this repo builds a mobile app, read off the checkout rather than off
+  // configuration (code review, 2026-09-12, twice). `repoKindFor` means "not backend"
+  // and put an Android and iOS ship path on every Node repo; the declared kind is
+  // unset in the common case and turned the whole thing off instead. Neither failure
+  // said anything, so a skip is journaled now.
+  // Not once the gate has merged (code review, 2026-09-12). `gh pr ready` is then
+  // spent on a merged pull request, and a comment saying what MERGING will cost lands
+  // after the merge.
+  const alreadyMerged = merge && gateResult.merged === true;
+  const isMobile = !alreadyMerged && (deps.mobileRepo?.(item.repo!) ?? false);
+  if (deps.readyPrWithPrediction && item.repo && !isMobile && !alreadyMerged) {
+    deps.append({
+      event: 'queue.pr-ready-skipped', actor: 'queue', itemId: item.id, pr: pr.number,
+      reason: 'no mobile build found for this repo, so no ship path to predict',
+    });
+  }
+  if (deps.readyPrWithPrediction && item.repo && isMobile) {
     const prediction = renderShipPrediction(shipPredictionFor(item.changedFiles ?? []));
     try {
       const outcome = await deps.readyPrWithPrediction({ item, pr: { no: pr.number, url: pr.url }, prediction });

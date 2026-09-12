@@ -11,7 +11,7 @@
  * same two steps `chain-wire.ts#chainIntake` already runs for a poll-sourced packet,
  * just triggered by an operator's own add instead of a poll cycle.
  */
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { chainCouncil, chainGate, chainGh, chainRebase, chainLauncher, chainLaunchGoal } from './chain-wire.js';
@@ -302,14 +302,38 @@ export function queueBackendHandoff(
 }
 
 /**
- * Item 16, 2026-09-12: at review, mark the pull request ready and append the ship
- * prediction to its body. Both are writes a person would otherwise do by hand, and
- * leaving the pull request a draft means nobody can merge it at all. `readyPr` on an
- * already-ready pull request is a no-op, and the body append carries its own marker,
- * so a second pass over the same item changes nothing.
+ * Item 16, 2026-09-12: at review, mark the pull request ready and post the ship
+ * prediction as a comment. Both are writes a person would otherwise do by hand, and
+ * leaving the pull request a draft means nobody can merge it at all.
+ *
+ * `readyPr` on an already-ready pull request is a no-op. The comment is NOT: a second
+ * pass over the same item leaves a second prediction. The body write this replaced
+ * carried a marker for that, and a comment has nowhere to put one -- named in the
+ * finishing work rather than left implied (code review, 2026-09-12).
  */
+/**
+ * Item 16, 2026-09-12: whether a repo builds a mobile app, so a ship prediction means
+ * anything for it.
+ *
+ * Evidence rather than configuration, after two rounds of the configuration reading
+ * being wrong in opposite directions: `repoKindFor` means "not backend" and would have
+ * put an Android and iOS ship path on every Node repo here, and the declared kind is
+ * unset in the common case, which turned the feature off entirely without saying so.
+ * An `android` or `ios` directory in the checkout is the thing that actually decides
+ * whether there is a build to predict. A repo declaring `frontend` outright is taken
+ * at its word; a repo with no checkout configured cannot be read, and answers no.
+ */
+export function mobileRepoAt(chainEnv: ChainEnv | undefined, repo: string): boolean {
+  if (!chainEnv) return false;
+  if (declaredRepoKind(chainEnv, repo) === 'frontend') return true;
+  const checkout = checkoutFor(chainEnv, repo);
+  if (!checkout) return false;
+  return existsSync(join(checkout, 'android')) || existsSync(join(checkout, 'ios'));
+}
+
 export function queueReadyPrWithPrediction(
   gh: Pick<GhWriter, 'readyPr' | 'commentPr'> = REAL_GH,
+  onRefused?: (reason: string) => void,
 ): NonNullable<QueueRuntimeDeps['readyPrWithPrediction']> {
   return async ({ item, pr, prediction }) => {
     if (!item.repo) return { readied: false };
@@ -319,7 +343,10 @@ export function queueReadyPrWithPrediction(
     // request says it is CLOSED, so matching only on "merged" wrote a false failure row
     // on every successful auto-merge (code review, 2026-09-12).
     const nothingToDo = ready.returncode !== 0
-      && /not a draft|is closed|already merged|ready for review/i.test(ready.stderr);
+      // `ready for review` is gone: `gh pr ready`'s own usage text contains it, so an
+      // argument error printed help, matched, was swallowed, and the pull request was
+      // recorded ready while still a draft (code review, 2026-09-12).
+      && /not a draft|is closed|already merged/i.test(ready.stderr);
     if (ready.returncode !== 0 && !nothingToDo) {
       throw new Error(`gh pr ready failed: ${ready.stderr.slice(0, 300)}`);
     }
@@ -333,7 +360,14 @@ export function queueReadyPrWithPrediction(
     // with stderr into one buffer -- a warning from the read would have been written
     // into somebody's prose, silently, with nothing parsing the result. A comment
     // needs no read at all, so the corruption class is gone rather than guarded.
-    const commented = await gh.commentPr(item.repo, pr.no, prediction);
+    //
+    // Through `guardedCommentPr`, which `council/gh.ts` states is the one gate every
+    // pull request comment goes through; calling `commentPr` directly skipped the
+    // readability verdict and its refusal row (code review, 2026-09-12).
+    const commented = await guardedCommentPr(gh, item.repo, pr.no, prediction, (refusal) => {
+      onRefused?.(refusal.reason);
+    });
+    if (commented === null) return { readied, predictionError: 'refused by readability' };
     if (commented.returncode !== 0) {
       return { readied, predictionError: commented.stderr.slice(0, 300) };
     }
@@ -540,8 +574,15 @@ export function buildQueueRuntimeDeps(
     mergeCheckRepos: chainEnv.checkouts.map((entry) => entry.repo),
     backendHandoff: queueBackendHandoff(),
     jiraHandoff: queueJiraHandoff(),
-    declaredRepoKindFor: (repo) => declaredRepoKind(chainEnv, repo),
-    readyPrWithPrediction: queueReadyPrWithPrediction(),
+    mobileRepo: (repo) => mobileRepoAt(chainEnv, repo),
+    readyPrWithPrediction: queueReadyPrWithPrediction(REAL_GH, (reason) => {
+      const journal = new Journal(journalPath());
+      try {
+        journal.append({ event: 'readability.refused', actor: 'queue', reason } as never);
+      } finally {
+        journal.close();
+      }
+    }),
     prSnapshot: queuePrSnapshot(),
     // BBZ, 2026-09-08: read fresh every tick (`autoMergeAllowed` re-reads
     // `FORGE_COUNCIL_AUTOMERGE` off `councilPolicy()` on each call), the same allow-list
