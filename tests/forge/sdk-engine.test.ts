@@ -2086,3 +2086,56 @@ describe('cross-model review findings, held as regressions', () => {
     expect(open[0]?.goals).toContain('goal-id');
   });
 });
+
+describe('the ticket moves when a pull request opens', () => {
+  it('fires onPullRequestOpened with the checkout, on a successful gh pr create', async () => {
+    const { fn } = fakeQuery([[{
+      text: 'opening it',
+      toolUse: { name: 'Bash', input: { command: 'gh pr create --fill --draft' } },
+    }]]);
+    const opened: string[] = [];
+    const engine = new SdkEngine({
+      journalPath, inboxDir: join(home, 'inbox-pr'), gotchasDir: join(home, 'gotchas-pr'),
+      queryFn: fn,
+      onPullRequestOpened: (cwd) => { opened.push(cwd); },
+    });
+
+    await engine.run({ ...REQUEST, env: { PATH: '/usr/bin' } });
+
+    expect(opened).toEqual([REQUEST.cwd]);
+  });
+
+  it('does not fire on a git push, which moves no ticket', async () => {
+    const { fn } = fakeQuery([[{
+      text: 'pushing',
+      toolUse: { name: 'Bash', input: { command: 'git push -u origin feature/x' } },
+    }]]);
+    const opened: string[] = [];
+    const engine = new SdkEngine({
+      journalPath, inboxDir: join(home, 'inbox-pr2'), gotchasDir: join(home, 'gotchas-pr2'),
+      queryFn: fn,
+      onPullRequestOpened: (cwd) => { opened.push(cwd); },
+    });
+
+    await engine.run({ ...REQUEST, env: { PATH: '/usr/bin' } });
+
+    expect(opened).toEqual([]);
+  });
+
+  it('does not fire when the create failed', async () => {
+    const { fn } = fakeQuery([[{
+      text: 'trying',
+      toolUse: { name: 'Bash', input: { command: 'gh pr create --fill' }, isError: true },
+    }]]);
+    const opened: string[] = [];
+    const engine = new SdkEngine({
+      journalPath, inboxDir: join(home, 'inbox-pr3'), gotchasDir: join(home, 'gotchas-pr3'),
+      queryFn: fn,
+      onPullRequestOpened: (cwd) => { opened.push(cwd); },
+    });
+
+    await engine.run({ ...REQUEST, env: { PATH: '/usr/bin' } });
+
+    expect(opened).toEqual([]);
+  });
+});

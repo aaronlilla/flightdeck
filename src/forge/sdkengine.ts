@@ -770,6 +770,15 @@ export interface SdkEngineDeps {
    */
   driftClock?: DriftClock;
   /**
+   * Fired the moment a worker's own `gh pr create` succeeds, with the checkout it ran in.
+   * The ticket a pull request names has to move when the pull request opens, or the board
+   * keeps offering work that already exists. Fire-and-forget: nothing in the turn stream
+   * waits on it, and it must never throw (see `handlePullRequestOpened`).
+   *
+   * Undefined means no caller wired it -- a specimen, or a fleet with no tracker.
+   */
+  onPullRequestOpened?: (cwd: string) => Promise<unknown> | void;
+  /**
    * P4.7/I8: read fresh on every tool call by the PreToolUse hook. Undefined means no
    * caller wired the kill switch to this engine -- `forge run` always does; a specimen
    * with nothing to say about stopping needs no fake.
@@ -1078,6 +1087,13 @@ export class SdkEngine implements EngineLike {
               pending.done = true;
             }
             const bashCommand = bashCommandById.get(event.id);
+            // A pull request opening is the moment its ticket stops being available work.
+            // Only a `gh pr create` counts: a `git push` moves no ticket. Fire-and-forget
+            // beside the drift read below, and deliberately not awaited -- a tracker that
+            // is slow or down must not hold up the worker's turn.
+            if (bashCommand && !event.isError && invokesCommand(bashCommand, 'gh', 'pr', 'create')) {
+              void this.deps.onPullRequestOpened?.(request.cwd);
+            }
             if (bashCommand && !event.isError
               && (invokesCommand(bashCommand, 'git', 'push') || invokesCommand(bashCommand, 'gh', 'pr', 'create'))) {
               // Fire-and-forget: drift is checked after the push or PR open resolves, but
