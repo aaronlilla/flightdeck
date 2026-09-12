@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { humanizeParkReason, stripMachineIds } from '../../src/shared/humanize.js';
+import { plainStatus } from '../../src/forge/console/plain.js';
 
 /**
  * Aaron, 2026-09-12: board and strip text must survive the same pass a pull request or a
@@ -70,5 +71,32 @@ describe('a park reason written before the wording changed', () => {
     const out = humanizeParkReason('run 2026-09-09-forge-compaction-aware-warden: wall clock: 4.0 h over 3.0 h');
     expect(out).toContain('Running 4.0 h, expected 3.0 h');
     expect(out).not.toContain('2026-09-09');
+  });
+});
+
+/**
+ * The board tile reads its reason off `lane.plain`, not off the rail's path, so the
+ * rewrite has to be wired in both places. Two tiles carried
+ * "Stuck since 09-09: wall clock: 22.3 h over 3.0 h." for three days after the wording
+ * changed, because a reason is journaled once and replayed for as long as the lane is up.
+ */
+describe('the sentence a board tile carries', () => {
+  it('says the reason in plain words, whatever the journal recorded', () => {
+    const lane = {
+      id: '2026-09-09-readable-pr-rule-flightdeck', kind: 'manual', state: 'blocked',
+      since: Date.now() - 3 * 60 * 60_000, reason: 'wall clock: 22.3 h over 3.0 h',
+      ticket: null, title: null, pr: null, retiredAt: null,
+    } as unknown as Parameters<typeof plainStatus>[0];
+    const out = plainStatus(lane, { now: Date.now() });
+    expect(out).toContain('Running 22.3 h, expected 3.0 h');
+    expect(out).not.toContain('wall clock');
+  });
+
+  it('still says so when no reason was recorded at all', () => {
+    const lane = {
+      id: 'x', kind: 'manual', state: 'blocked', since: Date.now(), reason: null,
+      ticket: null, title: null, pr: null, retiredAt: null,
+    } as unknown as Parameters<typeof plainStatus>[0];
+    expect(plainStatus(lane, { now: Date.now() })).toContain('has not been recorded');
   });
 });
