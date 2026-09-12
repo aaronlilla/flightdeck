@@ -1018,7 +1018,10 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
     const prediction = renderShipPrediction(shipPredictionFor(item.changedFiles ?? []));
     try {
       const outcome = await deps.readyPrWithPrediction({ item, pr: { no: pr.number, url: pr.url }, prediction });
-      readied = outcome ? outcome.readied : true;
+      // A wiring that returns nothing did nothing, so it did not ready anything
+      // (code review, 2026-09-12). Mapping `void` to "ready" recorded a still-draft
+      // pull request as mergeable.
+      readied = outcome?.readied === true;
       if (outcome?.predictionError) {
         deps.append({
           event: 'queue.pr-prediction-failed', actor: 'queue', itemId: item.id,

@@ -48,6 +48,22 @@ describe('shipPredictionFor', () => {
     expect(p.signals).toContain('package.json');
   });
 
+  // Edge: the pull request file query pages at 100, so a full page is a prefix and
+  // the absence of a native path in it proves nothing (code review, 2026-09-12).
+  it('predicts nothing either way off a truncated file list', () => {
+    const files = Array.from({ length: 100 }, (_, i) => `src/f${i}.ts`);
+    const p = shipPredictionFor(files);
+    expect(p.android).toBe('unknown');
+    expect(p.ios).toBe('unknown');
+  });
+
+  it('still predicts a rebuild off a truncated list, since no unseen file undoes one', () => {
+    const files = ['android/app/build.gradle', ...Array.from({ length: 99 }, (_, i) => `src/f${i}.ts`)];
+    const p = shipPredictionFor(files);
+    expect(p.android).toBe('rebuild');
+    expect(p.ios).toBe('update');
+  });
+
   // Edge: nothing to go on. Saying "update" here would be a guess presented as a
   // reading, which is the fault this item exists to remove.
   it('predicts nothing either way when the file list is empty', () => {

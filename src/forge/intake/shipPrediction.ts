@@ -40,6 +40,11 @@ const IOS_ONLY = /^ios[/\\]/i;
  */
 const BOTH = /^patches[/\\]|^(package\.json|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|app\.json|app\.config\.[jt]s|eas\.json)$/i;
 
+/** The page size of the pull request file query the caller reads from. A list at
+ *  exactly this length is a prefix, not the whole diff, so the absence of a native
+ *  path in it proves nothing (code review, 2026-09-12). */
+const FILE_LIST_PAGE = 100;
+
 export function shipPredictionFor(changedFiles: readonly string[]): ShipPrediction {
   if (changedFiles.length === 0) return { android: 'unknown', ios: 'unknown', signals: [] };
 
@@ -62,6 +67,12 @@ export function shipPredictionFor(changedFiles: readonly string[]): ShipPredicti
     }
   }
 
+  // A full page means the list is truncated. A confident "update" off a prefix is a
+  // guess presented as a reading, so say so instead -- unless something in the prefix
+  // already forced a rebuild, which no unseen file can undo.
+  if (changedFiles.length >= FILE_LIST_PAGE && android === 'update' && ios === 'update') {
+    return { android: 'unknown', ios: 'unknown', signals };
+  }
   return { android, ios, signals };
 }
 

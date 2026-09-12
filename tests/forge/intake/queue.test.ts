@@ -1073,7 +1073,7 @@ describe('backend path: A.4', () => {
       launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
       council: async () => ({ verdict: 'PASS' }),
     });
-    deps.declaredRepoKindFor = () => 'frontend';
+    deps.repoKindFor = () => 'frontend';
     deps.backendHandoff = async () => { calls += 1; };
 
     let current = item;
@@ -1138,7 +1138,10 @@ describe('Jira write-back at review: A.3', () => {
     });
     deps.prSnapshot = async () => ({ files: ['android/app/build.gradle', 'src/app/store.ts'], add: 3, del: 1 });
     deps.declaredRepoKindFor = () => 'frontend';
-    deps.readyPrWithPrediction = async (input) => { calls.push({ pr: input.pr.no, prediction: input.prediction }); };
+    deps.readyPrWithPrediction = async (input) => {
+      calls.push({ pr: input.pr.no, prediction: input.prediction });
+      return { readied: true };
+    };
 
     let current = item;
     current = await advanceItem(current, deps);

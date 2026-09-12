@@ -309,33 +309,35 @@ export function queueBackendHandoff(
  * so a second pass over the same item changes nothing.
  */
 export function queueReadyPrWithPrediction(
-  gh: Pick<GhWriter, 'readyPr' | 'appendPrBody'> = REAL_GH,
+  gh: Pick<GhWriter, 'readyPr' | 'commentPr'> = REAL_GH,
 ): NonNullable<QueueRuntimeDeps['readyPrWithPrediction']> {
   return async ({ item, pr, prediction }) => {
-    if (!item.repo) return;
-    // The two writes fail separately (code review, 2026-09-12). Throwing on a failed
-    // body append after `readyPr` already succeeded recorded the pull request as a
-    // draft when it was ready, under an event naming the wrong write, and the hop is
-    // never re-entered to correct it.
+    if (!item.repo) return { readied: false };
     const ready = await gh.readyPr(item.repo, pr.no);
-    // The gate readies and merges on the auto-merge path before this runs, so a
-    // non-zero exit here is usually "there was nothing to do". The real message for a
-    // merged pull request names it closed, not merged -- matching only on "merged"
-    // wrote a false failure row on every successful auto-merge (code review,
-    // 2026-09-12). The bare "already" arm was dead: gh exits 0 on an open pull request
-    // that is already ready.
-    const alreadyReady = ready.returncode !== 0
+    // A non-zero exit here is usually "there was nothing to do": the gate readies and
+    // merges on the auto-merge path before this runs. The message for a merged pull
+    // request says it is CLOSED, so matching only on "merged" wrote a false failure row
+    // on every successful auto-merge (code review, 2026-09-12).
+    const nothingToDo = ready.returncode !== 0
       && /not a draft|is closed|already merged|ready for review/i.test(ready.stderr);
-    if (ready.returncode !== 0 && !alreadyReady) {
+    if (ready.returncode !== 0 && !nothingToDo) {
       throw new Error(`gh pr ready failed: ${ready.stderr.slice(0, 300)}`);
     }
-    const appended = await gh.appendPrBody(item.repo, pr.no, prediction);
-    if (appended.returncode !== 0) {
-      // The pull request IS ready; only the prediction is missing. Reported so the row
-      // says what happened, without claiming the pull request is still a draft.
-      return { readied: true, predictionError: appended.stderr.slice(0, 300) };
+    // A closed pull request was never readied, and saying otherwise records it as
+    // mergeable when it is not. It still gets the prediction: whoever reopens it wants
+    // to know what merging costs.
+    const readied = ready.returncode === 0 || !/is closed/i.test(ready.stderr);
+
+    // The prediction is a COMMENT, not an edit to the body (2026-09-12). Appending to
+    // the body meant reading it back first, and the only read available merges stdout
+    // with stderr into one buffer -- a warning from the read would have been written
+    // into somebody's prose, silently, with nothing parsing the result. A comment
+    // needs no read at all, so the corruption class is gone rather than guarded.
+    const commented = await gh.commentPr(item.repo, pr.no, prediction);
+    if (commented.returncode !== 0) {
+      return { readied, predictionError: commented.stderr.slice(0, 300) };
     }
-    return { readied: true };
+    return { readied };
   };
 }
 
