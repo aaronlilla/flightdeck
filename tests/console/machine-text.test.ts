@@ -1,0 +1,53 @@
+import { describe, expect, it } from 'vitest';
+
+import { stripMachineIds } from '../../src/shared/humanize.js';
+
+/**
+ * Aaron, 2026-09-12: board and strip text must survive the same pass a pull request or a
+ * ticket does -- "never unnamed, never confusing, never vague".
+ *
+ * The stripper knew four id shapes and the live board carried two it had never seen: a
+ * dated brief id (`2026-09-09-forge-compaction-aware-warden`), which reached the board
+ * body text AND the Needs-you strip whole, and the intake item id on a blocker row
+ * (`item:Q-fc2090a8`). A queue row's packet suffix survived too, leaving `-Q-34ddf8a4`
+ * standing beside the ticket key that was supposed to replace it.
+ */
+describe('machine ids the live board was showing on 2026-09-12', () => {
+  it('replaces a dated brief id with the words in it', () => {
+    const out = stripMachineIds('run 2026-09-09-forge-compaction-aware-warden has produced no event for 149s');
+    expect(out).not.toContain('2026-09-09');
+    expect(out).toContain('Compaction aware');
+  });
+
+  it('replaces one carrying a second-attempt suffix', () => {
+    const out = stripMachineIds('2026-09-09-readable-pr-rule-flightdeck-2 finished (parked)');
+    expect(out).not.toMatch(/\d{4}-\d{2}-\d{2}/);
+    expect(out).toContain('Readable PR rule');
+  });
+
+  it('takes the packet suffix with the queue id, not just its head', () => {
+    const out = stripMachineIds('rounds.applied (queue-BBZ-123-Q-34ddf8a4)');
+    expect(out).not.toContain('34ddf8a4');
+    expect(out).toContain('BBZ-123');
+  });
+
+  it('replaces an intake item id', () => {
+    expect(stripMachineIds('item:Q-fc2090a8')).not.toContain('fc2090a8');
+  });
+
+  it('prefers the lane label when the caller has one', () => {
+    const out = stripMachineIds('2026-09-09-forge-compaction-aware-warden stops now', {
+      labelFor: () => 'BBZ-200',
+    });
+    expect(out).toContain('BBZ-200');
+    expect(out).not.toContain('2026-09-09');
+  });
+
+  it('leaves an ordinary date alone', () => {
+    expect(stripMachineIds('merged on 2026-09-09 after review')).toContain('2026-09-09');
+  });
+
+  it('leaves a date followed by one word alone, which is prose and not an id', () => {
+    expect(stripMachineIds('the 2026-09-09 call')).toContain('2026-09-09');
+  });
+});

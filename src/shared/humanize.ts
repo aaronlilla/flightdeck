@@ -13,11 +13,22 @@
  *  is part of a longer path or branch segment (`feature/S-...`, `something-S-...`):
  *  a `/` or `-` right before it means the id is stuck to another word, not standing
  *  on its own. */
+import { runName } from './runName.js';
+
 const RUN_ID_PATTERNS: RegExp[] = [
   /(?<![/-])\bS-[0-9a-f]{12,}\b(?:-\d+)?/g,
   /(?<![/-])\bjira_([A-Z]{2,6}-\d+)_\d{10,}(?:-\d+)?\b/g,
-  /(?<![/-])\bqueue-([A-Z]{2,6}-\d+)(?:-\d+)?\b/g,
+  // The queue row's whole id, packet suffix included. Matching only the `queue-KEY` head
+  // left `-Q-34ddf8a4` standing on the screen beside the ticket key (2026-09-12).
+  /(?<![/-])\bqueue-([A-Z]{2,6}-\d+)(?:-Q-[0-9a-f]{6,})?(?:-\d+)?\b/g,
   /(?<![/-])\bqueue-brief-\d{10,}(?:-\d+)?\b/g,
+  // A dated brief id: `2026-09-09-forge-compaction-aware-warden`. It reached the board
+  // and the Needs-you strip untouched -- the run ids the rest of the board is built to
+  // hide were in its own body text all along (2026-09-12). Replaced by the lane's own
+  // label, or by the words in the id itself.
+  /(?<![/\w-])\d{4}-\d{2}-\d{2}-[a-z0-9]+(?:-[a-z0-9]+)+\b/g,
+  // The intake item's own id, as it appears on a blocker row: `item:Q-fc2090a8`.
+  /(?<![/-])\bitem:Q-[0-9a-f]{6,}\b/g,
 ];
 
 /** A bare hex key at least 16 long that is not a git sha (asks, packets, tokens).
@@ -74,7 +85,7 @@ function replaceRunIds(text: string, pattern: RegExp, labelFor: (id: string) => 
 export function stripMachineIds(text: string, options: StripOptions = {}): string {
   let out = text;
   for (const pattern of RUN_ID_PATTERNS) {
-    out = replaceRunIds(out, pattern, (id) => options.labelFor?.(id) ?? ticketInId(id) ?? 'this run');
+    out = replaceRunIds(out, pattern, (id) => options.labelFor?.(id) ?? ticketInId(id) ?? runName(id) ?? 'this run');
   }
   out = shortenShas(out);
   out = out.replace(JOURNAL_ID, '');
