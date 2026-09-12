@@ -99,7 +99,7 @@ function ActionCard({ message, tone, kicker, title, body, onCommand, onTopic, co
         </div>
       ) : null}
       {resolved ? (
-        <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>{resolved === 'declined' ? 'Not now.' : resolved === 'answered' ? 'Answered.' : 'Confirmed.'}</span>
+        <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>{resolved === 'declined' ? 'Not now.' : resolved === 'answered' ? 'Answered.' : resolved === 'expired' ? 'Expired before anyone answered.' : 'Confirmed.'}</span>
       ) : message.btns && message.btns.length > 0 ? (
         <div data-testid="question-options" style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 2 }}>
           {message.btns.map((button, index) => (

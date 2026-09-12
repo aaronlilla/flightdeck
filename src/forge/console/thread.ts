@@ -12,7 +12,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import type { ForgeEvent } from '../journal.js';
 import type { InboxEntry } from '../inbox.js';
 import type { RunMessage } from '../runinbox.js';
-import type { Message, ThreadResponse } from '../../shared/console-model.js';
+import { CONFIRM_TTL_MS, type Message, type ThreadResponse } from '../../shared/console-model.js';
 import { RAIL_TYPES } from '../../shared/rail-kinds.js';
 
 export { RAIL_TYPES };
@@ -145,6 +145,44 @@ export interface ComputeThreadOptions {
    *  when unset, so a caller that has not wired the full inbox still answers open
    *  questions correctly, just not already-answered ones. */
   allAsks?: InboxEntry[];
+  /** Whether `confirm <token>` would still find something to run.
+   *
+   *  A confirm card is rebuilt from its `conductor.receipt` journal row on every read,
+   *  and the row is permanent, so without this the card outlives the token it addresses
+   *  by days. Measured live on 2026-09-12: 67 confirm cards on screen, 12 tokens in the
+   *  durable store, every one of the 12 already past its two-hour life. All 67 were
+   *  offered as something a person could answer and not one of them could be.
+   *
+   *  Unwired, the fall-back is the token's own lifetime: past `CONFIRM_TTL_MS` the
+   *  durable store refuses the token outright, so no card older than that is answerable
+   *  by anyone. Inside that window an in-memory token may still be live, so an unwired
+   *  caller leaves the card alone rather than guess. */
+  confirmPending?: (token: string) => boolean;
+}
+
+/** The token a confirm card's own Confirm button addresses, or null when the card
+ *  carries no such button. */
+function confirmToken(card: Message): string | null {
+  for (const button of card.btns ?? []) {
+    const match = /^confirm\s+(\S+)$/.exec(button.cmd.trim());
+    if (match?.[1]) return match[1];
+  }
+  return null;
+}
+
+/**
+ * A confirm nobody can answer is not an ask. It keeps its place in the history -- this
+ * marks it `resolved`, which is what every reader already uses to mean "no longer
+ * waiting on you", rather than dropping a row a person may need to look back at.
+ */
+export function settleDeadConfirms(cards: Message[], now: number, pending?: (token: string) => boolean): Message[] {
+  return cards.map((card) => {
+    if (card.type !== 'confirm' || card.resolved) return card;
+    const token = confirmToken(card);
+    if (token === null) return card;
+    const answerable = pending ? pending(token) : now - card.ts < CONFIRM_TTL_MS;
+    return answerable ? card : { ...card, resolved: 'expired' as const };
+  });
 }
 
 /** Deliverable 8: a persisted rail row humanized at read time, so an operator bubble or
@@ -211,7 +249,7 @@ export function computeThread(
   const all = [...persistedRows, ...chips, ...questions].sort((a, b) => a.ts - b.ts);
   return {
     messages: all.filter((message) => RAIL_TYPES.has(message.type)),
-    cards: all.filter((message) => !RAIL_TYPES.has(message.type)),
+    cards: settleDeadConfirms(all.filter((message) => !RAIL_TYPES.has(message.type)), now, options.confirmPending),
   };
 }
 

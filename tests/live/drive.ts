@@ -133,7 +133,10 @@ function offeredAsks(thread: any, lanes: any, blockers: any): OfferedAsk[] {
     out.push({
       uid: `card:${card.k}`,
       kind: card.type,
-      content: String(card.kicker ?? card.title ?? card.body ?? card.text ?? '').trim(),
+      // `blast` is where a confirm card keeps its one readable sentence, so a reader
+      // that skips it calls a perfectly answerable card contentless -- which is what
+      // this did on 2026-09-12, reporting D7 against three cards that were fine.
+      content: String(card.kicker ?? card.title ?? card.body ?? card.blast ?? card.text ?? '').trim(),
       askedAt: Number(card.ts ?? 0),
       actionTargets: targets,
       actionLive: answerable,
@@ -472,7 +475,13 @@ async function main(): Promise<void> {
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
     const page = await context.newPage();
     const errors = { console: [] as string[], page: [] as string[] };
-    page.on('console', (message) => { if (message.type() === 'error') errors.console.push(message.text()); });
+    // The preview server (tests/live/preview.ts) proxies reads and nothing else, so the
+    // page's live-feed socket cannot connect there. That failure is the harness's, and
+    // counting it as a console defect would make every preview run look broken.
+    const HARNESS_NOISE = /WebSocket connection to 'ws:\/\/[^']*\/events'/;
+    page.on('console', (message) => {
+      if (message.type() === 'error' && !HARNESS_NOISE.test(message.text())) errors.console.push(message.text());
+    });
     page.on('pageerror', (error) => errors.page.push(error.message));
 
     await page.goto(args.base + '/', { waitUntil: 'networkidle' });

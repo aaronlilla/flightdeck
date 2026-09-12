@@ -55,6 +55,7 @@ import {
 import { labelFor as laneLabelFor, laneStateNowFor, meaningfulEvents, tokensToday } from './lanes.js';
 import { signalPhrase } from './journal-narrative.js';
 import { plainEventText } from './thread.js';
+import { CONFIRM_TTL_MS } from '../../shared/console-model.js';
 import {
   applyRule, dismissRule, restoreRule, rulesPath, setRuleStatus, startEnforcementTick,
   type RulesDeps,
@@ -387,8 +388,9 @@ interface PersistedConfirm {
 /** A pending confirm is stale after this long. Short on purpose: a card that survives a
  *  restart also survives the board moving on underneath it, and the shorter the window the
  *  less there is to move. The restart cadence is minutes, so this still covers many of
- *  them; a card older than this is refused and the operator re-issues the action. */
-const CONFIRM_TTL_MS = 2 * 60 * 60_000;
+ *  them; a card older than this is refused and the operator re-issues the action.
+ *  Declared in `shared/console-model.ts` so the thread builder can read it too. */
+
 
 /** How long past its expiry a spent-out row is still kept, so a refusal can say
  *  "expired at ..." rather than "nothing pending". */
