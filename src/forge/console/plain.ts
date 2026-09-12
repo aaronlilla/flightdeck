@@ -8,7 +8,7 @@
  * clock time) or a full clause a person can act on.
  */
 import type { Lane, NarrationFacts, QueueItem } from '../../shared/console-model.js';
-import { clock } from '../../shared/humanize.js';
+import { clock, humanizeParkReason } from '../../shared/humanize.js';
 
 export interface PlainContext {
   now: number;
@@ -125,7 +125,12 @@ export function plainStatus(lane: Lane, context: PlainContext): string {
     }
     case 'blocked': {
       const day = dayLabel(lane.since, context.now);
-      const reason = lane.reason ?? 'the reason has not been recorded';
+      // Through the same read-time humanizer the rail uses, so a reason journaled before
+      // the wording changed reads in plain words here too. The two tiles carrying
+      // "wall clock: 22.3 h over 3.0 h" kept it for three days otherwise, because a
+      // reason is written once and replayed for as long as the lane is on the board
+      // (Aaron, 2026-09-12: no jargon in anything on screen).
+      const reason = lane.reason ? humanizeParkReason(lane.reason) : 'the reason has not been recorded';
       const prefix = lane.kind === 'chain' ? 'Blocked since' : 'Stuck since';
       return `${prefix} ${day}: ${reason}.`;
     }

@@ -27,6 +27,7 @@ import {
   type Claim, type ControlProbe, type Inventory, type OfferedAsk,
   type RenderedCard, type RequiredRegion, type ScreenCapture,
 } from './model.js';
+import { runName } from '../../src/shared/runName.js';
 
 /** Every view `src/console/store.ts` declares, read out of source rather than retyped,
  *  so a view added tomorrow is walked tomorrow. */
@@ -347,8 +348,14 @@ async function claimsFor(view: string, page: Page, payloads: Record<string, any>
     // own grouping rule is that no live lane is missing from the screen entirely.
     const boardText = (await page.textContent('[data-testid="board"]')) ?? '';
     const live = (payloads['lanes']?.lanes ?? []).filter((lane: any) => !lane.retiredAt);
+    // What a person would look for, which is never the run id: the board is built to keep
+    // those off the screen, so checking for one meant this reported a lane as missing
+    // precisely BECAUSE the console was doing the right thing (2026-09-12). The ticket
+    // when there is one, else the title, else the words in the id -- the same order the
+    // tile itself resolves.
+    const nameFor = (lane: any): string => String(lane.ticket ?? lane.title ?? runName(String(lane.id)) ?? lane.id);
     const missing = live
-      .map((lane: any) => String(lane.ticket ?? lane.id))
+      .map(nameFor)
       .filter((name: string) => !boardText.includes(name));
     claims.push({
       label: 'Live lanes missing from the board',
