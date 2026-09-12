@@ -113,7 +113,7 @@ export async function act(
     const delivered = Boolean(answered);
     if (answered) {
       await deliverAnswer(answered, key, answer);
-      journalInterviewAnswer((row) => ctx.journal.append(row), answered);
+      journalInterviewAnswer((row) => ctx.journal.append(row), answered, undefined, 'router');
     }
     return { class: 'answer', key, answer, delivered };
   }

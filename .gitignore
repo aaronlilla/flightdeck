@@ -20,3 +20,4 @@ test-results/
 playwright-report/
 tests/e2e/__screenshots__/*.png
 
+.verify-exit

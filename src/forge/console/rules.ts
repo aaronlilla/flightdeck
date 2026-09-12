@@ -162,12 +162,52 @@ export async function enforceRulesOnce(deps: EnforcementDeps): Promise<void> {
       const pattern = rule.evidence;
       for (const ask of deps.inbox.open()) {
         if (!pattern || !ask.question.includes(pattern)) continue;
-        const answered = deps.inbox.answer(ask.key, rule.effect);
+        // Re-read off disk rather than trusting the snapshot `open()` took before the
+        // first `await deliverAnswer` (code review, 2026-09-12). An answer or a reply
+        // that lands during one of those awaits -- the HTTP route, the Slack poller, a
+        // separate `forge answer` process -- was overwritten, and with the author
+        // argument the operator's own click was then journalled as the rule's.
+        const fresh = deps.inbox.entry(ask.key);
+        if (!fresh || fresh.answer !== undefined) continue;
+        // No stand-down here, deliberately (2026-09-12). One was added when a review
+        // found a rule overwriting a teammate's name, and four rounds then alternated
+        // between two harms: guard the ask and a question held by somebody on holiday
+        // blocks the rule forever, because nothing clears a pass or a reply on its own;
+        // age the guard out and the rule discards a real reply nobody saw. Both
+        // readings were right, which makes it a policy call and not a defect to patch
+        // a fifth time.
+        //
+        // The harm that started it is closed elsewhere: `answeredDirectlyBy` is its own
+        // field, so a rule answering over a reply credits itself and leaves `answeredBy`
+        // and `reply` exactly as the teammate left them. Nothing is destroyed, and the
+        // rule unblocks the run the way it did before this branch. A real deferral
+        // needs a window on both the pass and the reply side, and the person holding
+        // the question needs telling when it is taken -- neither exists yet, and the
+        // row below is the only record that it happened.
+        const answered = deps.inbox.answer(ask.key, rule.effect, `the auto-answer rule "${rule.title}"`);
         if (answered) {
+          // A rule answering over a person's open pass or reply says so, once the answer
+          // has actually landed. The person is not told -- the Slack thread stops being
+          // polled the moment an answer is set -- so the row is the only record that a
+          // teammate was asked and then overtaken. Named in the finishing work.
+          if (fresh.passedTo || fresh.reply !== undefined) {
+            appendOnce(deps.runActions.journalPath, {
+              event: 'decision.made', actor: 'rule', action: 'rule.enforced', ruleId: rule.id,
+              ...(answered.runs[0] ? { run: answered.runs[0] } : {}),
+              text: `auto-answer answered over a question held by ${fresh.passedTo ?? fresh.answeredBy}`
+                + ` on ${ask.key}${fresh.reply === undefined ? ', who had not replied' : ', whose reply was waiting'}`,
+            });
+          }
           await deliverAnswer(answered, ask.key, rule.effect);
-          journalInterviewAnswer((row) => appendOnce(deps.runActions.journalPath, row), answered);
+          journalInterviewAnswer(
+            (row) => appendOnce(deps.runActions.journalPath, row), answered, undefined, 'rule',
+          );
           appendOnce(deps.runActions.journalPath, {
-            event: 'decision.made', actor: 'console', action: 'rule.enforced', ruleId: rule.id,
+            event: 'decision.made', actor: 'rule', action: 'rule.enforced', ruleId: rule.id,
+            // Carried so the lane's own thread and cost sheet see the row; both match
+            // on `run` and a rule's answer was invisible on them (code review,
+            // 2026-09-12).
+            ...(answered.runs[0] ? { run: answered.runs[0] } : {}),
             text: `auto-answer enforced on ${ask.key}`,
           });
         }

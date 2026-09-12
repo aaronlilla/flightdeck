@@ -53,6 +53,13 @@ export interface PassFields {
   passedAt?: number | null;
   passedThread?: string | null;
   answeredBy?: string | null;
+  /** Who answered the ask DIRECTLY, rather than attaching a reply for the operator to
+   *  confirm -- today an auto-answer rule (`console/rules.ts`). Kept apart from
+   *  `answeredBy` on purpose (code review, 2026-09-12): overloading one field meant a
+   *  rule overtaking a stale reply erased the teammate's name, the only record that
+   *  they replied at all, and then `answeredByOf` fell back to the operator and filed
+   *  the rule's call as theirs. */
+  answeredDirectlyBy?: string;
   /** The teammate's own words, attached but not accepted: the ask stays open until a
    *  person confirms it. */
   reply?: string;
@@ -247,6 +254,27 @@ export class Inbox {
       };
       delete entry.answer;
       delete entry.answeredAt;
+      // Found by code review, 2026-09-12: a direct author (an auto-answer rule) survived
+      // the reopen, so the next answer -- typed by the operator, with no author of its
+      // own -- was credited to the rule. That is the same mis-attribution this branch's
+      // change exists to remove, pointing the other way. The reply is dropped with it:
+      // a reopened ask is a fresh question, and a teammate's reply to the old one is not
+      // an answer to it. The console reads `answeredBy` to decide a question is already
+      // answered (`console/lanes.ts#questionFor`), so a stale one also hid the options
+      // on a question nobody had answered.
+      delete entry.answeredBy;
+      delete entry.answeredDirectlyBy;
+      delete entry.reply;
+      delete entry.repliedAt;
+      // The pass goes with them (code review, 2026-09-12). Leaving `passedThread` put a
+      // reopened ask back into `openPasses` (`intake/slackReturn.ts:93`), so the poller
+      // resumed reading the OLD thread and attached a message from it as the reply to
+      // the new question -- the same "a reply to the old one is not an answer to this
+      // one" failure, re-entering through the field that was not cleared. The card also
+      // kept rendering "Passed to joe" with its options hidden.
+      delete entry.passedTo;
+      delete entry.passedAt;
+      delete entry.passedThread;
     } else {
       entry = {
         key,
@@ -309,11 +337,30 @@ export class Inbox {
     return attached;
   }
 
-  /** Answer an entry. An answer to a key nobody asked is ignored rather than invented. */
-  answer(key: string, answer: string): InboxEntry | undefined {
+  /** Answer an entry. An answer to a key nobody asked is ignored rather than invented.
+   *
+   *  `answeredBy` names a non-operator author that answered DIRECTLY rather than by
+   *  attaching a reply for the operator to confirm. Only `console/rules.ts` passes one
+   *  today; `worker.ts`'s `--auto-answer` and the mergeable-branch clear in
+   *  `sdkengine.ts` also answer directly and pass nothing, so both still read as the
+   *  operator. Found by code review, 2026-09-12: without it the entry
+   *  reaches `answeredByOf` with no author at all, so the brief's `## Decisions` credits
+   *  the operator with a call a heuristic made, while the journal row beside it already
+   *  names the rule. Two records of one event that disagree is worse than either alone.
+   *  Left unset, the operator is credited exactly as before. */
+  answer(key: string, answer: string, answeredBy?: string): InboxEntry | undefined {
     const entry = this.entry(key);
     if (!entry) return undefined;
+    // A caller that names no author is the operator, so a previous author does not
+    // carry forward (code review, 2026-09-12). A rule closes the ask, the operator
+    // disagrees and answers again through any of the four routes, and without this the
+    // correction was filed as the rule's -- the inverse of the bug the reopen path
+    // above fixes. A teammate's attached reply is left alone: `answeredByOf` credits
+    // that only while the stored answer still equals the reply, so the operator
+    // overriding it already reads as the operator's.
     const answered: InboxEntry = { ...entry, answer, answeredAt: Date.now() };
+    if (answeredBy) answered.answeredDirectlyBy = answeredBy;
+    else delete answered.answeredDirectlyBy;
     this.write(answered);
     return answered;
   }
