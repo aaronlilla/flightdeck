@@ -60,4 +60,27 @@ describe('item 3: the rounds sweep leaves an item held on an interview answer al
     const findings = deadWorkerFindings(item({ id: 'Q-near', reason: 'interviewer never answered' }));
     expect(findings).toHaveLength(1);
   });
+
+  it('does not offer to retry a park the queue deliberately declines to recover', () => {
+    // `parkRecoverability` fail-closes on a merge conflict, an unrouted ticket and a
+    // backend hand-off. This sweep reached the same items by a different rule -- "no
+    // blocker on the board" -- and offered a retry that re-ran the conflict.
+    const row = item({
+      id: 'Q-conflict', state: 'parked',
+      reason: 'conflicts with develop: the branch could not be replayed on its base',
+      updatedAt: NOW - 90 * MIN,
+    });
+    const sheet = planRounds({ now: NOW, items: [row], lanes: [], blockers: [] });
+    const mine = sheet.findings.filter((f) => f.itemId === 'Q-conflict');
+
+    expect(mine.map((f) => f.action)).not.toContain('retry');
+    expect(mine[0]?.why ?? '').toMatch(/conflict/i);
+  });
+
+  it('still offers a retry for a park a machine could clear', () => {
+    const row = item({ id: 'Q-stopped', state: 'parked', reason: 'stopped', updatedAt: NOW - 90 * MIN });
+    const sheet = planRounds({ now: NOW, items: [row], lanes: [], blockers: [] });
+
+    expect(sheet.findings.filter((f) => f.itemId === 'Q-stopped').map((f) => f.action)).toContain('retry');
+  });
 });
