@@ -20,6 +20,7 @@ import { classFor, classNames, governorBudget, policyPath } from '../policy.js';
 import { QueueStore } from '../intake/queueStore.js';
 import { processAlive, Registry } from '../registry.js';
 import type { StuckSignal } from '../liveness.js';
+import { briefFacts, briefPathForLane } from './briefLookup.js';
 import { computeLive } from './live.js';
 import { Lanes, type LaneRecord } from '../supervisor.js';
 import { RunInbox } from '../runinbox.js';
@@ -740,10 +741,20 @@ export class ConsoleReads {
       briefPath = this.registry.get(lane.id)?.briefPath ?? null;
     }
 
+    // No queue row holding the brief does not mean no brief. A pasted brief and a hotfix
+    // are written to a file named after the run key itself, and the queue row is pruned
+    // when the item finishes -- so a finished brief lane lost its title AND its ticket
+    // key at the moment somebody was most likely to be looking at it, and the tile read
+    // `No ticket` over `Untitled run` (measured 2026-09-12).
+    briefPath = briefPath ?? briefPathForLane(this.forgeHomeDir, lane.id);
     const briefHeading = briefPath ? readBriefHeading(briefPath, lane.ticket) : null;
-    const { title, sourceUrl } = titleFor({ kind: lane.kind, ticket: lane.ticket, briefHeading, jiraSite: this.jiraSite, prUrl });
+    // The brief's own `ticket:` line, for a lane the queue is no longer holding a ticket
+    // for. Every board item should name the ticket it is working on; this one always
+    // knew its own, one file away.
+    const ticket = lane.ticket ?? (briefPath ? briefFacts(briefPath).ticket : null);
+    const { title, sourceUrl } = titleFor({ kind: lane.kind, ticket, briefHeading, jiraSite: this.jiraSite, prUrl });
     const mergeable = mergeableFor({ pr, repo, mergeAllowed: this.mergeAllowedFn });
-    const patched: Lane = { ...lane, title, sourceUrl, mergeable, repo, pr };
+    const patched: Lane = { ...lane, ticket, title, sourceUrl, mergeable, repo, pr };
     // `plain` was built in `buildLane` off whatever `pr` the cache already had; a queue
     // lane's fallback `pr` above can change what it should say (a bare `pr` now exists
     // where there was none), so it is recomputed here rather than left stale.
