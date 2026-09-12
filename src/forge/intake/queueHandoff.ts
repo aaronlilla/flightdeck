@@ -25,16 +25,63 @@ export interface QueueHandoffInput {
    *  honest for a non-visual change; the comment says so plainly rather than inventing
    *  steps. */
   testPlan: string[];
+  /** Item 13, 2026-09-12: the repo-relative paths this pull request changes, so the
+   *  comment can name the screens rather than guess whether anyone needs to look.
+   *  Absent means the caller does not know, which is never the same as "nothing to
+   *  see". */
+  changedFiles?: string[];
 }
 
+/** A path that puts something on a screen. Deliberately generous -- a false "look at
+ *  this" costs a minute, and a missed one costs a defect reaching a person who was
+ *  told not to look. */
+const SCREEN_PATH = /(^|[/\\])(screens?|components?|features)[/\\]|(Screen|Card|Modal|Sheet|Header|Button)\.(tsx|jsx)$/i;
+
+/** A file every screen renders under, so a change here is not one screen's problem. */
+const APP_ROOT_PATH = /(^|[/\\])(App|AppRoot|RootNavigator|Navigation)\.(tsx|jsx)$|(^|[/\\])src[/\\]app[/\\].*\.(tsx|jsx)$/i;
+
+function screenNamesIn(files: readonly string[]): string[] {
+  const names = files
+    .filter((file) => SCREEN_PATH.test(file) || APP_ROOT_PATH.test(file))
+    .map((file) => file.split(/[/\\]/).pop()!.replace(/\.(tsx|jsx|ts|js)$/i, ''));
+  return [...new Set(names)];
+}
+
+/**
+ * Item 13, 2026-09-12. The comment posted at 16:01 on 2026-09-11 told QA "No visual
+ * check needed here -- this one is covered by the suite." Nobody had looked at a
+ * screen, and the change installed a touch handler at the app root, so every screen
+ * was affected. The text is generated, so it kept saying it.
+ *
+ * The comment now states what was checked and by what, states plainly that no agent
+ * looked at a screen, and lists the screens the diff touches. It never says a visual
+ * check is unnecessary -- that is a claim only somebody who looked can make, and no
+ * agent here has.
+ */
 export function buildQueueHandoffComment(input: QueueHandoffInput): string {
   const lines: string[] = [`Opened ${input.prUrl}.`, input.what];
   if (input.testPlan.length) {
     lines.push('Quick visual check:');
     input.testPlan.forEach((step, index) => lines.push(`${index + 1}. ${step}`));
-  } else {
-    lines.push('No visual check needed here -- this one is covered by the suite.');
   }
+
+  const screens = input.changedFiles ? screenNamesIn(input.changedFiles) : null;
+  const touchesRoot = (input.changedFiles ?? []).some((file) => APP_ROOT_PATH.test(file));
+
+  if (screens !== null && screens.length === 0) {
+    lines.push('The tests pass and the types are clean. No screen changes in this diff,'
+      + ' so there is nothing on screen to compare.');
+    return lines.join('\n');
+  }
+
+  if (touchesRoot) {
+    lines.push('This touches the app root, so it reaches every screen, not only the ones below.');
+  }
+  if (screens?.length) {
+    lines.push(`Screens in this diff: ${screens.join(', ')}.`);
+  }
+  lines.push('The tests pass and the types are clean, and nothing here was looked at on a screen'
+    + ' by an agent -- so the rendered result is unverified either way.');
   return lines.join('\n');
 }
 

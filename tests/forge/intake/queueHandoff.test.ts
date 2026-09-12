@@ -28,11 +28,75 @@ describe('buildQueueHandoffComment', () => {
     expect(body).toContain('open transaction history');
   });
 
-  it('says plainly when there is no visual check, never invents steps', () => {
+  // Updated 2026-09-12 (item 13): this asserted "No visual check needed", which is the
+  // sentence the item exists to remove -- nobody had looked, so nobody could say that.
+  // With no test plan the comment still invents no steps; it says what is unverified.
+  it('invents no steps when the brief gave none, and says what is unverified', () => {
     const body = buildQueueHandoffComment({
       ticket: 'BBZ-1', prUrl: 'https://github.com/acme/app/pull/1', what: 'fixes a null check.', testPlan: [],
     });
-    expect(body).toContain('No visual check needed');
+    expect(body).not.toContain('Quick visual check:');
+    expect(body).toMatch(/nothing here was looked at on a screen/i);
+  });
+});
+
+// Item 13, 2026-09-12: the comment posted at 16:01 on 2026-09-11 told QA "No visual
+// check needed here -- this one is covered by the suite." No agent had looked at a
+// screen, and the change installed a touch handler at the app root, so every screen
+// was affected. The text is generated, so it keeps saying it.
+describe('the handoff never claims a visual check is unnecessary', () => {
+  it('names the screens a UI diff touches and says nothing was looked at', () => {
+    const body = buildQueueHandoffComment({
+      ticket: 'BBZ-169', prUrl: 'https://github.com/acme/app/pull/12',
+      what: 'the player card drop-down closes on an outside tap.', testPlan: [],
+      changedFiles: [
+        'src/features/wallet/screens/WalletScreen.tsx',
+        'src/features/rewards/screens/RewardsHomeScreen.tsx',
+        'src/app/store.ts',
+      ],
+    });
+    expect(body).not.toContain('No visual check needed');
+    expect(body).toContain('WalletScreen');
+    expect(body).toContain('RewardsHomeScreen');
+    expect(body).toMatch(/nothing here was looked at on a screen/i);
+  });
+
+  it('says a root-level touch handler reaches every screen', () => {
+    const body = buildQueueHandoffComment({
+      ticket: 'BBZ-169', prUrl: 'https://github.com/acme/app/pull/12',
+      what: 'captures taps at the app root.', testPlan: [],
+      changedFiles: ['src/app/AppRoot.tsx'],
+    });
+    expect(body).toMatch(/every screen/i);
+  });
+
+  it('gives the honest short form for a diff with no screens in it', () => {
+    const body = buildQueueHandoffComment({
+      ticket: 'BBZ-1', prUrl: 'https://github.com/acme/app/pull/1', what: 'fixes a null check.',
+      testPlan: [], changedFiles: ['src/forge/intake/queue.ts'],
+    });
+    expect(body).not.toContain('No visual check needed');
+    expect(body).toMatch(/no screen changes in this diff/i);
+  });
+
+  it('still carries a test plan when the brief supplied one', () => {
+    const body = buildQueueHandoffComment({
+      ticket: 'BBZ-2', prUrl: 'https://github.com/acme/app/pull/2', what: 'timestamps in UTC.',
+      testPlan: ['open transaction history', 'check the timestamps'],
+      changedFiles: ['src/features/wallet/screens/HistoryScreen.tsx'],
+    });
+    expect(body).toContain('open transaction history');
+    expect(body).toMatch(/nothing here was looked at on a screen/i);
+  });
+
+  // Edge: the caller knows nothing about the diff. Saying a check is unnecessary is
+  // still the one thing the comment may never do.
+  it('never claims a check is unnecessary when the changed files are unknown', () => {
+    const body = buildQueueHandoffComment({
+      ticket: 'BBZ-3', prUrl: 'https://github.com/acme/app/pull/3', what: 'something.', testPlan: [],
+    });
+    expect(body).not.toContain('No visual check needed');
+    expect(body).toMatch(/nothing here was looked at on a screen/i);
   });
 });
 

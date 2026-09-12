@@ -309,6 +309,21 @@ export function queueJiraHandoff(
     const config = configFn();
     if (!config || !item.ticket) return;
     const journal = new Journal(journalPath());
+    // Item 13, 2026-09-12: the comment names the screens this diff touches, so read the
+    // real file list rather than let the handoff guess. A failure here leaves
+    // `changedFiles` unset, which the comment reads as "the caller does not know" --
+    // never as "there is nothing to look at".
+    let changedFiles: string[] | undefined;
+    if (item.repo) {
+      try {
+        changedFiles = (await REAL_GH.viewPr(item.repo, pr.no)).files;
+      } catch (error) {
+        journal.append({
+          event: 'external.unknown', actor: 'queue', kind: 'gh-pr-files', ticket: item.ticket,
+          body: error instanceof Error ? error.message : String(error),
+        } as never);
+      }
+    }
     try {
       await runQueueHandoff(
         createJiraWriteClient(config),
@@ -316,6 +331,7 @@ export function queueJiraHandoff(
           ticket: item.ticket, prUrl: pr.url,
           what: `${item.ticket} reached review through the queue.`,
           testPlan: [],
+          ...(changedFiles ? { changedFiles } : {}),
         },
         {
           qaAccountId: process.env['FORGE_JIRA_QA_ACCOUNT'],
