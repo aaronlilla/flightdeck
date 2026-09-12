@@ -30,7 +30,7 @@ export interface NeedOption {
 }
 
 export interface Need {
-  kind: 'blocker' | 'confirm' | 'lane';
+  kind: 'blocker' | 'confirm' | 'question' | 'lane';
   /** This need's own id, unique across kinds. `askKey` alone is not: a card uses its
    *  own key or its message key, a lane uses the inbox ask key, and the two id spaces
    *  are not namespaced against each other. Everything the strip remembers about a
@@ -62,7 +62,7 @@ export interface Need {
 /** The kind order, applied only between two cards a person can actually answer: what is
  *  stopping an agent outranks what is waiting on a yes, which outranks a question the
  *  agent can still work around. */
-const KIND_RANK: Record<Need['kind'], number> = { blocker: 0, confirm: 1, lane: 2 };
+const KIND_RANK: Record<Need['kind'], number> = { blocker: 0, confirm: 1, question: 2, lane: 3 };
 
 /**
  * Whether a person could answer this card if it were on screen right now.
@@ -117,6 +117,16 @@ function cardEvidence(card: Message): string[] {
   return lines.length > 0 ? lines : [card.text];
 }
 
+/** What sits behind a question card's disclosure: which run is waiting on it, and
+ *  whether anyone stands behind the options it offers. The question text itself is
+ *  already the card's own line, so repeating it here would read as a stutter. */
+function questionEvidence(card: Message): string[] {
+  const lines: string[] = [];
+  if (card.source && card.source !== 'system') lines.push(`Waiting: ${card.source}`);
+  if (card.optionSource === 'drafted') lines.push('Options drafted, not the agent’s own');
+  return lines;
+}
+
 /**
  * Everything that needs a person, in one ordered list: the blocker and confirm cards
  * off the thread response's second field (R-75 item 1), and every lane with an open
@@ -132,9 +142,42 @@ export function buildNeeds(lanes: Lane[], cards: Message[], blockers?: Blocker[]
     blockers.filter((blocker) => blocker.state !== 'resolved').flatMap((blocker) => blocker.blocks.map((b) => b.laneId)),
   );
   const needs: Need[] = [];
+  /** Ask keys already on the strip as a question card, so the lane pass below does not
+   *  add the same ask a second time. Both come off the one inbox. */
+  const questionKeys = new Set<string>();
   for (const card of cards) {
-    if (card.type !== 'blocker' && card.type !== 'confirm') continue;
     if (card.resolved) continue;
+    // R-75 shipped with the strip accepting `blocker` and `confirm` cards only. Every
+    // open question reaches the console as a `question` card on the same list, so all
+    // 92 of them were dropped on the floor: the strip is the console's answer to "what
+    // needs me", and it was the one surface that never showed a question (measured
+    // 2026-09-12). They were reachable on the Blockers screen and nowhere the strip
+    // pointed.
+    if (card.type === 'question') {
+      const options = recommendedFirst(card.opts ?? [], card.recommended)
+        .filter((option) => option.trim().length > 0);
+      if (options.length === 0) continue;
+      const key = card.askKey ?? card.k;
+      questionKeys.add(key);
+      needs.push({
+        kind: 'question',
+        uid: `card:${card.k}`,
+        id: card.lane ?? card.source,
+        key: '',
+        title: card.kicker ?? 'Question',
+        line: card.title ?? card.text,
+        options: options.map((option) => ({ label: option, cmd: `answer ${key} ${option}` })),
+        askKey: key,
+        askedAt: card.ts,
+        evidence: questionEvidence(card),
+        passedTo: null,
+        passedAt: null,
+        answeredBy: null,
+        passable: true,
+      });
+      continue;
+    }
+    if (card.type !== 'blocker' && card.type !== 'confirm') continue;
     if (card.type === 'blocker' && openLanes !== null && !openLanes.has(card.lane ?? card.source)) continue;
     const options: NeedOption[] = (card.btns ?? []).filter((button) => button.label.trim().length > 0).map((button) => ({ label: button.label, cmd: button.cmd }));
     needs.push({
@@ -163,6 +206,9 @@ export function buildNeeds(lanes: Lane[], cards: Message[], blockers?: Blocker[]
   }
   for (const lane of lanes) {
     if (!lane.question || lane.retiredAt !== null) continue;
+    // The same ask, already on the strip as a card. Both lists are built from the one
+    // inbox, so an ask with a live lane behind it arrives twice.
+    if (questionKeys.has(lane.question.key)) continue;
     const head = laneHeadline(lane);
     const question = lane.question;
     const opts = recommendedFirst(question.opts, question.recommended);

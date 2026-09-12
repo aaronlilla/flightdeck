@@ -106,3 +106,58 @@ describe('the strip ranks answerable first', () => {
     expect(buildNeeds([], [confirmCard('c1', { resolved: 'expired' })])).toEqual([]);
   });
 });
+
+/**
+ * Every open question reaches the console as a `question` card on the thread response's
+ * card list. The strip took `blocker` and `confirm` cards only, so all 92 open questions
+ * on the live console were dropped: the one surface whose job is to say what needs a
+ * person was the one surface that never showed a question (measured 2026-09-12).
+ */
+describe('open questions reach the strip', () => {
+  function questionCard(key: string, patch: Partial<Message> = {}): Message {
+    return {
+      k: `question-${key}`, type: 'question', text: 'Build it here, or hold until BB-86 lands?',
+      ts: NOW - 60_000, source: 'item:Q-fc2090a8', askKey: key,
+      opts: ['Build it here', 'Hold'], recommended: 0, optionSource: 'drafted',
+      ...patch,
+    };
+  }
+
+  it('renders a question card as something to answer', () => {
+    const [need] = buildNeeds([], [questionCard('k1')]);
+    expect(need?.kind).toBe('question');
+    expect(need?.line).toContain('Build it here');
+    expect(need?.options.map((option) => option.label)).toEqual(['Build it here', 'Hold']);
+  });
+
+  it('posts the answer against the ask key, not the card key', () => {
+    const [need] = buildNeeds([], [questionCard('k1')]);
+    expect(need?.options[0]?.cmd).toBe('answer k1 Build it here');
+  });
+
+  it('leads with the recommended option', () => {
+    const [need] = buildNeeds([], [questionCard('k1', { opts: ['Hold', 'Build it here'], recommended: 1 })]);
+    expect(need?.options[0]?.label).toBe('Build it here');
+  });
+
+  it('says in its evidence that the options were drafted rather than the agent’s own', () => {
+    const [need] = buildNeeds([], [questionCard('k1')]);
+    expect(need?.evidence.some((line) => line.includes('drafted'))).toBe(true);
+  });
+
+  it('skips a question carrying nothing to choose between', () => {
+    expect(buildNeeds([], [questionCard('k1', { opts: [] })])).toEqual([]);
+  });
+
+  it('shows one entry when the same ask arrives as a card and as a lane question', () => {
+    const lane = laneWithQuestion('lane-1', NOW - 60_000);
+    const needs = buildNeeds([lane], [questionCard('k1')]);
+    expect(needs).toHaveLength(1);
+    expect(needs[0]?.askKey).toBe('k1');
+  });
+
+  it('ranks a real question ahead of a contentless confirm', () => {
+    const needs = buildNeeds([], [confirmCard('dead', { ts: NOW - 900_000 }), questionCard('k1')]);
+    expect(needs[0]?.kind).toBe('question');
+  });
+});
