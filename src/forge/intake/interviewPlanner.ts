@@ -15,7 +15,8 @@
 import type { Packet, Reasoner } from '../contracts.ts';
 import { ITEM_RUN_PREFIX, type Inbox, type InboxEntry } from '../inbox.ts';
 import {
-  interview, writeBrief, type InterviewAnswer, type InterviewQuestion, type JournalAppend,
+  interview, writeBrief, readConflictSignal,
+  type InterviewAnswer, type InterviewQuestion, type JournalAppend,
 } from './interview.ts';
 import type { InterviewRecords } from './interviewStore.ts';
 import type { QueuePlanOutcome } from './queue.ts';
@@ -223,76 +224,22 @@ const CONTRADICTION_MARKER = 'single-tap-vs-shared-component contradiction';
  * differently-worded version of the same conflict, and it never inspects the
  * repository -- it reads the collected decisions only.
  */
-/**
- * Whether an answer ASKS FOR a second tap, rather than ruling one out. The distinction
- * is the whole check: "do not require a second tap" is the conflict, and "require a
- * second tap to activate" is the conflict already resolved. Matching the phrase either
- * way made the detector negation-blind and parked items on a settled decision -- found
- * by code review, 2026-09-12.
- */
-function requiresASecondTap(answer: string): boolean {
-  const mentions = /(second tap|two taps|tap again)/i.test(answer);
-  if (!mentions) return false;
-  // Word-bounded (code review, 2026-09-12): bare `no` matched inside "nothing", "now"
-  // and "know", so the disqualifier fired on three of four natural phrasings of the
-  // settled decision and parked the ticket anyway.
-  const ruledOut = /\b(do not|don'?t|never|no|without|rather than|instead of)\b[^.]{0,40}\b(second tap|two taps|tap again)\b/i
-    .test(answer);
-  return !ruledOut;
-}
-
-export function findKnownContradiction(allAnswers: InterviewAnswer[]): string | undefined {
-  if (allAnswers.some((a) => a.question.includes(CONTRADICTION_MARKER))) return undefined;
-  // Decisions only, which is what the docblock above promises (code review,
-  // 2026-09-12). The scout's answers describe code that already exists, and a citation
-  // like "dismissal already lives in the shared component src/ui/common/Cards.tsx"
-  // satisfies half the conflict on its own. A description of the repository is not
-  // somebody deciding something, and holding a ticket on one is the false positive.
-  const answers = allAnswers.filter((a) => a.answeredBy !== 'the repo');
-  const buildsDismissalIntoSharedComponent = answers.some(
-    (a) => /shared|reusable/i.test(a.answer)
-      && /component/i.test(a.answer)
-      && /(outside[- ]press|backdrop|dismiss)/i.test(a.answer),
-  );
-  // `second tap` was in the positive alternation until code review, 2026-09-12, which
-  // made the check negation-blind: an interview that had already settled on resolution
-  // (a) -- "a single tap closes it, a second tap activates" -- matched every half and
-  // parked the item on a follow-up nobody needed. That answer is the conflict RESOLVED,
-  // not the conflict. The conflict is one tap doing both, so any wording that hands the
-  // activation to a second tap disqualifies the match.
-  const wantsSingleTapThrough = answers.some(
-    (a) => /single tap/i.test(a.answer)
-      && /(close|dismiss)/i.test(a.answer)
-      && /(activate|go through)/i.test(a.answer)
-      && !requiresASecondTap(a.answer),
-  );
-  if (!buildsDismissalIntoSharedComponent || !wantsSingleTapThrough) return undefined;
-  return `${CONTRADICTION_MARKER}: two earlier decisions conflict. One says the `
-    + 'outside-press dismissal belongs in the shared component; another says a single '
-    + 'tap must both close the drop-down and activate whatever is under it. In React '
-    + 'Native, whatever view sits on top at those coordinates is the only touch target '
-    + '-- a backdrop confined to the shared component will swallow the tap it closes on, '
-    + 'so true single-tap dismiss-and-activate needs a listener placed above the '
-    + 'component instead. Which do you want: (a) keep the dismissal in the shared '
-    + 'component and accept that a second tap activates the element, or (b) move the '
-    + 'dismiss listener above the component so one tap does both?';
-}
-
 async function finishBrief(
   packet: Packet, answers: InterviewAnswer[], ticket: string, itemId: string, deps: InterviewPlannerDeps,
 ): Promise<QueuePlanOutcome> {
-  const contradiction = findKnownContradiction(answers);
-  if (contradiction) {
+  const brief = await writeBrief(packet, answers, deps.reasoner);
+
+  // The planner read every settled decision against every other one and refused to write
+  // a brief over a conflict. Judgement lives there because that call already carries all
+  // the answers; this side only spots the signal and holds the item. The previous version
+  // matched two hardcoded patterns here, caught one conflict in one phrasing, and needed
+  // two review fixes for false positives before it shipped.
+  const signal = alreadyAskedAboutAConflict(answers) ? null : readConflictSignal(brief.text);
+  if (signal) {
     const entry = deps.inbox.raise({
       run: askRunFor(itemId),
-      question: contradiction,
-      // The question spells out two choices in prose; without them as options the card
-      // showed nothing selectable and answer-by-number was dead (code review,
-      // 2026-09-12).
-      options: [
-        'keep the dismissal in the shared component and accept that a second tap activates the element',
-        'move the dismiss listener above the component so one tap does both',
-      ],
+      question: `${CONTRADICTION_MARKER}: ${signal.question}`,
+      options: signal.options,
       recommended: null,
       optionSource: 'drafted',
       kind: 'question',
@@ -305,16 +252,24 @@ async function finishBrief(
         answerableBy: 'aaron', question: entry.question,
       });
     }
-    // Carry forward only what never touched the inbox (scout answers): whatever is
-    // already an inbox entry for this item comes back through `asksForItem` on its own
-    // next hop, and re-storing it here would double it up in the merged answer list.
-    const inboxQuestions = new Set(asksForItem(deps.inbox, itemId).map((entry2) => entry2.question));
-    const carryForward = answers.filter((a) => !inboxQuestions.has(a.question));
-    deps.records.put({ itemId, ticket, at: Date.now(), answers: carryForward });
+    // Carry forward only what never touched the inbox: whatever is already an inbox
+    // entry for this item comes back through `asksForItem` on its own next hop, and
+    // re-storing it here would double it up in the merged answer list.
+    const inboxQuestions = new Set(asksForItem(deps.inbox, itemId).map((e) => e.question));
+    deps.records.put({
+      itemId, ticket, at: Date.now(),
+      answers: answers.filter((a) => !inboxQuestions.has(a.question)),
+    });
     return { waiting: 'interview', asks: 1 };
   }
-  const brief = await writeBrief(packet, answers, deps.reasoner);
+
   const written = await deps.writeBriefFile({ ticket, itemId, text: brief.text });
   deps.records.clear(itemId);
   return { ticket, repo: written.repo, briefPath: written.briefPath };
+}
+
+/** Once the conflict follow-up is answered its own question is among the settled answers,
+ *  so the same pair never holds the item twice. */
+function alreadyAskedAboutAConflict(answers: InterviewAnswer[]): boolean {
+  return answers.some((a) => a.question.includes(CONTRADICTION_MARKER));
 }

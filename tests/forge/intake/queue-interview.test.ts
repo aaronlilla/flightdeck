@@ -21,7 +21,7 @@ import {
 } from '../../../src/forge/intake/queue.js';
 import { QueueStore } from '../../../src/forge/intake/queueStore.js';
 import {
-  askRunFor, asksForItem, findKnownContradiction, planTicketWithInterview,
+  askRunFor, asksForItem, planTicketWithInterview,
 } from '../../../src/forge/intake/interviewPlanner.js';
 import { scoutAnswer } from '../../../src/forge/intake/scout.js';
 import { MemoryInterviewStore } from '../../../src/forge/intake/interviewStore.js';
@@ -494,74 +494,7 @@ const SINGLE_TAP_DISMISS_AND_ACTIVATE = {
   answeredBy: 'the operator',
 };
 
-describe('findKnownContradiction: item 11', () => {
-  it('raises a follow-up when the shared-component fix and single-tap-through decisions collide', () => {
-    const found = findKnownContradiction([OUTSIDE_PRESS_INTO_SHARED_COMPONENT, SINGLE_TAP_DISMISS_AND_ACTIVATE]);
-    expect(found).toBeDefined();
-    expect(found).toContain('single-tap-vs-shared-component contradiction');
-  });
-
-  it('says nothing when the answers agree (a second, unrelated pair of decisions)', () => {
-    const found = findKnownContradiction([
-      { question: 'Which screen shows the crash?', answer: 'VoucherList.tsx', answeredBy: 'the repo' },
-      { question: 'Hide the row or show a zero?', answer: 'Hide the row entirely.', answeredBy: 'the operator' },
-    ]);
-    expect(found).toBeUndefined();
-  });
-
-  // Found by code review, 2026-09-12: the two predicates are negation-blind, so an
-  // interview that had ALREADY settled on option (a) matched both halves and parked the
-  // item on a follow-up nobody needed. That is the false positive the docblock warns
-  // against, and it is worse than the bug: it holds a ticket on an imagined conflict.
-  // Found by code review, 2026-09-12: `no` sat in the negation alternation with no word
-  // boundary, so it matched inside "nothing", "now" and "know" and the disqualifier
-  // fired on three of four natural phrasings of the settled decision.
-  it.each([
-    'a single tap closes the drop-down and nothing else; a second tap activates the item',
-    'a single tap closes the drop-down; the user must now tap again to activate it',
-    'a single tap closes the drop-down; we know a second tap activates whatever is under it',
-  ])('says nothing when the second-tap resolution is worded as: %s', (settled) => {
-    const answers = [
-      {
-        question: 'where does dismissal live?',
-        answer: 'build the outside-press backdrop into the shared component',
-        answeredBy: 'aaron',
-      },
-      { question: 'what does a tap outside do?', answer: settled, answeredBy: 'aaron' },
-    ];
-    expect(findKnownContradiction(answers)).toBeUndefined();
-  });
-
-  it('says nothing when the answers already settled on the second-tap resolution', () => {
-    const answers = [
-      {
-        question: 'where does dismissal live?',
-        answer: 'build the outside-press backdrop into the shared component',
-        answeredBy: 'aaron',
-      },
-      {
-        question: 'what does a tap outside do?',
-        answer: 'a single tap closes the drop-down; require a second tap to activate whatever is under it',
-        answeredBy: 'aaron',
-      },
-    ];
-    expect(findKnownContradiction(answers)).toBeUndefined();
-  });
-
-  it('does not re-raise once its own follow-up question is already among the answers', () => {
-    const resolved = {
-      question: 'single-tap-vs-shared-component contradiction: ...',
-      answer: 'Keep the dismissal in the shared component; accept a second tap.',
-      answeredBy: 'the operator',
-    };
-    const found = findKnownContradiction([
-      OUTSIDE_PRESS_INTO_SHARED_COMPONENT, SINGLE_TAP_DISMISS_AND_ACTIVATE, resolved,
-    ]);
-    expect(found).toBeUndefined();
-  });
-});
-
-describe('the planning hop raises a follow-up on a known contradiction (item 11)', () => {
+describe('the planning hop holds the item when the planner reports a conflict', () => {
   function answeredAsk(inbox: Inbox, itemId: string, ticket: string, question: string, answer: string): void {
     const entry = inbox.raise({
       run: askRunFor(itemId), question, options: [], recommended: null, optionSource: 'drafted',
@@ -572,7 +505,20 @@ describe('the planning hop raises a follow-up on a known contradiction (item 11)
 
   function minimalDeps(inbox: Inbox, briefsWritten: string[]) {
     return {
-      reasoner: { provider: 'claude', async call() { return { text: '# Goal: fix it\n' }; } } as Reasoner,
+      reasoner: {
+        provider: 'claude',
+        async call({ prompt }: { prompt: string }) {
+          // The planner reads every settled answer in its own prompt and refuses there.
+          const collides = prompt.includes(OUTSIDE_PRESS_INTO_SHARED_COMPONENT.answer)
+            && prompt.includes(SINGLE_TAP_DISMISS_AND_ACTIVATE.answer);
+          if (!collides) return { text: '# Goal: fix it\n' };
+          return {
+            text: 'CONTRADICTION: decisions 1 and 2 cannot both hold; a backdrop inside the '
+              + 'shared component swallows the tap it closes on. Which do you want?\n'
+              + 'OPTIONS: keep it in the component and accept a second tap | move the listener above it',
+          };
+        },
+      } as unknown as Reasoner,
       inbox,
       records: new MemoryInterviewStore(),
       packetFor: async (ticket: string) => packetFor(ticket),
@@ -602,7 +548,7 @@ describe('the planning hop raises a follow-up on a known contradiction (item 11)
     expect(briefsWritten).toHaveLength(0);
     const asks = asksForItem(inbox, 'ITEM-1');
     expect(asks).toHaveLength(3);
-    expect(asks.some((a) => a.question.includes('single-tap-vs-shared-component contradiction'))).toBe(true);
+    expect(asks.some((a) => a.question.includes('cannot both hold'))).toBe(true);
   });
 
   it('writes the brief unchanged when the collected answers do not conflict', async () => {
@@ -633,7 +579,7 @@ describe('the planning hop raises a follow-up on a known contradiction (item 11)
     expect('waiting' in first).toBe(true);
 
     const followUp = asksForItem(inbox, 'ITEM-3').find(
-      (a) => a.question.includes('single-tap-vs-shared-component contradiction'),
+      (a) => a.question.includes('cannot both hold'),
     )!;
     inbox.answer(followUp.key, 'Keep it in the shared component; accept a second tap.');
 
