@@ -169,33 +169,21 @@ export async function enforceRulesOnce(deps: EnforcementDeps): Promise<void> {
         // argument the operator's own click was then journalled as the rule's.
         const fresh = deps.inbox.entry(ask.key);
         if (!fresh || fresh.answer !== undefined) continue;
-        // A person is already on this one, so the rule stands down -- but only while
-        // that is still true of a person who might act. Nothing clears a pass on its
-        // own, so a question passed to somebody on holiday blocked the rule on every
-        // tick, forever, with no row saying why, where before the guard the rule
-        // unblocked the run (code review, 2026-09-12). Past the window the rule takes
-        // it and journals that it overtook a person, so the stand-down can never be
-        // the silent stall it was meant to prevent.
-        //
-        // `reply` is a
-        // teammate's words waiting on the operator to confirm them -- answering over it
-        // overwrote the teammate's name, the only record that they replied at all.
-        // `passedTo` is a question out with a teammate who has not replied yet; closing
-        // it by heuristic discards their reply with no acknowledgement, and the pass
-        // window is hours where the reply window is seconds.
         // No stand-down here, deliberately (2026-09-12). One was added when a review
         // found a rule overwriting a teammate's name, and four rounds then alternated
         // between two harms: guard the ask and a question held by somebody on holiday
-        // blocks the rule forever; age the guard out and the rule discards a real reply
-        // the operator never saw. Both reviews were right, which makes it a policy call
-        // and not a defect to patch again.
+        // blocks the rule forever, because nothing clears a pass or a reply on its own;
+        // age the guard out and the rule discards a real reply nobody saw. Both
+        // readings were right, which makes it a policy call and not a defect to patch
+        // a fifth time.
         //
         // The harm that started it is closed elsewhere: `answeredDirectlyBy` is its own
         // field, so a rule answering over a reply credits itself and leaves `answeredBy`
         // and `reply` exactly as the teammate left them. Nothing is destroyed, and the
-        // rule unblocks the run the way it did before this branch. Whether it SHOULD
-        // defer to a waiting person is Aaron's to decide, and it wants a window on both
-        // sides rather than a bare skip on one.
+        // rule unblocks the run the way it did before this branch. A real deferral
+        // needs a window on both the pass and the reply side, and the person holding
+        // the question needs telling when it is taken -- neither exists yet, and the
+        // row below is the only record that it happened.
         const answered = deps.inbox.answer(ask.key, rule.effect, `the auto-answer rule "${rule.title}"`);
         if (answered) {
           // A rule answering over a person's open pass or reply says so, once the answer
@@ -205,6 +193,7 @@ export async function enforceRulesOnce(deps: EnforcementDeps): Promise<void> {
           if (fresh.passedTo || fresh.reply !== undefined) {
             appendOnce(deps.runActions.journalPath, {
               event: 'decision.made', actor: 'rule', action: 'rule.enforced', ruleId: rule.id,
+              ...(answered.runs[0] ? { run: answered.runs[0] } : {}),
               text: `auto-answer answered over a question held by ${fresh.passedTo ?? fresh.answeredBy}`
                 + ` on ${ask.key}${fresh.reply === undefined ? ', who had not replied' : ', whose reply was waiting'}`,
             });
@@ -215,6 +204,10 @@ export async function enforceRulesOnce(deps: EnforcementDeps): Promise<void> {
           );
           appendOnce(deps.runActions.journalPath, {
             event: 'decision.made', actor: 'rule', action: 'rule.enforced', ruleId: rule.id,
+            // Carried so the lane's own thread and cost sheet see the row; both match
+            // on `run` and a rule's answer was invisible on them (code review,
+            // 2026-09-12).
+            ...(answered.runs[0] ? { run: answered.runs[0] } : {}),
             text: `auto-answer enforced on ${ask.key}`,
           });
         }

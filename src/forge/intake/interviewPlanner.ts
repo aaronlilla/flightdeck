@@ -13,7 +13,6 @@
  * `planning`, `running` and `queued`) and would wait for a person to click Retry.
  */
 import type { Packet, Reasoner } from '../contracts.ts';
-import { redact } from '../redact.ts';
 import { ITEM_RUN_PREFIX, type Inbox, type InboxEntry } from '../inbox.ts';
 import { interview, writeBrief, type InterviewAnswer, type InterviewQuestion, type JournalAppend } from './interview.ts';
 import type { InterviewRecords } from './interviewStore.ts';
@@ -97,10 +96,17 @@ export function journalInterviewAnswer(
     // of `answeredByOf` already guards against, so a caller that knows better says so.
     answeredBy: answeredBy ?? answeredByOf(answered),
     // The row said an answer landed and never what it was, so two corrections of the same
-    // ask read the same apart from their sequence. Scrubbed on the way in (code review,
-    // 2026-09-12): this is free text a person typed, the journal is served to every
-    // console client, and an answer naming a credential would otherwise sit in it.
-    answer: redact(answered.answer ?? ''),
+    // ask read the same apart from their sequence.
+    //
+    // Not run through `redact` (code review, 2026-09-12). Its pattern is any unbroken
+    // 24-character run, which is sized for log lines, not for a sentence somebody
+    // typed: "deploy-develop-workflow-fingerprint" is erased whole while "sk-abc123"
+    // passes, so it fails in both directions and leaves the row saying an answer
+    // landed without saying what it was -- the state this field exists to fix. The
+    // journal already carries `interview.asked`'s question text unscrubbed, so this is
+    // the same exposure rather than a new one, and a redaction pass over the journal as
+    // a whole is the fix. Named in the finishing work.
+    answer: answered.answer ?? '',
   });
 }
 
