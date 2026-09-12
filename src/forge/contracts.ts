@@ -377,6 +377,10 @@ export const FORGE_EVENT_NAMES = [
   // already exists. `pr-opened.no-key` records a pull request that named none, and
   // `pr-opened.failed` a write the issue tracker refused.
   'pr-opened.assigned', 'pr-opened.transitioned', 'pr-opened.failed', 'pr-opened.no-key',
+  // Fired instead of a move when the automatic path did nothing and the reason is not
+  // the ticket's: no pull request readable at the checkout, no tracker credentials, or
+  // the handoff itself throwing. A ticket that did not move always says why.
+  'pr-opened.skipped',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];

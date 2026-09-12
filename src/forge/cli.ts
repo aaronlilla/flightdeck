@@ -106,6 +106,8 @@ import {
 import { readChainEnv, repoKindFor } from './chain-env.js';
 import { checkOutwardDraft, draftReportLines, type OutwardDraft } from './intake/draftCheck.js';
 import { runPrOpenedHandoff } from './intake/prOpened.js';
+import { handlePullRequestOpened, readPrAtCheckout } from './intake/prOpenedWatch.js';
+import { run as execRun } from './exec.js';
 import { buildChainDeps, hasRunRegistered } from './chain-wire.js';
 import { isGoalFile } from './intake/goalFile.js';
 import { installShutdown } from './service/shutdown.js';
@@ -1273,6 +1275,28 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           registry.setSession(slug, sessionId, model);
           lanes.put(slug, { session_id: sessionId });
         },
+        // The ticket moves the moment the pull request opens. Without this the fix
+        // existed and nothing called it, so a pull request opened by a worker still left
+        // its ticket reading Backlog -- the board-lies defect, one step removed.
+        onPullRequestOpened: (cwd) => handlePullRequestOpened(cwd, {
+          readPrAt: readPrAtCheckout(execRun),
+          client: () => {
+            const config = jiraConfigFromEnv();
+            return config ? createJiraWriteClient(config) : null;
+          },
+          env: () => ({
+            wipAccountId: process.env['FORGE_JIRA_WIP_ACCOUNT'],
+            wipTransitionId: process.env['FORGE_JIRA_WIP_TRANSITION'],
+          }),
+          emit: (event) => {
+            const prJournal = new Journal(journalPath());
+            try {
+              prJournal.append({ ...event, actor: 'queue' } as never);
+            } finally {
+              prJournal.close();
+            }
+          },
+        }),
       });
       const worker = new Worker({
         run: slug,
