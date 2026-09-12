@@ -513,9 +513,7 @@ async function unresolvedAfterReason(
  * own. Called for an item already `planning` or `running` too, so a crash between two
  * hops picks up exactly where it stopped rather than repeating work already done.
  */
-export async function advanceItem(
-  itemIn: QueueItem, deps: QueueRuntimeDeps,
-): Promise<QueueItem> {
+export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Promise<QueueItem> {
   let item = itemIn;
 
   // 2026-09-08: a `goal` item skips planning, provisioning, the council and the gate
@@ -1019,7 +1017,6 @@ export async function runQueueTick(deps: QueueRuntimeDeps, items: QueueItem[]): 
       }
     }
   }
-
 
   let advanced = 0;
   for (const item of toAdvance) {

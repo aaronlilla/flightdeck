@@ -183,21 +183,11 @@ export class Narrator {
   private readonly store: NarrationStore;
   private readonly queue: NarrationRequest[] = [];
   private readonly pending = new Set<string>();
-  /** One hour of reservations, class-wide. A per-surface bucket was tried (2026-09-11)
-   *  and reverted the same round: it turned the configured ceiling into that same
-   *  ceiling *per surface*, which on a cold board with a dozen live surfaces is a dozen
-   *  times the spend the policy actually authorised. The class-wide bucket is the spend
-   *  control; `surface` rides along on the journaled row only so a capped fleet can say
-   *  which surface was asking, never to grant that surface its own allowance. */
   private readonly callTimes: number[] = [];
   /** Where the hour of calls is kept between processes. See `loadCallTimes`. */
   private readonly callsPath: string;
   private running = 0;
   private lastCappedRowAt = 0;
-  /** Throttle for the dedup-visibility row (`narration.deduped`): once per surface per
-   *  hour, the same reasoning as the cap row above -- a row per poll would be the same
-   *  storm this fix removes, just moved into the journal instead of the model bill. */
-  private readonly lastDedupedRowAtBySurface = new Map<string, number>();
   private idleWaiters: Array<() => void> = [];
 
   constructor(private readonly deps: NarratorDeps) {
@@ -265,7 +255,7 @@ export class Narrator {
   /** Whether a call may be reserved now, counting reservations rather than completions:
    *  a cap enforced only once calls come back is no cap at all when a cold board asks for
    *  a thousand sentences at once. Cache hits are never counted -- they cost nothing. */
-  private reserveCall(surface: string): boolean {
+  private reserveCall(): boolean {
     const cap = maxCallsPerHourFor(CLASS_NAME, this.deps.policyPath);
     const at = this.now();
     while (this.callTimes.length && at - (this.callTimes[0] ?? 0) >= HOUR_MS) this.callTimes.shift();
@@ -273,7 +263,7 @@ export class Narrator {
       if (at - this.lastCappedRowAt >= HOUR_MS) {
         this.lastCappedRowAt = at;
         this.deps.journal.append({
-          event: 'narration.capped', actor: 'narrator', class: CLASS_NAME, surface,
+          event: 'narration.capped', actor: 'narrator', class: CLASS_NAME,
           maxCallsPerHour: cap, servedTemplate: true,
         });
       }
@@ -291,20 +281,7 @@ export class Narrator {
     const key = narrationKey(input);
     const entry = this.store.get(key);
     if (entry) {
-      if (entry.verdict.ok) {
-        // The key is quantised (`narrationKey`), so a hit here can still carry a
-        // different raw template than the one just asked for -- a counter or a clock
-        // moved and the shape did not. That is the call this fix buys back; without a
-        // row for it the saving is invisible; the drift is checked before the cheap
-        // key-equality path below (a byte-identical repoll caused the same drift and
-        // reduces `entry.input.template` to a no-op comparison against itself, so no
-        // separate skip on that path).
-        if (entry.input.template !== input.template
-          || (entry.input.detailTemplate ?? '') !== (input.detailTemplate ?? '')) {
-          this.journalDeduped(input.surface);
-        }
-        return narratedFrom(input, entry.glance, entry.detail, entry.narratedAt);
-      }
+      if (entry.verdict.ok) return narratedFrom(input, entry.glance, entry.detail, entry.narratedAt);
       // A rejected narration is served as the template and never called again.
       return templateNarration(input);
     }
@@ -312,23 +289,10 @@ export class Narrator {
     return templateNarration(input);
   }
 
-  /** Once per surface per hour: the same throttle reasoning as `narration.capped`, so
-   *  the visibility row itself never becomes the storm it is reporting on. */
-  private journalDeduped(surface: string): void {
-    const at = this.now();
-    const lastRow = this.lastDedupedRowAtBySurface.get(surface) ?? 0;
-    if (at - lastRow < HOUR_MS) return;
-    this.lastDedupedRowAtBySurface.set(surface, at);
-    this.deps.journal.append({
-      event: 'narration.deduped', actor: 'narrator', class: CLASS_NAME, surface,
-      reason: 'a counter or a clock changed but the sentence shape did not; served the cached narration',
-    });
-  }
-
   private enqueue(key: string, input: NarrationRequest): void {
     if (!this.enabled()) return;
     if (this.pending.has(key)) return;
-    if (!this.reserveCall(input.surface)) return;
+    if (!this.reserveCall()) return;
     this.pending.add(key);
     this.queue.push(input);
     this.pump();

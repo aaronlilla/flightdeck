@@ -6,8 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { computeDid, computeYou, didFactsFor, nextCategoryFor } from '../../../src/forge/console/laneGlance.js';
-import { narrationKey } from '../../../src/forge/console/narrate.js';
+import { computeDid, computeYou, nextCategoryFor } from '../../../src/forge/console/laneGlance.js';
 import { computeNext } from '../../../src/forge/console/summary.js';
 import type { ForgeEvent } from '../../../src/forge/journal.js';
 import type { Lane, LaneReadiness, LaneState } from '../../../src/shared/console-model.js';
@@ -175,58 +174,5 @@ describe('computeYou agrees with computeNext, per state', () => {
     const pr = { no: 5, url: 'x', draft: false, merged: false, closed: true } as never;
     const l = lane({ state: 'done', pr, mergeable: { ok: false, why: 'closed without merging' } });
     expect(nextCategoryFor(l, false)).toBe('done-cleanup');
-  });
-});
-
-/**
- * 2026-09-11: the tool digest sentence climbs on every poll -- "Ran 3 commands.", then
- * "Ran 4 commands." -- and folding the tally out of the cache key was tried to stop it
- * buying a fresh model call each time. Withdrawn 2026-09-12: the cache then serves the
- * FIRST sentence for the life of the run, so a lane that has run 400 commands keeps
- * reading "Ran 2 commands." and an active lane looks stalled. A number that lies costs
- * more than the call it saves. These are the real sentences the live console produced.
- */
-describe('didFactsFor never declares its own digits noise', () => {
-  // Found by code review, 2026-09-12: flattening the tally out of the key means the
-  // cache serves the FIRST sentence for the life of the run. A lane that has since run
-  // 400 commands keeps reading "Ran 2 commands.", and a number that never moves makes
-  // an active lane look like a stalled one. Saving a model call is not worth telling
-  // the operator the lane stopped working.
-  it('does not fold a tally that has moved by two orders of magnitude into one key', () => {
-    const l = lane({ ticket: 'BBZ-169' });
-    const early = didFactsFor(l, 'Ran 2 commands.');
-    const later = didFactsFor(l, 'Ran 400 commands.');
-    expect(narrationKey(later!)).not.toBe(narrationKey(early!));
-  });
-
-  it('still separates two polls whose sentence shape actually changed', () => {
-    const l = lane({ ticket: 'BBZ-169' });
-    const ran = didFactsFor(l, 'Ran 4 commands.');
-    const searched = didFactsFor(l, 'Ran 4 commands, 1 search.');
-    expect(narrationKey(searched!)).not.toBe(narrationKey(ran!));
-  });
-
-  // Found by code review, 2026-09-11: declaring every unspoken digit noise swept in a
-  // pull request's own diff stats, so a growing pull request kept serving the stale
-  // numbers as fact. The tally rule must match the tool digest and nothing else.
-  it('keeps a pull request sentence apart when only its diff stats moved', () => {
-    const l = lane({ ticket: 'BBZ-169', pr: { no: 159, url: 'u' } as Lane['pr'] });
-    const small = didFactsFor(l, 'Opened draft PR #159: add the fee cap, 2 files +79 -12');
-    const grown = didFactsFor(l, 'Opened draft PR #159: add the fee cap, 7 files +240 -31');
-    expect(narrationKey(grown!)).not.toBe(narrationKey(small!));
-  });
-
-  it('keeps an agent report apart when only its own numbers moved', () => {
-    const l = lane({ ticket: 'BBZ-169' });
-    const a = didFactsFor(l, 'Backfilled 3 shards.');
-    const b = didFactsFor(l, 'Backfilled 9 shards.');
-    expect(narrationKey(b!)).not.toBe(narrationKey(a!));
-  });
-
-  it('leaves a pull request number alone, since another fact already speaks for it', () => {
-    const l = lane({ ticket: 'BBZ-169', pr: { no: 159, url: 'u' } as Lane['pr'] });
-    const a = didFactsFor(l, 'Opened #159.');
-    const b = didFactsFor(l, 'Opened #160.');
-    expect(narrationKey(b!)).not.toBe(narrationKey(a!));
   });
 });

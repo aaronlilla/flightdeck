@@ -280,11 +280,6 @@ export const FORGE_EVENT_NAMES = [
   // for the same reason: the detector below only read `src/forge/*.ts` and never
   // descended into `console/`, `intake/` or `council/`. It walks the tree now.
   'narration.capped',
-  // `narration.deduped` (`console/narrate-store.ts`, the 2026-09-11 poll-storm fix):
-  // once per surface per hour, when a cache hit's raw template drifted from the entry it
-  // matched -- a counter or a clock changed but the quantised key did not -- so the call
-  // this fix buys back leaves a visible row instead of a silent saving.
-  'narration.deduped',
   // R-11 part 2: the Jira watcher bridge's own tick row (`intake/watcherWire.ts`) --
   // `watcher.poll` once per poll that added, sent, or closed at least one item, and
   // `watcher.tick-error` for a tick that threw before any of those.

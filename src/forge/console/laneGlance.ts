@@ -62,7 +62,6 @@ function toolDigest(runEvents: ForgeEvent[]): string | null {
   return `Ran ${parts.join(', ')}.`;
 }
 
-
 function prDidSentence(pr: LanePr): string {
   const filesKnown = pr.files !== undefined && pr.add !== undefined && pr.del !== undefined;
   const stats = filesKnown ? `, ${pr.files} files +${pr.add} -${pr.del}` : '';
