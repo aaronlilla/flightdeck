@@ -804,6 +804,15 @@ export interface QueueItem {
    *  Once it reaches `PENDING_CHECKS_POLL_CAP` (`intake/queue.ts`), the item parks instead
    *  of retrying again, so a check that never finishes cannot hold an item forever. */
   pendingGatePolls?: number;
+  /** Item 1 (2026-09-11): how many times the tick has re-read this item's park reason and
+   *  decided. Counts held and successful attempts alike, capped at `PARK_RECOVERY_CAP`,
+   *  so a park nothing can clear stops costing journal rows instead of writing one per
+   *  tick forever. Absent means never re-read. */
+  recoveryAttempts?: number;
+  /** Item 1: set once when the park reason is one no machine can clear (a conflict, an
+   *  unrouted ticket, a backend hand-off). It marks the row as already judged, so the
+   *  reason is journalled once rather than every tick. */
+  recoveryDeclined?: boolean;
   /** The Queue view's two columns (2026-09-09, `Flightdeck Console.dc.html` 1c), filled by
    *  `GET /queue` at read time like `title`: why this item sits where it does in the
    *  order, and when it starts, in words. Absent on a response older than this field. */

@@ -55,6 +55,49 @@ export const QUEUE_IN_FLIGHT_STATES: readonly QueueItemState[] = ['planning', 'r
  *  ordinary CI time. */
 export const PENDING_CHECKS_POLL_CAP = 20;
 
+/** Item 1 (2026-09-11): how many times the tick may re-evaluate one parked item before
+ *  leaving it to a person for good. Bounded rather than endless because a recovery that
+ *  keeps trying forever is indistinguishable, from the operator's side, from a pipeline
+ *  that has quietly given up: three attempts is enough to cover a check that went green
+ *  a minute later, and few enough that the journal rows stay readable. */
+export const PARK_RECOVERY_CAP = 3;
+
+/** What re-reading would have to say before a parked item may move again. `checks` means
+ *  the park is about a pull request's checks; `run` means it is about a worker process
+ *  that may or may not still be alive. */
+export type ParkRecheck = 'checks' | 'run';
+
+export type ParkRecoverability =
+  | { recoverable: true; reRead: ParkRecheck }
+  | { recoverable: false; why: string };
+
+/**
+ * Item 1: whether a machine can decide this park on its own, read from the reason
+ * `advanceItem` wrote. Fail-closed by construction -- a reason this function does not
+ * recognise is NOT recoverable, so a new park reason added elsewhere never silently
+ * starts auto-recovering before anybody has thought about it.
+ */
+export function parkRecoverability(reason: string | null | undefined): ParkRecoverability {
+  const text = (reason ?? '').trim();
+  if (!text) return { recoverable: false, why: 'the park carries no reason to re-read' };
+  if (/^conflicts with /i.test(text)) {
+    return { recoverable: false, why: 'a merge conflict is a person\'s call, not a stale reading' };
+  }
+  if (/^unrouted$/i.test(text)) return { recoverable: false, why: 'nothing routed the ticket to a repository' };
+  if (/^backend:/i.test(text)) return { recoverable: false, why: 'the ticket was handed to the backend' };
+  if (/^overlaps /i.test(text)) return { recoverable: false, why: 'another item holds the same files' };
+  if (/checks (never settled|are pending)/i.test(text)) return { recoverable: true, reRead: 'checks' };
+  // Every run verdict `relaunchOnRetryOrPark` passes through (`stopped`, `exhausted`,
+  // `parked`, `unknown`) plus the launcher's own stale-liveness refusal: all of them are
+  // about a process, and all of them are answered by asking whether one is still alive.
+  if (/^(stopped|exhausted|parked|unknown|failed)$/i.test(text)) return { recoverable: true, reRead: 'run' };
+  if (/produced no event|has a registry row|no run on the board/i.test(text)) return { recoverable: true, reRead: 'run' };
+  // Item 2's own refusal: the retry is still wanted, the process was simply still alive.
+  // Re-reading liveness is exactly what decides it, so it recovers on the same path.
+  if (/^retry refused:/i.test(text)) return { recoverable: true, reRead: 'run' };
+  return { recoverable: false, why: `no rule covers the park reason "${text}"` };
+}
+
 // ---------------------------------------------------------------------------------------
 // Adding work
 // ---------------------------------------------------------------------------------------
@@ -327,6 +370,16 @@ export interface QueueRuntimeDeps {
    *  hand (the CLI gate, GitHub itself) lands on `done` on the next sweep instead of
    *  sitting in review with a Merge button forever (seen live 2026-09-07). */
   prMerged?: (repo: string, pr: number) => Promise<boolean>;
+  /** Item 1 (2026-09-11): the PR's current check conclusion, re-read when deciding
+   *  whether a park about checks has cleared. Undefined answers, and an absent
+   *  dependency, both read as "not green" -- this never guesses a check passed. */
+  checksConclusion?: (repo: string, pr: number) => Promise<string | undefined>;
+  /** Items 1 and 2 (2026-09-11): the live pid behind a run key, or undefined when no
+   *  process is alive for it. The registry's own liveness check (`registry.ts`
+   *  `processAlive`), handed in rather than read here so this file still spawns nothing.
+   *  Absent means this environment cannot tell, and the relaunch guard stands down --
+   *  the behaviour every caller had before the guard existed. */
+  runPid?: (runKey: string) => number | undefined;
   /** Reused from `chain.ts` unchanged. Whether `advanceItem` passes `merge: true` is
    *  this file's own decision (see `mergeAllowed` below), not whatever the caller wires
    *  this to. */
@@ -435,6 +488,18 @@ async function relaunchOnRetryOrPark(
   item: QueueItem, deps: QueueRuntimeDeps, reason: string, extra: Record<string, unknown>,
 ): Promise<QueueItem> {
   if (item.retriedAt) {
+    // Item 2 (2026-09-11): the relaunch below clears `runKey` and provisions a fresh run
+    // on the SAME worktree. Doing that while the first worker's process is still alive
+    // puts two agents on one working tree; it happened live on 2026-09-11 and cost eight
+    // minutes of a worker's uncommitted work. The retry is not thrown away -- the marker
+    // stays set, so the next tick tries again once the process is gone.
+    const pid = item.runKey ? deps.runPid?.(item.runKey) : undefined;
+    if (pid !== undefined) {
+      return writeTransition(
+        item, { state: 'parked', reason: `retry refused: ${item.runKey} is still running as pid ${pid}` },
+        deps, 'queue.relaunch-refused', { runKey: item.runKey, pid },
+      );
+    }
     const relaunching = writeTransition(
       item, { runKey: null, retriedAt: null }, deps, 'queue.relaunch-on-retry',
       { previousRunKey: item.runKey, parkReason: reason },
@@ -964,11 +1029,87 @@ export function queueBusy(): boolean {
   return advancing.size > 0;
 }
 
+/**
+ * Item 1 (2026-09-11): one pass over the parked rows, re-reading whatever the park was
+ * about and deciding, per item, whether it may move again. Everything it does is
+ * journalled -- `queue.recovered` when an item is handed back to the worker,
+ * `queue.recovery-held` when the re-read says not yet, `queue.recovery-declined` once
+ * for a park no machine can clear. A recovery that leaves no row is how a pipeline lies
+ * to its operator, so there is no silent branch here.
+ *
+ * Bounded by `PARK_RECOVERY_CAP` attempts per item, counted on the item itself, so a
+ * park that never clears costs three rows and then stops rather than one row per tick
+ * for as long as the console runs.
+ */
+async function recoverParkedItems(deps: QueueRuntimeDeps, items: QueueItem[]): Promise<number> {
+  let recovered = 0;
+  for (const item of items) {
+    if (item.state !== 'parked') continue;
+    const verdict = parkRecoverability(item.reason);
+    if (!verdict.recoverable) {
+      // Once per item, never once per tick: `recoveryDeclined` is the marker that this
+      // park has already been read and judged a person's call.
+      if (!item.recoveryDeclined) {
+        writeTransition(item, { recoveryDeclined: true }, deps, 'queue.recovery-declined', { why: verdict.why, parkReason: item.reason });
+      }
+      continue;
+    }
+    const attempts = item.recoveryAttempts ?? 0;
+    if (attempts >= PARK_RECOVERY_CAP) continue;
+
+    let found: string;
+    let clear = false;
+    if (verdict.reRead === 'checks') {
+      if (!deps.checksConclusion || !item.repo || !item.pr) {
+        found = 'no checks reader wired';
+      } else {
+        found = (await deps.checksConclusion(item.repo, item.pr.no)) ?? 'unknown';
+        clear = found === 'SUCCESS';
+      }
+    } else if (!deps.runPid) {
+      found = 'no liveness reader wired';
+    } else {
+      const pid = item.runKey ? deps.runPid(item.runKey) : undefined;
+      found = pid === undefined ? 'no live process' : `run still alive (pid ${pid})`;
+      clear = pid === undefined;
+    }
+
+    const attempt = attempts + 1;
+    if (!clear) {
+      writeTransition(
+        item, { recoveryAttempts: attempt }, deps, 'queue.recovery-held',
+        { reRead: verdict.reRead, found, parkReason: item.reason, attempt, cap: PARK_RECOVERY_CAP },
+      );
+      continue;
+    }
+    // Same landing rule `retryItem` uses: a run already exists means this item re-enters
+    // at the status/gate hop (`running`), never at the plan/launch hop.
+    const state: QueueItemState = item.runKey ? 'running' : 'queued';
+    writeTransition(
+      item,
+      {
+        state, reason: null, recoveryAttempts: attempt,
+        ...(item.runKey ? { retriedAt: deps.clock() } : {}),
+        ...(item.pendingGatePolls ? { pendingGatePolls: 0 } : {}),
+      },
+      deps, 'queue.recovered',
+      { reRead: verdict.reRead, found, parkReason: item.reason, attempt, decided: `moved to ${state}` },
+    );
+    recovered += 1;
+  }
+  return recovered;
+}
+
 export async function runQueueTick(deps: QueueRuntimeDeps, items: QueueItem[]): Promise<QueueTickResult> {
   if (deps.killSwitch()) return { started: 0, advanced: 0, killSwitchEngaged: true, paused: false };
   if (deps.paused()) return { started: 0, advanced: 0, killSwitchEngaged: false, paused: true };
 
   items = items.filter((item) => !advancing.has(item.id));
+  // Item 1: parked rows are re-read before the width is worked out, so an item handed
+  // back to the worker this tick is advanced on this tick rather than the next one.
+  if (await recoverParkedItems(deps, items)) {
+    items = deps.store.all().filter((item) => !advancing.has(item.id));
+  }
   const inFlight = items.filter((item) => QUEUE_IN_FLIGHT_STATES.includes(item.state));
   const queued = items.filter((item) => item.state === 'queued');
   // R-76: an item waiting on an interview answer is in `planning` and therefore counts as

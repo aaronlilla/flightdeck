@@ -209,6 +209,68 @@ export class Breaker {
   }
 }
 
+/** Item 6 (2026-09-11): whether a launch may drop a lane's `needs_aaron` flag by itself. */
+export type StaleBlockClearance = { clear: true; signal: string } | { clear: false; why: string };
+
+/** The liveness signals `liveness.ts#assess` writes onto a lane, by the shape of the hint
+ *  it phrases each one with. Every one of them is a reading ABOUT A PROCESS: once that
+ *  process is gone the reading describes history, and the folded journal keeps it exactly
+ *  as it was the instant the process died. */
+const STALE_READING_HINTS: Array<{ re: RegExp; signal: string }> = [
+  { re: /has produced no event for/i, signal: 'idle' },
+  { re: /call has run \d+s past the/i, signal: 'tool-budget' },
+  { re: /tokens against its .* class ceiling/i, signal: 'context' },
+];
+
+/**
+ * Item 6: a launch refused five times in a row on 2026-09-11 because the warden's idle
+ * trip stayed on the lane after the run it described was gone and the idle budget had
+ * been widened. The reading is cleared here only when the condition that produced it is
+ * cleared too -- the process is dead -- and never otherwise.
+ *
+ * The breaker's own zero-turn-start block is deliberately NOT covered: that counts failed
+ * STARTS, and `Breaker`'s own comment says in writing that a window rolling off must not
+ * hand the lane back without anyone having looked. Nothing here changes that.
+ */
+export function clearanceForStaleBlock(input: { reason: string | null | undefined; runAlive: boolean }): StaleBlockClearance {
+  const reason = (input.reason ?? '').trim();
+  if (!reason) return { clear: false, why: 'the lane carries no reason to re-read' };
+  const match = STALE_READING_HINTS.find((hint) => hint.re.test(reason));
+  if (!match) {
+    return { clear: false, why: `no rule covers this block: "${reason.slice(0, 120)}"` };
+  }
+  if (input.runAlive) {
+    return { clear: false, why: 'the run that tripped it is still alive, so the reading is not stale' };
+  }
+  return { clear: true, signal: match.signal };
+}
+
+export interface StaleBlockDeps {
+  lanes: Lanes;
+  breaker: Breaker;
+  /** Whether a process is alive for this run key. */
+  runAlive: (slug: string) => boolean;
+  append: (row: Record<string, unknown>) => void;
+}
+
+/**
+ * Item 6: reads the lane's flag, decides, and -- only on a clear -- hands the lane back
+ * and journals what it dropped. A recovery that leaves no row is how a pipeline lies to
+ * its operator, so the clear and the row are one step.
+ */
+export function clearStaleBlock(slug: string, deps: StaleBlockDeps): StaleBlockClearance {
+  const reason = deps.lanes.get(slug)?.needs_aaron ?? null;
+  if (!reason) return { clear: false, why: 'the lane is not blocked' };
+  const verdict = clearanceForStaleBlock({ reason, runAlive: deps.runAlive(slug) });
+  if (!verdict.clear) return verdict;
+  deps.breaker.clear(slug);
+  deps.append({
+    event: 'lane.block-cleared', run: slug, actor: 'launcher', signal: verdict.signal, dropped: reason,
+    why: 'the run that produced this reading is gone and the item is being deliberately relaunched',
+  });
+  return verdict;
+}
+
 
 /**
  * The whole fleet, and the one control that has to work when nothing else does.
