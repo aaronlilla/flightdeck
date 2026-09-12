@@ -23,6 +23,14 @@ export interface PrOpenedEnv {
   wipTransitionId?: string;
 }
 
+export interface PrOpenedResult {
+  lines: string[];
+  /** How many writes the issue tracker refused. A caller exits non-zero on any of them:
+   *  a command that reports success while the ticket still reads Backlog reproduces the
+   *  defect it exists to stop (review, 2026-09-12). */
+  failed: number;
+}
+
 export interface PrOpenedEvent {
   event: 'pr-opened.assigned' | 'pr-opened.transitioned' | 'pr-opened.failed' | 'pr-opened.no-key';
   ticket?: string;
@@ -72,31 +80,52 @@ async function perform(
  */
 export async function runPrOpenedHandoff(
   client: JiraWriteClient,
-  input: { prUrl: string; title: string; body: string },
+  input: { prUrl: string; title: string },
   env: PrOpenedEnv,
   emit: (event: PrOpenedEvent) => void,
-): Promise<string[]> {
-  const keys = ticketKeysIn(`${input.title}\n${input.body}`);
+): Promise<PrOpenedResult> {
+  // The TITLE only. A body reads "blocked by ACME-100" or "follow-up to ACME-88" all the
+  // time, and taking keys from it pulls unrelated tickets out of the backlog and onto
+  // somebody's plate (review, 2026-09-12). The title is the ownership claim -- the
+  // readability contract already requires exactly one key in it.
+  const keys = ticketKeysIn(input.title);
   if (keys.length === 0) {
     emit({ event: 'pr-opened.no-key', prUrl: input.prUrl });
-    return [`${input.prUrl} names no ticket key; nothing to move`];
+    return { lines: [`${input.prUrl} names no ticket key in its title; nothing to move`], failed: 0 };
   }
 
   const lines: string[] = [];
+  let failed = 0;
   for (const ticket of keys) {
     if (env.wipAccountId) {
-      lines.push(await perform('pr-opened.assigned', ticket, input.prUrl, () => client.assign(ticket, env.wipAccountId!), emit));
+      const line = await perform('pr-opened.assigned', ticket, input.prUrl, () => client.assign(ticket, env.wipAccountId!), emit);
+      if (line.startsWith('pr-opened.assigned') && line.includes('failed')) failed += 1;
+      lines.push(line);
     }
     if (env.wipTransitionId) {
-      lines.push(await perform('pr-opened.transitioned', ticket, input.prUrl, () => client.transition(ticket, env.wipTransitionId!), emit));
+      const line = await perform('pr-opened.transitioned', ticket, input.prUrl, () => client.transition(ticket, env.wipTransitionId!), emit);
+      if (line.includes('failed')) failed += 1;
+      lines.push(line);
     }
     // The link is what makes the pull request findable from the ticket at all, which is
-    // the half of this that the in-flight check reads back.
+    // the half of this that the in-flight check reads back. It emits `pr-opened.failed`
+    // like the other two: a failure that produces only a line of text and no event left
+    // the journal claiming a link that does not exist (review, 2026-09-12).
     const link = await client.link(ticket, input.prUrl);
-    lines.push(link.ok ? `pr-opened.linked: ${ticket} ok` : `pr-opened.linked: ${ticket} failed (${link.status ?? 'no status'})`);
+    if (link.ok) {
+      lines.push(`pr-opened.linked: ${ticket} ok`);
+    } else {
+      failed += 1;
+      emit({
+        event: 'pr-opened.failed', ticket, prUrl: input.prUrl,
+        ...(link.status ? { status: link.status } : {}),
+        ...(link.body ? { body: link.body } : {}),
+      });
+      lines.push(`pr-opened.linked: ${ticket} failed (${link.status ?? 'no status'})`);
+    }
   }
   if (!env.wipAccountId && !env.wipTransitionId) {
     lines.push('no assignee or transition configured; the ticket was linked but not moved');
   }
-  return lines;
+  return { lines, failed };
 }

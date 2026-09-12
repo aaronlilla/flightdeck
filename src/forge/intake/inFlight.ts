@@ -61,6 +61,15 @@ export function findPullRequestRefs(sources: MentionText[]): PullRequestRef[] {
 
 export type PullRequestState = 'OPEN' | 'MERGED' | 'CLOSED';
 
+/** The repository name alone, so `BOLTBETZ-LLC/v2-React-Native` and `v2-react-native`
+ *  compare equal. The owner is dropped on purpose: a routed repo is carried as a bare
+ *  name in some places and an `owner/name` slug in others. */
+function repoTail(repo: string | null | undefined): string | null {
+  if (!repo) return null;
+  const last = repo.replace(/\\/g, '/').split('/').filter(Boolean).pop();
+  return last ? last.toLowerCase() : null;
+}
+
 export interface InFlightDeps {
   /** The named ticket's own comment bodies, as plain text. */
   comments(ticket: string): Promise<string[]>;
@@ -68,6 +77,16 @@ export interface InFlightDeps {
   remoteLinks(ticket: string): Promise<string[]>;
   /** What GitHub says the pull request is doing now. Throwing is treated as unknown. */
   stateOf(repo: string, pr: number): Promise<PullRequestState>;
+  /**
+   * The repository this ticket is routed to. Only a pull request in THAT repository is a
+   * claim on this ticket.
+   *
+   * Without it, a comment citing a pull request in another or a private repository makes
+   * the state read fail, the unknown branch refuses, and the ticket is parked forever --
+   * a retry re-plans and parks again, with no way out (review, 2026-09-12). A URL from
+   * somewhere else is somebody else's work, not an unmeasured claim on this one.
+   */
+  ownRepo?: string | null;
 }
 
 export interface InFlightVerdict {
@@ -82,11 +101,29 @@ export interface InFlightVerdict {
  * the field that lied.
  */
 export async function checkTicketInFlight(ticket: string, deps: InFlightDeps): Promise<InFlightVerdict> {
-  const [commentBodies, links] = await Promise.all([deps.comments(ticket), deps.remoteLinks(ticket)]);
-  const refs = findPullRequestRefs([
+  let commentBodies: string[];
+  let links: string[];
+  try {
+    [commentBodies, links] = await Promise.all([deps.comments(ticket), deps.remoteLinks(ticket)]);
+  } catch (err) {
+    // Refusing, not throwing. Throwing propagates out of the planning hop and writes the
+    // item to `failed`, which a person has to dig out; a refusal parks it with the real
+    // error named and is recoverable (review, 2026-09-12). Either way a tracker that
+    // cannot be read is never reported as "no pull request".
+    const detail = err instanceof Error ? err.message : String(err);
+    return {
+      start: false,
+      reason: `${ticket}'s comments and remote links could not be read (${detail}), so whether it `
+        + 'already has a pull request is unknown; an unmeasured ticket reads as in flight',
+    };
+  }
+
+  const all = findPullRequestRefs([
     ...commentBodies.map((text) => ({ where: 'comment' as const, text })),
     ...links.map((text) => ({ where: 'remote-link' as const, text })),
   ]);
+  const own = repoTail(deps.ownRepo);
+  const refs = own === null ? all : all.filter((ref) => repoTail(ref.repo) === own);
 
   if (refs.length === 0) {
     return { start: true, reason: `${ticket} names no pull request in its comments or remote links` };

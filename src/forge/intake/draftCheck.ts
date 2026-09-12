@@ -19,6 +19,8 @@ import { findAttribution } from '../../kernel/guards/authorship.ts';
 import {
   readabilityVerdict,
   getReadabilityContractState,
+  hasSecretShape,
+  repoNameFrom,
   type DiffStatEntry,
   type ReadabilityVerdictKind,
 } from './readability.ts';
@@ -64,13 +66,6 @@ export interface DraftReport {
   humanize: DraftSurface[];
 }
 
-/** `outward_repos` holds bare names; callers carry `owner/name` or a checkout path. */
-function normalizeRepo(repo: string | null | undefined): string | null {
-  if (!repo) return null;
-  const last = repo.replace(/\\/g, '/').split('/').filter(Boolean).pop();
-  return last ? last.toLowerCase() : null;
-}
-
 /** An issue surface is always in scope; a repo surface only on an outward-facing repo.
  *  Mirrors `readabilityVerdict`'s own scope rule rather than restating it, so a repo
  *  added to the contract widens both at once. */
@@ -87,9 +82,24 @@ function inScope(surface: DraftSurface, repo: string | null): boolean {
  * a specimen passes a fixed one.
  */
 export function checkOutwardDraft(draft: OutwardDraft, asOf: string): DraftReport {
-  const repo = normalizeRepo(draft.repo);
+  const repo = repoNameFrom(draft.repo);
   const findings: DraftFinding[] = [];
   const humanize: DraftSurface[] = [];
+
+  // A missing contract must never read as a pass. Every repo surface would fall out of
+  // scope and the report would print "no refusal", asserting a contract was applied when
+  // none was loaded (review, 2026-09-12). Issue surfaces are still checked below, because
+  // `readabilityVerdict` answers SILENT for them too and the authorship check does not
+  // need a contract at all.
+  const contract = getReadabilityContractState();
+  if (!contract.ok) {
+    findings.push({
+      surface: 'pr-body',
+      verdict: 'ADVISE',
+      reason: `the readability contract is not loaded (${contract.reason}), so nothing was measured `
+        + 'against it; this is not a pass',
+    });
+  }
 
   for (const surface of SURFACE_ORDER) {
     const text = draft.texts[surface];
@@ -108,13 +118,35 @@ export function checkOutwardDraft(draft: OutwardDraft, asOf: string): DraftRepor
     if (!inScope(surface, repo)) continue;
     humanize.push(surface);
 
+    // A commit message is NOT a readability surface. The contract does not list it, and
+    // no write-time rule checks one -- the only shell-side rule looks at `gh pr` calls.
+    // Running the banned-word check on it here would refuse a commit for a word nothing
+    // else refuses, which is the opposite of this module's whole point (review,
+    // 2026-09-12). Authorship, above, and a pasted secret are what a commit message is
+    // genuinely refused for.
+    if (surface === 'commit-message') {
+      const secret = hasSecretShape(text);
+      if (secret.hit) {
+        findings.push({
+          surface,
+          verdict: 'DENY',
+          reason: `secret-shaped token in the commit message ("${secret.match}")`,
+        });
+      }
+      continue;
+    }
+
     // A title carries the ticket-key rule; a body carries sections, files and the prose
     // ceiling. Each surface is measured on its own text only, so a banned word in the
     // title is reported once against the title rather than again against the body.
     const isBody = surface === 'pr-body' || surface === 'jira-description';
     const title = surface === 'pr-title' ? text : '';
     const body = surface === 'pr-title' ? '' : text;
-    const diffStats = isBody ? draft.diffStats : undefined;
+    // A body with no diff supplied is `null`, never `undefined`. `undefined` skips the
+    // undocumented-production-path check and the size ceiling in silence, and those are
+    // half of what a pull request body is refused for; `null` reports "cannot measure"
+    // (review, 2026-09-12).
+    const diffStats = isBody ? (draft.diffStats ?? null) : undefined;
 
     const result = readabilityVerdict(surface, repo, title, body, diffStats, asOf);
     if (result.verdict === 'DENY' || result.verdict === 'ADVISE') {

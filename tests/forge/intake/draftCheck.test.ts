@@ -272,3 +272,64 @@ describe('forge draft -- the one step a person runs before writing anything', ()
     expect((await forge(['draft', noTexts])).code).toBe(2);
   });
 });
+
+describe('review fixes, 2026-09-12', () => {
+  it('resolves the repository from a worktree path, not the slug', () => {
+    const report = checkOutwardDraft(
+      {
+        repo: 'C:/dev/worktrees/acme-app--ticket-friction',
+        diffStats: THREE_PRODUCTION_FILES,
+        texts: { 'pr-body': prBody174() },
+      },
+      AS_OF,
+    );
+    // Before this, the repo read 'ticket-friction', matched no outward repo, and the
+    // whole gate went quiet for every draft written in a worktree.
+    expect(report.findings.some((f) => f.reason.includes('174 words of prose'))).toBe(true);
+    expect(report.humanize).toContain('pr-body');
+  });
+
+  it('never reports a pass when no contract is loaded', () => {
+    const empty = mkdtempSync(path.join(tmpdir(), 'forge-draftcheck-none-'));
+    try {
+      process.env['FORGE_READABILITY_DIR'] = empty;
+      resetReadabilityContractForTests();
+      const report = checkOutwardDraft(
+        { repo: 'acme-app', texts: { 'pr-body': prBody174() } },
+        AS_OF,
+      );
+      expect(report.findings).not.toEqual([]);
+      expect(formatDraftReport(report)).toContain('not loaded');
+      expect(formatDraftReport(report)).not.toContain('no refusal');
+    } finally {
+      rmSync(empty, { recursive: true, force: true });
+    }
+  });
+
+  it('says the diff could not be measured rather than skipping those checks in silence', () => {
+    const report = checkOutwardDraft(
+      { repo: 'acme-app', texts: { 'pr-body': prBodyThatFits() } },
+      AS_OF,
+    );
+    expect(formatDraftReport(report)).toContain('cannot measure');
+  });
+
+  it('does not refuse a commit message for a word no write-time gate refuses', () => {
+    const report = checkOutwardDraft(
+      // 'just' is a banned word on a pull request body. Nothing checks a commit message
+      // for it, so refusing here would stop a script for a write that would succeed.
+      { repo: 'acme-app', texts: { 'commit-message': 'ACME-1 I just moved the button up' } },
+      AS_OF,
+    );
+    expect(report.findings).toEqual([]);
+  });
+
+  it('still refuses a commit message carrying a secret-shaped token', () => {
+    const report = checkOutwardDraft(
+      { repo: 'acme-app', texts: { 'commit-message': 'ACME-1 Wire it up\n\npassword: hunter2correcthorse' } },
+      AS_OF,
+    );
+    expect(report.findings[0]?.verdict).toBe('DENY');
+    expect(report.findings[0]?.reason).toContain('secret-shaped');
+  });
+});

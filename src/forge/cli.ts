@@ -1449,16 +1449,19 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       const snapshot = await REAL_GH.viewPr(repoArg, prNumber);
       const prJournal = new Journal(journalPath());
       try {
-        const lines = await runPrOpenedHandoff(
+        const result = await runPrOpenedHandoff(
           createJiraWriteClient(jiraConfig),
-          { prUrl: `https://github.com/${repoArg}/pull/${prNumber}`, title: snapshot.title, body: snapshot.body },
+          { prUrl: `https://github.com/${repoArg}/pull/${prNumber}`, title: snapshot.title },
           {
             wipAccountId: process.env['FORGE_JIRA_WIP_ACCOUNT'],
             wipTransitionId: process.env['FORGE_JIRA_WIP_TRANSITION'],
           },
           (event) => prJournal.append({ ...event, actor: 'queue' }),
         );
-        return { code: 0, lines };
+        // Non-zero on any refused write. A script runs this straight after `gh pr create`
+        // and cannot see the ticket; reporting success while it still reads Backlog is
+        // the very defect this command exists to stop (review, 2026-09-12).
+        return { code: result.failed > 0 ? 1 : 0, lines: result.lines };
       } finally {
         prJournal.close();
       }

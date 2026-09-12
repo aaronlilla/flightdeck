@@ -195,7 +195,7 @@ describe('runPrOpenedHandoff -- the ticket moves when the pull request opens', (
     const events: string[] = [];
     await runPrOpenedHandoff(
       client,
-      { prUrl: PR_URL, title: 'ACME-284 Stop the sheet dismissing itself', body: 'What breaks...' },
+      { prUrl: PR_URL, title: 'ACME-284 Stop the sheet dismissing itself' },
       { wipAccountId: 'acct-1', wipTransitionId: '21' },
       (event) => events.push(event.event),
     );
@@ -207,9 +207,9 @@ describe('runPrOpenedHandoff -- the ticket moves when the pull request opens', (
   it('changes nothing and says so when the pull request names no ticket key', async () => {
     const { client, calls } = writeClient();
     const events: string[] = [];
-    const lines = await runPrOpenedHandoff(
+    const { lines } = await runPrOpenedHandoff(
       client,
-      { prUrl: PR_URL, title: 'Tab bar clearance on four more screens', body: '' },
+      { prUrl: PR_URL, title: 'Tab bar clearance on four more screens' },
       { wipAccountId: 'acct-1', wipTransitionId: '21' },
       (event) => events.push(event.event),
     );
@@ -227,14 +227,106 @@ describe('runPrOpenedHandoff -- the ticket moves when the pull request opens', (
       async link(key) { calls.push(`link:${key}`); return { ok: true, status: 201 }; },
     };
     const events: string[] = [];
-    const lines = await runPrOpenedHandoff(
+    const { lines } = await runPrOpenedHandoff(
       client,
-      { prUrl: PR_URL, title: 'ACME-284 Fix it', body: '' },
+      { prUrl: PR_URL, title: 'ACME-284 Fix it' },
       { wipAccountId: 'acct-1', wipTransitionId: '21' },
       (event) => events.push(event.event),
     );
     expect(calls).toEqual(['assign:ACME-284', 'transition:ACME-284', 'link:ACME-284']);
     expect(events).toContain('pr-opened.failed');
     expect(lines.join(' ')).toContain('403');
+  });
+});
+
+describe('review fixes, 2026-09-12', () => {
+  it('finds a pull request posted as a smart link, which carries no text at all', async () => {
+    const { adfUrls } = await import('../../../src/forge/intake/jira.ts');
+    // What Jira Cloud stores when somebody pastes a GitHub URL into a comment.
+    const adf = {
+      type: 'doc',
+      version: 1,
+      content: [
+        { type: 'paragraph', content: [{ type: 'inlineCard', attrs: { url: PR_URL } }] },
+        {
+          type: 'paragraph',
+          content: [{
+            type: 'text',
+            text: 'the PR',
+            marks: [{ type: 'link', attrs: { href: OTHER_PR_URL } }],
+          }],
+        },
+      ],
+    };
+    expect(adfUrls(adf)).toEqual([PR_URL, OTHER_PR_URL]);
+    expect(findPullRequestRefs([{ where: 'comment', text: adfUrls(adf).join('\n') }]).map((r) => r.pr))
+      .toEqual([161, 284]);
+  });
+
+  it('ignores a pull request in another repository rather than parking on it forever', async () => {
+    const { deps, statesRead } = depsFor(
+      { 'ACME-284': { comments: ['see https://github.com/someone/other-repo/pull/9'] } },
+      {},
+    );
+    const verdict = await checkTicketInFlight('ACME-284', { ...deps, ownRepo: 'acme/acme-app' });
+    expect(verdict.start).toBe(true);
+    // Never asked GitHub about it: a foreign URL is not an unmeasured claim on this ticket.
+    expect(statesRead).toEqual([]);
+  });
+
+  it('still refuses a pull request in the ticket\'s own repository, however the repo is spelled', async () => {
+    const { deps } = depsFor({ 'ACME-284': { comments: [PR_URL] } }, { 161: 'OPEN' });
+    const verdict = await checkTicketInFlight('ACME-284', { ...deps, ownRepo: 'ACME/Acme-App' });
+    expect(verdict.start).toBe(false);
+  });
+
+  it('refuses rather than throwing when the ticket itself cannot be read', async () => {
+    const verdict = await checkTicketInFlight('ACME-284', {
+      comments: async () => { throw new Error('503 Service Unavailable'); },
+      remoteLinks: async () => [],
+      stateOf: async () => 'OPEN',
+    });
+    expect(verdict.start).toBe(false);
+    expect(verdict.reason).toContain('503');
+    expect(verdict.reason).toContain('unknown');
+  });
+
+  it('takes ticket keys from the title alone, never from the body', async () => {
+    const calls: string[] = [];
+    const client: JiraWriteClient = {
+      async comment() { return { ok: true }; },
+      async assign(key) { calls.push(`assign:${key}`); return { ok: true, status: 204 }; },
+      async transition(key) { calls.push(`transition:${key}`); return { ok: true, status: 204 }; },
+      async link(key) { calls.push(`link:${key}`); return { ok: true, status: 201 }; },
+    };
+    // The body cites two other tickets, as bodies do. Neither may be touched.
+    const result = await runPrOpenedHandoff(
+      client,
+      { prUrl: PR_URL, title: 'ACME-284 Stop the sheet dismissing itself' },
+      { wipAccountId: 'acct-1', wipTransitionId: '21' },
+      () => {},
+    );
+    expect(calls).toEqual(['assign:ACME-284', 'transition:ACME-284', 'link:ACME-284']);
+    expect(result.failed).toBe(0);
+  });
+
+  it('counts a refused write, so the caller can exit non-zero', async () => {
+    const client: JiraWriteClient = {
+      async comment() { return { ok: true }; },
+      async assign() { return { ok: true, status: 204 }; },
+      async transition() { return { ok: false, status: 400, body: 'transition not available' }; },
+      async link() { return { ok: false, status: 404 }; },
+    };
+    const events: string[] = [];
+    const result = await runPrOpenedHandoff(
+      client,
+      { prUrl: PR_URL, title: 'ACME-284 Fix it' },
+      { wipAccountId: 'acct-1', wipTransitionId: '21' },
+      (event) => events.push(event.event),
+    );
+    expect(result.failed).toBe(2);
+    // The link failure emits an event too; a line of text alone left the journal
+    // claiming a link that does not exist.
+    expect(events.filter((e) => e === 'pr-opened.failed')).toHaveLength(2);
   });
 });
