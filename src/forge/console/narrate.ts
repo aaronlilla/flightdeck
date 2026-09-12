@@ -77,8 +77,39 @@ export function canonicalFacts(input: NarrationFacts): string {
  * Serving a sentence about a different event costs the operator's trust in every sentence.
  */
 export function narrationKey(input: NarrationFacts): string {
-  const material = [canonicalFacts(input), input.template, input.detailTemplate ?? ''].join('\n');
+  const material = [
+    canonicalFacts(input),
+    quantizeForKey(input.template),
+    quantizeForKey(input.detailTemplate ?? ''),
+  ].join('\n');
   return createHash('sha256').update(material).digest('hex');
+}
+
+/**
+ * Flattens every run of digits in a template to one placeholder, for the cache key only.
+ *
+ * Measured on the live console 2026-09-11: one ticket drove 164 narration calls in two
+ * and a half hours -- 9,995 seconds of model time for sentences a person may never read.
+ * The facts record was never the problem (`VOLATILE_FACT_KEYS` already refuses a clock
+ * reading there); the counter was hiding in the template text instead. `laneGlance.ts`'s
+ * `didFactsFor` builds its whole sentence from a running tool tally ("Ran 2 commands.",
+ * "Ran 3 commands.", "Ran 4 commands.") and puts only the ids it recognises -- a PR
+ * number, a ticket key -- into `facts`; the tally itself never becomes a fact anywhere,
+ * so `canonicalFacts` never saw it change and `narrationKey` was hashing the raw template
+ * instead. Every poll produced a template one digit different from the last, which is a
+ * fresh cache key and a fresh model call for a sentence that says the same thing: work is
+ * happening. The same shape hid the token counter (`agent.ts`'s "Used 173540484 tokens
+ * today") and the elapsed clock (`elapsedGlance`'s "running 42 min").
+ *
+ * Quantising here rather than in every caller keeps the fix at the one seam every
+ * template already passes through, and the fix does not have to know which caller's
+ * counter it is protecting against. `rawFor`, `templateNarration` and the prompt sent to
+ * the model all still read `input.template` untouched -- only the hash changes, so the
+ * rendered sentence, the raw register and the model's own view of the facts are exactly
+ * what they were.
+ */
+export function quantizeForKey(text: string): string {
+  return text.replace(/\d+/g, '#');
 }
 
 /**

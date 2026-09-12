@@ -227,6 +227,77 @@ describe('one call per distinct fact record', () => {
   });
 });
 
+/**
+ * The break measured on the live console 2026-09-11: one ticket drove 164 narration
+ * calls between 13:45 and 16:10, 9,995 seconds of model time, because the sentence
+ * `laneGlance.ts` builds off a running tool tally reads "Ran 2 commands.", then "Ran 3
+ * commands.", then "Ran 4 commands." on the very next poll -- the facts record never
+ * changes (the tally is not a fact anywhere), but the template does, on every single
+ * poll, for as long as the run keeps working. `narrationKey` hashed the raw template, so
+ * every one of those was a fresh key and a fresh call for a sentence that says the same
+ * thing: work is happening.
+ */
+describe('a counter that ticks inside the template does not buy a fresh call every poll', () => {
+  it('makes one call across a run of polls that only differ by a running tool tally', async () => {
+    const { narrator, journalPath } = rigWith(scriptedQuery(() => acceptedReply).fn);
+    const base: NarrationFacts = {
+      surface: 'lane.did',
+      facts: { lane: 'BBZ-169', state: 'running' },
+      template: 'Ran 2 commands.',
+    };
+    const polls = ['Ran 2 commands.', 'Ran 3 commands.', 'Ran 4 commands.', 'Ran 5 commands.'];
+    for (const template of polls) {
+      const narrated = narrator.get({ ...base, template });
+      expect(narrated.raw).toContain('BBZ-169');
+    }
+    await narrator.idle();
+    expect(narrateCalls(journalPath)).toBe(1);
+  });
+
+  it('makes one call across a run of polls that only differ by an elapsed clock', async () => {
+    const { narrator, journalPath } = rigWith(scriptedQuery(() => acceptedReply).fn);
+    const base: NarrationFacts = {
+      surface: 'lane.now', facts: { lane: 'BBZ-169' }, template: 'running 5 min',
+    };
+    for (const template of ['running 5 min', 'running 6 min', 'running 12 min', 'running 61 min']) {
+      narrator.get({ ...base, template });
+    }
+    await narrator.idle();
+    expect(narrateCalls(journalPath)).toBe(1);
+  });
+
+  it('still narrates again when the ticket, not just the tally, actually changes', async () => {
+    const { narrator, journalPath } = rigWith(scriptedQuery(() => acceptedReply).fn);
+    narrator.get({ surface: 'lane.did', facts: { lane: 'BBZ-169', state: 'running' }, template: 'Ran 2 commands.' });
+    narrator.get({ surface: 'lane.did', facts: { lane: 'BBZ-201', state: 'running' }, template: 'Ran 2 commands.' });
+    await narrator.idle();
+    expect(narrateCalls(journalPath)).toBe(2);
+  });
+
+  it('journals the drift once an hour so the saving is visible, not silent', async () => {
+    // A reply that carries the one protected token the first poll's template names (the
+    // tally `2`) and invents nothing else: the checker demands every number the template
+    // names back out of glance, so a reply naming PR #412 for a different fixture (like
+    // `acceptedReply`) would be rejected here and never land an `ok` entry for the
+    // drifted poll below to find.
+    const matchingReply = JSON.stringify({
+      glance: 'Ran 2 commands.', detail: 'BBZ-169 is running and has run 2 commands so far.',
+    });
+    const { narrator, journalPath } = rigWith(scriptedQuery(() => matchingReply).fn);
+    const base: NarrationFacts = {
+      surface: 'lane.did', facts: { lane: 'BBZ-169', state: 'running' }, template: 'Ran 2 commands.',
+    };
+    narrator.get(base);
+    await narrator.idle();
+    for (const template of ['Ran 3 commands.', 'Ran 4 commands.', 'Ran 5 commands.']) {
+      narrator.get({ ...base, template });
+    }
+    const deduped = rows(journalPath).filter((row) => row['event'] === 'narration.deduped');
+    expect(deduped).toHaveLength(1);
+    expect(deduped[0]?.['surface']).toBe('lane.did');
+  });
+});
+
 describe('a rejected narration is not paid for twice', () => {
   it('serves the template, journals the rule and never calls again', async () => {
     const leaked = JSON.stringify({
