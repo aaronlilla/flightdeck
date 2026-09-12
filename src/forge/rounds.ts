@@ -19,7 +19,7 @@
  * do" and never as "did not look".
  */
 import type { Blocker, Lane, QueueItem } from '../shared/console-model.js';
-import { isWaitingOnInterview, removeItem, retryItem } from './intake/queue.js';
+import { isWaitingOnInterview, parkRecoverability, removeItem, retryItem } from './intake/queue.js';
 import type { QueueStore } from './intake/queueStore.js';
 
 export type RoundsKind =
@@ -283,7 +283,30 @@ export function planRounds(input: RoundsInput): RoundsSheet {
         waiting.push({ itemId: item.id, label, on: openOther.map((b) => b.title).join('; ') });
         continue;
       }
-      const transient = TRANSIENT_REASONS.find((t) => t.re.test(item.reason ?? ''));
+      // 2026-09-11: this branch used to offer a retry for ANY parked item with no blocker,
+      // reading only "is anything holding it" and never the park reason. That reached the
+      // same rows the queue's own recovery pass deliberately declines -- a merge conflict,
+      // an unrouted ticket, a backend hand-off -- and re-ran the conflict. The two passes
+      // now share one rule: `parkRecoverability` decides, and what it refuses goes to a
+      // person instead of being retried.
+      const transientReason = TRANSIENT_REASONS.find((t) => t.re.test(item.reason ?? ''));
+      const recoverable = parkRecoverability(item.reason);
+      // A launch collision with itself (a dirty tree, two ticks planning at once, checks
+      // that had not finished) still retries: those clear on the next launch and are
+      // named in `TRANSIENT_REASONS` above. They can read as "conflicts with ...", which
+      // is why this is checked before the queue's table, not after it.
+      // Only a reason the queue RECOGNISES and refuses on purpose goes to a person. A
+      // reason nobody classified -- a failed launch's error tail, say -- still gets the
+      // retry it always got, because refusing it here would make a network blip a
+      // human's job for good with no second automatic path.
+      if (!transientReason && !recoverable.recoverable && recoverable.personsCall && !resolved.length) {
+        findings.push({
+          kind: 'unblocked', action: 'judge', itemId: item.id, laneId: lane?.id ?? null, label,
+          why: `parked on "${item.reason ?? 'no reason'}": ${recoverable.why}`,
+        });
+        continue;
+      }
+      const transient = transientReason;
       let why: string;
       if (resolved.length) why = `parked behind "${resolved[0]!.title}", which has since cleared`;
       else if (transient) why = `parked because ${transient.words}; nothing else is holding it`;

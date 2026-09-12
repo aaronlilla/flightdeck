@@ -282,6 +282,11 @@ export function parseIntent(raw: string): Intent {
 // ---------------------------------------------------------------------------------------
 
 export interface ConsoleWritesDeps {
+  /** Item 4, round 2: runs the Queue view's merge for one item, so a `queue-merge`
+   *  confirm minted before a restart can be rebuilt by the process the operator clicks
+   *  against. Absent means this process has no queue merge wiring, and a rebuilt click
+   *  is refused with that sentence rather than silently answering `done`. */
+  queueMerge?: (itemId: string) => Promise<RouteOutcome>;
   journalPath: string;
   registry: Registry;
   lanes?: Lanes;
@@ -366,7 +371,10 @@ export type ConfirmDescriptor =
    *  waits for a person to read a diff -- so it was the one most often voided by a
    *  restart. The lane id is all the rebuilt action needs; `mergeRun` reads the PR off
    *  the lane the same way the closure did. */
-  | { kind: 'merge'; laneId: string; label: string };
+  | { kind: 'merge'; laneId: string; label: string }
+  /** Round 2: the Queue view's own Merge click, which goes through `queue-route.ts` and
+   *  was the last confirm surface a restart could still void. */
+  | { kind: 'queue-merge'; itemId: string; label: string };
 
 interface PersistedConfirm {
   token: string;
@@ -381,6 +389,10 @@ interface PersistedConfirm {
  *  less there is to move. The restart cadence is minutes, so this still covers many of
  *  them; a card older than this is refused and the operator re-issues the action. */
 const CONFIRM_TTL_MS = 2 * 60 * 60_000;
+
+/** How long past its expiry a spent-out row is still kept, so a refusal can say
+ *  "expired at ..." rather than "nothing pending". */
+const CONFIRM_NAMEABLE_MS = 24 * 60 * 60_000;
 
 /** Newest-first hard ceiling, so a wedged proposer cannot grow the file without end. */
 const CONFIRM_MAX = 200;
@@ -413,7 +425,11 @@ class PendingConfirmStore {
   }
 
   private write(rows: PersistedConfirm[], now: number): void {
-    const live = rows.filter((row) => now - row.at < CONFIRM_TTL_MS).slice(-CONFIRM_MAX);
+    // Kept for a day past expiry, not dropped at it: a row the prune removes can no
+    // longer be named, so the operator gets "nothing pending" for a token that was real
+    // -- the answer this whole change exists to stop. A row past its TTL is refused by
+    // `take` regardless, so keeping it spends nothing but a line of disk.
+    const live = rows.filter((row) => now - row.at < CONFIRM_TTL_MS + CONFIRM_NAMEABLE_MS).slice(-CONFIRM_MAX);
     mkdirSync(dirname(this.path), { recursive: true });
     // Temp file then rename: the store is rewritten whole, so a torn write would lose
     // EVERY pending confirm (read() treats unparseable as empty), not the one row.
@@ -791,6 +807,15 @@ export class ConsoleWrites {
     const pending: PendingConfirm = {
       blast: row.blast, descriptor: d,
       run: async () => {
+        if (d.kind === 'queue-merge') {
+          const outcome = this.deps.queueMerge
+            ? await this.deps.queueMerge(d.itemId)
+            : { status: 501, body: { ok: false, error: 'no queue merge wiring is configured for this process' } };
+          pending.outcome = outcome;
+          return [outcome.status === 200
+            ? receiptCard(source, outcome.body as ActionResult)
+            : refusalCard(source, actionFailureText(outcome.body, `could not merge ${d.label}`))];
+        }
         if (d.kind === 'merge') {
           const outcome = await mergeRun(d.laneId, this.runActionsDeps());
           pending.outcome = outcome;
