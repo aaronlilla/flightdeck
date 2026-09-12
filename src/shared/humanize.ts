@@ -101,10 +101,42 @@ export function stripMachineIds(text: string, options: StripOptions = {}): strin
 /** "parking on 19a6c631cb7783d8: Probe: continue?" -> "Asked you: Probe: continue?"
  *  The asked text itself still carries whatever the run wrote into it, so it goes
  *  through `stripMachineIds` too, the same as any other reason. */
+/**
+ * A park reason written before 2026-09-12 named the measurement rather than saying what
+ * happened: "wall clock: 22.3 h over 3.0 h". `session-clock.ts` writes the plain sentence
+ * now, but a reason is journaled once and replayed for as long as the lane is on the
+ * board, so the two tiles carrying the old wording would have kept it for days. Rewritten
+ * at read time, the same way a machine id is.
+ */
+function plainWallClock(text: string): string {
+  // Written without a regex on purpose. The pattern this replaced lost its escapes
+  // somewhere between the source and the running function -- the body was right, the
+  // match never fired, and the test read green-looking prose over an unchanged string
+  // (2026-09-12). Two `indexOf` calls cannot be mangled that way.
+  const MARK = 'wall clock:';
+  let out = '';
+  let rest = text;
+  for (;;) {
+    const at = rest.toLowerCase().indexOf(MARK);
+    if (at === -1) break;
+    const after = rest.slice(at + MARK.length);
+    const over = after.indexOf(' over ');
+    if (over === -1) break;
+    const ran = after.slice(0, over).trim();
+    const tail = after.slice(over + ' over '.length);
+    // The budget runs to the end of the clause: a full stop, a semicolon, or the end.
+    const stop = tail.search(/[.;]|$/);
+    const expected = tail.slice(0, stop).trim();
+    out += `${rest.slice(0, at)}Running ${ran}, expected ${expected}`;
+    rest = tail.slice(stop);
+  }
+  return out + rest;
+}
+
 export function humanizeParkReason(reason: string): string {
   const asked = /^parking on [0-9a-f]{8,}:\s*(.+)$/is.exec(reason.trim());
   if (asked) return `Asked you: ${stripMachineIds(asked[1]!.trim())}`;
-  return stripMachineIds(reason);
+  return plainWallClock(stripMachineIds(reason));
 }
 
 /** 24-hour `HH:MM`, zero-padded -- the same shape the browser's own `hm()` in

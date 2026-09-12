@@ -70,6 +70,12 @@ export interface DetectionInputs {
   /** Lane ids with a live registry row right now -- backs `process` detection. */
   registryLive: Set<string>;
   jiraSite?: string;
+  /** Whether the work an open question is about still exists. Measured live on
+   *  2026-09-12: 92 open questions on the board, and 90 pointed at a queue item that had
+   *  been pruned, so answering one would have posted to work that has gone. Unwired,
+   *  every question counts as live -- a caller that cannot resolve work never hides a
+   *  real question. */
+  askAlive?: (runs: readonly string[]) => boolean;
 }
 
 const TEN_MINUTES_MS = 10 * 60_000;
@@ -95,7 +101,11 @@ function lanesOnPr(lanes: LaneInput[], repo: string, pr: number): LaneInput[] {
 
 function questionBlockers(inputs: DetectionInputs): BlockerSnapshot[] {
   const laneById = new Map(inputs.lanes.map((lane) => [lane.id, lane]));
-  return inputs.asks.filter((ask) => ask.answer === undefined).map((ask) => {
+  const alive = inputs.askAlive ?? ((): boolean => true);
+  return inputs.asks
+    .filter((ask) => ask.answer === undefined)
+    .filter((ask) => alive(ask.runs))
+    .map((ask) => {
     const title = stripMachineIds(ask.question).slice(0, 90);
     const links = ask.ticket && inputs.jiraSite
       ? [{ label: ask.ticket, url: `${inputs.jiraSite}/browse/${ask.ticket}` }]

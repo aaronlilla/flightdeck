@@ -21,6 +21,7 @@ import { QueueStore } from '../intake/queueStore.js';
 import { processAlive, Registry } from '../registry.js';
 import type { StuckSignal } from '../liveness.js';
 import { briefFacts, briefPathForLane } from './briefLookup.js';
+import { askContextForRuns } from './askContext.js';
 import { computeLive } from './live.js';
 import { Lanes, type LaneRecord } from '../supervisor.js';
 import { RunInbox } from '../runinbox.js';
@@ -955,8 +956,15 @@ export class ConsoleReads {
       }
     }
     const titleFor = (id: string): string | null => titles.get(id) ?? null;
+    // What every open question is about: the queue item it names, when that item is
+    // still on the board. Built once per read rather than per question.
+    const askInput = {
+      items: this.queueStore.all(),
+      laneIds: new Set(this.lanesResponse(true, true).lanes.map((lane) => lane.id)),
+    };
     const thread = computeThread(persisted, fleet.events, now, this.inbox.open(), titleFor, {
       verbose, allAsks: this.inbox.all(),
+      askContext: (runs) => askContextForRuns(runs, askInput),
       ...(this.confirmPendingFn ? { confirmPending: this.confirmPendingFn } : {}),
     });
     return {

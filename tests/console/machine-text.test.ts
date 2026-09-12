@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { stripMachineIds } from '../../src/shared/humanize.js';
+import { humanizeParkReason, stripMachineIds } from '../../src/shared/humanize.js';
 
 /**
  * Aaron, 2026-09-12: board and strip text must survive the same pass a pull request or a
@@ -49,5 +49,26 @@ describe('machine ids the live board was showing on 2026-09-12', () => {
 
   it('leaves a date followed by one word alone, which is prose and not an id', () => {
     expect(stripMachineIds('the 2026-09-09 call')).toContain('2026-09-09');
+  });
+});
+
+describe('a park reason written before the wording changed', () => {
+  it('reads as plain words at read time, not as the name of a measurement', () => {
+    expect(humanizeParkReason('wall clock: 22.3 h over 3.0 h')).toBe('Running 22.3 h, expected 3.0 h');
+  });
+
+  it('rewrites one sitting inside a longer sentence', () => {
+    expect(humanizeParkReason('Stuck since 09-10: wall clock: 34.1 h over 3.0 h.'))
+      .toBe('Stuck since 09-10: Running 34.1 h, expected 3.0 h.');
+  });
+
+  it('leaves a reason that never carried the phrase alone', () => {
+    expect(humanizeParkReason('no event for 149s; checking')).toBe('no event for 149s; checking');
+  });
+
+  it('still strips a machine id in the same reason', () => {
+    const out = humanizeParkReason('run 2026-09-09-forge-compaction-aware-warden: wall clock: 4.0 h over 3.0 h');
+    expect(out).toContain('Running 4.0 h, expected 3.0 h');
+    expect(out).not.toContain('2026-09-09');
   });
 });
