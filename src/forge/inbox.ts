@@ -309,11 +309,21 @@ export class Inbox {
     return attached;
   }
 
-  /** Answer an entry. An answer to a key nobody asked is ignored rather than invented. */
-  answer(key: string, answer: string): InboxEntry | undefined {
+  /** Answer an entry. An answer to a key nobody asked is ignored rather than invented.
+   *
+   *  `answeredBy` names a non-operator author that answered DIRECTLY rather than by
+   *  attaching a reply for the operator to confirm -- today only an auto-answer rule
+   *  (`console/rules.ts`). Found by code review, 2026-09-12: without it the entry
+   *  reaches `answeredByOf` with no author at all, so the brief's `## Decisions` credits
+   *  the operator with a call a heuristic made, while the journal row beside it already
+   *  names the rule. Two records of one event that disagree is worse than either alone.
+   *  Left unset, the operator is credited exactly as before. */
+  answer(key: string, answer: string, answeredBy?: string): InboxEntry | undefined {
     const entry = this.entry(key);
     if (!entry) return undefined;
-    const answered: InboxEntry = { ...entry, answer, answeredAt: Date.now() };
+    const answered: InboxEntry = {
+      ...entry, answer, answeredAt: Date.now(), ...(answeredBy ? { answeredBy } : {}),
+    };
     this.write(answered);
     return answered;
   }

@@ -60,6 +60,12 @@ export function answeredByOf(entry: InboxEntry): string {
   if (entry.answeredBy && entry.reply !== undefined && entry.answer === entry.reply) {
     return entry.answeredBy;
   }
+  // A direct author: something answered the ask itself rather than attaching a reply for
+  // the operator to confirm, so there is no `reply` to compare the answer against. Only
+  // an auto-answer rule does this today (`Inbox.answer`'s third argument). Found by code
+  // review, 2026-09-12 -- until this branch existed the brief credited the operator for
+  // a rule's call while the journal row beside it named the rule.
+  if (entry.answeredBy && entry.reply === undefined) return entry.answeredBy;
   return 'the operator';
 }
 
@@ -75,12 +81,13 @@ export function journalInterviewAnswer(
   append: JournalAppend | undefined,
   answered: InboxEntry,
   answeredBy?: string,
+  actor: string = 'console',
 ): void {
   const itemRun = answered.runs.find((run) => run.startsWith(ITEM_RUN_PREFIX));
   if (itemRun === undefined) return;
   append?.({
     event: 'interview.answered',
-    actor: 'console',
+    actor,
     itemId: itemRun.slice(ITEM_RUN_PREFIX.length),
     ticket: answered.ticket,
     askKey: answered.key,

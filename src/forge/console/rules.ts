@@ -162,7 +162,7 @@ export async function enforceRulesOnce(deps: EnforcementDeps): Promise<void> {
       const pattern = rule.evidence;
       for (const ask of deps.inbox.open()) {
         if (!pattern || !ask.question.includes(pattern)) continue;
-        const answered = deps.inbox.answer(ask.key, rule.effect);
+        const answered = deps.inbox.answer(ask.key, rule.effect, `rule:${rule.id}`);
         if (answered) {
           await deliverAnswer(answered, ask.key, rule.effect);
           journalInterviewAnswer((row) => appendOnce(deps.runActions.journalPath, row), answered, `rule:${rule.id}`);

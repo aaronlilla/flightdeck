@@ -15,6 +15,7 @@ import {
   type EnforcementDeps,
 } from '../../../src/forge/console/rules.js';
 import type { Rule } from '../../../src/shared/console-model.js';
+import { answeredByOf } from '../../../src/forge/intake/interviewPlanner.js';
 
 class FakeActuator implements Actuator {
   killed: string[] = [];
@@ -185,6 +186,50 @@ describe('enforceRulesOnce', () => {
     expect(rows[0]!['answeredBy']).toBe('rule:r2');
     expect(rows[0]!['answer']).toBe('skip nulls');
     expect(rows[0]!['itemId']).toBe('Q-abc123');
+  });
+
+  // Found by code review, 2026-09-12: the journal row was corrected but the BRIEF was
+  // not. `Inbox.answer` never sets `answeredBy`, so `answeredByOf` -- which is what
+  // `answersFrom` feeds into the brief's `## Decisions` -- still falls through to the
+  // operator. The two records of the same event then disagree, and the worker reads a
+  // heuristic's call as one Aaron made.
+  it('credits the rule in the brief too, not only in the journal row', async () => {
+    inbox.raise({ run: 'item:Q-abc123', ticket: 'BBZ-169', question: 'value cannot be NOT NULL, what now?' });
+    writeRule({
+      id: 'r3', kind: 'auto-answer', title: 't', summary: 's', evidence: 'NOT NULL',
+      effect: 'skip nulls', status: 'open', jid: null, prUrl: null,
+    });
+
+    await enforceRulesOnce({ journalPath, rulesPath: rulesFile, inbox, runActions });
+
+    const entry = inbox.all().find((row) => row.question.includes('NOT NULL'))!;
+    expect(entry.answer).toBe('skip nulls');
+    expect(answeredByOf(entry)).toBe('rule:r3');
+  });
+
+  // Edge cases neighbouring the new direct-author branch, 2026-09-12. Each is a state
+  // the branch must NOT change.
+  it('still credits a teammate whose attached reply the operator accepted unchanged', () => {
+    inbox.raise({ run: 'item:Q-edge1', ticket: 'BBZ-1', question: 'which env?' });
+    const key = inbox.open()[0]!.key;
+    inbox.attachReply(key, 'joe', 'staging');
+    inbox.answer(key, 'staging');
+    expect(answeredByOf(inbox.entry(key)!)).toBe('joe');
+  });
+
+  it('still credits the operator when they override a teammate reply', () => {
+    inbox.raise({ run: 'item:Q-edge2', ticket: 'BBZ-2', question: 'which env?' });
+    const key = inbox.open()[0]!.key;
+    inbox.attachReply(key, 'joe', 'staging');
+    inbox.answer(key, 'production');
+    expect(answeredByOf(inbox.entry(key)!)).toBe('the operator');
+  });
+
+  it('still credits the operator for a plain typed answer with no author', () => {
+    inbox.raise({ run: 'item:Q-edge3', ticket: 'BBZ-3', question: 'which env?' });
+    const key = inbox.open()[0]!.key;
+    inbox.answer(key, 'staging');
+    expect(answeredByOf(inbox.entry(key)!)).toBe('the operator');
   });
 });
 

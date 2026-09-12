@@ -1327,7 +1327,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       const answerText = answer.join(' ');
       const answered = inbox.answer(key, answerText);
       if (!answered) return { code: 1, lines: [`nothing asked ${key}`] };
-      journalInterviewAnswer((row) => appendOnce(journalPath(), row), answered);
+      journalInterviewAnswer((row) => appendOnce(journalPath(), row), answered, undefined, 'cli');
       // A run this process itself holds the live session for (deps.engine, injected by a
       // specimen or by `forge run` calling straight through) is answered in place. Every
       // run also gets its answer queued through the inbox, which is what reaches a run
