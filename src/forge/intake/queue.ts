@@ -85,7 +85,11 @@ export type ParkRecheck = 'checks' | 'run';
 
 export type ParkRecoverability =
   | { recoverable: true; reRead: ParkRecheck }
-  | { recoverable: false; why: string };
+  /** `personsCall` marks a reason this file RECOGNISES and refuses on purpose -- a merge
+   *  conflict, an unrouted ticket, a backend hand-off, a spent budget. A reason no rule
+   *  covers is also `recoverable: false`, but it carries no `personsCall`: nobody has
+   *  judged it, and another pass may still have an opinion about it. */
+  | { recoverable: false; why: string; personsCall?: true };
 
 /**
  * Item 1: whether a machine can decide this park on its own, read from the reason
@@ -97,18 +101,18 @@ export function parkRecoverability(reason: string | null | undefined): ParkRecov
   const text = (reason ?? '').trim();
   if (!text) return { recoverable: false, why: 'the park carries no reason to re-read' };
   if (/^conflicts with /i.test(text)) {
-    return { recoverable: false, why: 'a merge conflict is a person\'s call, not a stale reading' };
+    return { recoverable: false, why: 'a merge conflict is a person\'s call, not a stale reading', personsCall: true };
   }
-  if (/^unrouted$/i.test(text)) return { recoverable: false, why: 'nothing routed the ticket to a repository' };
-  if (/^backend:/i.test(text)) return { recoverable: false, why: 'the ticket was handed to the backend' };
-  if (/^overlaps /i.test(text)) return { recoverable: false, why: 'another item holds the same files' };
+  if (/^unrouted$/i.test(text)) return { recoverable: false, why: 'nothing routed the ticket to a repository', personsCall: true };
+  if (/^backend:/i.test(text)) return { recoverable: false, why: 'the ticket was handed to the backend', personsCall: true };
+  if (/^overlaps /i.test(text)) return { recoverable: false, why: 'another item holds the same files', personsCall: true };
   if (/checks (never settled|are pending)/i.test(text)) return { recoverable: true, reRead: 'checks' };
   // Every run verdict `relaunchOnRetryOrPark` passes through (`stopped`, `exhausted`,
   // `parked`, `unknown`) plus the launcher's own stale-liveness refusal: all of them are
   // about a process, and all of them are answered by asking whether one is still alive.
   // `exhausted` is deliberately absent: a run that hit its budget ceiling did not fail
   // on a stale reading, and relaunching it three more times only proves the ceiling again.
-  if (/^exhausted$/i.test(text)) return { recoverable: false, why: 'the run spent its budget ceiling' };
+  if (/^exhausted$/i.test(text)) return { recoverable: false, why: 'the run spent its budget ceiling', personsCall: true };
   // `unverified` is the commonest of these: `worker.ts` writes it for a run that stopped
   // without finishing, and `advanceItem` parks on it twice. `failed` is deliberately
   // absent -- no writer emits it as a verdict, and a rule nothing produces is noise.
@@ -1094,10 +1098,17 @@ async function recoverParkedItems(deps: QueueRuntimeDeps, items: QueueItem[], sl
     // provision ten workers on one tick. Journalled once, like every other decision here:
     // an item held back by the width is a decision, and skipping it in silence is the
     // thing this function's own comment promises not to do.
-    if (slots <= 0) {
-      if (item.recoveryHeldOn !== 'no room at this width') {
+    // Only a `run` recovery ends in a relaunched worker; a `checks` recovery re-enters
+    // the gate hop and provisions nothing, so it neither needs a slot nor spends one.
+    // Charging it a slot starved the relaunches the width is actually there to bound.
+    const needsSlot = verdict.reRead === 'run';
+    if (needsSlot && slots <= 0) {
+      // Its own marker, not `recoveryHeldOn`: overwriting the real reading with the width
+      // made a queue oscillating around its cap write a row on every flip, which is what
+      // the one-row-per-reading rule exists to stop.
+      if (!item.recoveryWidthHeld) {
         writeTransition(
-          item, { recoveryHeldOn: 'no room at this width' }, deps, 'queue.recovery-held',
+          item, { recoveryWidthHeld: true }, deps, 'queue.recovery-held',
           { reRead: verdict.reRead, found: 'no room at this width', parkReason: item.reason },
         );
       }
@@ -1164,7 +1175,11 @@ async function recoverParkedItems(deps: QueueRuntimeDeps, items: QueueItem[], sl
       item,
       {
         state, reason: null, recoveryAttempts: recoveries + 1, recoveryHeldOn: null, recoveryDeclinedFor: null,
-        ...readMarks,
+        recoveryWidthHeld: false,
+        // The read budget belongs to THIS park, not to the item's whole life: an item
+        // that parks on checks three times over a week must not be refused on the third
+        // for reads it spent on the first.
+        checksReads: 0, checksReadAt: undefined,
         // `retriedAt` means "a person asked for this run to be looked at again", and
         // `relaunchOnRetryOrPark` answers it by provisioning a NEW worker. That is right
         // for a run that died and wrong for checks that went green: there the run
@@ -1176,7 +1191,7 @@ async function recoverParkedItems(deps: QueueRuntimeDeps, items: QueueItem[], sl
       { reRead: verdict.reRead, found, parkReason: item.reason, recovery: recoveries + 1, decided: `moved to ${state}` },
     );
     recovered += 1;
-    slots -= 1;
+    if (needsSlot) slots -= 1;
   }
   return recovered;
 }

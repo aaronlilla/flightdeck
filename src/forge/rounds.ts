@@ -295,7 +295,11 @@ export function planRounds(input: RoundsInput): RoundsSheet {
       // that had not finished) still retries: those clear on the next launch and are
       // named in `TRANSIENT_REASONS` above. They can read as "conflicts with ...", which
       // is why this is checked before the queue's table, not after it.
-      if (!transientReason && !recoverable.recoverable && !resolved.length) {
+      // Only a reason the queue RECOGNISES and refuses on purpose goes to a person. A
+      // reason nobody classified -- a failed launch's error tail, say -- still gets the
+      // retry it always got, because refusing it here would make a network blip a
+      // human's job for good with no second automatic path.
+      if (!transientReason && !recoverable.recoverable && recoverable.personsCall && !resolved.length) {
         findings.push({
           kind: 'unblocked', action: 'judge', itemId: item.id, laneId: lane?.id ?? null, label,
           why: `parked on "${item.reason ?? 'no reason'}": ${recoverable.why}`,

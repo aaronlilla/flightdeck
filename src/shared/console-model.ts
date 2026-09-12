@@ -821,6 +821,9 @@ export interface QueueItem {
    *  shared rate limit, so it is windowed and capped; reading a local pid is neither. */
   checksReadAt?: number;
   checksReads?: number;
+  /** Item 1: set once while the width is what is holding a recovery back, so that
+   *  hold is journalled once rather than on every flip of a queue sitting at its cap. */
+  recoveryWidthHeld?: boolean;
   /** The Queue view's two columns (2026-09-09, `Flightdeck Console.dc.html` 1c), filled by
    *  `GET /queue` at read time like `title`: why this item sits where it does in the
    *  order, and when it starts, in words. Absent on a response older than this field. */

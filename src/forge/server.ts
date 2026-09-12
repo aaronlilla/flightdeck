@@ -510,7 +510,11 @@ export class ForgeServer {
       writePaused: (paused) => writeQueuePaused(paused),
       maxInFlight: options.queueMaxInFlight ?? 4,
       publish: (event) => this.publish(event),
-      confirmGate: (body, source, blast, act) => this.consoleWrites.confirmGate(body, source, blast, act),
+      // The descriptor is the whole point of the Queue view's own confirm surviving a
+      // restart, and a four-parameter lambda dropped it silently -- TypeScript accepts
+      // the shorter arrow. `tests/forge/server-merge-confirm.test.ts` now drives the
+      // real server and asserts the row lands on disk, which is what caught this.
+      confirmGate: (body, source, blast, act, descriptor) => this.consoleWrites.confirmGate(body, source, blast, act, descriptor),
       ...(options.queueMergeDeps ? { mergeDeps: options.queueMergeDeps } : {}),
       ...(options.queuePromoteDeps ? { promoteDeps: options.queuePromoteDeps } : {}),
     });

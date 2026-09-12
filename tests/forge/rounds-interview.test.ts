@@ -77,6 +77,18 @@ describe('item 3: the rounds sweep leaves an item held on an interview answer al
     expect(mine[0]?.why ?? '').toMatch(/conflict/i);
   });
 
+  it('still offers a retry for a failed row whose reason is an error nobody classified', () => {
+    // A launch that died on a network error used to get a retry here. Widening the new
+    // gate to every unrecognised reason would make that a person's job for good.
+    const row = item({
+      id: 'Q-failed', state: 'failed', reason: 'fatal: unable to access ...: Could not resolve host',
+      updatedAt: NOW - 90 * MIN,
+    });
+    const sheet = planRounds({ now: NOW, items: [row], lanes: [], blockers: [] });
+
+    expect(sheet.findings.filter((f) => f.itemId === 'Q-failed').map((f) => f.action)).toContain('retry');
+  });
+
   it('still offers a retry for a park a machine could clear', () => {
     const row = item({ id: 'Q-stopped', state: 'parked', reason: 'stopped', updatedAt: NOW - 90 * MIN });
     const sheet = planRounds({ now: NOW, items: [row], lanes: [], blockers: [] });

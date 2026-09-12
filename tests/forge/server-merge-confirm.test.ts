@@ -21,6 +21,7 @@ import { Inbox } from '../../src/forge/inbox.js';
 import { Journal } from '../../src/forge/journal.js';
 import { Registry } from '../../src/forge/registry.js';
 import { Lanes } from '../../src/forge/supervisor.js';
+import { QueueStore } from '../../src/forge/intake/queueStore.js';
 import { ForgeServer } from '../../src/forge/server.js';
 
 const LANE = '2026-09-11-acme-merge-wait';
@@ -64,6 +65,36 @@ async function postMerge(base: string, body: Record<string, unknown>): Promise<{
   });
   return { status: response.status, body: (await response.json()) as Record<string, unknown> };
 }
+
+describe('item 4 round 3: the Queue view Merge click is persisted by the real server', () => {
+  it('writes a queue-merge row to the store, so the wiring is proven end to end', async () => {
+    // The route-level specimen captures the descriptor at the route boundary and cannot
+    // see the server's own adapter dropping it. This drives the real server instead.
+    const queueStore = new QueueStore(join(dir, 'queue.jsonl'));
+    queueStore.append({
+      id: 'Q-1', at: 1, source: 'ticket', input: 'ABC-9', ticket: 'ABC-9', repo: 'owner/name',
+      briefPath: null, branch: 'feature/abc-9', worktreePath: null, base: 'develop',
+      state: 'review', reason: null, runKey: null,
+      pr: { no: 9, url: 'https://github.com/owner/name/pull/9', draft: false },
+      journalIds: [], createdAt: 1, updatedAt: 1,
+    } as never);
+    server = new ForgeServer({
+      lanes: new Lanes(join(dir, 'lanes')), inbox: new Inbox(join(dir, 'inbox')),
+      journalPath: join(dir, 'fleet.jsonl'), registry: new Registry(join(dir, 'registry')),
+      port: 0, queueStore, queueMergeDeps: {} as never,
+    });
+    const base = `http://127.0.0.1:${await server.listen()}`;
+
+    const response = await fetch(`${base}/queue/Q-1/merge`, {
+      method: 'POST', headers: { 'x-forge-token': server.token, 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(response.status).toBe(202);
+
+    const rows = JSON.parse(readFileSync(join(dir, 'pending-confirms.json'), 'utf8')) as Array<{ descriptor?: { kind?: string } }>;
+    expect(rows.map((row) => row.descriptor?.kind)).toContain('queue-merge');
+  });
+});
 
 describe('item 4: a merge confirm survives the console restarting under it', () => {
   it('honours a merge token minted before the restart', async () => {
