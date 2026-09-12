@@ -8,6 +8,9 @@
  * it read as idle. On 2026-09-11 a merge to main restarted the console out from under a
  * pending click.
  */
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import { QUEUE_IN_FLIGHT_STATES } from '../../src/forge/intake/queue.js';
@@ -38,7 +41,7 @@ describe('item 5: an item at review blocks a cutover', () => {
   it('refuses the restart a moved trunk would otherwise take', async () => {
     const events: Record<string, unknown>[] = [];
     const due = await cutoverDue({
-      checkout: 'C:/dev/flightdeck', runningHead: 'old', git: git('new'),
+      checkout: join(tmpdir(), 'self-checkout'), runningHead: 'old', git: git('new'),
       idle: () => cutoverIdle({ items: [item('review')], queueBusy: false }),
       append: (event) => { events.push(event); },
     });
@@ -49,7 +52,7 @@ describe('item 5: an item at review blocks a cutover', () => {
 
   it('still restarts when the same fleet holds only done and parked rows', async () => {
     const due = await cutoverDue({
-      checkout: 'C:/dev/flightdeck', runningHead: 'old', git: git('new'),
+      checkout: join(tmpdir(), 'self-checkout'), runningHead: 'old', git: git('new'),
       idle: () => cutoverIdle({ items: [item('done'), item('parked')], queueBusy: false }),
       append: () => {},
     });
