@@ -34,7 +34,10 @@ describe('queueReadyPrWithPrediction', () => {
   // Edge: the gate readies and merges on the auto-merge path before this runs, so
   // `gh pr ready` fails on a pull request that is already ready or merged. Treating
   // that as a failure wrote a false row on every successful auto-merge.
-  it.each(['pull request is not a draft', 'Pull request is already merged'])(
+  it.each([
+    'pull request is not a draft',
+    'Pull request owner/repo#7 is closed. Only draft pull requests can be marked as "ready for review"',
+  ])(
     'treats %s as already ready, not a failure', async (stderr) => {
       let appended = false;
       const run = queueReadyPrWithPrediction({

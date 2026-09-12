@@ -1137,6 +1137,7 @@ describe('Jira write-back at review: A.3', () => {
       council: async () => ({ verdict: 'PASS' }),
     });
     deps.prSnapshot = async () => ({ files: ['android/app/build.gradle', 'src/app/store.ts'], add: 3, del: 1 });
+    deps.repoKindFor = () => 'frontend';
     deps.readyPrWithPrediction = async (input) => { calls.push({ pr: input.pr.no, prediction: input.prediction }); };
 
     let current = item;
@@ -1159,6 +1160,7 @@ describe('Jira write-back at review: A.3', () => {
       council: async () => ({ verdict: 'PASS' }),
     });
     deps.prSnapshot = async () => ({ files: ['src/app/store.ts'], add: 1, del: 0 });
+    deps.repoKindFor = () => 'frontend';
     deps.readyPrWithPrediction = async () => { throw new Error('gh: draft conversion refused'); };
 
     let current = item;
@@ -1170,6 +1172,30 @@ describe('Jira write-back at review: A.3', () => {
     const refusal = events.find((row) => row['event'] === 'queue.pr-ready-failed');
     expect(refusal).toBeDefined();
     expect(String(refusal!['error'])).toContain('draft conversion refused');
+    expect(current.pr?.draft).toBe(true);
+  });
+
+  // Found by code review, 2026-09-12: `repoKindFor` answers `frontend` for any repo
+  // with no entry of its own, so the permissive reading put an Android and iOS ship
+  // path into a pull request on a Node repo with no mobile build at all.
+  it('leaves a repo with no declared kind alone', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'BBZ-226', 1000);
+    let called = false;
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS' }),
+    });
+    deps.prSnapshot = async () => ({ files: ['src/app/store.ts'], add: 1, del: 0 });
+    deps.readyPrWithPrediction = async () => { called = true; };
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+
+    expect(current.state).toBe('review');
+    expect(called).toBe(false);
     expect(current.pr?.draft).toBe(true);
   });
 

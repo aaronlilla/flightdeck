@@ -316,7 +316,14 @@ export function queueReadyPrWithPrediction(
     // draft when it was ready, under an event naming the wrong write, and the hop is
     // never re-entered to correct it.
     const ready = await gh.readyPr(item.repo, pr.no);
-    const alreadyReady = ready.returncode !== 0 && /not a draft|already|merged/i.test(ready.stderr);
+    // The gate readies and merges on the auto-merge path before this runs, so a
+    // non-zero exit here is usually "there was nothing to do". The real message for a
+    // merged pull request names it closed, not merged -- matching only on "merged"
+    // wrote a false failure row on every successful auto-merge (code review,
+    // 2026-09-12). The bare "already" arm was dead: gh exits 0 on an open pull request
+    // that is already ready.
+    const alreadyReady = ready.returncode !== 0
+      && /not a draft|is closed|already merged|ready for review/i.test(ready.stderr);
     if (ready.returncode !== 0 && !alreadyReady) {
       throw new Error(`gh pr ready failed: ${ready.stderr.slice(0, 300)}`);
     }

@@ -1004,7 +1004,11 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
   // hand a backend owner a pull request the queue had already made mergeable (code
   // review, 2026-09-12). The mobile prediction is meaningless on those repos anyway.
   let readied = false;
-  const frontendRepo = !deps.repoKindFor || deps.repoKindFor(item.repo!) === 'frontend';
+  // An explicit frontend kind, never the default (code review, 2026-09-12).
+  // `repoKindFor` answers `frontend` for any repo with no entry of its own, including
+  // this queue's own repository, so the permissive reading put an Android and iOS ship
+  // path into the body of a pull request on a Node repo with no mobile build at all.
+  const frontendRepo = deps.repoKindFor !== undefined && deps.repoKindFor(item.repo!) === 'frontend';
   if (deps.readyPrWithPrediction && item.repo && frontendRepo) {
     const prediction = renderShipPrediction(shipPredictionFor(item.changedFiles ?? []));
     try {
