@@ -196,9 +196,81 @@ export async function planTicketWithInterview(
   return finishBrief(packet, answers, ticket, itemId, deps);
 }
 
+/** Marks the follow-up ask `findKnownContradiction` raises, and doubles as the guard
+ *  against re-raising it: once that ask is answered, its own question text (carrying
+ *  this marker) is itself one of the settled answers on the next hop, so the same two
+ *  original decisions never fire the check twice. */
+const CONTRADICTION_MARKER = 'single-tap-vs-shared-component contradiction';
+
+/**
+ * Item 11 (2026-09-11): a live round trip cost twenty minutes into implementation
+ * because two settled decisions read as fine independently and were incompatible
+ * together -- "build outside-press dismissal into the shared component" and "a single
+ * tap should both close the drop-down and activate whatever was tapped". Whatever view
+ * sits under the finger at those coordinates is the only touch target in React Native,
+ * so a backdrop confined to the shared component necessarily swallows the tap it closes
+ * on; true single-tap dismiss-and-activate needs a listener placed ABOVE the component.
+ *
+ * This is ONE narrow, evidenced rule for that one known-shape conflict, not a general
+ * contradiction detector -- a false positive that parks every ticket on an imagined
+ * contradiction is worse than the bug this fixes. It matches only when both halves of
+ * the specific conflict are present in the answer text; it will not catch a
+ * differently-worded version of the same conflict, and it never inspects the
+ * repository -- it reads the collected decisions only.
+ */
+export function findKnownContradiction(answers: InterviewAnswer[]): string | undefined {
+  if (answers.some((a) => a.question.includes(CONTRADICTION_MARKER))) return undefined;
+  const buildsDismissalIntoSharedComponent = answers.some(
+    (a) => /shared|reusable/i.test(a.answer)
+      && /component/i.test(a.answer)
+      && /(outside[- ]press|backdrop|dismiss)/i.test(a.answer),
+  );
+  const wantsSingleTapThrough = answers.some(
+    (a) => /single tap/i.test(a.answer)
+      && /(close|dismiss)/i.test(a.answer)
+      && /(activate|go through|second tap)/i.test(a.answer),
+  );
+  if (!buildsDismissalIntoSharedComponent || !wantsSingleTapThrough) return undefined;
+  return `${CONTRADICTION_MARKER}: two earlier decisions conflict. One says the `
+    + 'outside-press dismissal belongs in the shared component; another says a single '
+    + 'tap must both close the drop-down and activate whatever is under it. In React '
+    + 'Native, whatever view sits on top at those coordinates is the only touch target '
+    + '-- a backdrop confined to the shared component will swallow the tap it closes on, '
+    + 'so true single-tap dismiss-and-activate needs a listener placed above the '
+    + 'component instead. Which do you want: (a) keep the dismissal in the shared '
+    + 'component and accept that a second tap activates the element, or (b) move the '
+    + 'dismiss listener above the component so one tap does both?';
+}
+
 async function finishBrief(
   packet: Packet, answers: InterviewAnswer[], ticket: string, itemId: string, deps: InterviewPlannerDeps,
 ): Promise<QueuePlanOutcome> {
+  const contradiction = findKnownContradiction(answers);
+  if (contradiction) {
+    const entry = deps.inbox.raise({
+      run: askRunFor(itemId),
+      question: contradiction,
+      options: [],
+      recommended: null,
+      optionSource: 'drafted',
+      kind: 'question',
+      ticket,
+      actionTarget: 'interview',
+    });
+    if (entry.asked === 1) {
+      deps.append?.({
+        event: 'interview.asked', itemId, ticket, askKey: entry.key,
+        answerableBy: 'aaron', question: entry.question,
+      });
+    }
+    // Carry forward only what never touched the inbox (scout answers): whatever is
+    // already an inbox entry for this item comes back through `asksForItem` on its own
+    // next hop, and re-storing it here would double it up in the merged answer list.
+    const inboxQuestions = new Set(asksForItem(deps.inbox, itemId).map((entry2) => entry2.question));
+    const carryForward = answers.filter((a) => !inboxQuestions.has(a.question));
+    deps.records.put({ itemId, ticket, at: Date.now(), answers: carryForward });
+    return { waiting: 'interview', asks: 1 };
+  }
   const brief = await writeBrief(packet, answers, deps.reasoner);
   const written = await deps.writeBriefFile({ ticket, itemId, text: brief.text });
   deps.records.clear(itemId);

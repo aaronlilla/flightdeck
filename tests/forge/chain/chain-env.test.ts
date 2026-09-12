@@ -77,6 +77,42 @@ describe('worktreePathFor', () => {
     const path = worktreePathFor('D:/repos/Name', 'Owner/Name', 'ABC-1');
     expect(path).toBe('D:/repos/worktrees/name--abc-1');
   });
+
+  // Item 12 (2026-09-11): a checkout that is itself a worktree (the mobile repo's
+  // configured checkout, C:/dev/worktrees/v2-react-native--merge-base) used to double
+  // the "worktrees" segment, landing new trees at .../worktrees/worktrees/... --
+  // invisible to the coordination board and cleanup, both of which scan
+  // C:/dev/worktrees/* only.
+  it('item 12: a checkout that is itself a worktree does not double the "worktrees" segment', () => {
+    const path = worktreePathFor(
+      'C:/dev/worktrees/v2-react-native--merge-base', 'owner/v2-react-native', 'BBZ-169',
+    );
+    expect(path).toBe('C:/dev/worktrees/v2-react-native--bbz-169');
+  });
+
+  it('item 12: a plain checkout (not itself a worktree) still resolves exactly today\'s path', () => {
+    const path = worktreePathFor('C:/dev/v2-React-Native', 'owner/v2-react-native', 'BBZ-169');
+    expect(path).toBe('C:/dev/worktrees/v2-react-native--bbz-169');
+  });
+
+  it('item 12: backslash paths through the same doubled-worktree checkout resolve without doubling', () => {
+    const path = worktreePathFor(
+      'C:\\dev\\worktrees\\v2-react-native--merge-base', 'owner/v2-react-native', 'BBZ-169',
+    );
+    expect(path).toBe('C:\\dev\\worktrees\\v2-react-native--bbz-169');
+  });
+
+  it('item 12: a trailing slash on the worktree checkout does not confuse the parent lookup', () => {
+    const path = worktreePathFor(
+      'C:/dev/worktrees/v2-react-native--merge-base/', 'owner/v2-react-native', 'BBZ-169',
+    );
+    expect(path).toBe('C:/dev/worktrees/v2-react-native--bbz-169');
+  });
+
+  it('item 12: a repo literally named "worktrees" still lands under one worktrees directory', () => {
+    const path = worktreePathFor('C:/dev/worktrees', 'owner/worktrees', 'BBZ-1');
+    expect(path).toBe('C:/dev/worktrees/worktrees--bbz-1');
+  });
 });
 
 describe('branchFor', () => {
