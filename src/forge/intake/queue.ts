@@ -81,7 +81,7 @@ export const PARK_CHECKS_RECHECK_CAP = 20;
 /** What re-reading would have to say before a parked item may move again. `checks` means
  *  the park is about a pull request's checks; `run` means it is about a worker process
  *  that may or may not still be alive. */
-export type ParkRecheck = 'checks' | 'run';
+export type ParkRecheck = 'checks' | 'run' | 'overlap';
 
 export type ParkRecoverability =
   | { recoverable: true; reRead: ParkRecheck }
@@ -105,10 +105,12 @@ export function parkRecoverability(reason: string | null | undefined): ParkRecov
   }
   if (/^unrouted$/i.test(text)) return { recoverable: false, why: 'nothing routed the ticket to a repository', personsCall: true };
   if (/^backend:/i.test(text)) return { recoverable: false, why: 'the ticket was handed to the backend', personsCall: true };
-  // Not a person's call: the overlap clears itself the moment the item holding those
-  // files reaches `done`. This pass has nothing to re-read that would tell it so, but the
-  // board sweep does, and marking it a person's call took away the only automatic path.
-  if (/^overlaps /i.test(text)) return { recoverable: false, why: 'another item holds the same files' };
+  // The one park that clears itself: it ends the moment the item holding those files is
+  // done. That is a question this pass can answer off its own store, for free, under the
+  // same attempt cap -- which is where it belongs. The board sweep must NOT retry it,
+  // because that path runs on a ticker and would flip the item to running and back on
+  // every tick for as long as the other item held the files.
+  if (/^overlaps /i.test(text)) return { recoverable: true, reRead: 'overlap' };
   if (/checks (never settled|are pending)/i.test(text)) return { recoverable: true, reRead: 'checks' };
   // Every run verdict `relaunchOnRetryOrPark` passes through (`stopped`, `exhausted`,
   // `parked`, `unknown`) plus the launcher's own stale-liveness refusal: all of them are
@@ -323,7 +325,16 @@ export function removeItem(store: QueueStore, id: string, now: number = Date.now
  *  a second real Codex subprocess, for the one item. No `runKey` yet means the item never
  *  got past planning or launch, and `queued` is correct: there is nothing in flight for a
  *  concurrent tick to collide with. */
-export function retryItem(store: QueueStore, id: string, now: number = Date.now()): QueueItem | undefined {
+export function retryItem(
+  store: QueueStore, id: string, now: number = Date.now(),
+  /** Set only by a route a person clicked. `retryItem` is the board sweep's path too
+   *  (`rounds.ts` `applyRounds`, `relaunchItem`, `blockers-restart.ts`), and handing the
+   *  recovery budgets back on an automatic retry makes every cap here unreachable: retry,
+   *  spend twenty check reads, park, retry, twenty more, for as long as the ticker runs.
+   *  A person asking again is a new decision and gets a fresh budget; a machine asking
+   *  again is the same decision and does not. */
+  opts: { askedByAPerson?: boolean } = {},
+): QueueItem | undefined {
   const item = store.get(id);
   if (!item || (item.state !== 'parked' && item.state !== 'failed')) return undefined;
   const state: QueueItemState = item.runKey ? 'running' : 'queued';
@@ -337,8 +348,14 @@ export function retryItem(store: QueueStore, id: string, now: number = Date.now(
   // reason it has already written once.
   const patch: Partial<QueueItem> = {
     state, reason: null, updatedAt: now,
-    recoveryAttempts: 0, recoveryHeldOn: null, recoveryDeclinedFor: null,
-    recoveryWidthHeld: false, checksReads: 0, checksReadAt: 0,
+    // `pendingGatePolls` belongs to this list too: leaving it at its cap means the retry
+    // re-enters the gate, spends a real council round, and parks again on the first pass.
+    ...(opts.askedByAPerson
+      ? {
+        recoveryAttempts: 0, recoveryHeldOn: null, recoveryDeclinedFor: null,
+        recoveryWidthHeld: false, checksReads: 0, checksReadAt: 0, pendingGatePolls: 0,
+      }
+      : {}),
     ...(item.runKey ? { retriedAt: now } : {}),
   };
   store.append({ id, at: now, ...patch });
@@ -1113,7 +1130,7 @@ async function recoverParkedItems(deps: QueueRuntimeDeps, items: QueueItem[], sl
     // Only a `run` recovery ends in a relaunched worker; a `checks` recovery re-enters
     // the gate hop and provisions nothing, so it neither needs a slot nor spends one.
     // Charging it a slot starved the relaunches the width is actually there to bound.
-    const needsSlot = verdict.reRead === 'run';
+    const needsSlot = verdict.reRead === 'run';   // checks and overlap re-enter the gate hop and provision nothing
     if (needsSlot && slots <= 0) {
       // Its own marker, not `recoveryHeldOn`: overwriting the real reading with the width
       // made a queue oscillating around its cap write a row on every flip, which is what
@@ -1156,6 +1173,16 @@ async function recoverParkedItems(deps: QueueRuntimeDeps, items: QueueItem[], sl
         // whole branch dead in production while the specimen stayed green.
         clear = found.toLowerCase() === 'success';
       }
+    } else if (verdict.reRead === 'overlap') {
+      // The reason names the item holding the files. Still holding means still in a state
+      // that can be writing to them; anything else (done, removed, parked) releases them.
+      const holder = /^overlaps (\S+) on /i.exec(reason)?.[1];
+      const row = holder
+        ? deps.store.all().find((other) => other.id === holder || other.ticket === holder)
+        : undefined;
+      const holding = row !== undefined && (row.state === 'running' || row.state === 'review');
+      found = holding ? `${holder} still holds those files` : 'the other item released those files';
+      clear = !holding;
     } else if (!deps.runPid) {
       found = 'no liveness reader wired';
     } else {
@@ -1172,8 +1199,9 @@ async function recoverParkedItems(deps: QueueRuntimeDeps, items: QueueItem[], sl
       // would bury the journal, and a cap on holds would abandon the item.
       if (item.recoveryHeldOn !== found) {
         writeTransition(
-          // The width marker clears here: an item held on the width, then on a real
-          // reading, then on the width again has to say so the second time.
+          // The width marker is deliberately NOT cleared here. A queue sitting at its cap
+          // oscillates around it, and clearing the marker on each real reading wrote a row
+          // on every flip. One row per park; a person's retry is what says it again.
           item, { recoveryHeldOn: found, ...readMarks }, deps, 'queue.recovery-held',
           { reRead: verdict.reRead, found, parkReason: item.reason },
         );

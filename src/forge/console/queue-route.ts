@@ -212,7 +212,9 @@ export class QueueRoutes {
   }
 
   retry(id: string): ActionResult {
-    const retried = retryItem(this.opts.store, id);
+    // A person clicked this, so the item gets its recovery budgets back. The sweep's
+    // own calls do not pass this, deliberately: see `retryItem`.
+    const retried = retryItem(this.opts.store, id, Date.now(), { askedByAPerson: true });
     return retried
       ? { ok: true, jid: null, message: `${id} is queued again`, undoable: false }
       : { ok: false, jid: null, message: `${id} is not parked or failed`, undoable: false };
