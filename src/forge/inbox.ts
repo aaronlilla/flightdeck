@@ -53,6 +53,13 @@ export interface PassFields {
   passedAt?: number | null;
   passedThread?: string | null;
   answeredBy?: string | null;
+  /** Who answered the ask DIRECTLY, rather than attaching a reply for the operator to
+   *  confirm -- today an auto-answer rule (`console/rules.ts`). Kept apart from
+   *  `answeredBy` on purpose (code review, 2026-09-12): overloading one field meant a
+   *  rule overtaking a stale reply erased the teammate's name, the only record that
+   *  they replied at all, and then `answeredByOf` fell back to the operator and filed
+   *  the rule's call as theirs. */
+  answeredDirectlyBy?: string;
   /** The teammate's own words, attached but not accepted: the ask stays open until a
    *  person confirms it. */
   reply?: string;
@@ -256,6 +263,7 @@ export class Inbox {
       // answered (`console/lanes.ts#questionFor`), so a stale one also hid the options
       // on a question nobody had answered.
       delete entry.answeredBy;
+      delete entry.answeredDirectlyBy;
       delete entry.reply;
       delete entry.repliedAt;
       // The pass goes with them (code review, 2026-09-12). Leaving `passedThread` put a
@@ -350,10 +358,9 @@ export class Inbox {
     // above fixes. A teammate's attached reply is left alone: `answeredByOf` credits
     // that only while the stored answer still equals the reply, so the operator
     // overriding it already reads as the operator's.
-    const author = answeredBy ?? (entry.reply === undefined ? undefined : entry.answeredBy);
     const answered: InboxEntry = { ...entry, answer, answeredAt: Date.now() };
-    if (author) answered.answeredBy = author;
-    else delete answered.answeredBy;
+    if (answeredBy) answered.answeredDirectlyBy = answeredBy;
+    else delete answered.answeredDirectlyBy;
     this.write(answered);
     return answered;
   }

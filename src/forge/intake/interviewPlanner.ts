@@ -57,15 +57,14 @@ export interface InterviewPlannerDeps {
  * `## Decisions` as settled and never asks again. Found by code review, 2026-09-11.
  */
 export function answeredByOf(entry: InboxEntry): string {
+  // A direct author outranks a replier: it is the thing that actually decided, and it
+  // is set only when something answered the ask itself. Checked first so a rule that
+  // overtook a stale reply is credited for its own call rather than falling through to
+  // the operator, while the teammate's name stays on the reply it belongs to.
+  if (entry.answeredDirectlyBy) return entry.answeredDirectlyBy;
   if (entry.answeredBy && entry.reply !== undefined && entry.answer === entry.reply) {
     return entry.answeredBy;
   }
-  // A direct author: something answered the ask itself rather than attaching a reply for
-  // the operator to confirm, so there is no `reply` to compare the answer against. Only
-  // an auto-answer rule does this today (`Inbox.answer`'s third argument). Found by code
-  // review, 2026-09-12 -- until this branch existed the brief credited the operator for
-  // a rule's call while the journal row beside it named the rule.
-  if (entry.answeredBy && entry.reply === undefined) return entry.answeredBy;
   return 'the operator';
 }
 

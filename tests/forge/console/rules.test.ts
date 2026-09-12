@@ -301,6 +301,32 @@ describe('enforceRulesOnce', () => {
     expect(overtook).toBeDefined();
   });
 
+  // Found by code review, 2026-09-12: overtaking a stale hold overwrote `answeredBy`,
+  // so the teammate's credit was destroyed AND `answeredByOf` fell back to the operator
+  // -- the rule's call filed as Aaron's, the exact fault this branch removes.
+  it('credits the rule and keeps the teammate words when it overtakes a stale reply', async () => {
+    inbox.raise({ run: 'item:Q-ot', ticket: 'BBZ-13', question: 'value cannot be NOT NULL, what now?' });
+    const key = inbox.open()[0]!.key;
+    inbox.attachReply(key, 'joe', 'use the default');
+    // Age the reply on disk. The inbox has no public way to backdate one, and the
+    // window is what this specimen is about.
+    const entryPath = join(dir, 'inbox', `${key}.json`);
+    const aged = { ...JSON.parse(readFileSync(entryPath, 'utf8')), repliedAt: Date.now() - 25 * 60 * 60 * 1000 };
+    writeFileSync(entryPath, JSON.stringify(aged), 'utf8');
+    writeRule({
+      id: 'r9', kind: 'auto-answer', title: 'nulls', summary: 's', evidence: 'NOT NULL',
+      effect: 'skip nulls', status: 'open', jid: null, prUrl: null,
+    });
+
+    await enforceRulesOnce({ journalPath, rulesPath: rulesFile, inbox, runActions });
+
+    const after = inbox.entry(key)!;
+    expect(after.answer).toBe('skip nulls');
+    expect(after.reply).toBe('use the default');
+    expect(after.answeredBy).toBe('joe');
+    expect(answeredByOf(after)).toBe('the auto-answer rule "nulls"');
+  });
+
   it('still stands down while the pass is fresh', async () => {
     inbox.raise({ run: 'item:Q-fresh', ticket: 'BBZ-12', question: 'value cannot be NOT NULL, what now?' });
     const key = inbox.open()[0]!.key;
