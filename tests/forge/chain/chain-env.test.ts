@@ -6,7 +6,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  baseFor, branchFor, checkoutFor, hotfixBaseFor, mergeAllowedFor, parseRepoScoped, readChainEnv,
+  baseFor, branchFor, checkoutFor, declaredRepoKind, hotfixBaseFor, mergeAllowedFor,
+  parseRepoScoped, readChainEnv,
   repoKindFor, verifyCommandFor, worktreePathFor, worktreeSetupFor,
 } from '../../../src/forge/chain-env.js';
 
@@ -76,6 +77,30 @@ describe('worktreePathFor', () => {
   it('places the worktree in a sibling "worktrees" directory, named <name-lower>--<ticket-lower>', () => {
     const path = worktreePathFor('D:/repos/Name', 'Owner/Name', 'ABC-1');
     expect(path).toBe('D:/repos/worktrees/name--abc-1');
+  });
+});
+
+/**
+ * Item 16, 2026-09-12: `repoKindFor` answers `frontend` for anything not named as
+ * backend, which reads as "this builds a mobile app" and is not. A caller that put an
+ * Android and iOS ship path into a pull request body on that reading would have done
+ * it on every Node repository in the workspace.
+ */
+describe('declaredRepoKind', () => {
+  it('returns nothing for a repo that declares no kind, where repoKindFor says frontend', () => {
+    const env = readChainEnv({ FORGE_REPO_KIND: 'owner/backendrepo=backend' });
+    expect(repoKindFor(env, 'aaronlilla/flightdeck')).toBe('frontend');
+    expect(declaredRepoKind(env, 'aaronlilla/flightdeck')).toBeUndefined();
+  });
+
+  it('returns the kind a repo does declare', () => {
+    const env = readChainEnv({ FORGE_REPO_KIND: 'o/app=frontend,o/api=backend' });
+    expect(declaredRepoKind(env, 'o/app')).toBe('frontend');
+    expect(declaredRepoKind(env, 'o/api')).toBe('backend');
+  });
+
+  it('returns nothing when no repo declares a kind at all', () => {
+    expect(declaredRepoKind(readChainEnv({}), 'o/app')).toBeUndefined();
   });
 });
 

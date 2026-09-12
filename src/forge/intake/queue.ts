@@ -31,6 +31,7 @@ import { parseAfterLines, repoFromBrief, roadmapFromBrief } from './repoRoute.js
 import type { QueueStore } from './queueStore.js';
 import { workspaceRoot } from '../paths.js';
 import { roadmapIdOpen } from '../roadmap.js';
+import { renderShipPrediction, shipPredictionFor } from './shipPrediction.js';
 
 /**
  * A.1: `ChainCouncilResult` (`chain.ts`) carries no findings text, only a verdict and an
@@ -422,6 +423,23 @@ export interface QueueRuntimeDeps {
    *  a remote link, all in Aaron's voice. Runs once per item, guarded by `handoffAt`;
    *  absent means this environment never wires it, and no Jira write happens at all. */
   jiraHandoff?: (input: { item: QueueItem; pr: { no: number; url: string } }) => Promise<void>;
+  /** Item 16, 2026-09-12: marks the pull request ready at review and writes the ship
+   *  prediction into its body. The pull request used to be left a draft with nothing
+   *  said about whether merging publishes an update or triggers a rebuild, though the
+   *  decide job had already resolved one. Absent means this environment never wires it,
+   *  and the pull request stays a draft exactly as before. A refusal is journalled
+   *  (`queue.pr-ready-failed`) rather than swallowed: a pull request nobody can merge
+   *  because it is still a draft is the stall this item exists to remove. */
+  /** Item 16, 2026-09-12: whether this repo builds a mobile app, so a ship prediction
+   *  means anything for it. Evidence, not configuration: `repoKindFor` answers
+   *  `frontend` for anything not named as backend, and the declared kind is unset in
+   *  the common case, so reading either one had the prediction land on every Node repo
+   *  or on none at all. Absent means the caller cannot tell, and the skip is journaled
+   *  rather than silent. */
+  mobileRepo?: (repo: string) => boolean;
+  readyPrWithPrediction?: (input: {
+    item: QueueItem; pr: { no: number; url: string }; prediction: string;
+  }) => Promise<{ readied: boolean; predictionError?: string } | void>;
   /** A.8/A.9: the PR's own changed files and line counts. Fetched once per item, right
    *  after the PR is found and before the council reads it, so A.9's overlap check runs
    *  against real data and A.8's figures at `review` need no second fetch. Absent means
@@ -984,6 +1002,53 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
     }
   }
 
+  // Item 16, 2026-09-12: ready the pull request and say what merging is predicted to
+  // cost, per platform. Built from the item's own changed-files list, already fetched
+  // for the overlap check, so this costs no extra call. Unlike the courtesies above, a
+  // failure here is journalled: a pull request left a draft cannot be merged at all.
+  // Not for a backend item: `terminalStateFor('backend')` says it stops at
+  // draft-pr-open and the owner ping below assumes a draft, so readying it here would
+  // hand a backend owner a pull request the queue had already made mergeable (code
+  // review, 2026-09-12). The mobile prediction is meaningless on those repos anyway.
+  let readied = false;
+  // Whether this repo builds a mobile app, read off the checkout rather than off
+  // configuration (code review, 2026-09-12, twice). `repoKindFor` means "not backend"
+  // and put an Android and iOS ship path on every Node repo; the declared kind is
+  // unset in the common case and turned the whole thing off instead. Neither failure
+  // said anything, so a skip is journaled now.
+  // Not once the gate has merged (code review, 2026-09-12). `gh pr ready` is then
+  // spent on a merged pull request, and a comment saying what MERGING will cost lands
+  // after the merge.
+  const alreadyMerged = merge && gateResult.merged === true;
+  const isMobile = !alreadyMerged && (deps.mobileRepo?.(item.repo!) ?? false);
+  if (deps.readyPrWithPrediction && item.repo && !isMobile && !alreadyMerged) {
+    deps.append({
+      event: 'queue.pr-ready-skipped', actor: 'queue', itemId: item.id, pr: pr.number,
+      reason: 'no mobile build found for this repo, so no ship path to predict',
+    });
+  }
+  if (deps.readyPrWithPrediction && item.repo && isMobile) {
+    const prediction = renderShipPrediction(shipPredictionFor(item.changedFiles ?? []));
+    try {
+      const outcome = await deps.readyPrWithPrediction({ item, pr: { no: pr.number, url: pr.url }, prediction });
+      // A wiring that returns nothing did nothing, so it did not ready anything
+      // (code review, 2026-09-12). Mapping `void` to "ready" recorded a still-draft
+      // pull request as mergeable.
+      readied = outcome?.readied === true;
+      if (outcome?.predictionError) {
+        deps.append({
+          event: 'queue.pr-prediction-failed', actor: 'queue', itemId: item.id,
+          pr: pr.number, error: outcome.predictionError,
+        });
+      }
+    } catch (error) {
+      deps.append({
+        event: 'queue.pr-ready-failed', actor: 'queue', itemId: item.id,
+        pr: pr.number, error: messageOf(error),
+      });
+    }
+  }
+
   // The backend owner's assignment runs after the ticket write-up on purpose: the Jira
   // handoff assigns QA, and for a backend item the owner who lands the PR must be the
   // assignee at the end, not the one overwritten a second later (seen live 2026-09-07).
@@ -1054,7 +1119,7 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
       // the board reads "checks/files not read yet" instead of a fabricated zero diff.
       state: 'review',
       pr: {
-        no: pr.number, url: pr.url, draft: true,
+        no: pr.number, url: pr.url, draft: !readied,
         ...(item.changedFiles ? { files: item.changedFiles.length } : {}),
         ...(prAdd !== undefined ? { add: prAdd } : {}),
         ...(prDel !== undefined ? { del: prDel } : {}),

@@ -11,14 +11,16 @@
  * same two steps `chain-wire.ts#chainIntake` already runs for a poll-sourced packet,
  * just triggered by an operator's own add instead of a poll cycle.
  */
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { chainCouncil, chainGate, chainGh, chainRebase, chainLauncher, chainLaunchGoal } from './chain-wire.js';
-import { checkoutFor, repoKindFor as repoKindForEnv, type ChainEnv } from './chain-env.js';
+import {
+  checkoutFor, declaredRepoKind, repoKindFor as repoKindForEnv, type ChainEnv,
+} from './chain-env.js';
 import type { CliResult, ForgeDeps } from './cli.js';
 import { autoMergeAllowed } from './council/risk.js';
-import { conclusionOf, countAddDel, guardedCommentPr, REAL_GH } from './council/gh.js';
+import { conclusionOf, countAddDel, guardedCommentPr, REAL_GH, type GhWriter } from './council/gh.js';
 import type { Packet, PollSourceName, Watermark } from './contracts.js';
 import { run as execRun } from './exec.js';
 import type {
@@ -299,6 +301,80 @@ export function queueBackendHandoff(
   };
 }
 
+/**
+ * Item 16, 2026-09-12: at review, mark the pull request ready and post the ship
+ * prediction as a comment. Both are writes a person would otherwise do by hand, and
+ * leaving the pull request a draft means nobody can merge it at all.
+ *
+ * `readyPr` on an already-ready pull request is a no-op. The comment is NOT: a second
+ * pass over the same item leaves a second prediction. The body write this replaced
+ * carried a marker for that, and a comment has nowhere to put one -- named in the
+ * finishing work rather than left implied (code review, 2026-09-12).
+ */
+/**
+ * Item 16, 2026-09-12: whether a repo builds a mobile app, so a ship prediction means
+ * anything for it.
+ *
+ * Evidence rather than configuration, after two rounds of the configuration reading
+ * being wrong in opposite directions: `repoKindFor` means "not backend" and would have
+ * put an Android and iOS ship path on every Node repo here, and the declared kind is
+ * unset in the common case, which turned the feature off entirely without saying so.
+ * An `android` or `ios` directory in the checkout is the thing that actually decides
+ * whether there is a build to predict. A repo declaring `frontend` outright is taken
+ * at its word; a repo with no checkout configured cannot be read, and answers no.
+ */
+export function mobileRepoAt(chainEnv: ChainEnv | undefined, repo: string): boolean {
+  if (!chainEnv) return false;
+  if (declaredRepoKind(chainEnv, repo) === 'frontend') return true;
+  const checkout = checkoutFor(chainEnv, repo);
+  if (!checkout) return false;
+  return existsSync(join(checkout, 'android')) || existsSync(join(checkout, 'ios'));
+}
+
+export function queueReadyPrWithPrediction(
+  gh: Pick<GhWriter, 'readyPr' | 'commentPr'> = REAL_GH,
+  onRefused?: (reason: string) => void,
+): NonNullable<QueueRuntimeDeps['readyPrWithPrediction']> {
+  return async ({ item, pr, prediction }) => {
+    if (!item.repo) return { readied: false };
+    const ready = await gh.readyPr(item.repo, pr.no);
+    // A non-zero exit here is usually "there was nothing to do": the gate readies and
+    // merges on the auto-merge path before this runs. The message for a merged pull
+    // request says it is CLOSED, so matching only on "merged" wrote a false failure row
+    // on every successful auto-merge (code review, 2026-09-12).
+    const nothingToDo = ready.returncode !== 0
+      // `ready for review` is gone: `gh pr ready`'s own usage text contains it, so an
+      // argument error printed help, matched, was swallowed, and the pull request was
+      // recorded ready while still a draft (code review, 2026-09-12).
+      && /not a draft|is closed|already merged/i.test(ready.stderr);
+    if (ready.returncode !== 0 && !nothingToDo) {
+      throw new Error(`gh pr ready failed: ${ready.stderr.slice(0, 300)}`);
+    }
+    // A closed pull request was never readied, and saying otherwise records it as
+    // mergeable when it is not. It still gets the prediction: whoever reopens it wants
+    // to know what merging costs.
+    const readied = ready.returncode === 0 || !/is closed/i.test(ready.stderr);
+
+    // The prediction is a COMMENT, not an edit to the body (2026-09-12). Appending to
+    // the body meant reading it back first, and the only read available merges stdout
+    // with stderr into one buffer -- a warning from the read would have been written
+    // into somebody's prose, silently, with nothing parsing the result. A comment
+    // needs no read at all, so the corruption class is gone rather than guarded.
+    //
+    // Through `guardedCommentPr`, which `council/gh.ts` states is the one gate every
+    // pull request comment goes through; calling `commentPr` directly skipped the
+    // readability verdict and its refusal row (code review, 2026-09-12).
+    const commented = await guardedCommentPr(gh, item.repo, pr.no, prediction, (refusal) => {
+      onRefused?.(refusal.reason);
+    });
+    if (commented === null) return { readied, predictionError: 'refused by readability' };
+    if (commented.returncode !== 0) {
+      return { readied, predictionError: commented.stderr.slice(0, 300) };
+    }
+    return { readied };
+  };
+}
+
 /** A.3: the Jira write-back at review -- a comment in Aaron's voice, a QA assign/
  *  transition when those variables are set, and a remote link to the PR. Skipped
  *  honestly (never a guessed write) when no Jira credential is configured. */
@@ -506,6 +582,15 @@ export function buildQueueRuntimeDeps(
     mergeCheckRepos: chainEnv.checkouts.map((entry) => entry.repo),
     backendHandoff: queueBackendHandoff(),
     jiraHandoff: queueJiraHandoff(),
+    mobileRepo: (repo) => mobileRepoAt(chainEnv, repo),
+    readyPrWithPrediction: queueReadyPrWithPrediction(REAL_GH, (reason) => {
+      const journal = new Journal(journalPath());
+      try {
+        journal.append({ event: 'readability.refused', actor: 'queue', reason } as never);
+      } finally {
+        journal.close();
+      }
+    }),
     prSnapshot: queuePrSnapshot(),
     // BBZ, 2026-09-08: read fresh every tick (`autoMergeAllowed` re-reads
     // `FORGE_COUNCIL_AUTOMERGE` off `councilPolicy()` on each call), the same allow-list
