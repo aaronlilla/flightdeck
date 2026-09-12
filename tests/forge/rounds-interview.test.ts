@@ -104,6 +104,24 @@ describe('item 3: the rounds sweep leaves an item held on an interview answer al
     expect(sheet.findings.filter((f) => f.itemId === 'Q-overlap').map((f) => f.action)).not.toContain('retry');
   });
 
+  it('sends an overlap to a person even when the item carries a resolved blocker', () => {
+    // A resolved blocker stays on the board for the rest of the day, so `!resolved.length`
+    // let every item that was ever blocked and unblocked fall through to a retry.
+    const row = item({
+      id: 'Q-overlap-resolved', state: 'parked', reason: 'overlaps Q-other on src/a.ts',
+      updatedAt: NOW - 90 * MIN, runKey: 'run-o',
+    });
+    const resolvedBlocker = {
+      id: 'blocker:1', kind: 'integration' as const, title: 'a thing that was fixed', detail: 'd',
+      youCanResolve: true, howToResolve: 'h', links: [], blocks: [{ laneId: 'run-o' }], blockedBy: [],
+      state: 'resolved' as const, since: NOW - 200 * MIN, checkedAt: null, resolvedAt: NOW - 10 * MIN,
+      thenWhat: '', lastCheck: null,
+    };
+    const sheet = planRounds({ now: NOW, items: [row], lanes: [], blockers: [resolvedBlocker as never] });
+
+    expect(sheet.findings.filter((f) => f.itemId === 'Q-overlap-resolved').map((f) => f.action)).not.toContain('retry');
+  });
+
   it('still offers a retry for a park a machine could clear', () => {
     const row = item({ id: 'Q-stopped', state: 'parked', reason: 'stopped', updatedAt: NOW - 90 * MIN });
     const sheet = planRounds({ now: NOW, items: [row], lanes: [], blockers: [] });
