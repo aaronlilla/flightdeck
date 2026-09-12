@@ -82,6 +82,11 @@ function viewNamesIn(files: readonly string[]): string[] {
       depth += 1;
       rendered = `${parts.slice(-depth).join('/')}/${base}`;
     }
+    // Widening runs out of segments on a shallow path, and the loop then pushed the
+    // colliding name unchanged -- two files printed as one name, which is the thing
+    // this loop exists to prevent (code review, 2026-09-12). The full path always
+    // tells them apart.
+    if (taken.has(rendered)) rendered = path;
     taken.add(rendered);
     // Backticked: the readability contract counts prose words and scans them for
     // banned words, so a path segment could deny the whole comment and post nothing
@@ -112,7 +117,14 @@ export function buildQueueHandoffComment(input: QueueHandoffInput): string {
   }
 
   const files = input.changedFiles ?? [];
-  if (files.some((file) => APP_ROOT_PATH.test(file.split('\\').join('/')))) {
+  // Filtered through NOT_A_VIEW first (code review, 2026-09-12): the root pattern's
+  // `[^/]+` ate `MainStack.test`, so a pull request repairing one navigation test told
+  // QA the change reaches every screen -- the same unearned claim, pointing the other
+  // way.
+  const renderPaths = files
+    .map((file) => file.split('\\').join('/'))
+    .filter((path) => VIEW_FILE.test(path) && !NOT_A_VIEW.test(path));
+  if (renderPaths.some((path) => APP_ROOT_PATH.test(path))) {
     lines.push('This touches the app root, so it reaches every screen.');
   }
   const names = viewNamesIn(files);
@@ -122,7 +134,10 @@ export function buildQueueHandoffComment(input: QueueHandoffInput): string {
     // "adds, changes or removes", never "files that render": the list comes from the
     // pull request's own file list, which includes deletions, and pointing somebody at
     // a screen that no longer exists wastes the look (code review, 2026-09-12).
-    lines.push(`Screens this diff adds, changes or removes: ${shown}${rest > 0 ? `, and ${rest} more` : ''}.`);
+    // "at least": the pull request's file list pages at 100, so on a larger diff the
+    // names are a prefix and the count understates (code review, 2026-09-12).
+    const more = rest > 0 ? `, and at least ${rest} more` : '';
+    lines.push(`Screens this diff adds, changes or removes: ${shown}${more}.`);
   }
   // The one sentence. It says what is NOT known, and claims nothing that is.
   // A first draft said "the tests pass and the types are clean", which nothing in this
@@ -133,10 +148,13 @@ export function buildQueueHandoffComment(input: QueueHandoffInput): string {
   // The clause about the list is only true when a list was printed (code review,
   // 2026-09-12). Most of what the queue ships is backend or plain TypeScript, which
   // names nothing, and the sentence then pointed at a list that was never there.
+  // Kept short on purpose (code review, 2026-09-12). The comment is measured against
+  // a prose-word ceiling that DENIES, and a denied comment posts nothing at all -- the
+  // long version plus a supplied test plan came to 98 words against a ceiling of 80,
+  // and QA lost the link, the plan and the list together.
   lines.push(names.length
-    ? 'Nobody has looked at this on a screen, so the rendered result is unverified'
-      + ' -- including anything the list above does not name.'
-    : 'Nobody has looked at this on a screen, so the rendered result is unverified.');
+    ? 'Nobody has looked at this on a screen, the list above included.'
+    : 'Nobody has looked at this on a screen.');
   return lines.join('\n');
 }
 

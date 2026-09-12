@@ -141,7 +141,7 @@ describe('the handoff makes no claim about the rendered result', () => {
       ticket: 'BBZ-6', prUrl: 'https://github.com/acme/app/pull/6', what: 'lots.', testPlan: [],
       changedFiles: files,
     });
-    expect(body).toMatch(/and 22 more/);
+    expect(body).toMatch(/and at least 22 more/);
     expect(body).not.toContain('Thing29');
   });
 
@@ -245,6 +245,50 @@ describe('the handoff makes no claim about the rendered result', () => {
     });
     expect(body).not.toContain('renderWallet');
     expect(body).not.toContain('renderWithStore');
+  });
+
+  // Found by code review, 2026-09-12, proven by running the pattern: the root check
+  // ran over the raw file list, and `[^/]+` ate `MainStack.test`, so a pull request
+  // repairing one navigation test told QA the change reaches every screen.
+  it.each([
+    'src/navigation/MainStack.test.tsx',
+    'src/navigation/RootNavigator.stories.tsx',
+    'src/navigation/MainTabs.spec.tsx',
+  ])('does not call %s the app root', (file) => {
+    const body = buildQueueHandoffComment({
+      ticket: 'BBZ-16', prUrl: 'https://github.com/acme/app/pull/16', what: 'x.', testPlan: [],
+      changedFiles: [file],
+    });
+    expect(body).not.toMatch(/every screen/i);
+  });
+
+  // Found by code review, 2026-09-12: widening runs out of segments on a shallow path,
+  // and the colliding name was then pushed unchanged.
+  it.each([
+    [['src/components/Header.tsx', 'src/Header.tsx']],
+    [['app/Home.tsx', 'ui/Home.tsx']],
+  ])('keeps shallow same-named paths apart: %s', (files) => {
+    const body = buildQueueHandoffComment({
+      ticket: 'BBZ-17', prUrl: 'https://github.com/acme/app/pull/17', what: 'x.', testPlan: [],
+      changedFiles: files,
+    });
+    const matches = body.match(/`[^`]+`/g) ?? [];
+    expect(matches).toHaveLength(2);
+    expect(new Set(matches).size).toBe(2);
+  });
+
+  // Found by code review, 2026-09-12: the long sentence plus a supplied plan came to
+  // 98 prose words against a ceiling of 80, and a denied comment posts nothing at all.
+  it('stays inside the prose ceiling with a plan and a full list', () => {
+    const files = Array.from({ length: 30 }, (_, i) => `src/features/f${i}/Thing${i}.tsx`);
+    const body = buildQueueHandoffComment({
+      ticket: 'BBZ-18', prUrl: 'https://github.com/acme/app/pull/18',
+      what: 'the drop-down closes on an outside tap.',
+      testPlan: ['open the player card', 'tap outside it', 'check the row underneath'],
+      changedFiles: ['src/navigation/MainStack.tsx', ...files],
+    });
+    const prose = body.replace(/`[^`]*`/g, '').replace(/https?:\S+/g, '');
+    expect(prose.split(/\s+/).filter(Boolean).length).toBeLessThan(80);
   });
 
   // Edge: an empty list is not proof of anything -- the file list pages at 100 and can
