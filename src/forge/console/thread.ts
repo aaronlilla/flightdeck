@@ -158,6 +158,17 @@ export interface ComputeThreadOptions {
    *  by anyone. Inside that window an in-memory token may still be live, so an unwired
    *  caller leaves the card alone rather than guess. */
   confirmPending?: (token: string) => boolean;
+  /** Whether the work an open question is about still exists, and what it is called.
+   *
+   *  Measured live on 2026-09-12: 92 open questions, and 90 pointed at a queue item that
+   *  had been pruned. Answering one would post to work that has gone, and the card gave a
+   *  person no way to tell -- its only pointer was the item id, which the board is built
+   *  to hide. Aaron: "a worthless question that can never be answered by a human
+   *  reasonably without extensive research."
+   *
+   *  Unwired, every question reads as live and unlabelled: the same answer as before this
+   *  existed, so a caller that cannot resolve work never hides a real question. */
+  askContext?: (runs: readonly string[]) => { live: boolean; label: string | null };
 }
 
 /** The token a confirm card's own Confirm button addresses, or null when the card
@@ -232,8 +243,19 @@ export function computeThread(
   const blockerCards = windowed.filter((row) => row.event === 'blocker.raised').map((row) => blockerCardFor(row, titleFor));
   const chips = [...ordinaryChips, ...blockerCards, ...wardenChipMessages(windowed.filter((row) => WARDEN_CHIP_EVENTS.has(row.event)), titleFor)];
   const persistedKeys = new Set(persisted.map((message) => message.k));
+  const askContext = options.askContext;
   let questions = openAsks
-    .map(questionMessageFor)
+    // A question about work that no longer exists is not a question. It keeps its place in
+    // the history, marked the way every reader already understands, and stops being an ask.
+    .map((entry) => {
+      const message = questionMessageFor(entry);
+      if (!askContext) return message;
+      const context = askContext(entry.runs);
+      if (!context.live) return { ...message, resolved: 'expired' as const };
+      // What the question is ABOUT, which is the one thing that made these answerable:
+      // "is flipping this flag part of this ticket" needs the ticket named.
+      return context.label ? { ...message, kicker: context.label } : message;
+    })
     .filter((message) => !persistedKeys.has(message.k));
   let persistedRows = persisted;
   if (!options.verbose) {
