@@ -274,6 +274,10 @@ export const FORGE_EVENT_NAMES = [
   'queue.recovered', 'queue.recovery-held', 'queue.recovery-declined', 'queue.relaunch-refused',
   'lane.block-cleared',
   'queue.review', 'queue.tick-error',
+  // Item 16, 2026-09-12: the pull request could not be marked ready at review, so
+  // it stays a draft and nobody can merge it. Journalled rather than swallowed --
+  // a draft nobody can merge is the stall that item exists to remove.
+  'queue.pr-ready-failed',
   // R-81: `queue.tick-complete` is the row a pass writes about itself, at most once a
   // minute, carrying how many items it considered. It exists because a held item
   // deliberately writes no row of its own, so without this the journal cannot tell a
