@@ -34,7 +34,11 @@ async function restartOne(laneId: string, deps: BlockersRestartDeps): Promise<bo
 
   const item = deps.queueStore.all().find((row) => row.runKey === laneId);
   if (item && (item.state === 'parked' || item.state === 'failed')) {
-    return Boolean(retryItem(deps.queueStore, item.id));
+    // A person said "I did it" on the blocker, so this is a person's retry and the
+    // item gets its recovery budgets back. Without the flag the click restarts an item
+    // whose read budget is already spent, and the recovery pass declines on the first
+    // tick without a row: the click does nothing and says nothing.
+    return Boolean(retryItem(deps.queueStore, item.id, Date.now(), { askedByAPerson: true }));
   }
 
   const outcome = await deps.resumeRun(laneId);

@@ -60,6 +60,11 @@ export interface InterviewPlannerDeps {
  * `## Decisions` as settled and never asks again. Found by code review, 2026-09-11.
  */
 export function answeredByOf(entry: InboxEntry): string {
+  // A direct author outranks a replier: it is the thing that actually decided, and it
+  // is set only when something answered the ask itself. Checked first so a rule that
+  // overtook a stale reply is credited for its own call rather than falling through to
+  // the operator, while the teammate's name stays on the reply it belongs to.
+  if (entry.answeredDirectlyBy) return entry.answeredDirectlyBy;
   if (entry.answeredBy && entry.reply !== undefined && entry.answer === entry.reply) {
     return entry.answeredBy;
   }
@@ -74,15 +79,37 @@ export function answeredByOf(entry: InboxEntry): string {
  * auto-answer rule -- rather than from one route alone, so the row fires wherever the
  * shipped app actually delivers an answer, not only where a test happens to call in.
  */
-export function journalInterviewAnswer(append: JournalAppend | undefined, answered: InboxEntry): void {
+export function journalInterviewAnswer(
+  append: JournalAppend | undefined,
+  answered: InboxEntry,
+  answeredBy?: string,
+  actor: string = 'console',
+): void {
   const itemRun = answered.runs.find((run) => run.startsWith(ITEM_RUN_PREFIX));
   if (itemRun === undefined) return;
   append?.({
     event: 'interview.answered',
+    actor,
     itemId: itemRun.slice(ITEM_RUN_PREFIX.length),
     ticket: answered.ticket,
     askKey: answered.key,
-    answeredBy: answeredByOf(answered),
+    // Found by code review, 2026-09-11: `answeredByOf` falls through to the operator
+    // whenever `answeredBy` is unset, so an auto-answer rule's call was filed as Aaron's.
+    // Crediting him with a decision he did not make is the same fault the teammate branch
+    // of `answeredByOf` already guards against, so a caller that knows better says so.
+    answeredBy: answeredBy ?? answeredByOf(answered),
+    // The row said an answer landed and never what it was, so two corrections of the same
+    // ask read the same apart from their sequence.
+    //
+    // Not run through `redact` (code review, 2026-09-12). Its pattern is any unbroken
+    // 24-character run, which is sized for log lines, not for a sentence somebody
+    // typed: "deploy-develop-workflow-fingerprint" is erased whole while "sk-abc123"
+    // passes, so it fails in both directions and leaves the row saying an answer
+    // landed without saying what it was -- the state this field exists to fix. The
+    // journal already carries `interview.asked`'s question text unscrubbed, so this is
+    // the same exposure rather than a new one, and a redaction pass over the journal as
+    // a whole is the fix. Named in the finishing work.
+    answer: answered.answer ?? '',
   });
 }
 

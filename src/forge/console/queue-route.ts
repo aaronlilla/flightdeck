@@ -71,9 +71,14 @@ export interface QueueRoutesOptions {
   confirmGate?: ConfirmGate;
 }
 
+/** The descriptor a queue route hands the gate so the confirm survives a restart. Spelled
+ *  structurally rather than imported from `command.ts`, which imports this module. */
+export type QueueConfirmDescriptor = { kind: 'queue-merge'; itemId: string; label: string };
+
 export type ConfirmGate = (
   body: Record<string, unknown> | null | undefined, source: string, blast: string,
   act: () => Promise<{ status: number; body: unknown }>,
+  descriptor?: QueueConfirmDescriptor,
 ) => Promise<{ status: number; body: unknown }>;
 
 function respond(response: ServerResponse, status: number, body: unknown): void {
@@ -207,7 +212,9 @@ export class QueueRoutes {
   }
 
   retry(id: string): ActionResult {
-    const retried = retryItem(this.opts.store, id);
+    // A person clicked this, so the item gets its recovery budgets back. The sweep's
+    // own calls do not pass this, deliberately: see `retryItem`.
+    const retried = retryItem(this.opts.store, id, Date.now(), { askedByAPerson: true });
     return retried
       ? { ok: true, jid: null, message: `${id} is queued again`, undoable: false }
       : { ok: false, jid: null, message: `${id} is not parked or failed`, undoable: false };
@@ -410,11 +417,14 @@ export class QueueRoutes {
         }
         const mergeDeps = this.opts.mergeDeps;
         const body = await readBody<Record<string, unknown>>(request);
+        // Item 4, round 2: the descriptor is what lets a restarted process rebuild this
+        // click. Without it the Queue view's Merge was still answered `nothing pending`
+        // after a restart, which is the surface the reported symptom came from.
         const gated = await gate(body, 'console', `merges ${id}: merges its pull request and closes the ticket.`, async () => {
           const outcome = await mergeItem(item, mergeDeps);
           const result: ActionResult = { ok: outcome.ok, jid: null, message: outcome.message, undoable: false };
           return { status: outcome.ok ? 200 : 409, body: result };
-        });
+        }, { kind: 'queue-merge', itemId: id, label: item.ticket ?? id });
         respond(response, gated.status, gated.body);
         return true;
       }

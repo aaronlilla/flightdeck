@@ -748,6 +748,11 @@ export interface QueueItem {
   /** A.3: when the Jira write-back at review ran for this item -- absent means it
    *  hasn't fired yet. Set once, alongside the transition into `review`. */
   handoffAt?: number;
+  /** Item 16, 2026-09-12: when the ship prediction was posted, so a second pass over
+   *  the same item does not post a second one. A FIX FIRST round leaves the item
+   *  `running` and the next tick re-enters the review hop; marking the pull request
+   *  ready again is harmless, commenting again is not (code review, 2026-09-12). */
+  predictionAt?: number;
   /** A.8/A.9: the PR's own changed-file paths, fetched once the item has a PR and
    *  before the council reads it -- shared by A.8's real figures at `review` and A.9's
    *  overlap check against every other item running or in review on the same repo. */
@@ -804,6 +809,26 @@ export interface QueueItem {
    *  Once it reaches `PENDING_CHECKS_POLL_CAP` (`intake/queue.ts`), the item parks instead
    *  of retrying again, so a check that never finishes cannot hold an item forever. */
   pendingGatePolls?: number;
+  /** Item 1 (2026-09-11): how many times the tick has handed this item back to the
+   *  worker, capped at `PARK_RECOVERY_CAP`. Successful recoveries only -- a "not yet"
+   *  reading costs nothing, because the tick runs every 15 seconds and a budget spent on
+   *  those would abandon the item inside a minute. Absent means never recovered. */
+  recoveryAttempts?: number;
+  /** Item 1: the last reading a recovery held on, so the same answer every 15 seconds
+   *  writes one journal row rather than one per tick. Cleared on a recovery. */
+  recoveryHeldOn?: string | null;
+  /** Item 1: the park reason that was last judged a person's call, so the decline is
+   *  journalled once per reason rather than every tick -- and a second, different
+   *  unrecoverable reason still gets its own row. */
+  recoveryDeclinedFor?: string | null;
+  /** Item 1: when the recovery pass last asked GitHub about this item's checks, and how
+   *  many times it has asked in total. Re-reading checks is a network call against a
+   *  shared rate limit, so it is windowed and capped; reading a local pid is neither. */
+  checksReadAt?: number;
+  checksReads?: number;
+  /** Item 1: set once while the width is what is holding a recovery back, so that
+   *  hold is journalled once rather than on every flip of a queue sitting at its cap. */
+  recoveryWidthHeld?: boolean;
   /** The Queue view's two columns (2026-09-09, `Flightdeck Console.dc.html` 1c), filled by
    *  `GET /queue` at read time like `title`: why this item sits where it does in the
    *  order, and when it starts, in words. Absent on a response older than this field. */

@@ -89,13 +89,13 @@ import { loadPolicy, maxWallMsFor, modelFor, modelIdFor, tierOfBrief } from './p
 import { attestationCoversHead, checkHandoff, providerFor, redact, verified } from './contracts.js';
 import type { CouncilAttestation, HaipingHandoff, JoeHandoff } from './contracts.js';
 import { evaluateAction } from './rules/index.js';
-import { readParkRecord } from './parkrecord.js';
+import { clearParkRecord, readParkRecord } from './parkrecord.js';
 import { processAlive, reconcileRegistry, Registry, relaunchAbandonedGoal } from './registry.js';
 import { reasonerFor } from './reasoner-claude.js';
 import { deliverAnswer, RunInbox } from './runinbox.js';
 import { SdkEngine } from './sdkengine.js';
 import { FORGE_PORT, ForgeServer } from './server.js';
-import { Breaker, clearKillSwitch, Fleet, Lanes, readKillSwitch } from './supervisor.js';
+import { Breaker, clearKillSwitch, clearStaleBlock, Fleet, Lanes, readKillSwitch } from './supervisor.js';
 import { WardenActuator } from './warden.js';
 import { DriftCadenceTracker, WardenTick, type WardenTickRun } from './warden-tick.js';
 import { renderToolCall } from './tool-target.js';
@@ -104,6 +104,10 @@ import {
   chainStatusLines, foldChainState, runChainTick, runKeyForBrief,
 } from './chain.js';
 import { readChainEnv, repoKindFor } from './chain-env.js';
+import { checkOutwardDraft, draftReportLines, type OutwardDraft } from './intake/draftCheck.js';
+import { runPrOpenedHandoff } from './intake/prOpened.js';
+import { handlePullRequestOpened, readPrAtCheckout } from './intake/prOpenedWatch.js';
+import { run as execRun } from './exec.js';
 import { buildChainDeps, hasRunRegistered } from './chain-wire.js';
 import { isGoalFile } from './intake/goalFile.js';
 import { installShutdown } from './service/shutdown.js';
@@ -1095,6 +1099,25 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       }
 
       if (breaker.blocked(slug)) {
+        // Item 6 (2026-09-11): a warden reading about a process that is now gone is
+        // history, not a reason to refuse the next launch. `clearStaleBlock` drops only
+        // those, only while no process is alive for the run, and journals what it
+        // dropped; every other block (the zero-turn-start streak above all) still stands
+        // and still needs a person.
+        const blockJournal = new Journal(journalPath());
+        try {
+          clearStaleBlock(slug, {
+            lanes, breaker, append: (row) => { blockJournal.append(row); }, clearPark: clearParkRecord,
+            runAlive: (key) => {
+              const row = new Registry(registryDir()).get(key);
+              return Boolean(row && processAlive(row.pid));
+            },
+          });
+        } finally {
+          blockJournal.close();
+        }
+      }
+      if (breaker.blocked(slug)) {
         return {
           code: 1,
           lines: [
@@ -1252,6 +1275,28 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           registry.setSession(slug, sessionId, model);
           lanes.put(slug, { session_id: sessionId });
         },
+        // The ticket moves the moment the pull request opens. Without this the fix
+        // existed and nothing called it, so a pull request opened by a worker still left
+        // its ticket reading Backlog -- the board-lies defect, one step removed.
+        onPullRequestOpened: (cwd) => handlePullRequestOpened(cwd, {
+          readPrAt: readPrAtCheckout(execRun),
+          client: () => {
+            const config = jiraConfigFromEnv();
+            return config ? createJiraWriteClient(config) : null;
+          },
+          env: () => ({
+            wipAccountId: process.env['FORGE_JIRA_WIP_ACCOUNT'],
+            wipTransitionId: process.env['FORGE_JIRA_WIP_TRANSITION'],
+          }),
+          emit: (event) => {
+            const prJournal = new Journal(journalPath());
+            try {
+              prJournal.append({ ...event, actor: 'queue' } as never);
+            } finally {
+              prJournal.close();
+            }
+          },
+        }),
       });
       const worker = new Worker({
         run: slug,
@@ -1327,7 +1372,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       const answerText = answer.join(' ');
       const answered = inbox.answer(key, answerText);
       if (!answered) return { code: 1, lines: [`nothing asked ${key}`] };
-      journalInterviewAnswer((row) => appendOnce(journalPath(), row), answered);
+      journalInterviewAnswer((row) => appendOnce(journalPath(), row), answered, undefined, 'cli');
       // A run this process itself holds the live session for (deps.engine, injected by a
       // specimen or by `forge run` calling straight through) is answered in place. Every
       // run also gets its answer queued through the inbox, which is what reaches a run
@@ -1383,6 +1428,67 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           ...stale.map((goal) => `  stale       ${goal}`),
         ],
       };
+    }
+
+    /**
+     * One pass over every outward text a work item is about to write, before any of them
+     * is attempted. Takes a JSON file of the shape `OutwardDraft` -- the commit message,
+     * the pull request title and body and the issue comment together -- and reports every
+     * refusal the write-time gates would raise, each naming its own ceiling and count.
+     * Exit 1 when any surface would be refused, so a script can stop before it writes.
+     */
+    case 'draft': {
+      const file = rest[0];
+      if (!file) return { code: 2, lines: ['forge draft needs a path to a draft JSON file'] };
+      let draft: OutwardDraft;
+      try {
+        draft = JSON.parse(readFileSync(file, 'utf8')) as OutwardDraft;
+      } catch (err) {
+        return { code: 2, lines: [`cannot read ${file}: ${err instanceof Error ? err.message : String(err)}`] };
+      }
+      if (typeof draft !== 'object' || draft === null || typeof draft.texts !== 'object' || draft.texts === null) {
+        return { code: 2, lines: [`${file} must be an object with a "texts" object`] };
+      }
+      const report = checkOutwardDraft(draft, new Date().toISOString().slice(0, 10));
+      const refused = report.findings.some((f) => f.verdict === 'DENY');
+      return { code: refused ? 1 : 0, lines: draftReportLines(report) };
+    }
+
+    /**
+     * Move the ticket a pull request names, the moment the pull request opens. The queue
+     * already does this for work it drove itself; a pull request opened by hand left the
+     * ticket reading Backlog with the work already done, which is how the board came to
+     * offer finished work. Run it right after `gh pr create`.
+     */
+    case 'pr-opened': {
+      const repoIdx = rest.indexOf('--repo');
+      const prIdx = rest.indexOf('--pr');
+      const repoArg = repoIdx >= 0 ? rest[repoIdx + 1] : undefined;
+      const prArg = prIdx >= 0 ? rest[prIdx + 1] : undefined;
+      if (!repoArg || !prArg) return { code: 2, lines: ['forge pr-opened needs --repo OWNER/NAME and --pr NUMBER'] };
+      const prNumber = Number(prArg);
+      if (!Number.isInteger(prNumber) || prNumber <= 0) return { code: 2, lines: [`--pr must be a positive number, got ${prArg}`] };
+      const jiraConfig = jiraConfigFromEnv();
+      if (!jiraConfig) return { code: 2, lines: ['no issue-tracker credentials configured; nothing to move'] };
+      const snapshot = await REAL_GH.viewPr(repoArg, prNumber);
+      const prJournal = new Journal(journalPath());
+      try {
+        const result = await runPrOpenedHandoff(
+          createJiraWriteClient(jiraConfig),
+          { prUrl: `https://github.com/${repoArg}/pull/${prNumber}`, title: snapshot.title },
+          {
+            wipAccountId: process.env['FORGE_JIRA_WIP_ACCOUNT'],
+            wipTransitionId: process.env['FORGE_JIRA_WIP_TRANSITION'],
+          },
+          (event) => prJournal.append({ ...event, actor: 'queue' }),
+        );
+        // Non-zero on any refused write. A script runs this straight after `gh pr create`
+        // and cannot see the ticket; reporting success while it still reads Backlog is
+        // the very defect this command exists to stop (review, 2026-09-12).
+        return { code: result.failed > 0 ? 1 : 0, lines: result.lines };
+      } finally {
+        prJournal.close();
+      }
     }
 
     case 'gotchas': {
@@ -2376,7 +2482,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         code: 2,
         lines: [
           'forge up | status | run BRIEF | send RUN TEXT | answer KEY ANSWER | stop --all '
-            + '| gotchas | clear LANE | accounts [list|add ID DIR [N]|remove ID] | cutover [--from DIR] | intake --dry-run | reason --class CLASS '
+            + '| gotchas | draft FILE | pr-opened --repo O/N --pr N | clear LANE | accounts [list|add ID DIR [N]|remove ID] | cutover [--from DIR] | intake --dry-run | reason --class CLASS '
             + '| council --repo O/N --pr N | gate --repo O/N --pr N [--merge] [--handoff FILE] '
             + '| chain [retry PACKET [--reason "<why>"]] | [skip PACKET [--reason "<why>"]]',
           `the server listens on ${FORGE_PORT}`,

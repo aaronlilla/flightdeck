@@ -269,7 +269,22 @@ export const FORGE_EVENT_NAMES = [
   // for a hop that threw outright, `queue.review` once a draft PR exists, and
   // `queue.tick-error` for a worker tick that threw before any item advanced.
   'queue.planning', 'queue.planned', 'queue.launched', 'queue.parked', 'queue.failed',
+  // Phase A of the pipeline-hardening brief (2026-09-11): every decision the recovery
+  // pass and the relaunch guard make is journalled, so each one is a literal here.
+  'queue.recovered', 'queue.recovery-held', 'queue.recovery-declined', 'queue.relaunch-refused',
+  'lane.block-cleared',
   'queue.review', 'queue.tick-error',
+  // Item 16, 2026-09-12: the pull request could not be marked ready at review, so
+  // it stays a draft and nobody can merge it. Journalled rather than swallowed --
+  // a draft nobody can merge is the stall that item exists to remove.
+  'queue.pr-ready-failed',
+  // The pull request was readied but the prediction could not be written into its
+  // body. Kept apart from the row above so neither claims the other's failure.
+  'queue.pr-prediction-failed',
+  // The repo builds no mobile app, so there is no ship path to predict and the
+  // pull request is left alone. Journaled because a silent skip is how a feature
+  // that never runs looks exactly like one that does.
+  'queue.pr-ready-skipped',
   // R-81: `queue.tick-complete` is the row a pass writes about itself, at most once a
   // minute, carrying how many items it considered. It exists because a held item
   // deliberately writes no row of its own, so without this the journal cannot tell a
@@ -357,6 +372,15 @@ export const FORGE_EVENT_NAMES = [
   // is written when `/answer` closes an ask whose run names an item (`item:<id>`), never
   // for an ordinary worker ask.
   'interview.asked', 'interview.answered',
+  // A pull request opened by hand naming a ticket key: the ticket is assigned,
+  // transitioned and linked (`intake/prOpened.ts`), so the board stops offering work that
+  // already exists. `pr-opened.no-key` records a pull request that named none, and
+  // `pr-opened.failed` a write the issue tracker refused.
+  'pr-opened.assigned', 'pr-opened.transitioned', 'pr-opened.failed', 'pr-opened.no-key',
+  // Fired instead of a move when the automatic path did nothing and the reason is not
+  // the ticket's: no pull request readable at the checkout, no tracker credentials, or
+  // the handoff itself throwing. A ticket that did not move always says why.
+  'pr-opened.skipped',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];

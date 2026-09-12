@@ -442,3 +442,21 @@ function finalize(verdict: ReadabilityVerdictKind, messages: string[]): Readabil
   }
   return { verdict, reason };
 }
+
+/**
+ * The repository name behind whatever a caller carries: an `owner/name` slug, a checkout
+ * path, or a worktree path.
+ *
+ * Every worktree in this workspace is named `<repo>--<slug>`, so the marker and
+ * everything after it comes off. Getting this backwards is not a cosmetic bug: the name
+ * is compared against `outward_repos`, a slug matches nothing, and every gate keyed on
+ * the repository turns into a silent no-op for all work done in a worktree. Found by a
+ * review on 2026-09-12, in code whose own comment warned about this exact failure.
+ */
+export function repoNameFrom(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const last = value.replace(/\\/g, '/').split('/').filter(Boolean).pop();
+  if (!last) return null;
+  const name = last.replace(/--.*$/, '');
+  return name ? name.toLowerCase() : null;
+}

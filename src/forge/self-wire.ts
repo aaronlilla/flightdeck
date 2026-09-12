@@ -15,7 +15,7 @@ import { REAL_GH } from './council/gh.js';
 import { run as execRun } from './exec.js';
 import { Gotchas } from './gotcha.js';
 import type { QueueMergeDeps } from './intake/queue.js';
-import { queueBusy, QUEUE_IN_FLIGHT_STATES } from './intake/queue.js';
+import { queueBusy } from './intake/queue.js';
 import type { QueueStore } from './intake/queueStore.js';
 import { Journal, JournalCache } from './journal.js';
 
@@ -25,7 +25,7 @@ import { analyze, type AttestationRoundInput, type RunTranscript, type SelfAnaly
 import { appendProposedLine } from './roadmap.js';
 import { enqueueFindings } from './self/enqueue.js';
 import { FindingsLedger } from './self/ledger.js';
-import { cutoverDue } from './self/selfCutover.js';
+import { cutoverDue, cutoverIdle } from './self/selfCutover.js';
 import { isRuntimePathChange, runSelfMerge } from './self/selfMerge.js';
 import { selfStatus, type SelfStatus } from './self/status.js';
 
@@ -164,8 +164,9 @@ export function buildSelfLoop(opts: SelfLoopOptions): SelfLoop {
     }
   });
 
-  const idle = (): boolean =>
-    !queueBusy() && !opts.store.all().some((item) => QUEUE_IN_FLIGHT_STATES.includes(item.state));
+  // Item 5 (2026-09-11): `cutoverIdle` owns this decision now, and it counts `review` --
+  // the one state where a person is being waited on -- as busy.
+  const idle = (): boolean => cutoverIdle({ items: opts.store.all(), queueBusy: queueBusy() });
 
   async function mergeSelfItems(): Promise<{ merged: string[]; refused: string[] }> {
     const merged: string[] = [];

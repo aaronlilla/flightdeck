@@ -282,6 +282,11 @@ export function parseIntent(raw: string): Intent {
 // ---------------------------------------------------------------------------------------
 
 export interface ConsoleWritesDeps {
+  /** Item 4, round 2: runs the Queue view's merge for one item, so a `queue-merge`
+   *  confirm minted before a restart can be rebuilt by the process the operator clicks
+   *  against. Absent means this process has no queue merge wiring, and a rebuilt click
+   *  is refused with that sentence rather than silently answering `done`. */
+  queueMerge?: (itemId: string) => Promise<RouteOutcome>;
   journalPath: string;
   registry: Registry;
   lanes?: Lanes;
@@ -361,7 +366,15 @@ function respond(response: ServerResponse, status: number, body: unknown): void 
  */
 export type ConfirmDescriptor =
   | { kind: 'kill'; laneId: string; reason: string; andRetire: boolean; label: string }
-  | { kind: 'retire'; laneId: string; label: string };
+  | { kind: 'retire'; laneId: string; label: string }
+  /** Item 4 (2026-09-11): the Merge click. It waits longer than any other confirm -- it
+   *  waits for a person to read a diff -- so it was the one most often voided by a
+   *  restart. The lane id is all the rebuilt action needs; `mergeRun` reads the PR off
+   *  the lane the same way the closure did. */
+  | { kind: 'merge'; laneId: string; label: string }
+  /** Round 2: the Queue view's own Merge click, which goes through `queue-route.ts` and
+   *  was the last confirm surface a restart could still void. */
+  | { kind: 'queue-merge'; itemId: string; label: string };
 
 interface PersistedConfirm {
   token: string;
@@ -376,6 +389,10 @@ interface PersistedConfirm {
  *  less there is to move. The restart cadence is minutes, so this still covers many of
  *  them; a card older than this is refused and the operator re-issues the action. */
 const CONFIRM_TTL_MS = 2 * 60 * 60_000;
+
+/** How long past its expiry a spent-out row is still kept, so a refusal can say
+ *  "expired at ..." rather than "nothing pending". */
+const CONFIRM_NAMEABLE_MS = 24 * 60 * 60_000;
 
 /** Newest-first hard ceiling, so a wedged proposer cannot grow the file without end. */
 const CONFIRM_MAX = 200;
@@ -408,7 +425,11 @@ class PendingConfirmStore {
   }
 
   private write(rows: PersistedConfirm[], now: number): void {
-    const live = rows.filter((row) => now - row.at < CONFIRM_TTL_MS).slice(-CONFIRM_MAX);
+    // Kept for a day past expiry, not dropped at it: a row the prune removes can no
+    // longer be named, so the operator gets "nothing pending" for a token that was real
+    // -- the answer this whole change exists to stop. A row past its TTL is refused by
+    // `take` regardless, so keeping it spends nothing but a line of disk.
+    const live = rows.filter((row) => now - row.at < CONFIRM_TTL_MS + CONFIRM_NAMEABLE_MS).slice(-CONFIRM_MAX);
     mkdirSync(dirname(this.path), { recursive: true });
     // Temp file then rename: the store is rewritten whole, so a torn write would lose
     // EVERY pending confirm (read() treats unparseable as empty), not the one row.
@@ -428,8 +449,20 @@ class PendingConfirmStore {
     const rows = this.read();
     const found = rows.find((row) => row.token === token);
     if (!found) return undefined;
+    // Item 4: an expired row is NOT spent here. Spending it would leave the refusal with
+    // nothing to read, and the operator would get "nothing pending" for a token that was
+    // real -- the answer this whole change exists to stop. `write`'s own TTL prune clears
+    // it on the next put.
+    if (now - found.at >= CONFIRM_TTL_MS) return undefined;
     this.write(rows.filter((row) => row.token !== token), now);
-    return now - found.at < CONFIRM_TTL_MS ? found : undefined;
+    return found;
+  }
+
+  /** When this token was minted, if it exists and has aged out. Undefined for a token
+   *  that is still live, and for one nobody ever minted. */
+  expiredAt(token: string, now: number): number | undefined {
+    const found = this.read().find((row) => row.token === token);
+    return found && now - found.at >= CONFIRM_TTL_MS ? found.at : undefined;
   }
 
   has(token: string, now: number): boolean {
@@ -774,6 +807,22 @@ export class ConsoleWrites {
     const pending: PendingConfirm = {
       blast: row.blast, descriptor: d,
       run: async () => {
+        if (d.kind === 'queue-merge') {
+          const outcome = this.deps.queueMerge
+            ? await this.deps.queueMerge(d.itemId)
+            : { status: 501, body: { ok: false, error: 'no queue merge wiring is configured for this process' } };
+          pending.outcome = outcome;
+          return [outcome.status === 200
+            ? receiptCard(source, outcome.body as ActionResult)
+            : refusalCard(source, actionFailureText(outcome.body, `could not merge ${d.label}`))];
+        }
+        if (d.kind === 'merge') {
+          const outcome = await mergeRun(d.laneId, this.runActionsDeps());
+          pending.outcome = outcome;
+          return [outcome.status === 200
+            ? receiptCard(source, outcome.body as ActionResult)
+            : refusalCard(source, actionFailureText(outcome.body, `could not merge ${d.label}`))];
+        }
         if (d.kind === 'retire') {
           const outcome = retireLane(d.laneId, true, this.retireDeps());
           pending.outcome = outcome;
@@ -814,6 +863,17 @@ export class ConsoleWrites {
     return row ? this.rebuild(row) : undefined;
   }
 
+  /** Item 4: why a confirm found nothing. A token that was real and has aged out says so
+   *  and names when it was minted, so the operator knows to start the action again
+   *  rather than reading a bare "nothing pending" as the console losing their click. */
+  confirmRefusal(token: string): string {
+    const at = this.durableConfirms.expiredAt(token, Date.now());
+    if (at === undefined) return `nothing pending for ${token}`;
+    const hours = CONFIRM_TTL_MS / 3_600_000;
+    return `confirm ${token} expired: it was proposed at ${new Date(at).toISOString()} and a confirm `
+      + `is good for ${hours} hours. Start the action again from its own button.`;
+  }
+
   /** Whether `confirm <token>` would still find something to run. */
   hasPending(token: string): boolean {
     return this.pendingConfirms.has(token) || this.durableConfirms.has(token, Date.now());
@@ -834,7 +894,7 @@ export class ConsoleWrites {
     const token = body?.['confirm'];
     if (typeof token === 'string') {
       const pending = this.takeConfirm(token);
-      if (!pending) return { status: 409, body: { error: `nothing pending for ${token}` } };
+      if (!pending) return { status: 409, body: { error: this.confirmRefusal(token) } };
       const cards = await pending.run();
       for (const card of cards) appendThread(card);
       return pending.outcome ?? { status: 200, body: { ok: true, jid: null, message: cards[0]?.text ?? 'done', undoable: false } };
@@ -970,7 +1030,10 @@ export class ConsoleWrites {
 
       case 'confirm': {
         const pending = this.takeConfirm(intent.token);
-        if (!pending) return [refusalCard(source, `nothing pending for ${intent.token}`)];
+        // Item 4: the same sentence the clicked route gives. The typed path is where the
+        // live `nothing pending for <uuid>` answers came from, so fixing only the route
+        // would have left the reported symptom in place.
+        if (!pending) return [refusalCard(source, this.confirmRefusal(intent.token))];
         return pending.run();
       }
 
@@ -1393,7 +1456,7 @@ export class ConsoleWrites {
           break;
         case 'merge':
           outcome = await this.confirmGate(body, 'console', `merges ${label}: merges the PR and closes the ticket.`,
-            () => mergeRun(run, deps));
+            () => mergeRun(run, deps), { kind: 'merge', laneId: run, label });
           break;
         case 'reopen':
           outcome = await reopenRun(run, deps);

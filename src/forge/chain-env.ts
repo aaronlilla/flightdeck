@@ -91,6 +91,21 @@ export function repoKindFor(chainEnv: ChainEnv, repo: string): 'backend' | 'fron
   return lookupRepoScoped(chainEnv.repoKinds, repo) === 'backend' ? 'backend' : 'frontend';
 }
 
+/**
+ * The kind this repository DECLARES, or `undefined` when it declares none.
+ *
+ * `repoKindFor` above answers `frontend` for anything not named as backend, which is
+ * the right default for the handoff it was written for -- but it means "not backend",
+ * not "this builds a mobile app". Reading it as the latter put an Android and iOS ship
+ * path into the body of a pull request on a Node repository with no mobile build at
+ * all (code review, 2026-09-12). A caller that needs the difference asks here.
+ */
+export function declaredRepoKind(chainEnv: ChainEnv, repo: string): 'backend' | 'frontend' | undefined {
+  const declared = lookupRepoScoped(chainEnv.repoKinds, repo);
+  if (declared === 'backend' || declared === 'frontend') return declared;
+  return undefined;
+}
+
 export function baseFor(chainEnv: ChainEnv, repo: string): string {
   return lookupRepoScoped(chainEnv.bases, repo) ?? DEFAULT_BASE;
 }
