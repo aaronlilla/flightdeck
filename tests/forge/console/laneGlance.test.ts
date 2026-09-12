@@ -6,7 +6,8 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { computeDid, computeYou, nextCategoryFor } from '../../../src/forge/console/laneGlance.js';
+import { computeDid, computeYou, didFactsFor, nextCategoryFor } from '../../../src/forge/console/laneGlance.js';
+import { narrationKey } from '../../../src/forge/console/narrate.js';
 import { computeNext } from '../../../src/forge/console/summary.js';
 import type { ForgeEvent } from '../../../src/forge/journal.js';
 import type { Lane, LaneReadiness, LaneState } from '../../../src/shared/console-model.js';
@@ -174,5 +175,37 @@ describe('computeYou agrees with computeNext, per state', () => {
     const pr = { no: 5, url: 'x', draft: false, merged: false, closed: true } as never;
     const l = lane({ state: 'done', pr, mergeable: { ok: false, why: 'closed without merging' } });
     expect(nextCategoryFor(l, false)).toBe('done-cleanup');
+  });
+});
+
+/**
+ * 2026-09-11: the tool digest sentence climbs on every poll -- "Ran 3 commands.", then
+ * "Ran 4 commands." -- while meaning the same thing. `narrationKey` only folds a
+ * template digit that the facts themselves carry, so a tally left out of the facts
+ * bought a fresh model call every poll. Measured on the live console driving ONE ticket:
+ * 164 calls, 9,995 seconds of model time. These are the real sentences it produced.
+ */
+describe('didFactsFor mirrors its tool tally so the same sentence is not paid for twice', () => {
+  it('gives two polls that differ only in the tally one key', () => {
+    const l = lane({ ticket: 'BBZ-169' });
+    const third = didFactsFor(l, 'Ran 3 commands.');
+    const fourth = didFactsFor(l, 'Ran 4 commands.');
+    expect(third).not.toBeNull();
+    expect(fourth).not.toBeNull();
+    expect(narrationKey(fourth!)).toBe(narrationKey(third!));
+  });
+
+  it('still separates two polls whose sentence shape actually changed', () => {
+    const l = lane({ ticket: 'BBZ-169' });
+    const ran = didFactsFor(l, 'Ran 4 commands.');
+    const searched = didFactsFor(l, 'Ran 4 commands, 1 search.');
+    expect(narrationKey(searched!)).not.toBe(narrationKey(ran!));
+  });
+
+  it('leaves a pull request number alone, since another fact already speaks for it', () => {
+    const l = lane({ ticket: 'BBZ-169', pr: { no: 159, url: 'u' } as Lane['pr'] });
+    const a = didFactsFor(l, 'Opened #159.');
+    const b = didFactsFor(l, 'Opened #160.');
+    expect(narrationKey(b!)).not.toBe(narrationKey(a!));
   });
 });

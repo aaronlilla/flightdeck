@@ -78,7 +78,10 @@ export function canonicalFacts(input: NarrationFacts): string {
  */
 export function narrationKey(input: NarrationFacts): string {
   const facts = canonicalFacts(input);
-  const mirrored = mirroredDigits(input);
+  // A caller may also declare digits as noise (`noisyDigits`): a tally that climbs
+  // while the sentence means the same thing. Unlike a mirrored digit it is NOT in
+  // `facts`, so it is not hashed as identity -- which is the whole point.
+  const mirrored = new Set([...mirroredDigits(input), ...(input.noisyDigits ?? [])]);
   const material = [
     facts,
     quantizeForKey(input.template, mirrored),

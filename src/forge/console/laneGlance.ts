@@ -226,7 +226,19 @@ export function didFactsFor(lane: Lane, did: string | null): NarrationFacts | nu
     if (pr.checks) facts['checks'] = pr.checks;
     if (pr.verdict) facts['verdict'] = pr.verdict;
   }
-  return { surface: 'lane.did', facts: facts as NarrationFacts['facts'], template: did };
+  // 2026-09-11: this sentence is a tool digest -- "Ran 3 commands.", "Ran 4 commands,
+  // 1 search." -- and the tally climbs on every poll while the sentence means the same
+  // thing. `narrationKey` only flattens a template digit that the facts themselves
+  // carry, so a tally left out of the facts bought a fresh model call every poll: 164
+  // calls and 9,995 seconds of model time across ONE ticket on 2026-09-11. Mirroring
+  // the tallies here is what makes them flattenable. Digits already spoken for by
+  // another fact (a pull request number) are left alone, so they still distinguish.
+  const spokenFor = new Set(Object.values(facts).map((value) => String(value ?? '')));
+  const noisyDigits = (did.match(/\d+/g) ?? []).filter((run) => !spokenFor.has(run));
+  return {
+    surface: 'lane.did', facts: facts as NarrationFacts['facts'], template: did,
+    ...(noisyDigits.length > 0 ? { noisyDigits } : {}),
+  };
 }
 
 /**

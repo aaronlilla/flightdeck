@@ -1122,6 +1122,14 @@ export interface NarrationFacts {
   facts: NarrationFactMap;
   template: string;
   detailTemplate?: string;
+  /**
+   * Digit runs in `template` the CALLER declares are noise: a tally that climbs while the
+   * sentence keeps its meaning ("Ran 3 commands." then "Ran 4 commands."). A digit in
+   * `facts` is identity and is hashed, so it can never say this; only the surface that
+   * wrote the sentence knows which of its own numbers do not change what it says. Left
+   * unset, nothing is treated as noise, which is the safe default.
+   */
+  noisyDigits?: readonly string[];
 }
 
 /**
