@@ -74,7 +74,13 @@ describe('buildSelfLoop', () => {
     store.append({ id: 'Q-1', at: 1, source: 'ticket', input: 'X-1', ticket: 'X-1', state: 'running', createdAt: 1, updatedAt: 1 } as never);
     expect((await loop.tick()).restart).toBe(false);
     expect(pulled).toEqual([]);
+    // Item 5 (2026-09-11): `review` used to read as idle and let the cutover through,
+    // which is how a restart landed on top of a pending merge click. It now holds the
+    // cutover back exactly as `running` does; only a terminal state lets it go.
     store.append({ id: 'Q-1', at: 2, state: 'review', updatedAt: 2 } as never);
+    expect((await loop.tick()).restart).toBe(false);
+    expect(pulled).toEqual([]);
+    store.append({ id: 'Q-1', at: 3, state: 'done', updatedAt: 3 } as never);
     expect((await loop.tick()).restart).toBe(true);
     expect(pulled).toEqual([join(h, 'co')]);
   });
