@@ -77,39 +77,64 @@ export function canonicalFacts(input: NarrationFacts): string {
  * Serving a sentence about a different event costs the operator's trust in every sentence.
  */
 export function narrationKey(input: NarrationFacts): string {
+  const facts = canonicalFacts(input);
+  const mirrored = mirroredDigits(input);
   const material = [
-    canonicalFacts(input),
-    quantizeForKey(input.template),
-    quantizeForKey(input.detailTemplate ?? ''),
+    facts,
+    quantizeForKey(input.template, mirrored),
+    quantizeForKey(input.detailTemplate ?? '', mirrored),
   ].join('\n');
   return createHash('sha256').update(material).digest('hex');
 }
 
 /**
- * Flattens every run of digits in a template to one placeholder, for the cache key only.
+ * Every digit run that already appears somewhere in a fact's own value.
  *
- * Measured on the live console 2026-09-11: one ticket drove 164 narration calls in two
- * and a half hours -- 9,995 seconds of model time for sentences a person may never read.
- * The facts record was never the problem (`VOLATILE_FACT_KEYS` already refuses a clock
- * reading there); the counter was hiding in the template text instead. `laneGlance.ts`'s
- * `didFactsFor` builds its whole sentence from a running tool tally ("Ran 2 commands.",
- * "Ran 3 commands.", "Ran 4 commands.") and puts only the ids it recognises -- a PR
- * number, a ticket key -- into `facts`; the tally itself never becomes a fact anywhere,
- * so `canonicalFacts` never saw it change and `narrationKey` was hashing the raw template
- * instead. Every poll produced a template one digit different from the last, which is a
- * fresh cache key and a fresh model call for a sentence that says the same thing: work is
- * happening. The same shape hid the token counter (`agent.ts`'s "Used 173540484 tokens
- * today") and the elapsed clock (`elapsedGlance`'s "running 42 min").
- *
- * Quantising here rather than in every caller keeps the fix at the one seam every
- * template already passes through, and the fix does not have to know which caller's
- * counter it is protecting against. `rawFor`, `templateNarration` and the prompt sent to
- * the model all still read `input.template` untouched -- only the hash changes, so the
- * rendered sentence, the raw register and the model's own view of the facts are exactly
- * what they were.
+ * A quantised digit is a claim that the exact number does not matter to the identity of
+ * what is being narrated -- only something already carried by `facts`, which the key
+ * hashes anyway, is allowed to make that claim. `input.facts` is the only source this
+ * function trusts, deliberately: it never reads the template's own structure to guess
+ * which of its numbers are "the same kind" as another poll's, because that guess is
+ * exactly what broke the queue (below).
  */
-export function quantizeForKey(text: string): string {
-  return text.replace(/\d+/g, '#');
+function mirroredDigits(input: NarrationFacts): ReadonlySet<string> {
+  const found = new Set<string>();
+  for (const value of Object.values(input.facts as Record<string, NarrationFactValue>)) {
+    if (value === null || value === undefined) continue;
+    for (const digits of String(value).match(/\d+/g) ?? []) found.add(digits);
+  }
+  return found;
+}
+
+/**
+ * Flattens a template's digit runs to one placeholder for the cache key only, but only
+ * the runs `mirrored` already vouches for by way of a fact.
+ *
+ * First shipped 2026-09-11 as a blanket flatten (every digit, unconditionally), to close
+ * the storm one ticket caused: 164 narration calls in two and a half hours, because
+ * `laneGlance.ts`'s `didFactsFor` builds its sentence from a running tool tally ("Ran 2
+ * commands.", "Ran 3 commands.") that never becomes a fact, so every poll's template
+ * differed by one digit and bought a fresh key. That version broke a case it never had
+ * a specimen for: `queue-route.ts`'s `queueOrderWordsWith` writes a position past third
+ * ("9th in the queue...") straight into the template with no fact behind it either --
+ * indistinguishable, to a blind digit-flatten, from the tally noise it was built to
+ * catch, except here the digit *is* the card's identity. Flattened, the ninth item's
+ * card and the fourth item's card hashed the same key and one served the other's
+ * sentence -- a wrong card read as fact, which costs more than the call it saved.
+ *
+ * Restricting the flatten to digits a fact already carries fixes that without knowing
+ * anything about either caller: `didFactsFor`'s tally is not mirrored into facts, so it
+ * is not flattened either -- the original storm is not closed by this file alone
+ * (finishing work: `laneGlance.ts` has to mirror it, deliberately, as its owner). What
+ * this guarantees instead is the one thing a cache is not allowed to get wrong: two
+ * narrations whose facts differ are never the same key just because their prose looks
+ * similar.
+ *
+ * `rawFor`, `templateNarration` and the prompt sent to the model all still read
+ * `input.template` untouched -- only the hash changes.
+ */
+export function quantizeForKey(text: string, mirrored: ReadonlySet<string>): string {
+  return text.replace(/\d+/g, (digits) => (mirrored.has(digits) ? '#' : digits));
 }
 
 /**

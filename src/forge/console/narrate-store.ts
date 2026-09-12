@@ -183,14 +183,17 @@ export class Narrator {
   private readonly store: NarrationStore;
   private readonly queue: NarrationRequest[] = [];
   private readonly pending = new Set<string>();
-  /** One hour of reservations per surface, never one shared bucket -- a storm on one
-   *  surface (a lane whose tool tally never quantised right) must not spend the whole
-   *  fleet's hour and cap every other surface's genuine narrations along with it. */
-  private readonly callTimesBySurface = new Map<string, number[]>();
+  /** One hour of reservations, class-wide. A per-surface bucket was tried (2026-09-11)
+   *  and reverted the same round: it turned the configured ceiling into that same
+   *  ceiling *per surface*, which on a cold board with a dozen live surfaces is a dozen
+   *  times the spend the policy actually authorised. The class-wide bucket is the spend
+   *  control; `surface` rides along on the journaled row only so a capped fleet can say
+   *  which surface was asking, never to grant that surface its own allowance. */
+  private readonly callTimes: number[] = [];
   /** Where the hour of calls is kept between processes. See `loadCallTimes`. */
   private readonly callsPath: string;
   private running = 0;
-  private readonly lastCappedRowAtBySurface = new Map<string, number>();
+  private lastCappedRowAt = 0;
   /** Throttle for the dedup-visibility row (`narration.deduped`): once per surface per
    *  hour, the same reasoning as the cap row above -- a row per poll would be the same
    *  storm this fix removes, just moved into the journal instead of the model bill. */
@@ -216,20 +219,12 @@ export class Narrator {
   private loadCallTimes(): void {
     try {
       const parsed = JSON.parse(readFileSync(this.callsPath, 'utf8')) as unknown;
+      if (!Array.isArray(parsed)) return;
       const at = this.now();
-      // The old shape was a flat array, one hour for the whole class. A file written by
-      // that version is read as the `_all` surface's own hour rather than discarded, so
-      // upgrading mid-fleet does not hand every surface a fresh cap the same minute.
-      const bySurface: Record<string, unknown> = Array.isArray(parsed)
-        ? { _all: parsed }
-        : (parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {});
-      for (const [surface, values] of Object.entries(bySurface)) {
-        if (!Array.isArray(values)) continue;
-        const kept = values.filter((value): value is number => (
-          typeof value === 'number' && at - value < HOUR_MS
-        )).sort((a, b) => a - b);
-        if (kept.length) this.callTimesBySurface.set(surface, kept);
+      for (const value of parsed) {
+        if (typeof value === 'number' && at - value < HOUR_MS) this.callTimes.push(value);
       }
+      this.callTimes.sort((a, b) => a - b);
     } catch {
       // No file, or an unreadable one: an empty hour.
     }
@@ -239,9 +234,7 @@ export class Narrator {
   private saveCallTimes(): void {
     try {
       const tmp = `${this.callsPath}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
-      const bySurface: Record<string, number[]> = {};
-      for (const [surface, values] of this.callTimesBySurface) bySurface[surface] = values;
-      writeFileSync(tmp, JSON.stringify(bySurface), 'utf8');
+      writeFileSync(tmp, JSON.stringify(this.callTimes), 'utf8');
       renameSync(tmp, this.callsPath);
     } catch {
       // A home that cannot be written is not a reason to stop answering reads. The cap
@@ -275,13 +268,10 @@ export class Narrator {
   private reserveCall(surface: string): boolean {
     const cap = maxCallsPerHourFor(CLASS_NAME, this.deps.policyPath);
     const at = this.now();
-    const times = this.callTimesBySurface.get(surface) ?? [];
-    while (times.length && at - (times[0] ?? 0) >= HOUR_MS) times.shift();
-    if (cap !== null && times.length >= cap) {
-      this.callTimesBySurface.set(surface, times);
-      const lastRow = this.lastCappedRowAtBySurface.get(surface) ?? 0;
-      if (at - lastRow >= HOUR_MS) {
-        this.lastCappedRowAtBySurface.set(surface, at);
+    while (this.callTimes.length && at - (this.callTimes[0] ?? 0) >= HOUR_MS) this.callTimes.shift();
+    if (cap !== null && this.callTimes.length >= cap) {
+      if (at - this.lastCappedRowAt >= HOUR_MS) {
+        this.lastCappedRowAt = at;
         this.deps.journal.append({
           event: 'narration.capped', actor: 'narrator', class: CLASS_NAME, surface,
           maxCallsPerHour: cap, servedTemplate: true,
@@ -289,8 +279,7 @@ export class Narrator {
       }
       return false;
     }
-    times.push(at);
-    this.callTimesBySurface.set(surface, times);
+    this.callTimes.push(at);
     this.saveCallTimes();
     return true;
   }

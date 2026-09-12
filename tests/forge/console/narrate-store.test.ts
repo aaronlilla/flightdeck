@@ -231,42 +231,65 @@ describe('one call per distinct fact record', () => {
  * The break measured on the live console 2026-09-11: one ticket drove 164 narration
  * calls between 13:45 and 16:10, 9,995 seconds of model time, because the sentence
  * `laneGlance.ts` builds off a running tool tally reads "Ran 2 commands.", then "Ran 3
- * commands.", then "Ran 4 commands." on the very next poll -- the facts record never
- * changes (the tally is not a fact anywhere), but the template does, on every single
- * poll, for as long as the run keeps working. `narrationKey` hashed the raw template, so
- * every one of those was a fresh key and a fresh call for a sentence that says the same
- * thing: work is happening.
+ * commands.", then "Ran 4 commands." on the very next poll. A first version of this fix
+ * flattened every digit in a template unconditionally, and a review round the same day
+ * found what that broke: `queue-route.ts`'s `queueOrderWordsWith` writes a queue card's
+ * own position straight into its template with no fact behind it either ("9th in the
+ * queue..."), and a blind flatten cannot tell that digit apart from the tally noise it
+ * was built to catch -- the ninth card and the fourth card hashed the same key and one
+ * served the other's sentence. `narrationKey` now only flattens a template digit that a
+ * fact already carries (`mirroredDigits`), which fixes the collision unconditionally but
+ * means the tally itself is not deduped here: `didFactsFor` never mirrors it into facts,
+ * so this file alone does not close the original storm. That is finishing work for
+ * whoever owns `laneGlance.ts` next, not a gap in this file's own guarantee.
  */
-describe('a counter that ticks inside the template does not buy a fresh call every poll', () => {
-  it('makes one call across a run of polls that only differ by a running tool tally', async () => {
-    const { narrator, journalPath } = rigWith(scriptedQuery(() => acceptedReply).fn);
-    const base: NarrationFacts = {
-      surface: 'lane.did',
-      facts: { lane: 'BBZ-169', state: 'running' },
-      template: 'Ran 2 commands.',
+describe('narrationKey never guesses which of a template\'s own digits are safe to fold', () => {
+  it('does not collapse two queue cards whose only difference is a position no fact carries', () => {
+    // The exact shape `queueOrderWordsWith` writes past the third position: `facts` has
+    // `source` and nothing else, and the ordinal plus the queued-at clock live only in
+    // the template. This is the specimen the review round asked for.
+    const fourth: NarrationFacts = {
+      surface: 'queue.whyNext', facts: { source: 'a ticket in Ready for Dev' },
+      template: '4th in the queue, from a ticket in Ready for Dev; queued 09:15 UTC.',
     };
-    const polls = ['Ran 2 commands.', 'Ran 3 commands.', 'Ran 4 commands.', 'Ran 5 commands.'];
-    for (const template of polls) {
-      const narrated = narrator.get({ ...base, template });
-      expect(narrated.raw).toContain('BBZ-169');
-    }
-    await narrator.idle();
-    expect(narrateCalls(journalPath)).toBe(1);
+    const ninth: NarrationFacts = {
+      surface: 'queue.whyNext', facts: { source: 'a ticket in Ready for Dev' },
+      template: '9th in the queue, from a ticket in Ready for Dev; queued 09:16 UTC.',
+    };
+    expect(narrationKey(fourth)).not.toBe(narrationKey(ninth));
   });
 
-  it('makes one call across a run of polls that only differ by an elapsed clock', async () => {
+  it('does not collapse a run of polls whose tally is not mirrored anywhere in facts', async () => {
+    // The known gap, named rather than hidden: without a fact behind the tally, the
+    // safe key cannot tell "the same work, one command later" from "a different card
+    // that happens to end in a digit," so it makes a call each time, same as before this
+    // fix -- closing this fully is `laneGlance.ts`'s to do (finishing work).
     const { narrator, journalPath } = rigWith(scriptedQuery(() => acceptedReply).fn);
     const base: NarrationFacts = {
-      surface: 'lane.now', facts: { lane: 'BBZ-169' }, template: 'running 5 min',
+      surface: 'lane.did', facts: { lane: 'BBZ-169', state: 'running' }, template: 'Ran 2 commands.',
     };
-    for (const template of ['running 5 min', 'running 6 min', 'running 12 min', 'running 61 min']) {
+    for (const template of ['Ran 2 commands.', 'Ran 3 commands.', 'Ran 4 commands.', 'Ran 5 commands.']) {
       narrator.get({ ...base, template });
     }
     await narrator.idle();
+    expect(narrateCalls(journalPath)).toBe(4);
+  });
+
+  it('folds a template digit into one key once a fact actually carries it', async () => {
+    // The positive case: two different facts each mirror one of the two numbers this
+    // template could show ("2" from a first attempt, "3" from a second), so both
+    // renderings of it are individually vouched for and collapse to one call -- proving
+    // the mechanism works for a caller that does mirror what it wants ignored, which is
+    // the fix this file promises, distinct from the gap named above.
+    const { narrator, journalPath } = rigWith(scriptedQuery(() => acceptedReply).fn);
+    const facts = { lane: 'BBZ-169', firstAttempt: 2, secondAttempt: 3 };
+    narrator.get({ surface: 'lane.did', facts, template: 'Ran 2 commands.' });
+    narrator.get({ surface: 'lane.did', facts, template: 'Ran 3 commands.' });
+    await narrator.idle();
     expect(narrateCalls(journalPath)).toBe(1);
   });
 
-  it('still narrates again when the ticket, not just the tally, actually changes', async () => {
+  it('still narrates again when the ticket, not just an un-mirrored digit, actually changes', async () => {
     const { narrator, journalPath } = rigWith(scriptedQuery(() => acceptedReply).fn);
     narrator.get({ surface: 'lane.did', facts: { lane: 'BBZ-169', state: 'running' }, template: 'Ran 2 commands.' });
     narrator.get({ surface: 'lane.did', facts: { lane: 'BBZ-201', state: 'running' }, template: 'Ran 2 commands.' });
@@ -274,24 +297,19 @@ describe('a counter that ticks inside the template does not buy a fresh call eve
     expect(narrateCalls(journalPath)).toBe(2);
   });
 
-  it('journals the drift once an hour so the saving is visible, not silent', async () => {
-    // A reply that carries the one protected token the first poll's template names (the
-    // tally `2`) and invents nothing else: the checker demands every number the template
-    // names back out of glance, so a reply naming PR #412 for a different fixture (like
-    // `acceptedReply`) would be rejected here and never land an `ok` entry for the
-    // drifted poll below to find.
+  it('journals a fold once an hour so a collapsed poll is visible, not silent', async () => {
+    // Same mirrored-digit setup as the positive case above: both attempts are
+    // individually vouched for by a fact, so the second poll's raw template drifts from
+    // the entry the (now-shared) key matched, and that drift gets one journal row.
     const matchingReply = JSON.stringify({
-      glance: 'Ran 2 commands.', detail: 'BBZ-169 is running and has run 2 commands so far.',
+      glance: 'Ran 2 commands.', detail: 'BBZ-169 is running: attempt 2 first, attempt 3 second.',
     });
     const { narrator, journalPath } = rigWith(scriptedQuery(() => matchingReply).fn);
-    const base: NarrationFacts = {
-      surface: 'lane.did', facts: { lane: 'BBZ-169', state: 'running' }, template: 'Ran 2 commands.',
-    };
-    narrator.get(base);
+    const facts = { lane: 'BBZ-169', state: 'running', firstAttempt: 2, secondAttempt: 3 };
+    narrator.get({ surface: 'lane.did', facts, template: 'Ran 2 commands.' });
     await narrator.idle();
-    for (const template of ['Ran 3 commands.', 'Ran 4 commands.', 'Ran 5 commands.']) {
-      narrator.get({ ...base, template });
-    }
+    narrator.get({ surface: 'lane.did', facts, template: 'Ran 3 commands.' });
+    narrator.get({ surface: 'lane.did', facts, template: 'Ran 3 commands.' });
     const deduped = rows(journalPath).filter((row) => row['event'] === 'narration.deduped');
     expect(deduped).toHaveLength(1);
     expect(deduped[0]?.['surface']).toBe('lane.did');
