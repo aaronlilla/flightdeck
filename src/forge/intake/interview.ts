@@ -42,6 +42,14 @@ export interface InterviewResult {
   questions: InterviewQuestion[];
   /** Present on the backend route: the exact sentence the handoff carries. */
   ask?: string;
+  /** Item 10, 2026-09-11: how many questions this item actually asked (tagged and kept
+   *  under `MAX_QUESTIONS`) but never made it into `questions` because the poll's shared
+   *  `budget` ran out first. Absent when no `budget` was passed, or when nothing was cut.
+   *  The caller (`interviewPlanner.ts`) reads this to tell "this item genuinely has
+   *  nothing to ask" apart from "this item was throttled" -- the two outcomes cannot
+   *  share a code path, or a throttled item silently gets a brief with its real
+   *  questions never asked. */
+  deferred?: number;
 }
 
 export interface InterviewAnswer {
@@ -189,7 +197,7 @@ export async function interview(
       packetId: packet.id, raised: kept.length, kept: final.length, deferred: deferredHere,
     });
   }
-  return { route, questions: final };
+  return { route, questions: final, ...(deferredHere > 0 ? { deferred: deferredHere } : {}) };
 }
 
 export function buildBriefPrompt(packet: Packet, answers: InterviewAnswer[]): string {
