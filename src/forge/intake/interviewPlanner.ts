@@ -233,13 +233,22 @@ const CONTRADICTION_MARKER = 'single-tap-vs-shared-component contradiction';
 function requiresASecondTap(answer: string): boolean {
   const mentions = /(second tap|two taps|tap again)/i.test(answer);
   if (!mentions) return false;
-  const ruledOut = /(do not|don'?t|never|no|without|rather than|instead of)[^.]{0,40}(second tap|two taps|tap again)/i
+  // Word-bounded (code review, 2026-09-12): bare `no` matched inside "nothing", "now"
+  // and "know", so the disqualifier fired on three of four natural phrasings of the
+  // settled decision and parked the ticket anyway.
+  const ruledOut = /\b(do not|don'?t|never|no|without|rather than|instead of)\b[^.]{0,40}\b(second tap|two taps|tap again)\b/i
     .test(answer);
   return !ruledOut;
 }
 
-export function findKnownContradiction(answers: InterviewAnswer[]): string | undefined {
-  if (answers.some((a) => a.question.includes(CONTRADICTION_MARKER))) return undefined;
+export function findKnownContradiction(allAnswers: InterviewAnswer[]): string | undefined {
+  if (allAnswers.some((a) => a.question.includes(CONTRADICTION_MARKER))) return undefined;
+  // Decisions only, which is what the docblock above promises (code review,
+  // 2026-09-12). The scout's answers describe code that already exists, and a citation
+  // like "dismissal already lives in the shared component src/ui/common/Cards.tsx"
+  // satisfies half the conflict on its own. A description of the repository is not
+  // somebody deciding something, and holding a ticket on one is the false positive.
+  const answers = allAnswers.filter((a) => a.answeredBy !== 'the repo');
   const buildsDismissalIntoSharedComponent = answers.some(
     (a) => /shared|reusable/i.test(a.answer)
       && /component/i.test(a.answer)

@@ -513,6 +513,25 @@ describe('findKnownContradiction: item 11', () => {
   // interview that had ALREADY settled on option (a) matched both halves and parked the
   // item on a follow-up nobody needed. That is the false positive the docblock warns
   // against, and it is worse than the bug: it holds a ticket on an imagined conflict.
+  // Found by code review, 2026-09-12: `no` sat in the negation alternation with no word
+  // boundary, so it matched inside "nothing", "now" and "know" and the disqualifier
+  // fired on three of four natural phrasings of the settled decision.
+  it.each([
+    'a single tap closes the drop-down and nothing else; a second tap activates the item',
+    'a single tap closes the drop-down; the user must now tap again to activate it',
+    'a single tap closes the drop-down; we know a second tap activates whatever is under it',
+  ])('says nothing when the second-tap resolution is worded as: %s', (settled) => {
+    const answers = [
+      {
+        question: 'where does dismissal live?',
+        answer: 'build the outside-press backdrop into the shared component',
+        answeredBy: 'aaron',
+      },
+      { question: 'what does a tap outside do?', answer: settled, answeredBy: 'aaron' },
+    ];
+    expect(findKnownContradiction(answers)).toBeUndefined();
+  });
+
   it('says nothing when the answers already settled on the second-tap resolution', () => {
     const answers = [
       {
