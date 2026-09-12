@@ -124,12 +124,20 @@ function offeredAsks(thread: any, lanes: any, blockers: any): OfferedAsk[] {
     const targets: string[] = (card.btns ?? [])
       .map((b: any) => String(b.cmd).trim().split(/\s+/)[1])
       .filter((t: unknown): t is string => typeof t === 'string' && t.length > 0);
-    // A question card's options are answers, not ids: it is answerable as long as it has
-    // options. A confirm or blocker card's button addresses a token, and the token has to
-    // still exist for the click to land.
+    // A question card's options are answers, so it is answerable while it has options.
+    //
+    // A confirm's button addresses a pending token, and a token is NOT a message key --
+    // checking one against the other made every confirm read as dead, which is the right
+    // answer for the wrong reason and would have gone on being right after a fix
+    // (2026-09-12). The server is the only thing that knows whether a token would still
+    // run, and it now says so: an unanswerable confirm comes back settled as `expired`.
+    // An unsettled confirm on an older server reads as answerable rather than being
+    // guessed at here.
     const answerable = card.type === 'question'
       ? (card.opts ?? []).length > 0
-      : targets.length > 0 && targets.every((t) => liveKeys.has(t));
+      : card.type === 'confirm'
+        ? targets.length > 0
+        : targets.length > 0 && targets.every((t) => liveKeys.has(t));
     out.push({
       uid: `card:${card.k}`,
       kind: card.type,
