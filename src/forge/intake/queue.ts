@@ -432,7 +432,7 @@ export interface QueueRuntimeDeps {
    *  because it is still a draft is the stall this item exists to remove. */
   readyPrWithPrediction?: (input: {
     item: QueueItem; pr: { no: number; url: string }; prediction: string;
-  }) => Promise<void>;
+  }) => Promise<{ readied: boolean; predictionError?: string } | void>;
   /** A.8/A.9: the PR's own changed files and line counts. Fetched once per item, right
    *  after the PR is found and before the council reads it, so A.9's overlap check runs
    *  against real data and A.8's figures at `review` need no second fetch. Absent means
@@ -999,12 +999,23 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
   // cost, per platform. Built from the item's own changed-files list, already fetched
   // for the overlap check, so this costs no extra call. Unlike the courtesies above, a
   // failure here is journalled: a pull request left a draft cannot be merged at all.
+  // Not for a backend item: `terminalStateFor('backend')` says it stops at
+  // draft-pr-open and the owner ping below assumes a draft, so readying it here would
+  // hand a backend owner a pull request the queue had already made mergeable (code
+  // review, 2026-09-12). The mobile prediction is meaningless on those repos anyway.
   let readied = false;
-  if (deps.readyPrWithPrediction && item.repo) {
+  const frontendRepo = !deps.repoKindFor || deps.repoKindFor(item.repo!) === 'frontend';
+  if (deps.readyPrWithPrediction && item.repo && frontendRepo) {
     const prediction = renderShipPrediction(shipPredictionFor(item.changedFiles ?? []));
     try {
-      await deps.readyPrWithPrediction({ item, pr: { no: pr.number, url: pr.url }, prediction });
-      readied = true;
+      const outcome = await deps.readyPrWithPrediction({ item, pr: { no: pr.number, url: pr.url }, prediction });
+      readied = outcome ? outcome.readied : true;
+      if (outcome?.predictionError) {
+        deps.append({
+          event: 'queue.pr-prediction-failed', actor: 'queue', itemId: item.id,
+          pr: pr.number, error: outcome.predictionError,
+        });
+      }
     } catch (error) {
       deps.append({
         event: 'queue.pr-ready-failed', actor: 'queue', itemId: item.id,

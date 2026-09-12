@@ -250,17 +250,25 @@ export const REAL_GH: GhReader & GhWriter = {
   },
 
   async appendPrBody(repo, pr, addition) {
+    // `fullOutput` and `raw` are both load-bearing here, and omitting either destroys
+    // the author's text on GitHub (code review, 2026-09-12). `tail` is the last 4000
+    // bytes of combined stdout and stderr, so a longer body came back beheaded with
+    // gh's own stderr spliced into it; and without `raw` the read is `redact()`ed, so
+    // every 24-character word in the body -- `ResponsibleGamingLimitsScreen` among
+    // them -- was written back as `[REDACTED]`. This is a read-modify-write of somebody
+    // else's prose, which is the one place a truncated, scrubbed buffer must never be
+    // the input.
     const current = await execRun({
       argv: ['gh', 'pr', 'view', String(pr), '--repo', repo, '--json', 'body', '--jq', '.body'],
-      cwd: process.cwd(), owner: 'council', cls: 'script',
+      cwd: process.cwd(), owner: 'council', cls: 'script', fullOutput: true, raw: true,
     });
-    if ((current.returncode ?? -1) !== 0) {
+    if ((current.returncode ?? -1) !== 0 || current.full === undefined) {
       return { returncode: current.returncode ?? -1, stderr: current.tail };
     }
     // Appending twice would stack two predictions on a re-run; the marker makes the
     // write idempotent without reading a second source of truth.
-    if (current.tail.includes(SHIP_PREDICTION_MARKER)) return { returncode: 0, stderr: '' };
-    const body = `${current.tail.trimEnd()}
+    if (current.full.includes(SHIP_PREDICTION_MARKER)) return { returncode: 0, stderr: '' };
+    const body = `${current.full.trimEnd()}
 
 ${SHIP_PREDICTION_MARKER}
 ${addition}

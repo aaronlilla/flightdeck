@@ -278,6 +278,9 @@ export const FORGE_EVENT_NAMES = [
   // it stays a draft and nobody can merge it. Journalled rather than swallowed --
   // a draft nobody can merge is the stall that item exists to remove.
   'queue.pr-ready-failed',
+  // The pull request was readied but the prediction could not be written into its
+  // body. Kept apart from the row above so neither claims the other's failure.
+  'queue.pr-prediction-failed',
   // R-81: `queue.tick-complete` is the row a pass writes about itself, at most once a
   // minute, carrying how many items it considered. It exists because a held item
   // deliberately writes no row of its own, so without this the journal cannot tell a

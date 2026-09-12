@@ -33,8 +33,12 @@ const IOS_ONLY = /^ios[/\\]/i;
  * A path that rebuilds both. A patch rewrites a package's own source, native included,
  * and the manifest or lockfile can pull in native code without naming a native path --
  * neither can be taken over the air, and the file list alone cannot prove otherwise.
+ * The build config files are here for the same reason (code review, 2026-09-12): a
+ * change to `app.config.js`, `app.json` or `eas.json` moves the fingerprint without
+ * naming a single native path, so a config-only change predicted an update and got a
+ * rebuild.
  */
-const BOTH = /^patches[/\\]|^(package\.json|package-lock\.json|yarn\.lock|pnpm-lock\.yaml)$/i;
+const BOTH = /^patches[/\\]|^(package\.json|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|app\.json|app\.config\.[jt]s|eas\.json)$/i;
 
 export function shipPredictionFor(changedFiles: readonly string[]): ShipPrediction {
   if (changedFiles.length === 0) return { android: 'unknown', ios: 'unknown', signals: [] };

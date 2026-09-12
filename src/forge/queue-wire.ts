@@ -311,14 +311,22 @@ export function queueReadyPrWithPrediction(
 ): NonNullable<QueueRuntimeDeps['readyPrWithPrediction']> {
   return async ({ item, pr, prediction }) => {
     if (!item.repo) return;
+    // The two writes fail separately (code review, 2026-09-12). Throwing on a failed
+    // body append after `readyPr` already succeeded recorded the pull request as a
+    // draft when it was ready, under an event naming the wrong write, and the hop is
+    // never re-entered to correct it.
     const ready = await gh.readyPr(item.repo, pr.no);
-    if (ready.returncode !== 0) {
+    const alreadyReady = ready.returncode !== 0 && /not a draft|already|merged/i.test(ready.stderr);
+    if (ready.returncode !== 0 && !alreadyReady) {
       throw new Error(`gh pr ready failed: ${ready.stderr.slice(0, 300)}`);
     }
     const appended = await gh.appendPrBody(item.repo, pr.no, prediction);
     if (appended.returncode !== 0) {
-      throw new Error(`gh pr edit failed: ${appended.stderr.slice(0, 300)}`);
+      // The pull request IS ready; only the prediction is missing. Reported so the row
+      // says what happened, without claiming the pull request is still a draft.
+      return { readied: true, predictionError: appended.stderr.slice(0, 300) };
     }
+    return { readied: true };
   };
 }
 
