@@ -120,6 +120,26 @@ describe('item 4: a merge confirm survives the console restarting under it', () 
     expect(refusal?.text).toMatch(/expired/i);
   });
 
+  it('still names the expiry after another confirm has rewritten the store', async () => {
+    // The store is rewritten whole on every put, and the prune drops aged rows, so an
+    // expired token stopped being nameable the moment anything else was proposed. The
+    // earlier specimen passed only because nothing happened in between.
+    const base = await start();
+    const proposed = await postMerge(base, {});
+    const token = String(proposed.body['token']);
+
+    const path = join(dir, 'pending-confirms.json');
+    const rows = JSON.parse(readFileSync(path, 'utf8')) as Array<{ token: string; at: number }>;
+    for (const row of rows) if (row.token === token) row.at = Date.now() - 3 * 60 * 60_000;
+    writeFileSync(path, JSON.stringify(rows), 'utf8');
+
+    const fresh = await restart();
+    await postMerge(fresh, {});          // a second proposal rewrites the store
+    const after = await postMerge(fresh, { confirm: token });
+
+    expect(String(after.body['error'])).toMatch(/expired/i);
+  });
+
   it('still refuses a token nobody ever minted, with the unchanged sentence', async () => {
     const base = await start();
     const after = await postMerge(base, { confirm: '00000000-0000-4000-8000-000000000000' });

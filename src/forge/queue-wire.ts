@@ -18,7 +18,7 @@ import { chainCouncil, chainGate, chainGh, chainRebase, chainLauncher, chainLaun
 import { checkoutFor, repoKindFor as repoKindForEnv, type ChainEnv } from './chain-env.js';
 import type { CliResult, ForgeDeps } from './cli.js';
 import { autoMergeAllowed } from './council/risk.js';
-import { countAddDel, guardedCommentPr, REAL_GH } from './council/gh.js';
+import { conclusionOf, countAddDel, guardedCommentPr, REAL_GH } from './council/gh.js';
 import type { Packet, PollSourceName, Watermark } from './contracts.js';
 import { run as execRun } from './exec.js';
 import type {
@@ -513,12 +513,20 @@ export function buildQueueRuntimeDeps(
       if (!result.ok) throw new Error('gh could not read the PR');
       return Boolean((JSON.parse(result.full ?? result.tail) as { mergedAt?: string | null }).mergedAt);
     },
-    // Item 1 (2026-09-11): the same `gh pr view` read the self loop already uses for its
-    // own merge decision. A throw is an unreadable sensor, never a green check, so it
-    // answers undefined and the recovery pass holds the item.
+    // Item 1 (2026-09-11): ONE `gh pr view --json statusCheckRollup`, never `REAL_GH.viewPr`
+    // -- that reader also downloads the whole `gh pr diff`, so wiring this to it spent two
+    // GitHub calls and a full diff per parked item per tick, against a rate limit every
+    // session on this machine shares. A throw is an unreadable sensor, never a green
+    // check, so it answers undefined and the recovery pass holds the item.
     checksConclusion: async (repo, pr) => {
       try {
-        return (await REAL_GH.viewPr(repo, pr)).checks.conclusion;
+        const result = await execRun({
+          argv: ['gh', 'pr', 'view', String(pr), '--repo', repo, '--json', 'statusCheckRollup'],
+          cwd: process.cwd(), owner: 'queue', cls: 'script', fullOutput: true, raw: true,
+        });
+        if (!result.ok) return undefined;
+        const parsed = JSON.parse(result.full ?? result.tail) as { statusCheckRollup?: Parameters<typeof conclusionOf>[0] };
+        return conclusionOf(parsed.statusCheckRollup);
       } catch {
         return undefined;
       }

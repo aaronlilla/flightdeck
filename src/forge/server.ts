@@ -452,6 +452,20 @@ export class ForgeServer {
       });
     this.queueStoreForMerge = options.queueStore ?? new QueueStore(defaultQueuePath());
     this.consoleWrites = new ConsoleWrites({
+      // Item 4, round 2: the same merge the Queue view's own route runs, so a click
+      // minted before a restart is rebuilt rather than answered `nothing pending`.
+      queueMerge: async (itemId: string) => {
+        const row = this.queueStoreForMerge.get(itemId);
+        if (!row) return { status: 404, body: { ok: false, error: `no queue item ${itemId}` } };
+        if (!this.queueMergeDepsOpt) {
+          return { status: 501, body: { ok: false, error: 'no merge wiring is configured for this environment' } };
+        }
+        const outcome = await mergeItem(row, this.queueMergeDepsOpt);
+        return {
+          status: outcome.ok ? 200 : 409,
+          body: { ok: outcome.ok, jid: null, message: outcome.message, undoable: false },
+        };
+      },
       journalPath: this.journalPath,
       registry: this.registry,
       lanes: this.lanes,

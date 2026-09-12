@@ -816,6 +816,11 @@ export interface QueueItem {
    *  journalled once per reason rather than every tick -- and a second, different
    *  unrecoverable reason still gets its own row. */
   recoveryDeclinedFor?: string | null;
+  /** Item 1: when the recovery pass last asked GitHub about this item's checks, and how
+   *  many times it has asked in total. Re-reading checks is a network call against a
+   *  shared rate limit, so it is windowed and capped; reading a local pid is neither. */
+  checksReadAt?: number;
+  checksReads?: number;
   /** The Queue view's two columns (2026-09-09, `Flightdeck Console.dc.html` 1c), filled by
    *  `GET /queue` at read time like `title`: why this item sits where it does in the
    *  order, and when it starts, in words. Absent on a response older than this field. */

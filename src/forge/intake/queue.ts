@@ -66,6 +66,18 @@ export const PENDING_CHECKS_POLL_CAP = 20;
  *  and cost one journal row per DISTINCT reading instead. */
 export const PARK_RECOVERY_CAP = 3;
 
+/** How long the recovery pass waits before asking GitHub about one item's checks again,
+ *  and how many times it may ask at all.
+ *
+ *  Re-reading checks is a network call against a rate limit every session on this machine
+ *  shares. Holds are unbounded by design (item 2 needs an item to keep its retry however
+ *  long the worker outlives the click), so without these two the tick would spend a call
+ *  per parked item every 15 seconds forever -- and would reinstate exactly the endless
+ *  polling `PENDING_CHECKS_POLL_CAP` exists to stop. Reading the pid of a local process
+ *  costs nothing and is deliberately left unbounded. */
+export const PARK_CHECKS_RECHECK_MS = 5 * 60_000;
+export const PARK_CHECKS_RECHECK_CAP = 20;
+
 /** What re-reading would have to say before a parked item may move again. `checks` means
  *  the park is about a pull request's checks; `run` means it is about a worker process
  *  that may or may not still be alive. */
@@ -97,7 +109,10 @@ export function parkRecoverability(reason: string | null | undefined): ParkRecov
   // `exhausted` is deliberately absent: a run that hit its budget ceiling did not fail
   // on a stale reading, and relaunching it three more times only proves the ceiling again.
   if (/^exhausted$/i.test(text)) return { recoverable: false, why: 'the run spent its budget ceiling' };
-  if (/^(stopped|parked|unknown|failed)$/i.test(text)) return { recoverable: true, reRead: 'run' };
+  // `unverified` is the commonest of these: `worker.ts` writes it for a run that stopped
+  // without finishing, and `advanceItem` parks on it twice. `failed` is deliberately
+  // absent -- no writer emits it as a verdict, and a rule nothing produces is noise.
+  if (/^(stopped|parked|unknown|unverified)$/i.test(text)) return { recoverable: true, reRead: 'run' };
   // The literal `advanceItem`'s gate hop writes when a finished run left no PR anywhere.
   // This is the commonest park of all, and the first cut of this table missed it.
   if (/no PR was found/i.test(text)) return { recoverable: true, reRead: 'run' };
@@ -1076,15 +1091,40 @@ async function recoverParkedItems(deps: QueueRuntimeDeps, items: QueueItem[], sl
     }
     // Item 1, finding 5: a recovery ends in a relaunched worker, so it spends a slot the
     // same way a queued item does. Without this, ten parked rows whose runs are dead
-    // provision ten workers on one tick.
-    if (slots <= 0) continue;
+    // provision ten workers on one tick. Journalled once, like every other decision here:
+    // an item held back by the width is a decision, and skipping it in silence is the
+    // thing this function's own comment promises not to do.
+    if (slots <= 0) {
+      if (item.recoveryHeldOn !== 'no room at this width') {
+        writeTransition(
+          item, { recoveryHeldOn: 'no room at this width' }, deps, 'queue.recovery-held',
+          { reRead: verdict.reRead, found: 'no room at this width', parkReason: item.reason },
+        );
+      }
+      continue;
+    }
 
     let found: string;
     let clear = false;
+    let checksRead = false;
     if (verdict.reRead === 'checks') {
+      const reads = item.checksReads ?? 0;
+      if (reads >= PARK_CHECKS_RECHECK_CAP) {
+        const why = `asked GitHub about these checks ${reads} times without them going green`;
+        if (item.recoveryDeclinedFor !== reason) {
+          writeTransition(item, { recoveryDeclinedFor: reason }, deps, 'queue.recovery-declined', { why, parkReason: item.reason });
+        }
+        continue;
+      }
+      // Silent on purpose, and the only silent branch here: nothing was re-read and
+      // nothing was decided, so there is no decision to journal. The window is what keeps
+      // this off the rate limit; a row per skipped tick would be four an hour per item
+      // saying "did not look yet".
+      if (item.checksReadAt !== undefined && deps.clock() - item.checksReadAt < PARK_CHECKS_RECHECK_MS) continue;
       if (!deps.checksConclusion || !item.repo || !item.pr) {
         found = 'no checks reader wired';
       } else {
+        checksRead = true;
         found = (await deps.checksConclusion(item.repo, item.pr.no)) ?? 'unknown';
         // Case-insensitive on purpose. The wired reader answers `conclusionOf`'s own
         // lowercase verdict (`council/gh.ts`), and comparing against 'SUCCESS' made this
@@ -1099,14 +1139,21 @@ async function recoverParkedItems(deps: QueueRuntimeDeps, items: QueueItem[], sl
       clear = pid === undefined;
     }
 
+    const readMarks = checksRead
+      ? { checksReadAt: deps.clock(), checksReads: (item.checksReads ?? 0) + 1 }
+      : {};
     if (!clear) {
       // One row per distinct reading. The tick fires every 15 seconds; a row each time
       // would bury the journal, and a cap on holds would abandon the item.
       if (item.recoveryHeldOn !== found) {
         writeTransition(
-          item, { recoveryHeldOn: found }, deps, 'queue.recovery-held',
+          item, { recoveryHeldOn: found, ...readMarks }, deps, 'queue.recovery-held',
           { reRead: verdict.reRead, found, parkReason: item.reason },
         );
+      } else if (checksRead) {
+        // No decision changed, so no journal row, but the read still has to be counted or
+        // the window and the cap both stop working.
+        deps.store.append({ id: item.id, at: deps.clock(), ...readMarks });
       }
       continue;
     }
@@ -1117,7 +1164,12 @@ async function recoverParkedItems(deps: QueueRuntimeDeps, items: QueueItem[], sl
       item,
       {
         state, reason: null, recoveryAttempts: recoveries + 1, recoveryHeldOn: null, recoveryDeclinedFor: null,
-        ...(item.runKey ? { retriedAt: deps.clock() } : {}),
+        ...readMarks,
+        // `retriedAt` means "a person asked for this run to be looked at again", and
+        // `relaunchOnRetryOrPark` answers it by provisioning a NEW worker. That is right
+        // for a run that died and wrong for checks that went green: there the run
+        // finished correctly and the item only needs its gate hop read again.
+        ...(item.runKey && verdict.reRead === 'run' ? { retriedAt: deps.clock() } : {}),
         ...(item.pendingGatePolls ? { pendingGatePolls: 0 } : {}),
       },
       deps, 'queue.recovered',
