@@ -60,41 +60,40 @@ const GENERIC_DIR = /^(components?|screens?|views?|containers?|ui|src|app)$/i;
  *  basename: two `Header.tsx` under different features are two files, and collapsing
  *  them told a reader one screen changed when two did. */
 function viewNamesIn(files: readonly string[]): string[] {
+  const paths: string[] = [];
   const seen = new Set<string>();
-  const taken = new Set<string>();
-  const names: string[] = [];
   for (const file of files) {
     const path = file.split('\\').join('/');
     if (!VIEW_FILE.test(path) || NOT_A_VIEW.test(path)) continue;
     if (seen.has(path)) continue;
     seen.add(path);
+    paths.push(path);
+  }
+
+  // Two passes, because one cannot see a collision it has not reached yet. The first
+  // renders the short name; the second re-renders EVERY member of a colliding group
+  // with its full path. A single pass widened only the later file, so the earlier one
+  // kept a short name that claimed a path with no file at it, and where widening ran
+  // out of segments it printed the same name twice -- both proven by running this
+  // function (code review, 2026-09-12).
+  const shortOf = (path: string): string => {
     const parts = path.split('/');
     const base = parts.pop()!.replace(/\.(tsx|jsx)$/i, '');
-    // Skip the generic folder names -- `components/Header` and `screens/Header` read
-    // as one file when they are two. Then widen back out until the rendered name is
-    // unique: stripping a generic segment could collapse two paths the full path had
-    // told apart, and the list then printed the same name twice (code review,
-    // 2026-09-12).
-    const meaningful = [...parts];
-    while (meaningful.length && GENERIC_DIR.test(meaningful[meaningful.length - 1]!)) meaningful.pop();
-    let rendered = meaningful.length ? `${meaningful[meaningful.length - 1]}/${base}` : base;
-    let depth = 1;
-    while (taken.has(rendered) && depth < parts.length) {
-      depth += 1;
-      rendered = `${parts.slice(-depth).join('/')}/${base}`;
-    }
-    // Widening runs out of segments on a shallow path, and the loop then pushed the
-    // colliding name unchanged -- two files printed as one name, which is the thing
-    // this loop exists to prevent (code review, 2026-09-12). The path without its
-    // extension always tells them apart, and keeps the format of every other entry.
-    if (taken.has(rendered)) rendered = path.replace(/\.(tsx|jsx)$/i, '');
-    taken.add(rendered);
-    // Backticked: the readability contract counts prose words and scans them for
-    // banned words, so a path segment could deny the whole comment and post nothing
-    // at all. Code in backticks is exempt from both (code review, 2026-09-12).
-    names.push(`\`${rendered}\``);
-  }
-  return names;
+    while (parts.length && GENERIC_DIR.test(parts[parts.length - 1]!)) parts.pop();
+    const parent = parts.pop();
+    return parent ? `${parent}/${base}` : base;
+  };
+  const counts = new Map<string, number>();
+  for (const path of paths) counts.set(shortOf(path), (counts.get(shortOf(path)) ?? 0) + 1);
+
+  // Backticked: the readability contract counts prose words and scans them for banned
+  // words, so a path segment could deny the whole comment and post nothing at all.
+  // Code in backticks is exempt from both.
+  return paths.map((path) => {
+    const short = shortOf(path);
+    const rendered = (counts.get(short) ?? 0) > 1 ? path.replace(/\.(tsx|jsx)$/i, '') : short;
+    return `\`${rendered}\``;
+  });
 }
 
 /**

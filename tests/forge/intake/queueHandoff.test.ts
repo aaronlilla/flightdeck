@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import { buildQueueHandoffComment, runQueueHandoff, type QueueHandoffEvent } from '../../../src/forge/intake/queueHandoff.js';
 import type { JiraCallResult, JiraWriteClient } from '../../../src/forge/intake/jira.js';
-import { readabilityVerdict } from '../../../src/forge/intake/readability.js';
+import { proseWordCount, readabilityVerdict } from '../../../src/forge/intake/readability.js';
 
 function fakeClient(overrides: Partial<JiraWriteClient> = {}): JiraWriteClient {
   return {
@@ -292,8 +292,13 @@ describe('the handoff makes no claim about the rendered result', () => {
         'reopen it', 'tap the same row again'],
       changedFiles: ['src/navigation/MainStack.tsx', ...files],
     });
-    expect(readabilityVerdict('jira-comment', null, '', body, undefined, '2026-09-12').verdict)
-      .not.toBe('DENY');
+    const verdict = readabilityVerdict('jira-comment', null, '', body, undefined, '2026-09-12');
+    // SILENT means the contract is not installed and nothing was measured, so the
+    // assertion below would pass without a working detector (code review,
+    // 2026-09-12). The count is asserted directly too, against the contract's own
+    // number, so this fails closed rather than quietly.
+    expect(proseWordCount(body)).toBeLessThanOrEqual(80);
+    expect(verdict.verdict).not.toBe('DENY');
   });
 
   // Found by code review, 2026-09-12, against the real mobile repo: matching every
@@ -330,6 +335,27 @@ describe('the handoff makes no claim about the rendered result', () => {
       changedFiles: ['jest/svgMock.tsx'],
     });
     expect(body).not.toContain('svgMock');
+  });
+
+  // Found by code review, 2026-09-12, by running this function: widening only the
+  // later file left the earlier one with a short name claiming a path no file sits
+  // at, and where widening ran out of segments both printed the same name.
+  it.each([
+    [['src/components/Header.tsx', 'Header.tsx']],
+    [['ui/Home.tsx', 'Home.tsx']],
+    [['components/index.tsx', 'index.tsx']],
+    [['src/screens/Wallet/Header.tsx', 'Wallet/Header.tsx']],
+  ])('renders both members of a colliding pair by their own path: %s', (files) => {
+    const body = buildQueueHandoffComment({
+      ticket: 'BBZ-22', prUrl: 'https://github.com/acme/app/pull/22', what: 'x.', testPlan: [],
+      changedFiles: files,
+    });
+    const matches = body.match(/`[^`]+`/g) ?? [];
+    expect(matches).toHaveLength(2);
+    expect(new Set(matches).size).toBe(2);
+    for (const file of files) {
+      expect(body).toContain(`\`${file.replace(/\.tsx$/, '')}\``);
+    }
   });
 
   // Edge: an empty list is not proof of anything -- the file list pages at 100 and can
