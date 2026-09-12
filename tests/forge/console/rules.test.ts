@@ -266,6 +266,18 @@ describe('enforceRulesOnce', () => {
     expect(entry.passedTo).toBe('joe');
   });
 
+  // Found by code review, 2026-09-12: `Inbox.answer` spreads the existing entry, so a
+  // prior author survived a SECOND answer. A rule closes the ask, the operator
+  // disagrees and answers again through any of the four routes -- none of which passes
+  // an author -- and their correction was credited to the rule.
+  it('drops the previous author when the operator answers over a rule', () => {
+    inbox.raise({ run: 'item:Q-again', ticket: 'BBZ-10', question: 'which env?' });
+    const key = inbox.open()[0]!.key;
+    inbox.answer(key, 'skip nulls', 'rule:r6');
+    inbox.answer(key, 'production');
+    expect(answeredByOf(inbox.entry(key)!)).toBe('the operator');
+  });
+
   it('still credits the operator for a plain typed answer with no author', () => {
     inbox.raise({ run: 'item:Q-edge3', ticket: 'BBZ-3', question: 'which env?' });
     const key = inbox.open()[0]!.key;

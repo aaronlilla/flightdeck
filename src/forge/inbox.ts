@@ -341,9 +341,17 @@ export class Inbox {
   answer(key: string, answer: string, answeredBy?: string): InboxEntry | undefined {
     const entry = this.entry(key);
     if (!entry) return undefined;
-    const answered: InboxEntry = {
-      ...entry, answer, answeredAt: Date.now(), ...(answeredBy ? { answeredBy } : {}),
-    };
+    // A caller that names no author is the operator, so a previous author does not
+    // carry forward (code review, 2026-09-12). A rule closes the ask, the operator
+    // disagrees and answers again through any of the four routes, and without this the
+    // correction was filed as the rule's -- the inverse of the bug the reopen path
+    // above fixes. A teammate's attached reply is left alone: `answeredByOf` credits
+    // that only while the stored answer still equals the reply, so the operator
+    // overriding it already reads as the operator's.
+    const author = answeredBy ?? (entry.reply === undefined ? undefined : entry.answeredBy);
+    const answered: InboxEntry = { ...entry, answer, answeredAt: Date.now() };
+    if (author) answered.answeredBy = author;
+    else delete answered.answeredBy;
     this.write(answered);
     return answered;
   }

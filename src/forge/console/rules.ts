@@ -170,11 +170,6 @@ export async function enforceRulesOnce(deps: EnforcementDeps): Promise<void> {
         const fresh = deps.inbox.entry(ask.key);
         if (!fresh || fresh.answer !== undefined) continue;
         // A person is already on this one, so the rule stands down. `reply` is a
-        // teammate's words waiting on the operator to confirm them; `passedTo` is a
-        // question out with a teammate who has not replied yet. Answering either
-        // discards a person's work: a pass closed by a heuristic drops the teammate's
-        // reply with no acknowledgement, and the pass window is hours.
-        // A person is already on this one, so the rule stands down. `reply` is a
         // teammate's words waiting on the operator to confirm them -- answering over it
         // overwrote the teammate's name, the only record that they replied at all.
         // `passedTo` is a question out with a teammate who has not replied yet; closing
@@ -184,9 +179,11 @@ export async function enforceRulesOnce(deps: EnforcementDeps): Promise<void> {
         const answered = deps.inbox.answer(ask.key, rule.effect, `rule:${rule.id}`);
         if (answered) {
           await deliverAnswer(answered, ask.key, rule.effect);
-          journalInterviewAnswer((row) => appendOnce(deps.runActions.journalPath, row), answered, `rule:${rule.id}`);
+          journalInterviewAnswer(
+            (row) => appendOnce(deps.runActions.journalPath, row), answered, `rule:${rule.id}`, 'rule',
+          );
           appendOnce(deps.runActions.journalPath, {
-            event: 'decision.made', actor: 'console', action: 'rule.enforced', ruleId: rule.id,
+            event: 'decision.made', actor: 'rule', action: 'rule.enforced', ruleId: rule.id,
             text: `auto-answer enforced on ${ask.key}`,
           });
         }
