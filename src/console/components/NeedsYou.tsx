@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { durationWords, laneHeadline } from '../laneVM.js';
 import type { Blocker, Lane, Message } from '../../shared/console-model.js';
 import { QuestionCard } from './QuestionCard.js';
+import { LIVE, type Liveness } from '../../shared/liveness.js';
 
 /**
  * R-75 item 3 (spec `doctrine/design/operator-experience.md` §5): the Needs-you strip,
@@ -57,6 +58,17 @@ export interface Need {
   answeredBy: string | null;
   /** Only a lane question can be passed: a blocker or a confirm is not a question. */
   passable: boolean;
+  /**
+   * Whether the thing this card points at still exists. Required, not optional, and that
+   * is the whole point (Aaron, 2026-09-12: "The entire board and app in general is
+   * constantly dead or old information ... Fix it permanently so it can't happen").
+   *
+   * There is no way to build a card for this strip without having answered the question.
+   * Answering it wrong is still possible; forgetting to ask is not. Every kind that can
+   * reach this strip has its rule on record in `shared/liveness.ts`, and a computed test
+   * fails the day a kind is added without one.
+   */
+  liveness: Liveness;
 }
 
 /** The kind order, applied only between two cards a person can actually answer: what is
@@ -83,6 +95,10 @@ const KIND_RANK: Record<Need['kind'], number> = { blocker: 0, confirm: 1, questi
  * their place at the front. Only `line` and `evidence` are the card's own words.
  */
 export function answerable(need: Need): boolean {
+  // The verdict first: a card about work that no longer exists cannot be answered however
+  // well it reads. Then the two things that were already checked -- words a person can
+  // read, and a way to reply.
+  if (!need.liveness.live) return false;
   const readable = [need.line, ...need.evidence]
     .some((text) => text.trim().length > 0 && text.trim() !== FALLBACK_TEXT);
   return readable && need.options.length > 0;
@@ -180,6 +196,7 @@ export function buildNeeds(lanes: Lane[], cards: Message[], blockers?: Blocker[]
         passedAt: null,
         answeredBy: null,
         passable: true,
+        liveness: LIVE,
       });
       continue;
     }
@@ -208,6 +225,10 @@ export function buildNeeds(lanes: Lane[], cards: Message[], blockers?: Blocker[]
       passedAt: null,
       answeredBy: null,
       passable: false,
+      // The server settles a card whose token or work is gone as `resolved`, and the loop
+      // above skips those, so a card that reaches here is one the server still stands
+      // behind. Said out loud rather than assumed.
+      liveness: LIVE,
     });
   }
   for (const lane of lanes) {
@@ -229,6 +250,8 @@ export function buildNeeds(lanes: Lane[], cards: Message[], blockers?: Blocker[]
       askKey: question.key,
       askedAt: question.askedAt,
       evidence: laneEvidence(lane),
+      // A retired lane is skipped above; one still on the board is work that exists.
+      liveness: LIVE,
       passedTo: question.passedTo ?? null,
       passedAt: question.passedAt ?? null,
       answeredBy: question.answeredBy ?? null,

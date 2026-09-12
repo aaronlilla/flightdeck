@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { answerable, buildNeeds, type Need } from '../../src/console/components/NeedsYou.js';
+import { LIVE, dead } from '../../src/shared/liveness.js';
 import type { Lane, Message } from '../../src/shared/console-model.js';
 
 /**
@@ -54,6 +55,7 @@ describe('answerable', () => {
     kind: 'confirm', uid: 'u', id: 'l', key: '', title: 'Confirm', line: 'Kill BBZ-182?',
     options: [{ label: 'Confirm', cmd: 'confirm t' }], askKey: 'k', askedAt: NOW,
     evidence: [], passedTo: null, passedAt: null, answeredBy: null, passable: false,
+    liveness: LIVE,
   };
 
   it('is true for a card with words and a way to reply', () => {
@@ -70,6 +72,21 @@ describe('answerable', () => {
 
   it('is true when the words are only in the evidence', () => {
     expect(answerable({ ...base, title: 'confirm?', line: 'confirm?', evidence: ['BBZ-182 is killed immediately'] })).toBe(true);
+  });
+
+  /**
+   * Aaron, 2026-09-12: "The entire board and app in general is constantly dead or old
+   * information ... Fix it permanently so it can't happen." A card about work that no
+   * longer exists cannot be answered however well it reads.
+   */
+  it('is false for a card whose work is gone, however well the card reads', () => {
+    expect(answerable({ ...base, liveness: dead('its queue item has been removed') })).toBe(false);
+  });
+
+  it('a dead card ranks behind a live one', () => {
+    const live = { ...base, uid: 'live' };
+    const gone = { ...base, uid: 'gone', liveness: dead('its queue item has been removed') };
+    expect([gone, live].sort((a, b) => Number(answerable(b)) - Number(answerable(a)))[0]?.uid).toBe('live');
   });
 });
 
