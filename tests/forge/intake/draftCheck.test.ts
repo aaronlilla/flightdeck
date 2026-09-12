@@ -277,7 +277,7 @@ describe('review fixes, 2026-09-12', () => {
   it('resolves the repository from a worktree path, not the slug', () => {
     const report = checkOutwardDraft(
       {
-        repo: 'C:/dev/worktrees/acme-app--ticket-friction',
+        repo: '/work/worktrees/acme-app--ticket-friction',
         diffStats: THREE_PRODUCTION_FILES,
         texts: { 'pr-body': prBody174() },
       },

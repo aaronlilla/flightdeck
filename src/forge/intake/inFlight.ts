@@ -61,7 +61,7 @@ export function findPullRequestRefs(sources: MentionText[]): PullRequestRef[] {
 
 export type PullRequestState = 'OPEN' | 'MERGED' | 'CLOSED';
 
-/** The repository name alone, so `BOLTBETZ-LLC/v2-React-Native` and `v2-react-native`
+/** The repository name alone, so `ACME-ORG/Acme-App` and `acme-app`
  *  compare equal. The owner is dropped on purpose: a routed repo is carried as a bare
  *  name in some places and an `owner/name` slug in others. */
 function repoTail(repo: string | null | undefined): string | null {
