@@ -77,7 +77,9 @@ describe('buildSelfLoop', () => {
     // Item 5 (2026-09-11): `review` used to read as idle and let the cutover through,
     // which is how a restart landed on top of a pending merge click. It now holds the
     // cutover back exactly as `running` does; only a terminal state lets it go.
-    store.append({ id: 'Q-1', at: 2, state: 'review', updatedAt: 2 } as never);
+    // A FRESH review row: the block is bounded by how long a merge confirm can still be
+    // spent, so a row stamped at epoch 2 is long past having a click left to protect.
+    store.append({ id: 'Q-1', at: 2, state: 'review', updatedAt: Date.now() } as never);
     expect((await loop.tick()).restart).toBe(false);
     expect(pulled).toEqual([]);
     store.append({ id: 'Q-1', at: 3, state: 'done', updatedAt: 3 } as never);

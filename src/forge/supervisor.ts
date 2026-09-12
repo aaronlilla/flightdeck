@@ -251,6 +251,11 @@ export interface StaleBlockDeps {
   /** Whether a process is alive for this run key. */
   runAlive: (slug: string) => boolean;
   append: (row: Record<string, unknown>) => void;
+  /** Drops the warden's cross-process park record for this run (`parkrecord.ts`). Handed
+   *  in rather than imported so this module still touches no files of its own. Absent
+   *  means the caller has no run directory to clear, which is every specimen that only
+   *  cares about the lane flag. */
+  clearPark?: (slug: string) => void;
 }
 
 /**
@@ -263,7 +268,16 @@ export function clearStaleBlock(slug: string, deps: StaleBlockDeps): StaleBlockC
   if (!reason) return { clear: false, why: 'the lane is not blocked' };
   const verdict = clearanceForStaleBlock({ reason, runAlive: deps.runAlive(slug) });
   if (!verdict.clear) return verdict;
-  deps.breaker.clear(slug);
+  // `Breaker.clear` is NOT used here: it also zeroes `zero_turn_starts`, and wiping the
+  // failed-start streak every time a warden reading is dropped means a lane two strikes
+  // into the three-strike window starts again from zero and the breaker never trips --
+  // the exact loop the breaker exists to break. Only the flag goes.
+  deps.lanes.put(slug, { needs_aaron: null });
+  // The lane flag is one of two things holding this run back. The warden also wrote
+  // `runs/<run>/park.json`, which the pre-tool hook reads fresh on every call, so a
+  // relaunch with the record still on disk is denied its first tool call and burns a
+  // whole session doing nothing. Same condition, same clear.
+  deps.clearPark?.(slug);
   deps.append({
     event: 'lane.block-cleared', run: slug, actor: 'launcher', signal: verdict.signal, dropped: reason,
     why: 'the run that produced this reading is gone and the item is being deliberately relaunched',

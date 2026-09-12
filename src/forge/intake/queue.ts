@@ -55,11 +55,15 @@ export const QUEUE_IN_FLIGHT_STATES: readonly QueueItemState[] = ['planning', 'r
  *  ordinary CI time. */
 export const PENDING_CHECKS_POLL_CAP = 20;
 
-/** Item 1 (2026-09-11): how many times the tick may re-evaluate one parked item before
- *  leaving it to a person for good. Bounded rather than endless because a recovery that
- *  keeps trying forever is indistinguishable, from the operator's side, from a pipeline
- *  that has quietly given up: three attempts is enough to cover a check that went green
- *  a minute later, and few enough that the journal rows stay readable. */
+/** Item 1 (2026-09-11): how many times the tick may HAND ONE ITEM BACK to the worker
+ *  before leaving it to a person for good. An item that parks, recovers and parks again
+ *  three times is not having a bad minute; something about it needs reading.
+ *
+ *  Counting successful recoveries only, never "not yet" readings: the tick runs every
+ *  `FORGE_QUEUE_POLL_S` seconds (default 15), so a budget spent on holds would be 45
+ *  seconds of wall clock, and a worker outliving its own retry click by a minute would
+ *  lose that retry for good -- the opposite of what item 2 promises. Holds are unbounded
+ *  and cost one journal row per DISTINCT reading instead. */
 export const PARK_RECOVERY_CAP = 3;
 
 /** What re-reading would have to say before a parked item may move again. `checks` means
@@ -90,7 +94,13 @@ export function parkRecoverability(reason: string | null | undefined): ParkRecov
   // Every run verdict `relaunchOnRetryOrPark` passes through (`stopped`, `exhausted`,
   // `parked`, `unknown`) plus the launcher's own stale-liveness refusal: all of them are
   // about a process, and all of them are answered by asking whether one is still alive.
-  if (/^(stopped|exhausted|parked|unknown|failed)$/i.test(text)) return { recoverable: true, reRead: 'run' };
+  // `exhausted` is deliberately absent: a run that hit its budget ceiling did not fail
+  // on a stale reading, and relaunching it three more times only proves the ceiling again.
+  if (/^exhausted$/i.test(text)) return { recoverable: false, why: 'the run spent its budget ceiling' };
+  if (/^(stopped|parked|unknown|failed)$/i.test(text)) return { recoverable: true, reRead: 'run' };
+  // The literal `advanceItem`'s gate hop writes when a finished run left no PR anywhere.
+  // This is the commonest park of all, and the first cut of this table missed it.
+  if (/no PR was found/i.test(text)) return { recoverable: true, reRead: 'run' };
   if (/produced no event|has a registry row|no run on the board/i.test(text)) return { recoverable: true, reRead: 'run' };
   // Item 2's own refusal: the retry is still wanted, the process was simply still alive.
   // Re-reading liveness is exactly what decides it, so it recovers on the same path.
@@ -1041,21 +1051,33 @@ export function queueBusy(): boolean {
  * park that never clears costs three rows and then stops rather than one row per tick
  * for as long as the console runs.
  */
-async function recoverParkedItems(deps: QueueRuntimeDeps, items: QueueItem[]): Promise<number> {
+async function recoverParkedItems(deps: QueueRuntimeDeps, items: QueueItem[], slots: number): Promise<number> {
   let recovered = 0;
   for (const item of items) {
     if (item.state !== 'parked') continue;
     const verdict = parkRecoverability(item.reason);
+    const reason = item.reason ?? '';
     if (!verdict.recoverable) {
-      // Once per item, never once per tick: `recoveryDeclined` is the marker that this
-      // park has already been read and judged a person's call.
-      if (!item.recoveryDeclined) {
-        writeTransition(item, { recoveryDeclined: true }, deps, 'queue.recovery-declined', { why: verdict.why, parkReason: item.reason });
+      // Once per REASON, not once per item and not once per tick: an item that parks on a
+      // second, different reason a machine cannot clear still has to say so.
+      if (item.recoveryDeclinedFor !== reason) {
+        writeTransition(item, { recoveryDeclinedFor: reason }, deps, 'queue.recovery-declined', { why: verdict.why, parkReason: item.reason });
       }
       continue;
     }
-    const attempts = item.recoveryAttempts ?? 0;
-    if (attempts >= PARK_RECOVERY_CAP) continue;
+    const recoveries = item.recoveryAttempts ?? 0;
+    if (recoveries >= PARK_RECOVERY_CAP) {
+      // Never a silent stop. One row says the budget is gone and why, then nothing more.
+      const why = `recovered ${recoveries} times already and parked again; a person needs to read this one`;
+      if (item.recoveryDeclinedFor !== reason) {
+        writeTransition(item, { recoveryDeclinedFor: reason }, deps, 'queue.recovery-declined', { why, parkReason: item.reason });
+      }
+      continue;
+    }
+    // Item 1, finding 5: a recovery ends in a relaunched worker, so it spends a slot the
+    // same way a queued item does. Without this, ten parked rows whose runs are dead
+    // provision ten workers on one tick.
+    if (slots <= 0) continue;
 
     let found: string;
     let clear = false;
@@ -1064,7 +1086,10 @@ async function recoverParkedItems(deps: QueueRuntimeDeps, items: QueueItem[]): P
         found = 'no checks reader wired';
       } else {
         found = (await deps.checksConclusion(item.repo, item.pr.no)) ?? 'unknown';
-        clear = found === 'SUCCESS';
+        // Case-insensitive on purpose. The wired reader answers `conclusionOf`'s own
+        // lowercase verdict (`council/gh.ts`), and comparing against 'SUCCESS' made this
+        // whole branch dead in production while the specimen stayed green.
+        clear = found.toLowerCase() === 'success';
       }
     } else if (!deps.runPid) {
       found = 'no liveness reader wired';
@@ -1074,12 +1099,15 @@ async function recoverParkedItems(deps: QueueRuntimeDeps, items: QueueItem[]): P
       clear = pid === undefined;
     }
 
-    const attempt = attempts + 1;
     if (!clear) {
-      writeTransition(
-        item, { recoveryAttempts: attempt }, deps, 'queue.recovery-held',
-        { reRead: verdict.reRead, found, parkReason: item.reason, attempt, cap: PARK_RECOVERY_CAP },
-      );
+      // One row per distinct reading. The tick fires every 15 seconds; a row each time
+      // would bury the journal, and a cap on holds would abandon the item.
+      if (item.recoveryHeldOn !== found) {
+        writeTransition(
+          item, { recoveryHeldOn: found }, deps, 'queue.recovery-held',
+          { reRead: verdict.reRead, found, parkReason: item.reason },
+        );
+      }
       continue;
     }
     // Same landing rule `retryItem` uses: a run already exists means this item re-enters
@@ -1088,14 +1116,15 @@ async function recoverParkedItems(deps: QueueRuntimeDeps, items: QueueItem[]): P
     writeTransition(
       item,
       {
-        state, reason: null, recoveryAttempts: attempt,
+        state, reason: null, recoveryAttempts: recoveries + 1, recoveryHeldOn: null, recoveryDeclinedFor: null,
         ...(item.runKey ? { retriedAt: deps.clock() } : {}),
         ...(item.pendingGatePolls ? { pendingGatePolls: 0 } : {}),
       },
       deps, 'queue.recovered',
-      { reRead: verdict.reRead, found, parkReason: item.reason, attempt, decided: `moved to ${state}` },
+      { reRead: verdict.reRead, found, parkReason: item.reason, recovery: recoveries + 1, decided: `moved to ${state}` },
     );
     recovered += 1;
+    slots -= 1;
   }
   return recovered;
 }
@@ -1105,9 +1134,11 @@ export async function runQueueTick(deps: QueueRuntimeDeps, items: QueueItem[]): 
   if (deps.paused()) return { started: 0, advanced: 0, killSwitchEngaged: false, paused: true };
 
   items = items.filter((item) => !advancing.has(item.id));
-  // Item 1: parked rows are re-read before the width is worked out, so an item handed
-  // back to the worker this tick is advanced on this tick rather than the next one.
-  if (await recoverParkedItems(deps, items)) {
+  // Item 1: parked rows are re-read first, so an item handed back this tick is advanced
+  // on this tick rather than the next one. A recovery ends in a relaunched worker, so it
+  // is given only the slots the width has left over after everything already in flight.
+  const busy = items.filter((item) => QUEUE_IN_FLIGHT_STATES.includes(item.state) && !isWaitingOnInterview(item));
+  if (await recoverParkedItems(deps, items, Math.max(0, deps.maxInFlight() - busy.length))) {
     items = deps.store.all().filter((item) => !advancing.has(item.id));
   }
   const inFlight = items.filter((item) => QUEUE_IN_FLIGHT_STATES.includes(item.state));

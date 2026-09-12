@@ -99,6 +99,27 @@ describe('item 4: a merge confirm survives the console restarting under it', () 
     expect(String(after.body['error'])).not.toMatch(/^nothing pending/);
   });
 
+  it('gives the typed confirm the same expiry sentence the clicked one gets', async () => {
+    const base = await start();
+    const proposed = await postMerge(base, {});
+    const token = String(proposed.body['token']);
+
+    const path = join(dir, 'pending-confirms.json');
+    const rows = JSON.parse(readFileSync(path, 'utf8')) as Array<{ token: string; at: number }>;
+    for (const row of rows) if (row.token === token) row.at = Date.now() - 3 * 60 * 60_000;
+    writeFileSync(path, JSON.stringify(rows), 'utf8');
+
+    const fresh = await restart();
+    const response = await fetch(`${fresh}/command`, {
+      method: 'POST', headers: { 'x-forge-token': server!.token, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: `confirm ${token}` }),
+    });
+    const { cards } = (await response.json()) as { cards: Array<{ type: string; text: string }> };
+    const refusal = cards.find((card) => card.type === 'refusal');
+
+    expect(refusal?.text).toMatch(/expired/i);
+  });
+
   it('still refuses a token nobody ever minted, with the unchanged sentence', async () => {
     const base = await start();
     const after = await postMerge(base, { confirm: '00000000-0000-4000-8000-000000000000' });

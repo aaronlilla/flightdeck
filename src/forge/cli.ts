@@ -89,7 +89,7 @@ import { loadPolicy, maxWallMsFor, modelFor, modelIdFor, tierOfBrief } from './p
 import { attestationCoversHead, checkHandoff, providerFor, redact, verified } from './contracts.js';
 import type { CouncilAttestation, HaipingHandoff, JoeHandoff } from './contracts.js';
 import { evaluateAction } from './rules/index.js';
-import { readParkRecord } from './parkrecord.js';
+import { clearParkRecord, readParkRecord } from './parkrecord.js';
 import { processAlive, reconcileRegistry, Registry, relaunchAbandonedGoal } from './registry.js';
 import { reasonerFor } from './reasoner-claude.js';
 import { deliverAnswer, RunInbox } from './runinbox.js';
@@ -1103,7 +1103,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         const blockJournal = new Journal(journalPath());
         try {
           clearStaleBlock(slug, {
-            lanes, breaker, append: (row) => { blockJournal.append(row); },
+            lanes, breaker, append: (row) => { blockJournal.append(row); }, clearPark: clearParkRecord,
             runAlive: (key) => {
               const row = new Registry(registryDir()).get(key);
               return Boolean(row && processAlive(row.pid));

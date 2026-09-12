@@ -94,6 +94,52 @@ describe('item 6: clearStaleBlock on a real lane', () => {
     expect(rows).toEqual([]);
   });
 
+  it('keeps the failed-start streak it says it does not touch', () => {
+    // `Breaker.clear` also zeroes `zero_turn_starts`, which is a person's decision to
+    // hand a lane back. Wiping it here means a lane two strikes into the three-strike
+    // window starts again from zero every time a warden reading is dropped, and the
+    // breaker can never trip -- the loop it exists to break.
+    const store = lanes();
+    const breaker = new Breaker(store);
+    store.put('queue-BBZ-169', { needs_aaron: IDLE_HINT, zero_turn_starts: [1, 2] });
+
+    clearStaleBlock('queue-BBZ-169', { lanes: store, breaker, runAlive: () => false, append: () => {} });
+
+    expect(store.get('queue-BBZ-169')?.zero_turn_starts).toEqual([1, 2]);
+    expect(store.get('queue-BBZ-169')?.needs_aaron).toBeFalsy();
+  });
+
+  it('drops the warden park record too, so the relaunched run is not denied its first call', () => {
+    // The park record is a separate file the pre-tool hook reads fresh on every call.
+    // Clearing the lane flag alone relaunches a run that is denied every tool call and
+    // burns a whole session doing nothing.
+    const store = lanes();
+    const breaker = new Breaker(store);
+    store.put('queue-BBZ-169', { needs_aaron: IDLE_HINT });
+    const cleared: string[] = [];
+
+    clearStaleBlock('queue-BBZ-169', {
+      lanes: store, breaker, runAlive: () => false, append: () => {},
+      clearPark: (slug) => { cleared.push(slug); },
+    });
+
+    expect(cleared).toEqual(['queue-BBZ-169']);
+  });
+
+  it('leaves the park record alone when the block is not cleared', () => {
+    const store = lanes();
+    const breaker = new Breaker(store);
+    store.put('queue-BBZ-169', { needs_aaron: IDLE_HINT });
+    const cleared: string[] = [];
+
+    clearStaleBlock('queue-BBZ-169', {
+      lanes: store, breaker, runAlive: () => true, append: () => {},
+      clearPark: (slug) => { cleared.push(slug); },
+    });
+
+    expect(cleared).toEqual([]);
+  });
+
   it('is a no-op for a lane that was never blocked', () => {
     const store = lanes();
     const breaker = new Breaker(store);

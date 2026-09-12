@@ -34,10 +34,26 @@ import type { QueueItem, QueueItemState } from '../../shared/console-model.js';
 // `QUEUE_IN_FLIGHT_STATES` so the two cannot drift apart unnoticed.
 export const CUTOVER_BLOCKING_STATES: readonly QueueItemState[] = ['planning', 'running', 'review'];
 
+/**
+ * How long a row at `review` holds a cutover back. The block exists to protect one thing:
+ * a merge confirm the operator has not clicked yet. Those tokens live two hours
+ * (`console/command.ts` `CONFIRM_TTL_MS`), so past that there is no click left to void,
+ * and holding a restart forever would stop the console taking its own fixes for as long
+ * as one row sits in review -- which, with the self-merge switch off, is indefinitely.
+ */
+export const REVIEW_BLOCKS_CUTOVER_MS = 2 * 60 * 60_000;
+
 /** Whether nothing on the board would lose anything if the process restarted now. */
-export function cutoverIdle(input: { items: QueueItem[]; queueBusy: boolean }): boolean {
+export function cutoverIdle(input: { items: QueueItem[]; queueBusy: boolean; now?: number }): boolean {
   if (input.queueBusy) return false;
-  return !input.items.some((item) => CUTOVER_BLOCKING_STATES.includes(item.state));
+  const now = input.now ?? Date.now();
+  return !input.items.some((item) => {
+    if (!CUTOVER_BLOCKING_STATES.includes(item.state)) return false;
+    // Only `review` is time-bounded. `planning` and `running` are work in flight however
+    // long they have taken, and a restart under either loses it.
+    if (item.state !== 'review') return true;
+    return now - item.updatedAt < REVIEW_BLOCKS_CUTOVER_MS;
+  });
 }
 
 export interface CutoverCheckoutGit {

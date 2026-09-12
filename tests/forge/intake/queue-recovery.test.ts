@@ -22,6 +22,7 @@ import {
   type QueuePlanner, type QueueRuntimeDeps,
 } from '../../../src/forge/intake/queue.js';
 import { QueueStore } from '../../../src/forge/intake/queueStore.js';
+import { conclusionOf } from '../../../src/forge/council/gh.js';
 
 function tempStore(): QueueStore {
   const dir = mkdtempSync(join(tmpdir(), 'queue-recovery-'));
@@ -94,19 +95,25 @@ describe('item 1: a parked item recovers on its own when the park reason was tra
   it('advances an item parked on checks that have since gone green, with no human call', async () => {
     const store = tempStore();
     const item = parkedItem(store, 'checks never settled after 20 polls');
-    const { deps, events } = buildDeps(store, { checksConclusion: async () => 'SUCCESS' });
+    // The value the SHIPPED reader produces, from the shipped function that produces it:
+    // the wiring returns `REAL_GH.viewPr(...).checks.conclusion`, which is `conclusionOf`'s
+    // own answer. A literal chosen here proved nothing -- the first cut of this test fed
+    // 'SUCCESS' and the recovery compared against 'SUCCESS', while the real wiring has
+    // always answered 'success', so the whole branch was dead in production.
+    const green = conclusionOf([{ conclusion: 'SUCCESS' }]);
+    const { deps, events } = buildDeps(store, { checksConclusion: async () => green });
 
     await runQueueTick(deps, store.all());
 
     expect(store.get(item.id)!.state).not.toBe('parked');
     const row = events.find((e) => e['event'] === 'queue.recovered');
-    expect(row).toMatchObject({ itemId: item.id, reRead: 'checks', found: 'SUCCESS' });
+    expect(row).toMatchObject({ itemId: item.id, reRead: 'checks', found: green });
   });
 
   it('leaves an item parked on a merge conflict alone, and its row says why', async () => {
     const store = tempStore();
     const item = parkedItem(store, 'conflicts with develop: the branch could not be replayed on its base');
-    const { deps, events } = buildDeps(store, { checksConclusion: async () => 'SUCCESS' });
+    const { deps, events } = buildDeps(store, { checksConclusion: async () => conclusionOf([{ conclusion: 'SUCCESS' }]) });
 
     await runQueueTick(deps, store.all());
 
@@ -116,17 +123,106 @@ describe('item 1: a parked item recovers on its own when the park reason was tra
     expect(String(row!['why'])).toMatch(/conflict/i);
   });
 
-  it('holds an item whose checks are still failing, and stops after a bounded number of attempts', async () => {
+  it('holds an item whose checks are still failing, journalling the hold once per distinct reading', async () => {
     const store = tempStore();
     const item = parkedItem(store, 'checks never settled after 20 polls');
-    const { deps, events } = buildDeps(store, { checksConclusion: async () => 'FAILURE' });
+    const red = conclusionOf([{ conclusion: 'FAILURE' }]);
+    const { deps, events } = buildDeps(store, { checksConclusion: async () => red });
 
     for (let tick = 0; tick < 5; tick += 1) await runQueueTick(deps, store.all());
 
     expect(store.get(item.id)!.state).toBe('parked');
     const held = events.filter((e) => e['event'] === 'queue.recovery-held');
-    expect(held).toHaveLength(3);
-    expect(held[0]).toMatchObject({ itemId: item.id, reRead: 'checks', found: 'FAILURE' });
+    expect(held).toHaveLength(1);
+    expect(held[0]).toMatchObject({ itemId: item.id, reRead: 'checks', found: red });
+  });
+
+  it('still recovers after holding far longer than the recovery budget', async () => {
+    // The tick runs every 15 seconds by default, so a budget spent on "not yet" answers
+    // is 45 seconds of wall clock. A worker that outlived its own retry click by a minute
+    // used to lose that retry for good.
+    const store = tempStore();
+    const item = parkedItem(store, 'retry refused: abc-1 is still running as pid 4242', { runKey: 'abc-1' });
+    let pid: number | undefined = 4242;
+    const { deps, events } = buildDeps(store, { runPid: () => pid });
+
+    for (let tick = 0; tick < 20; tick += 1) await runQueueTick(deps, store.all());
+    expect(store.get(item.id)!.state).toBe('parked');
+
+    pid = undefined;
+    await runQueueTick(deps, store.all());
+
+    expect(store.get(item.id)!.state).not.toBe('parked');
+    expect(events.filter((e) => e['event'] === 'queue.recovery-held')).toHaveLength(1);
+  });
+
+  it('gives up after three RECOVERIES of one item, and says so rather than going quiet', async () => {
+    const store = tempStore();
+    const item = parkedItem(store, 'stopped', { runKey: 'abc-1' });
+    const { deps, events } = buildDeps(store, { runPid: () => undefined });
+
+    for (let round = 0; round < 5; round += 1) {
+      store.append({ id: item.id, at: 1_000, state: 'parked', reason: 'stopped', updatedAt: 1_000 });
+      await runQueueTick(deps, store.all());
+    }
+
+    expect(events.filter((e) => e['event'] === 'queue.recovered')).toHaveLength(3);
+    const declined = events.filter((e) => e['event'] === 'queue.recovery-declined');
+    expect(declined).toHaveLength(1);
+    expect(String(declined[0]!['why'])).toMatch(/recovered/i);
+    expect(store.get(item.id)!.state).toBe('parked');
+  });
+
+  it('recovers the finished-with-no-PR park the gate hop writes', async () => {
+    const store = tempStore();
+    const reason = 'run finished done but no PR was found in its evidence or on its branch';
+    const item = parkedItem(store, reason, { runKey: 'abc-1' });
+    const { deps } = buildDeps(store, { runPid: () => undefined });
+
+    await runQueueTick(deps, store.all());
+
+    expect(store.get(item.id)!.state).not.toBe('parked');
+  });
+
+  it('leaves an exhausted run parked: a budget ceiling is not a stale reading', async () => {
+    const store = tempStore();
+    const item = parkedItem(store, 'exhausted', { runKey: 'abc-1' });
+    const { deps } = buildDeps(store, { runPid: () => undefined });
+
+    await runQueueTick(deps, store.all());
+
+    expect(store.get(item.id)!.state).toBe('parked');
+  });
+
+  it('recovers no more items in one tick than the width leaves room for', async () => {
+    const store = tempStore();
+    const ids: string[] = [];
+    for (let n = 0; n < 4; n += 1) {
+      const row = addTicketItem(store, `ABC-${n + 2}`, 1_000);
+      store.append({
+        id: row.id, at: 1_000, updatedAt: 1_000, state: 'parked', reason: 'stopped',
+        repo: 'owner/name', runKey: `run-${n}`, briefPath: 'C:/briefs/x.md', ticket: `ABC-${n + 2}`,
+      });
+      ids.push(row.id);
+    }
+    const { deps } = buildDeps(store, { runPid: () => undefined, maxInFlight: () => 2 });
+
+    await runQueueTick(deps, store.all());
+
+    const moved = ids.filter((id) => store.get(id)!.state !== 'parked');
+    expect(moved).toHaveLength(2);
+  });
+
+  it('journals a second decline when a re-parked item lands on a different unrecoverable reason', async () => {
+    const store = tempStore();
+    const item = parkedItem(store, 'unrouted');
+    const { deps, events } = buildDeps(store);
+
+    await runQueueTick(deps, store.all());
+    store.append({ id: item.id, at: 2_000, state: 'parked', reason: 'overlaps Q-other on src/a.ts', updatedAt: 2_000 });
+    await runQueueTick(deps, store.all());
+
+    expect(events.filter((e) => e['event'] === 'queue.recovery-declined')).toHaveLength(2);
   });
 
   it('holds when no checks reader is wired rather than guessing the checks are green', async () => {

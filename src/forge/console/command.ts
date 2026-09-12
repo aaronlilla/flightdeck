@@ -841,7 +841,7 @@ export class ConsoleWrites {
   /** Item 4: why a confirm found nothing. A token that was real and has aged out says so
    *  and names when it was minted, so the operator knows to start the action again
    *  rather than reading a bare "nothing pending" as the console losing their click. */
-  private confirmRefusal(token: string): string {
+  confirmRefusal(token: string): string {
     const at = this.durableConfirms.expiredAt(token, Date.now());
     if (at === undefined) return `nothing pending for ${token}`;
     const hours = CONFIRM_TTL_MS / 3_600_000;
@@ -1005,7 +1005,10 @@ export class ConsoleWrites {
 
       case 'confirm': {
         const pending = this.takeConfirm(intent.token);
-        if (!pending) return [refusalCard(source, `nothing pending for ${intent.token}`)];
+        // Item 4: the same sentence the clicked route gives. The typed path is where the
+        // live `nothing pending for <uuid>` answers came from, so fixing only the route
+        // would have left the reported symptom in place.
+        if (!pending) return [refusalCard(source, this.confirmRefusal(intent.token))];
         return pending.run();
       }
 

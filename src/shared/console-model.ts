@@ -804,15 +804,18 @@ export interface QueueItem {
    *  Once it reaches `PENDING_CHECKS_POLL_CAP` (`intake/queue.ts`), the item parks instead
    *  of retrying again, so a check that never finishes cannot hold an item forever. */
   pendingGatePolls?: number;
-  /** Item 1 (2026-09-11): how many times the tick has re-read this item's park reason and
-   *  decided. Counts held and successful attempts alike, capped at `PARK_RECOVERY_CAP`,
-   *  so a park nothing can clear stops costing journal rows instead of writing one per
-   *  tick forever. Absent means never re-read. */
+  /** Item 1 (2026-09-11): how many times the tick has handed this item back to the
+   *  worker, capped at `PARK_RECOVERY_CAP`. Successful recoveries only -- a "not yet"
+   *  reading costs nothing, because the tick runs every 15 seconds and a budget spent on
+   *  those would abandon the item inside a minute. Absent means never recovered. */
   recoveryAttempts?: number;
-  /** Item 1: set once when the park reason is one no machine can clear (a conflict, an
-   *  unrouted ticket, a backend hand-off). It marks the row as already judged, so the
-   *  reason is journalled once rather than every tick. */
-  recoveryDeclined?: boolean;
+  /** Item 1: the last reading a recovery held on, so the same answer every 15 seconds
+   *  writes one journal row rather than one per tick. Cleared on a recovery. */
+  recoveryHeldOn?: string | null;
+  /** Item 1: the park reason that was last judged a person's call, so the decline is
+   *  journalled once per reason rather than every tick -- and a second, different
+   *  unrecoverable reason still gets its own row. */
+  recoveryDeclinedFor?: string | null;
   /** The Queue view's two columns (2026-09-09, `Flightdeck Console.dc.html` 1c), filled by
    *  `GET /queue` at read time like `title`: why this item sits where it does in the
    *  order, and when it starts, in words. Absent on a response older than this field. */
