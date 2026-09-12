@@ -267,3 +267,22 @@ describe('startEnforcementTick', () => {
     handle.stop();
   });
 });
+
+// Found by code review, 2026-09-12: the direct-author branch survived a re-raise, so an
+// operator who answered a reopened ask by hand was credited to the rule that answered
+// the previous round of it.
+describe('a reopened ask starts with no author', () => {
+  let dir: string;
+
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'reopen-')); });
+
+  it('does not credit the previous round\'s rule for a fresh operator answer', () => {
+    const inbox = new Inbox(dir);
+    inbox.raise({ run: 'item:Q-r1', ticket: 'BBZ-9', question: 'which env?' });
+    const key = inbox.open()[0]!.key;
+    inbox.answer(key, 'skip nulls', 'rule:r1');
+    inbox.raise({ run: 'item:Q-r1', ticket: 'BBZ-9', question: 'which env?' });
+    inbox.answer(key, 'production');
+    expect(answeredByOf(inbox.entry(key)!)).toBe('the operator');
+  });
+});

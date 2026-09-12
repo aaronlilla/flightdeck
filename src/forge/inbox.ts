@@ -247,6 +247,17 @@ export class Inbox {
       };
       delete entry.answer;
       delete entry.answeredAt;
+      // Found by code review, 2026-09-12: a direct author (an auto-answer rule) survived
+      // the reopen, so the next answer -- typed by the operator, with no author of its
+      // own -- was credited to the rule. That is the same mis-attribution this branch's
+      // change exists to remove, pointing the other way. The reply is dropped with it:
+      // a reopened ask is a fresh question, and a teammate's reply to the old one is not
+      // an answer to it. The console reads `answeredBy` to decide a question is already
+      // answered (`console/lanes.ts#questionFor`), so a stale one also hid the options
+      // on a question nobody had answered.
+      delete entry.answeredBy;
+      delete entry.reply;
+      delete entry.repliedAt;
     } else {
       entry = {
         key,
