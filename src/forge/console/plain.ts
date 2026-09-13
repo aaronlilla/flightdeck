@@ -8,7 +8,7 @@
  * clock time) or a full clause a person can act on.
  */
 import type { Lane, NarrationFacts, QueueItem } from '../../shared/console-model.js';
-import { clock, humanizeParkReason } from '../../shared/humanize.js';
+import { clock, humanizeParkReason, oneSentence } from '../../shared/humanize.js';
 
 export interface PlainContext {
   now: number;
@@ -138,9 +138,13 @@ export function plainStatus(lane: Lane, context: PlainContext): string {
       // (Aaron, 2026-09-12: no jargon in anything on screen).
       const reason = lane.reason ? humanizeParkReason(lane.reason) : 'the reason has not been recorded';
       const prefix = lane.kind === 'chain' ? 'Blocked since' : 'Stuck since';
-      // The reason may end its own sentence. Adding a second full stop on top is how the
-      // board came to carry "... verification steps.." (Aaron, 2026-09-13).
-      return `${prefix} ${day}: ${endOnce(reason)}`;
+      // Capped on the WHOLE line, not on the reason alone. Capping the reason and then
+      // adding "Stuck since today: " in front of it put 137 characters on a card sized
+      // for 120 -- the limit has to be measured where the text actually lands.
+      //
+      // The reason may also end its own sentence, and adding a second full stop on top is
+      // how the board came to carry "... verification steps.." (Aaron, 2026-09-13).
+      return endOnce(oneSentence(`${prefix} ${day}: ${reason}`));
     }
     case 'killed': {
       const reason = lane.reason ? ` (${lane.reason})` : '';
