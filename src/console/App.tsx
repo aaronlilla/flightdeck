@@ -30,6 +30,7 @@ import { isSliceEvent, type SliceName } from '../shared/console-events.js';
 import type { Message } from '../shared/console-model.js';
 import { commandEcho } from '../shared/humanize.js';
 import { EventStream, type EventStreamOptions } from './ws.js';
+import { runForScope } from './sync-text.js';
 
 const POLL_MS = 5000;
 
@@ -504,7 +505,7 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
           <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
             {state.view === 'board' ? (
               <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-                <SyncCard scope="lanes" run={state.sync?.runs.lanes ?? null} busy={syncBusy('lanes')} onResync={onResync} />
+                <SyncCard scope="lanes" run={runForScope(state.sync?.runs ?? {}, 'lanes')} busy={syncBusy('lanes')} onResync={onResync} />
                 <div style={{ flex: 1, minWidth: 0, position: 'relative', display: 'flex' }}>
                   <LanesGrid lanes={state.lanes} blockers={blockers} queue={queue} now={state.now} onOpen={openLane} onCommand={onBoardCommand} onLaneCommand={onLaneCommand} onQueue={() => dispatch({ type: 'view', view: 'queue' })} />
                   {sheet?.type === 'ticket' && sheetLane ? (
@@ -517,28 +518,28 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
             ) : null}
             {state.view === 'blockers' ? (
               <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-                <SyncCard scope="inbox" run={state.sync?.runs.inbox ?? null} busy={syncBusy('inbox')} onResync={onResync} />
+                <SyncCard scope="inbox" run={runForScope(state.sync?.runs ?? {}, 'inbox')} busy={syncBusy('inbox')} onResync={onResync} />
                 <BlockersView blockers={blockers} chains={state.blockers?.chains ?? []} laneTitle={(id) => state.lanes.find((l) => l.id === id)?.title ?? null} onOpenSettings={() => dispatch({ type: 'view', view: 'settings' })} onSendToLane={onSendLane} verbose={state.verbose} />
               </div>
             ) : null}
             {state.view === 'queue' ? (
               <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-                <SyncCard scope="queue" run={state.sync?.runs.queue ?? null} busy={syncBusy('queue')} onResync={onResync} />
+                <SyncCard scope="queue" run={runForScope(state.sync?.runs ?? {}, 'queue')} busy={syncBusy('queue')} onResync={onResync} />
                 <QueueView items={state.queue} paused={state.queuePaused} pauseReason={state.queuePauseReason} maxInFlight={state.queueMaxInFlight} working={working} verbose={state.verbose} />
               </div>
             ) : null}
             {state.view === 'review' ? <FlightReview proposals={state.proposals} verbose={state.verbose} now={state.now} tokensToday={state.caps?.tokensToday} dailyTokens={state.caps?.dailyTokens} /> : null}
             {state.view === 'machine' ? (
               <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-                <SyncCard scope="machine" run={state.sync?.runs.machine ?? null} busy={syncBusy('machine')} onResync={onResync} />
-                <SyncCard scope="sessions" run={state.sync?.runs.sessions ?? null} busy={syncBusy('sessions')} onResync={onResync} />
+                <SyncCard scope="machine" run={runForScope(state.sync?.runs ?? {}, 'machine')} busy={syncBusy('machine')} onResync={onResync} />
+                <SyncCard scope="sessions" run={runForScope(state.sync?.runs ?? {}, 'sessions')} busy={syncBusy('sessions')} onResync={onResync} />
                 <MachineView machine={state.machine} verbose={state.verbose} now={state.now} />
               </div>
             ) : null}
             {state.view === 'settings' ? (
               <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
                 <Settings integrations={state.integrations} verbose={state.verbose} accounts={state.accounts} onAccountsChanged={() => void refreshSlice('accounts')} caps={state.caps} now={state.now} maxInFlight={state.queueMaxInFlight} theme={state.theme} onTheme={(theme) => dispatch({ type: 'theme', theme })} />
-                <SyncCard scope="accounts" run={state.sync?.runs.accounts ?? null} busy={syncBusy('accounts')} onResync={onResync} />
+                <SyncCard scope="accounts" run={runForScope(state.sync?.runs ?? {}, 'accounts')} busy={syncBusy('accounts')} onResync={onResync} />
               </div>
             ) : null}
             <ConductorRail

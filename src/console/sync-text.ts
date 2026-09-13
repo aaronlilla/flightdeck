@@ -1,9 +1,29 @@
+
 /**
  * Pure templates for the re-sync surfaces (R-71): the header watcher line, one row per
  * sync stage, and the card's run summary. No narration call, no `?verbose` register --
  * everything here renders straight from the value it is given.
  */
 import type { SyncRunRecord, SyncStage, WatcherStatus } from '../shared/sync-contract.js';
+
+/**
+ * The run a scope's card reports on.
+ *
+ * A full sync is the one that covers every scope, and every card used to read only the
+ * run filed under its own name. So a completed full sync -- nine stages, all ok -- left
+ * every card on the board reading "never synced", with the record of it sitting in the
+ * same response (Aaron, 2026-09-13).
+ *
+ * The scope's own run wins whenever there is one, however old: it is the more specific
+ * fact. Otherwise the full run answers, including when it failed -- a failed full sync is
+ * still the newest thing that touched this scope, and reporting it as "never synced"
+ * would hide a failure behind a blank.
+ */
+export function runForScope(
+  runs: Partial<Record<string, SyncRunRecord | null>>, scope: string,
+): SyncRunRecord | null {
+  return runs[scope] ?? runs['full'] ?? null;
+}
 
 function hhmm(t: number): string {
   const d = new Date(t);
