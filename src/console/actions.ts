@@ -116,6 +116,22 @@ export const ACTIONS = {
     ok: (result) => result.started,
     link: ([id]) => laneLink(id),
   }),
+  /**
+   * The sheet's Hand on button: comment, assign and transition in one press.
+   *
+   * The receipt names every step rather than reporting one verdict for three writes.
+   * Two of three landing is a different situation from none and from all, and a line
+   * saying only "handed on" would be the board lying in the one place somebody is
+   * relying on it. A refusal attempted nothing, so it says so instead of listing steps.
+   */
+  handOffTicket: spec<[string, string, string], Awaited<ReturnType<typeof api.handOffTicket>>>({
+    id: 'handOffTicket', label: 'Hand on', reversible: false, effect: 'lane',
+    call: ([key, to, comment]) => api.handOffTicket(key, to, comment),
+    text: (result) => (result.refused
+      ? `nothing written: ${result.refused}`
+      : result.steps.map((step) => `${step.name}: ${step.detail}`).join('; ')),
+    ok: (result) => result.ok,
+  }),
   postRetireFinished: spec<[], Gated<api.RetireFinishedResult>>({
     id: 'postRetireFinished', label: 'Clean up', reversible: false, effect: 'lane',
     call: (_args, confirm) => api.postRetireFinished(confirm),

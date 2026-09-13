@@ -45,6 +45,7 @@ import {
   compactRun, killRun, mergeRun, pauseRun, reauditRun, reopenRun, restoreRunCap,
   resumeRun, setRunCap, verifyRun, type RunActionsDeps,
 } from './run-actions.js';
+import { handOffTicket, handoffDepsFromEnv, type TicketHandoffDeps } from './ticket-handoff.js';
 import { capsOverridesPath, effectiveHardTokens, readCapsOverrides } from './caps-read.js';
 import { restoreCaps, writeCaps, type CapsWriteDeps } from './caps-write.js';
 import { IntegrationsRegistry, type IntegrationsDeps } from './integrations.js';
@@ -334,6 +335,11 @@ export interface ConsoleWritesDeps {
    *  sentence instead of failing somewhere quieter. */
   slackConfig?: () => SlackConfig | undefined;
   postQuestion?: typeof postQuestion;
+  /** `POST /ticket/:key/handoff`: the Jira write client and the destinations it knows,
+   *  read fresh on every press so credentials exported after the console started still
+   *  work. Injected so no specimen reaches Jira, and a console with nothing configured
+   *  refuses with a sentence rather than writing somewhere quieter. */
+  handoffDeps?: () => TicketHandoffDeps;
 }
 
 function readBody<T>(request: IncomingMessage): Promise<T | null> {
@@ -1501,6 +1507,27 @@ export class ConsoleWrites {
     if ((match = path.match(/^\/integrations\/([^/]+)\/reconnect$/)) && method === 'POST') {
       if (!this.deps.authorized(request, response)) return true;
       respond(response, 200, await this.integrations.reconnect(decodeURIComponent(match[1]!)));
+      return true;
+    }
+
+    // Commenting, assigning and moving a ticket, as one press. Everything needed to do
+    // it has existed since `intake/jiraHandoff.ts`; nothing could ask for it from a
+    // screen, so every handoff was a terminal job (Aaron, 2026-09-13).
+    if ((match = path.match(/^\/ticket\/([^/]+)\/handoff$/)) && method === 'POST') {
+      if (!this.deps.authorized(request, response)) return true;
+      const key = decodeURIComponent(match[1]!);
+      const body = await readBody<{ to?: unknown; comment?: unknown }>(request);
+      const deps = this.deps.handoffDeps?.() ?? handoffDepsFromEnv();
+      const result = await handOffTicket(
+        key, String(body?.['to'] ?? ''), String(body?.['comment'] ?? ''), deps,
+      );
+      // A refusal attempted nothing, so it is a request problem, not a partial write --
+      // and the two must not answer alike, or a caller cannot tell "no" from "half".
+      // Missing credentials is the machine's problem rather than the caller's (503).
+      const status = result.refused
+        ? (deps.client ? 400 : 503)
+        : 200;
+      respond(response, status, result);
       return true;
     }
 

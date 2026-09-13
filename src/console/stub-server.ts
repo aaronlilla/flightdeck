@@ -19,7 +19,7 @@ import { orderChains } from '../forge/console/blockers.js';
 import { RAIL_TYPES } from '../shared/rail-kinds.js';
 import type {
   ActionResult, Blocker, Caps, Integration, JournalEntry, Lane, LaneSummary, Message, QueueAddRequest,
-  QueueAddResponse, QueueItem, QueueSource, ReauditResponse, Rule,
+  QueueAddResponse, QueueItem, QueueSource, ReauditResponse, Rule, TicketHandoffResponse,
 } from '../shared/console-model.js';
 import { fmtTokens } from '../shared/format-tokens.js';
 import { commandEcho, shortenShas } from '../shared/humanize.js';
@@ -1313,6 +1313,47 @@ export function createStubServer() {
         // for the real server's fresh `gh pr view` + drift read: pending checks clear.
         if (lane.pr && lane.pr.checks === 'pending') lane.pr = { ...lane.pr, checks: 'success' };
         json(response, 200, stubSummary(lane, id));
+        return;
+      }
+      // `POST /ticket/:key/handoff`. The stub writes to no Jira; what it stands in for
+      // is the shape a caller has to be able to tell apart -- wrote nothing because the
+      // request was wrong, wrote nothing because nothing is configured, wrote some of
+      // it. A ticket key ending `-503` asks for the unconfigured case and one ending
+      // `-207` for a partial write, so both can be driven in a browser without taking
+      // the console's credentials away.
+      const handoffMatch = /^\/ticket\/([^/]+)\/handoff$/.exec(urlPath);
+      if (handoffMatch && method === 'POST') {
+        const key = decodeURIComponent(handoffMatch[1] as string);
+        const sent = (await readJson<{ to?: string; comment?: string }>(request)) ?? {};
+        const to = String(sent.to ?? '');
+        const comment = String(sent.comment ?? '').trim();
+        const people: Record<string, string> = { qa: 'QA', backend: 'the backend lead', me: 'me' };
+        const refuse = (reason: string, status: number): void => {
+          const out: TicketHandoffResponse = { ok: false, steps: [], refused: reason };
+          json(response, status, out);
+        };
+        if (key.endsWith('-503')) {
+          refuse('no jira credentials are wired into this console, so nothing was written', 503);
+          return;
+        }
+        if (!comment) {
+          refuse('a handoff carries a comment saying what the next person is looking at', 400);
+          return;
+        }
+        if (!people[to]) {
+          refuse(`"${to}" is not somebody this console can hand to; it knows: ${Object.keys(people).join(', ')}`, 400);
+          return;
+        }
+        const partial = key.endsWith('-207');
+        const steps: TicketHandoffResponse['steps'] = [
+          { name: 'comment', ok: true, detail: 'commented' },
+          { name: 'assign', ok: true, detail: `assigned to ${people[to] as string}` },
+          partial
+            ? { name: 'transition', ok: false, detail: 'transition 31 is not available' }
+            : { name: 'transition', ok: true, detail: 'moved' },
+        ];
+        const out: TicketHandoffResponse = { ok: steps.every((step) => step.ok), steps, refused: '' };
+        json(response, 200, out);
         return;
       }
       const runReauditMatch = /^\/run\/([^/]+)\/reaudit$/.exec(urlPath);
