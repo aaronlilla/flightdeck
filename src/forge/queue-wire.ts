@@ -561,6 +561,16 @@ export function queueMergeDeps(deps: ForgeDeps, store: QueueRuntimeDeps['store']
     },
     clock: () => Date.now(),
     store,
+    // The squash pushes a new commit to the base, so GitHub never sees the branch as
+    // merged. Without this the pull request stays open, a draft, on a board that says the
+    // ticket is done.
+    closePr: async ({ repo, pr, comment }) => {
+      if (!REAL_GH.closePr) return { ok: false, reason: 'this gh writer cannot close a pull request' };
+      const result = await REAL_GH.closePr(repo, pr, comment);
+      return result.returncode === 0
+        ? { ok: true }
+        : { ok: false, reason: result.stderr.slice(0, 300) };
+    },
     ...(chainEnv ? { postMergeVerify: queuePostMergeVerify(chainEnv), gitMerge: queueGitMerge(chainEnv) } : {}),
   };
 }

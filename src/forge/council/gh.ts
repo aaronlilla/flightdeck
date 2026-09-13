@@ -66,6 +66,13 @@ export interface GhWriter {
   /** A.4: `gh pr edit --add-reviewer`, for the backend handoff -- requesting the backend
    *  owner as a reviewer on a draft PR this queue will never merge itself. */
   requestReviewer(repo: string, pr: number, reviewer: string): Promise<GhWriteResult>;
+  /** `gh pr close`, for a pull request whose content has already landed on the base by
+   *  another route. A squash pushed straight to the base writes a NEW commit, so GitHub
+   *  never recognises the branch as merged and leaves the pull request open for ever.
+   *
+   *  Absent on a writer written before this existed, and such a caller then leaves the
+   *  pull request exactly as it did. */
+  closePr?(repo: string, pr: number, comment: string): Promise<GhWriteResult>;
 }
 
 /** One row per refusal, for whatever caller wants to surface it (the queue journal). */
@@ -203,6 +210,13 @@ export const REAL_GH: GhReader & GhWriter = {
     } catch {
       return true;
     }
+  },
+  async closePr(repo, pr, comment) {
+    const result = await execRun({
+      argv: ['gh', 'pr', 'close', String(pr), '--repo', repo, '--comment', comment],
+      cwd: process.cwd(), owner: 'council', cls: 'script',
+    });
+    return { returncode: result.returncode ?? -1, stderr: result.tail };
   },
   async viewPr(repo, pr) {
     const view = await execRun({
