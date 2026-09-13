@@ -114,20 +114,53 @@ function capitalizeFirst(text: string): string {
  *  boundary and capitalised, so it reads as a title rather than a quoted line. */
 export function firstBodyParagraph(brief: string): string | null {
   const lines = brief.split(/\r?\n/);
-  const headingIndex = lines.findIndex((line) => /^#[ \t]+/.test(line));
-  const rest = headingIndex >= 0 ? lines.slice(headingIndex + 1) : lines;
+  // Past the brief's own opening heading, when it has one. Searching for the first `# `
+  // anywhere instead walked into the standing notes every brief carries under
+  // `## Routines`, and answered with a sentence out of one of them.
+  const opens = lines.findIndex((line) => line.trim().length > 0);
+  const openingIsHeading = opens >= 0 && /^#[ \t]/.test(lines[opens]!.trim());
+  const rest = openingIsHeading ? lines.slice(opens + 1) : lines;
   for (const rawLine of rest) {
     const line = rawLine.trim();
-    if (!line || /^#{1,6}\s/.test(line)) continue;
+    if (line.length === 0) continue;
+    // A section heading ends the brief's own words. Anything under it was appended, and
+    // reading on would answer with somebody else's sentence.
+    if (/^#{1,6}\s/.test(line)) return null;
     return capitalizeFirst(truncateAtWordBoundary(line, 120));
   }
   return null;
 }
 
+/**
+ * The brief's own opening heading, or nothing.
+ *
+ * "Or nothing" is the whole of it. The title used to be the first `# ` line anywhere in
+ * the file, and every brief has standing notes appended under `## Routines`, each of
+ * which carries its own `# ` heading. A brief written as a plain paragraph therefore took
+ * its name from the first note below it: a lane about queue row titles went onto the
+ * board reading "An emulator cannot see a bottom-chrome bug" (measured on the live
+ * console, 2026-09-12). Nothing about that title was true, and nothing on the screen
+ * said so.
+ *
+ * So a heading names the brief only when it comes before the brief's own words. Anything
+ * after them belongs to a section, and a section's heading is not the brief's name.
+ */
+function openingHeading(brief: string): string | null {
+  for (const rawLine of brief.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line.length === 0) continue;
+    // `# ` opens a heading. `##` and deeper open a section, and a section reached before
+    // any body text still means the brief itself was never named.
+    if (line.startsWith('# ') || line.startsWith('#\t')) return line.slice(2).trim();
+    return null;
+  }
+  return null;
+}
+
 export function titleFromHeading(brief: string, ticket: string | null): string | null {
-  const match = /^#[ \t]+(.+)$/m.exec(brief);
-  if (!match) return null;
-  let text = match[1]!.trim();
+  const heading = openingHeading(brief);
+  if (heading === null) return null;
+  let text = heading;
   text = text.replace(/^self finding:\s*/i, '');
   text = text.replace(/^goal\s*[:\-]\s*/i, '');
   if (ticket) {
