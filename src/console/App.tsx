@@ -391,6 +391,9 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
       case 'unretire': void runCatalogAction(ACTIONS.unretireRun, [id], id, id); break;
       case 'recheck': void runCatalogAction(ACTIONS.recheckRun, [id], id, id); break;
       case 'kill': void runCatalogAction(ACTIONS.killRun, [id, 'killed from the board'], id, id); break;
+      case 'pause': void runCatalogAction(ACTIONS.pauseRun, [id], id, id); break;
+      case 'retire': void runCatalogAction(ACTIONS.retireRun, [id], id, id); break;
+      case 'reaudit': void runCatalogAction(ACTIONS.reauditRun, [id], id, id); break;
       default: break;
     }
   }, [state.lanes, blockers, openLane, runCatalogAction, onRailSend, labelFor]);

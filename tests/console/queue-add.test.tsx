@@ -11,14 +11,20 @@
  */
 import type { JSX, ReactNode } from 'react';
 import { useReducer } from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const added = vi.fn(async () => ({ ok: true, items: [] }));
+const added = vi.fn(async (_body: unknown) => ({ ok: true, items: [] }));
+const removed = vi.fn(async (_id: string, _confirm?: string) => ({ ok: true, jid: null, message: 'removed', undoable: false }));
+const paused = vi.fn(async () => ({ ok: true, jid: null, message: 'paused', undoable: true }));
+const resumed = vi.fn(async () => ({ ok: true, jid: null, message: 'resumed', undoable: true }));
 
 vi.mock('../../src/console/api.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/console/api.js')>()),
   addToQueue: (body: unknown) => added(body),
+  removeQueueItem: (id: string, confirm?: string) => removed(id, confirm),
+  pauseQueue: () => paused(),
+  resumeQueue: () => resumed(),
 }));
 
 import { QueueView } from '../../src/console/components/QueueView.js';
@@ -40,7 +46,51 @@ function view(): void {
   render(<Wrapper><QueueView items={[]} paused={false} maxInFlight={4} working={0} /></Wrapper>);
 }
 
-beforeEach(() => { added.mockClear(); });
+beforeEach(() => { added.mockClear(); removed.mockClear(); paused.mockClear(); resumed.mockClear(); });
+
+const waiting = {
+  id: 'q-1', source: 'ticket' as const, state: 'queued' as const, ticket: 'BBZ-1',
+  title: 'A real ticket', addedAt: 1, whyNext: 'next up', startsIn: 'now',
+};
+
+function viewWith(items: unknown[], isPaused = false): void {
+  render(<Wrapper><QueueView items={items as never} paused={isPaused} maxInFlight={4} working={0} /></Wrapper>);
+}
+
+describe('taking a waiting item back out of the queue', () => {
+  it('offers a Remove on every waiting row', () => {
+    viewWith([waiting]);
+    expect(screen.getByTestId('queue-remove-q-1')).toBeTruthy();
+  });
+
+  it('asks before it removes, because a remove cannot be undone', async () => {
+    viewWith([waiting]);
+    const button = screen.getByTestId('queue-remove-q-1');
+    expect(button.textContent).toBe('Remove');
+    fireEvent.click(button);
+    await waitFor(() => { expect(removed).toHaveBeenCalledWith('q-1', undefined); });
+  });
+});
+
+describe('stopping and starting the queue', () => {
+  it('says what the click will do, not what is true now', () => {
+    viewWith([waiting], false);
+    expect(screen.getByTestId('queue-pause-toggle').textContent).toBe('Pause the queue');
+    cleanup();
+    viewWith([waiting], true);
+    expect(screen.getByTestId('queue-pause-toggle').textContent).toBe('Start the queue');
+  });
+
+  it('pauses a running queue and starts a paused one', async () => {
+    viewWith([waiting], false);
+    fireEvent.click(screen.getByTestId('queue-pause-toggle'));
+    await waitFor(() => { expect(paused).toHaveBeenCalled(); });
+    cleanup();
+    viewWith([waiting], true);
+    fireEvent.click(screen.getByTestId('queue-pause-toggle'));
+    await waitFor(() => { expect(resumed).toHaveBeenCalled(); });
+  });
+});
 
 describe('putting work into the queue from the queue screen', () => {
   it('is there at all', () => {

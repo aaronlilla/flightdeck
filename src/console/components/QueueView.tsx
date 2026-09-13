@@ -100,7 +100,7 @@ function AddToQueue(): JSX.Element {
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
         <textarea
           id="queue-add-input" data-testid="queue-add-input" rows={2}
-          placeholder="A ticket key, a Jira search, or what needs doing in your own words"
+          placeholder="Ticket key, Jira search, or a brief"
           value={text}
           onChange={(event) => { setText(event.target.value); }}
           onKeyDown={(event) => {
@@ -108,7 +108,7 @@ function AddToQueue(): JSX.Element {
             // wants its own paragraphs still gets them on Shift+Enter.
             if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void submit(); }
           }}
-          style={{ flex: '1 1 320px', minWidth: 0, resize: 'vertical', font: 'inherit', fontSize: 'var(--fs-body)', padding: '8px 10px', border: '1px solid var(--line)', background: 'var(--bg2)', color: 'var(--ink)' }}
+          style={{ flex: '1 1 320px', minWidth: 0, resize: 'vertical', font: 'inherit', fontSize: 'var(--fs-body)', padding: '8px 10px', border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--ink)' }}
         />
         <button
           type="button" className="btn primary" data-testid="queue-add-submit"
@@ -126,6 +126,66 @@ function AddToQueue(): JSX.Element {
         <span role="alert" style={{ fontSize: 'var(--fs-meta)', color: 'var(--warn)' }}>{error}</span>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * One row of what is still waiting, with the one thing a person does to a waiting item
+ * that is not waiting for it: take it back out.
+ *
+ * There was no way to. An item added by mistake, or overtaken by events, sat there until
+ * it ran -- the server has taken a remove since the queue existed and no screen offered
+ * it. Removing is not reversible, so it asks first, the same two-step every other
+ * irreversible control here uses.
+ */
+function NextRow({ item, index, paused, verbose }: {
+  item: QueueItem; index: number; paused: boolean; verbose?: boolean;
+}): JSX.Element {
+  const remove = useAction(ACTIONS.removeQueueItem, item.id);
+  const asking = remove.result?.kind === 'confirm';
+  return (
+    <div className="queue-row" data-testid={`queue-row-${item.id}`} style={{ display: 'grid', gridTemplateColumns: '44px minmax(0,1fr) minmax(0,1fr) 150px 100px', gap: 18, alignItems: 'baseline', padding: '14px 16px', borderBottom: '1px solid var(--line)' }}>
+      <span className="hd" style={{ fontSize: 'var(--fs-num)', color: 'var(--ink3)', fontVariantNumeric: 'tabular-nums' }}>{index + 1}</span>
+      <span>{item.ticket ? <WhatIsHover refText={item.ticket}><span className="key" style={{ marginRight: 10 }}>{item.ticket}</span></WhatIsHover> : null}<span className="hd" data-testid="queue-card-title" style={{ fontSize: 'var(--fs-rowhead)' }}><NarratedLine bag={item.narration} field="title" glance={titleOf(item)} testid="queue-title" {...(verbose === undefined ? {} : { verbose })} /></span></span>
+      <span style={{ color: 'var(--ink2)' }}><NarratedLine bag={item.narration} field="whyNext" glance={item.whyNext ?? ''} testid="queue-why" {...(verbose === undefined ? {} : { verbose })} /></span>
+      <span style={{ color: index === 0 && !paused ? 'var(--acc)' : 'var(--ink)' }}><NarratedLine bag={item.narration} field="startsIn" glance={item.startsIn ?? ''} testid="queue-starts" {...(verbose === undefined ? {} : { verbose })} /></span>
+      <span>
+        <button
+          type="button" className={`btn ${asking ? 'warn' : 'ghost'}`}
+          data-testid={`queue-remove-${item.id}`}
+          disabled={remove.pending}
+          onClick={() => { void (asking ? remove.confirm() : remove.run(item.id)); }}
+        >
+          {remove.pending ? 'Removing…' : asking ? 'Really remove' : 'Remove'}
+        </button>
+      </span>
+    </div>
+  );
+}
+
+/**
+ * Stop the queue starting anything new, and start it again.
+ *
+ * The screen showed "Paused" as a word and gave no way to change it: pausing meant
+ * finding the sentence the rail understood, and starting again meant remembering it.
+ *
+ * The button says what the click will do, never what is true now -- one reading "Paused"
+ * beside a running queue is the ambiguity this console keeps getting wrong.
+ */
+function QueueRunning({ paused }: { paused: boolean }): JSX.Element {
+  const pause = useAction(ACTIONS.pauseQueue);
+  const resume = useAction(ACTIONS.resumeQueue);
+  const busy = pause.pending || resume.pending;
+  return (
+    <button
+      type="button" className={`btn ${paused ? 'primary' : ''}`}
+      data-testid="queue-pause-toggle" aria-pressed={paused}
+      disabled={busy}
+      onClick={() => { void (paused ? resume.run() : pause.run()); }}
+      style={{ padding: '8px 16px' }}
+    >
+      {busy ? 'Working…' : paused ? 'Start the queue' : 'Pause the queue'}
+    </button>
   );
 }
 
@@ -152,19 +212,18 @@ export function QueueView({ items, paused, pauseReason, maxInFlight, working = 0
             <span>{width.value}</span>
             <button type="button" aria-label="one more" onClick={width.inc}>+</button>
           </div>
+          <QueueRunning paused={paused} />
         </div>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '44px 1fr 1fr 190px', gap: 18, padding: '0 16px 8px', borderBottom: '1px solid var(--line2)' }} className="kick">
-        <span>#</span><span>Ticket</span><span>Why</span><span>Starts</span>
+      <div style={{ display: 'grid', gridTemplateColumns: '44px 1fr 1fr 150px 100px', gap: 18, padding: '0 16px 8px', borderBottom: '1px solid var(--line2)' }} className="kick">
+        <span>#</span><span>Ticket</span><span>Why</span><span>Starts</span><span />
       </div>
       <div style={{ display: 'flex', flexDirection: 'column' }}>
         {next.map((item, index) => (
-          <div key={item.id} className="queue-row" style={{ display: 'grid', gridTemplateColumns: '44px minmax(0,1fr) minmax(0,1fr) 190px', gap: 18, alignItems: 'baseline', padding: '14px 16px', borderBottom: '1px solid var(--line)' }}>
-            <span className="hd" style={{ fontSize: 'var(--fs-num)', color: 'var(--ink3)', fontVariantNumeric: 'tabular-nums' }}>{index + 1}</span>
-            <span>{item.ticket ? <WhatIsHover refText={item.ticket}><span className="key" style={{ marginRight: 10 }}>{item.ticket}</span></WhatIsHover> : null}<span className="hd" data-testid="queue-card-title" style={{ fontSize: 'var(--fs-rowhead)' }}><NarratedLine bag={item.narration} field="title" glance={titleOf(item)} testid="queue-title" {...(verbose === undefined ? {} : { verbose })} /></span></span>
-            <span style={{ color: 'var(--ink2)' }}><NarratedLine bag={item.narration} field="whyNext" glance={item.whyNext ?? ''} testid="queue-why" {...(verbose === undefined ? {} : { verbose })} /></span>
-            <span style={{ color: index === 0 && !paused ? 'var(--acc)' : 'var(--ink)' }}><NarratedLine bag={item.narration} field="startsIn" glance={item.startsIn ?? ''} testid="queue-starts" {...(verbose === undefined ? {} : { verbose })} /></span>
-          </div>
+          <NextRow
+            key={item.id} item={item} index={index} paused={paused}
+            {...(verbose === undefined ? {} : { verbose })}
+          />
         ))}
         {next.length === 0 ? <p style={{ margin: '14px 16px', color: 'var(--ink2)' }}>Empty</p> : null}
       </div>

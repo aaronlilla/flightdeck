@@ -198,6 +198,14 @@ export const ACTIONS = {
     id: 'amendRun', label: 'Amend', reversible: true, effect: 'lane',
     call: ([id, text]) => api.amendRun(id, text), text: fromActionResult, ok: okOf, jid: jidOf, link: ([id]) => laneLink(id),
   }),
+  setDefaultLoginOff: spec<[boolean], Awaited<ReturnType<typeof api.setDefaultLoginOff>>>({
+    id: 'setDefaultLoginOff', label: 'Use this login', reversible: true, effect: 'account',
+    call: ([off]) => api.setDefaultLoginOff(off),
+    text: (result) => (result.ok ? (result.off ? 'this login is out of the rotation' : 'this login is back in the rotation') : (result.error ?? 'that change was refused')),
+    ok: (result) => result.ok,
+    jid: () => null,
+    link: () => viewLink('settings', 'settings'),
+  }),
   setCaps: spec<[{ dailyTokens?: number; runTokens?: number }], Gated<Awaited<ReturnType<typeof api.getCaps>>>>({
     id: 'setCaps', label: 'Save caps', reversible: false, effect: 'caps',
     call: ([body], confirm) => api.setCaps(body, confirm),
