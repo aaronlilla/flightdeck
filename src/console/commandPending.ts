@@ -45,7 +45,13 @@ export function useCommandPending(laneId: string, cmd: BoardCommand): boolean {
   const { state } = useStore();
   const action = actionForCommand(cmd);
   if (!action) return false;
-  return state.pending[actionKey(action, laneId)] !== undefined;
+  // `state.actions`, not `state.pending`. Two maps record a call in flight and the two
+  // paths that make one fill different halves: the catalog hook fills both, the board's
+  // own runner fills only `actions`. Reading `pending` therefore showed nothing at all for
+  // every board click -- measured on the live board after the first attempt at this:
+  // pressed Merge, 200 ms and 500 ms later still idle, and only at 1.5 s did the reply
+  // land and change the label. `actions` is the half both paths write.
+  return state.actions[actionKey(action, laneId)]?.pending === true;
 }
 
 /**
