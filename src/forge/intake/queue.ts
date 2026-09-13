@@ -108,6 +108,15 @@ export function parkRecoverability(reason: string | null | undefined): ParkRecov
   }
   if (/^unrouted$/i.test(text)) return { recoverable: false, why: 'nothing routed the ticket to a repository', personsCall: true };
   if (/^backend:/i.test(text)) return { recoverable: false, why: 'the ticket was handed to the backend', personsCall: true };
+  // The planner found the work already shipped. Nothing about that changes on a retry,
+  // and the unclassified default is "retry" -- so until 2026-09-13 the restart sweep
+  // re-planned fifteen of these every ten minutes, each one a planner call, each one
+  // parking again on the same sentence three seconds later. Traced on the live board
+  // through three identical cycles of one ticket. Whether to close the ticket, reopen it
+  // or leave it is a person's call, and it only has to be made once.
+  if (/^\S+ already has (a|an) (merged|open) pull request\b/i.test(text)) {
+    return { recoverable: false, why: 'its pull request already exists; re-planning it cannot change that', personsCall: true };
+  }
   // A person's call, after trying twice to make it automatic (2026-09-11). Reading "has
   // the holder released these files" off the store looked free and was not: a PARKED
   // holder still owns its worktree and its file list; the reason is matched by a regex
