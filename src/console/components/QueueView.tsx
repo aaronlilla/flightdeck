@@ -10,6 +10,7 @@ import { useWidthStepper } from '../useWidthStepper.js';
 import { Marks } from './QuestionCard.js';
 import { NarratedLine } from './Narrated.js';
 import { readQueueInput } from '../../shared/queueInput.js';
+import { humanizeParkReason } from '../../shared/humanize.js';
 
 /**
  * `Flightdeck Console.dc.html` 1c: what runs next, in the queue's own order, with why
@@ -56,7 +57,7 @@ function LaterRow({ item }: { item: QueueItem }): JSX.Element {
     <div className="queue-row" data-testid={`queue-later-${item.id}`} style={{ display: 'grid', gridTemplateColumns: '44px minmax(0,1fr) minmax(0,1fr) 190px', gap: 18, alignItems: 'baseline', padding: '14px 16px', borderBottom: '1px solid var(--line)' }}>
       <span className="kick" style={{ fontSize: 'var(--fs-meta)' }}>{state}</span>
       <span>{item.ticket ? <WhatIsHover refText={item.ticket}><span className="key" style={{ marginRight: 10 }}>{item.ticket}</span></WhatIsHover> : null}<span className="hd" data-testid="queue-card-title" style={{ fontSize: 'var(--fs-rowhead)' }}>{titleOf(item)}</span></span>
-      <span style={{ color: 'var(--ink2)' }}><Linkify text={item.reason ?? (item.pr ? `PR #${item.pr.no}${item.pr.draft ? ' (draft)' : ''}` : '')} repo={item.repo} /></span>
+      <span style={{ color: 'var(--ink2)' }}><Linkify text={(item.reason ? humanizeParkReason(item.reason) : null) ?? (item.pr ? `PR #${item.pr.no}${item.pr.draft ? ' (draft)' : ''}` : '')} repo={item.repo} /></span>
       <span>{action && verdict.live
         ? <button type="button" className={`btn ${action.kind}`} onClick={action.run}>{action.label}</button>
         : action

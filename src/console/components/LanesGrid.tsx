@@ -7,6 +7,7 @@ import { LaneGroupTile } from './LaneGroupTile.js';
 import { Marks } from './QuestionCard.js';
 import { ACTIONS, useAction } from '../actions.js';
 import { busyLabelFor, confirmLabelFor, useCommandConfirming, useCommandPending } from '../commandPending.js';
+import { humanizeParkReason } from '../../shared/humanize.js';
 
 /**
  * `FD Board.dc.html`: the running grid (one card per active lane, dashed idle cards up
@@ -172,7 +173,7 @@ export function LanesGrid(props: LanesGridProps): JSX.Element {
               return (
                 <div key={lane.id} className="rowBlocked">
                   <span className="key">{lane.ticket ?? ''}</span>
-                  <span><span className="hd" style={{ fontSize: 'var(--fs-lead)' }}>{laneHeadline(lane).main}</span><span style={{ color: 'var(--ink2)' }}> — {blocker?.detail ?? lane.reason ?? lane.now ?? 'no reason'}</span></span>
+                  <span><span className="hd" style={{ fontSize: 'var(--fs-lead)' }}>{laneHeadline(lane).main}</span><span style={{ color: 'var(--ink2)' }}> — {blocker?.detail ?? (lane.reason ? humanizeParkReason(lane.reason) : null) ?? lane.now ?? 'no reason'}</span></span>
                   <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>{who} · {durationWords(now - lane.since)}</span>
                   <CommandButton lane={lane} cmd={cta.cmd} label={cta.label} kind={cta.kind === 'secondary' ? '' : cta.kind} onCommand={onCommand} />
                 </div>
