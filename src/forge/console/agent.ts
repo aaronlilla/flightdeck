@@ -30,7 +30,7 @@ import { Engine, type QueryFn } from '../../adapter/engine.js';
 import type { Inbox } from '../inbox.js';
 import { appendOnce, Journal } from '../journal.js';
 import { CodexAdvisor, realCodexAdvisorRunner } from '../council/codexAdvisor.js';
-import { loadAccounts, configDirForSession } from '../accounts.js';
+import { loadAccounts, configDirForSession, defaultLoginOff } from '../accounts.js';
 import { readAccountUsage } from '../accounts-usage.js';
 import { fleetConfigDir, forgeHome } from '../paths.js';
 import {
@@ -552,10 +552,20 @@ export class ConductorAgent {
    *  before accounts existed. Read per session rather than cached, so connecting an
    *  account in Settings takes effect on the Conductor's next turn. */
   private sessionConfigDir(): string {
-    return configDirForSession(
+    const picked = configDirForSession(
       loadAccounts(this.deps.accountsPath), readAccountUsage(this.deps.accountUsagePath),
       {}, this.now(), this.deps.existsConfigDir,
-    ).configDir ?? fleetConfigDir(this.deps.existsConfigDir);
+    );
+    if (picked.accountId !== null && picked.configDir !== null) return picked.configDir;
+    // No account was picked, so what is left is the machine's own login. The operator can
+    // switch that out of the rotation in Settings, and when they have, a turn refuses
+    // here: the throw lands in `handleSerial`'s catch, the grammar answers, and the reply
+    // row names this reason. Quietly spending the login they turned off is the one
+    // outcome the switch exists to prevent.
+    if (defaultLoginOff(this.deps.accountsPath)) {
+      throw new Error('every linked account is spent, and this machine\'s own login is switched off in Settings');
+    }
+    return fleetConfigDir(this.deps.existsConfigDir);
   }
 
   private env(): NodeJS.ProcessEnv {
@@ -747,7 +757,7 @@ export class ConductorAgent {
         event: 'conductor.usage', actor: 'conductor',
         model: result.model || modelIdFor(modelFor(CONDUCTOR_CLASS, this.deps.policyPath), this.deps.policyPath),
         class: CONDUCTOR_CLASS, usage: result.usage, context: result.context, durationMs: this.now() - startedAt,
-        account: this.sessionConfigDir(), sessionId: this.sessionId,
+        account: wanted, sessionId: this.sessionId,
         ...(context.run ? { run: context.run } : {}),
       });
       const replyText = result.text || 'Done. Nothing else is waiting on you.';

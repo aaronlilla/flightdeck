@@ -25,6 +25,9 @@ export interface AccountsServiceDeps {
   liveRuns: () => Record<string, number>;
   /** The machine's own Claude config directory, or null when it holds no login. */
   fleetConfigDir: () => string | null;
+  /** Whether the operator has taken that login out of the rotation. Unset reads as in,
+   *  which is what every machine that never touched the switch wants. */
+  defaultLoginOff?: () => boolean;
   probe: (provider: AccountProvider, dir: string) => Promise<UsageReading>;
   now?: () => number;
   /** A reading older than this is refreshed on the next `list()`. */
@@ -88,7 +91,11 @@ export class AccountsService {
       }
       const limit = limitedUntil(row.id, now, usage);
       const email = row.record?.email ?? reading?.email;
-      const selected = row.id === FLEET_ACCOUNT_ID ? chosen.claude === null : chosen[row.provider] === row.id;
+      // A login that is switched out of the rotation is never the one a session runs on,
+      // whatever the registry says, so it never reads as in use.
+      const selected = row.id === FLEET_ACCOUNT_ID
+        ? chosen.claude === null && !this.deps.defaultLoginOff?.()
+        : chosen[row.provider] === row.id;
       items.push({
         id: row.id,
         provider: row.provider,
@@ -103,7 +110,9 @@ export class AccountsService {
         ...(record?.readError ? { readError: record.readError.error } : {}),
         ...(limit ? { limitedUntil: limit.until, limitedWindow: limit.window } : {}),
         selected,
-        ...(row.id === FLEET_ACCOUNT_ID ? { fleet: true } : {}),
+        ...(row.id === FLEET_ACCOUNT_ID
+          ? { fleet: true, ...(this.deps.defaultLoginOff?.() ? { off: true } : {}) }
+          : {}),
       });
     }
     return items;

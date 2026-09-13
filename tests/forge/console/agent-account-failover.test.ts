@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -9,6 +9,7 @@ import { ConsoleWrites } from '../../../src/forge/console/command.js';
 import { Inbox } from '../../../src/forge/inbox.js';
 import { Journal } from '../../../src/forge/journal.js';
 import { Registry } from '../../../src/forge/registry.js';
+import { setDefaultLoginOff } from '../../../src/forge/accounts.js';
 import { scriptedQuery } from './agent-fake.js';
 
 /**
@@ -54,6 +55,13 @@ function spend(id: string, now: number): void {
   writeFileSync(accountUsagePath, JSON.stringify({
     [id]: { windows: { week: { limitedUntil: now + WEEK, seenAt: now } } },
   }), 'utf8');
+}
+
+/** Marks a second one too, keeping the first. */
+function spend2(id: string, now: number): void {
+  const usage = JSON.parse(readFileSync(accountUsagePath, 'utf8')) as Record<string, unknown>;
+  usage[id] = { windows: { week: { limitedUntil: now + WEEK, seenAt: now } } };
+  writeFileSync(accountUsagePath, JSON.stringify(usage), 'utf8');
 }
 
 function agentOn(queryFn: ReturnType<typeof scriptedQuery>['fn'], now: () => number): ConductorAgent {
@@ -105,6 +113,22 @@ describe('which login a rail turn runs on', () => {
     expect(fake.calls.length, 'the second turn stayed on the spent login').toBe(2);
     expect((fake.calls[1]!.options.env as NodeJS.ProcessEnv)['CLAUDE_CONFIG_DIR'])
       .toBe(join(dir, 'config-fresh'));
+  });
+
+  it('refuses the turn rather than spending a login the operator switched off', async () => {
+    const now = Date.now();
+    const fake = scriptedQuery([{ reply: 'first' }]);
+    agent = agentOn(fake.fn, () => now);
+
+    spend('spent', now);
+    spend2('fresh', now);
+    expect(setDefaultLoginOff(true, accountsPath).ok).toBe(true);
+
+    const reply = await agent.handle('status');
+
+    expect(fake.calls.length, 'it opened a session on the switched-off login').toBe(0);
+    expect(reply.path).toBe('grammar');
+    expect(reply.reason).toMatch(/switched off in Settings/);
   });
 
   it('keeps the one session while the login has not moved', async () => {

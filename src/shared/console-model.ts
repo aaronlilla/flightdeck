@@ -570,8 +570,13 @@ export interface AccountItem {
   /** Whether this account is the one the next session of its provider launches under. */
   selected?: boolean;
   /** The machine's default Claude login, which every run used before accounts existed.
-   *  Shown so its limits are visible; it cannot be unlinked from the console. */
+   *  Shown so its limits are visible. It has no registry row, so it cannot be unlinked;
+   *  what it can be is switched out of the rotation -- see `off`. */
   fleet?: boolean;
+  /** Set on the `fleet` row when the operator has taken that login out of the rotation.
+   *  It stays logged in and is still read for settings and credentials; what stops is
+   *  spending its quota. */
+  off?: boolean;
 }
 
 export interface AccountsResponse {
