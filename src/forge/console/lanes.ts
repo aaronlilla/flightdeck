@@ -126,9 +126,20 @@ export function firstBodyParagraph(brief: string): string | null {
     // A section heading ends the brief's own words. Anything under it was appended, and
     // reading on would answer with somebody else's sentence.
     if (/^#{1,6}\s/.test(line)) return null;
+    // The lines a brief uses to route itself are instructions to the intake, not the
+    // brief's own words. The queue's Add box writes `repo:` at the top of every brief
+    // that names one, and a lane so titled read "Repo: aaronlilla/flightdeck" -- true,
+    // and nothing at all about the work.
+    if (isFrontMatter(line)) continue;
     return capitalizeFirst(truncateAtWordBoundary(line, 120));
   }
   return null;
+}
+
+/** `repo: owner/name`, `roadmap: R-nn`, `ticket: KEY-1` and the rest of the routing lines
+ *  a brief may open with. Each is read by the intake and none of them names the work. */
+function isFrontMatter(line: string): boolean {
+  return /^(repo|roadmap|ticket|after|base|branch|slug|tier)\s*:/i.test(line);
 }
 
 /**

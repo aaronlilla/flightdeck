@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import { firstBodyParagraph, titleFromHeading } from '../../../src/forge/console/lanes.js';
 
+const NL = String.fromCharCode(10);
+
 /**
  * A lane is named by its own brief, and by nothing appended to it.
  *
@@ -64,5 +66,26 @@ describe('what a lane calls itself', () => {
   it('falls back to the first body line when the heading is only a kind slug', () => {
     const brief = '# health-repeat\n\nThe same check failed four runs running.\n';
     expect(titleFromHeading(brief, null)).toBe('The same check failed four runs running.');
+  });
+});
+
+describe('the routing lines a brief opens with', () => {
+  it('does not name a lane after the repository line the Add box writes', () => {
+    const brief = ['repo: aaronlilla/flightdeck', '', 'The queue row prints its key twice.', ''].join(NL);
+    expect(firstBodyParagraph(brief)).toBe('The queue row prints its key twice.');
+  });
+
+  it('skips every routing line, not only the first', () => {
+    const brief = ['repo: a/b', 'roadmap: R-04', 'ticket: BBZ-1', '', 'The real sentence.'].join(NL);
+    expect(firstBodyParagraph(brief)).toBe('The real sentence.');
+  });
+
+  it('names nothing when routing lines are all a brief has', () => {
+    expect(firstBodyParagraph(['repo: a/b', 'roadmap: R-04'].join(NL))).toBeNull();
+  });
+
+  it('keeps a sentence that merely starts with one of those words', () => {
+    expect(firstBodyParagraph('Repo cloning is slow on this machine.'))
+      .toBe('Repo cloning is slow on this machine.');
   });
 });
