@@ -158,6 +158,48 @@ export interface ReauditResponse {
   reason?: string;
 }
 
+/**
+ * `POST /ticket/:key/handoff`'s own response: the comment, the assignment and the
+ * transition, each reported on its own.
+ *
+ * One verdict for three writes is the thing this shape exists to prevent. Two of three
+ * landing is a different situation from none and from all, and a caller that cannot tell
+ * them apart will say the ticket was handed on either way -- the board lying in the one
+ * place somebody is relying on it.
+ *
+ * `refused` is set only when nothing was attempted, and is empty whenever the writes ran.
+ */
+/**
+ * Who a ticket can be handed to, and the label a screen shows for each.
+ *
+ * One list, read by the control, the route's own people map and the stub alike. Three
+ * hardcoded copies drifted apart silently before this: adding a destination left the
+ * screen offering the old three, and renaming an id made the screen send a value the
+ * route refused. The names are roles, not people -- who `qa` actually is comes from the
+ * environment, so swapping the person is a setting, not a change here.
+ */
+export const HANDOFF_DESTINATIONS = [
+  { id: 'qa', name: 'QA' },
+  { id: 'backend', name: 'the backend lead' },
+  { id: 'me', name: 'me' },
+] as const;
+
+export type HandoffDestinationId = typeof HANDOFF_DESTINATIONS[number]['id'];
+
+export interface TicketHandoffStep {
+  name: 'comment' | 'assign' | 'transition';
+  ok: boolean;
+  /** What happened, in a sentence a person can act on: what landed, or why it did not,
+   *  or which setting is missing for a step that could not be attempted at all. */
+  detail: string;
+}
+
+export interface TicketHandoffResponse {
+  ok: boolean;
+  steps: TicketHandoffStep[];
+  refused: string;
+}
+
 export interface LaneQuestion {
   /** The inbox key `POST /answer` takes. */
   key: string;
@@ -1008,6 +1050,10 @@ export interface ConsoleStateSummary {
  *   POST /run/:id/recheck   {}           LaneSummary    fresh PR/audit/drift facts, cache bypassed
  *   POST /run/:id/reaudit   {}           ReauditResponse   runs the council again on the current head
  *   POST /run/:id/cap       {tokenCap}   ActionResult   undoable
+ *   POST /ticket/:key/handoff  {to, comment}  TicketHandoffResponse
+ *                                            200 wrote some or all of it, per step;
+ *                                            400 the request was wrong, wrote nothing;
+ *                                            503 no Jira credentials, wrote nothing
  *   POST /caps              {dailyTokens?, runTokens?}  Caps | 422 {error, hardTokens}   undoable
  *   POST /command           {text}       CommandResponse
  *   POST /integrations/:id/check         IntegrationsResponse

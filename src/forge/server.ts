@@ -35,6 +35,7 @@ import { reasonerFor } from './reasoner-claude.js';
 /** How often the fleet journal's size is compared against the last look. */
 const JOURNAL_WATCH_MS = 1000;
 import { appendThread, ConsoleWrites, plainReceiptCard } from './console/command.js';
+import type { TicketHandoffDeps } from './console/ticket-handoff.js';
 import { TicketTitles } from './console/ticket-titles.js';
 import { QueueRoutes } from './console/queue-route.js';
 import { BlockersRoutes, type Confirmer, type Restarter } from './console/blockers-route.js';
@@ -235,6 +236,11 @@ export interface ForgeServerOptions {
   /** How many queue items `GET /queue` reports as the worker's own concurrency ceiling.
    *  Purely informational here -- the worker enforces it, this class only echoes it. */
   queueMaxInFlight?: number;
+  /** `POST /ticket/:key/handoff`: the Jira write client and the destinations it knows.
+   *  Unset in production, where the route builds both from the environment on every
+   *  press so credentials exported after startup still work. A specimen passes a fake
+   *  so no test reaches Jira. */
+  handoffDeps?: () => TicketHandoffDeps;
   /** A.7: the Merge click's dependencies (`queue-wire.ts#queueMergeDeps`). Absent means
    *  `POST /queue/:id/merge` answers 501 with that reason, which is what a console with
    *  no chain environment should say. */
@@ -515,6 +521,9 @@ export class ForgeServer {
         ? { spawnFn: this.loginHelperSpawnFn() }
         : {}),
       ...(options.modelPolicyPath ? { modelPolicyPath: options.modelPolicyPath } : {}),
+      // `POST /ticket/:key/handoff`. Injected so a specimen never reaches Jira; unset in
+      // production, where the route reads the credentials fresh on every press.
+      ...(options.handoffDeps ? { handoffDeps: options.handoffDeps } : {}),
     });
     this.queueMergeDepsOpt = options.queueMergeDeps;
     // Queue-throughput W2: an explicit `queueMaxInFlight` (from `FORGE_QUEUE_MAX_IN_FLIGHT`

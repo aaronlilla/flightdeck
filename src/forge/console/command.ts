@@ -45,6 +45,7 @@ import {
   compactRun, killRun, mergeRun, pauseRun, reauditRun, reopenRun, restoreRunCap,
   resumeRun, setRunCap, verifyRun, type RunActionsDeps,
 } from './run-actions.js';
+import { handOffTicket, handoffDepsFromEnv, type TicketHandoffDeps } from './ticket-handoff.js';
 import { capsOverridesPath, effectiveHardTokens, readCapsOverrides } from './caps-read.js';
 import { restoreCaps, writeCaps, type CapsWriteDeps } from './caps-write.js';
 import { IntegrationsRegistry, type IntegrationsDeps } from './integrations.js';
@@ -334,6 +335,11 @@ export interface ConsoleWritesDeps {
    *  sentence instead of failing somewhere quieter. */
   slackConfig?: () => SlackConfig | undefined;
   postQuestion?: typeof postQuestion;
+  /** `POST /ticket/:key/handoff`: the Jira write client and the destinations it knows,
+   *  read fresh on every press so credentials exported after the console started still
+   *  work. Injected so no specimen reaches Jira, and a console with nothing configured
+   *  refuses with a sentence rather than writing somewhere quieter. */
+  handoffDeps?: () => TicketHandoffDeps;
 }
 
 function readBody<T>(request: IncomingMessage): Promise<T | null> {
@@ -1501,6 +1507,60 @@ export class ConsoleWrites {
     if ((match = path.match(/^\/integrations\/([^/]+)\/reconnect$/)) && method === 'POST') {
       if (!this.deps.authorized(request, response)) return true;
       respond(response, 200, await this.integrations.reconnect(decodeURIComponent(match[1]!)));
+      return true;
+    }
+
+    // Commenting, assigning and moving a ticket, as one press. Everything needed to do
+    // it has existed since `intake/jiraHandoff.ts`; nothing could ask for it from a
+    // screen, so every handoff was a terminal job (Aaron, 2026-09-13).
+    if ((match = path.match(/^\/ticket\/([^/]+)\/handoff$/)) && method === 'POST') {
+      if (!this.deps.authorized(request, response)) return true;
+      const key = decodeURIComponent(match[1]!);
+      const body = await readBody<{ to?: unknown; comment?: unknown }>(request);
+      const deps = this.deps.handoffDeps?.() ?? handoffDepsFromEnv();
+      const to = String(body?.['to'] ?? '');
+      const comment = String(body?.['comment'] ?? '');
+      // Irreversible, and it writes to somebody else's board: a comment cannot be
+      // unposted and a transition cannot be taken back from here. Behind the same
+      // confirm as kill and merge, for the same reason.
+      const outcome = await this.confirmGate(
+        body, 'console', `hands ${key} to ${to || 'nobody'}: comments, assigns and moves it.`,
+        async () => {
+          const result = await handOffTicket(key, to, comment, deps);
+          // Kill and merge both leave a `decision.made` row and its ledger mirror, and
+          // the worker's own Jira writes emit external.intent/call/complete. This route
+          // wrote to Jira -- irreversibly, on a board other people read -- and left
+          // nothing but a chat card, so a handoff that half-landed could not be
+          // reconstructed afterwards at all. Found by design critique.
+          //
+          // The row carries the per-step outcome rather than one verdict, for the same
+          // reason the response does: two of three is the case somebody needs to find
+          // later. Not undoable, because none of the three writes can be.
+          recordAction(this.deps.journalPath, this.ledger, {
+            kind: 'ticket-handoff',
+            text: result.refused
+              ? `did not hand ${key} to ${to}: ${result.refused}`
+              : `handed ${key} to ${to} -- ${result.steps.map((step) => `${step.name}: ${step.detail}`).join('; ')}`,
+            undo: null,
+            extra: { ticket: key, to, ok: result.ok, steps: result.steps },
+          });
+          // A refusal attempted nothing, so it is a request problem, not a partial
+          // write -- and the two must not answer alike, or a caller cannot tell "no"
+          // from "half". Missing credentials is the machine's problem, not the
+          // caller's (503), so retrying the same request forever is not the answer.
+          //
+          // The sentence goes in `error` as well as `refused`. The console throws on any
+          // non-2xx and reads the body through `redactErrorBody`, which looks for `error`
+          // and otherwise says "the server did not say why" -- so a refusal carrying its
+          // reason only in `refused` reached the operator as nothing at all, which is the
+          // whole point of the route. Found by code review before this shipped.
+          if (result.refused) {
+            return { status: deps.client ? 400 : 503, body: { ...result, error: result.refused } };
+          }
+          return { status: 200, body: result };
+        },
+      );
+      respond(response, outcome.status, outcome.body);
       return true;
     }
 

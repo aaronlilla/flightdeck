@@ -17,9 +17,10 @@ import { CONSOLE_ROUTES, HEARTBEAT_MS } from '../shared/console-model.js';
 import { computeNext } from '../forge/console/summary.js';
 import { orderChains } from '../forge/console/blockers.js';
 import { RAIL_TYPES } from '../shared/rail-kinds.js';
+import { HANDOFF_DESTINATIONS } from '../shared/console-model.js';
 import type {
   ActionResult, Blocker, Caps, Integration, JournalEntry, Lane, LaneSummary, Message, QueueAddRequest,
-  QueueAddResponse, QueueItem, QueueSource, ReauditResponse, Rule,
+  QueueAddResponse, QueueItem, QueueSource, ReauditResponse, Rule, TicketHandoffResponse,
 } from '../shared/console-model.js';
 import { fmtTokens } from '../shared/format-tokens.js';
 import { commandEcho, shortenShas } from '../shared/humanize.js';
@@ -1313,6 +1314,55 @@ export function createStubServer() {
         // for the real server's fresh `gh pr view` + drift read: pending checks clear.
         if (lane.pr && lane.pr.checks === 'pending') lane.pr = { ...lane.pr, checks: 'success' };
         json(response, 200, stubSummary(lane, id));
+        return;
+      }
+      // `POST /ticket/:key/handoff`. The stub writes to no Jira; what it stands in for
+      // is the shape a caller has to be able to tell apart -- wrote nothing because the
+      // request was wrong, wrote nothing because nothing is configured, wrote some of
+      // it. A ticket key ending `-503` asks for the unconfigured case and one ending
+      // `-207` for a partial write, so both can be driven in a browser without taking
+      // the console's credentials away.
+      const handoffMatch = /^\/ticket\/([^/]+)\/handoff$/.exec(urlPath);
+      if (handoffMatch && method === 'POST') {
+        const key = decodeURIComponent(handoffMatch[1] as string);
+        const sent = (await readJson<{ to?: string; comment?: string }>(request)) ?? {};
+        const to = String(sent.to ?? '');
+        const comment = String(sent.comment ?? '').trim();
+        const people: Record<string, string> = Object.fromEntries(
+          HANDOFF_DESTINATIONS.map((who) => [who.id, who.name]),
+        );
+        // `error` as well as `refused`: the console reads a non-2xx body through
+        // `redactErrorBody`, which looks for `error` and otherwise says nothing useful.
+        const refuse = (reason: string, status: number): { status: number; body: unknown } => ({
+          status,
+          body: { ...({ ok: false, steps: [], refused: reason } satisfies TicketHandoffResponse), error: reason },
+        });
+        // Irreversible, so it goes through the same confirm gate the real route does:
+        // a press asks, and only the press that comes back with the token writes.
+        const outcome = gate(sent as Record<string, unknown>,
+          `hands ${key} to ${to || 'nobody'}: comments, assigns and moves it.`, () => {
+            if (key.endsWith('-503')) {
+              return refuse('no jira credentials are wired into this console, so nothing was written', 503);
+            }
+            if (!comment) {
+              return refuse('a handoff carries a comment saying what the next person is looking at', 400);
+            }
+            // Own-property check, the same hole the real route had: `people[to]`
+            // resolves `constructor` and friends on Object.prototype.
+            if (!Object.prototype.hasOwnProperty.call(people, to)) {
+              return refuse(`"${to}" is not somebody this console can hand to; it knows: ${Object.keys(people).join(', ')}`, 400);
+            }
+            const partial = key.endsWith('-207');
+            const steps: TicketHandoffResponse['steps'] = [
+              { name: 'comment', ok: true, detail: 'commented' },
+              { name: 'assign', ok: true, detail: `assigned to ${people[to] as string}` },
+              partial
+                ? { name: 'transition', ok: false, detail: 'transition 31 is not available' }
+                : { name: 'transition', ok: true, detail: 'moved' },
+            ];
+            return { status: 200, body: { ok: steps.every((step) => step.ok), steps, refused: '' } satisfies TicketHandoffResponse };
+          });
+        json(response, outcome.status, outcome.body);
         return;
       }
       const runReauditMatch = /^\/run\/([^/]+)\/reaudit$/.exec(urlPath);

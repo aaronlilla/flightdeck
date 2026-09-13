@@ -8,6 +8,7 @@ import { boardStateWord, durationWords, laneHeadline } from '../laneVM.js';
 import { laneActionLiveness } from '../actionLiveness.js';
 import { ACTIONS, useAction } from '../actions.js';
 import { busyLabelFor, confirmLabelFor, useCommandConfirming, useCommandPending } from '../commandPending.js';
+import { HANDOFF_DESTINATIONS } from '../../shared/console-model.js';
 import type { Lane, LaneStory, LaneSummary } from '../../shared/console-model.js';
 import { Marks } from './QuestionCard.js';
 import { NarratedLine } from './Narrated.js';
@@ -105,6 +106,84 @@ function LaneActions({ lane, onCommand }: {
         </details>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * Handing the ticket on: a comment, an assignment and a move, in one press.
+ *
+ * All three writes existed for the background worker long before this and nothing could
+ * ask for them from a screen, so finishing a ticket meant leaving the console for a
+ * terminal (Aaron, 2026-09-13). Shown only on a lane that names a ticket, because there
+ * is nothing to hand on otherwise.
+ *
+ * The receipt lists every step rather than one verdict for three writes. Two of three
+ * landing is a different situation from none and from all, and "handed on" over a
+ * half-written ticket is the board lying where somebody is relying on it.
+ */
+function LaneHandoff({ lane }: { lane: Lane }): JSX.Element | null {
+  const handoff = useAction(ACTIONS.handOffTicket, lane.id);
+  const [to, setTo] = useState('qa');
+  const [comment, setComment] = useState('');
+  const ticket = lane.ticket;
+  if (!ticket) return null;
+  const result = handoff.result?.kind === 'done' ? handoff.result : null;
+  // Irreversible, so the first press asks and the second writes. A comment cannot be
+  // unposted and a transition cannot be taken back from here.
+  const asking = handoff.result?.kind === 'confirm';
+  return (
+    <details data-testid="lane-handoff">
+      <summary className="kick" style={{ cursor: 'pointer', color: 'var(--ink3)' }}>{`Hand ${ticket} on`}</summary>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 10 }}>
+        <label className="kick" htmlFor={`handoff-to-${lane.id}`}>Who takes it next</label>
+        <select
+          id={`handoff-to-${lane.id}`} data-testid="lane-handoff-to"
+          value={to} onChange={(event) => { setTo(event.target.value); handoff.clear(); }}
+          style={{ font: 'inherit', fontSize: 'var(--fs-body)', padding: '8px 10px', border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--ink)' }}
+        >
+          {HANDOFF_DESTINATIONS.map((who) => (
+            <option key={who.id} value={who.id}>{who.name}</option>
+          ))}
+        </select>
+        <label className="kick" htmlFor={`handoff-comment-${lane.id}`}>What they are looking at</label>
+        <textarea
+          id={`handoff-comment-${lane.id}`} data-testid="lane-handoff-comment" rows={3}
+          placeholder="What changed, and what to check"
+          value={comment} onChange={(event) => { setComment(event.target.value); handoff.clear(); }}
+          style={{ font: 'inherit', fontSize: 'var(--fs-body)', padding: '8px 10px', border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--ink)', resize: 'vertical' }}
+        />
+        <button
+          type="button" className="btn" data-testid="lane-handoff-submit"
+          disabled={comment.trim().length === 0 || handoff.pending}
+          onClick={() => { void (asking ? handoff.confirm() : handoff.run(ticket, to, comment.trim())); }}
+          style={{ alignSelf: 'flex-start' }}
+        >
+          {handoff.pending ? 'Handing on…' : asking ? `Confirm — hand ${ticket} on` : `Hand ${ticket} on`}
+        </button>
+        {asking && handoff.result?.kind === 'confirm' ? (
+          <>
+            <span data-testid="lane-handoff-blast" role="alert" style={{ fontSize: 'var(--fs-meta)', color: 'var(--warn)' }}>
+              {handoff.result.blast}
+            </span>
+            <button
+              type="button" className="btn" data-testid="lane-handoff-dismiss"
+              onClick={() => { handoff.dismiss(); }}
+              style={{ alignSelf: 'flex-start' }}
+            >
+              Not now
+            </button>
+          </>
+        ) : null}
+        {result ? (
+          <div
+            data-testid="lane-handoff-result" role="status"
+            style={{ fontSize: 'var(--fs-meta)', color: result.ok ? 'var(--ink2)' : 'var(--warn)' }}
+          >
+            {result.text}
+          </div>
+        ) : null}
+      </div>
+    </details>
   );
 }
 
@@ -223,6 +302,7 @@ export function TicketSheet({ lane, now, onClose, onCommand, onSendLane, verbose
         </div>
         <LaneActions lane={lane} onCommand={onCommand} />
         <LaneSteering lane={lane} />
+        <LaneHandoff key={lane.id} lane={lane} />
         {question ? (
           <div style={{ position: 'relative', border: '1px solid var(--warn)', background: 'var(--warnTint)', padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 6 }}>
             <Marks />

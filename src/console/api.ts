@@ -28,6 +28,7 @@ import type {
   LaneStory,
   LanesResponse,
   LaneSummary,
+  TicketHandoffResponse,
   MergeReadyReport,
   Message,
   ProposalsResponse,
@@ -188,6 +189,21 @@ export function recheckRun(id: string): Promise<LaneSummary> {
  *  audit's own `head` matches the PR's current head. */
 export function reauditRun(id: string): Promise<ReauditResponse> {
   return post<ReauditResponse>(`/run/${encodeURIComponent(id)}/reaudit`, {});
+}
+
+/**
+ * The sheet's Hand on button: comments, assigns and transitions the ticket in one press.
+ *
+ * Every step is reported on its own, because two of three landing is a different
+ * situation from none and from all. A 400 or 503 means nothing was written at all; the
+ * body says which, and the caller shows `refused` rather than a step list.
+ */
+export function handOffTicket(
+  key: string, to: string, comment: string, confirm?: string,
+): Promise<Gated<TicketHandoffResponse>> {
+  return post<Gated<TicketHandoffResponse>>(
+    `/ticket/${encodeURIComponent(key)}/handoff`, withConfirm({ to, comment }, confirm),
+  );
 }
 
 /** H2.3: what a bulk retire would do (`GET /retire-finished`), and doing it

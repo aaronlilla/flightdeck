@@ -20,7 +20,7 @@ import * as api from './api.js';
 import type { Action as StoreAction, ActionLink, ActionOutcome, View } from './store.js';
 import { useStore } from './store.js';
 import type { SliceName } from '../shared/console-events.js';
-import type { AccountProvider, ActionResult, Message } from '../shared/console-model.js';
+import type { AccountProvider, ActionResult, Message, TicketHandoffResponse } from '../shared/console-model.js';
 
 export type Effect = 'lane' | 'queue' | 'integration' | 'account' | 'caps' | 'conductor' | 'proposal' | 'blocker' | 'journal' | 'sync' | 'none';
 
@@ -115,6 +115,25 @@ export const ACTIONS = {
     text: (result) => (result.started ? 'audit started; the result lands as a new attestation' : (result.reason ?? 'audit did not start')),
     ok: (result) => result.started,
     link: ([id]) => laneLink(id),
+  }),
+  /**
+   * The sheet's Hand on button: comment, assign and transition in one press.
+   *
+   * The receipt names every step rather than reporting one verdict for three writes.
+   * Two of three landing is a different situation from none and from all, and a line
+   * saying only "handed on" would be the board lying in the one place somebody is
+   * relying on it. A refusal attempted nothing, so it says so instead of listing steps.
+   */
+  handOffTicket: spec<[string, string, string], Gated<TicketHandoffResponse>>({
+    id: 'handOffTicket', label: 'Hand on', reversible: false, effect: 'lane',
+    call: ([key, to, comment], confirm) => api.handOffTicket(key, to, comment, confirm),
+    text: (result) => {
+      if (api.isConfirmPending(result)) return gatedText(result);
+      return result.refused
+        ? `nothing written: ${result.refused}`
+        : result.steps.map((step) => `${step.name}: ${step.detail}`).join('; ');
+    },
+    ok: (result) => (api.isConfirmPending(result) ? false : result.ok),
   }),
   postRetireFinished: spec<[], Gated<api.RetireFinishedResult>>({
     id: 'postRetireFinished', label: 'Clean up', reversible: false, effect: 'lane',
