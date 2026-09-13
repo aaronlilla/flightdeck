@@ -20,7 +20,7 @@ import * as api from './api.js';
 import type { Action as StoreAction, ActionLink, ActionOutcome, View } from './store.js';
 import { useStore } from './store.js';
 import type { SliceName } from '../shared/console-events.js';
-import type { AccountProvider, ActionResult, Message, TicketHandoffResponse } from '../shared/console-model.js';
+import type { AccountProvider, ActionResult, Message, OpenPrResponse, TicketHandoffResponse } from '../shared/console-model.js';
 
 export type Effect = 'lane' | 'queue' | 'integration' | 'account' | 'caps' | 'conductor' | 'proposal' | 'blocker' | 'journal' | 'sync' | 'none';
 
@@ -124,6 +124,28 @@ export const ACTIONS = {
    * saying only "handed on" would be the board lying in the one place somebody is
    * relying on it. A refusal attempted nothing, so it says so instead of listing steps.
    */
+  /**
+   * The sheet's Open a pull request button.
+   *
+   * The refusals are most of what this reports, and each is a different thing to do
+   * next: push the branch, look at the one that already exists, or trim the body. A
+   * single "could not open it" would send a person to GitHub to find out which.
+   */
+  openPullRequest: spec<[string, string, string, boolean], Gated<OpenPrResponse>>({
+    id: 'openPullRequest', label: 'Open a pull request', reversible: false, effect: 'lane',
+    call: ([run, title, body, draft], confirm) => api.openPullRequest(run, title, body, draft, confirm),
+    text: (result) => {
+      if (api.isConfirmPending(result)) return gatedText(result);
+      if (result.refused) return result.refused;
+      return result.advice
+        ? `opened #${result.number} -- worth a trim: ${result.advice}`
+        : `opened #${result.number}`;
+    },
+    ok: (result) => (api.isConfirmPending(result) ? false : result.ok),
+    link: (_args, result) => (result && !api.isConfirmPending(result) && result.url
+      ? { kind: 'url' as const, href: result.url, label: `#${result.number}` }
+      : null),
+  }),
   handOffTicket: spec<[string, string, string], Gated<TicketHandoffResponse>>({
     id: 'handOffTicket', label: 'Hand on', reversible: false, effect: 'lane',
     call: ([key, to, comment], confirm) => api.handOffTicket(key, to, comment, confirm),

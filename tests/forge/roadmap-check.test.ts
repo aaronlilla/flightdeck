@@ -152,3 +152,93 @@ describe('runRoadmapCheck: gh unreachable', () => {
     expect(result.ghSkipped).toBe(true);
   });
 });
+
+/**
+ * Two rows carrying one id.
+ *
+ * Found by doing it twice: this branch added R-90 and R-91 without checking, and both
+ * already existed. The first of those merged. Nothing complained -- the check reads each
+ * row on its own and never asks whether an id is unique, so the roadmap can name one
+ * id twice and still read clean, which is the board lying about itself.
+ */
+describe('duplicate ids', () => {
+  it('refuses a roadmap that names one id twice, and says which', async () => {
+    const { failures } = await runRoadmapCheck({
+      roadmapText: roadmapText({ itemsExtra: '| R-01 | thing one again | queue | planned |  |  |' }),
+      listPrs: async () => [],
+    });
+
+    expect(failures.some((line) => line.includes('R-01'))).toBe(true);
+    expect(failures.some((line) => /names 2 rows/.test(line))).toBe(true);
+  });
+
+  it('says nothing about ids that appear once', async () => {
+    const { failures } = await runRoadmapCheck({
+      roadmapText: roadmapText(),
+      listPrs: async () => [],
+    });
+
+    expect(failures.filter((line) => /names \d+ rows/.test(line))).toEqual([]);
+  });
+});
+
+/**
+ * The two ids that already named two rows when this check was written are named in the
+ * source and skipped. This pins the shape of that: it is an allowlist of exactly those
+ * two, not a switch that turns the rule off.
+ */
+describe('the ids grandfathered in', () => {
+  it('still refuses a NEW duplicate while an old one is tolerated', async () => {
+    const { failures } = await runRoadmapCheck({
+      roadmapText: roadmapText({
+        itemsExtra: [
+          '| R-46 | an old duplicate | queue | planned |  |  |',
+          '| R-46 | its twin | queue | planned |  |  |',
+          '| R-02 | a new duplicate | queue | planned |  |  |',
+        ].join('\n'),
+      }),
+      listPrs: async () => [],
+    });
+
+    expect(failures.some((line) => line.startsWith('R-02'))).toBe(true);
+    expect(failures.some((line) => line.startsWith('R-46'))).toBe(false);
+  });
+});
+
+/**
+ * Found by code review, and it defeated the check it was part of. The allowlist exempted
+ * two ids unconditionally rather than exempting the two rows each already had, so a third
+ * row citing R-46 would have passed for ever -- the new anti-duplicate check beaten by
+ * reusing one of the two names it already tolerated.
+ */
+describe('the grandfather allowlist has a ceiling', () => {
+  it('refuses a THIRD row on a grandfathered id', async () => {
+    const { failures } = await runRoadmapCheck({
+      roadmapText: roadmapText({
+        itemsExtra: [
+          '| R-46 | the first | queue | planned |  |  |',
+          '| R-46 | the second | queue | planned |  |  |',
+          '| R-46 | one too many | queue | planned |  |  |',
+        ].join('\n'),
+      }),
+      listPrs: async () => [],
+    });
+
+    expect(failures.some((line) => line.startsWith('R-46'))).toBe(true);
+    expect(failures.some((line) => /grandfathered|2 of them|tolerated/i.test(line))).toBe(true);
+  });
+
+  it('still tolerates exactly the two rows each was grandfathered with', async () => {
+    const { failures } = await runRoadmapCheck({
+      roadmapText: roadmapText({
+        itemsExtra: [
+          '| R-46 | the first | queue | planned |  |  |',
+          '| R-46 | the second | queue | planned |  |  |',
+        ].join('\n'),
+      }),
+      listPrs: async () => [],
+    });
+
+    expect(failures.some((line) => line.startsWith('R-46'))).toBe(false);
+  });
+});

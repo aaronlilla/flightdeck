@@ -108,6 +108,9 @@ import { checkOutwardDraft, draftReportLines, type OutwardDraft } from './intake
 import { runPrOpenedHandoff } from './intake/prOpened.js';
 import { handlePullRequestOpened, readPrAtCheckout } from './intake/prOpenedWatch.js';
 import { run as execRun } from './exec.js';
+import { realOpenPrDeps } from './console/open-pr.js';
+import { readabilityVerdict } from './intake/readability.js';
+import { whereRunLives } from './console/run-actions.js';
 import { buildChainDeps, hasRunRegistered } from './chain-wire.js';
 import { isGoalFile } from './intake/goalFile.js';
 import { installShutdown } from './service/shutdown.js';
@@ -612,6 +615,23 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           return Array.isArray(read) ? read.map((proc) => ({ ...proc })) : read;
         },
         queueStore,
+        // R-91: `POST /run/:id/open-pr`. The lane read is the same `whereRunLives` every
+        // other run action uses -- a second copy is exactly how Merge came to refuse on
+        // a queue lane whose repository the queue was holding all along. The readability
+        // rule runs here so a body that would be denied is refused before the request
+        // exists, rather than after it is open for Joe to read.
+        openPrDeps: () => realOpenPrDeps(
+          (input) => execRun({ ...input, cls: input.cls as 'script' }),
+          (run) => {
+            const where = whereRunLives(run, { journalPath: journalPath(), queueStore });
+            return where.repo || where.branch
+              ? { repo: where.repo, branch: where.branch, base: where.base, ticket: where.ticket }
+              : null;
+          },
+          (repo, title, body) => readabilityVerdict(
+            'pr-body', repo, title, body, undefined, new Date().toISOString().slice(0, 10),
+          ),
+        ),
         ...(queueMaxInFlight !== undefined ? { queueMaxInFlight } : {}),
         // A.7: Merge and Promote are clicks. Merge reuses the gate with `merge: true` for
         // repos on FORGE_QUEUE_MERGE_REPOS and then reads the develop deploy's outcome per

@@ -36,6 +36,7 @@ import { reasonerFor } from './reasoner-claude.js';
 const JOURNAL_WATCH_MS = 1000;
 import { appendThread, ConsoleWrites, plainReceiptCard } from './console/command.js';
 import type { TicketHandoffDeps } from './console/ticket-handoff.js';
+import type { OpenPrDeps } from './console/open-pr.js';
 import { TicketTitles } from './console/ticket-titles.js';
 import { QueueRoutes } from './console/queue-route.js';
 import { BlockersRoutes, type Confirmer, type Restarter } from './console/blockers-route.js';
@@ -241,6 +242,9 @@ export interface ForgeServerOptions {
    *  press so credentials exported after startup still work. A specimen passes a fake
    *  so no test reaches Jira. */
   handoffDeps?: () => TicketHandoffDeps;
+  /** `POST /run/:id/open-pr`: the lane read, the `gh` calls and the readability rule.
+   *  Unset means the route answers 501 rather than pretending. */
+  openPrDeps?: () => OpenPrDeps;
   /** A.7: the Merge click's dependencies (`queue-wire.ts#queueMergeDeps`). Absent means
    *  `POST /queue/:id/merge` answers 501 with that reason, which is what a console with
    *  no chain environment should say. */
@@ -524,6 +528,7 @@ export class ForgeServer {
       // `POST /ticket/:key/handoff`. Injected so a specimen never reaches Jira; unset in
       // production, where the route reads the credentials fresh on every press.
       ...(options.handoffDeps ? { handoffDeps: options.handoffDeps } : {}),
+      ...(options.openPrDeps ? { openPrDeps: options.openPrDeps } : {}),
     });
     this.queueMergeDepsOpt = options.queueMergeDeps;
     // Queue-throughput W2: an explicit `queueMaxInFlight` (from `FORGE_QUEUE_MAX_IN_FLIGHT`

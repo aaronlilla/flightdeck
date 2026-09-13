@@ -159,6 +159,20 @@ export interface ReauditResponse {
 }
 
 /**
+ * `POST /run/:id/open-pr`'s own response. `number` and `url` are set on success, and also
+ * on the 409 -- the request that already exists is the useful thing to hand back, not an
+ * error. `advice` carries the readability rule's note when it advised rather than denied,
+ * which is the difference between a body that ships and one worth trimming first.
+ */
+export interface OpenPrResponse {
+  ok: boolean;
+  number: number | null;
+  url: string | null;
+  refused: string;
+  advice: string;
+}
+
+/**
  * `POST /ticket/:key/handoff`'s own response: the comment, the assignment and the
  * transition, each reported on its own.
  *
@@ -1050,6 +1064,10 @@ export interface ConsoleStateSummary {
  *   POST /run/:id/recheck   {}           LaneSummary    fresh PR/audit/drift facts, cache bypassed
  *   POST /run/:id/reaudit   {}           ReauditResponse   runs the council again on the current head
  *   POST /run/:id/cap       {tokenCap}   ActionResult   undoable
+ *   POST /run/:id/open-pr   {title, body, draft?}  OpenPrResponse
+ *                                            200 opened; 400 the request was wrong;
+ *                                            409 one is already open, and is linked;
+ *                                            501 this console has no GitHub wiring
  *   POST /ticket/:key/handoff  {to, comment}  TicketHandoffResponse
  *                                            200 wrote some or all of it, per step;
  *                                            400 the request was wrong, wrote nothing;

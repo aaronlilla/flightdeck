@@ -18,6 +18,7 @@ import { computeNext } from '../forge/console/summary.js';
 import { orderChains } from '../forge/console/blockers.js';
 import { RAIL_TYPES } from '../shared/rail-kinds.js';
 import { HANDOFF_DESTINATIONS } from '../shared/console-model.js';
+import type { OpenPrResponse } from '../shared/console-model.js';
 import type {
   ActionResult, Blocker, Caps, Integration, JournalEntry, Lane, LaneSummary, Message, QueueAddRequest,
   QueueAddResponse, QueueItem, QueueSource, ReauditResponse, Rule, TicketHandoffResponse,
@@ -1322,6 +1323,43 @@ export function createStubServer() {
       // it. A ticket key ending `-503` asks for the unconfigured case and one ending
       // `-207` for a partial write, so both can be driven in a browser without taking
       // the console's credentials away.
+      // `POST /run/:id/open-pr`. The stub opens nothing; what it stands in for is the
+      // set of answers a caller has to tell apart. A lane id ending `-409` already has a
+      // request, and one ending `-400` has an unpushed branch, so both refusals can be
+      // driven in a browser.
+      const openPrMatch = /^\/run\/([^/]+)\/open-pr$/.exec(urlPath);
+      if (openPrMatch && method === 'POST') {
+        const id = decodeURIComponent(openPrMatch[1] as string);
+        const sent = (await readJson<{ title?: string; body?: string; draft?: boolean; confirm?: string }>(request)) ?? {};
+        const refuse = (reason: string, status: number, found?: { number: number; url: string }) => ({
+          status,
+          body: {
+            ok: false, number: found?.number ?? null, url: found?.url ?? null,
+            refused: reason, advice: '', error: reason,
+          } satisfies OpenPrResponse & { error: string },
+        });
+        const draft = sent.draft === true;
+        const outcome = gate(sent as Record<string, unknown>,
+          `opens a ${draft ? 'draft ' : ''}pull request for ${id}: notifies its reviewers, and on the app repo spends a build.`,
+          () => {
+            if (!String(sent.title ?? '').trim()) return refuse('a pull request needs a title; this one is empty', 400);
+            if (!String(sent.body ?? '').trim()) return refuse('a pull request needs a body describing what breaks and what changes', 400);
+            if (id.endsWith('-409')) {
+              return refuse(`${id} already has an open pull request`, 409,
+                { number: 4, url: 'https://github.com/owner/repo/pull/4' });
+            }
+            if (id.endsWith('-400')) {
+              return refuse(`feature/${id} is not on the remote yet, so there is nothing to open a request from -- push it first`, 400);
+            }
+            const body: OpenPrResponse = {
+              ok: true, number: 42, url: 'https://github.com/owner/repo/pull/42',
+              refused: '', advice: '',
+            };
+            return { status: 200, body };
+          });
+        json(response, outcome.status, outcome.body);
+        return;
+      }
       const handoffMatch = /^\/ticket\/([^/]+)\/handoff$/.exec(urlPath);
       if (handoffMatch && method === 'POST') {
         const key = decodeURIComponent(handoffMatch[1] as string);

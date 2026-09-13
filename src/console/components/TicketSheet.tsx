@@ -110,6 +110,85 @@ function LaneActions({ lane, onCommand }: {
 }
 
 /**
+ * Opening a pull request, from the lane that has the branch.
+ *
+ * The only `gh pr create` in this codebase runs inside a worker's own turn, so a branch a
+ * worker pushed and then stopped short of could only become a pull request from a
+ * terminal (Aaron, 2026-09-13). Shown only on a lane that has no pull request yet: with
+ * one, the thing to do is look at it, not open another.
+ *
+ * Irreversible and outward-facing, so it asks first, and editing after the ask takes the
+ * confirm away rather than opening the text that was there before.
+ */
+function LaneOpenPr({ lane }: { lane: Lane }): JSX.Element | null {
+  const open = useAction(ACTIONS.openPullRequest, lane.id);
+  const [title, setTitle] = useState(lane.ticket ? `${lane.ticket} ` : '');
+  const [body, setBody] = useState('');
+  const [draft, setDraft] = useState(true);
+  if (lane.pr) return null;
+  const asking = open.result?.kind === 'confirm';
+  const result = open.result?.kind === 'done' ? open.result : null;
+  const ready = title.trim().length > 0 && body.trim().length > 0;
+  return (
+    <details data-testid="lane-open-pr">
+      <summary className="kick" style={{ cursor: 'pointer', color: 'var(--ink3)' }}>Open a pull request</summary>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 10 }}>
+        <label className="kick" htmlFor={`openpr-title-${lane.id}`}>Title</label>
+        <input
+          id={`openpr-title-${lane.id}`} data-testid="lane-open-pr-title" type="text"
+          placeholder="BBZ-000 what changes"
+          value={title} onChange={(event) => { setTitle(event.target.value); open.clear(); }}
+          style={{ font: 'inherit', fontSize: 'var(--fs-body)', padding: '8px 10px', border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--ink)' }}
+        />
+        <label className="kick" htmlFor={`openpr-body-${lane.id}`}>What breaks, and what changes</label>
+        <textarea
+          id={`openpr-body-${lane.id}`} data-testid="lane-open-pr-body" rows={5}
+          placeholder="What a caller sees today, then what changes"
+          value={body} onChange={(event) => { setBody(event.target.value); open.clear(); }}
+          style={{ font: 'inherit', fontSize: 'var(--fs-body)', padding: '8px 10px', border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--ink)', resize: 'vertical' }}
+        />
+        <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 'var(--fs-meta)', color: 'var(--ink2)' }}>
+          <input
+            type="checkbox" data-testid="lane-open-pr-draft" checked={draft}
+            onChange={(event) => { setDraft(event.target.checked); open.clear(); }}
+          />
+          Open it as a draft
+        </label>
+        <button
+          type="button" className="btn" data-testid="lane-open-pr-submit"
+          disabled={!ready || open.pending}
+          onClick={() => { void (asking ? open.confirm() : open.run(lane.id, title.trim(), body.trim(), draft)); }}
+          style={{ alignSelf: 'flex-start' }}
+        >
+          {open.pending ? 'Opening…' : asking ? 'Confirm — open it' : 'Open a pull request'}
+        </button>
+        {asking && open.result?.kind === 'confirm' ? (
+          <>
+            <span data-testid="lane-open-pr-blast" role="alert" style={{ fontSize: 'var(--fs-meta)', color: 'var(--warn)' }}>
+              {open.result.blast}
+            </span>
+            <button
+              type="button" className="btn" data-testid="lane-open-pr-dismiss"
+              onClick={() => { open.dismiss(); }} style={{ alignSelf: 'flex-start' }}
+            >
+              Not now
+            </button>
+          </>
+        ) : null}
+        {result ? (
+          <div
+            data-testid="lane-open-pr-result" role="status"
+            style={{ fontSize: 'var(--fs-meta)', color: result.ok ? 'var(--ink2)' : 'var(--warn)' }}
+          >
+            {result.text}
+          </div>
+        ) : null}
+      </div>
+    </details>
+  );
+}
+
+/**
  * Handing the ticket on: a comment, an assignment and a move, in one press.
  *
  * All three writes existed for the background worker long before this and nothing could
@@ -302,6 +381,7 @@ export function TicketSheet({ lane, now, onClose, onCommand, onSendLane, verbose
         </div>
         <LaneActions lane={lane} onCommand={onCommand} />
         <LaneSteering lane={lane} />
+        <LaneOpenPr key={`openpr-${lane.id}`} lane={lane} />
         <LaneHandoff key={lane.id} lane={lane} />
         {question ? (
           <div style={{ position: 'relative', border: '1px solid var(--warn)', background: 'var(--warnTint)', padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 6 }}>
