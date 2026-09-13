@@ -1483,6 +1483,9 @@ export interface QueueMergeDeps {
    *  here calls `gh`. Absent means the pre-R-22 `deps.gate({merge:true})` path runs
    *  unchanged, so every existing gate-based specimen keeps passing. */
   gitMerge?: (input: { repo: string; pr: number; branch: string; base: string; subject: string; body: string }) => Promise<{ ok: boolean; mergeSha?: string; reason?: string }>;
+  /** Closes a pull request whose content the merge above already pushed to the base.
+   *  Absent leaves it open, which is what happened before this existed. */
+  closePr?: (input: { repo: string; pr: number; comment: string }) => Promise<{ ok: boolean; reason?: string }>;
   clock(): number;
   store: QueueStore;
 }
@@ -1513,6 +1516,34 @@ export async function mergeItem(item: QueueItem, deps: QueueMergeDeps): Promise<
       subject: `Merge ${item.branch} (#${item.pr.no})`, body: '',
     });
     result = gm.ok ? { merged: true, mergeSha: gm.mergeSha } : { merged: false, reason: gm.reason ? [gm.reason] : undefined };
+    // The squash pushed a NEW commit straight to the base, so GitHub never recognises the
+    // branch as merged and leaves the pull request open for ever -- a draft, on a board
+    // that says the ticket is done, counted by every check that reads open pull requests.
+    // Measured 2026-09-13: the first ticket driven in through the console merged to main
+    // and left its own pull request open behind it.
+    //
+    // Best effort. A close that fails never un-merges anything, so it is journaled and the
+    // item carries on.
+    if (gm.ok && deps.closePr) {
+      const where = gm.mergeSha ? ` as ${gm.mergeSha}` : '';
+      try {
+        const closed = await deps.closePr({
+          repo: item.repo!, pr: item.pr.no,
+          comment: `Merged into ${base}${where}. Closing this, since the squash lands a new commit and GitHub cannot see the branch in it.`,
+        });
+        if (closed?.ok === false) {
+          deps.append?.({
+            event: 'queue.pr-close-failed', actor: 'queue', itemId: item.id,
+            pr: item.pr.no, error: closed.reason ?? 'no reason given',
+          });
+        }
+      } catch (error) {
+        deps.append?.({
+          event: 'queue.pr-close-failed', actor: 'queue', itemId: item.id,
+          pr: item.pr.no, error: messageOf(error),
+        });
+      }
+    }
   } else {
     result = await deps.gate({ repo: item.repo!, pr: item.pr.no, merge: true });
 

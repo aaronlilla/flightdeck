@@ -1980,6 +1980,76 @@ describe('mergeItem: A.7', () => {
       const log = sh(seedDir, 'log', 'origin/develop', '-1', '--format=%s').trim();
       expect(log).toBe('Merge feature/abc-1 (#9)');
     });
+
+    // Measured 2026-09-13: the first ticket driven in through the console merged to main
+    // and left its own pull request open behind it, a draft, on a board saying done. The
+    // squash pushes a NEW commit, so GitHub never recognises the branch in the base and
+    // nothing closes the pull request on its own.
+    it('closes the pull request the merge landed, naming where it went', async () => {
+      const store = tempStore();
+      const added = addTicketItem(store, 'ABC-1', 1000);
+      store.append({
+        id: added.id, at: 2000, state: 'review', repo: 'owner/name', branch: 'feature/abc-1', base: 'develop',
+        pr: { no: 9, url: 'https://github.com/owner/name/pull/9', files: 1, add: 1, del: 0, draft: true },
+      });
+      const closed: Array<{ repo: string; pr: number; comment: string }> = [];
+      const result = await mergeItem(store.get(added.id)!, {
+        mergeAllowed: () => true,
+        gate: async () => ({ merged: true }),
+        gitMerge: async () => ({ ok: true, mergeSha: 'abc1234' }),
+        closePr: async (input) => { closed.push(input); return { ok: true }; },
+        clock: () => 3000,
+        store: { append: () => {} } as never,
+      });
+
+      expect(result.ok).toBe(true);
+      expect(closed, 'the pull request was left open behind the merge').toHaveLength(1);
+      expect(closed[0]?.pr).toBe(9);
+      expect(closed[0]?.comment).toMatch(/Merged into develop as abc1234/);
+    });
+
+    it('does not close a pull request the merge refused', async () => {
+      const store = tempStore();
+      const added = addTicketItem(store, 'ABC-1', 1000);
+      store.append({
+        id: added.id, at: 2000, state: 'review', repo: 'owner/name', branch: 'feature/abc-1', base: 'develop',
+        pr: { no: 9, url: 'https://github.com/owner/name/pull/9', files: 1, add: 1, del: 0, draft: true },
+      });
+      let closes = 0;
+      await mergeItem(store.get(added.id)!, {
+        mergeAllowed: () => true,
+        gate: async () => ({ merged: false }),
+        gitMerge: async () => ({ ok: false, reason: 'the base moved first' }),
+        closePr: async () => { closes += 1; return { ok: true }; },
+        clock: () => 3000,
+        store: { append: () => {} } as never,
+      });
+      expect(closes, 'it closed a pull request whose merge never landed').toBe(0);
+    });
+
+    it('journals a close that failed rather than swallowing it', async () => {
+      const store = tempStore();
+      const added = addTicketItem(store, 'ABC-1', 1000);
+      store.append({
+        id: added.id, at: 2000, state: 'review', repo: 'owner/name', branch: 'feature/abc-1', base: 'develop',
+        pr: { no: 9, url: 'https://github.com/owner/name/pull/9', files: 1, add: 1, del: 0, draft: true },
+      });
+      const rows: Array<Record<string, unknown>> = [];
+      const result = await mergeItem(store.get(added.id)!, {
+        mergeAllowed: () => true,
+        gate: async () => ({ merged: true }),
+        gitMerge: async () => ({ ok: true, mergeSha: 'abc1234' }),
+        closePr: async () => ({ ok: false, reason: 'gh is not logged in' }),
+        append: (row: unknown) => { rows.push(row as Record<string, unknown>); return 'jid'; },
+        clock: () => 3000,
+        store: { append: () => {} } as never,
+      } as never);
+
+      expect(result.ok, 'a failed close un-merged the item').toBe(true);
+      const row = rows.find((r) => r['event'] === 'queue.pr-close-failed');
+      expect(row).toBeDefined();
+      expect(String(row?.['error'])).toMatch(/gh is not logged in/);
+    });
   });
 });
 

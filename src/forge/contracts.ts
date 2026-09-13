@@ -281,6 +281,10 @@ export const FORGE_EVENT_NAMES = [
   // The pull request was readied but the prediction could not be written into its
   // body. Kept apart from the row above so neither claims the other's failure.
   'queue.pr-prediction-failed',
+  // The squash landed on the base but the pull request could not be closed behind it.
+  // Journalled rather than swallowed: an open draft on a done ticket is counted by every
+  // check that reads open pull requests.
+  'queue.pr-close-failed',
   // The repo builds no mobile app, so there is no ship path to predict and the
   // pull request is left alone. Journaled because a silent skip is how a feature
   // that never runs looks exactly like one that does.
