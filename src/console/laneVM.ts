@@ -78,7 +78,11 @@ export type BoardCommand =
   // Reachable only from the lane sheet's own action bar: a tile shows one button, chosen
   // by state, so anything the state does not call for had no way to be clicked at all.
   | 'pause' | 'retire' | 'reaudit'
-  | 'settings' | 'queue' | 'blockers' | 'open-pr' | 'nudge' | `open-url:${string}`;
+  | 'settings' | 'queue' | 'blockers' | 'open-pr' | 'nudge' | `open-url:${string}`
+  // The second press of an irreversible action, carrying the token the first press was
+  // answered with. Shaped like `open-url:` above so the board's dispatcher handles it the
+  // same way, with no new prop threaded through three components.
+  | `confirm:${string}`;
 
 export interface BoardCta {
   label: string;

@@ -376,6 +376,9 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
     if (cmd === 'settings' || cmd === 'queue' || cmd === 'blockers') { dispatch({ type: 'view', view: cmd }); return; }
     if (cmd === 'open-pr') { if (lane?.pr?.url && typeof window !== 'undefined') window.open(lane.pr.url, '_blank', 'noopener'); return; }
     if (cmd.startsWith('open-url:')) { if (typeof window !== 'undefined') window.open(cmd.slice('open-url:'.length), '_blank', 'noopener'); return; }
+    // The second press of an irreversible action. Through the same command path the
+    // rail's own Confirm button uses, so one token is spent one way.
+    if (cmd.startsWith('confirm:')) { void processCommand(`confirm ${cmd.slice('confirm:'.length)}`).catch(() => undefined); return; }
     if (cmd === 'nudge') {
       const blocker = lane ? blockerFor(lane, blockers) : null;
       const who = blocker?.who ?? 'the owner';
