@@ -400,6 +400,11 @@ export interface RebaseOutcome {
 }
 
 export interface QueueRuntimeDeps {
+  /** Closes a pull request this queue merged. The same closer `QueueMergeDeps` carries;
+   *  named here too so the tick can retry one whose close failed at merge time. Absent
+   *  means no retry runs at all, which is the honest answer for a console wired with no
+   *  GitHub writer. */
+  closePr?: (input: { repo: string; pr: number; comment: string }) => Promise<{ ok: boolean; reason?: string } | void>;
   planner: QueuePlanner;
   launcher: ChainLauncher;
   gh: ChainGh;
@@ -1391,6 +1396,16 @@ export async function runQueueTick(deps: QueueRuntimeDeps, items: QueueItem[]): 
   if (await recoverParkedItems(deps, items, Math.max(0, deps.maxInFlight() - busy.length))) {
     items = deps.store.all().filter((item) => !advancing.has(item.id));
   }
+  // A pull request this queue merged and could not close at the time -- GitHub was down,
+  // or the call failed once. Nothing used to try again, so the board went on reporting a
+  // merged ticket as waiting for a merge (2026-09-13, BBZ-169, an hour after it landed).
+  // Never awaited by the rest of the pass: closing somebody's pull request is not worth
+  // holding up starting work, and a failure here comes round on the next tick.
+  void retryOpenPrCloses(items, {
+    ...(deps.closePr ? { closePr: deps.closePr } : {}),
+    ...(deps.append ? { append: deps.append } : {}),
+  }).catch(() => undefined);
+
   const inFlight = items.filter((item) => QUEUE_IN_FLIGHT_STATES.includes(item.state));
   const queued = items.filter((item) => item.state === 'queued');
   // R-76: an item waiting on an interview answer is in `planning` and therefore counts as
@@ -1648,4 +1663,61 @@ export async function promoteItem(
   }
   await deps.promote({ item, version: input.version, message: input.message });
   return { ok: true, code: 200, message: `production publish dispatched for ${input.version}` };
+}
+
+/** What `retryOpenPrCloses` needs: the same closer `mergeItem` uses, and somewhere to
+ *  record a retry that failed again. Both optional -- a caller with neither does nothing,
+ *  which is the honest answer for a console with no GitHub writer wired. */
+export interface RetryCloseDeps {
+  closePr?: (input: { repo: string; pr: number; comment: string }) => Promise<{ ok: boolean; reason?: string } | void>;
+  append?: (event: Record<string, unknown>) => void;
+}
+
+/**
+ * Close the pull requests this queue merged and could not close at the time.
+ *
+ * The squash pushes a new commit to the base, so GitHub never sees the branch inside it
+ * and never closes the pull request on its own. `mergeItem` closes it explicitly, and on
+ * 2026-09-13 that call met a GitHub outage: the merge landed, the close failed, the
+ * failure was journaled once, and nothing ever tried again. The board went on saying
+ * "Draft PR #159 is waiting for your Merge" for a ticket that had merged an hour before.
+ *
+ * Run on the queue's own tick. Closing an already-closed pull request changes nothing, so
+ * a retry is safe; the filters below exist to keep it quiet rather than to keep it correct.
+ * A failure here never propagates: the next item still gets its turn and this one comes
+ * round again on the following tick.
+ */
+export async function retryOpenPrCloses(items: QueueItem[], deps: RetryCloseDeps): Promise<string[]> {
+  if (!deps.closePr) return [];
+  const closed: string[] = [];
+  for (const item of items) {
+    const pr = item.pr;
+    // Only what this queue merged itself. A pull request somebody else owns is not the
+    // console's to close, however open it looks.
+    if (!pr || !item.repo || !item.mergedBy || !item.mergedAt) continue;
+    if (pr.closed === true || pr.merged === true) continue;
+    const sha = (item as { mergeSha?: string }).mergeSha;
+    const where = sha ? ` as ${sha}` : '';
+    const base = item.base ?? 'develop';
+    try {
+      const result = await deps.closePr({
+        repo: item.repo, pr: pr.no,
+        comment: `Merged into ${base}${where}. Closing this, since the squash lands a new commit and GitHub cannot see the branch in it.`,
+      });
+      if (result && result.ok === false) {
+        deps.append?.({
+          event: 'queue.pr-close-failed', actor: 'queue', itemId: item.id,
+          pr: pr.no, error: result.reason ?? 'no reason given', retry: true,
+        });
+        continue;
+      }
+      closed.push(item.id);
+    } catch (error) {
+      deps.append?.({
+        event: 'queue.pr-close-failed', actor: 'queue', itemId: item.id,
+        pr: pr.no, error: messageOf(error), retry: true,
+      });
+    }
+  }
+  return closed;
 }
