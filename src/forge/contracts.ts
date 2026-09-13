@@ -327,6 +327,10 @@ export const FORGE_EVENT_NAMES = [
   // Retire/Unretire click or the bulk `POST /retire-finished` -- never written by any
   // worker or automation.
   'lane.retired',
+  /** A lane that left the board on its own: no process, no queue row, nothing unpushed.
+   *  Distinct from `lane.retired`, which is a person archiving a finished lane, so the
+   *  board can always tell the two apart and the row carries why it went. */
+  'lane.abandoned',
   // The Conductor agent (2026-09-08): one usage row per model turn on the rail, and one
   // live-feed frame per tool receipt so the console refetches the thread mid-turn.
   'conductor.usage', 'conductor.receipt',

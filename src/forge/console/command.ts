@@ -39,7 +39,7 @@ import type { Lanes } from '../supervisor.js';
 import type { QueueStore } from '../intake/queueStore.js';
 import { conductorAgentEnabled, governorBudget } from '../policy.js';
 import { fleetConfigDir, forgeHome } from '../paths.js';
-import { retireLane } from './retire.js';
+import { retireAbandonedLane, retireLane } from './retire.js';
 import { consoleDir, recordAction, ActionsLedger, actionsLedgerPath } from './actions-ledger.js';
 import {
   compactRun, killRun, mergeRun, pauseRun, reauditRun, reopenRun, restoreRunCap,
@@ -55,6 +55,8 @@ import {
 import { labelFor as laneLabelFor, laneStateNowFor, meaningfulEvents, tokensToday } from './lanes.js';
 import { signalPhrase } from './journal-narrative.js';
 import { plainEventText } from './thread.js';
+import { sweepAbandonedLanes as sweepAbandoned, type AbandonedSweepResult } from './abandoned-sweep.js';
+import type { WorktreeState } from './abandoned.js';
 import { CONFIRM_TTL_MS } from '../../shared/console-model.js';
 import {
   applyRule, dismissRule, restoreRule, rulesPath, setRuleStatus, startEnforcementTick,
@@ -314,6 +316,9 @@ export interface ConsoleWritesDeps {
    *  repo/PR/base/worktree (`POST /run/:id/reaudit`). Defaults to `RunActionsDeps`'s own
    *  default (`defaultQueuePath()`, which follows `FORGE_HOME`) when unset. */
   queueStore?: QueueStore;
+  /** Reads what a worktree holds, for the abandoned sweep's courtesy check. Absent means
+   *  the check is skipped, which is safe: retiring writes one row and touches no tree. */
+  worktreeState?: (cwd: string) => WorktreeState | null;
   /** What `remove | archive | retire <lane>` retires against: the archived-inclusive
    *  lanes view (`lanesResponse(true, true)`) the retire rule reads heart and PR off.
    *  Falls back to `lanesView` when unset. */
@@ -799,6 +804,33 @@ export class ConsoleWrites {
       forgeHomeDir: this.deps.forgeHomeDir ?? forgeHome(), journalPath: this.deps.journalPath,
       lanesAll: () => (this.deps.lanesViewAll ?? this.deps.lanesView)?.().lanes ?? [],
     };
+  }
+
+  /**
+   * One pass of the abandoned-lane sweep (`abandoned-sweep.ts`), wired here because this
+   * class already owns `retireDeps` and the lanes view.
+   *
+   * Aaron, 2026-09-12: "if a lane is stuck it needs to self heal ... what would my options
+   * even be? leave it and just let it hold up the entire system? what a useless question."
+   * Three lanes had sat blocked for 70 hours or more with no process and no queue row, and
+   * the board's only exit for each was Kill, so it raised a confirm and asked every ten
+   * minutes whether to destroy something already gone.
+   *
+   * The worktree is read off the run's own registry row, and a lane with no such row
+   * reports none -- which is fine, because retiring writes one row and never touches a
+   * tree. See `abandoned.ts` for why that is a courtesy check rather than a safety gate.
+   */
+  sweepAbandonedLanes(): AbandonedSweepResult {
+    const deps = this.retireDeps();
+    return sweepAbandoned({
+      lanesAll: deps.lanesAll,
+      queue: () => this.deps.queueStore?.all() ?? [],
+      worktreeFor: (lane) => {
+        const cwd = this.deps.registry.get(lane.id)?.cwd;
+        return cwd ? this.deps.worktreeState?.(cwd) ?? null : null;
+      },
+      retire: (id, why) => { retireAbandonedLane(id, why, deps); },
+    });
   }
 
   /**

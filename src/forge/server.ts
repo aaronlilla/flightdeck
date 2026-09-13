@@ -70,6 +70,7 @@ import { processAlive, Registry } from './registry.js';
 import { route as routeMessage } from './router.js';
 import { RunInbox, deliverAnswer } from './runinbox.js';
 import { assertRunListening } from './console/listening.js';
+import { readWorktreeState } from './console/worktree-state.js';
 import { amendRunBrief, type AmendDeps } from './console/amend.js';
 import { ConductorAgent } from './console/agent.js';
 import { RoundsRoutes } from './console/rounds-route.js';
@@ -315,6 +316,14 @@ export class ForgeServer {
 
   private readonly consoleReads: ConsoleReads;
 
+  /** One pass of the abandoned-lane sweep, for the `forge up` tick to call. A lane with
+   *  no process, no queue row and nothing unpushed leaves the board on its own; every
+   *  lane that stays is reported with what kept it. Retiring is reversible and deletes
+   *  nothing, so nothing here needs a person's confirm. */
+  sweepAbandonedLanes(): ReturnType<ConsoleWrites['sweepAbandonedLanes']> {
+    return this.consoleWrites.sweepAbandonedLanes();
+  }
+
   private readonly wanted: number;
 
   private http: Server | undefined;
@@ -484,6 +493,7 @@ export class ForgeServer {
       lanesViewAll: () => this.consoleReads.lanesResponse(true, true),
       forgeHomeDir: this.forgeHomeDir,
       queueStore: this.queueStoreForMerge,
+      worktreeState: (cwd: string) => readWorktreeState(cwd),
       // R-53: under the flag, a service in Session 0 cannot open a browser, so the
       // account-login spawn `realSpawnLogin` would otherwise make is intercepted here
       // and turned into a published event the desktop login helper answers instead.

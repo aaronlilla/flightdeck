@@ -735,6 +735,20 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         liveness.evaluate();
         void wardenTick.run();
         try {
+          // A lane with no process, no queue row and nothing unpushed leaves the board on
+          // its own (Aaron, 2026-09-12: "if a lane is stuck it needs to self heal ... what
+          // would my options even be? leave it and just let it hold up the entire
+          // system?"). Retiring is reversible and deletes nothing, so this asks nobody.
+          // The warden's own rule that it never kills is untouched: this never kills.
+          const swept = server.sweepAbandonedLanes();
+          for (const row of swept.cleared) {
+            process.stdout.write(`lane ${row.id} cleared itself: ${row.why}
+`);
+          }
+        } catch {
+          // One bad pass never stops the tick, the same as every other step here.
+        }
+        try {
           const fleetState = sharedJournalCache.read(journalPath());
           for (const event of reconcileBurnOnce(fleetState, burnReported)) burnJournal.append(event);
 
