@@ -28,7 +28,7 @@ import { processAlive, type Registry } from '../registry.js';
 import type { RunRequest } from '../exec.js';
 import {
   accountName, accountsRegistryPath, addAccount, interactiveSentence, liveRunsByAccount,
-  loadAccounts, pickAccount, removeAccount, updateAccount,
+  defaultLoginOff, loadAccounts, pickAccount, removeAccount, setDefaultLoginOff, updateAccount,
 } from '../accounts.js';
 import { deleteLeftover, listLeftovers } from '../accounts-leftovers.js';
 import { AccountsService, diskWriters, fleetLoginDir, realProbe, type AccountsServiceDeps } from '../accounts-service.js';
@@ -588,6 +588,7 @@ export class ConsoleWrites {
       recordReadError: diskWriters.recordReadError,
       liveRuns: () => this.liveRunsByAccount(),
       fleetConfigDir: deps.fleetLoginDir ?? fleetLoginDir(() => fleetConfigDir()),
+      defaultLoginOff: () => defaultLoginOff(this.accountsPath),
       probe: deps.accountsProbe ?? realProbe(),
       // R-58, wired. A login that has just run out leaves one note per live terminal on
       // it saying where to come back; the shim reads it after its child exits. Without
@@ -1474,6 +1475,21 @@ export class ConsoleWrites {
       if (!this.deps.authorized(request, response)) return true;
       const result = await this.accountsConnect.disconnect(decodeURIComponent(match[1]!));
       respond(response, result.ok ? 200 : 409, result satisfies DisconnectResponse);
+      return true;
+    }
+
+    // The machine's own login has no registry row, so there is nothing to unlink and the
+    // row carried no control at all -- Aaron, 2026-09-12: "i have no way to unlink the
+    // other account, which i should be able to." This is the control: it takes that login
+    // out of the rotation and leaves it logged in, and it refuses while no Claude account
+    // is registered, since the machine would then have nothing to run on.
+    if (path === '/accounts/default-login' && method === 'POST') {
+      if (!this.deps.authorized(request, response)) return true;
+      const body = await readBody<{ off?: boolean }>(request);
+      const result = setDefaultLoginOff(body?.off === true, this.accountsPath);
+      respond(response, result.ok ? 200 : 409, result.ok
+        ? { ok: true as const, off: body?.off === true }
+        : { ok: false as const, error: result.reason });
       return true;
     }
 

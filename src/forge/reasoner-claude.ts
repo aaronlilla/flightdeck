@@ -21,7 +21,7 @@ import { Engine, type QueryFn } from '../adapter/engine.js';
 import type { Provider, Reasoner } from './contracts.js';
 import type { Journal } from './journal.js';
 import { modelFor, modelIdFor, reasonerTimeoutMsFor } from './policy.js';
-import { workerConfigDir } from './accounts.js';
+import { spendConfigDir } from './accounts.js';
 import { workerEnv } from './worker.js';
 
 /** The preferred JSON shape a `claude` reasoner call is asked to answer with. There is
@@ -154,7 +154,14 @@ export class ClaudeReasoner implements Reasoner {
     const env = workerEnv(this.deps.env ?? process.env);
     // `model` is already resolved above, so a model-scoped weekly bucket only counts
     // against a reasoner run of that model.
-    env['CLAUDE_CONFIG_DIR'] = workerConfigDir(model, this.deps.existsConfigDir);
+    // Spending, not reading, so the machine's own login is only reached while the
+    // operator has left it in the rotation. Off with every linked account spent refuses
+    // here rather than billing a login they switched off.
+    const configDir = spendConfigDir(model, this.deps.existsConfigDir);
+    if (configDir === null) {
+      throw new Error('every linked account is spent, and the login belonging to this machine is switched off in Settings');
+    }
+    env['CLAUDE_CONFIG_DIR'] = configDir;
 
     const engine = new Engine(this.deps.queryFn);
     let text = '';

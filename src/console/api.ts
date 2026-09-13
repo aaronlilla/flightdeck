@@ -431,6 +431,12 @@ export function disconnectAccount(id: string): Promise<DisconnectResponse> {
   return post<DisconnectResponse>(`/accounts/${encodeURIComponent(id)}/disconnect`, {});
 }
 
+/** Takes the machine's own login out of the rotation, or puts it back. It stays logged
+ *  in either way. Refused with a reason while no other Claude account is linked. */
+export function setDefaultLoginOff(off: boolean): Promise<{ ok: boolean; off?: boolean; error?: string }> {
+  return post<{ ok: boolean; off?: boolean; error?: string }>('/accounts/default-login', { off });
+}
+
 /** How much of this login the fleet may take. An omitted field is left alone;
  *  `maxConcurrent: 0` clears the ceiling. */
 export function updateAccount(id: string, patch: AccountUpdateRequest): Promise<AccountUpdateResponse> {
