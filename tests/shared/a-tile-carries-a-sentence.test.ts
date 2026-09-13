@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import { humanizeParkReason, oneSentence, TILE_SENTENCE_LIMIT } from '../../src/shared/humanize.js';
+import { plainStatus } from '../../src/forge/console/plain.js';
+import type { Lane } from '../../src/shared/console-model.js';
 
 /**
  * What a board tile is allowed to say.
@@ -79,5 +81,33 @@ describe('cutting a reason down to one sentence', () => {
     // Punctuation alone is not a sentence; it collapses to one mark and nothing else,
     // which the caller's own fallback replaces.
     expect(oneSentence('...').replace(/[.!?]/g, '')).toBe('');
+  });
+});
+
+describe('the line that actually lands on the card', () => {
+  // The cap used to be measured on the reason, and then "Stuck since today: " was added
+  // in front of it -- 137 characters on a card sized for 120, measured on the live board.
+  function blocked(reason: string): string {
+    const lane = {
+      id: 'r-1', state: 'blocked', kind: 'goal', since: Date.parse('2026-09-13T09:00:00Z'),
+      reason, pr: null, retiredAt: null, question: null,
+    } as unknown as Lane;
+    return plainStatus(lane, { now: Date.parse('2026-09-13T12:00:00Z') });
+  }
+
+  it('fits, prefix included', () => {
+    const said = blocked('a'.repeat(300));
+    expect(said.length, said).toBeLessThanOrEqual(TILE_SENTENCE_LIMIT + 2);
+  });
+
+  it('still says which day and why', () => {
+    const said = blocked('the base moved under it');
+    expect(said).toMatch(/Stuck since/);
+    expect(said).toMatch(/the base moved under it/);
+  });
+
+  it('ends once, whatever the reason brought', () => {
+    expect(blocked('it stopped.')).not.toMatch(/\.\./);
+    expect(blocked('it stopped')).toMatch(/\.$/);
   });
 });
