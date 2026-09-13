@@ -53,6 +53,14 @@ export function App({ eventStreamOptions }: AppProps = {}): JSX.Element {
   const resolvedOverridesRef = useRef<Map<string, LocalResolution>>(new Map());
   const refreshing = useRef(false);
 
+  // The theme lives on the app's own div, so anything drawn outside it -- a hover card
+  // portalled to the body to escape a scrolling container -- resolved none of the colour
+  // variables and rendered transparent with the page showing through (screenshotted
+  // 2026-09-12). Mirrored onto the document so every portal, now and later, inherits it.
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', state.theme);
+  }, [state.theme]);
+
   const applyResolved = useCallback(
     (messages: Message[]): Message[] => applyLocalResolutions(messages, resolvedOverridesRef.current, Date.now()),
     [],
