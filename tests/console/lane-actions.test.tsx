@@ -140,3 +140,34 @@ describe('steering a lane without stopping it', () => {
     await waitFor(() => { expect(capped).toHaveBeenCalledWith('r-1', 250000); });
   });
 });
+
+describe('buttons that would do nothing are not offered', () => {
+  it('does not offer Unretire on a lane that is still on the board', () => {
+    sheet(lane());
+    expect(screen.queryByTestId('lane-do-unretire')).toBeNull();
+    expect(screen.getByTestId('lane-actions-unavailable').textContent)
+      .toMatch(/Unretire — it is already on the board/);
+  });
+
+  it('offers Resume on a lane that stopped, and not on one already going', () => {
+    sheet(lane({ state: 'paused', live: { alive: false, pid: 1, lastEventAt: NOW, checkedAt: NOW } }));
+    expect(screen.getByTestId('lane-do-resume')).toBeTruthy();
+    cleanup();
+    sheet(lane());
+    expect(screen.queryByTestId('lane-do-resume')).toBeNull();
+    expect(screen.getByTestId('lane-actions-unavailable').textContent)
+      .toMatch(/Resume — it is already running/);
+  });
+});
+
+describe('the rest of the bar refuses what it cannot do', () => {
+  it('offers Compact only while something is running', () => {
+    sheet(lane());
+    expect(screen.getByTestId('lane-do-compact')).toBeTruthy();
+    cleanup();
+    sheet(lane({ state: 'done', live: { alive: false, pid: 1, lastEventAt: NOW, checkedAt: NOW } }));
+    expect(screen.queryByTestId('lane-do-compact')).toBeNull();
+    expect(screen.getByTestId('lane-actions-unavailable').textContent)
+      .toMatch(/Compact — nothing is running for it to compact/);
+  });
+});
