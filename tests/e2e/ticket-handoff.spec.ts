@@ -34,6 +34,12 @@ test('the sheet can hand a ticket on, and says what each of the three writes did
     comment: 'merged, the deposit screen is the one to look at',
   });
 
+  // Irreversible, so the first press only asks. It says what it is about to do, and
+  // nothing has been written yet.
+  await expect(sheet.getByTestId('lane-handoff-blast')).toContainText('comments, assigns and moves it');
+  await expect(sheet.getByTestId('lane-handoff-result')).toHaveCount(0);
+  await sheet.getByTestId('lane-handoff-submit').click();
+
   const result = sheet.getByTestId('lane-handoff-result');
   await expect(result).toBeVisible();
   // Every step named, not one verdict for three writes.

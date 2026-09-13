@@ -1518,16 +1518,23 @@ export class ConsoleWrites {
       const key = decodeURIComponent(match[1]!);
       const body = await readBody<{ to?: unknown; comment?: unknown }>(request);
       const deps = this.deps.handoffDeps?.() ?? handoffDepsFromEnv();
-      const result = await handOffTicket(
-        key, String(body?.['to'] ?? ''), String(body?.['comment'] ?? ''), deps,
+      const to = String(body?.['to'] ?? '');
+      const comment = String(body?.['comment'] ?? '');
+      // Irreversible, and it writes to somebody else's board: a comment cannot be
+      // unposted and a transition cannot be taken back from here. Behind the same
+      // confirm as kill and merge, for the same reason.
+      const outcome = await this.confirmGate(
+        body, 'console', `hands ${key} to ${to || 'nobody'}: comments, assigns and moves it.`,
+        async () => {
+          const result = await handOffTicket(key, to, comment, deps);
+          // A refusal attempted nothing, so it is a request problem, not a partial
+          // write -- and the two must not answer alike, or a caller cannot tell "no"
+          // from "half". Missing credentials is the machine's problem, not the
+          // caller's (503), so retrying the same request forever is not the answer.
+          return { status: result.refused ? (deps.client ? 400 : 503) : 200, body: result };
+        },
       );
-      // A refusal attempted nothing, so it is a request problem, not a partial write --
-      // and the two must not answer alike, or a caller cannot tell "no" from "half".
-      // Missing credentials is the machine's problem rather than the caller's (503).
-      const status = result.refused
-        ? (deps.client ? 400 : 503)
-        : 200;
-      respond(response, status, result);
+      respond(response, outcome.status, outcome.body);
       return true;
     }
 

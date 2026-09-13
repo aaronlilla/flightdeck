@@ -198,8 +198,12 @@ export function reauditRun(id: string): Promise<ReauditResponse> {
  * situation from none and from all. A 400 or 503 means nothing was written at all; the
  * body says which, and the caller shows `refused` rather than a step list.
  */
-export function handOffTicket(key: string, to: string, comment: string): Promise<TicketHandoffResponse> {
-  return post<TicketHandoffResponse>(`/ticket/${encodeURIComponent(key)}/handoff`, { to, comment });
+export function handOffTicket(
+  key: string, to: string, comment: string, confirm?: string,
+): Promise<Gated<TicketHandoffResponse>> {
+  return post<Gated<TicketHandoffResponse>>(
+    `/ticket/${encodeURIComponent(key)}/handoff`, withConfirm({ to, comment }, confirm),
+  );
 }
 
 /** H2.3: what a bulk retire would do (`GET /retire-finished`), and doing it

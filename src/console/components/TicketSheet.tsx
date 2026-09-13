@@ -127,6 +127,9 @@ function LaneHandoff({ lane }: { lane: Lane }): JSX.Element | null {
   const ticket = lane.ticket;
   if (!ticket) return null;
   const result = handoff.result?.kind === 'done' ? handoff.result : null;
+  // Irreversible, so the first press asks and the second writes. A comment cannot be
+  // unposted and a transition cannot be taken back from here.
+  const asking = handoff.result?.kind === 'confirm';
   return (
     <details data-testid="lane-handoff">
       <summary className="kick" style={{ cursor: 'pointer', color: 'var(--ink3)' }}>{`Hand ${ticket} on`}</summary>
@@ -151,11 +154,16 @@ function LaneHandoff({ lane }: { lane: Lane }): JSX.Element | null {
         <button
           type="button" className="btn" data-testid="lane-handoff-submit"
           disabled={comment.trim().length === 0 || handoff.pending}
-          onClick={() => { void handoff.run(ticket, to, comment.trim()); }}
+          onClick={() => { void (asking ? handoff.confirm() : handoff.run(ticket, to, comment.trim())); }}
           style={{ alignSelf: 'flex-start' }}
         >
-          {handoff.pending ? 'Handing on…' : `Hand ${ticket} on`}
+          {handoff.pending ? 'Handing on…' : asking ? `Confirm — hand ${ticket} on` : `Hand ${ticket} on`}
         </button>
+        {asking && handoff.result?.kind === 'confirm' ? (
+          <span data-testid="lane-handoff-blast" role="alert" style={{ fontSize: 'var(--fs-meta)', color: 'var(--warn)' }}>
+            {handoff.result.blast}
+          </span>
+        ) : null}
         {result ? (
           <div
             data-testid="lane-handoff-result" role="status"

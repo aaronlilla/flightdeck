@@ -1,0 +1,38 @@
+[
+  {
+    "board": "1a",
+    "theme": "dark",
+    "console": "test-results/design-parity/1a-board-dark-console.png",
+    "design": "test-results/design-parity/1a-board-dark-design.png",
+    "diffPercent": 7.7,
+    "sizes": "console 1440x900 · design 1442x903",
+    "note": "full page"
+  },
+  {
+    "board": "1g",
+    "theme": "dark",
+    "console": "test-results/design-parity/1g-rail-dark-console.png",
+    "design": "test-results/design-parity/1g-rail-dark-design.png",
+    "diffPercent": 6.4,
+    "sizes": "console 1440x900 · design 1442x903",
+    "note": "the board is not dimmed: the design dims it to 40% only to foreground the rail"
+  },
+  {
+    "board": "1a",
+    "theme": "light",
+    "console": "test-results/design-parity/1a-board-light-console.png",
+    "design": "test-results/design-parity/1a-board-light-design.png",
+    "diffPercent": 6.9,
+    "sizes": "console 1440x900 · design 1442x903",
+    "note": "full page"
+  },
+  {
+    "board": "1g",
+    "theme": "light",
+    "console": "test-results/design-parity/1g-rail-light-console.png",
+    "design": "test-results/design-parity/1g-rail-light-design.png",
+    "diffPercent": 5.6,
+    "sizes": "console 1440x900 · design 1442x903",
+    "note": "the board is not dimmed: the design dims it to 40% only to foreground the rail"
+  }
+]

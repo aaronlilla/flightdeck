@@ -16,6 +16,8 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { fetchConfirmed } from '../../helpers/confirmed.js';
+
 import { Inbox } from '../../../src/forge/inbox.js';
 import { Journal } from '../../../src/forge/journal.js';
 import { ForgeServer } from '../../../src/forge/server.js';
@@ -48,8 +50,11 @@ function fakeClient(over: Partial<Record<'comment' | 'assign' | 'transition', ()
   };
 }
 
+/** The route is irreversible, so it answers 202 with a token first and writes nothing
+ *  until the request comes back carrying it. `fetchConfirmed` does that second press,
+ *  the way the console's own confirm card does. */
 async function handoff(key: string, body: unknown, withToken = true): Promise<{ status: number; body: HandoffResult }> {
-  const response = await fetch(`${base}/ticket/${encodeURIComponent(key)}/handoff`, {
+  const response = await fetchConfirmed(`${base}/ticket/${encodeURIComponent(key)}/handoff`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...(withToken ? { 'x-forge-token': token } : {}) },
     body: JSON.stringify(body),
@@ -136,6 +141,20 @@ describe('POST /ticket/:key/handoff', () => {
 
     expect(status).toBe(503);
     expect(body.refused).toMatch(/jira/i);
+  });
+
+  // Irreversible: a comment cannot be unposted and a transition cannot be taken back
+  // from here, so the first press must ask and write nothing.
+  it('asks before it writes, and the asking press writes nothing', async () => {
+    const response = await fetch(`${base}/ticket/BBZ-290/handoff`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forge-token': token },
+      body: JSON.stringify({ to: 'qa', comment: 'over to you' }),
+    });
+
+    expect(response.status).toBe(202);
+    expect(await response.json()).toMatchObject({ pending: true });
+    expect(wrote).toEqual([]);
   });
 
   it('is behind the same token as every other console write', async () => {

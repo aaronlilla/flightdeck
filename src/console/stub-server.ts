@@ -1328,32 +1328,33 @@ export function createStubServer() {
         const to = String(sent.to ?? '');
         const comment = String(sent.comment ?? '').trim();
         const people: Record<string, string> = { qa: 'QA', backend: 'the backend lead', me: 'me' };
-        const refuse = (reason: string, status: number): void => {
-          const out: TicketHandoffResponse = { ok: false, steps: [], refused: reason };
-          json(response, status, out);
-        };
-        if (key.endsWith('-503')) {
-          refuse('no jira credentials are wired into this console, so nothing was written', 503);
-          return;
-        }
-        if (!comment) {
-          refuse('a handoff carries a comment saying what the next person is looking at', 400);
-          return;
-        }
-        if (!people[to]) {
-          refuse(`"${to}" is not somebody this console can hand to; it knows: ${Object.keys(people).join(', ')}`, 400);
-          return;
-        }
-        const partial = key.endsWith('-207');
-        const steps: TicketHandoffResponse['steps'] = [
-          { name: 'comment', ok: true, detail: 'commented' },
-          { name: 'assign', ok: true, detail: `assigned to ${people[to] as string}` },
-          partial
-            ? { name: 'transition', ok: false, detail: 'transition 31 is not available' }
-            : { name: 'transition', ok: true, detail: 'moved' },
-        ];
-        const out: TicketHandoffResponse = { ok: steps.every((step) => step.ok), steps, refused: '' };
-        json(response, 200, out);
+        const refuse = (reason: string, status: number): { status: number; body: unknown } => ({
+          status, body: { ok: false, steps: [], refused: reason } satisfies TicketHandoffResponse,
+        });
+        // Irreversible, so it goes through the same confirm gate the real route does:
+        // a press asks, and only the press that comes back with the token writes.
+        const outcome = gate(sent as Record<string, unknown>,
+          `hands ${key} to ${to || 'nobody'}: comments, assigns and moves it.`, () => {
+            if (key.endsWith('-503')) {
+              return refuse('no jira credentials are wired into this console, so nothing was written', 503);
+            }
+            if (!comment) {
+              return refuse('a handoff carries a comment saying what the next person is looking at', 400);
+            }
+            if (!people[to]) {
+              return refuse(`"${to}" is not somebody this console can hand to; it knows: ${Object.keys(people).join(', ')}`, 400);
+            }
+            const partial = key.endsWith('-207');
+            const steps: TicketHandoffResponse['steps'] = [
+              { name: 'comment', ok: true, detail: 'commented' },
+              { name: 'assign', ok: true, detail: `assigned to ${people[to] as string}` },
+              partial
+                ? { name: 'transition', ok: false, detail: 'transition 31 is not available' }
+                : { name: 'transition', ok: true, detail: 'moved' },
+            ];
+            return { status: 200, body: { ok: steps.every((step) => step.ok), steps, refused: '' } satisfies TicketHandoffResponse };
+          });
+        json(response, outcome.status, outcome.body);
         return;
       }
       const runReauditMatch = /^\/run\/([^/]+)\/reaudit$/.exec(urlPath);

@@ -56,6 +56,7 @@ export default defineConfig({
       '/command': proxied(),
       '/run': proxied(),
       '/state': proxied(),
+      '/ticket': proxied(),
       '/queue': proxied(),
       '/blockers': proxied(),
       '/send': proxied(),
