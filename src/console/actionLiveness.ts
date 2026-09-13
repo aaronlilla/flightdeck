@@ -46,6 +46,26 @@ export function laneActionLiveness(input: LaneActionInput): Liveness {
     return base === 'unretire' ? LIVE : dead('this lane has left the board');
   }
 
+  // Past this point the lane is ON the board, so bringing it back is not a thing to do.
+  // The sheet's action bar asks about every command rather than only the one the tile
+  // would have shown, and an Unretire offered on a live lane is a button that does
+  // nothing -- the exact failure the bar exists to end.
+  if (base === 'unretire') return dead('it is already on the board');
+
+  if (base === 'resume') {
+    // Resuming restarts something that stopped. The board offers it on paused, parked and
+    // blocked lanes, so the only state it cannot mean anything in is one already going.
+    if (lane.live?.alive === true || lane.state === 'running') return dead('it is already running');
+    return LIVE;
+  }
+
+  if (base === 'compact') {
+    // Compacting trims a live session's history and carries on. With nothing running
+    // there is no history to trim and nothing to carry on.
+    if (lane.live?.alive !== true) return dead('nothing is running for it to compact');
+    return LIVE;
+  }
+
   if (base === 'merge') {
     if (lane.pr === null) return dead('no pull request is open on it');
     if (lane.pr.merged === true) return dead('its pull request is already merged');
