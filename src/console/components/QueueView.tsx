@@ -3,6 +3,7 @@ import type { JSX } from 'react';
 import { ACTIONS, useAction } from '../actions.js';
 import type { QueueItem } from '../../shared/console-model.js';
 import { queueActionLiveness } from '../actionLiveness.js';
+import { WhatIsHover } from './WhatIsCard.js';
 import { useWidthStepper } from '../useWidthStepper.js';
 import { Marks } from './QuestionCard.js';
 import { NarratedLine } from './Narrated.js';
@@ -45,7 +46,7 @@ function LaterRow({ item }: { item: QueueItem }): JSX.Element {
   return (
     <div className="queue-row" style={{ display: 'grid', gridTemplateColumns: '44px minmax(0,1fr) minmax(0,1fr) 190px', gap: 18, alignItems: 'baseline', padding: '14px 16px', borderBottom: '1px solid var(--line)' }}>
       <span className="kick" style={{ fontSize: 'var(--fs-meta)' }}>{state}</span>
-      <span><span className="key" style={{ marginRight: 10 }}>{item.ticket ?? ''}</span><span className="hd" data-testid="queue-card-title" style={{ fontSize: 'var(--fs-rowhead)' }}>{titleOf(item)}</span></span>
+      <span>{item.ticket ? <WhatIsHover refText={item.ticket}><span className="key" style={{ marginRight: 10 }}>{item.ticket}</span></WhatIsHover> : null}<span className="hd" data-testid="queue-card-title" style={{ fontSize: 'var(--fs-rowhead)' }}>{titleOf(item)}</span></span>
       <span style={{ color: 'var(--ink2)' }}>{item.reason ?? (item.pr ? `PR #${item.pr.no}${item.pr.draft ? ' (draft)' : ''}` : '')}</span>
       <span>{action && verdict.live
         ? <button type="button" className={`btn ${action.kind}`} onClick={action.run}>{action.label}</button>
@@ -87,7 +88,7 @@ export function QueueView({ items, paused, pauseReason, maxInFlight, working = 0
         {next.map((item, index) => (
           <div key={item.id} className="queue-row" style={{ display: 'grid', gridTemplateColumns: '44px minmax(0,1fr) minmax(0,1fr) 190px', gap: 18, alignItems: 'baseline', padding: '14px 16px', borderBottom: '1px solid var(--line)' }}>
             <span className="hd" style={{ fontSize: 'var(--fs-num)', color: 'var(--ink3)', fontVariantNumeric: 'tabular-nums' }}>{index + 1}</span>
-            <span><span className="key" style={{ marginRight: 10 }}>{item.ticket ?? ''}</span><span className="hd" data-testid="queue-card-title" style={{ fontSize: 'var(--fs-rowhead)' }}><NarratedLine bag={item.narration} field="title" glance={titleOf(item)} testid="queue-title" {...(verbose === undefined ? {} : { verbose })} /></span></span>
+            <span>{item.ticket ? <WhatIsHover refText={item.ticket}><span className="key" style={{ marginRight: 10 }}>{item.ticket}</span></WhatIsHover> : null}<span className="hd" data-testid="queue-card-title" style={{ fontSize: 'var(--fs-rowhead)' }}><NarratedLine bag={item.narration} field="title" glance={titleOf(item)} testid="queue-title" {...(verbose === undefined ? {} : { verbose })} /></span></span>
             <span style={{ color: 'var(--ink2)' }}><NarratedLine bag={item.narration} field="whyNext" glance={item.whyNext ?? ''} testid="queue-why" {...(verbose === undefined ? {} : { verbose })} /></span>
             <span style={{ color: index === 0 && !paused ? 'var(--acc)' : 'var(--ink)' }}><NarratedLine bag={item.narration} field="startsIn" glance={item.startsIn ?? ''} testid="queue-starts" {...(verbose === undefined ? {} : { verbose })} /></span>
           </div>

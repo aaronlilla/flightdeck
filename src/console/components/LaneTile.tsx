@@ -3,6 +3,7 @@ import type { JSX } from 'react';
 import { boardCta, boardStateWord, timeInStateText, tileHeadlineParts, type BoardCommand } from '../laneVM.js';
 import { laneActionLiveness } from '../actionLiveness.js';
 import { actionable } from '../../shared/liveness.js';
+import { WhatIsHover } from './WhatIsCard.js';
 import type { Blocker, Lane } from '../../shared/console-model.js';
 import { Marks } from './QuestionCard.js';
 
@@ -54,7 +55,16 @@ export function LaneTile({ lane, now, blocker = null, onOpen, onCommand }: LaneT
     >
       <Marks />
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
-        <span className="key" data-testid="tile-key" title={keyText} style={{ minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{keyText}</span>
+        {/* The ticket key is what a reader hovers to ask what this is (Aaron,
+            2026-09-12). It is a plain span rather than a link here, so the hover is
+            attached directly; `No ticket` names nothing and gets none. */}
+        {head.key ? (
+          <WhatIsHover refText={head.key}>
+            <span className="key" data-testid="tile-key" title={keyText} style={{ minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{keyText}</span>
+          </WhatIsHover>
+        ) : (
+          <span className="key" data-testid="tile-key" title={keyText} style={{ minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{keyText}</span>
+        )}
         <span data-testid="tile-state" style={{ flex: 'none', fontSize: 'var(--fs-kicker)', fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: word.color }}>{word.word}</span>
       </div>
       {title === null ? null : (

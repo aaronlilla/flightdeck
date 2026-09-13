@@ -52,6 +52,7 @@ export default defineConfig({
       '/caps': proxied(),
       '/machine': proxied(),
       '/proposals': proxied(),
+      '/whatis': proxied(),
       '/command': proxied(),
       '/run': proxied(),
       '/state': proxied(),

@@ -584,9 +584,16 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         && envQueueMaxInFlight >= 1 && envQueueMaxInFlight <= 12
         ? envQueueMaxInFlight
         : undefined;
+      // `GET /whatis` reads one issue so hovering a ticket key shows what it says. Built
+      // once here rather than per request, and absent without credentials -- a ticket then
+      // resolves from the board alone.
+      const whatIsJira = jiraConfigFromEnv();
+      const whatIsReader = whatIsJira ? createJiraWriteClient(whatIsJira) : null;
+
       const server = new ForgeServer({
         lanes, inbox, journalPath: journalPath(), journalCache: sharedJournalCache, registry,
         stuck: () => liveness.stuck(),
+        ...(whatIsReader ? { jiraRead: (key: string) => whatIsReader.read(key) } : {}),
         reasoner,
         // R-55: the Codex advisor's routes. The advisor itself never spends unless a
         // caller hits /codex/ask; `ask` never awaits the Codex turn (codexAdvisor.ts).

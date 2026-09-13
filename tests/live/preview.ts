@@ -24,6 +24,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { extname, join, normalize } from 'node:path';
 
 import { settleDeadConfirms } from '../../src/forge/console/thread.js';
+import { classifyRef, fromBoard, notFound, prNumberFrom, pullRequestFromBoard, runFromBoard } from '../../src/forge/console/whatis.js';
 import type { Message } from '../../src/shared/console-model.js';
 
 const LIVE = process.env['FORGE_LIVE_BASE'] ?? 'http://127.0.0.1:4120';
@@ -81,6 +82,30 @@ async function main(): Promise<void> {
       }
       if (serveFile(asset, response)) return;
 
+      if (url.pathname === '/whatis') {
+        // Answered from THIS checkout, because the live server is on an older head and
+        // returns 404 for a route it does not have yet. The board half is real data
+        // proxied from it; the Jira half is absent here, since the preview holds no
+        // credentials -- which is the same answer an unconfigured console gives.
+        const ref = url.searchParams.get('ref') ?? '';
+        // In parallel: the real route reads both in-process, so two sequential round
+        // trips here would make the preview look slower than the thing it previews.
+        const [lanesBody, queueBody] = await Promise.all([
+          fetch(LIVE + '/lanes?all=1', { headers: { 'x-forge-token': token } }).then((r) => r.json() as Promise<{ lanes?: any[] }>),
+          fetch(LIVE + '/queue', { headers: { 'x-forge-token': token } }).then((r) => r.json() as Promise<{ items?: any[] }>),
+        ]);
+        const lanes = lanesBody.lanes ?? [];
+        const queue = queueBody.items ?? [];
+        const kind = classifyRef(ref);
+        const answer = kind === 'pull-request'
+          ? (pullRequestFromBoard(prNumberFrom(ref) ?? -1, lanes, queue) ?? notFound(ref))
+          : kind === 'ticket'
+            ? (fromBoard(ref, lanes, queue) ?? notFound(ref))
+            : (runFromBoard(ref, lanes) ?? fromBoard(ref, lanes, queue) ?? notFound(ref));
+        response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+        response.end(JSON.stringify(answer));
+        return;
+      }
       const upstream = await fetch(LIVE + url.pathname + url.search, { headers: { 'x-forge-token': token } });
       let body = await upstream.text();
       if (url.pathname === '/thread' && upstream.ok) {
