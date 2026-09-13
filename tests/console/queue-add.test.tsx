@@ -141,3 +141,33 @@ describe('putting work into the queue from the queue screen', () => {
     });
   });
 });
+
+describe('naming the repository a brief belongs to', () => {
+  it('offers a repo box, and puts the name into the brief that is sent', async () => {
+    view();
+    fireEvent.change(screen.getByTestId('queue-add-input'), { target: { value: 'the row names nothing' } });
+    fireEvent.change(screen.getByTestId('queue-add-repo'), { target: { value: 'aaronlilla/flightdeck' } });
+    expect(screen.getByTestId('queue-add-reading').textContent).toBe('Reads as a brief, for aaronlilla/flightdeck.');
+    fireEvent.click(screen.getByTestId('queue-add-submit'));
+    await waitFor(() => {
+      expect(added).toHaveBeenCalledWith({
+        source: 'brief',
+        input: ['repo: aaronlilla/flightdeck', '', 'the row names nothing'].join(String.fromCharCode(10)),
+      });
+    });
+  });
+
+  it('will not send a repo that is not owner/name', () => {
+    view();
+    fireEvent.change(screen.getByTestId('queue-add-input'), { target: { value: 'the row names nothing' } });
+    fireEvent.change(screen.getByTestId('queue-add-repo'), { target: { value: 'flightdeck' } });
+    expect(screen.getByTestId('queue-add-submit').hasAttribute('disabled')).toBe(true);
+    expect(screen.getByTestId('queue-add-reading').textContent).toMatch(/is not a repository/);
+  });
+
+  it('says where a brief with no repo will land, rather than leaving it unsaid', () => {
+    view();
+    fireEvent.change(screen.getByTestId('queue-add-input'), { target: { value: 'the row names nothing' } });
+    expect(screen.getByTestId('queue-add-reading').textContent).toMatch(/goes to the default one/);
+  });
+});
