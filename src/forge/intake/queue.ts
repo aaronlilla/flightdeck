@@ -33,6 +33,7 @@ import type { QueueStore } from './queueStore.js';
 import { workspaceRoot } from '../paths.js';
 import { roadmapIdOpen } from '../roadmap.js';
 import { renderShipPrediction, shipPredictionFor } from './shipPrediction.js';
+import { parkReasonFor } from './parkReason.js';
 
 /**
  * A.1: `ChainCouncilResult` (`chain.ts`) carries no findings text, only a verdict and an
@@ -730,7 +731,10 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
     // and it always failed. An operator's retry (`item.retriedAt`) still clears `runKey`
     // and relaunches on the same goal path via `launchGoal`, the same way a retried brief
     // relaunches via `launcher.launch`.
-    return relaunchOnRetryOrPark(item, deps, status.verdict ?? 'unknown', { hop: 'run' });
+    // The verdict is one token, written for a switch. `parkReasonFor` turns it into the
+    // sentence a person reads: a card carrying only the word "stopped" is what the queue
+    // handed over on 2026-09-13 after telling somebody to go and read it.
+    return relaunchOnRetryOrPark(item, deps, parkReasonFor(status.verdict, 'run'), { hop: 'run', verdict: status.verdict ?? null });
   }
 
   if (!item.briefPath) {
@@ -859,7 +863,7 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
     if (pr && status.verdict !== undefined) {
       deps.append({ event: 'queue.unverified-pr', actor: 'queue', itemId: item.id, pr: pr.number, url: pr.url, verdict: status.verdict });
     } else {
-      return relaunchOnRetryOrPark(item, deps, status.verdict ?? 'unknown', { hop: 'gate' });
+      return relaunchOnRetryOrPark(item, deps, parkReasonFor(status.verdict, 'gate'), { hop: 'gate', verdict: status.verdict ?? null });
     }
   }
   if (!pr) {
