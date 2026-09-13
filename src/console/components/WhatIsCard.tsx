@@ -1,5 +1,6 @@
 import type { JSX, ReactNode } from 'react';
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 import * as api from '../api.js';
 import type { WhatIs } from '../../forge/console/whatis.js';
@@ -114,8 +115,25 @@ export function WhatIsHover({ refText, children, lookup }: WhatIsHoverProps): JS
     setOpen(false);
   };
 
+  const anchorRef = useRef<HTMLSpanElement | null>(null);
+
+  /** Where to draw the card, in viewport coordinates, flipped up when there is no room
+   *  below and pulled left when it would run off the right edge. */
+  const place = (): { top: number; left: number } => {
+    const rect = anchorRef.current?.getBoundingClientRect();
+    if (!rect) return { top: 0, left: 0 };
+    const width = 420;
+    const below = window.innerHeight - rect.bottom;
+    const top = below < 220 && rect.top > below ? Math.max(8, rect.top - 8 - 200) : rect.bottom + 4;
+    const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
+    return { top, left };
+  };
+
+  const at = open && what ? place() : null;
+
   return (
     <span
+      ref={anchorRef}
       style={{ position: 'relative', display: 'inline-block' }}
       onMouseEnter={enter}
       onMouseLeave={leave}
@@ -124,18 +142,22 @@ export function WhatIsHover({ refText, children, lookup }: WhatIsHoverProps): JS
       data-testid="whatis-anchor"
     >
       {children}
-      {open && what ? (
+      {at && what ? createPortal((
         <span
           role="tooltip" data-testid="whatis-card"
           style={{
-            position: 'absolute', top: '100%', left: 0, zIndex: 40, marginTop: 4,
+            // Drawn into the body, not beside the anchor. The Needs-you strip scrolls
+            // inside itself (`maxHeight: 34vh; overflow-y: auto`), and an absolutely
+            // positioned child of a scrolling box is CLIPPED by it -- the card rendered
+            // at the right size and place and was invisible on screen (screenshotted
+            // 2026-09-12). Fixed positioning off the anchor's own rect escapes every
+            // such ancestor.
+            position: 'fixed', top: at.top, left: at.left, zIndex: 60,
             border: '1px solid var(--line2)', background: 'var(--panel)', padding: '12px 14px',
             boxShadow: '0 6px 20px rgba(0,0,0,.18)', display: 'block', cursor: 'auto',
             // An absolutely positioned box takes its width from its containing block, and
             // the anchor sits inside a narrow board column -- so without these the card
-            // came out about 140px wide and wrapped the state one letter per line
-            // (screenshotted 2026-09-12; the unit tests were green throughout, which is
-            // what looking at it is for).
+            // came out about 140px wide and wrapped the state one letter per line.
             width: 'max-content', minWidth: 280, maxWidth: 420,
             whiteSpace: 'normal', textAlign: 'left', font: 'inherit',
           }}
@@ -143,7 +165,7 @@ export function WhatIsHover({ refText, children, lookup }: WhatIsHoverProps): JS
         >
           <Body what={what} />
         </span>
-      ) : null}
+      ), document.body) : null}
     </span>
   );
 }

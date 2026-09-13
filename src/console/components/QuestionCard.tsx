@@ -2,6 +2,7 @@ import type { JSX } from 'react';
 import { useState } from 'react';
 
 import { durationWords } from '../laneVM.js';
+import { Linkify } from './Linkify.js';
 
 /**
  * The one question card (UX rule 2): two to four options, the first recommended, and a
@@ -147,10 +148,10 @@ export function QuestionCard(props: QuestionCardProps): JSX.Element {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10 }}>
         {rail
           ? <span className="kick" style={{ color: 'var(--warn)', fontWeight: 700, cursor: onHead ? 'pointer' : undefined }} onClick={onHead}>{head}</span>
-          : <span className="key" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{head}</span>}
+          : <span className="key" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}><Linkify text={head} /></span>}
         <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)', whiteSpace: 'nowrap', flex: 'none' }}>{stamp}</span>
       </div>
-      <p className="hd" dir="auto" style={{ margin: 0, fontSize: 'var(--fs-lead)', lineHeight: 1.25, overflowWrap: 'anywhere' }}>{prompt}</p>
+      <p className="hd" dir="auto" style={{ margin: 0, fontSize: 'var(--fs-lead)', lineHeight: 1.25, overflowWrap: 'anywhere' }}><Linkify text={prompt} /></p>
       {evidence && evidence.length > 0 ? (
         <div>
           <button

@@ -122,3 +122,29 @@ describe('the card carries its own width', () => {
     expect(style).toMatch(/max-width/);
   });
 });
+
+/**
+ * Two more escapes from the same feature, both found by screenshotting it and both
+ * invisible to every test above.
+ *
+ * The card was drawn beside its anchor, and the Needs-you strip scrolls inside itself
+ * (`maxHeight: 34vh; overflow-y: auto`) — so it rendered at the right size and position
+ * and was clipped out of sight. Then, drawn into the body to escape that, it lost the
+ * colour variables, which live on the app's own div: it came back solid-sized and fully
+ * transparent, with the page showing through it.
+ */
+describe('the card escapes whatever it opened inside', () => {
+  it('is drawn into the document body, not beside its anchor', async () => {
+    const { anchor } = mount();
+    await userEvent.hover(anchor);
+    await waitFor(() => expect(screen.getByTestId('whatis-card')).toBeTruthy());
+    expect(screen.getByTestId('whatis-card').parentElement?.tagName).toBe('BODY');
+  });
+
+  it('is positioned against the viewport, since its anchor is no longer its parent', async () => {
+    const { anchor } = mount();
+    await userEvent.hover(anchor);
+    await waitFor(() => expect(screen.getByTestId('whatis-card')).toBeTruthy());
+    expect(screen.getByTestId('whatis-card').getAttribute('style') ?? '').toMatch(/position:\s*fixed/);
+  });
+});

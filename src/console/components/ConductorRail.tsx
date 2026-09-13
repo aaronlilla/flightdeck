@@ -2,6 +2,7 @@ import type { JSX } from 'react';
 import { Fragment, useLayoutEffect, useRef, useState } from 'react';
 
 import { hm } from '../freshness.js';
+import { Linkify } from './Linkify.js';
 import { useStore } from '../store.js';
 import type { Feed, Message, MessageButton } from '../../shared/console-model.js';
 import { Marks, QuestionCard } from './QuestionCard.js';
@@ -171,7 +172,7 @@ export function MessageCard({ message, labelFor, onCommand, onUndo, onTopic, com
         <Row ts={message.ts}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 3, alignItems: 'flex-start' }}>
             {to ? <span className="kick" style={{ letterSpacing: '.08em' }}>to the agent on {to}</span> : null}
-            <p style={{ margin: 0, padding: '8px 10px', background: 'var(--panel)', border: '1px solid var(--line)', color: 'var(--ink)', whiteSpace: 'pre-wrap' }}>{message.text}</p>
+            <p style={{ margin: 0, padding: '8px 10px', background: 'var(--panel)', border: '1px solid var(--line)', color: 'var(--ink)', whiteSpace: 'pre-wrap' }}><Linkify text={message.text} /></p>
           </div>
         </Row>
       );
@@ -183,7 +184,7 @@ export function MessageCard({ message, labelFor, onCommand, onUndo, onTopic, com
             <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
               <span className="kick" style={{ letterSpacing: '.08em' }}><span className="hd" style={{ fontSize: 'var(--fs-ui)', color: 'var(--ink2)', letterSpacing: 0, textTransform: 'none' }}>{label(message.source) ?? 'An agent'}</span> · the agent</span>
               <Folded text={message.text}>
-                <p style={{ margin: 0, color: 'var(--ink)', paddingLeft: 10, borderLeft: '2px dashed var(--line2)', whiteSpace: 'pre-wrap' }}>{message.text}</p>
+                <p style={{ margin: 0, color: 'var(--ink)', paddingLeft: 10, borderLeft: '2px dashed var(--line2)', whiteSpace: 'pre-wrap' }}><Linkify text={message.text} /></p>
               </Folded>
               {message.btns && message.btns.length > 0 && !message.resolved ? (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>

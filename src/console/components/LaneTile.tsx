@@ -4,6 +4,7 @@ import { boardCta, boardStateWord, timeInStateText, tileHeadlineParts, type Boar
 import { laneActionLiveness } from '../actionLiveness.js';
 import { actionable } from '../../shared/liveness.js';
 import { WhatIsHover } from './WhatIsCard.js';
+import { Linkify } from './Linkify.js';
 import type { Blocker, Lane } from '../../shared/console-model.js';
 import { Marks } from './QuestionCard.js';
 
@@ -70,7 +71,7 @@ export function LaneTile({ lane, now, blocker = null, onOpen, onCommand }: LaneT
       {title === null ? null : (
         <div className="hd" data-testid="tile-title" dir="auto" title={title} style={{ fontSize: 'var(--fs-rowhead)', lineHeight: 1.1, flex: 'none', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{title}</div>
       )}
-      <p data-testid="tile-now" style={{ margin: 0, flex: 'none', color: 'var(--ink2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{lane.now || lane.plain || lane.stepText}</p>
+      <p data-testid="tile-now" style={{ margin: 0, flex: 'none', color: 'var(--ink2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}><Linkify text={lane.now || lane.plain || lane.stepText} repo={lane.repo} /></p>
       <div data-testid="tile-footer" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 'auto' }}>
         <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', marginRight: 8 }}>
           {timeInStateText(lane, now, word.word)}{lane.attempts > 1 ? ` · attempt ${lane.attempt} of ${lane.attempts}` : ''}
