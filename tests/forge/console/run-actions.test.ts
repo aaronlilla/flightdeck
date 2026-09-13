@@ -301,10 +301,45 @@ describe('setRunCap', () => {
 });
 
 describe('mergeRun / verifyRun', () => {
-  it('answers 501 when no chain packet names a repo for the run', async () => {
+  it('answers 501 when nothing on record names a repository for the run', async () => {
     const result = await mergeRun('alpha', deps);
     expect(result.status).toBe(501);
     expect((result.body as { error: string }).error).toBe('not wired');
+    // The reason names what is missing, not where it looked.
+    expect(String((result.body as { reason: string }).reason)).toMatch(/nothing on record names a repository/);
+  });
+
+  // Aaron, 2026-09-13, after pressing Merge on the board: "Refused -- no chain packet
+  // names a repo for BBZ-169". A run reaches the board by two routes and only one of them
+  // writes a chain packet; that lane came in through the queue, which was holding its
+  // repository, branch and pull request number the whole time.
+  it('merges a queue-sourced run, whose repository and pull request only the queue knows', async () => {
+    const queueStore = new QueueStore(join(dir, 'queue.jsonl'));
+    queueStore.append({
+      id: 'Q-1', at: 1, source: 'ticket', input: 'ABC-1', ticket: 'ABC-1', repo: 'owner/name',
+      briefPath: null, branch: 'feature/abc-1', worktreePath: dir, base: 'develop',
+      state: 'review', reason: null, runKey: 'alpha',
+      pr: { no: 159, url: 'https://github.com/owner/name/pull/159', files: 1, add: 1, del: 0, draft: true },
+      journalIds: [], createdAt: 1, updatedAt: 1,
+    } as never);
+    appendOnce(journalPath, { event: 'run.finished', run: 'alpha', verdict: 'done' });
+
+    const spawned: string[][] = [];
+    deps.spawnFn = ((command: string, args: string[]) => {
+      spawned.push(args);
+      return fakeSpawn(0, 'gate passed')();
+    }) as RunActionsDeps['spawnFn'];
+
+    const result = await mergeRun('alpha', { ...deps, queueStore });
+
+    expect(result.status, JSON.stringify(result.body)).toBe(200);
+    // Straight to the gate with the number the queue held: no `gh pr list` round trip,
+    // which answers nothing once the branch has been squashed away.
+    expect(spawned.some((args) => args.includes('list')), 'it asked gh for a PR it already had').toBe(false);
+    const gate = spawned.find((args) => args.includes('gate'));
+    expect(gate).toContain('--merge');
+    expect(gate).toContain('159');
+    expect(gate).toContain('owner/name');
   });
 
   it('answers 501 when a chain packet exists but no PR is open for its branch', async () => {
