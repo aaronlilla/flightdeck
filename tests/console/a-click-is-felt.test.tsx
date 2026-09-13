@@ -25,8 +25,17 @@ vi.mock('../../src/console/api.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/console/api.js')>()),
   // Never settles, so the pending state stays up for the assertion -- which is the state
   // a person is looking at while a real merge runs.
-  mergeRun: () => new Promise(() => {}),
+  // Never settles, so the pending state stays up for the assertion -- which is the state
+  // a person is looking at while a real merge runs.
+  mergeRun: (_id: string, confirm?: string) => (confirm === undefined && MERGE_PROPOSES
+    ? Promise.resolve({ pending: true, token: 'tok-merge', blast: 'merges it' })
+    : new Promise(() => {})),
+  isConfirmPending: (r: unknown) => typeof r === 'object' && r !== null && 'pending' in r,
 }));
+
+/** Flipped per test: a merge that hangs (for the busy assertions) or one that answers with
+ *  a proposal (for the confirm assertions). */
+let MERGE_PROPOSES = false;
 
 import { LaneTile } from '../../src/console/components/LaneTile.js';
 import { ACTIONS, ActionsContext, useAction } from '../../src/console/actions.js';
@@ -82,6 +91,7 @@ describe('a click on the board', () => {
   });
 
   it('says so the moment the action starts, without waiting for a poll', async () => {
+    MERGE_PROPOSES = false;
     render(<Wrapper><Harness value={lane()} /></Wrapper>);
     fireEvent.click(screen.getByTestId('start'));
     await waitFor(() => {
@@ -111,5 +121,33 @@ describe('the table from a command to the action it runs', () => {
     for (const cmd of ['settings', 'queue', 'blockers', 'watch', 'answer'] as BoardCommand[]) {
       expect(actionForCommand(cmd), `${cmd} would show a busy state for nothing`).toBeNull();
     }
+  });
+});
+
+describe('an irreversible command', () => {
+  it('asks on the button that was pressed, and sends the token on the second press', async () => {
+    MERGE_PROPOSES = true;
+    const sent: string[] = [];
+    function Confirming(): JSX.Element {
+      const merge = useAction(ACTIONS.mergeRun, 'r-1');
+      return (
+        <>
+          <button type="button" data-testid="start" onClick={() => { void merge.run('r-1'); }}>start</button>
+          <LaneTile lane={lane()} now={NOW} onOpen={() => {}} onCommand={(_id, cmd) => { sent.push(cmd); }} />
+        </>
+      );
+    }
+    render(<Wrapper><Confirming /></Wrapper>);
+    expect(screen.getByTestId('primary-action').textContent).toBe('Merge');
+
+    fireEvent.click(screen.getByTestId('start'));
+    await waitFor(() => {
+      // The proposal used to land only in the rail, leaving this button reading "Merge"
+      // while the question was somewhere else on the screen.
+      expect(screen.getByTestId('primary-action').textContent).toBe('Confirm merge');
+    });
+
+    fireEvent.click(screen.getByTestId('primary-action'));
+    expect(sent, 'the second press re-proposed instead of confirming').toEqual(['confirm:tok-merge']);
   });
 });

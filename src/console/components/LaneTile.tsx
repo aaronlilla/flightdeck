@@ -7,7 +7,7 @@ import { WhatIsHover } from './WhatIsCard.js';
 import { Linkify } from './Linkify.js';
 import type { Blocker, Lane } from '../../shared/console-model.js';
 import { Marks } from './QuestionCard.js';
-import { busyLabelFor, useCommandPending } from '../commandPending.js';
+import { busyLabelFor, confirmLabelFor, useCommandConfirming, useCommandPending } from '../commandPending.js';
 
 /**
  * One card of the Board's running grid (`FD Board.dc.html`, the `lanes` loop): key, the
@@ -36,6 +36,9 @@ export function LaneTile({ lane, now, blocker = null, onOpen, onCommand }: LaneT
   const action = actionable(cta, laneActionLiveness({ lane, cmd: cta.cmd }));
   // A click has to be felt before the next poll changes the row underneath it.
   const busy = useCommandPending(lane.id, cta.cmd);
+  // An irreversible command answers with a question, and the question belongs on the
+  // button that asked it rather than only in the rail.
+  const confirmToken = useCommandConfirming(lane.id, cta.cmd);
   const head = tileHeadlineParts(lane);
   // No title and a ticket key means the key is all there is, and it is already in the
   // kicker above -- printing it again gave the tile "BBZ-123" over "BBZ-123", which
@@ -87,9 +90,9 @@ export function LaneTile({ lane, now, blocker = null, onOpen, onCommand }: LaneT
           <button
             type="button" className={`btn ${cta.kind}`} data-testid="primary-action" data-cmd={cta.cmd}
             aria-busy={busy} disabled={busy}
-            onClick={(e) => { e.stopPropagation(); onCommand(lane.id, cta.cmd); }}
+            onClick={(e) => { e.stopPropagation(); onCommand(lane.id, confirmToken ? `confirm:${confirmToken}` : cta.cmd); }}
           >
-            {busy ? busyLabelFor(cta.cmd, cta.label) : cta.label}
+            {busy ? busyLabelFor(cta.cmd, cta.label) : confirmToken ? confirmLabelFor(cta.cmd, cta.label) : cta.label}
           </button>
         ) : (
           <span

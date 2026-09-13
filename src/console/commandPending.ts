@@ -48,6 +48,30 @@ export function useCommandPending(laneId: string, cmd: BoardCommand): boolean {
   return state.pending[actionKey(action, laneId)] !== undefined;
 }
 
+/**
+ * Whether this command is waiting for the operator to confirm it.
+ *
+ * An irreversible command does not run on the click: the server proposes, and the person
+ * confirms. On the board that proposal went only into the rail, so the button snapped
+ * back to reading "Merge" within a fraction of a second while the question appeared
+ * somewhere else on the screen (measured 2026-09-13: pressed Merge, read the label 350 ms
+ * later, still "Merge", still not busy). The queue's own rows have always turned into
+ * "Confirm merge" in place; the board never did.
+ */
+export function useCommandConfirming(laneId: string, cmd: BoardCommand): string | null {
+  const { state } = useStore();
+  const action = actionForCommand(cmd);
+  if (!action) return null;
+  const result = state.actions[actionKey(action, laneId)]?.result;
+  return result?.kind === 'confirm' ? result.token : null;
+}
+
+/** What a button says while it is waiting to be confirmed. Names the command, so the
+ *  second press is about the same thing the first one was. */
+export function confirmLabelFor(cmd: BoardCommand, idle: string): string {
+  return `Confirm ${idle.toLowerCase()}`;
+}
+
 /** What a button says while its command is in flight. The label is the command's own,
  *  in the continuous tense, so the button never changes into a different word -- a
  *  Merge that becomes "Working…" tells a reader less than one that becomes "Merging…". */

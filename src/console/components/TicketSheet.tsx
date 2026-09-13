@@ -7,7 +7,7 @@ import type { BoardCommand } from '../laneVM.js';
 import { boardStateWord, durationWords, laneHeadline } from '../laneVM.js';
 import { laneActionLiveness } from '../actionLiveness.js';
 import { ACTIONS, useAction } from '../actions.js';
-import { busyLabelFor, useCommandPending } from '../commandPending.js';
+import { busyLabelFor, confirmLabelFor, useCommandConfirming, useCommandPending } from '../commandPending.js';
 import type { Lane, LaneStory, LaneSummary } from '../../shared/console-model.js';
 import { Marks } from './QuestionCard.js';
 import { NarratedLine } from './Narrated.js';
@@ -63,13 +63,14 @@ function LaneDo({ lane, cmd, label, onCommand }: {
   onCommand: (id: string, cmd: string) => void;
 }): JSX.Element {
   const busy = useCommandPending(lane.id, cmd);
+  const confirmToken = useCommandConfirming(lane.id, cmd);
   return (
     <button
-      type="button" className="btn" data-testid={`lane-do-${cmd}`}
+      type="button" className={`btn ${confirmToken ? 'warn' : ''}`} data-testid={`lane-do-${cmd}`}
       aria-busy={busy} disabled={busy}
-      onClick={() => onCommand(lane.id, cmd)}
+      onClick={() => onCommand(lane.id, confirmToken ? `confirm:${confirmToken}` : cmd)}
     >
-      {busy ? busyLabelFor(cmd, label) : label}
+      {busy ? busyLabelFor(cmd, label) : confirmToken ? confirmLabelFor(cmd, label) : label}
     </button>
   );
 }

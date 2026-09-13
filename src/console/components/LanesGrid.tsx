@@ -6,7 +6,7 @@ import type { Blocker, Lane, QueueItem } from '../../shared/console-model.js';
 import { LaneGroupTile } from './LaneGroupTile.js';
 import { Marks } from './QuestionCard.js';
 import { ACTIONS, useAction } from '../actions.js';
-import { busyLabelFor, useCommandPending } from '../commandPending.js';
+import { busyLabelFor, confirmLabelFor, useCommandConfirming, useCommandPending } from '../commandPending.js';
 
 /**
  * `FD Board.dc.html`: the running grid (one card per active lane, dashed idle cards up
@@ -99,13 +99,14 @@ function CommandButton({ lane, cmd, label, kind, onCommand }: {
   onCommand: (id: string, cmd: BoardCommand) => void;
 }): JSX.Element {
   const busy = useCommandPending(lane.id, cmd);
+  const confirmToken = useCommandConfirming(lane.id, cmd);
   return (
     <button
-      type="button" className={`btn ${kind}`} data-cmd={cmd}
+      type="button" className={`btn ${confirmToken ? 'warn' : kind}`} data-cmd={cmd}
       aria-busy={busy} disabled={busy}
-      onClick={() => onCommand(lane.id, cmd)}
+      onClick={() => onCommand(lane.id, confirmToken ? `confirm:${confirmToken}` : cmd)}
     >
-      {busy ? busyLabelFor(cmd, label) : label}
+      {busy ? busyLabelFor(cmd, label) : confirmToken ? confirmLabelFor(cmd, label) : label}
     </button>
   );
 }
