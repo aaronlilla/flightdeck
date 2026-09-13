@@ -623,9 +623,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         openPrDeps: () => realOpenPrDeps(
           (input) => execRun({ ...input, cls: input.cls as 'script' }),
           (run) => {
-            const where = whereRunLives(run, {
-              journalPath: journalPath(), registry, lanes, queueStore,
-            } as never);
+            const where = whereRunLives(run, { journalPath: journalPath(), queueStore });
             return where.repo || where.branch
               ? { repo: where.repo, branch: where.branch, base: where.base, ticket: where.ticket }
               : null;

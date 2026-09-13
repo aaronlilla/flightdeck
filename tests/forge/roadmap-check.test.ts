@@ -204,3 +204,41 @@ describe('the ids grandfathered in', () => {
     expect(failures.some((line) => line.startsWith('R-46'))).toBe(false);
   });
 });
+
+/**
+ * Found by code review, and it defeated the check it was part of. The allowlist exempted
+ * two ids unconditionally rather than exempting the two rows each already had, so a third
+ * row citing R-46 would have passed for ever -- the new anti-duplicate check beaten by
+ * reusing one of the two names it already tolerated.
+ */
+describe('the grandfather allowlist has a ceiling', () => {
+  it('refuses a THIRD row on a grandfathered id', async () => {
+    const { failures } = await runRoadmapCheck({
+      roadmapText: roadmapText({
+        itemsExtra: [
+          '| R-46 | the first | queue | planned |  |  |',
+          '| R-46 | the second | queue | planned |  |  |',
+          '| R-46 | one too many | queue | planned |  |  |',
+        ].join('\n'),
+      }),
+      listPrs: async () => [],
+    });
+
+    expect(failures.some((line) => line.startsWith('R-46'))).toBe(true);
+    expect(failures.some((line) => /grandfathered|2 of them|tolerated/i.test(line))).toBe(true);
+  });
+
+  it('still tolerates exactly the two rows each was grandfathered with', async () => {
+    const { failures } = await runRoadmapCheck({
+      roadmapText: roadmapText({
+        itemsExtra: [
+          '| R-46 | the first | queue | planned |  |  |',
+          '| R-46 | the second | queue | planned |  |  |',
+        ].join('\n'),
+      }),
+      listPrs: async () => [],
+    });
+
+    expect(failures.some((line) => line.startsWith('R-46'))).toBe(false);
+  });
+});

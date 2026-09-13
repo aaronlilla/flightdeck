@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { openPullRequest, type OpenPrDeps } from '../../../src/forge/console/open-pr.js';
+import { openPullRequest, realOpenPrDeps, type OpenPrDeps } from '../../../src/forge/console/open-pr.js';
 
 /**
  * Opening a pull request from the console.
@@ -137,5 +137,84 @@ describe('opening a pull request from the console', () => {
 
     expect(result.ok).toBe(false);
     expect(result.refused).toMatch(/command not found/);
+  });
+});
+
+/**
+ * `realOpenPrDeps` -- the code that actually shells out to `gh`, and the only part of
+ * this that reaches GitHub.
+ *
+ * Found by code review: nothing exercised it at all. Every other case here drives the
+ * pure rules against a fake, so a change in what `gh` prints, or an auth line landing in
+ * the output, would have shipped silent.
+ */
+function fakeGh(replies: Record<string, { ok: boolean; tail: string }>) {
+  const calls: string[][] = [];
+  const exec = async (input: { argv: string[]; cwd: string; owner: string; cls: string }) => {
+    calls.push(input.argv);
+    const key = input.argv.slice(0, 3).join(' ');
+    return replies[key] ?? { ok: false, tail: `no fake for ${key}` };
+  };
+  return { exec, calls };
+}
+
+const LANE = () => ({ repo: 'owner/repo', branch: 'feature/abc-1', base: 'develop', ticket: 'ABC-1' });
+const SILENT = () => ({ verdict: 'SILENT', reason: '' });
+
+describe('the real gh calls', () => {
+  it('reads a branch as pushed only when the remote names it back', async () => {
+    const { exec } = fakeGh({ 'gh api repos/owner/repo/branches/feature/abc-1': { ok: true, tail: 'feature/abc-1\n' } });
+    const d = realOpenPrDeps(exec, LANE, SILENT);
+    expect(await d.pushed('owner/repo', 'feature/abc-1')).toBe(true);
+  });
+
+  it('reads a branch as unpushed when the remote does not have it', async () => {
+    const { exec } = fakeGh({ 'gh api repos/owner/repo/branches/feature/abc-1': { ok: false, tail: 'Not Found' } });
+    const d = realOpenPrDeps(exec, LANE, SILENT);
+    expect(await d.pushed('owner/repo', 'feature/abc-1')).toBe(false);
+  });
+
+  it('finds an open request, and reports none when the list is empty', async () => {
+    const found = realOpenPrDeps(fakeGh({ 'gh pr list': { ok: true, tail: '[{"number":5,"url":"https://github.com/x/y/pull/5"}]' } }).exec, LANE, SILENT);
+    expect(await found.existing('owner/repo', 'feature/abc-1')).toEqual({ number: 5, url: 'https://github.com/x/y/pull/5' });
+
+    const none = realOpenPrDeps(fakeGh({ 'gh pr list': { ok: true, tail: '[]' } }).exec, LANE, SILENT);
+    expect(await none.existing('owner/repo', 'feature/abc-1')).toBeNull();
+  });
+
+  // "I could not tell" is not "there is none". Reading unparseable output as no request
+  // would send this straight on to create and open a second one.
+  it('refuses rather than reporting none when it cannot read the list', async () => {
+    const d = realOpenPrDeps(fakeGh({ 'gh pr list': { ok: true, tail: 'gh: please authenticate' } }).exec, LANE, SILENT);
+    await expect(d.existing('owner/repo', 'feature/abc-1')).rejects.toThrow(/could not tell|unreadable|authenticate/i);
+  });
+
+  it('reads the number out of the url gh prints', async () => {
+    const d = realOpenPrDeps(fakeGh({ 'gh pr create': { ok: true, tail: 'https://github.com/owner/repo/pull/123\n' } }).exec, LANE, SILENT);
+    const made = await d.create({ repo: 'owner/repo', branch: 'feature/abc-1', base: 'develop', title: 't', body: 'b', draft: false });
+    expect(made).toEqual({ ok: true, number: 123, url: 'https://github.com/owner/repo/pull/123' });
+  });
+
+  // gh prints chatter before the URL often enough that pinning the whole output would be
+  // wrong; pinning that the URL is found inside it is the real rule.
+  it('finds the url even when gh says something else first', async () => {
+    const d = realOpenPrDeps(fakeGh({ 'gh pr create': { ok: true, tail: 'Warning: 3 uncommitted changes\nhttps://github.com/owner/repo/pull/8\n' } }).exec, LANE, SILENT);
+    const made = await d.create({ repo: 'owner/repo', branch: 'feature/abc-1', base: 'develop', title: 't', body: 'b', draft: false });
+    expect(made).toMatchObject({ ok: true, number: 8 });
+  });
+
+  it('says so rather than guessing when gh prints no url at all', async () => {
+    const d = realOpenPrDeps(fakeGh({ 'gh pr create': { ok: true, tail: 'done' } }).exec, LANE, SILENT);
+    const made = await d.create({ repo: 'owner/repo', branch: 'feature/abc-1', base: 'develop', title: 't', body: 'b', draft: false });
+    expect(made).toMatchObject({ ok: false });
+  });
+
+  it('passes --draft only when a draft was asked for', async () => {
+    const gh = fakeGh({ 'gh pr create': { ok: true, tail: 'https://github.com/owner/repo/pull/1' } });
+    const d = realOpenPrDeps(gh.exec, LANE, SILENT);
+    await d.create({ repo: 'owner/repo', branch: 'b', base: 'develop', title: 't', body: 'b', draft: false });
+    expect(gh.calls[0]).not.toContain('--draft');
+    await d.create({ repo: 'owner/repo', branch: 'b', base: 'develop', title: 't', body: 'b', draft: true });
+    expect(gh.calls[1]).toContain('--draft');
   });
 });

@@ -130,12 +130,18 @@ export function realOpenPrDeps(
     async existing(repo, branch) {
       const result = await gh(['gh', 'pr', 'list', '--repo', repo, '--head', branch,
                                '--state', 'open', '--json', 'number,url']);
-      if (!result.ok) return null;
+      // "I could not tell" is not "there is none", and the difference is a second pull
+      // request. Reading a failed call or unparseable output as "none open" sends this
+      // straight on to create. It throws instead, and `openPullRequest`'s catch turns
+      // that into a refusal naming what happened. Found by code review.
+      if (!result.ok) {
+        throw new Error(`could not tell whether ${branch} already has a pull request: ${result.tail.trim().slice(0, 200)}`);
+      }
       try {
         const rows = JSON.parse(result.tail) as { number: number; url: string }[];
         return rows[0] ?? null;
       } catch {
-        return null;
+        throw new Error(`could not tell whether ${branch} already has a pull request; gh said: ${result.tail.trim().slice(0, 200)}`);
       }
     },
     async create({ repo, branch, base, title, body, draft }) {

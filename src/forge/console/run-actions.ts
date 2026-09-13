@@ -263,7 +263,20 @@ function findChainRowForRun(run: string, journalPath: string): (ChainPacketState
  * The queue is asked first because it carries the pull request number outright; the chain
  * packet fills in what the queue does not have.
  */
-export function whereRunLives(run: string, deps: RunActionsDeps): {
+/** Exactly what `whereRunLives` reads, and nothing else.
+ *
+ *  `RunActionsDeps` requires a ledger, an actuator and a token ceiling this function
+ *  never touches, so a caller outside this module had to fake them or cast them away --
+ *  and the cast the console's own wiring used (`as never`) defeats the compiler, so a
+ *  later change here that started reading one of those would fail at runtime with no
+ *  warning. Naming the two fields it actually uses makes that impossible instead of
+ *  merely unlikely. Found by code review. */
+export interface RunLocationDeps {
+  journalPath: string;
+  queueStore?: QueueStore;
+}
+
+export function whereRunLives(run: string, deps: RunLocationDeps): {
   repo: string | null; branch: string | null; worktreePath: string | null; pr: number | null;
   base: string | null; ticket: string | null;
 } {
