@@ -27,6 +27,26 @@ function fakeGit(script: Record<string, { ok: boolean; stdout?: string }>): { ru
 describe('gitSquashMergeToBase: fake git', () => {
   const input = { checkoutDir: '/tmp/checkout', base: 'develop', branch: 'feature/abc-1', subject: 'Merge feature/abc-1 (#9)', body: '' };
 
+  // Measured 2026-09-12: every Merge on a ticket driven in through the console refused
+  // with "could not check out origin/main". The checkout it merges in is a worktree, and
+  // the repository's own main checkout already held `main`, so claiming the branch by name
+  // failed outright -- "fatal: 'main' is already used by worktree at ...". Detaching never
+  // collides, and nothing below the checkout needs the branch name locally.
+  it('detaches onto the base rather than claiming the branch another worktree may hold', async () => {
+    const { run, calls } = fakeGit({});
+    await gitSquashMergeToBase(input, run);
+    const checkout = calls.find((argv) => argv[0] === 'checkout');
+    expect(checkout, 'it never checked anything out').toBeDefined();
+    expect(checkout).toEqual(['checkout', '--detach', 'origin/develop']);
+    expect(checkout, 'it claimed the branch by name').not.toContain('-B');
+  });
+
+  it('still pushes to the base by name, since nothing local carries it now', async () => {
+    const { run, calls } = fakeGit({});
+    await gitSquashMergeToBase(input, run);
+    expect(calls.find((argv) => argv[0] === 'push')).toEqual(['push', 'origin', 'HEAD:develop']);
+  });
+
   it('aborts when fetch fails, without touching the checkout', async () => {
     const { run, calls } = fakeGit({ fetch: { ok: false } });
     const result = await gitSquashMergeToBase(input, run);
