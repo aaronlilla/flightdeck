@@ -6,6 +6,19 @@
  * can change was the only control fifteen live rows had. Pure string matching, no imports,
  * so the browser can read it without dragging a server module into the bundle.
  */
+/** How many times the queue will recover one park on its own before handing it over. Lives
+ *  here so the screen reads the same number the queue enforces; `queue.ts` re-exports it
+ *  under its old name. */
+export const PARK_RECOVERY_CAP = 3;
+
+/** Whether automatic recovery has given up on this item. The queue says so out loud when
+ *  it happens -- "recovered 3 times already and parked again; a person needs to read this
+ *  one" -- and until 2026-09-13 the row went on offering Retry, which is the one thing the
+ *  queue had already decided would not work. */
+export function recoveryIsSpent(attempts: number | null | undefined): boolean {
+  return (attempts ?? 0) >= PARK_RECOVERY_CAP;
+}
+
 /** What a recoverable park asks to be re-read: the pull request's checks, or the run. */
 export type ParkRecheck = 'checks' | 'run';
 

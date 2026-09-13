@@ -34,8 +34,8 @@ import { workspaceRoot } from '../paths.js';
 import { roadmapIdOpen } from '../roadmap.js';
 import { renderShipPrediction, shipPredictionFor } from './shipPrediction.js';
 import { parkReasonFor } from './parkReason.js';
-import { parkRecoverability, type ParkRecoverability, type ParkRecheck } from '../../shared/parkRecoverability.js';
-export { parkRecoverability };
+import { parkRecoverability, PARK_RECOVERY_CAP, type ParkRecoverability, type ParkRecheck } from '../../shared/parkRecoverability.js';
+export { parkRecoverability, PARK_RECOVERY_CAP };
 export type { ParkRecoverability, ParkRecheck };
 
 /**
@@ -70,7 +70,6 @@ export const PENDING_CHECKS_POLL_CAP = 20;
  *  seconds of wall clock, and a worker outliving its own retry click by a minute would
  *  lose that retry for good -- the opposite of what item 2 promises. Holds are unbounded
  *  and cost one journal row per DISTINCT reading instead. */
-export const PARK_RECOVERY_CAP = 3;
 
 /** How long the recovery pass waits before asking GitHub about one item's checks again,
  *  and how many times it may ask at all.
