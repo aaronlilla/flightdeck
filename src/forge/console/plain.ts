@@ -55,6 +55,12 @@ function closedPrSentence(pr: Lane['pr']): string | null {
   return `PR #${pr.no} was closed without merging.`;
 }
 
+/** One full stop at the end, whether or not the text brought its own. */
+function endOnce(text: string): string {
+  const trimmed = text.trim();
+  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+}
+
 function reviewSentence(lane: Lane): string | null {
   const pr = lane.pr;
   if (!pr) return null;
@@ -132,7 +138,9 @@ export function plainStatus(lane: Lane, context: PlainContext): string {
       // (Aaron, 2026-09-12: no jargon in anything on screen).
       const reason = lane.reason ? humanizeParkReason(lane.reason) : 'the reason has not been recorded';
       const prefix = lane.kind === 'chain' ? 'Blocked since' : 'Stuck since';
-      return `${prefix} ${day}: ${reason}.`;
+      // The reason may end its own sentence. Adding a second full stop on top is how the
+      // board came to carry "... verification steps.." (Aaron, 2026-09-13).
+      return `${prefix} ${day}: ${endOnce(reason)}`;
     }
     case 'killed': {
       const reason = lane.reason ? ` (${lane.reason})` : '';

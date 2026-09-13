@@ -133,10 +133,51 @@ function plainWallClock(text: string): string {
   return out + rest;
 }
 
+/**
+ * Words a run writes about itself that mean nothing to the person reading the board.
+ *
+ * A park reason is written once by whatever stopped the run and replayed on the tile for
+ * as long as the lane is there, so one bad phrase stays on screen for days. The pairs
+ * below are the ones seen on the live board; each keeps the meaning and drops the term.
+ */
+const PLAINER: ReadonlyArray<readonly [RegExp, string]> = [
+  [/\bdrift confirmed off-brief\b/gi, 'it went off the brief'],
+  [/\bconfirmed off-brief\b/gi, 'it went off the brief'],
+  [/\bthe transcript tail is\b/gi, 'its log is'],
+  [/\btranscript tail\b/gi, 'log'],
+  [/\bthe agent\b/gi, 'it'],
+  [/\bno actual tool calls or edits shown\b/gi, 'no work recorded'],
+];
+
+/** The longest a sentence on a tile may be. A tile is one line beside a state word and a
+ *  clock; past this it wraps over the card and buries what it sits next to. */
+export const TILE_SENTENCE_LIMIT = 120;
+
+/**
+ * One sentence, at most `limit` characters, ending cleanly.
+ *
+ * A reason arrives as however many sentences whatever stopped the run felt like writing.
+ * The board has room for one: a 250-character paragraph on a tile reads as noise, which
+ * is the same as reading as nothing (Aaron, 2026-09-13).
+ */
+export function oneSentence(text: string, limit = TILE_SENTENCE_LIMIT): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  // A run that ends its own sentence and then meets the template's full stop leaves two.
+  const collapsed = flat.replace(/([.!?])[.!?]+/g, '$1');
+  const stop = collapsed.search(/[.!?](\s|$)/);
+  const first = stop === -1 ? collapsed : collapsed.slice(0, stop + 1);
+  if (first.length <= limit) return first.trim();
+  const cut = first.slice(0, limit);
+  const space = cut.lastIndexOf(' ');
+  return `${(space > 40 ? cut.slice(0, space) : cut).replace(/[.,;:\s]+$/, '')}…`;
+}
+
 export function humanizeParkReason(reason: string): string {
   const asked = /^parking on [0-9a-f]{8,}:\s*(.+)$/is.exec(reason.trim());
-  if (asked) return `Asked you: ${stripMachineIds(asked[1]!.trim())}`;
-  return plainWallClock(stripMachineIds(reason));
+  if (asked) return `Asked you: ${oneSentence(stripMachineIds(asked[1]!.trim()))}`;
+  let plain = plainWallClock(stripMachineIds(reason));
+  for (const [pattern, replacement] of PLAINER) plain = plain.replace(pattern, replacement);
+  return oneSentence(plain);
 }
 
 /** 24-hour `HH:MM`, zero-padded -- the same shape the browser's own `hm()` in
