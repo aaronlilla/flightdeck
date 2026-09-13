@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-import { screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { WhatIsHover } from '../../src/console/components/WhatIsCard.js';
 import type { WhatIs } from '../../src/forge/console/whatis.js';
@@ -146,5 +146,59 @@ describe('the card escapes whatever it opened inside', () => {
     await userEvent.hover(anchor);
     await waitFor(() => expect(screen.getByTestId('whatis-card')).toBeTruthy());
     expect(screen.getByTestId('whatis-card').getAttribute('style') ?? '').toMatch(/position:\s*fixed/);
+  });
+});
+
+/**
+ * Aaron, 2026-09-12: "when hovering the ticket it will close if you try to move the mouse
+ * to it because the area is too little."
+ *
+ * The card is drawn into the document body so a scrolling ancestor cannot clip it, which
+ * means it is NOT a descendant of its anchor: the browser fires `mouseleave` on the anchor
+ * the instant the pointer starts travelling toward the card, and there is a gap to cross.
+ * So the close waits, and arriving on the card cancels it.
+ */
+describe('reaching the card with the pointer', () => {
+  /**
+   * Real timers here would let a React state change land in a timer callback that
+   * testing-library never flushes, so the card stays in the DOM after it has logically
+   * closed — and the case passes with the fix removed. Proven: neutering the card's own
+   * `onMouseEnter` left the first version of these green. Fake timers plus `act` make
+   * both the timing and the flush explicit.
+   */
+  async function openCard() {
+    const { anchor } = mount();
+    await act(async () => { fireEvent.mouseEnter(anchor); });
+    await act(async () => { vi.advanceTimersByTime(300); });
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByTestId('whatis-card')).toBeTruthy();
+    return anchor;
+  }
+
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it('does not close the instant the pointer starts travelling toward it', async () => {
+    const anchor = await openCard();
+    await act(async () => { fireEvent.mouseLeave(anchor); });
+    await act(async () => { vi.advanceTimersByTime(100); });
+    expect(screen.queryByTestId('whatis-card'), 'it closed before the pointer could arrive').toBeTruthy();
+  });
+
+  it('stays up once the pointer arrives on it', async () => {
+    const anchor = await openCard();
+    await act(async () => { fireEvent.mouseLeave(anchor); });
+    await act(async () => { fireEvent.mouseEnter(screen.getByTestId('whatis-card')); });
+    await act(async () => { vi.advanceTimersByTime(5_000); });
+    expect(screen.queryByTestId('whatis-card'), 'it closed while the pointer was on it').toBeTruthy();
+  });
+
+  it('closes once the pointer leaves the card as well', async () => {
+    const anchor = await openCard();
+    await act(async () => { fireEvent.mouseLeave(anchor); });
+    await act(async () => { fireEvent.mouseEnter(screen.getByTestId('whatis-card')); });
+    await act(async () => { fireEvent.mouseLeave(screen.getByTestId('whatis-card')); });
+    await act(async () => { vi.advanceTimersByTime(1_000); });
+    expect(screen.queryByTestId('whatis-card')).toBeNull();
   });
 });
