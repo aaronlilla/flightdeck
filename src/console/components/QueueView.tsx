@@ -30,7 +30,9 @@ export interface QueueViewProps {
 }
 
 function titleOf(item: QueueItem): string {
-  return item.title ?? item.ticket ?? (item.source === 'brief' ? 'A pasted brief' : item.source === 'hotfix' ? 'A hotfix' : 'An untitled item');
+  // Never fall back to item.ticket: the key is already rendered beside this span, and a
+  // fallback that repeats it prints 'BBZ-289 BBZ-289' on a row whose title has not landed yet.
+  return item.title ?? (item.source === 'brief' ? 'A pasted brief' : item.source === 'hotfix' ? 'A hotfix' : 'Title not read yet');
 }
 
 function LaterRow({ item }: { item: QueueItem }): JSX.Element {
