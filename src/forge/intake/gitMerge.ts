@@ -52,7 +52,16 @@ export async function gitSquashMergeToBase(input: GitSquashMergeInput, runGit: G
   const fetch = await git(['fetch', 'origin', base, branch]);
   if (!fetch.ok) return { ok: false, reason: `could not fetch origin/${base} and origin/${branch}` };
 
-  const checkout = await git(['checkout', '-B', base, `origin/${base}`]);
+  // Detached, never `checkout -B <base>`. Claiming the branch by name fails outright when
+  // another worktree of the same repository already holds it -- "fatal: 'main' is already
+  // used by worktree at ..." -- which is the normal shape here: the checkout this merges
+  // in is usually a worktree, and the repository's own main checkout holds the base.
+  // Measured 2026-09-12: a ticket driven in through the console reached review and every
+  // Merge refused with "could not check out origin/main".
+  //
+  // Nothing below needs the branch name locally: the squash, the commit and the push all
+  // work off HEAD, and the push already names `HEAD:<base>`.
+  const checkout = await git(['checkout', '--detach', `origin/${base}`]);
   if (!checkout.ok) return { ok: false, reason: `could not check out origin/${base}` };
 
   const merge = await git(['merge', '--squash', `origin/${branch}`]);
