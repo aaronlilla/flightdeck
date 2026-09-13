@@ -21,3 +21,7 @@ playwright-report/
 tests/e2e/__screenshots__/*.png
 
 .verify-exit
+
+# Scratch browser drivers used to operate the console by hand; never part of a build.
+*.mjs
+!scripts/**/*.mjs
