@@ -43,7 +43,12 @@ input,textarea{outline:none}
 .btn.ghost{color:var(--ink2);border-color:transparent}
 .btn.ghost:hover{border-color:transparent;color:var(--ink)}
 .btn.primary:hover,.btn.warn:hover{filter:brightness(1.06)}
-.btn[aria-busy="true"],.btn[aria-disabled="true"]{opacity:.55;cursor:default}
+/* A button that cannot be pressed has to look it. The dimming keyed on aria-disabled
+   alone, so the nine buttons across the console that use the native attribute --
+   Answer with no option picked, Send with an empty box, Add with an empty box --
+   rendered at full strength and read as live. */
+.btn[aria-busy="true"],.btn[aria-disabled="true"],.btn:disabled{opacity:.55;cursor:default}
+.btn:disabled:hover{border-color:var(--line2);filter:none}
 /* A multiple-choice option row (the Board's Needs-you card and the lane sheet). */
 .opt{font:inherit;font-size:var(--fs-body);line-height:1.35;text-align:left;padding:9px 12px;min-height:40px;width:100%;background:transparent;border:1px solid var(--line2);color:var(--ink);border-radius:0;cursor:pointer;display:flex;gap:10px;align-items:flex-start}
 .opt:hover{border-color:var(--warn);background:var(--warnTint)}

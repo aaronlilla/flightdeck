@@ -1,4 +1,5 @@
 import type { JSX } from 'react';
+import { useState } from 'react';
 
 import { ACTIONS, useAction } from '../actions.js';
 import type { QueueItem } from '../../shared/console-model.js';
@@ -8,6 +9,7 @@ import { Linkify } from './Linkify.js';
 import { useWidthStepper } from '../useWidthStepper.js';
 import { Marks } from './QuestionCard.js';
 import { NarratedLine } from './Narrated.js';
+import { readQueueInput } from '../../shared/queueInput.js';
 
 /**
  * `Flightdeck Console.dc.html` 1c: what runs next, in the queue's own order, with why
@@ -58,6 +60,75 @@ function LaterRow({ item }: { item: QueueItem }): JSX.Element {
   );
 }
 
+/**
+ * The one way into the queue from the console.
+ *
+ * Until this existed there was none: the queue screen held a width stepper and nothing
+ * else, and the only route in was typing a sentence at the rail and hoping it reached the
+ * right tool. A ticket cannot be taken end to end through a console it cannot be put
+ * into.
+ *
+ * One box rather than a kind-picker, because "is this a ticket key, a search or a brief?"
+ * is a question about the plumbing and not about the work. `readQueueInput` decides, and
+ * the reading is shown under the box before anything is sent, so a wrong one is a visible
+ * sentence rather than a wrong row on the board.
+ */
+function AddToQueue(): JSX.Element {
+  const [text, setText] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const add = useAction(ACTIONS.addToQueue);
+  const reading = readQueueInput(text);
+
+  async function submit(): Promise<void> {
+    if (!reading) return;
+    setError(null);
+    const outcome = await add.run({ source: reading.source, input: reading.input });
+    if (outcome.kind === 'done' && outcome.ok) {
+      setText('');
+      return;
+    }
+    setError(outcome.kind === 'done' ? outcome.text : 'that add did not go through');
+  }
+
+  return (
+    <div
+      data-testid="queue-add"
+      style={{ position: 'relative', border: '1px solid var(--line)', padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 8 }}
+    >
+      <Marks />
+      <label className="kick" htmlFor="queue-add-input">Add work</label>
+      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+        <textarea
+          id="queue-add-input" data-testid="queue-add-input" rows={2}
+          placeholder="A ticket key, a Jira search, or what needs doing in your own words"
+          value={text}
+          onChange={(event) => { setText(event.target.value); }}
+          onKeyDown={(event) => {
+            // Enter sends, since the common case is a ticket key on one line. A brief that
+            // wants its own paragraphs still gets them on Shift+Enter.
+            if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void submit(); }
+          }}
+          style={{ flex: '1 1 320px', minWidth: 0, resize: 'vertical', font: 'inherit', fontSize: 'var(--fs-body)', padding: '8px 10px', border: '1px solid var(--line)', background: 'var(--bg2)', color: 'var(--ink)' }}
+        />
+        <button
+          type="button" className="btn primary" data-testid="queue-add-submit"
+          disabled={reading === null || add.pending}
+          onClick={() => { void submit(); }}
+          style={{ padding: '8px 18px' }}
+        >
+          {add.pending ? 'Adding…' : 'Add'}
+        </button>
+      </div>
+      <span data-testid="queue-add-reading" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)', minHeight: '1.2em' }}>
+        {reading ? reading.says : ''}
+      </span>
+      {error ? (
+        <span role="alert" style={{ fontSize: 'var(--fs-meta)', color: 'var(--warn)' }}>{error}</span>
+      ) : null}
+    </div>
+  );
+}
+
 export function QueueView({ items, paused, pauseReason, maxInFlight, working = 0, verbose }: QueueViewProps): JSX.Element {
   const width = useWidthStepper(maxInFlight);
   const next = items.filter((item) => item.state === 'queued');
@@ -65,9 +136,10 @@ export function QueueView({ items, paused, pauseReason, maxInFlight, working = 0
   const idle = Math.max(0, maxInFlight - working);
   return (
     <main data-testid="queue-view" className="scroll" style={{ flex: 1, minWidth: 0, overflow: 'auto', padding: '26px 28px', display: 'flex', flexDirection: 'column', gap: 20 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 24 }}>
-        <div>
-          {paused ? <p className="hd" style={{ margin: 0, fontSize: 'var(--fs-rowhead)', color: 'var(--warn)' }}>{pauseReason ? `Paused · ${pauseReason}` : 'Paused'}</p> : null}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 24, flexWrap: 'wrap' }}>
+        <div style={{ flex: '1 1 360px', minWidth: 0 }}>
+          {paused ? <p className="hd" style={{ margin: '0 0 10px', fontSize: 'var(--fs-rowhead)', color: 'var(--warn)' }}>{pauseReason ? `Paused · ${pauseReason}` : 'Paused'}</p> : null}
+          <AddToQueue />
         </div>
         <div style={{ position: 'relative', border: '1px solid var(--line)', padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 16 }}>
           <Marks />
