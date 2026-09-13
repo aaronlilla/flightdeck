@@ -144,7 +144,13 @@ export function Settings({ integrations, accounts, onAccountsChanged, caps, now,
               </div>
             </div>
             {capError ? <span data-testid="cap-error" style={{ fontSize: 'var(--fs-meta)', color: 'var(--warn)' }}>{capError}</span> : null}
-            {save.result?.kind === 'done' ? <span style={{ fontSize: 'var(--fs-meta)', color: save.result.ok ? 'var(--ink3)' : 'var(--warn)' }}>{save.result.text}</span> : null}
+            {/* The cap saves on blur or Enter, and until 2026-09-13 that showed nothing at
+                all until the server answered -- a typed number and a keypress, and no sign
+                anybody had heard it. The in-flight line comes first and the outcome
+                replaces it, so the field is never silent between the two. */}
+            {save.pending
+              ? <span data-testid="cap-saving" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>Saving…</span>
+              : save.result?.kind === 'done' ? <span style={{ fontSize: 'var(--fs-meta)', color: save.result.ok ? 'var(--ink3)' : 'var(--warn)' }}>{save.result.text}</span> : null}
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>{fmtTokens(used)} used today</span><span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>resets at midnight</span></div>
