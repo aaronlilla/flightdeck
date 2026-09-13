@@ -402,6 +402,12 @@ export function queueReadyPrWithPrediction(
     // Through `guardedCommentPr`, which `council/gh.ts` states is the one gate every
     // pull request comment goes through; calling `commentPr` directly skipped the
     // readability verdict and its refusal row (code review, 2026-09-12).
+    // An empty prediction means there is nothing to predict -- a repository that builds no
+    // mobile app has no ship path -- and a pull request in one still has to be readied, or
+    // it stays a draft that nobody can merge. Readying and predicting are two things, and
+    // the caller decides them separately.
+    if (prediction.trim().length === 0) return { readied };
+
     let refusedReason: string | undefined;
     const commented = await guardedCommentPr(gh, item.repo, pr.no, prediction, (refusal) => {
       refusedReason = refusal.reason;
