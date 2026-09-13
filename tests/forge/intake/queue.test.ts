@@ -1286,7 +1286,12 @@ describe('Jira write-back at review: A.3', () => {
   // Found by code review, 2026-09-12: `repoKindFor` answers `frontend` for any repo
   // with no entry of its own, so the permissive reading put an Android and iOS ship
   // path into a pull request on a Node repo with no mobile build at all.
-  it('leaves a repo with no mobile build alone, and journals the skip', async () => {
+  // This used to assert the readier was never called for a repository with no mobile
+  // build, which is the defect rather than the intent: readying a draft and predicting a
+  // ship path were one call, so such a pull request stayed a draft nobody could merge.
+  // Measured 2026-09-12 on a ticket driven in through the console -- it reached review,
+  // Merge did nothing, and the row said no mobile build was found.
+  it('readies a repo with no mobile build, predicts nothing, and journals why', async () => {
     const store = tempStore();
     const item = addTicketItem(store, 'BBZ-226', 1000);
     let called = false;
@@ -1300,7 +1305,12 @@ describe('Jira write-back at review: A.3', () => {
     // reads whether the repo has a mobile build, which this one does not.
     deps.repoKindFor = () => 'frontend';
     deps.mobileRepo = () => false;
-    deps.readyPrWithPrediction = async () => { called = true; };
+    let sentPrediction: string | undefined;
+    deps.readyPrWithPrediction = async ({ prediction }) => {
+      called = true;
+      sentPrediction = prediction;
+      return { readied: true };
+    };
 
     let current = item;
     current = await advanceItem(current, deps);
@@ -1308,10 +1318,12 @@ describe('Jira write-back at review: A.3', () => {
     current = await advanceItem(current, deps);
 
     expect(current.state).toBe('review');
-    expect(called).toBe(false);
-    expect(current.pr?.draft).toBe(true);
+    expect(called, 'the draft was never readied, so nobody can merge it').toBe(true);
+    expect(sentPrediction, 'it predicted a ship path for a repository that has none').toBe('');
     // A silent skip is how a feature that never runs looks exactly like one that does.
-    expect(events.find((row) => row['event'] === 'queue.pr-ready-skipped')).toBeDefined();
+    const skip = events.find((row) => row['event'] === 'queue.pr-ready-skipped');
+    expect(skip).toBeDefined();
+    expect(String(skip?.['reason'])).toMatch(/readied with no ship path predicted/);
   });
 
   // Found by code review, 2026-09-12: a FIX FIRST round leaves the item running and

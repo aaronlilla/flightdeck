@@ -1084,15 +1084,29 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
     // never runs looks exactly like one that did, which is the fault the row exists to
     // remove -- and the first version of this block skipped the row too on the
     // auto-merge path, so the case most likely to hide was the one left uncovered.
+    // Readying a draft and predicting a ship path are two things, and they used to share
+    // one branch: a repository that builds no mobile app skipped BOTH, so its pull request
+    // stayed a draft nobody could merge. Measured 2026-09-12 on a ticket driven in through
+    // the console -- it reached review, the Merge button did nothing, and the row said
+    // "no mobile build found for this repo, so no ship path to predict".
+    //
+    // Nothing to ready is the one case that skips: the gate has already merged it.
     const skip = alreadyMerged
       ? 'the gate already merged this pull request, so there is nothing to ready and no merge to predict'
-      : (!isMobile ? 'no mobile build found for this repo, so no ship path to predict' : null);
+      : null;
     if (skip) {
       deps.append({
         event: 'queue.pr-ready-skipped', actor: 'queue', itemId: item.id, pr: pr.number, reason: skip,
       });
     } else {
-      const prediction = renderShipPrediction(shipPredictionFor(item.changedFiles ?? []));
+      // Empty for a repository with no mobile build: it is readied, and nothing is posted.
+      const prediction = isMobile ? renderShipPrediction(shipPredictionFor(item.changedFiles ?? [])) : '';
+      if (!isMobile) {
+        deps.append({
+          event: 'queue.pr-ready-skipped', actor: 'queue', itemId: item.id, pr: pr.number,
+          reason: 'no mobile build found for this repo, so it is readied with no ship path predicted',
+        });
+      }
       try {
         const outcome = await deps.readyPrWithPrediction({ item, pr: { no: pr.number, url: pr.url }, prediction });
         readied = outcome?.readied === true;
