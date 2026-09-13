@@ -28,6 +28,7 @@ import { evaluateAction } from '../rules/index.js';
 import { renderNotes } from '../council/renderNotes.js';
 import { terminalStateFor, type RepoKind } from './handoff.js';
 import { parseAfterLines, repoFromBrief, roadmapFromBrief } from './repoRoute.js';
+import { noCiVerdict } from './noCiGate.js';
 import type { QueueStore } from './queueStore.js';
 import { workspaceRoot } from '../paths.js';
 import { roadmapIdOpen } from '../roadmap.js';
@@ -408,6 +409,13 @@ export interface QueueRuntimeDeps {
    *  conflict, and the item parks for a person rather than anything being forced. */
   rebaseOnBase?: (input: { worktreePath: string; base: string }) => Promise<RebaseOutcome>;
   council: QueueCouncilFn;
+  /** Whether a repository runs any check on a pull request. Absent means the question is
+   *  never asked and a pending gate waits exactly as it always did. */
+  repoRunsChecks?: (repo: string) => Promise<boolean>;
+  /** Runs a repository's own verify against the working tree an item holds, for a
+   *  repository that runs no checks of its own. Absent means there is nothing to run in
+   *  place of them, and such an item parks saying so. */
+  runRepoVerify?: (input: { repo: string; worktreePath: string }) => Promise<{ ok: boolean; output: string }>;
   /** A.1: relaunches the worker on the item's own worktree with the round's findings as
    *  its brief -- one fix round, never a from-scratch replan. Absent means this
    *  environment never wires a fix round; a FIX FIRST then always parks, the behaviour
@@ -918,7 +926,7 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
     }
   }
 
-  const council = await deps.council({
+  let council = await deps.council({
     repo: item.repo!, pr: pr.number, forceCodex: true,
     ...(item.worktreePath ? { cwd: item.worktreePath } : {}),
     // `origin/<base>`, never the bare branch name: the local ref is whatever this
@@ -933,6 +941,29 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
   // a plain non-pass and park it the same way a real failure does): leaving `state`
   // untouched keeps the item in `QUEUE_IN_FLIGHT_STATES`, so the next tick calls the
   // council again instead of leaving it stuck.
+  if (council.pending) {
+    // A repository that runs no checks never leaves `pending`, so it used to poll twenty
+    // times and park saying the checks "never settled" -- a sentence about a wait that
+    // never happened. Aaron's decision, 2026-09-12: run that repository's own verify on
+    // the head and treat it as the check. Asked before the poll counter moves, so an
+    // environment wiring this never spends the twenty ticks first.
+    const noCi = await noCiVerdict(
+      { repo: item.repo ?? null, worktreePath: item.worktreePath ?? null },
+      { ...(deps.repoRunsChecks ? { repoRunsChecks: deps.repoRunsChecks } : {}),
+        ...(deps.runRepoVerify ? { runVerify: deps.runRepoVerify } : {}) },
+    );
+    if (noCi.kind === 'failed' || noCi.kind === 'cannot-check') {
+      return writeTransition(
+        item, { state: 'parked', reason: noCi.why }, deps, 'queue.parked', { hop: 'gate' },
+      );
+    }
+    if (noCi.kind === 'passed') {
+      // The gate is green by this repository's own standard. Fall through to the council
+      // verdict below exactly as a green rollup would, rather than merging on this alone.
+      council = { ...council, pending: false };
+      item = { ...item, pendingGatePolls: undefined };
+    }
+  }
   if (council.pending) {
     const polls = (item.pendingGatePolls ?? 0) + 1;
     if (polls >= PENDING_CHECKS_POLL_CAP) {

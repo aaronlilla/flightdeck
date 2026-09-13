@@ -40,6 +40,8 @@ interface FixtureOverrides {
   launchGoal?: QueueRuntimeDeps['launchGoal'];
   mergeAllowed?: QueueRuntimeDeps['mergeAllowed'];
   postMergeVerify?: QueueRuntimeDeps['postMergeVerify'];
+  repoRunsChecks?: QueueRuntimeDeps['repoRunsChecks'];
+  runRepoVerify?: QueueRuntimeDeps['runRepoVerify'];
 }
 
 function buildDeps(store: QueueStore, overrides: FixtureOverrides = {}): { deps: QueueRuntimeDeps; events: Record<string, unknown>[] } {
@@ -81,6 +83,8 @@ function buildDeps(store: QueueStore, overrides: FixtureOverrides = {}): { deps:
     ...(overrides.launchGoal ? { launchGoal: overrides.launchGoal } : {}),
     ...(overrides.mergeAllowed ? { mergeAllowed: overrides.mergeAllowed } : {}),
     ...(overrides.postMergeVerify ? { postMergeVerify: overrides.postMergeVerify } : {}),
+    ...(overrides.repoRunsChecks ? { repoRunsChecks: overrides.repoRunsChecks } : {}),
+    ...(overrides.runRepoVerify ? { runRepoVerify: overrides.runRepoVerify } : {}),
   };
   return { deps, events };
 }
@@ -674,6 +678,71 @@ describe('advanceItem', () => {
     expect(result.state).toBe('running');
     expect(result.reason).toMatch(/checks are pending/);
     expect(result.pendingGatePolls).toBe(1);
+  });
+
+  // Aaron, 2026-09-12: a repository whose Actions are off never leaves a pending rollup,
+  // so the item polled twenty times and parked saying the checks "never settled" -- about
+  // a wait that never happened. The gate asks whether the repository runs any, and stands
+  // that repository's own verify in their place when it does not.
+  it('a repository that runs no checks is gated on its own verify instead of waiting', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let verifyRan = 0;
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS', pending: true }),
+      repoRunsChecks: async () => false,
+      runRepoVerify: async () => { verifyRan += 1; return { ok: true, output: 'green' }; },
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    const result = await advanceItem(current, deps);
+    expect(verifyRan, 'the gate never ran the verify this repository owns').toBe(1);
+    expect(result.reason ?? '').not.toMatch(/checks are pending/);
+    expect(result.pendingGatePolls ?? 0).toBe(0);
+  });
+
+  it('a repository that runs no checks parks on its own verify failing, not on a timeout', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS', pending: true }),
+      repoRunsChecks: async () => false,
+      runRepoVerify: async () => ({
+        ok: false,
+        output: ['running', '', '  Tests  2 failed | 90 passed', ''].join(String.fromCharCode(10)),
+      }),
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    const result = await advanceItem(current, deps);
+    expect(result.state).toBe('parked');
+    expect(result.reason).toMatch(/runs no checks; its own verify failed/);
+    expect(result.reason).not.toMatch(/never settled/);
+  });
+
+  it('a repository that does run checks waits exactly as it always did', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let verifyRan = 0;
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'unavailable', pending: true }),
+      repoRunsChecks: async () => true,
+      runRepoVerify: async () => { verifyRan += 1; return { ok: true, output: '' }; },
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    const result = await advanceItem(current, deps);
+    expect(verifyRan, 'it ran a verify on a repository that runs its own checks').toBe(0);
+    expect(result.reason).toMatch(/checks are pending/);
   });
 
   it('a pending council result that later turns success carries the item on to review', async () => {
