@@ -45,3 +45,26 @@ export function runSummary(run: SyncRunRecord | null): string {
   }
   return 'sync did not complete';
 }
+
+/**
+ * What a sync card covers, in words.
+ *
+ * Every card showed its state and never its subject, so each read "never synced" with
+ * nothing saying what had never synced. On the machine screen, which carries two, the
+ * same sentence rendered twice one above the other and a reader could not tell the two
+ * apart (measured on the live console, 2026-09-12).
+ */
+export const SYNC_SCOPE_NAME: Record<string, string> = {
+  lanes: 'The board',
+  inbox: 'Blockers',
+  queue: 'The queue',
+  machine: 'This machine',
+  sessions: 'Sessions',
+  accounts: 'Accounts',
+};
+
+/** The scope's name, or the key itself when one is added and this table is not. Never
+ *  blank: an unnamed card is the thing this exists to stop. */
+export function syncScopeName(scope: string): string {
+  return SYNC_SCOPE_NAME[scope] ?? scope;
+}

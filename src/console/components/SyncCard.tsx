@@ -1,6 +1,6 @@
 import type { JSX } from 'react';
 
-import { runSummary, stageLine } from '../sync-text.js';
+import { runSummary, stageLine, syncScopeName } from '../sync-text.js';
 import type { SyncRunRecord, SyncScope } from '../../shared/sync-contract.js';
 
 /** A computed class name, never a static word standing in a template literal --
@@ -24,7 +24,7 @@ export function SyncCard({ scope, run, busy, onResync }: SyncCardProps): JSX.Ele
   return (
     <section data-testid={`sync-card-${scope}`} style={{ border: '1px solid var(--line)', padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-        <span data-testid="sync-summary" style={{ fontWeight: 600 }}>{runSummary(run)}</span>
+        <span style={{ display: 'flex', gap: 8, alignItems: 'baseline', minWidth: 0 }}><span className="kick" data-testid="sync-scope" style={{ flex: 'none', color: 'var(--ink3)' }}>{syncScopeName(scope)}</span><span data-testid="sync-summary" style={{ fontWeight: 600, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{runSummary(run)}</span></span>
         <button
           type="button"
           data-testid="sync-resync"
