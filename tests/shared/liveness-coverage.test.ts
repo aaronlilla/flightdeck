@@ -93,6 +93,7 @@ describe('every kind that can carry an action has a liveness rule', () => {
   it('names the seam for every kind already routed through the verdict', () => {
     const WIRED = [
       'message:confirm', 'message:question', 'message:blocker', 'blocker:question',
+      'lane:action', 'queue:action',
     ];
     const unwired = WIRED.filter((key) => LIVENESS_RULES[key as keyof typeof LIVENESS_RULES].seam === null);
     expect(unwired, 'a kind that was enforced has stopped being enforced').toEqual([]);
@@ -106,7 +107,6 @@ describe('every kind that can carry an action has a liveness rule', () => {
     expect(pending).toEqual([
       'message:plan',
       'blocker:integration', 'blocker:checks', 'blocker:billing', 'blocker:owner', 'blocker:process',
-      'lane:action', 'queue:action',
     ]);
   });
 });

@@ -2,6 +2,7 @@ import type { JSX } from 'react';
 
 import { ACTIONS, useAction } from '../actions.js';
 import type { QueueItem } from '../../shared/console-model.js';
+import { queueActionLiveness } from '../actionLiveness.js';
 import { useWidthStepper } from '../useWidthStepper.js';
 import { Marks } from './QuestionCard.js';
 import { NarratedLine } from './Narrated.js';
@@ -37,12 +38,20 @@ function LaterRow({ item }: { item: QueueItem }): JSX.Element {
     : item.state === 'parked' || item.state === 'failed'
       ? { label: retry.pending ? 'Retrying…' : 'Retry', run: () => void retry.run(item.id), kind: '' }
       : null;
+  // The row's state moves under the button between polls: a Merge offered on something
+  // already merged tells somebody to do a thing that is done (Aaron, 2026-09-12). A dead
+  // action renders as its reason instead.
+  const verdict = queueActionLiveness(item, item.state === 'review' ? 'merge' : 'retry');
   return (
     <div className="queue-row" style={{ display: 'grid', gridTemplateColumns: '44px minmax(0,1fr) minmax(0,1fr) 190px', gap: 18, alignItems: 'baseline', padding: '14px 16px', borderBottom: '1px solid var(--line)' }}>
       <span className="kick" style={{ fontSize: 'var(--fs-meta)' }}>{state}</span>
       <span><span className="key" style={{ marginRight: 10 }}>{item.ticket ?? ''}</span><span className="hd" data-testid="queue-card-title" style={{ fontSize: 'var(--fs-rowhead)' }}>{titleOf(item)}</span></span>
       <span style={{ color: 'var(--ink2)' }}>{item.reason ?? (item.pr ? `PR #${item.pr.no}${item.pr.draft ? ' (draft)' : ''}` : '')}</span>
-      <span>{action ? <button type="button" className={`btn ${action.kind}`} onClick={action.run}>{action.label}</button> : null}</span>
+      <span>{action && verdict.live
+        ? <button type="button" className={`btn ${action.kind}`} onClick={action.run}>{action.label}</button>
+        : action
+          ? <span data-testid="queue-action-unavailable" title={verdict.live === false ? verdict.why : ''} style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>{verdict.live === false ? verdict.why : ''}</span>
+          : null}</span>
     </div>
   );
 }
