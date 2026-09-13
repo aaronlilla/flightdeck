@@ -599,14 +599,23 @@ export function queueRepoRunsChecks(): NonNullable<QueueRuntimeDeps['repoRunsChe
  * held to one standard rather than two. A repository with no command configured answers
  * `ok: false` saying exactly that, and the item parks rather than passing on nothing.
  */
-export function queueRunRepoVerify(chainEnv: ChainEnv): NonNullable<QueueRuntimeDeps['runRepoVerify']> {
+export function queueRunRepoVerify(
+  chainEnv: ChainEnv,
+  /** The runner, so a specimen can read what would be spawned without spawning it. */
+  exec: typeof execRun = execRun,
+): NonNullable<QueueRuntimeDeps['runRepoVerify']> {
   return async ({ repo, worktreePath }) => {
     const command = verifyCommandFor(chainEnv, repo);
     if (!command) {
       return { ok: false, output: `no FORGE_REPO_VERIFY command is configured for ${repo}` };
     }
-    const result = await execRun({
-      argv: [...(chainEnv.shell ?? []), command],
+    const result = await exec({
+      // Through a shell, not exec'd as one argument. The command is a sentence a person
+      // wrote into FORGE_REPO_VERIFY -- `npm run verify`, or two of those joined by `&&`
+      // -- and handing that to a direct exec looks for a program whose name is the whole
+      // line. Same call shape the worktree setup command already uses.
+      argv: [command],
+      shell: chainEnv.shell.length ? chainEnv.shell : true,
       cwd: worktreePath, owner: 'queue', cls: 'script', fullOutput: true, raw: true,
       // A whole suite, not a probe. Sized past the longest this repository's own verify
       // has taken rather than against a tick.
