@@ -61,8 +61,21 @@ export async function gitSquashMergeToBase(input: GitSquashMergeInput, runGit: G
   //
   // Nothing below needs the branch name locally: the squash, the commit and the push all
   // work off HEAD, and the push already names `HEAD:<base>`.
-  const checkout = await git(['checkout', '--detach', `origin/${base}`]);
-  if (!checkout.ok) return { ok: false, reason: `could not check out origin/${base}` };
+  //
+  // `--force`, because the checkout is a staging area and never somebody's work: whatever
+  // a previous install or half-finished merge left modified in it is thrown away rather
+  // than allowed to refuse the merge. Aaron, 2026-09-13: clicked Merge on a ticket the
+  // board called ready and got "could not check out origin/develop" -- one uncommitted
+  // `package-lock.json` in the merge checkout, and every merge of that repository refused
+  // the same way. Untracked files are left alone: `--force` does not remove them, and a
+  // `clean` here would delete an installed `node_modules` on every single merge.
+  const checkout = await git(['checkout', '--force', '--detach', `origin/${base}`]);
+  if (!checkout.ok) {
+    // Git's own sentence, not a paraphrase of it: the paraphrase named the symptom and
+    // sent a reader looking at the branch when the cause was a file in the checkout.
+    const said = checkout.stdout.trim().split(String.fromCharCode(10)).filter(Boolean).slice(-2).join(' ');
+    return { ok: false, reason: `could not check out origin/${base}${said ? `: ${said}` : ''}` };
+  }
 
   const merge = await git(['merge', '--squash', `origin/${branch}`]);
   if (!merge.ok) {
