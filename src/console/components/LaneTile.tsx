@@ -1,6 +1,8 @@
 import type { JSX } from 'react';
 
 import { boardCta, boardStateWord, timeInStateText, tileHeadlineParts, type BoardCommand } from '../laneVM.js';
+import { laneActionLiveness } from '../actionLiveness.js';
+import { actionable } from '../../shared/liveness.js';
 import type { Blocker, Lane } from '../../shared/console-model.js';
 import { Marks } from './QuestionCard.js';
 
@@ -28,6 +30,7 @@ export interface LaneTileProps {
 export function LaneTile({ lane, now, blocker = null, onOpen, onCommand }: LaneTileProps): JSX.Element {
   const word = boardStateWord(lane);
   const cta = boardCta(lane, blocker);
+  const action = actionable(cta, laneActionLiveness({ lane, cmd: cta.cmd }));
   const head = tileHeadlineParts(lane);
   // No title and a ticket key means the key is all there is, and it is already in the
   // kicker above -- printing it again gave the tile "BBZ-123" over "BBZ-123", which
@@ -62,12 +65,26 @@ export function LaneTile({ lane, now, blocker = null, onOpen, onCommand }: LaneT
         <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', marginRight: 8 }}>
           {timeInStateText(lane, now, word.word)}{lane.attempts > 1 ? ` · attempt ${lane.attempt} of ${lane.attempts}` : ''}
         </span>
-        <button
-          type="button" className={`btn ${cta.kind}`} data-testid="primary-action" data-cmd={cta.cmd}
-          onClick={(e) => { e.stopPropagation(); onCommand(lane.id, cta.cmd); }}
-        >
-          {cta.label}
-        </button>
+        {/* The verdict decides whether this is a button at all. A tile offering Merge on
+            a pull request that merged an hour ago is not a broken button, it is the board
+            telling somebody to do a thing already done (Aaron, 2026-09-12). A dead action
+            renders as the reason instead, so the tile still says where it stands. */}
+        {action.liveness.live ? (
+          <button
+            type="button" className={`btn ${cta.kind}`} data-testid="primary-action" data-cmd={cta.cmd}
+            onClick={(e) => { e.stopPropagation(); onCommand(lane.id, cta.cmd); }}
+          >
+            {cta.label}
+          </button>
+        ) : (
+          <span
+            data-testid="primary-action-unavailable" data-cmd={cta.cmd}
+            title={action.liveness.why}
+            style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 200 }}
+          >
+            {action.liveness.why}
+          </span>
+        )}
       </div>
     </div>
   );

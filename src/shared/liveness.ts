@@ -117,11 +117,11 @@ export const LIVENESS_RULES = {
   'blocker:process': { decides: 'the lane still has a registry row', seam: null },
   'lane:action': {
     decides: 'the lane is not retired and its action still applies to its state',
-    seam: null,
+    seam: 'console/actionLiveness.ts#laneActionLiveness, then LaneTile',
   },
   'queue:action': {
-    decides: 'the item is still in the queue store',
-    seam: null,
+    decides: 'the row is in the state its own button acts on',
+    seam: 'console/actionLiveness.ts#queueActionLiveness, then QueueView',
   },
 } as const satisfies Record<string, LivenessRule>;
 
