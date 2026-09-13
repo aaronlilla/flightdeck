@@ -28,6 +28,7 @@ import type {
   LaneStory,
   LanesResponse,
   LaneSummary,
+  OpenPrResponse,
   TicketHandoffResponse,
   MergeReadyReport,
   Message,
@@ -189,6 +190,20 @@ export function recheckRun(id: string): Promise<LaneSummary> {
  *  audit's own `head` matches the PR's current head. */
 export function reauditRun(id: string): Promise<ReauditResponse> {
   return post<ReauditResponse>(`/run/${encodeURIComponent(id)}/reaudit`, {});
+}
+
+/**
+ * The sheet's Open a pull request button.
+ *
+ * Irreversible and outward-facing -- it notifies reviewers, and on the app repository it
+ * spends a build -- so it goes through the same confirm as merge and kill.
+ */
+export function openPullRequest(
+  run: string, title: string, body: string, draft: boolean, confirm?: string,
+): Promise<Gated<OpenPrResponse>> {
+  return post<Gated<OpenPrResponse>>(
+    `/run/${encodeURIComponent(run)}/open-pr`, withConfirm({ title, body, draft }, confirm),
+  );
 }
 
 /**

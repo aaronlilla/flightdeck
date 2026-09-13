@@ -263,8 +263,9 @@ function findChainRowForRun(run: string, journalPath: string): (ChainPacketState
  * The queue is asked first because it carries the pull request number outright; the chain
  * packet fills in what the queue does not have.
  */
-function whereRunLives(run: string, deps: RunActionsDeps): {
+export function whereRunLives(run: string, deps: RunActionsDeps): {
   repo: string | null; branch: string | null; worktreePath: string | null; pr: number | null;
+  base: string | null; ticket: string | null;
 } {
   const queueStore = deps.queueStore ?? new QueueStore(defaultQueuePath());
   const item = queueStore.all().find((row) => row.runKey === run);
@@ -274,6 +275,8 @@ function whereRunLives(run: string, deps: RunActionsDeps): {
     branch: item?.branch ?? chainRow?.provisioned?.branch ?? null,
     worktreePath: item?.worktreePath ?? chainRow?.provisioned?.worktreePath ?? null,
     pr: item?.pr?.no ?? null,
+    base: item?.base ?? null,
+    ticket: item?.ticket ?? chainRow?.ticket ?? null,
   };
 }
 

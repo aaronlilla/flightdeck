@@ -98,6 +98,26 @@ export async function runRoadmapCheck(deps: RoadmapCheckDeps): Promise<RoadmapCh
   }
 
   const items = parseRoadmapItems(deps.roadmapText);
+
+  // One id, one row. The check read every row on its own and never asked whether an id
+  // was unique, so the roadmap could name one id twice and still read clean -- the board
+  // lying about itself, in the one file that is supposed to say what is being built.
+  // Found by adding R-90 and R-91 without looking, both of which already existed, and
+  // shipping the first of them.
+  const seen = new Map<string, number>();
+  // R-46 and R-59 each named two rows before this check existed, and both pairs shipped:
+  // every one of the four is `done` or `review` with a merged pull request citing that
+  // id. Renumbering any of them would rewrite somebody else's history to make a new rule
+  // look clean. They are named here instead, so they are visible and dated rather than
+  // silently passing, and any id duplicated from now on fails (2026-09-13).
+  const KNOWN_BEFORE_THIS_CHECK = new Set(['R-46', 'R-59']);
+  for (const item of items) {
+    seen.set(item.id, (seen.get(item.id) ?? 0) + 1);
+  }
+  for (const [id, count] of seen) {
+    if (count > 1 && !KNOWN_BEFORE_THIS_CHECK.has(id)) failures.push(`${id} names ${count} rows; an id belongs to one row, so ${count - 1} of them is somebody else's work`);
+  }
+
   for (const item of items) {
     if (item.status.trim().toLowerCase() === 'done' && item.pr.trim() === '') {
       failures.push(`${item.id} is marked done but its pr cell is empty`);

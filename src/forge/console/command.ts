@@ -46,6 +46,7 @@ import {
   resumeRun, setRunCap, verifyRun, type RunActionsDeps,
 } from './run-actions.js';
 import { handOffTicket, handoffDepsFromEnv, type TicketHandoffDeps } from './ticket-handoff.js';
+import { openPullRequest, type OpenPrDeps } from './open-pr.js';
 import { capsOverridesPath, effectiveHardTokens, readCapsOverrides } from './caps-read.js';
 import { restoreCaps, writeCaps, type CapsWriteDeps } from './caps-write.js';
 import { IntegrationsRegistry, type IntegrationsDeps } from './integrations.js';
@@ -340,6 +341,9 @@ export interface ConsoleWritesDeps {
    *  work. Injected so no specimen reaches Jira, and a console with nothing configured
    *  refuses with a sentence rather than writing somewhere quieter. */
   handoffDeps?: () => TicketHandoffDeps;
+  /** `POST /run/:id/open-pr`: the lane read, the `gh` calls and the readability rule.
+   *  Injected so no specimen reaches GitHub. */
+  openPrDeps?: () => OpenPrDeps;
 }
 
 function readBody<T>(request: IncomingMessage): Promise<T | null> {
@@ -1507,6 +1511,39 @@ export class ConsoleWrites {
     if ((match = path.match(/^\/integrations\/([^/]+)\/reconnect$/)) && method === 'POST') {
       if (!this.deps.authorized(request, response)) return true;
       respond(response, 200, await this.integrations.reconnect(decodeURIComponent(match[1]!)));
+      return true;
+    }
+
+    // Opening a pull request, from the lane that has the branch. The only `gh pr create`
+    // in this codebase runs inside a worker's own turn, so a branch a worker pushed and
+    // stopped short of could only become a request from a terminal (Aaron, 2026-09-13).
+    if ((match = path.match(/^\/run\/([^/]+)\/open-pr$/)) && method === 'POST') {
+      if (!this.deps.authorized(request, response)) return true;
+      const run = decodeURIComponent(match[1]!);
+      const body = await readBody<Record<string, unknown>>(request);
+      const deps = this.deps.openPrDeps?.();
+      if (!deps) {
+        respond(response, 501, { error: 'not wired',
+          reason: 'this console has no GitHub wiring, so it cannot open a pull request' });
+        return true;
+      }
+      const title = String(body?.['title'] ?? '');
+      const draft = body?.['draft'] === true;
+      // Irreversible enough to ask first, and on the frontend repository a pull request
+      // -- draft included -- spends an Android build. The blast says so, because that is
+      // the part a person needs to know before the second press, not after.
+      const outcome = await this.confirmGate(
+        body, 'console',
+        `opens a ${draft ? 'draft ' : ''}pull request for ${run}: notifies its reviewers, and on the app repo spends a build.`,
+        async () => {
+          const result = await openPullRequest(run, title, String(body?.['body'] ?? ''), deps, { draft });
+          // A refusal opened nothing. 409 rather than 400 when a request already exists,
+          // because the request was fine and the world was not what it assumed.
+          const status = result.ok ? 200 : (result.number ? 409 : 400);
+          return { status, body: result.ok ? result : { ...result, error: result.refused } };
+        },
+      );
+      respond(response, outcome.status, outcome.body);
       return true;
     }
 
