@@ -78,7 +78,7 @@ import { runQueueTick } from './intake/queue.js';
 import { acquireQueueLock } from './intake/queueLock.js';
 import { notTickingHere, QueueTickRunner } from './intake/queueTickRunner.js';
 import { QueueStore } from './intake/queueStore.js';
-import { buildQueueRuntimeDeps, queueMergeDeps, queuePromoteDeps, jiraConfigFromEnv } from './queue-wire.js';
+import { buildQueueRuntimeDeps, queueMergeDeps, queuePromoteDeps, jiraConfigFromEnv, queueSearch } from './queue-wire.js';
 import { slackConfigFromEnv } from './intake/slack.js';
 import { readSlackReplies } from './intake/slackReturn.js';
 import { fileWatermarkStore } from './intake/watermarkStore.js';
@@ -594,6 +594,12 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         lanes, inbox, journalPath: journalPath(), journalCache: sharedJournalCache, registry,
         stuck: () => liveness.stuck(),
         ...(whatIsReader ? { jiraRead: (key: string) => whatIsReader.read(key) } : {}),
+        // The queue's own Jira search. `queueSearch` has existed and been exported since
+        // the `query`/`backlog` sources were written, and nothing ever passed it here, so
+        // every such add hit the server's throwing stub and answered "jira not configured"
+        // -- with the credentials sitting right there, and the Settings row reading
+        // Connected beside it (Aaron, 2026-09-13: typed a search into the Add box).
+        queueSearch: queueSearch(),
         reasoner,
         // R-55: the Codex advisor's routes. The advisor itself never spends unless a
         // caller hits /codex/ask; `ask` never awaits the Codex turn (codexAdvisor.ts).
