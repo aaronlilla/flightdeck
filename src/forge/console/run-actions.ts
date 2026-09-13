@@ -251,6 +251,32 @@ function findChainRowForRun(run: string, journalPath: string): (ChainPacketState
   return undefined;
 }
 
+/**
+ * Where a run's repository, branch and worktree live, wherever the run came from.
+ *
+ * A run reaches the board by two routes and only one of them writes a chain packet. A
+ * queue-sourced run never has one, so a lookup that asks the chain alone answers nothing
+ * for it -- which is how Merge on a board tile came to refuse with "no chain packet names
+ * a repo for run BBZ-169" on a lane whose repository, branch and pull request the queue
+ * was holding all along (Aaron, 2026-09-13, after pressing Merge).
+ *
+ * The queue is asked first because it carries the pull request number outright; the chain
+ * packet fills in what the queue does not have.
+ */
+function whereRunLives(run: string, deps: RunActionsDeps): {
+  repo: string | null; branch: string | null; worktreePath: string | null; pr: number | null;
+} {
+  const queueStore = deps.queueStore ?? new QueueStore(defaultQueuePath());
+  const item = queueStore.all().find((row) => row.runKey === run);
+  const chainRow = findChainRowForRun(run, deps.journalPath);
+  return {
+    repo: item?.repo ?? chainRow?.repo ?? null,
+    branch: item?.branch ?? chainRow?.provisioned?.branch ?? null,
+    worktreePath: item?.worktreePath ?? chainRow?.provisioned?.worktreePath ?? null,
+    pr: item?.pr?.no ?? null,
+  };
+}
+
 interface GhPr {
   number: number;
 }
@@ -261,14 +287,20 @@ interface GhPr {
  * by hand), then spawn `forge gate` exactly as a person would type it.
  */
 async function gateAction(run: string, wantsMerge: boolean, deps: RunActionsDeps): Promise<RunActionResponse> {
-  const row = findChainRowForRun(run, deps.journalPath);
-  if (!row || !row.repo) {
-    return { status: 501, body: { error: 'not wired', reason: `no chain packet names a repo for run ${run}` } };
+  const where = whereRunLives(run, deps);
+  if (!where.repo) {
+    return { status: 501, body: { error: 'not wired', reason: `nothing on record names a repository for run ${run}` } };
   }
-  const branch = row.provisioned?.branch;
+  const branch = where.branch;
   if (!branch) {
-    return { status: 501, body: { error: 'not wired', reason: `no provisioned branch on record for run ${run}` } };
+    return { status: 501, body: { error: 'not wired', reason: `no branch on record for run ${run}` } };
   }
+  const row = { repo: where.repo };
+
+  // The queue carries the pull request number outright. Asking `gh` for it again is a
+  // round trip that can answer nothing -- a squash-merged branch no longer has an OPEN
+  // pull request on it -- while the number sits on the row.
+  if (where.pr) return gateWithPr(run, wantsMerge, where.repo, where.pr, deps);
 
   const listResult = await execRun({
     argv: ['gh', 'pr', 'list', '--repo', row.repo, '--head', branch, '--json', 'number'],
@@ -289,9 +321,17 @@ async function gateAction(run: string, wantsMerge: boolean, deps: RunActionsDeps
     return { status: 501, body: { error: 'not wired', reason: `no open PR found for ${row.repo}@${branch}` } };
   }
 
+  return gateWithPr(run, wantsMerge, row.repo, pr, deps);
+}
+
+/** The half that runs once a repository and a pull request number are known, whichever
+ *  of the two routes found them. */
+async function gateWithPr(
+  run: string, wantsMerge: boolean, repo: string, pr: number, deps: RunActionsDeps,
+): Promise<RunActionResponse> {
   const argv = [
     ...(deps.cliArgv?.() ?? defaultCliArgv()),
-    'gate', '--repo', row.repo, '--pr', String(pr),
+    'gate', '--repo', repo, '--pr', String(pr),
     ...(wantsMerge ? ['--merge'] : []),
   ];
   const [command, ...args] = argv;
@@ -308,7 +348,7 @@ async function gateAction(run: string, wantsMerge: boolean, deps: RunActionsDeps
     || (ok ? 'gate passed' : `gate exited ${result.returncode}`);
   const { jid } = recordAction(deps.journalPath, deps.ledger, {
     kind: wantsMerge ? 'merge' : 'verify', run, text: summary, undo: null,
-    extra: { exitCode: result.returncode, repo: row.repo, pr },
+    extra: { exitCode: result.returncode, repo: repo, pr },
   });
   return { status: ok ? 200 : 502, body: { ok, jid, message: summary, undoable: false } };
 }

@@ -6,6 +6,7 @@ import type { Blocker, Lane, QueueItem } from '../../shared/console-model.js';
 import { LaneGroupTile } from './LaneGroupTile.js';
 import { Marks } from './QuestionCard.js';
 import { ACTIONS, useAction } from '../actions.js';
+import { busyLabelFor, useCommandPending } from '../commandPending.js';
 
 /**
  * `FD Board.dc.html`: the running grid (one card per active lane, dashed idle cards up
@@ -85,6 +86,30 @@ function BoardSweeps({ readyCount }: { readyCount: number }): JSX.Element {
   );
 }
 
+/**
+ * A board row's action, which says so the moment it is pressed.
+ *
+ * These two rows called straight through and rendered nothing, so a click sat there
+ * looking unpressed until the next poll -- several seconds, on a merge (Aaron,
+ * 2026-09-13). The pending state was already dispatched on every call; nothing here read
+ * it.
+ */
+function CommandButton({ lane, cmd, label, kind, onCommand }: {
+  lane: Lane; cmd: BoardCommand; label: string; kind: string;
+  onCommand: (id: string, cmd: BoardCommand) => void;
+}): JSX.Element {
+  const busy = useCommandPending(lane.id, cmd);
+  return (
+    <button
+      type="button" className={`btn ${kind}`} data-cmd={cmd}
+      aria-busy={busy} disabled={busy}
+      onClick={() => onCommand(lane.id, cmd)}
+    >
+      {busy ? busyLabelFor(cmd, label) : label}
+    </button>
+  );
+}
+
 export function LanesGrid(props: LanesGridProps): JSX.Element {
   const { lanes, blockers, queue, now, onOpen, onCommand, onLaneCommand, onQueue } = props;
   const active = lanes.filter(isActive);
@@ -129,7 +154,7 @@ export function LanesGrid(props: LanesGridProps): JSX.Element {
               <span className="key">{lane.ticket ?? ''}</span>
               <span><span className="hd" style={{ fontSize: 'var(--fs-lead)' }}>{laneHeadline(lane).main}</span><span style={{ color: 'var(--ink2)' }}> — {mergeLine(lane)}</span></span>
               <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>ready {durationWords(now - lane.since)}</span>
-              <button type="button" className="btn primary" onClick={() => onCommand(lane.id, 'merge')}>Merge</button>
+              <CommandButton lane={lane} cmd="merge" label="Merge" kind="primary" onCommand={onCommand} />
             </div>
           ))}
         </section>
@@ -148,7 +173,7 @@ export function LanesGrid(props: LanesGridProps): JSX.Element {
                   <span className="key">{lane.ticket ?? ''}</span>
                   <span><span className="hd" style={{ fontSize: 'var(--fs-lead)' }}>{laneHeadline(lane).main}</span><span style={{ color: 'var(--ink2)' }}> — {blocker?.detail ?? lane.reason ?? lane.now ?? 'no reason'}</span></span>
                   <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>{who} · {durationWords(now - lane.since)}</span>
-                  <button type="button" className={`btn ${cta.kind === 'secondary' ? '' : cta.kind}`} onClick={() => onCommand(lane.id, cta.cmd)}>{cta.label}</button>
+                  <CommandButton lane={lane} cmd={cta.cmd} label={cta.label} kind={cta.kind === 'secondary' ? '' : cta.kind} onCommand={onCommand} />
                 </div>
               );
             })}

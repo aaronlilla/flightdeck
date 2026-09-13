@@ -7,6 +7,7 @@ import { WhatIsHover } from './WhatIsCard.js';
 import { Linkify } from './Linkify.js';
 import type { Blocker, Lane } from '../../shared/console-model.js';
 import { Marks } from './QuestionCard.js';
+import { busyLabelFor, useCommandPending } from '../commandPending.js';
 
 /**
  * One card of the Board's running grid (`FD Board.dc.html`, the `lanes` loop): key, the
@@ -33,6 +34,8 @@ export function LaneTile({ lane, now, blocker = null, onOpen, onCommand }: LaneT
   const word = boardStateWord(lane);
   const cta = boardCta(lane, blocker);
   const action = actionable(cta, laneActionLiveness({ lane, cmd: cta.cmd }));
+  // A click has to be felt before the next poll changes the row underneath it.
+  const busy = useCommandPending(lane.id, cta.cmd);
   const head = tileHeadlineParts(lane);
   // No title and a ticket key means the key is all there is, and it is already in the
   // kicker above -- printing it again gave the tile "BBZ-123" over "BBZ-123", which
@@ -83,9 +86,10 @@ export function LaneTile({ lane, now, blocker = null, onOpen, onCommand }: LaneT
         {action.liveness.live ? (
           <button
             type="button" className={`btn ${cta.kind}`} data-testid="primary-action" data-cmd={cta.cmd}
+            aria-busy={busy} disabled={busy}
             onClick={(e) => { e.stopPropagation(); onCommand(lane.id, cta.cmd); }}
           >
-            {cta.label}
+            {busy ? busyLabelFor(cta.cmd, cta.label) : cta.label}
           </button>
         ) : (
           <span

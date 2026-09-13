@@ -7,6 +7,7 @@ import type { BoardCommand } from '../laneVM.js';
 import { boardStateWord, durationWords, laneHeadline } from '../laneVM.js';
 import { laneActionLiveness } from '../actionLiveness.js';
 import { ACTIONS, useAction } from '../actions.js';
+import { busyLabelFor, useCommandPending } from '../commandPending.js';
 import type { Lane, LaneStory, LaneSummary } from '../../shared/console-model.js';
 import { Marks } from './QuestionCard.js';
 import { NarratedLine } from './Narrated.js';
@@ -55,6 +56,24 @@ const LANE_ACTIONS: ReadonlyArray<{ cmd: BoardCommand; label: string }> = [
   { cmd: 'unretire', label: 'Unretire' },
 ];
 
+/** One button in the bar, which says so the moment it is pressed rather than waiting for
+ *  the next poll to change the sheet underneath it (Aaron, 2026-09-13). */
+function LaneDo({ lane, cmd, label, onCommand }: {
+  lane: Lane; cmd: BoardCommand; label: string;
+  onCommand: (id: string, cmd: string) => void;
+}): JSX.Element {
+  const busy = useCommandPending(lane.id, cmd);
+  return (
+    <button
+      type="button" className="btn" data-testid={`lane-do-${cmd}`}
+      aria-busy={busy} disabled={busy}
+      onClick={() => onCommand(lane.id, cmd)}
+    >
+      {busy ? busyLabelFor(cmd, label) : label}
+    </button>
+  );
+}
+
 function LaneActions({ lane, onCommand }: {
   lane: Lane; onCommand: (id: string, cmd: string) => void;
 }): JSX.Element {
@@ -68,13 +87,7 @@ function LaneActions({ lane, onCommand }: {
       <span className="kick">Do</span>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         {live.map((row) => (
-          <button
-            key={row.cmd} type="button" className="btn"
-            data-testid={`lane-do-${row.cmd}`}
-            onClick={() => onCommand(lane.id, row.cmd)}
-          >
-            {row.label}
-          </button>
+          <LaneDo key={row.cmd} lane={lane} cmd={row.cmd} label={row.label} onCommand={onCommand} />
         ))}
         {live.length === 0 ? <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>Nothing to do here</span> : null}
       </div>

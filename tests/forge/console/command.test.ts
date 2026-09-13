@@ -718,12 +718,15 @@ describe('grammar verbs remove/archive/retire, reopen, verify actually execute',
     expect(refusal?.text).toMatch(/reopen needs killed\/blocked\/exhausted, not running/);
   });
 
-  it('"verify <lane>" reaches verifyRun (its own "no chain packet" reason answers)', async () => {
+  it('"verify <lane>" reaches verifyRun, which answers that nothing names a repository', async () => {
     registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
     appendOnce(journalPath, { event: 'run.started', run: 'alpha', actor: 'runner' });
     const cards = await writes.command('verify alpha');
     const refusal = cards.find((card) => card.type === 'refusal');
-    expect(refusal?.text).toMatch(/no chain packet names a repo for run alpha/);
+    // The reason names what is missing rather than where it looked: a run reaches the
+    // board by two routes and only one writes a chain packet, so "no chain packet" told a
+    // reader about the plumbing and nothing about their lane (Aaron, 2026-09-13).
+    expect(refusal?.text).toMatch(/nothing on record names a repository for run alpha/);
   });
 });
 
