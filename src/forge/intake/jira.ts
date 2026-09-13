@@ -176,6 +176,30 @@ export interface JiraCallResult {
 
 /** J3: the writes `forge gate --merge` (and, A.3, the queue's own `queueHandoff.ts`)
  *  make once a ticket clears. */
+/** One issue's own fields, for the console's "what is this" route. Read-only and
+ *  separate from the write client's methods so a reader can never reach a write. */
+export interface JiraIssueRead {
+  summary: string | null;
+  status: string | null;
+  assignee: string | null;
+  issueType: string | null;
+  priority: string | null;
+  updated: string | null;
+  description: string | null;
+}
+
+/**
+ * Reading one issue, kept off `JiraWriteClient` on purpose: a caller that only needs to
+ * show somebody what a ticket says should not be holding a handle that can comment on it
+ * or move it. The factory below returns an object satisfying both, so there is still one
+ * client and one set of credentials.
+ */
+export interface JiraReadClient {
+  /** Answers null when Jira refuses or does not have it -- a hover that cannot resolve
+   *  says so rather than showing a blank card. */
+  read(key: string): Promise<JiraIssueRead | null>;
+}
+
 export interface JiraWriteClient {
   comment(key: string, body: string): Promise<JiraCallResult>;
   assign(key: string, accountId: string): Promise<JiraCallResult>;
@@ -222,12 +246,43 @@ export function adfFromText(text: string): AdfDocument {
   return { type: 'doc', version: 1, content };
 }
 
-export function createJiraWriteClient(config: Pick<JiraConfig, 'site' | 'email' | 'token' | 'fetchFn'>): JiraWriteClient {
+export function createJiraWriteClient(config: Pick<JiraConfig, 'site' | 'email' | 'token' | 'fetchFn'>): JiraWriteClient & JiraReadClient {
   const fetchFn = config.fetchFn ?? fetch;
   const auth = basicAuth(config.email, config.token);
   const headers = { 'content-type': 'application/json', authorization: auth };
 
   return {
+    async read(key) {
+      // Only the fields the card shows. Asking for the whole issue pulls changelog,
+      // comments and every custom field the site has, which is a slow call for a hover.
+      const fields = 'summary,status,assignee,issuetype,priority,updated,description';
+      const response = await fetchFn(`${config.site}/rest/api/3/issue/${key}?fields=${fields}`, {
+        method: 'GET', headers: { authorization: auth },
+      });
+      if (!response.ok) return null;
+      try {
+        const body = await response.json() as { fields?: Record<string, any> };
+        const f = body.fields ?? {};
+        const text = (value: unknown): string | null => {
+          if (typeof value === 'string') return value;
+          if (value && typeof value === 'object' && 'name' in (value as object)) return String((value as { name: unknown }).name);
+          if (value && typeof value === 'object' && 'displayName' in (value as object)) return String((value as { displayName: unknown }).displayName);
+          return null;
+        };
+        const description = f['description'] ? flattenAdf(f['description']).trim() : '';
+        return {
+          summary: typeof f['summary'] === 'string' ? f['summary'] : null,
+          status: text(f['status']),
+          assignee: text(f['assignee']),
+          issueType: text(f['issuetype']),
+          priority: text(f['priority']),
+          updated: typeof f['updated'] === 'string' ? f['updated'] : null,
+          description: description.length > 0 ? description : null,
+        };
+      } catch {
+        return null;
+      }
+    },
     async comment(key, body) {
       // The backstop: whatever assembled `body` and whichever caller reached this
       // point, a DENY refuses the write here too, before `fetchFn` is ever called.

@@ -3,6 +3,7 @@ import type { JSX, ReactNode } from 'react';
 import { Fragment } from 'react';
 
 import { StoreContext } from '../store.js';
+import { WhatIsHover } from './WhatIsCard.js';
 
 /**
  * `<Linkify text repo />` (2026-09-08, Aaron: "when there's jira tickets mentioned or
@@ -34,17 +35,31 @@ function prNumberFrom(match: string): number | null {
   return digits ? Number(digits[0]) : null;
 }
 
-function LinkTo({ href, children }: { href: string; children: ReactNode }): JSX.Element {
+/**
+ * One linked identifier, with what it refers to behind a hover.
+ *
+ * Aaron, 2026-09-12: "when i hover over an item that has an acronym, like a bbz ticket
+ * number, i should be able to see full detail of the ticket or whatever it is." Linking
+ * out to Jira or GitHub only helps a reader willing to leave the page; the hover answers
+ * in place. The link stays exactly as it was for anyone who does want to leave.
+ *
+ * `refText` is what to ask about, which is not always the visible text: "pull request
+ * #77" renders as `#77` and is asked about as `#77`, while a ticket renders and asks
+ * under the same key.
+ */
+function LinkTo({ href, refText, children }: { href: string; refText: string; children: ReactNode }): JSX.Element {
   return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="m"
-      onClick={(e) => e.stopPropagation()}
-    >
-      {children}
-    </a>
+    <WhatIsHover refText={refText}>
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="m"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {children}
+      </a>
+    </WhatIsHover>
   );
 }
 
@@ -63,7 +78,7 @@ export function Linkify({ text, repo }: { text: string; repo?: string | null }):
       const start = match.index ?? 0;
       tokens.push({
         start, end: start + key.length,
-        render: (k) => <LinkTo key={k} href={jiraUrl(jiraSite, key)}>{key}</LinkTo>,
+        render: (k) => <LinkTo key={k} href={jiraUrl(jiraSite, key)} refText={key}>{key}</LinkTo>,
       });
     }
   }
@@ -81,7 +96,7 @@ export function Linkify({ text, repo }: { text: string; repo?: string | null }):
       const offset = isPullRequestWord ? raw.length - visible.length : 0;
       tokens.push({
         start: start + offset, end: start + raw.length,
-        render: (k) => <LinkTo key={k} href={`https://github.com/${effectiveRepo}/pull/${no}`}>{visible}</LinkTo>,
+        render: (k) => <LinkTo key={k} href={`https://github.com/${effectiveRepo}/pull/${no}`} refText={`#${no}`}>{visible}</LinkTo>,
       });
     }
   }
@@ -91,7 +106,10 @@ export function Linkify({ text, repo }: { text: string; repo?: string | null }):
     const start = match.index ?? 0;
     tokens.push({
       start, end: start + url.length,
-      render: (k) => <LinkTo key={k} href={url}>{url}</LinkTo>,
+      // A bare url is already the whole answer; there is nothing a card could add.
+      render: (k) => (
+        <a key={k} href={url} target="_blank" rel="noopener noreferrer" className="m" onClick={(e) => e.stopPropagation()}>{url}</a>
+      ),
     });
   }
 

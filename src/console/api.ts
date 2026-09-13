@@ -5,6 +5,7 @@
  * goal brief: "all of that lives behind one `api.ts`").
  */
 import { redactErrorBody } from './redact.js';
+import type { WhatIs } from '../forge/console/whatis.js';
 import type { SyncScope, SyncStateResponse, WatcherStatus as WatcherStatusModel } from '../shared/sync-contract.js';
 import type {
   AccountProvider,
@@ -474,4 +475,10 @@ export function deleteLeftover(name: string, confirm?: string): Promise<Gated<De
   return post<Gated<DeleteFilesResponse>>(
     `/accounts/leftovers/${encodeURIComponent(name)}/delete`, withConfirm({}, confirm),
   );
+}
+
+/** `GET /whatis?ref=…`: what the identifier under the reader's pointer refers to.
+ *  A ticket key, a pull request number, or a run's own name — see `forge/console/whatis.ts`. */
+export function whatIs(ref: string): Promise<WhatIs> {
+  return call<WhatIs>(`/whatis?ref=${encodeURIComponent(ref)}`);
 }

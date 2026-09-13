@@ -201,6 +201,9 @@ export interface ForgeServerOptions {
    *  `/proposals`, `/run/:id/{thread,pr,sandbox}`). A specimen only: production always
    *  gets the default, which reads the real `~/.forge` tree. */
   consoleReads?: ConsoleReads;
+  /** Reads one Jira issue, for `GET /whatis`. Wired by `cli.ts` when Jira credentials
+   *  are configured; absent otherwise. */
+  jiraRead?: (key: string) => Promise<import('./intake/jira.js').JiraIssueRead | null>;
   /** R-55: `POST /codex/ask` and `GET /codex/:id`, behind the same token as every other
    *  route. Undefined (no default wired -- the advisor spends Codex quota, and this
    *  goal's guardrail is "nothing else live") answers 501, the same pattern `/router`
@@ -461,6 +464,10 @@ export class ForgeServer {
         // below this one. Without it, `GET /thread` cannot tell a confirm a person can
         // still answer from one whose token went with a restart days ago.
         confirmPending: (token: string) => this.consoleWrites.hasPending(token),
+        // `GET /whatis` reads one issue so a hover can show what a ticket key means.
+        // Without credentials there is no reader, and a ticket resolves from the board
+        // alone -- an answer, just a smaller one.
+        ...(options.jiraRead ? { jiraRead: options.jiraRead } : {}),
         ...(options.modelPolicyPath ? { modelPolicyPath: options.modelPolicyPath } : {}),
       });
     this.queueStoreForMerge = options.queueStore ?? new QueueStore(defaultQueuePath());

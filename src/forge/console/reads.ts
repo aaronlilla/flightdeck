@@ -21,6 +21,11 @@ import { QueueStore } from '../intake/queueStore.js';
 import { processAlive, Registry } from '../registry.js';
 import type { StuckSignal } from '../liveness.js';
 import { briefFacts, briefPathForLane } from './briefLookup.js';
+import type { JiraIssueRead } from '../intake/jira.js';
+import {
+  classifyRef, fromBoard, fromJira, mergeTicket, notFound, prNumberFrom,
+  pullRequestFromBoard, runFromBoard, type WhatIs,
+} from './whatis.js';
 import { askContextForRuns } from './askContext.js';
 import { computeLive } from './live.js';
 import { Lanes, type LaneRecord } from '../supervisor.js';
@@ -78,6 +83,9 @@ export interface ConsoleReadsOptions {
    *  Read through a callback rather than held, because the write path is constructed
    *  after this class. */
   confirmPending?: (token: string) => boolean;
+  /** Reads one Jira issue, for `GET /whatis`. Left unset, a ticket resolves from the
+   *  board alone rather than failing. */
+  jiraRead?: (key: string) => Promise<JiraIssueRead | null>;
   lanes?: Lanes;
   registry?: Registry;
   inbox?: Inbox;
@@ -299,10 +307,22 @@ function defaultAttestationReader(): AttestationReaderFn {
 
 /** The runs `GET /run/:id` matches, and everything under it -- `/run/:id/thread`,
  *  `/run/:id/pr`, `/run/:id/sandbox`, `/run/:id/cost`, `/run/:id/journal`. */
+/** How long a `/whatis` answer is reused. Long enough to cover a sweep across the
+ *  board, short enough that a ticket moved in Jira shows its new state promptly. */
+const WHATIS_CACHE_MS = 60_000;
+
 const RUN_SUBROUTE = /^\/run\/([^/]+)\/(thread|pr|sandbox|cost|journal|story|summary)$/;
 
 export class ConsoleReads {
   private readonly confirmPendingFn: ((token: string) => boolean) | undefined;
+
+  /** Reads one Jira issue for the `/whatis` route. Absent (no credentials, a specimen)
+   *  means a ticket resolves from the board alone, which is still an answer. */
+  private readonly jiraReadFn: ((key: string) => Promise<JiraIssueRead | null>) | undefined;
+
+  /** `/whatis` answers, by reference. A reader sweeping the board hovers the same key
+   *  repeatedly and neither Jira nor they gain anything from a call each time. */
+  private readonly whatIsCache = new Map<string, { at: number; value: WhatIs }>();
 
   private readonly lanes: Lanes;
 
@@ -392,6 +412,7 @@ export class ConsoleReads {
   constructor(options: ConsoleReadsOptions = {}) {
     this.narrator = options.narrator ?? null;
     this.confirmPendingFn = options.confirmPending;
+    this.jiraReadFn = options.jiraRead;
     this.forgeHomeDir = options.forgeHomeDir ?? forgeHome();
     this.lanes = options.lanes ?? new Lanes(lanesDir());
     this.registry = options.registry ?? new Registry(registryDir());
@@ -556,7 +577,7 @@ export class ConsoleReads {
   static matches(path: string, method: string | undefined): boolean {
     if (method !== 'GET') return false;
     return path === '/lanes' || path === '/thread' || path === '/journal' || path === '/caps'
-      || path === '/proposals' || path === '/sessions' || RUN_SUBROUTE.test(path);
+      || path === '/proposals' || path === '/sessions' || path === '/whatis' || RUN_SUBROUTE.test(path);
   }
 
   /** True when a request matched a route this class owns and the response has already
@@ -592,6 +613,11 @@ export class ConsoleReads {
     }
     if (path === '/proposals') {
       json(response, 200, this.proposalsResponse());
+      return true;
+    }
+    if (path === '/whatis') {
+      const url = new URL(request.url ?? '/', 'http://localhost');
+      json(response, 200, await this.whatIsResponse(url.searchParams.get('ref') ?? ''));
       return true;
     }
     if (path === '/sessions') {
@@ -972,6 +998,49 @@ export class ConsoleReads {
       messages: narrateThread(thread.messages, this.narrator),
       cards: narrateThread(thread.cards, this.narrator),
     };
+  }
+
+  /**
+   * `GET /whatis?ref=BBZ-169`: what the identifier under the reader's pointer refers to.
+   *
+   * Aaron, 2026-09-12: "when i hover over an item that has an acronym, like a bbz ticket
+   * number, i should be able to see full detail of the ticket or whatever it is."
+   *
+   * Cheapest source first. The board answers instantly and is never wrong about its own
+   * state; Jira is asked only for a ticket, and its answer is merged with the board's so
+   * the card carries both what the ticket says and what is being done about it here. A
+   * ticket nobody is working still resolves, through Jira alone.
+   *
+   * Answers are cached for a minute: a reader sweeping the board hovers the same key over
+   * and over, and neither Jira nor the reader benefits from a call each time.
+   */
+  private async whatIsResponse(ref: string): Promise<WhatIs> {
+    const key = ref.trim();
+    if (key.length === 0) return notFound('');
+    const hit = this.whatIsCache.get(key);
+    const now = Date.now();
+    if (hit && now - hit.at < WHATIS_CACHE_MS) return hit.value;
+
+    const lanes = this.lanesResponse(true, true).lanes;
+    const queue = this.queueStore.all();
+    let value: WhatIs;
+    switch (classifyRef(key)) {
+      case 'ticket': {
+        const board = fromBoard(key, lanes, queue);
+        const issue = this.jiraReadFn ? await this.jiraReadFn(key).catch(() => null) : null;
+        value = issue ? mergeTicket(fromJira(key, issue, this.jiraSite), board) : board ?? notFound(key);
+        break;
+      }
+      case 'pull-request': {
+        const no = prNumberFrom(key);
+        value = (no === null ? null : pullRequestFromBoard(no, lanes, queue)) ?? notFound(key);
+        break;
+      }
+      default:
+        value = runFromBoard(key, lanes) ?? fromBoard(key, lanes, queue) ?? notFound(key);
+    }
+    this.whatIsCache.set(key, { at: now, value });
+    return value;
   }
 
   private journalResponse(query: { since?: number; run?: string; limit?: number }): JournalResponse {
