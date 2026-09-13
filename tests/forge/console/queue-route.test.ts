@@ -332,3 +332,59 @@ describe('POST /queue/pause and /resume', () => {
     expect(afterResume.paused).toBe(false);
   });
 });
+
+/**
+ * One ticket, two repositories.
+ *
+ * Two halves of one ticket were two unrelated rows sharing a key, so the board showed two
+ * tickets and nothing stopped the frontend half merging before the backend half existed.
+ * The link and the hold are computed on the way out, so a half added or removed re-links
+ * on the very next read.
+ */
+describe('a ticket worked in two repositories', () => {
+  it('names each half as the other one on the board', async () => {
+    queueStore.append({ id: 'front', ticket: 'ABC-9', repo: 'owner/front', state: 'queued', at: Date.now() });
+    queueStore.append({ id: 'back', ticket: 'ABC-9', repo: 'owner/back', state: 'running', at: Date.now() });
+
+    const response = await fetch(`${base}/queue`, { headers: { 'x-forge-token': token } });
+    const body = await response.json() as QueueResponse;
+    const front = body.items.find((row) => row.id === 'front');
+    const back = body.items.find((row) => row.id === 'back');
+
+    expect(front?.sibling).toBe('back');
+    expect(back?.sibling).toBe('front');
+  });
+
+  it('holds the half that waits, and says what it waits for', async () => {
+    queueStore.append({ id: 'front', ticket: 'ABC-9', repo: 'owner/front', state: 'queued', waitingFor: 'back', at: Date.now() });
+    queueStore.append({ id: 'back', ticket: 'ABC-9', repo: 'owner/back', state: 'running', at: Date.now() });
+
+    const body = await (await fetch(`${base}/queue`, { headers: { 'x-forge-token': token } })).json() as QueueResponse;
+    const front = body.items.find((row) => row.id === 'front');
+
+    expect(front?.heldBecause).toMatch(/owner\/back/);
+  });
+
+  it('releases the hold once the half it waits for is done', async () => {
+    queueStore.append({ id: 'front', ticket: 'ABC-9', repo: 'owner/front', state: 'queued', waitingFor: 'back', at: Date.now() });
+    queueStore.append({ id: 'back', ticket: 'ABC-9', repo: 'owner/back', state: 'done', at: Date.now() });
+
+    const body = await (await fetch(`${base}/queue`, { headers: { 'x-forge-token': token } })).json() as QueueResponse;
+
+    expect(body.items.find((row) => row.id === 'front')?.heldBecause).toBeUndefined();
+  });
+
+  it('says a ticket with three halves needs a person, rather than pairing two of them', async () => {
+    for (const [id, repo] of [['a', 'owner/front'], ['b', 'owner/back'], ['c', 'owner/infra']]) {
+      queueStore.append({ id: id as string, ticket: 'ABC-9', repo: repo as string, state: 'queued', at: Date.now() });
+    }
+
+    const body = await (await fetch(`${base}/queue`, { headers: { 'x-forge-token': token } })).json() as QueueResponse;
+
+    for (const id of ['a', 'b', 'c']) {
+      const row = body.items.find((r) => r.id === id);
+      expect(row?.sibling, id).toBeNull();
+      expect(row?.siblingNote, id).toMatch(/3 items/);
+    }
+  });
+});
