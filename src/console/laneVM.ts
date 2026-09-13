@@ -145,13 +145,32 @@ export function blockerFor(lane: Lane, blockers: Blocker[]): Blocker | null {
   return blockers.find((b) => b.state !== 'resolved' && b.blocks.some((x) => x.laneId === lane.id)) ?? null;
 }
 
+/** The states that take a row out of the queue as a person reads it. Everything else --
+ *  planning, parked, failed, running, review, blocked, and any state added later -- is
+ *  still in the queue and must never be counted as an empty one. */
+const FINISHED_STATES = new Set(['done', 'merged', 'removed', 'cancelled']);
+
 /** Why an idle slot is idle, from the queue's own state: the sentence under the dashed
  *  card's "Waiting for a Ready ticket". */
 export function idleReason(queue: { items: QueueItem[]; paused: boolean; pauseReason: string | null; on: boolean }): string {
   if (!queue.on) return 'Waiting for a Ready ticket; the queue is off, so nothing starts.';
   if (queue.paused) return `Waiting for a Ready ticket; the queue is paused${queue.pauseReason ? ` (${queue.pauseReason})` : ''}.`;
   const queued = queue.items.filter((item) => item.state === 'queued');
-  if (queued.length === 0) return 'Waiting for a Ready ticket; nothing is in the queue.';
+  // "Nothing is in the queue" is about the whole queue, not about one state of it. It
+  // used to count `queued` rows alone, so a board carrying nineteen tickets in planning,
+  // parked and failed announced an empty queue beside twenty-two visible rows (Aaron,
+  // 2026-09-13, minutes after ingesting his own board). Anything not finished or removed
+  // is still in the queue as a person reads the screen.
+  const waiting = queue.items.filter((item) => !FINISHED_STATES.has(item.state));
+  if (waiting.length === 0) return 'Waiting for a Ready ticket; nothing is in the queue.';
+  if (queued.length === 0) {
+    // Something is there and none of it can start. Say how much and why, rather than
+    // either denying it exists or leaving the slot unexplained.
+    const counts = new Map<string, number>();
+    for (const item of waiting) counts.set(item.state, (counts.get(item.state) ?? 0) + 1);
+    const parts = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([state, n]) => `${n} ${state}`);
+    return `Waiting for a Ready ticket; ${waiting.length} in the queue, none ready to start (${parts.join(', ')}).`;
+  }
   const done = queue.items.filter((item) => item.state === 'done');
   const satisfied = (slug: string): boolean => done.some((row) => [row.input, row.ticket, row.branch, row.branch?.replace(/^(feature|hotfix)\//, '')].some((name) => name?.toLowerCase() === slug.toLowerCase()));
   const holding = (item: QueueItem): string[] => (item.after ?? []).filter((slug) => !satisfied(slug));
