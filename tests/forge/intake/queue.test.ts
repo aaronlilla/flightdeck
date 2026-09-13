@@ -270,7 +270,7 @@ describe('advanceItem: goal source', () => {
     const finished = await advanceItem(launched, deps2);
 
     expect(finished.state).toBe('parked');
-    expect(finished.reason).toBe('exhausted');
+    expect(finished.reason).toMatch(/ran out of room to think/);
     expect(finished.runKey).toBe('goal-run-3');
     expect(events.map((e) => e['event'])).toContain('queue.parked');
   });
@@ -619,7 +619,11 @@ describe('advanceItem', () => {
     current = await advanceItem(current, deps);
     const result = await advanceItem(current, deps);
     expect(result.state).toBe('parked');
-    expect(result.reason).toBe('blocked');
+    // Was `toBe('blocked')`. The bare verdict as the whole reason is the defect fixed on
+    // 2026-09-13: a card told somebody to read it and offered one word. The verdict is
+    // still what happened, and is still recorded; this is how it is said.
+    expect(result.reason).toMatch(/could not get past/);
+    expect(result.state).toBe('parked');
   });
 
   it('takes an unverified run on to the gate when its branch already carries a PR', async () => {
@@ -654,7 +658,8 @@ describe('advanceItem', () => {
     current = await advanceItem(current, deps);
     const result = await advanceItem(current, deps);
     expect(result.state).toBe('parked');
-    expect(result.reason).toBe('unverified');
+    expect(result.reason).toMatch(/nothing proving the work is good/);
+    expect(result.state).toBe('parked');
   });
 
   // BBZ-60/62/74/202, 2026-09-08: four items reached the gate hop while their PR checks
