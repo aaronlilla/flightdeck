@@ -69,6 +69,18 @@ export interface QueueRoutesOptions {
    *  rail resolves the same pending entry the click created. Absent (a bare specimen),
    *  the action runs at once. */
   confirmGate?: ConfirmGate;
+  /** What a queued ticket is called before a brief exists for it. Absent (no Jira
+   *  credentials, or a bare specimen) means a ticket card falls back to its key, the
+   *  same answer it gave before this was wired -- never a blank card, and never a
+   *  blocking read on the poll path. */
+  ticketTitles?: TicketTitlesLike;
+}
+
+/** Spelled structurally rather than imported, so this route stays independent of how the
+ *  titles are read (`ticket-titles.ts` in production, a map in a test). */
+export interface TicketTitlesLike {
+  get(key: string): string | null;
+  want(keys: Iterable<string>): void;
 }
 
 /** The descriptor a queue route hands the gate so the confirm survives a restart. Spelled
@@ -228,9 +240,16 @@ export class QueueRoutes {
     const paused = this.opts.readPaused();
     const maxInFlight = readQueueWidth();
     const ctx = queueOrderContext(items, { paused, maxInFlight });
+    // Ask about every key on this page before naming any of them. The reads run in the
+    // background: this call returns at once, and the keys it started land on the next
+    // poll a few seconds later.
+    const titles = this.opts.ticketTitles;
+    titles?.want(items.map((item) => item.ticket).filter((key): key is string => Boolean(key)));
     return {
       items: items.map((item) => this.narrateItem({
-        ...item, title: queueTitleFor(item), ...queueOrderWordsWith(item, ctx),
+        ...item,
+        title: queueTitleFor(item, titles ? (key) => titles.get(key) : undefined),
+        ...queueOrderWordsWith(item, ctx),
       })),
       paused, maxInFlight,
     };

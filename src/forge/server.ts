@@ -35,6 +35,7 @@ import { reasonerFor } from './reasoner-claude.js';
 /** How often the fleet journal's size is compared against the last look. */
 const JOURNAL_WATCH_MS = 1000;
 import { appendThread, ConsoleWrites, plainReceiptCard } from './console/command.js';
+import { TicketTitles } from './console/ticket-titles.js';
 import { QueueRoutes } from './console/queue-route.js';
 import { BlockersRoutes, type Confirmer, type Restarter } from './console/blockers-route.js';
 import { IntegrationsConnectRoutes } from './console/integrations-route.js';
@@ -204,6 +205,10 @@ export interface ForgeServerOptions {
   /** Reads one Jira issue, for `GET /whatis`. Wired by `cli.ts` when Jira credentials
    *  are configured; absent otherwise. */
   jiraRead?: (key: string) => Promise<import('./intake/jira.js').JiraIssueRead | null>;
+  /** What names a queued ticket before a brief is written for it. Built from `jiraRead`
+   *  when one is wired, so a board ingested into the queue reads as ticket summaries
+   *  rather than nineteen rows of `Title not read yet`. */
+  ticketTitles?: import('./console/queue-route.js').TicketTitlesLike;
   /** R-55: `POST /codex/ask` and `GET /codex/:id`, behind the same token as every other
    *  route. Undefined (no default wired -- the advisor spends Codex quota, and this
    *  goal's guardrail is "nothing else live") answers 501, the same pattern `/router`
@@ -518,9 +523,13 @@ export class ForgeServer {
     // A later `POST /queue/width` still wins for the rest of this process's life --
     // `response()` and the ticker both read the file fresh, never this captured option.
     if (options.queueMaxInFlight !== undefined) writeQueueWidth(options.queueMaxInFlight);
+    // Named from the same reader a ticket hover uses, so nothing new has to be configured.
+    const ticketTitles = options.ticketTitles
+      ?? (options.jiraRead ? new TicketTitles({ read: options.jiraRead }) : null);
     this.queueRoutes = new QueueRoutes({
       narrator: this.narrator,
       store: this.queueStoreForMerge,
+      ...(ticketTitles ? { ticketTitles } : {}),
       search: options.queueSearch ?? {
         searchKeys: async () => {
           throw new Error('jira not configured: missing FORGE_JIRA_SITE, FORGE_JIRA_EMAIL, FORGE_JIRA_TOKEN');

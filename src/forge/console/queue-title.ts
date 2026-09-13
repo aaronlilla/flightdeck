@@ -70,9 +70,15 @@ function withoutOrphanedPunctuation(title: string | null): string | null {
 
 /** `null` when nothing on the item can name it -- a ticket with no brief written yet.
  *  The card falls back to the ticket key, then the id, so it is never blank. */
-export function queueTitleFor(item: QueueItem): string | null {
+export function queueTitleFor(item: QueueItem, ticketTitle?: (key: string) => string | null): string | null {
   if (item.source === 'brief' || item.source === 'hotfix') {
     return withoutOrphanedPunctuation(titleFromHeading(item.input, item.ticket)) ?? firstBodyParagraph(item.input);
   }
-  return withoutOrphanedPunctuation(headingOfFile(item.briefPath, item.ticket));
+  const heading = withoutOrphanedPunctuation(headingOfFile(item.briefPath, item.ticket));
+  if (heading) return heading;
+  // The brief wins when there is one: it is what this run is actually doing, and a
+  // planned item can be narrower than the ticket that spawned it. The ticket's own
+  // summary is the answer for everything before that -- the whole time an ingested board
+  // sits waiting for a free slot, which is where nineteen cards read nothing at all.
+  return item.ticket && ticketTitle ? ticketTitle(item.ticket) : null;
 }
