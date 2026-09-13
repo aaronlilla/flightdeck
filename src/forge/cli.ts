@@ -1992,7 +1992,15 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       const gh = deps.councilGh ?? REAL_GH;
       const snapshot = await gh.viewPr(repo, pr);
 
-      if (snapshot.checks.conclusion !== 'success') {
+      // A repository with its Actions switched off reports an empty rollup for ever, so
+      // `pending` there is not "not yet" -- it is "never", and refusing on it meant the
+      // council never read a pull request in such a repository at all. The queue's own
+      // gate runs that repository's verify in place of the checks (`intake/noCiGate.ts`);
+      // this is the same decision on the review side, so the two agree.
+      const noChecksHere = snapshot.checks.conclusion === 'pending'
+        && gh.repoRunsChecks !== undefined
+        && !(await gh.repoRunsChecks(repo));
+      if (snapshot.checks.conclusion !== 'success' && !noChecksHere) {
         // BBZ-60/62/74/202, 2026-09-08: `pending` is "not yet", never "no" -- a queued or
         // in-progress check almost always turns green on its own. Marking it on `data`
         // lets `chainCouncil` and the queue's `advanceItem` retry instead of parking,
