@@ -38,9 +38,9 @@ vi.mock('../../src/console/api.js', async (importOriginal) => ({
 let MERGE_PROPOSES = false;
 
 import { LaneTile } from '../../src/console/components/LaneTile.js';
-import { ACTIONS, ActionsContext, useAction } from '../../src/console/actions.js';
+import { ACTIONS, ActionsContext, actionKey, useAction } from '../../src/console/actions.js';
 import { actionForCommand } from '../../src/console/commandPending.js';
-import { initialState, reducer, StoreContext } from '../../src/console/store.js';
+import { initialState, reducer, StoreContext, useStore } from '../../src/console/store.js';
 import type { Lane } from '../../src/shared/console-model.js';
 import type { BoardCommand } from '../../src/console/laneVM.js';
 
@@ -149,5 +149,36 @@ describe('an irreversible command', () => {
 
     fireEvent.click(screen.getByTestId('primary-action'));
     expect(sent, 'the second press re-proposed instead of confirming').toEqual(['confirm:tok-merge']);
+  });
+});
+
+describe('the runner behind a board click, which fills a different half of the store', () => {
+  // Two maps record a call in flight. The catalog hook fills both; the board's runner
+  // (`App.tsx`'s `runCatalogAction`) dispatches `action-pending` alone. Reading the other
+  // half therefore showed nothing at all for every board click -- measured on the live
+  // board: pressed Merge, still idle at 200 ms and 500 ms, and only at 1.5 s did the
+  // reply land and change the label.
+  function BoardPath(): JSX.Element {
+    const { dispatch } = useStore();
+    return (
+      <>
+        <button
+          type="button" data-testid="start"
+          onClick={() => dispatch({ type: 'action-pending', key: actionKey('mergeRun', 'r-1') })}
+        >
+          start
+        </button>
+        <LaneTile lane={lane()} now={NOW} onOpen={() => {}} onCommand={() => {}} />
+      </>
+    );
+  }
+
+  it('shows the button busy from `action-pending` alone', () => {
+    render(<Wrapper><BoardPath /></Wrapper>);
+    expect(screen.getByTestId('primary-action').textContent).toBe('Merge');
+    fireEvent.click(screen.getByTestId('start'));
+    const button = screen.getByTestId('primary-action');
+    expect(button.textContent, 'a board click shows nothing until its reply lands').toBe('Merging…');
+    expect(button.getAttribute('aria-busy')).toBe('true');
   });
 });
