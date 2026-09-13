@@ -9,6 +9,7 @@
  * worker that actually moves an item forward (`runQueueTick`) is `forge up`'s own timer;
  * this class never calls it, and never spawns anything itself.
  */
+import { linkSiblings, holdState, type SiblingItem } from './siblings.js';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { resolve } from 'node:path';
@@ -245,10 +246,20 @@ export class QueueRoutes {
     // poll a few seconds later.
     const titles = this.opts.ticketTitles;
     titles?.want(items.map((item) => item.ticket).filter((key): key is string => Boolean(key)));
+    // One ticket, two repositories. Both the link and the hold are computed here on the
+    // way out, never stored, so a half added or removed re-links on the very next read
+    // and no row can be left claiming a sibling that has gone.
+    const links = linkSiblings(items.map(toSiblingItem));
+    const siblingRows = items.map(toSiblingItem);
     return {
       items: items.map((item) => this.narrateItem({
         ...item,
         title: queueTitleFor(item, titles ? (key) => titles.get(key) : undefined),
+        sibling: links[item.id]?.sibling ?? null,
+        ...(links[item.id]?.ambiguous ? { siblingNote: links[item.id]!.ambiguous } : {}),
+        ...(holdState(toSiblingItem(item), siblingRows).why
+          ? { heldBecause: holdState(toSiblingItem(item), siblingRows).why }
+          : {}),
         ...queueOrderWordsWith(item, ctx),
       })),
       paused, maxInFlight,
@@ -479,4 +490,13 @@ export class QueueRoutes {
 
     return false;
   }
+}
+
+/** A queue item as the sibling rules see it: the four fields they read, and nothing of
+ *  this repository's own vocabulary. */
+function toSiblingItem(item: QueueItem): SiblingItem {
+  return {
+    id: item.id, ticket: item.ticket, repo: item.repo, state: item.state,
+    waitingFor: item.waitingFor ?? null,
+  };
 }

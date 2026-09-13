@@ -795,6 +795,29 @@ export interface QueueItem {
   branch: string | null;
   worktreePath: string | null;
   base: string | null;
+  /**
+   * One ticket, two repositories.
+   *
+   * A ticket whose fix needs both halves becomes two items, and `repo` and `ticket` are
+   * each a single string, so nothing joined them: the board showed two tickets. `sibling`
+   * is the other item working this ticket, computed on the way out from the items
+   * themselves and never stored, so a half added or removed re-links on the next read.
+   * Null when this ticket has one half, or more than two -- three cannot be paired
+   * without guessing which two belong together, and `siblingNote` says so instead.
+   */
+  sibling?: string | null;
+  siblingNote?: string;
+  /**
+   * The sibling that has to land first, set by whoever split the ticket (Aaron,
+   * 2026-09-13: the backend request opens and the frontend is held until it merges).
+   * Stored on the item, because which half waits is a decision, not something to infer
+   * from a repository name.
+   */
+  waitingFor?: string | null;
+  /** Why this item is held, computed from `waitingFor` and the sibling's own state.
+   *  Empty when it is not held. A sibling that has gone missing releases the hold and
+   *  says so here rather than holding for ever or releasing quietly. */
+  heldBecause?: string;
   state: QueueItemState;
   /** Why the item is `parked` or `failed`, when the worker knows. */
   reason: string | null;
