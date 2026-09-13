@@ -16,7 +16,7 @@ import { join } from 'node:path';
 
 import { chainCouncil, chainGate, chainGh, chainRebase, chainLauncher, chainLaunchGoal } from './chain-wire.js';
 import {
-  checkoutFor, declaredRepoKind, repoKindFor as repoKindForEnv, type ChainEnv,
+  checkoutFor, declaredRepoKind, repoKindFor as repoKindForEnv, verifyCommandFor, type ChainEnv,
 } from './chain-env.js';
 import type { CliResult, ForgeDeps } from './cli.js';
 import { autoMergeAllowed } from './council/risk.js';
@@ -559,6 +559,63 @@ export function queueMergeDeps(deps: ForgeDeps, store: QueueRuntimeDeps['store']
   };
 }
 
+/**
+ * Whether a repository runs any check on a pull request.
+ *
+ * Asked so a gate waiting on an empty check rollup can tell "no checks yet" from "no
+ * checks ever". Only an ACTIVE workflow counts: a repository whose Actions are disabled
+ * still lists its workflow files, and reading those as checks is how the gate came to
+ * wait twenty ticks for something that was never going to run.
+ *
+ * Any trouble at all answers `true`, which is the waiting answer. A lookup that failed is
+ * not evidence that a repository runs nothing, and this decides whether a merge gate is
+ * satisfied some other way.
+ */
+export function queueRepoRunsChecks(): NonNullable<QueueRuntimeDeps['repoRunsChecks']> {
+  return async (repo) => {
+    try {
+      // `actions/permissions` rather than the workflow list. A repository with Actions
+      // switched off still LISTS its workflow files as active -- this one does, and
+      // reading that as "runs checks" is what would leave the gate waiting for a run that
+      // cannot start. `enabled: false` is the repository-level switch itself.
+      const result = await execRun({
+        argv: ['gh', 'api', `repos/${repo}/actions/permissions`, '--jq', '.enabled'],
+        cwd: process.cwd(), owner: 'queue', cls: 'script', fullOutput: true, raw: true, wall: 20_000,
+      });
+      const text = (result.full ?? result.tail ?? '').trim();
+      if (result.returncode !== 0) return true;
+      return text !== 'false';
+    } catch {
+      return true;
+    }
+  };
+}
+
+/**
+ * Runs a repository's own verify in the working tree an item holds.
+ *
+ * The command is whatever `FORGE_REPO_VERIFY` names for that repository -- the same one
+ * a chain packet's brief already tells a worker to run -- so the gate and the worker are
+ * held to one standard rather than two. A repository with no command configured answers
+ * `ok: false` saying exactly that, and the item parks rather than passing on nothing.
+ */
+export function queueRunRepoVerify(chainEnv: ChainEnv): NonNullable<QueueRuntimeDeps['runRepoVerify']> {
+  return async ({ repo, worktreePath }) => {
+    const command = verifyCommandFor(chainEnv, repo);
+    if (!command) {
+      return { ok: false, output: `no FORGE_REPO_VERIFY command is configured for ${repo}` };
+    }
+    const result = await execRun({
+      argv: [...(chainEnv.shell ?? []), command],
+      cwd: worktreePath, owner: 'queue', cls: 'script', fullOutput: true, raw: true,
+      // A whole suite, not a probe. Sized past the longest this repository's own verify
+      // has taken rather than against a tick.
+      wall: 20 * 60_000,
+    });
+    return { ok: result.returncode === 0, output: result.full ?? result.tail ?? '' };
+  };
+}
+
 /** A.7: after a Merge lands, read the develop deploy's per-platform outcome off the EAS
  *  CLI (`intake/otaVerify.ts`), from the checkout `FORGE_REPO_CHECKOUTS` names for the
  *  repo. A repo with no checkout, or no workflow run inside the wait, answers undefined
@@ -600,6 +657,11 @@ export function buildQueueRuntimeDeps(
     rebaseOnBase: chainRebase(),
     council: chainCouncil(deps),
     gate: chainGate(deps),
+    // A repository whose Actions are off never leaves a pending check rollup, so the gate
+    // asks whether it runs any, and stands its own verify in their place when it does not
+    // (Aaron, 2026-09-12). Both are real calls; `noCiGate.ts` holds the decision.
+    repoRunsChecks: queueRepoRunsChecks(),
+    runRepoVerify: queueRunRepoVerify(chainEnv),
     clock: () => Date.now(),
     killSwitch: () => readKillSwitch(killSwitchPath()).engaged,
     paused: () => readQueuePaused(),
