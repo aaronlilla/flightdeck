@@ -805,9 +805,19 @@ export class ConsoleReads {
     // `planning`, `running`, `failed`), and the run-based sentence above stands there.
     if (queueItem && !mergedNow) {
       const verdict = this.queueVerdictFor({ ...queueItem, ...(repo ? { repo } : {}) });
-      // The checks clause reads the lane's own PR facts (the cache), which the queue
-      // item never carries.
-      const withChecks = pr && queueItem.pr ? { ...queueItem, pr: { ...queueItem.pr, ...(pr.checks !== undefined ? { checks: pr.checks } : {}), ...(pr.merged !== undefined ? { merged: pr.merged } : {}) } } : queueItem;
+      // The whole fresh reading wins, not a hand-picked pair of fields from it.
+      //
+      // This used to carry `checks` and `merged` across and nothing else, so `closed`
+      // stayed whatever the queue wrote when the pull request was opened -- and `closed`
+      // is the field that decides whether the sentence is true. A pull request closed
+      // hours earlier, its work already on main, went on reading "Draft PR 206 waiting
+      // for your merge" on the board, beside a mergeability verdict on the same lane that
+      // said "closed without merging" (Aaron, 2026-09-13: the console constantly has
+      // stale or wrong information).
+      //
+      // Spreading the whole record means a field added later is carried without anyone
+      // remembering to add it here, which is how the last one came to be missed.
+      const withChecks = pr && queueItem.pr ? { ...queueItem, pr: { ...queueItem.pr, ...pr } } : queueItem;
       // Only a repo that is off the allow-list AND has a named owner reads as
       // controlled code; an unconfigured allow-list alone is not a fact about the repo.
       const backendOwner = process.env['FORGE_GH_BACKEND_OWNER'];

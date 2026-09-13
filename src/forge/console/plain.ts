@@ -167,7 +167,29 @@ export interface QueueVerdict {
  * a council verdict word, a coverage count or the item's own reason, in a full sentence
  * a person can act on.
  */
+/**
+ * What has already happened to a pull request, when something has.
+ *
+ * Merged and closed are facts about the past, and they outrank every sentence about what
+ * to do next. Kept in one place so a branch added later cannot forget one of them: the
+ * defect this exists for was a `review` branch that checked neither.
+ */
+function settledPrSentence(pr: NonNullable<QueueItem['pr']>): string | null {
+  if (pr.merged) return `Merged: draft PR #${pr.no} landed.`;
+  if (pr.closed) return `PR #${pr.no} was closed without merging.`;
+  return null;
+}
+
 export function plainForQueueItem(item: QueueItem, verdict: QueueVerdict | null, owner: string | null = null): string | null {
+  // Before anything else: what has already happened to this pull request outranks what
+  // the item's own state says is next. A `review` row whose pull request closed or merged
+  // underneath it asked for a merge that could never happen -- the board read "Draft PR
+  // 206 waiting for your merge" beside its own verdict of "closed without merging"
+  // (Aaron, 2026-09-13). `done` already read this way; `review` did not, and a row sits in
+  // `review` for exactly as long as somebody has not merged it, which is the whole window
+  // in which it can close.
+  const settled = item.pr ? settledPrSentence(item.pr) : null;
+  if (settled) return settled;
   switch (item.state) {
     case 'review': {
       const pr = item.pr;
@@ -186,10 +208,7 @@ export function plainForQueueItem(item: QueueItem, verdict: QueueVerdict | null,
     case 'done': {
       const pr = item.pr;
       if (!pr) return null;
-      if (pr.merged) return `Merged: draft PR #${pr.no} landed.`;
-      // Follow-up to R-61: same reasoning as the `merged` branch above -- a PR closed
-      // without merging is done, never "open" or "waiting for your Merge."
-      if (pr.closed) return `PR #${pr.no} was closed without merging.`;
+      // Merged and closed are both answered by `settledPrSentence` above.
       return `Draft PR #${pr.no} is open; the queue never merges on its own, so it is waiting for your Merge.`;
     }
     case 'parked':
