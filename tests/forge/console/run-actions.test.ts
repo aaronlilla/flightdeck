@@ -380,6 +380,97 @@ describe('mergeRun / verifyRun', () => {
     expect(result.status).toBe(200);
     expect(result.body).toMatchObject({ ok: true });
   });
+
+  /**
+   * The gate refuses a head with no council attestation, telling the operator to run
+   * `forge council` first. The queue has re-councilled on that exact refusal since
+   * 2026-09-08; the console's own Verify and Merge did not, so a board item sat with one
+   * button that could never succeed no matter how many times it was pressed.
+   */
+  const chainWithPr = () => {
+    appendOnce(journalPath, { event: 'intake.planned', packetId: 'p1', repo: 'acme/widget' });
+    appendOnce(journalPath, { event: 'chain.provisioned', packetId: 'p1', worktreePath: dir, branch: 'feat/x' });
+    appendOnce(journalPath, { event: 'chain.launched', packetId: 'p1', runKey: 'alpha' });
+  };
+
+  const NO_ATTESTATION = 'refused: no attestation for acme/widget#42 at head abc123 -- run forge council first';
+
+  it('runs the council and gates again when the gate refuses for a missing attestation', async () => {
+    chainWithPr();
+
+    const spawned: string[][] = [];
+    let gateCalls = 0;
+    deps.spawnFn = ((command: string, args: string[]) => {
+      spawned.push(args);
+      if (args.includes('list')) return fakeSpawn(0, JSON.stringify([{ number: 42 }]))();
+      if (args.includes('council')) return fakeSpawn(0, 'council: PASS')();
+      gateCalls += 1;
+      return gateCalls === 1 ? fakeSpawn(1, NO_ATTESTATION)() : fakeSpawn(0, 'gate passed')();
+    }) as RunActionsDeps['spawnFn'];
+
+    const result = await verifyRun('alpha', deps);
+
+    expect(spawned.some((args) => args.includes('council'))).toBe(true);
+    expect(gateCalls).toBe(2);
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({ ok: true });
+  });
+
+  it('does the same for merge, which hits the same refusal', async () => {
+    chainWithPr();
+    appendOnce(journalPath, { event: 'run.finished', run: 'alpha', verdict: 'done' });
+
+    let gateCalls = 0;
+    let councilRan = false;
+    deps.spawnFn = ((command: string, args: string[]) => {
+      if (args.includes('list')) return fakeSpawn(0, JSON.stringify([{ number: 42 }]))();
+      if (args.includes('council')) { councilRan = true; return fakeSpawn(0, 'council: PASS')(); }
+      gateCalls += 1;
+      return gateCalls === 1 ? fakeSpawn(1, NO_ATTESTATION)() : fakeSpawn(0, 'merged')();
+    }) as RunActionsDeps['spawnFn'];
+
+    const result = await mergeRun('alpha', deps);
+
+    expect(councilRan).toBe(true);
+    expect(result.status).toBe(200);
+  });
+
+  it('reports the second gate refusal rather than looping', async () => {
+    chainWithPr();
+
+    let gateCalls = 0;
+    deps.spawnFn = ((command: string, args: string[]) => {
+      if (args.includes('list')) return fakeSpawn(0, JSON.stringify([{ number: 42 }]))();
+      if (args.includes('council')) return fakeSpawn(0, 'council: FIX FIRST')();
+      gateCalls += 1;
+      return fakeSpawn(1, gateCalls === 1 ? NO_ATTESTATION : "refused: the attestation's verdict is FIX FIRST")();
+    }) as RunActionsDeps['spawnFn'];
+
+    const result = await verifyRun('alpha', deps);
+
+    expect(gateCalls).toBe(2);
+    expect(result.status).toBe(502);
+    expect(String((result.body as { message: string }).message)).toContain('FIX FIRST');
+  });
+
+  it('leaves a refusal that is not about an attestation alone', async () => {
+    chainWithPr();
+
+    let councilRan = false;
+    let gateCalls = 0;
+    deps.spawnFn = ((command: string, args: string[]) => {
+      if (args.includes('list')) return fakeSpawn(0, JSON.stringify([{ number: 42 }]))();
+      if (args.includes('council')) { councilRan = true; return fakeSpawn(0, 'council: PASS')(); }
+      gateCalls += 1;
+      return fakeSpawn(1, 'refused: checks are red on head abc123')();
+    }) as RunActionsDeps['spawnFn'];
+
+    const result = await verifyRun('alpha', deps);
+
+    expect(councilRan).toBe(false);
+    expect(gateCalls).toBe(1);
+    expect(result.status).toBe(502);
+  });
 });
 
 describe('compactRun', () => {
