@@ -8,6 +8,7 @@ import { boardStateWord, durationWords, laneHeadline } from '../laneVM.js';
 import { laneActionLiveness } from '../actionLiveness.js';
 import { ACTIONS, useAction } from '../actions.js';
 import { busyLabelFor, confirmLabelFor, useCommandConfirming, useCommandPending } from '../commandPending.js';
+import { HANDOFF_DESTINATIONS } from '../../shared/console-model.js';
 import type { Lane, LaneStory, LaneSummary } from '../../shared/console-model.js';
 import { Marks } from './QuestionCard.js';
 import { NarratedLine } from './Narrated.js';
@@ -137,18 +138,18 @@ function LaneHandoff({ lane }: { lane: Lane }): JSX.Element | null {
         <label className="kick" htmlFor={`handoff-to-${lane.id}`}>Who takes it next</label>
         <select
           id={`handoff-to-${lane.id}`} data-testid="lane-handoff-to"
-          value={to} onChange={(event) => { setTo(event.target.value); }}
+          value={to} onChange={(event) => { setTo(event.target.value); handoff.clear(); }}
           style={{ font: 'inherit', fontSize: 'var(--fs-body)', padding: '8px 10px', border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--ink)' }}
         >
-          <option value="qa">QA</option>
-          <option value="backend">The backend lead</option>
-          <option value="me">Me</option>
+          {HANDOFF_DESTINATIONS.map((who) => (
+            <option key={who.id} value={who.id}>{who.name}</option>
+          ))}
         </select>
         <label className="kick" htmlFor={`handoff-comment-${lane.id}`}>What they are looking at</label>
         <textarea
           id={`handoff-comment-${lane.id}`} data-testid="lane-handoff-comment" rows={3}
           placeholder="What changed, and what to check"
-          value={comment} onChange={(event) => { setComment(event.target.value); }}
+          value={comment} onChange={(event) => { setComment(event.target.value); handoff.clear(); }}
           style={{ font: 'inherit', fontSize: 'var(--fs-body)', padding: '8px 10px', border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--ink)', resize: 'vertical' }}
         />
         <button
@@ -160,9 +161,18 @@ function LaneHandoff({ lane }: { lane: Lane }): JSX.Element | null {
           {handoff.pending ? 'Handing on…' : asking ? `Confirm — hand ${ticket} on` : `Hand ${ticket} on`}
         </button>
         {asking && handoff.result?.kind === 'confirm' ? (
-          <span data-testid="lane-handoff-blast" role="alert" style={{ fontSize: 'var(--fs-meta)', color: 'var(--warn)' }}>
-            {handoff.result.blast}
-          </span>
+          <>
+            <span data-testid="lane-handoff-blast" role="alert" style={{ fontSize: 'var(--fs-meta)', color: 'var(--warn)' }}>
+              {handoff.result.blast}
+            </span>
+            <button
+              type="button" className="btn" data-testid="lane-handoff-dismiss"
+              onClick={() => { handoff.dismiss(); }}
+              style={{ alignSelf: 'flex-start' }}
+            >
+              Not now
+            </button>
+          </>
         ) : null}
         {result ? (
           <div
@@ -292,7 +302,7 @@ export function TicketSheet({ lane, now, onClose, onCommand, onSendLane, verbose
         </div>
         <LaneActions lane={lane} onCommand={onCommand} />
         <LaneSteering lane={lane} />
-        <LaneHandoff lane={lane} />
+        <LaneHandoff key={lane.id} lane={lane} />
         {question ? (
           <div style={{ position: 'relative', border: '1px solid var(--warn)', background: 'var(--warnTint)', padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 6 }}>
             <Marks />

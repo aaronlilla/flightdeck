@@ -10,7 +10,7 @@
  * was wrong, wrote nothing because this machine has no credentials, wrote some of it --
  * do not all come back looking the same.
  */
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -154,6 +154,83 @@ describe('POST /ticket/:key/handoff', () => {
 
     expect(response.status).toBe(202);
     expect(await response.json()).toMatchObject({ pending: true });
+    expect(wrote).toEqual([]);
+  });
+
+  // Found by code review. The console throws on any non-2xx and hands the body to
+  // `redactErrorBody`, which reads an `error` field and otherwise says "the server did
+  // not say why". A refusal that carries its sentence only in `refused` therefore
+  // reaches the operator as nothing at all -- which is the whole point of the route.
+  it('puts the refusal sentence where the console can read it', async () => {
+    const refusals = [
+      await handoff('BBZ-290', { to: 'joe', comment: 'over to you' }),
+      await handoff('BBZ-290', { to: 'qa', comment: '   ' }),
+    ];
+    deps.client = null;
+    refusals.push(await handoff('BBZ-290', { to: 'qa', comment: 'over to you' }));
+
+    for (const { body } of refusals) {
+      const carried = (body as unknown as { error?: unknown }).error;
+      expect(typeof carried, JSON.stringify(body)).toBe('string');
+      expect(carried).toBe(body.refused);
+    }
+  });
+
+  // Found by code review, and it writes before it refuses. `deps.people[to]` is a plain
+  // lookup, so a `to` that resolves on Object.prototype walks past the unknown-destination
+  // guard -- the comment posts to Jira, which cannot be taken back, and only then does it
+  // report "no account id is configured for undefined".
+  it('refuses a destination that only exists on the prototype, before writing anything', async () => {
+    for (const to of ['constructor', '__proto__', 'toString', 'valueOf']) {
+      wrote = [];
+      const { status, body } = await handoff('BBZ-290', { to, comment: 'over to you' });
+
+      expect(status, to).toBe(400);
+      expect(body.refused, to).toMatch(/not somebody this console can hand to/);
+      expect(wrote, `${to} must not post a comment first`).toEqual([]);
+    }
+  });
+
+  /** Every `decision.made` row the journal holds, with what it recorded. */
+  function decisions(): { action?: string; text?: string }[] {
+    const raw = readFileSync(join(dir, 'fleet.jsonl'), 'utf8');
+    return raw.split(/\r?\n/).filter((line) => line.trim())
+      .map((line) => JSON.parse(line) as { event: string; action?: string; text?: string })
+      .filter((row) => row.event === 'decision.made');
+  }
+
+  // Found by design critique. Kill and merge both write a `decision.made` row plus its
+  // ledger mirror; the worker's own Jira writes emit external.intent/call/complete. This
+  // route wrote to Jira -- irreversibly, on somebody else's board -- and left nothing but
+  // a chat card. A handoff that half-landed could not be reconstructed afterwards at all.
+  it('records what it did where the journal can be read, not only in the thread', async () => {
+    await handoff('BBZ-290', { to: 'qa', comment: 'over to you' });
+
+    const rows = decisions();
+    expect(rows.map((row) => row.action)).toContain('ticket-handoff');
+    const row = rows.find((r) => r.action === 'ticket-handoff');
+    expect(row?.text).toContain('BBZ-290');
+    // The per-step outcome, not one verdict: a half-landed handoff has to be findable.
+    expect(row?.text).toMatch(/comment|assign|transition/);
+  });
+
+  it('records a refusal too, so a handoff nobody made is not indistinguishable from one never asked for', async () => {
+    await handoff('BBZ-290', { to: 'joe', comment: 'over to you' });
+
+    const row = decisions().find((r) => r.action === 'ticket-handoff');
+    expect(row?.text).toMatch(/not somebody this console can hand to/);
+  });
+
+  // The queue path runs voiceGuard before it posts, to keep agent self-narration and
+  // Aaron in the third person off tickets Joe and Haiping read. This route took free
+  // text from an operator and posted it with only the readability backstop.
+  it('refuses a comment voiceGuard would refuse, before writing anything', async () => {
+    const { status, body } = await handoff('BBZ-290', {
+      to: 'qa', comment: 'Aaron reported this one; fixed in this session.',
+    });
+
+    expect(status).toBe(400);
+    expect(body.refused).toMatch(/reads wrong for a ticket.*third person/i);
     expect(wrote).toEqual([]);
   });
 

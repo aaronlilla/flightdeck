@@ -17,6 +17,7 @@ import { CONSOLE_ROUTES, HEARTBEAT_MS } from '../shared/console-model.js';
 import { computeNext } from '../forge/console/summary.js';
 import { orderChains } from '../forge/console/blockers.js';
 import { RAIL_TYPES } from '../shared/rail-kinds.js';
+import { HANDOFF_DESTINATIONS } from '../shared/console-model.js';
 import type {
   ActionResult, Blocker, Caps, Integration, JournalEntry, Lane, LaneSummary, Message, QueueAddRequest,
   QueueAddResponse, QueueItem, QueueSource, ReauditResponse, Rule, TicketHandoffResponse,
@@ -1327,9 +1328,14 @@ export function createStubServer() {
         const sent = (await readJson<{ to?: string; comment?: string }>(request)) ?? {};
         const to = String(sent.to ?? '');
         const comment = String(sent.comment ?? '').trim();
-        const people: Record<string, string> = { qa: 'QA', backend: 'the backend lead', me: 'me' };
+        const people: Record<string, string> = Object.fromEntries(
+          HANDOFF_DESTINATIONS.map((who) => [who.id, who.name]),
+        );
+        // `error` as well as `refused`: the console reads a non-2xx body through
+        // `redactErrorBody`, which looks for `error` and otherwise says nothing useful.
         const refuse = (reason: string, status: number): { status: number; body: unknown } => ({
-          status, body: { ok: false, steps: [], refused: reason } satisfies TicketHandoffResponse,
+          status,
+          body: { ...({ ok: false, steps: [], refused: reason } satisfies TicketHandoffResponse), error: reason },
         });
         // Irreversible, so it goes through the same confirm gate the real route does:
         // a press asks, and only the press that comes back with the token writes.
@@ -1341,7 +1347,9 @@ export function createStubServer() {
             if (!comment) {
               return refuse('a handoff carries a comment saying what the next person is looking at', 400);
             }
-            if (!people[to]) {
+            // Own-property check, the same hole the real route had: `people[to]`
+            // resolves `constructor` and friends on Object.prototype.
+            if (!Object.prototype.hasOwnProperty.call(people, to)) {
               return refuse(`"${to}" is not somebody this console can hand to; it knows: ${Object.keys(people).join(', ')}`, 400);
             }
             const partial = key.endsWith('-207');

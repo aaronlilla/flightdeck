@@ -169,6 +169,23 @@ export interface ReauditResponse {
  *
  * `refused` is set only when nothing was attempted, and is empty whenever the writes ran.
  */
+/**
+ * Who a ticket can be handed to, and the label a screen shows for each.
+ *
+ * One list, read by the control, the route's own people map and the stub alike. Three
+ * hardcoded copies drifted apart silently before this: adding a destination left the
+ * screen offering the old three, and renaming an id made the screen send a value the
+ * route refused. The names are roles, not people -- who `qa` actually is comes from the
+ * environment, so swapping the person is a setting, not a change here.
+ */
+export const HANDOFF_DESTINATIONS = [
+  { id: 'qa', name: 'QA' },
+  { id: 'backend', name: 'the backend lead' },
+  { id: 'me', name: 'me' },
+] as const;
+
+export type HandoffDestinationId = typeof HANDOFF_DESTINATIONS[number]['id'];
+
 export interface TicketHandoffStep {
   name: 'comment' | 'assign' | 'transition';
   ok: boolean;

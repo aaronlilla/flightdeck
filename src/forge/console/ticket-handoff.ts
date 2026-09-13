@@ -12,7 +12,9 @@
  * unattemptable step is a failed step that names what is unset.
  */
 
+import { HANDOFF_DESTINATIONS, type HandoffDestinationId } from '../../shared/console-model.js';
 import { createJiraWriteClient } from '../intake/jira.js';
+import { voiceGuard } from '../intake/voiceGuard.js';
 import { jiraConfigFromEnv } from '../queue-wire.js';
 
 /** The three writes, each reported on its own. A caller needs to know which of them
@@ -54,6 +56,27 @@ function said(result: { ok: boolean; body?: string }, done: string): string {
 }
 
 /**
+ * One write, and never a rejection.
+ *
+ * The Jira write client does not wrap its `fetch`, so a network-level failure -- DNS,
+ * connection refused, TLS, a timeout -- rejects rather than returning a result. In a
+ * straight await chain that aborted everything after it AND escaped the route, so the
+ * browser was never answered at all: not "two of three landed", not an error, nothing.
+ * The worker's own path has caught this since `performOne`; this one had not.
+ */
+async function attempt(
+  name: HandoffStep['name'], done: string, call: () => Promise<{ ok: boolean; body?: string }>,
+): Promise<HandoffStep> {
+  try {
+    const result = await call();
+    return { name, ok: result.ok, detail: said(result, done) };
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    return { name, ok: false, detail: why.slice(0, 200) };
+  }
+}
+
+/**
  * Comment, then assign, then transition — always in that order, and always all three.
  * A failure in one never stops the next: a comment refused by a wording rule must not
  * leave the ticket unassigned as well.
@@ -67,7 +90,18 @@ export async function handOffTicket(
   }
   const text = comment.trim();
   if (!text) return none('a handoff carries a comment saying what the next person is looking at');
-  const person = deps.people[to];
+  // The operator types this and a teammate reads it. Every other Jira comment path in
+  // this codebase runs voiceGuard first (`queueHandoff.ts`, `jiraProjection.ts`); the
+  // write client itself only carries the readability backstop. This is the first caller
+  // that pipes freely typed prose in, which is the case voiceGuard exists for.
+  const voice = voiceGuard(text);
+  if (!voice.ok) return none(`the comment reads wrong for a ticket: ${voice.reason}`);
+  // An own-property check, not a plain lookup. `deps.people[to]` resolves `constructor`,
+  // `__proto__`, `toString` and `valueOf` on Object.prototype, and those walked past this
+  // guard: the comment posted to Jira -- which cannot be taken back -- and only then did
+  // the assignment report "no account id is configured for undefined". Found by code
+  // review before this shipped.
+  const person = Object.prototype.hasOwnProperty.call(deps.people, to) ? deps.people[to] : undefined;
   if (!person) {
     const known = Object.keys(deps.people).filter(Boolean).join(', ') || 'nobody';
     return none(`"${to}" is not somebody this console can hand to; it knows: ${known}`);
@@ -75,12 +109,12 @@ export async function handOffTicket(
 
   const steps: HandoffStep[] = [];
 
-  const commented = await deps.client.comment(key, text);
-  steps.push({ name: 'comment', ok: commented.ok, detail: said(commented, 'commented') });
+  const client = deps.client;
+  steps.push(await attempt('comment', 'commented', () => client.comment(key, text)));
 
   if (person.accountId) {
-    const assigned = await deps.client.assign(key, person.accountId);
-    steps.push({ name: 'assign', ok: assigned.ok, detail: said(assigned, `assigned to ${person.name}`) });
+    const accountId = person.accountId;
+    steps.push(await attempt('assign', `assigned to ${person.name}`, () => client.assign(key, accountId)));
   } else {
     steps.push({
       name: 'assign', ok: false,
@@ -89,8 +123,8 @@ export async function handOffTicket(
   }
 
   if (person.transitionId) {
-    const moved = await deps.client.transition(key, person.transitionId);
-    steps.push({ name: 'transition', ok: moved.ok, detail: said(moved, 'moved') });
+    const transitionId = person.transitionId;
+    steps.push(await attempt('transition', 'moved', () => client.transition(key, transitionId)));
   } else {
     steps.push({
       name: 'transition', ok: false,
@@ -111,24 +145,27 @@ export async function handOffTicket(
  * press comes back naming exactly which variable is missing, which is the whole
  * difference between this and the worker's version.
  */
+const SETTING_PREFIX: Record<HandoffDestinationId, string> = {
+  // `backend` is FORGE_JIRA_BACKEND_OWNER, not FORGE_JIRA_BACKEND. The second name was
+  // invented here and nothing else in the repository sets it, so handing a ticket to the
+  // backend lead could never assign it, whatever was configured. The first is the one the
+  // backend ping in `queue-wire.ts` already reads. Found by design critique.
+  qa: 'FORGE_JIRA_QA', backend: 'FORGE_JIRA_BACKEND_OWNER', me: 'FORGE_JIRA_WIP',
+};
+
 export function handoffPeopleFromEnv(env: NodeJS.ProcessEnv = process.env): Record<string, HandoffPerson> {
-  return {
-    qa: {
-      name: 'QA',
-      accountId: env['FORGE_JIRA_QA_ACCOUNT'] ?? null,
-      transitionId: env['FORGE_JIRA_QA_TRANSITION'] ?? null,
-    },
-    backend: {
-      name: 'the backend lead',
-      accountId: env['FORGE_JIRA_BACKEND_ACCOUNT'] ?? null,
-      transitionId: env['FORGE_JIRA_BACKEND_TRANSITION'] ?? null,
-    },
-    me: {
-      name: 'me',
-      accountId: env['FORGE_JIRA_WIP_ACCOUNT'] ?? null,
-      transitionId: env['FORGE_JIRA_WIP_TRANSITION'] ?? null,
-    },
-  };
+  // Built off the shared list, and with a null prototype, so `people['constructor']`
+  // is absent rather than resolving to something the unknown-destination guard lets by.
+  const people: Record<string, HandoffPerson> = Object.create(null) as Record<string, HandoffPerson>;
+  for (const { id, name } of HANDOFF_DESTINATIONS) {
+    const prefix = SETTING_PREFIX[id];
+    people[id] = {
+      name,
+      accountId: env[`${prefix}_ACCOUNT`] ?? null,
+      transitionId: env[`${prefix}_TRANSITION`] ?? null,
+    };
+  }
+  return people;
 }
 
 /**
@@ -142,10 +179,4 @@ export function handoffDepsFromEnv(env: NodeJS.ProcessEnv = process.env): Ticket
     client: config ? createJiraWriteClient(config) : null,
     people: handoffPeopleFromEnv(env),
   };
-}
-
-/** The destinations a screen can offer, so the control is built from the same list the
- *  route validates against and the two cannot drift apart. */
-export function handoffDestinations(env: NodeJS.ProcessEnv = process.env): { id: string; name: string }[] {
-  return Object.entries(handoffPeopleFromEnv(env)).map(([id, person]) => ({ id, name: person.name }));
 }
