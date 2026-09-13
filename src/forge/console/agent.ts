@@ -114,6 +114,11 @@ export interface ConductorAgentDeps {
   queryFn?: QueryFn;
   env?: NodeJS.ProcessEnv;
   existsConfigDir?: (path: string) => boolean;
+  /** Where the connected logins and their readings are stored. Production leaves both
+   *  unset, which reads the real files; a test points them at its own copies so which
+   *  login a turn should run on can be changed between turns. */
+  accountsPath?: string;
+  accountUsagePath?: string;
   policyPath?: string;
   cwd?: string;
   now?: () => number;
@@ -198,6 +203,16 @@ function refusalRow(text: string): Message {
 
 export class ConductorAgent {
   private engine: Engine | null = null;
+
+  /** The account directory the open engine was started with.
+   *
+   *  The engine is opened once and reused for every later turn, so whatever account it
+   *  picked at open is the account it keeps using. Linking a fresh one in Settings
+   *  therefore had no effect, and an account that ran out mid-session kept being asked:
+   *  measured 2026-09-12, a second Claude account was linked at 19:32:05 and the rail
+   *  went on answering "You've hit your weekly limit" at 19:32:31 and 19:32:37. Held so
+   *  a turn can notice the pick has moved and start a session on the new one. */
+  private engineConfigDir: string | null = null;
 
   private sessionId: string | null = null;
 
@@ -538,7 +553,8 @@ export class ConductorAgent {
    *  account in Settings takes effect on the Conductor's next turn. */
   private sessionConfigDir(): string {
     return configDirForSession(
-      loadAccounts(), readAccountUsage(), {}, this.now(), this.deps.existsConfigDir,
+      loadAccounts(this.deps.accountsPath), readAccountUsage(this.deps.accountUsagePath),
+      {}, this.now(), this.deps.existsConfigDir,
     ).configDir ?? fleetConfigDir(this.deps.existsConfigDir);
   }
 
@@ -597,6 +613,7 @@ export class ConductorAgent {
     this.clearIdle();
     const engine = this.engine;
     this.engine = null;
+    this.engineConfigDir = null;
     if (!keep) this.sessionId = null;
     if (engine) void engine.stop().catch(() => undefined);
   }
@@ -694,11 +711,20 @@ export class ConductorAgent {
     const startedAt = this.now();
     let resumed = false;
     try {
+      // Which account this turn should run on, asked every turn rather than only when a
+      // session is opened. A session already running on a different account -- one that
+      // has since run out, or one that was the only choice before a fresh account was
+      // linked -- is closed so the next one starts where the work can actually happen.
+      const wanted = this.sessionConfigDir();
+      if (this.engine && this.engineConfigDir !== null && this.engineConfigDir !== wanted) {
+        this.closeSession(true);
+      }
       let engine = this.engine;
       if (!engine) {
         engine = this.openEngine(this.sessionId);
         resumed = this.sessionId !== null;
         this.engine = engine;
+        this.engineConfigDir = wanted;
       }
       const message = this.composeMessage(text, context);
       let attemptTimer: ReturnType<typeof setTimeout> | undefined;
