@@ -11,7 +11,7 @@ import { Marks } from './QuestionCard.js';
 import { NarratedLine } from './Narrated.js';
 import { readQueueInput } from '../../shared/queueInput.js';
 import { humanizeParkReason } from '../../shared/humanize.js';
-import { parkRecoverability } from '../../shared/parkRecoverability.js';
+import { parkRecoverability, recoveryIsSpent } from '../../shared/parkRecoverability.js';
 
 /**
  * `Flightdeck Console.dc.html` 1c: what runs next, in the queue's own order, with why
@@ -48,7 +48,12 @@ function LaterRow({ item }: { item: QueueItem }): JSX.Element {
   // seconds later. The only control on those rows was the only one that could not work,
   // and the action a person wanted was on no screen at all: clearing one meant a terminal.
   const settled = item.reason ? parkRecoverability(item.reason) : null;
-  const personsCall = settled !== null && !settled.recoverable && settled.personsCall === true;
+  // Two ways a park becomes a person's: the reason itself is one the queue refuses on
+  // purpose, or automatic recovery has spent its budget on it. The queue says the second
+  // out loud ("recovered 3 times already and parked again; a person needs to read this
+  // one") and the row went on offering Retry regardless.
+  const personsCall = (settled !== null && !settled.recoverable && settled.personsCall === true)
+    || recoveryIsSpent((item as { recoveryAttempts?: number }).recoveryAttempts);
   const state = item.state === 'review' ? 'Ready to merge' : item.state === 'parked' ? 'Parked' : item.state === 'failed' ? 'Failed' : item.state === 'planning' ? 'Planning' : item.state === 'done' ? 'Done' : 'Working';
   const action = item.state === 'review'
     ? { label: merge.pending ? 'Merging…' : (merge.result?.kind === 'confirm' ? 'Confirm merge' : 'Merge'), run: () => void (merge.result?.kind === 'confirm' ? merge.confirm() : merge.run(item.id)), kind: 'primary' }
