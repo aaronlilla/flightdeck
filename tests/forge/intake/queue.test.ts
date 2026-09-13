@@ -745,6 +745,42 @@ describe('advanceItem', () => {
     expect(result.reason).toMatch(/checks are pending/);
   });
 
+  it('runs the verify before the council, so the council is not waited on first', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const order: string[] = [];
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => { order.push('council'); return { verdict: 'PASS', pending: true }; },
+      repoRunsChecks: async () => false,
+      runRepoVerify: async () => { order.push('verify'); return { ok: true, output: 'green' }; },
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    await advanceItem(current, deps);
+    expect(order[0], 'the council was asked before the verify ran').toBe('verify');
+  });
+
+  it('does not run the verify twice in one gate pass', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let ran = 0;
+    const { deps } = buildDeps(store, {
+      launcher: { status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/1' }) },
+      council: async () => ({ verdict: 'PASS', pending: true }),
+      repoRunsChecks: async () => false,
+      runRepoVerify: async () => { ran += 1; return { ok: true, output: 'green' }; },
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps);
+    current = await advanceItem(current, deps);
+    await advanceItem(current, deps);
+    expect(ran).toBe(1);
+  });
+
   it('a pending council result that later turns success carries the item on to review', async () => {
     const store = tempStore();
     const item = addTicketItem(store, 'ABC-1', 1000);

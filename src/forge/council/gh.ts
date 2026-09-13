@@ -32,6 +32,13 @@ export interface PrSnapshot {
  *  diff, the files and the checks off three points in time that disagree. */
 export interface GhReader {
   viewPr(repo: string, pr: number): Promise<PrSnapshot>;
+  /** Whether this repository runs any check on a pull request at all -- its repository
+   *  level Actions switch, not its workflow list, since a repository with Actions off
+   *  still lists its workflow files as active.
+   *
+   *  Absent on a reader written before this existed, and the caller then behaves as it
+   *  always did: an empty rollup reads as pending and it waits. */
+  repoRunsChecks?(repo: string): Promise<boolean>;
 }
 
 /** What a `gh` write reports back: the exit code and the combined output (`run()` in
@@ -182,6 +189,21 @@ export function conclusionOf(rollup: RawStatusCheck[] | undefined): 'success' | 
 /** Production wiring only. `cli.ts` is the sole caller; every specimen supplies its own
  *  `GhReader & GhWriter` instead. */
 export const REAL_GH: GhReader & GhWriter = {
+  /** Any trouble at all answers `true`, which is the waiting answer: a lookup that failed
+   *  is not evidence that a repository runs nothing, and the caller uses this to decide
+   *  whether a check gate may be satisfied some other way. */
+  async repoRunsChecks(repo) {
+    try {
+      const result = await execRun({
+        argv: ['gh', 'api', `repos/${repo}/actions/permissions`, '--jq', '.enabled'],
+        cwd: process.cwd(), owner: 'council', cls: 'script', fullOutput: true, raw: true, wall: 20_000,
+      });
+      if (result.returncode !== 0) return true;
+      return (result.full ?? result.tail ?? '').trim() !== 'false';
+    } catch {
+      return true;
+    }
+  },
   async viewPr(repo, pr) {
     const view = await execRun({
       argv: [

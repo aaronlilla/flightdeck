@@ -926,6 +926,25 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
     }
   }
 
+  // A repository with its Actions switched off reports an empty check rollup for ever, so
+  // an item there polled twenty times and parked saying the checks "never settled" -- a
+  // sentence about a wait that never happened. Aaron's decision, 2026-09-12: run that
+  // repository's own verify on the head and treat it as the check.
+  //
+  // Asked BEFORE the council, not after it: the council's own refusal on a non-green
+  // rollup is what has to be satisfied, and the review side reads the same switch
+  // (`cli.ts`'s council command), so the two agree on which repositories these are.
+  const noCi = await noCiVerdict(
+    { repo: item.repo ?? null, worktreePath: item.worktreePath ?? null },
+    { ...(deps.repoRunsChecks ? { repoRunsChecks: deps.repoRunsChecks } : {}),
+      ...(deps.runRepoVerify ? { runVerify: deps.runRepoVerify } : {}) },
+  );
+  if (noCi.kind === 'failed' || noCi.kind === 'cannot-check') {
+    return writeTransition(
+      item, { state: 'parked', reason: noCi.why }, deps, 'queue.parked', { hop: 'gate' },
+    );
+  }
+
   let council = await deps.council({
     repo: item.repo!, pr: pr.number, forceCodex: true,
     ...(item.worktreePath ? { cwd: item.worktreePath } : {}),
@@ -941,28 +960,13 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
   // a plain non-pass and park it the same way a real failure does): leaving `state`
   // untouched keeps the item in `QUEUE_IN_FLIGHT_STATES`, so the next tick calls the
   // council again instead of leaving it stuck.
-  if (council.pending) {
-    // A repository that runs no checks never leaves `pending`, so it used to poll twenty
-    // times and park saying the checks "never settled" -- a sentence about a wait that
-    // never happened. Aaron's decision, 2026-09-12: run that repository's own verify on
-    // the head and treat it as the check. Asked before the poll counter moves, so an
-    // environment wiring this never spends the twenty ticks first.
-    const noCi = await noCiVerdict(
-      { repo: item.repo ?? null, worktreePath: item.worktreePath ?? null },
-      { ...(deps.repoRunsChecks ? { repoRunsChecks: deps.repoRunsChecks } : {}),
-        ...(deps.runRepoVerify ? { runVerify: deps.runRepoVerify } : {}) },
-    );
-    if (noCi.kind === 'failed' || noCi.kind === 'cannot-check') {
-      return writeTransition(
-        item, { state: 'parked', reason: noCi.why }, deps, 'queue.parked', { hop: 'gate' },
-      );
-    }
-    if (noCi.kind === 'passed') {
-      // The gate is green by this repository's own standard. Fall through to the council
-      // verdict below exactly as a green rollup would, rather than merging on this alone.
-      council = { ...council, pending: false };
-      item = { ...item, pendingGatePolls: undefined };
-    }
+  if (noCi.kind === 'passed' && council.pending) {
+    // The checks this council is waiting on are never going to arrive, and this
+    // repository's own verify has already answered for them on this head. A council that
+    // read the pull request anyway (the review side skips the same refusal) carries a real
+    // verdict, which is what decides below -- this only stops the waiting.
+    council = { ...council, pending: false };
+    item = { ...item, pendingGatePolls: undefined };
   }
   if (council.pending) {
     const polls = (item.pendingGatePolls ?? 0) + 1;
