@@ -316,7 +316,7 @@ async function gateAction(run: string, wantsMerge: boolean, deps: RunActionsDeps
   // The queue carries the pull request number outright. Asking `gh` for it again is a
   // round trip that can answer nothing -- a squash-merged branch no longer has an OPEN
   // pull request on it -- while the number sits on the row.
-  if (where.pr) return gateWithPr(run, wantsMerge, where.repo, where.pr, deps);
+  if (where.pr) return gateWithPr(run, wantsMerge, where.repo, where.pr, deps, where.worktreePath);
 
   const listResult = await execRun({
     argv: ['gh', 'pr', 'list', '--repo', row.repo, '--head', branch, '--json', 'number'],
@@ -337,13 +337,13 @@ async function gateAction(run: string, wantsMerge: boolean, deps: RunActionsDeps
     return { status: 501, body: { error: 'not wired', reason: `no open PR found for ${row.repo}@${branch}` } };
   }
 
-  return gateWithPr(run, wantsMerge, row.repo, pr, deps);
+  return gateWithPr(run, wantsMerge, row.repo, pr, deps, where.worktreePath);
 }
 
 /** The half that runs once a repository and a pull request number are known, whichever
  *  of the two routes found them. */
 async function gateWithPr(
-  run: string, wantsMerge: boolean, repo: string, pr: number, deps: RunActionsDeps,
+  run: string, wantsMerge: boolean, repo: string, pr: number, deps: RunActionsDeps, cwd?: string | null,
 ): Promise<RunActionResponse> {
   const argv = [
     ...(deps.cliArgv?.() ?? defaultCliArgv()),
@@ -351,7 +351,7 @@ async function gateWithPr(
     ...(wantsMerge ? ['--merge'] : []),
   ];
   const [command, ...args] = argv;
-  const result = await execRun({
+  const runGate = () => execRun({
     argv: [command as string, ...args],
     cwd: process.cwd(),
     owner: `console-${run}-gate`,
@@ -359,6 +359,35 @@ async function gateWithPr(
     fullOutput: true,
     ...(deps.spawnFn ? { spawnFn: deps.spawnFn } : {}),
   });
+
+  let result = await runGate();
+
+  // The gate refuses a head that has no attestation, and says to run the review first.
+  // The queue has re-reviewed on that exact refusal since 2026-09-08
+  // (`intake/queue.ts`); this path did not, so a board item sat there offering the one
+  // action that could never succeed, however many times it was pressed. Review this head
+  // once and gate again. Only this refusal is retried: anything else the gate says (red
+  // checks, a FIX FIRST verdict, a stale attestation) is a real answer and stands.
+  if (result.returncode !== 0 && (result.full ?? result.tail).includes('no attestation for')) {
+    const reviewArgv = [
+      ...(deps.cliArgv?.() ?? defaultCliArgv()),
+      'council', '--repo', repo, '--pr', String(pr),
+      ...(cwd ? ['--cwd', cwd] : []),
+    ];
+    const [reviewCommand, ...reviewArgs] = reviewArgv;
+    await execRun({
+      argv: [reviewCommand as string, ...reviewArgs],
+      cwd: process.cwd(),
+      owner: `console-${run}-rereview`,
+      cls: 'script',
+      fullOutput: true,
+      env: { ...process.env, FORGE_COUNCIL_CODEX: 'always' },
+      ...(deps.spawnFn ? { spawnFn: deps.spawnFn } : {}),
+    });
+    // The gate is the referee, not the review's own stdout: if the review refused or came
+    // back FIX FIRST, this second run says so in words the operator can act on.
+    result = await runGate();
+  }
   const ok = result.returncode === 0;
   const summary = (result.full ?? result.tail).trim().split('\n').filter(Boolean).slice(-3).join(' | ')
     || (ok ? 'gate passed' : `gate exited ${result.returncode}`);
