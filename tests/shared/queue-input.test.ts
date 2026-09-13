@@ -59,3 +59,34 @@ describe('what the queue Add box makes of what was typed', () => {
     expect(readQueueInput('2026-09-12')).toMatchObject({ source: 'brief' });
   });
 });
+
+describe('which repository a pasted brief belongs to', () => {
+  it('says the default will be used when none is named, rather than leaving it unsaid', () => {
+    expect(readQueueInput('the balance is stale')?.says)
+      .toMatch(/Name a repository, or it goes to the default one/);
+  });
+
+  it('carries the named repository into the brief itself', () => {
+    const reading = readQueueInput('the balance is stale', 'aaronlilla/flightdeck');
+    expect(reading?.source).toBe('brief');
+    expect(reading?.input).toBe(['repo: aaronlilla/flightdeck', '', 'the balance is stale'].join('\n'));
+    expect(reading?.says).toBe('Reads as a brief, for aaronlilla/flightdeck.');
+  });
+
+  it('refuses something that is not a repository, rather than writing it into the brief', () => {
+    const reading = readQueueInput('the balance is stale', 'flightdeck');
+    expect(reading?.refused).toBe(true);
+    expect(reading?.says).toMatch(/is not a repository; write it as owner\/name/);
+    expect(reading?.input).not.toMatch(/repo:/);
+  });
+
+  it('ignores a named repository for a ticket, which is routed by its own key', () => {
+    const reading = readQueueInput('BBZ-289', 'aaronlilla/flightdeck');
+    expect(reading?.source).toBe('ticket');
+    expect(reading?.input).toBe('BBZ-289');
+  });
+
+  it('takes a repository with dots and dashes in either half', () => {
+    expect(readQueueInput('x', 'my-org/v2.react-native')?.refused).toBeUndefined();
+  });
+});

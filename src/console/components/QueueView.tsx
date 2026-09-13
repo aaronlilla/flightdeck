@@ -75,12 +75,13 @@ function LaterRow({ item }: { item: QueueItem }): JSX.Element {
  */
 function AddToQueue(): JSX.Element {
   const [text, setText] = useState('');
+  const [repo, setRepo] = useState('');
   const [error, setError] = useState<string | null>(null);
   const add = useAction(ACTIONS.addToQueue);
-  const reading = readQueueInput(text);
+  const reading = readQueueInput(text, repo);
 
   async function submit(): Promise<void> {
-    if (!reading) return;
+    if (!reading || reading.refused) return;
     setError(null);
     const outcome = await add.run({ source: reading.source, input: reading.input });
     if (outcome.kind === 'done' && outcome.ok) {
@@ -112,14 +113,27 @@ function AddToQueue(): JSX.Element {
         />
         <button
           type="button" className="btn primary" data-testid="queue-add-submit"
-          disabled={reading === null || add.pending}
+          disabled={reading === null || reading.refused === true || add.pending}
           onClick={() => { void submit(); }}
           style={{ padding: '8px 18px' }}
         >
           {add.pending ? 'Adding…' : 'Add'}
         </button>
       </div>
-      <span data-testid="queue-add-reading" style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)', minHeight: '1.2em' }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <label className="kick" htmlFor="queue-add-repo">Repo</label>
+        <input
+          id="queue-add-repo" data-testid="queue-add-repo"
+          placeholder="owner/name — briefs only"
+          value={repo}
+          onChange={(event) => { setRepo(event.target.value); }}
+          style={{ flex: '1 1 220px', minWidth: 0, font: 'inherit', fontSize: 'var(--fs-meta)', padding: '6px 8px', border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--ink)' }}
+        />
+      </div>
+      <span
+        data-testid="queue-add-reading" role={reading?.refused ? 'alert' : undefined}
+        style={{ fontSize: 'var(--fs-meta)', color: reading?.refused ? 'var(--warn)' : 'var(--ink3)', minHeight: '1.2em' }}
+      >
         {reading ? reading.says : ''}
       </span>
       {error ? (
