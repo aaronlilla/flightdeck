@@ -20,6 +20,30 @@ import type { Lane, QueueItem } from '../../shared/console-model.js';
 
 export type WhatIsKind = 'ticket' | 'pull-request' | 'run' | 'unknown';
 
+/**
+ * A title with its own key appended reads as a stutter on a card that already shows the
+ * key in its corner: "Fix the drop-down (BBZ-169)" under a heading that says `BBZ-169`.
+ * Trimmed only when the key matches the reference the card is about, and only when
+ * something is left over -- a title that is nothing but its key keeps it.
+ */
+export function titleWithoutRef(title: string | null, ref: string): string | null {
+  if (!title) return title;
+  const trimmed = title.trim();
+  // Written without a regex. A pattern built into a template literal loses its escapes --
+  // `\s` becomes a bare `s` -- which is how the first version silently matched the letter
+  // s instead of whitespace and left "Fix the drop-down BBZ-169" untouched (2026-09-12).
+  const endings = [`(${ref})`, `[${ref}]`, ref];
+  for (const ending of endings) {
+    if (!trimmed.toLowerCase().endsWith(ending.toLowerCase())) continue;
+    const head = trimmed.slice(0, trimmed.length - ending.length);
+    // Only when the key is a suffix hanging off real words, never when it IS the title.
+    const cut = head.replace(/[\s–—-]+$/, '').trim();
+    if (cut.length > 0) return cut;
+  }
+  return trimmed;
+}
+
+
 export interface WhatIsField {
   label: string;
   value: string;
@@ -77,7 +101,7 @@ export function fromBoard(ref: string, lanes: readonly Lane[], queue: readonly Q
   if (item?.repo) fields.push({ label: 'Repository', value: item.repo });
   return {
     kind: 'ticket', ref: key,
-    title: lane?.title ?? item?.title ?? null,
+    title: titleWithoutRef(lane?.title ?? item?.title ?? null, key),
     state: lane?.state ?? item?.state ?? null,
     fields,
     body: lane?.plain ?? null,
@@ -137,16 +161,36 @@ export interface JiraIssueFacts {
   description: string | null;
 }
 
+/**
+ * How long ago, in words. Jira answers `2026-09-11T16:24:51.519-0700`, which is a machine
+ * stamp and reads as one on a card somebody is glancing at (Aaron, 2026-09-12: "the text
+ * looks terrible"). Anything older than a week keeps its date, because "9 days ago" is
+ * less useful than the day itself once it stops being recent.
+ */
+export function agoWords(iso: string, now: number): string {
+  const at = Date.parse(iso);
+  if (Number.isNaN(at)) return iso;
+  const minutes = Math.floor((now - at) / 60_000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return hours === 1 ? 'an hour ago' : `${hours} hours ago`;
+  const days = Math.floor(hours / 24);
+  if (days === 1) return 'yesterday';
+  if (days < 7) return `${days} days ago`;
+  return new Date(at).toISOString().slice(0, 10);
+}
+
 /** A Jira issue turned into the same shape every other source answers in. */
-export function fromJira(ref: string, issue: JiraIssueFacts, site: string | null): WhatIs {
+export function fromJira(ref: string, issue: JiraIssueFacts, site: string | null, now = Date.now()): WhatIs {
   const fields: WhatIsField[] = [];
   if (issue.issueType) fields.push({ label: 'Type', value: issue.issueType });
   if (issue.assignee) fields.push({ label: 'Assignee', value: issue.assignee });
   if (issue.priority) fields.push({ label: 'Priority', value: issue.priority });
-  if (issue.updated) fields.push({ label: 'Updated', value: issue.updated });
+  if (issue.updated) fields.push({ label: 'Updated', value: agoWords(issue.updated, now) });
   return {
     kind: 'ticket', ref,
-    title: issue.summary,
+    title: titleWithoutRef(issue.summary, ref),
     state: issue.status,
     fields,
     body: issue.description,

@@ -24,7 +24,9 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { extname, join, normalize } from 'node:path';
 
 import { settleDeadConfirms } from '../../src/forge/console/thread.js';
-import { classifyRef, fromBoard, notFound, prNumberFrom, pullRequestFromBoard, runFromBoard } from '../../src/forge/console/whatis.js';
+import { classifyRef, fromBoard, fromJira, mergeTicket, notFound, prNumberFrom, pullRequestFromBoard, runFromBoard } from '../../src/forge/console/whatis.js';
+import { createJiraWriteClient } from '../../src/forge/intake/jira.js';
+import { jiraConfigFromEnv } from '../../src/forge/queue-wire.js';
 import type { Message } from '../../src/shared/console-model.js';
 
 const LIVE = process.env['FORGE_LIVE_BASE'] ?? 'http://127.0.0.1:4120';
@@ -97,6 +99,18 @@ async function main(): Promise<void> {
         const lanes = lanesBody.lanes ?? [];
         const queue = queueBody.items ?? [];
         const kind = classifyRef(ref);
+        // The Jira half too, when this shell carries the credentials, so the preview
+        // shows the card a person will actually see rather than the board-only half.
+        if (kind === 'ticket') {
+          const config = jiraConfigFromEnv();
+          const issue = config ? await createJiraWriteClient(config).read(ref).catch(() => null) : null;
+          if (issue) {
+            const merged = mergeTicket(fromJira(ref, issue, config?.site ?? null), fromBoard(ref, lanes, queue));
+            response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+            response.end(JSON.stringify(merged));
+            return;
+          }
+        }
         const answer = kind === 'pull-request'
           ? (pullRequestFromBoard(prNumberFrom(ref) ?? -1, lanes, queue) ?? notFound(ref))
           : kind === 'ticket'

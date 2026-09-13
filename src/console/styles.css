@@ -12,7 +12,11 @@ html,body{margin:0;height:100%}
 [data-theme="light"]{--bg:#f2f2f3;--panel:#e9e9ea;--ink:#1d1f20;--ink2:#5d5d60;--ink3:#7a7a7d;--line:rgba(29,31,32,.16);--line2:rgba(29,31,32,.34);--mark:rgba(29,31,32,.55);--acc:#5980a6;--accInk:#f2f2f3;--accTint:#eef6ff;--warn:oklch(.52 .13 45);--warnInk:#f2f2f3;--warnTint:oklch(.52 .13 45/.08);--scrim:rgba(43,43,45,.55)}
 [data-theme="dark"]{--bg:#1d1f20;--panel:#26282b;--ink:#e9e9ea;--ink2:#b7b7ba;--ink3:#8a8a8d;--line:rgba(233,233,234,.16);--line2:rgba(233,233,234,.34);--mark:rgba(233,233,234,.55);--acc:#94bce3;--accInk:#1d1f20;--accTint:rgba(148,188,227,.12);--warn:oklch(.8 .12 45);--warnInk:#1d1f20;--warnTint:oklch(.8 .12 45/.1);--scrim:rgba(0,0,0,.6)}
 [data-theme]{--mk:linear-gradient(var(--mark),var(--mark)) 5px 0/1px 100% no-repeat,linear-gradient(var(--mark),var(--mark)) 0 5px/100% 1px no-repeat}
-body{background:var(--bg)}
+/* The document's own typography, not the app's. Anything drawn outside `.app` -- a
+   hover card portalled to the body so a scrolling ancestor cannot clip it --
+   inherits from here, and without it rendered in the browser's default serif
+   (screenshotted 2026-09-12). `.app` keeps its own, so nothing inside it moves. */
+body{background:var(--bg);color:var(--ink);font-family:Barlow,system-ui,sans-serif;font-size:var(--fs-body);line-height:1.45}
 .app{width:100%;height:100vh;display:flex;flex-direction:column;background:var(--bg);color:var(--ink);font-family:Barlow,system-ui,sans-serif;font-size:var(--fs-body);line-height:1.45;overflow:hidden}
 .app *{box-sizing:border-box}
 a{color:var(--acc);text-decoration:none;cursor:pointer}

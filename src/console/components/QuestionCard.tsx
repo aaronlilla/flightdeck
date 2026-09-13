@@ -63,7 +63,8 @@ export interface QuestionCardProps {
   now?: number;
 }
 
-function Marks(): JSX.Element {
+/** The four corner ticks every card in this console carries. */
+export function Marks(): JSX.Element {
   return <><i className="mk tl" /><i className="mk tr" /><i className="mk bl" /><i className="mk br" /></>;
 }
 
@@ -239,4 +240,3 @@ export function QuestionCard(props: QuestionCardProps): JSX.Element {
   );
 }
 
-export { Marks };

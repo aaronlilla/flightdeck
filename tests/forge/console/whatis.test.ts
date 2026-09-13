@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  classifyRef, fromBoard, fromJira, mergeTicket, notFound, prNumberFrom,
-  pullRequestFromBoard, runFromBoard,
+  agoWords, classifyRef, fromBoard, fromJira, mergeTicket, notFound, prNumberFrom,
+  pullRequestFromBoard, runFromBoard, titleWithoutRef,
 } from '../../../src/forge/console/whatis.js';
 import type { Lane, QueueItem } from '../../../src/shared/console-model.js';
 
@@ -157,5 +157,66 @@ describe('a reference that resolves to nothing', () => {
     const out = notFound('BBZ-404');
     expect(out.kind).toBe('unknown');
     expect(out.body).toContain('Nothing on the board or in Jira answers to BBZ-404');
+  });
+});
+
+/**
+ * Aaron, 2026-09-12: "the text looks terrible." Jira answers an ISO stamp
+ * (`2026-09-11T16:24:51.519-0700`), which is a machine string and reads as one on a card
+ * somebody is glancing at.
+ */
+describe('when it was last touched', () => {
+  const NOW = Date.parse('2026-09-12T18:00:00Z');
+  const ago = (iso: string) => agoWords(iso, NOW);
+
+  it('says it in words for anything recent', () => {
+    expect(ago('2026-09-12T17:58:00Z')).toBe('2 min ago');
+    expect(ago('2026-09-12T17:00:00Z')).toBe('an hour ago');
+    expect(ago('2026-09-12T12:00:00Z')).toBe('6 hours ago');
+    expect(ago('2026-09-11T18:00:00Z')).toBe('yesterday');
+    expect(ago('2026-09-09T18:00:00Z')).toBe('3 days ago');
+  });
+
+  it('keeps the date once "n days ago" stops being useful', () => {
+    expect(ago('2026-08-20T18:00:00Z')).toBe('2026-08-20');
+  });
+
+  it('leaves a stamp it cannot read exactly as it came', () => {
+    expect(ago('not a date')).toBe('not a date');
+  });
+
+  it('reaches the field a person reads', () => {
+    const out = fromJira('BBZ-1', {
+      summary: 's', status: 'To Do', assignee: null, issueType: null,
+      priority: null, updated: '2026-09-11T18:00:00Z', description: null,
+    }, null, NOW);
+    expect(out.fields).toContainEqual({ label: 'Updated', value: 'yesterday' });
+  });
+});
+
+/** A title carrying its own key reads as a stutter under a heading that already shows it. */
+describe('a title that repeats its own key', () => {
+  it('drops a trailing key in brackets', () => {
+    expect(titleWithoutRef('Fix the drop-down (BBZ-169)', 'BBZ-169')).toBe('Fix the drop-down');
+  });
+
+  it('drops a trailing key with no brackets', () => {
+    expect(titleWithoutRef('Fix the drop-down BBZ-169', 'BBZ-169')).toBe('Fix the drop-down');
+  });
+
+  it('leaves a key that belongs to a different ticket alone', () => {
+    expect(titleWithoutRef('Blocked on BBZ-123', 'BBZ-169')).toBe('Blocked on BBZ-123');
+  });
+
+  it('leaves a key mentioned mid-sentence alone', () => {
+    expect(titleWithoutRef('BBZ-169 blocks the release', 'BBZ-169')).toBe('BBZ-169 blocks the release');
+  });
+
+  it('keeps a title that is nothing but its key', () => {
+    expect(titleWithoutRef('BBZ-169', 'BBZ-169')).toBe('BBZ-169');
+  });
+
+  it('passes a missing title straight through', () => {
+    expect(titleWithoutRef(null, 'BBZ-169')).toBeNull();
   });
 });
