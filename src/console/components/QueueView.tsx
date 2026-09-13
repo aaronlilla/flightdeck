@@ -11,6 +11,7 @@ import { Marks } from './QuestionCard.js';
 import { NarratedLine } from './Narrated.js';
 import { readQueueInput } from '../../shared/queueInput.js';
 import { humanizeParkReason } from '../../shared/humanize.js';
+import { parkRecoverability } from '../../shared/parkRecoverability.js';
 
 /**
  * `Flightdeck Console.dc.html` 1c: what runs next, in the queue's own order, with why
@@ -39,20 +40,27 @@ function titleOf(item: QueueItem): string {
 function LaterRow({ item }: { item: QueueItem }): JSX.Element {
   const merge = useAction(ACTIONS.mergeQueueItem, item.id);
   const retry = useAction(ACTIONS.retryQueueItem, item.id);
-  // A Remove belongs on these rows too -- a parked item, answered and finished with, is
-  // the one a person most wants to drop, and it is the only kind that cannot be. It is not
-  // here because `ux-one-action-per-state.test.tsx` allows a queue row exactly one control,
-  // and that rule is the operator plan's, not this file's to overturn.
+  const drop = useAction(ACTIONS.removeQueueItem, item.id);
+  // One control per row, which is the operator plan's rule and stands. Which control is
+  // decided by the park itself. Measured on the live queue 2026-09-13: fifteen parked
+  // rows, nine of them on "already has a merged pull request", every one offering Retry --
+  // and Retry there re-plans the item, finds the same pull request, and parks again three
+  // seconds later. The only control on those rows was the only one that could not work,
+  // and the action a person wanted was on no screen at all: clearing one meant a terminal.
+  const settled = item.reason ? parkRecoverability(item.reason) : null;
+  const personsCall = settled !== null && !settled.recoverable && settled.personsCall === true;
   const state = item.state === 'review' ? 'Ready to merge' : item.state === 'parked' ? 'Parked' : item.state === 'failed' ? 'Failed' : item.state === 'planning' ? 'Planning' : item.state === 'done' ? 'Done' : 'Working';
   const action = item.state === 'review'
     ? { label: merge.pending ? 'Merging…' : (merge.result?.kind === 'confirm' ? 'Confirm merge' : 'Merge'), run: () => void (merge.result?.kind === 'confirm' ? merge.confirm() : merge.run(item.id)), kind: 'primary' }
-    : item.state === 'parked' || item.state === 'failed'
-      ? { label: retry.pending ? 'Retrying…' : 'Retry', run: () => void retry.run(item.id), kind: '' }
+    : (item.state === 'parked' || item.state === 'failed')
+      ? (personsCall
+        ? { label: drop.pending ? 'Removing…' : (drop.result?.kind === 'confirm' ? 'Confirm remove' : 'Remove'), run: () => void (drop.result?.kind === 'confirm' ? drop.confirm() : drop.run(item.id)), kind: '' }
+        : { label: retry.pending ? 'Retrying…' : 'Retry', run: () => void retry.run(item.id), kind: '' })
       : null;
   // The row's state moves under the button between polls: a Merge offered on something
   // already merged tells somebody to do a thing that is done (Aaron, 2026-09-12). A dead
   // action renders as its reason instead.
-  const verdict = queueActionLiveness(item, item.state === 'review' ? 'merge' : 'retry');
+  const verdict = queueActionLiveness(item, item.state === 'review' ? 'merge' : personsCall ? 'remove' : 'retry');
   return (
     <div className="queue-row" data-testid={`queue-later-${item.id}`} style={{ display: 'grid', gridTemplateColumns: '44px minmax(0,1fr) minmax(0,1fr) 190px', gap: 18, alignItems: 'baseline', padding: '14px 16px', borderBottom: '1px solid var(--line)' }}>
       <span className="kick" style={{ fontSize: 'var(--fs-meta)' }}>{state}</span>
