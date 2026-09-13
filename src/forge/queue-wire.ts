@@ -675,6 +675,15 @@ export function buildQueueRuntimeDeps(
   maxInFlight: () => number = readQueueWidth,
 ): QueueRuntimeDeps {
   return {
+    // The tick's retry for a pull request the merge could not close at the time --
+    // the same closer `queueMergeDeps` carries a few dozen lines above. Wired here as
+    // well, because a close that failed during a GitHub outage had nothing to try it
+    // again and the board went on calling a merged ticket unmerged (2026-09-13).
+    closePr: async ({ repo, pr, comment }) => {
+      if (!REAL_GH.closePr) return { ok: false, reason: 'this gh writer cannot close a pull request' };
+      const result = await REAL_GH.closePr(repo, pr, comment);
+      return result.returncode === 0 ? { ok: true } : { ok: false, reason: result.stderr.slice(0, 300) };
+    },
     planner: queuePlanner(jiraConfigFromEnv, chainEnv),
     launcher: chainLauncher(chainEnv, configDirFor),
     launchGoal: chainLaunchGoal(configDirFor),
