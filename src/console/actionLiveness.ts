@@ -53,6 +53,19 @@ export function laneActionLiveness(input: LaneActionInput): Liveness {
     return LIVE;
   }
 
+  if (base === 'pause') {
+    // Pausing holds a running worker. Nothing is running, nothing to hold.
+    if (lane.state !== 'running') return dead(`it is ${lane.state}, not running`);
+    return lane.live?.alive === false ? dead('nothing is running for it to hold') : LIVE;
+  }
+
+  if (base === 'retire') {
+    // Retiring takes a lane off the board. Doing it under a live worker loses the work in
+    // flight, so the running lane is stopped first and this says so rather than refusing
+    // silently.
+    return lane.live?.alive === true ? dead('it is still running; stop it first') : LIVE;
+  }
+
   if (base === 'kill') {
     // Killing stops a process. With none running there is nothing to stop, and the sweep
     // takes the lane off the board on its own (`forge/console/abandoned.ts`).

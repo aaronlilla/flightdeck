@@ -3,7 +3,10 @@ import { useEffect, useState } from 'react';
 
 import * as api from '../api.js';
 import { hm } from '../freshness.js';
+import type { BoardCommand } from '../laneVM.js';
 import { boardStateWord, durationWords, laneHeadline } from '../laneVM.js';
+import { laneActionLiveness } from '../actionLiveness.js';
+import { ACTIONS, useAction } from '../actions.js';
 import type { Lane, LaneStory, LaneSummary } from '../../shared/console-model.js';
 import { Marks } from './QuestionCard.js';
 import { NarratedLine } from './Narrated.js';
@@ -25,6 +28,135 @@ export interface TicketSheetProps {
   onSendLane: (id: string, text: string) => void | Promise<unknown>;
   /** `?verbose=1`: every narrated sentence also shows its own fact record. */
   verbose?: boolean;
+}
+
+/**
+ * Everything a person can do to this lane, in one place.
+ *
+ * A tile carries one button, chosen by the lane's state, so anything the state did not
+ * call for could not be clicked at all: a running lane offered no Pause, a finished one
+ * no Retire, and nothing anywhere offered a re-audit. Taking a ticket from the queue to a
+ * merge meant leaving the console for a terminal.
+ *
+ * Every button is gated by the same verdict the board uses, so one that cannot do
+ * anything shows why instead of failing on the click.
+ */
+const LANE_ACTIONS: ReadonlyArray<{ cmd: BoardCommand; label: string }> = [
+  { cmd: 'merge', label: 'Merge' },
+  { cmd: 'verify', label: 'Verify' },
+  { cmd: 'recheck', label: 'Re-check' },
+  { cmd: 'reaudit', label: 'Re-audit' },
+  { cmd: 'pause', label: 'Pause' },
+  { cmd: 'resume', label: 'Resume' },
+  { cmd: 'compact', label: 'Compact' },
+  { cmd: 'kill', label: 'Stop' },
+  { cmd: 'reopen', label: 'Reopen' },
+  { cmd: 'retire', label: 'Retire' },
+  { cmd: 'unretire', label: 'Unretire' },
+];
+
+function LaneActions({ lane, onCommand }: {
+  lane: Lane; onCommand: (id: string, cmd: string) => void;
+}): JSX.Element {
+  const verdicts = LANE_ACTIONS.map((action) => ({
+    ...action, verdict: laneActionLiveness({ lane, cmd: action.cmd }),
+  }));
+  const live = verdicts.filter((row) => row.verdict.live);
+  const dead = verdicts.filter((row) => !row.verdict.live);
+  return (
+    <div data-testid="lane-actions" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <span className="kick">Do</span>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {live.map((row) => (
+          <button
+            key={row.cmd} type="button" className="btn"
+            data-testid={`lane-do-${row.cmd}`}
+            onClick={() => onCommand(lane.id, row.cmd)}
+          >
+            {row.label}
+          </button>
+        ))}
+        {live.length === 0 ? <span style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>Nothing to do here</span> : null}
+      </div>
+      {dead.length > 0 ? (
+        <details data-testid="lane-actions-unavailable">
+          <summary className="kick" style={{ cursor: 'pointer', color: 'var(--ink3)' }}>{`${dead.length} not available`}</summary>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, paddingTop: 6 }}>
+            {dead.map((row) => (
+              <span key={row.cmd} style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>
+                {`${row.label} — ${row.verdict.live === false ? row.verdict.why : ''}`}
+              </span>
+            ))}
+          </div>
+        </details>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * The two things a lane takes that are not a single click: a change to what it was asked
+ * to do, and a ceiling on what it may spend doing it.
+ *
+ * Both had a server route and a registry entry and no control anywhere, so steering a run
+ * without stopping it meant a terminal. Folded away rather than laid out, because most
+ * visits to a sheet are to read it.
+ */
+function LaneSteering({ lane }: { lane: Lane }): JSX.Element {
+  const amend = useAction(ACTIONS.amendRun, lane.id);
+  const cap = useAction(ACTIONS.setRunCap, lane.id);
+  const [text, setText] = useState('');
+  const [tokens, setTokens] = useState('');
+  const capNumber = Number.parseInt(tokens, 10);
+  const capValid = Number.isInteger(capNumber) && capNumber > 0;
+  return (
+    <details data-testid="lane-steering">
+      <summary className="kick" style={{ cursor: 'pointer', color: 'var(--ink3)' }}>Change what it is doing</summary>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12, paddingTop: 10 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <label className="kick" htmlFor={`amend-${lane.id}`}>Add to the brief</label>
+          <textarea
+            id={`amend-${lane.id}`} data-testid="lane-amend-input" rows={2}
+            placeholder="What it should also do"
+            value={text} onChange={(event) => { setText(event.target.value); }}
+            style={{ font: 'inherit', fontSize: 'var(--fs-body)', padding: '8px 10px', border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--ink)', resize: 'vertical' }}
+          />
+          <button
+            type="button" className="btn" data-testid="lane-amend-submit"
+            disabled={text.trim().length === 0 || amend.pending}
+            onClick={() => { void amend.run(lane.id, text.trim()).then(() => setText('')); }}
+            style={{ alignSelf: 'flex-start' }}
+          >
+            {amend.pending ? 'Sending…' : 'Add to the brief'}
+          </button>
+          {amend.result?.kind === 'done' && !amend.result.ok ? (
+            <span role="alert" style={{ fontSize: 'var(--fs-meta)', color: 'var(--warn)' }}>{amend.result.text}</span>
+          ) : null}
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <label className="kick" htmlFor={`cap-${lane.id}`}>Stop it after this many tokens</label>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <input
+              id={`cap-${lane.id}`} data-testid="lane-cap-input" type="number" min={1} inputMode="numeric"
+              placeholder="no ceiling"
+              value={tokens} onChange={(event) => { setTokens(event.target.value); }}
+              style={{ width: 140, font: 'inherit', fontSize: 'var(--fs-body)', padding: '7px 10px', border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--ink)' }}
+            />
+            <button
+              type="button" className="btn" data-testid="lane-cap-submit"
+              disabled={!capValid || cap.pending}
+              onClick={() => { void cap.run(lane.id, capNumber); }}
+            >
+              {cap.pending ? 'Saving…' : 'Set the ceiling'}
+            </button>
+          </div>
+          {cap.result?.kind === 'done' && !cap.result.ok ? (
+            <span role="alert" style={{ fontSize: 'var(--fs-meta)', color: 'var(--warn)' }}>{cap.result.text}</span>
+          ) : null}
+        </div>
+      </div>
+    </details>
+  );
 }
 
 export function TicketSheet({ lane, now, onClose, onCommand, onSendLane, verbose }: TicketSheetProps): JSX.Element {
@@ -75,6 +207,8 @@ export function TicketSheet({ lane, now, onClose, onCommand, onSendLane, verbose
           <p style={{ margin: 0 }}><span className="kick" style={{ display: 'inline-block', width: 54 }}>Now</span><NarratedLine bag={summary?.narration ?? lane.narration} field={summary?.narration?.['status'] ? 'status' : 'now'} glance={summary?.status ?? lane.now ?? ''} verbose={verbose} testid="sheet-status" /></p>
           <p style={{ margin: 0 }}><span className="kick" style={{ display: 'inline-block', width: 54 }}>Next</span><NarratedLine bag={summary?.narration ?? lane.narration} field={summary?.narration?.['next'] ? 'next' : 'you'} glance={summary?.next ?? lane.you ?? ''} verbose={verbose} testid="sheet-next" /></p>
         </div>
+        <LaneActions lane={lane} onCommand={onCommand} />
+        <LaneSteering lane={lane} />
         {question ? (
           <div style={{ position: 'relative', border: '1px solid var(--warn)', background: 'var(--warnTint)', padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 6 }}>
             <Marks />

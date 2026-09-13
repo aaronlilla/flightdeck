@@ -5,6 +5,7 @@ import { blockerFor, boardCta, boardStateWord, durationWords, groupLanesByTicket
 import type { Blocker, Lane, QueueItem } from '../../shared/console-model.js';
 import { LaneGroupTile } from './LaneGroupTile.js';
 import { Marks } from './QuestionCard.js';
+import { ACTIONS, useAction } from '../actions.js';
 
 /**
  * `FD Board.dc.html`: the running grid (one card per active lane, dashed idle cards up
@@ -41,6 +42,47 @@ function mergeLine(lane: Lane): string {
   const checks = pr.checks === 'success' ? 'checks passed' : pr.checks === 'failure' ? 'checks failing' : pr.checks === 'pending' ? 'checks running' : 'checks not read yet';
   const council = pr.verdict ? `council ${pr.verdict.toLowerCase()}` : 'no council verdict yet';
   return `PR #${pr.no} · ${checks} · ${council}`;
+}
+
+/**
+ * The two board-wide sweeps, offered where the board is rather than only as a sentence the
+ * rail understands.
+ *
+ * Both had a server route and a registry entry and no button: merging everything ready
+ * meant clicking Merge once per lane, and clearing the finished ones off the board had no
+ * route through the console at all. Neither can be undone, so each asks first.
+ */
+function BoardSweeps({ readyCount }: { readyCount: number }): JSX.Element {
+  const mergeReady = useAction(ACTIONS.postMergeReady);
+  const cleanUp = useAction(ACTIONS.postRetireFinished);
+  const askingMerge = mergeReady.result?.kind === 'confirm';
+  const askingClean = cleanUp.result?.kind === 'confirm';
+  return (
+    <div data-testid="board-sweeps" style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+      <button
+        type="button" className={`btn ${askingMerge ? 'warn' : ''}`}
+        data-testid="board-merge-ready"
+        disabled={readyCount === 0 || mergeReady.pending}
+        onClick={() => { void (askingMerge ? mergeReady.confirm() : mergeReady.run()); }}
+      >
+        {mergeReady.pending ? 'Merging…' : askingMerge ? 'Really merge them' : `Merge all ${readyCount} ready`}
+      </button>
+      <button
+        type="button" className={`btn ${askingClean ? 'warn' : ''}`}
+        data-testid="board-retire-finished"
+        disabled={cleanUp.pending}
+        onClick={() => { void (askingClean ? cleanUp.confirm() : cleanUp.run()); }}
+      >
+        {cleanUp.pending ? 'Clearing…' : askingClean ? 'Really clear them' : 'Clear the finished ones'}
+      </button>
+      {mergeReady.result?.kind === 'done' && !mergeReady.result.ok ? (
+        <span role="alert" style={{ fontSize: 'var(--fs-meta)', color: 'var(--warn)' }}>{mergeReady.result.text}</span>
+      ) : null}
+      {cleanUp.result?.kind === 'done' && !cleanUp.result.ok ? (
+        <span role="alert" style={{ fontSize: 'var(--fs-meta)', color: 'var(--warn)' }}>{cleanUp.result.text}</span>
+      ) : null}
+    </div>
+  );
 }
 
 export function LanesGrid(props: LanesGridProps): JSX.Element {
@@ -113,6 +155,8 @@ export function LanesGrid(props: LanesGridProps): JSX.Element {
           </div>
         </section>
       ) : null}
+
+      <BoardSweeps readyCount={ready.length} />
 
       <details data-testid="finished-today" style={{ borderTop: '1px solid var(--line)', paddingTop: 12 }}>
         <summary className="disc"><span className="tri" />Finished today <span style={{ fontWeight: 400 }}>{handed} handed to QA · {finished.length} merged</span></summary>

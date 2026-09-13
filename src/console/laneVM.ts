@@ -75,6 +75,9 @@ export function timeInStateText(lane: Lane, now: number, word: BoardStateWord['w
  *  `open-pr` and `open-url` open a link; `nudge` asks the Conductor to nudge the owner. */
 export type BoardCommand =
   | 'watch' | 'answer' | 'merge' | 'resume' | 'compact' | 'verify' | 'reopen' | 'unretire' | 'kill' | 'recheck'
+  // Reachable only from the lane sheet's own action bar: a tile shows one button, chosen
+  // by state, so anything the state does not call for had no way to be clicked at all.
+  | 'pause' | 'retire' | 'reaudit'
   | 'settings' | 'queue' | 'blockers' | 'open-pr' | 'nudge' | `open-url:${string}`;
 
 export interface BoardCta {
