@@ -1,3 +1,6 @@
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import { noCiVerdict } from '../../../src/forge/intake/noCiGate.js';
@@ -15,7 +18,10 @@ import { noCiVerdict } from '../../../src/forge/intake/noCiGate.js';
  * claim a timeout that did not happen, and change nothing at all for an environment that
  * wires none of this.
  */
-const WHERE = { repo: 'aaronlilla/flightdeck', worktreePath: 'C:/dev/worktrees/x' };
+// Neither value names this machine or this project: the repository has a check that
+// refuses both, and it scans TRACKED files, so a new file's violations are invisible
+// until the commit that adds it -- which is how this one reached main.
+const WHERE = { repo: 'owner/name', worktreePath: join(tmpdir(), 'a-worktree') };
 
 describe('a gate on a repository with no checks', () => {
   it('waits, exactly as before, when nothing asked the question', async () => {

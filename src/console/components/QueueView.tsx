@@ -36,6 +36,10 @@ function titleOf(item: QueueItem): string {
 function LaterRow({ item }: { item: QueueItem }): JSX.Element {
   const merge = useAction(ACTIONS.mergeQueueItem, item.id);
   const retry = useAction(ACTIONS.retryQueueItem, item.id);
+  // A Remove belongs on these rows too -- a parked item, answered and finished with, is
+  // the one a person most wants to drop, and it is the only kind that cannot be. It is not
+  // here because `ux-one-action-per-state.test.tsx` allows a queue row exactly one control,
+  // and that rule is the operator plan's, not this file's to overturn.
   const state = item.state === 'review' ? 'Ready to merge' : item.state === 'parked' ? 'Parked' : item.state === 'failed' ? 'Failed' : item.state === 'planning' ? 'Planning' : item.state === 'done' ? 'Done' : 'Working';
   const action = item.state === 'review'
     ? { label: merge.pending ? 'Merging…' : (merge.result?.kind === 'confirm' ? 'Confirm merge' : 'Merge'), run: () => void (merge.result?.kind === 'confirm' ? merge.confirm() : merge.run(item.id)), kind: 'primary' }
@@ -47,7 +51,7 @@ function LaterRow({ item }: { item: QueueItem }): JSX.Element {
   // action renders as its reason instead.
   const verdict = queueActionLiveness(item, item.state === 'review' ? 'merge' : 'retry');
   return (
-    <div className="queue-row" style={{ display: 'grid', gridTemplateColumns: '44px minmax(0,1fr) minmax(0,1fr) 190px', gap: 18, alignItems: 'baseline', padding: '14px 16px', borderBottom: '1px solid var(--line)' }}>
+    <div className="queue-row" data-testid={`queue-later-${item.id}`} style={{ display: 'grid', gridTemplateColumns: '44px minmax(0,1fr) minmax(0,1fr) 190px', gap: 18, alignItems: 'baseline', padding: '14px 16px', borderBottom: '1px solid var(--line)' }}>
       <span className="kick" style={{ fontSize: 'var(--fs-meta)' }}>{state}</span>
       <span>{item.ticket ? <WhatIsHover refText={item.ticket}><span className="key" style={{ marginRight: 10 }}>{item.ticket}</span></WhatIsHover> : null}<span className="hd" data-testid="queue-card-title" style={{ fontSize: 'var(--fs-rowhead)' }}>{titleOf(item)}</span></span>
       <span style={{ color: 'var(--ink2)' }}><Linkify text={item.reason ?? (item.pr ? `PR #${item.pr.no}${item.pr.draft ? ' (draft)' : ''}` : '')} repo={item.repo} /></span>
@@ -56,6 +60,7 @@ function LaterRow({ item }: { item: QueueItem }): JSX.Element {
         : action
           ? <span data-testid="queue-action-unavailable" title={verdict.live === false ? verdict.why : ''} style={{ fontSize: 'var(--fs-meta)', color: 'var(--ink3)' }}>{verdict.live === false ? verdict.why : ''}</span>
           : null}</span>
+
     </div>
   );
 }

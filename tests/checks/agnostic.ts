@@ -144,8 +144,30 @@ export function scanFiles(root: string, files: string[]): Finding[] {
   return findings;
 }
 
+/**
+ * Every file a commit from here would carry: the tracked ones, plus the untracked ones
+ * git is not ignoring.
+ *
+ * It used to be `git ls-files` alone, so a NEW file was invisible to this check until the
+ * commit that added it -- run the suite, see it clean, commit, and the violation lands on
+ * main where the next run finds it. That happened on 2026-09-12: a new test carrying a
+ * drive-rooted development path passed a full verify, merged, and turned main red.
+ *
+ * `--others --exclude-standard` adds the untracked-but-not-ignored half, so a file is
+ * seen the moment it is written rather than one commit later.
+ */
 export function trackedFiles(root: string): string[] {
-  const out = execFileSync('git', ['ls-files'], { cwd: root, encoding: 'utf8' });
+  const out = execFileSync(
+    'git', ['ls-files', '--cached', '--others', '--exclude-standard'],
+    { cwd: root, encoding: 'utf8' },
+  );
+  return [...new Set(out.split(/\r?\n/).filter(Boolean))];
+}
+
+/** The tracked half alone, for a caller that wants what a commit already carries rather
+ *  than what this working tree holds. */
+export function committedFiles(root: string): string[] {
+  const out = execFileSync('git', ['ls-files', '--cached'], { cwd: root, encoding: 'utf8' });
   return out.split(/\r?\n/).filter(Boolean);
 }
 
@@ -158,12 +180,18 @@ function main(): void {
   const findings = runCheck(root);
   if (findings.length === 0) {
     const count = trackedFiles(root).length;
-    console.log(`agnostic check: clean (${count} tracked files scanned)`);
+    console.log(`agnostic check: clean (${count} files scanned)`);
     return;
   }
   console.error(`agnostic check: ${findings.length} finding(s)\n`);
+  // Which findings sit in files git is not tracking yet. A reader takes the two very
+  // differently -- a tracked one is a change to make, an untracked one is usually a
+  // scratch file to delete -- and saying which saves working it out from the path. This
+  // matters now that a gate runs the check inside a worker's own tree.
+  const committed = new Set(committedFiles(root));
   for (const f of findings) {
-    console.error(`  ${f.file}:${f.line}  [${f.rule}]  ${f.text}`);
+    const note = committed.has(f.file) ? '' : '  (not committed: delete it, or clean it up)';
+    console.error(`  ${f.file}:${f.line}  [${f.rule}]  ${f.text}${note}`);
   }
   console.error('\nThis repository must stay project agnostic and machine agnostic.');
   console.error('Move the content to an overlay, or parameterise the path.');
