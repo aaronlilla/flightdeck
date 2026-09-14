@@ -10,6 +10,7 @@ import { dirname } from 'node:path';
 import type { WatcherStatus } from '../../shared/sync-contract.js';
 import type { JiraConfig } from '../intake/jira.js';
 import type { FeedActivityResult } from '../intake/jiraFeed.js';
+import type { TicketPoller, TicketPollResult } from './watcher-thread-host.js';
 import type { WatermarkStore } from '../intake/once.js';
 import type { QueueStore } from '../intake/queueStore.js';
 import { readWatcherPollSeconds, watcherFeed, watcherJql, watcherTick } from '../intake/watcherWire.js';
@@ -72,6 +73,9 @@ export interface JiraWatcherDeps {
   now?: () => number;
   activity?: JiraFeedActivity;
   holdLabels?: readonly string[];
+  /** R-101: where the ticket poll runs. Absent polls on this thread (every test);
+   *  `forge up` hands in a `ThreadTicketPoller` so a stalled console cannot delay it. */
+  poller?: TicketPoller;
 }
 
 /**
@@ -186,12 +190,30 @@ export class JiraWatcher {
     this.stop();
     this.project = project;
     if (options.fresh) this.deps.activity?.reset(this.now());
+    if (this.deps.poller) {
+      // The thread polls at once and on its own interval; nothing here waits on it.
+      this.deps.poller.start(project, (result) => { this.onPolled(project, result); });
+      return;
+    }
     await this.pollOnce(project);
     this.timer = setInterval(() => { void this.pollOnce(project); }, this.pollSeconds * 1000);
     (this.timer as unknown as { unref?: () => void }).unref?.();
   }
 
+  /** One poll result from the thread: the same bookkeeping `pollTickets` does in-process,
+   *  then the queue nudge and the comment pass. */
+  private onPolled(project: string, result: TicketPollResult): void {
+    this.lastPollAt = result.at;
+    this.lastCount = result.count;
+    this.lastError = result.error;
+    if (result.addedTickets.length && this.ticketsAdded) {
+      try { this.ticketsAdded(); } catch { /* the queue's own tick records its failures */ }
+    }
+    this.startActivity(project);
+  }
+
   stop(): void {
+    this.deps.poller?.stop();
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = undefined;
@@ -200,7 +222,7 @@ export class JiraWatcher {
 
   status(): WatcherStatus {
     return {
-      on: this.timer !== undefined,
+      on: this.timer !== undefined || this.deps.poller?.running === true,
       project: this.project,
       pollSeconds: this.pollSeconds,
       ...(this.lastPollAt !== undefined

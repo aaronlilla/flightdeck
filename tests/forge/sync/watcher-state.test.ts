@@ -190,3 +190,45 @@ describe('JiraWatcher and the Jira feed (R-101)', () => {
     expect(store.all().map((item) => item.ticket)).toEqual(['ABC-7']);
   });
 });
+
+describe('JiraWatcher on a ticket poller thread (R-101)', () => {
+  it('hands the poll to the poller, answers at once, and folds each result into status, the queue nudge and the comment pass', async () => {
+    const store = new QueueStore(tempPath('queue.jsonl'));
+    const journal = new Journal(tempPath('journal.jsonl'));
+    let onPolled: ((result: { at: number; count: number; addedTickets: string[]; error?: string }) => void) | undefined;
+    let running = false;
+    const poller = {
+      start: vi.fn((_project: string, fn: typeof onPolled) => { onPolled = fn; running = true; }),
+      stop: vi.fn(() => { running = false; }),
+      get running() { return running; },
+    };
+    const run = vi.fn(async () => ({ considered: 0, replied: [], deferred: [], sent: [], ignored: [], failed: [], answered: [] }));
+    const fetchFn = vi.fn();
+    const watcher = new JiraWatcher({
+      jiraConfig: () => ({ site: 's', email: 'e', token: 't', fetchFn: fetchFn as never }),
+      watermarks: memoryWatermarks(), store, journal, pollSeconds: 5,
+      poller: poller as never, activity: { run, reset: vi.fn() },
+    });
+    const nudge = vi.fn();
+    watcher.onTicketsAdded(nudge);
+
+    await watcher.start('ABC');
+    expect(poller.start).toHaveBeenCalledWith('ABC', expect.any(Function));
+    expect(fetchFn).not.toHaveBeenCalled();
+    expect(watcher.status().on).toBe(true);
+
+    onPolled!({ at: 1234, count: 1, addedTickets: ['ABC-9'] });
+    expect(watcher.status().lastPollAt).toBe(1234);
+    expect(nudge).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledTimes(1);
+    await watcher.settled();
+
+    onPolled!({ at: 2000, count: 0, addedTickets: [], error: 'Jira 401' });
+    expect(watcher.status().lastError).toBe('Jira 401');
+    expect(nudge).toHaveBeenCalledTimes(1);
+
+    watcher.stop();
+    expect(poller.stop).toHaveBeenCalled();
+    expect(watcher.status().on).toBe(false);
+  });
+});
