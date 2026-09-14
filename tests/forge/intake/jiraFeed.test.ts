@@ -439,3 +439,31 @@ describe('a reply refused by the comment check is reworded once', () => {
     expect(h.posts).toHaveLength(2);
   });
 });
+
+// Measured live 2026-09-14: the reword call fixed the wording, but the model answered in
+// the bare line form the prompt asks for, the reasoner demanded a JSON wrapper, and the
+// comment fell to the inbox. The decision is text; parseDecision reads both forms.
+describe('the decision call asks for a text reply', () => {
+  it('passes replyShape text on the first decision and on the rewording', async () => {
+    const h = harness({ board: [issue({ comments: [comment({ mentions: ['acc-me'] })] })] });
+    const shapes: (string | undefined)[] = [];
+    const replies = [decision('reply', 'just the app'), decision('reply', 'only the app')];
+    h.deps.reasoner = { call: async (input) => { shapes.push(input.replyShape); return { text: replies[shapes.length - 1]! }; } };
+    h.deps.post = async (ticket, body) => {
+      h.posts.push({ ticket, body });
+      return body.includes('just') ? { ok: false, body: 'readability refused this comment: banned word(s) in prose: just' } : { ok: true, id: 'p1' };
+    };
+    const result = await runFeedActivity(h.deps);
+    expect(shapes).toEqual(['text', 'text']);
+    expect(result.replied).toEqual(['ABC-1']);
+  });
+
+  it('names the words the comment check refuses, so the first reply avoids them', async () => {
+    const h = harness({ board: [issue({ comments: [comment({ mentions: ['acc-me'] })] })] });
+    let prompt = '';
+    h.deps.reasoner = { call: async (input) => { prompt = input.prompt; return { text: decision('ignore') }; } };
+    h.deps.avoidWords = () => ['just', 'really'];
+    await runFeedActivity(h.deps);
+    expect(prompt).toContain('never use these words: just, really');
+  });
+});

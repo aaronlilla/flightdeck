@@ -232,3 +232,30 @@ describe('JiraWatcher on a ticket poller thread (R-101)', () => {
     expect(watcher.status().on).toBe(false);
   });
 });
+
+// Measured live 2026-09-14: a burst of comments waited 6-8 s before the feed started on
+// them, because the comment pass only ran after a ticket poll result arrived.
+describe('the comment pass keeps its own short cadence (R-101)', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('runs on its own interval with no ticket poll result, and stops with the watcher', async () => {
+    vi.useFakeTimers();
+    const store = new QueueStore(tempPath('queue.jsonl'));
+    const journal = new Journal(tempPath('journal.jsonl'));
+    const poller = { start: vi.fn(), stop: vi.fn(), get running() { return true; } };
+    const run = vi.fn(async () => ({ considered: 0, replied: [], deferred: [], sent: [], ignored: [], failed: [], answered: [] }));
+    const watcher = new JiraWatcher({
+      jiraConfig: () => ({ site: 's', email: 'e', token: 't' }), watermarks: memoryWatermarks(), store, journal,
+      pollSeconds: 5, feedSeconds: 2, poller: poller as never, activity: { run, reset: vi.fn() },
+    });
+
+    await watcher.start('ABC');
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(run.mock.calls.length).toBeGreaterThanOrEqual(3);
+
+    watcher.stop();
+    const afterStop = run.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(run.mock.calls.length).toBe(afterStop);
+  });
+});
