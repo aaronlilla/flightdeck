@@ -48,6 +48,8 @@ const LEDGER_KEEP_MS = 30 * 24 * 60 * 60 * 1000;
 /** While the self-test switch is on: at most this many replies to one ticket in an hour. */
 const SELF_TEST_REPLY_CAP = 10;
 const SELF_TEST_CAP_WINDOW_MS = 60 * 60 * 1000;
+/** How many comments one pass decides at the same time. */
+const FEED_CONCURRENCY = 3;
 
 const SEND_STATES = new Set(['running', 'parked', 'review']);
 
@@ -333,6 +335,22 @@ function clip(text: string, max: number): string {
 
 export function feedPrompt(
   issue: FeedIssue, comment: FeedComment, relevance: Exclude<FeedRelevance, 'self'>, operatorName: string,
+  repair?: { reply: string; refusal: string },
+): string {
+  const base = feedPromptBody(issue, comment, relevance, operatorName);
+  if (!repair) return base;
+  // One rewording after the comment check refused a reply: same answer, fixed wording.
+  return [
+    base,
+    '',
+    `Your last reply was: "${repair.reply}"`,
+    `The team's comment check refused it: ${repair.refusal}`,
+    'Keep the same action and the same meaning, and reword the reply so the check passes.',
+  ].join('\n');
+}
+
+function feedPromptBody(
+  issue: FeedIssue, comment: FeedComment, relevance: Exclude<FeedRelevance, 'self'>, operatorName: string,
 ): string {
   const thread = issue.comments
     .filter((row) => row.id !== comment.id && row.created <= comment.created)
@@ -533,7 +551,35 @@ export async function runFeedActivity(deps: FeedActivityDeps): Promise<FeedActiv
   const selfTestRepliesFor = (ticket: string): number => Object.values(ledger.handled).filter((row) => row.selfTest
     && row.ticket === ticket && row.outcome === 'replied' && row.at >= now() - SELF_TEST_CAP_WINDOW_MS).length;
 
-  for (const candidate of candidates) {
+  // Comments found in one pass are decided together, a few at a time. Measured live on
+  // 2026-09-14: handled one after another, two comments arriving together took 6.4 s and
+  // 15.6 s, the second waiting on the first's model call.
+  const reservedReplies = new Map<string, number>();
+
+  const decide = async (
+    candidate: Candidate, repair?: { reply: string; refusal: string },
+  ): Promise<{ decision: FeedDecision | null; error: string }> => {
+    try {
+      const reply = await deps.reasoner.call({
+        className: 'triage',
+        prompt: feedPrompt(candidate.issue, candidate.comment, candidate.relevance, deps.operatorName(), repair),
+      });
+      const decision = parseDecision(reply.text);
+      return decision ? { decision, error: '' } : { decision: null, error: 'the reasoner answered in a shape the feed cannot read' };
+    } catch (error) {
+      return { decision: null, error: error instanceof Error ? error.message : String(error) };
+    }
+  };
+
+  const tryPost = async (ticket: string, text: string): Promise<string | null> => {
+    const local = replyRefusal(text, me.names);
+    if (local) return local;
+    const posted = await deps.post(ticket, text);
+    if (posted.id) ledger.posted.push(posted.id);
+    return posted.ok ? null : `the reply was refused by Jira: ${posted.body ?? posted.status ?? 'no detail'}`;
+  };
+
+  const handle = async (candidate: Candidate): Promise<void> => {
     result.considered += 1;
     const { issue, comment, relevance } = candidate;
     try {
@@ -543,59 +589,73 @@ export async function runFeedActivity(deps: FeedActivityDeps): Promise<FeedActiv
       if (lane?.runKey) {
         deps.sendTo(lane.runKey, `${comment.authorName || 'someone'} commented on ${issue.key}: ${comment.body}`);
         record(candidate, 'sent', `sent to the lane working ${issue.key}`, result.sent);
-        continue;
+        return;
       }
 
-      let decision: FeedDecision | null = null;
-      let decisionError = '';
-      try {
-        const reply = await deps.reasoner.call({
-          className: 'triage', prompt: feedPrompt(issue, comment, relevance, deps.operatorName()),
-        });
-        decision = parseDecision(reply.text);
-        if (!decision) decisionError = 'the reasoner answered in a shape the feed cannot read';
-      } catch (error) {
-        decisionError = error instanceof Error ? error.message : String(error);
-      }
-
+      const first = await decide(candidate);
+      let decision = first.decision;
       if (!decision) {
         if (relevance === 'maybe') {
-          record(candidate, 'ignored', `no decision on an unmarked comment: ${decisionError}`, result.ignored);
+          record(candidate, 'ignored', `no decision on an unmarked comment: ${first.error}`, result.ignored);
         } else {
           raiseQuestion(deps, candidate, '');
-          record(candidate, 'deferred', `no decision: ${decisionError}`, result.deferred);
+          record(candidate, 'deferred', `no decision: ${first.error}`, result.deferred);
         }
-        continue;
+        return;
       }
       if (decision.action === 'ignore' || (relevance === 'maybe' && !decision.directed)) {
         record(candidate, 'ignored', decision.why || 'not aimed at the operator', result.ignored);
-        continue;
+        return;
       }
-      if (decision.action === 'reply') {
-        const refusal = candidate.selfTest && selfTestRepliesFor(issue.key) >= SELF_TEST_REPLY_CAP
-          ? `self-test reply cap reached: ${SELF_TEST_REPLY_CAP} replies on ${issue.key} in the last hour`
-          : replyRefusal(decision.reply, me.names);
-        if (!refusal) {
-          const posted = await deps.post(issue.key, decision.reply);
-          if (posted.id) ledger.posted.push(posted.id);
-          if (posted.ok) {
-            record(candidate, 'replied', decision.why || 'answered from the ticket', result.replied);
-            continue;
-          }
-          raiseQuestion(deps, candidate, decision.reply);
-          record(candidate, 'deferred', `the reply was refused by Jira: ${posted.body ?? posted.status ?? 'no detail'}`, result.deferred);
-          continue;
-        }
+      if (decision.action !== 'reply') {
         raiseQuestion(deps, candidate, decision.reply);
-        record(candidate, 'deferred', refusal, result.deferred);
-        continue;
+        record(candidate, 'deferred', decision.why || 'needs a person', result.deferred);
+        return;
       }
-      raiseQuestion(deps, candidate, decision.reply);
-      record(candidate, 'deferred', decision.why || 'needs a person', result.deferred);
+
+      const key = issue.key;
+      if (candidate.selfTest && selfTestRepliesFor(key) + (reservedReplies.get(key) ?? 0) >= SELF_TEST_REPLY_CAP) {
+        raiseQuestion(deps, candidate, decision.reply);
+        record(candidate, 'deferred', `self-test reply cap reached: ${SELF_TEST_REPLY_CAP} replies on ${key} in the last hour`, result.deferred);
+        return;
+      }
+      // Reserved before the first await, so replies decided in parallel cannot all pass the cap.
+      reservedReplies.set(key, (reservedReplies.get(key) ?? 0) + 1);
+      try {
+        let text = decision.reply;
+        let refusal = await tryPost(key, text);
+        if (refusal) {
+          // Measured live: a correct reply refused for one filler word fell to the inbox.
+          // One rewording with the refusal in hand, then the inbox if that fails too.
+          const second = await decide(candidate, { reply: text, refusal });
+          if (second.decision?.action === 'reply') {
+            text = second.decision.reply;
+            decision = second.decision;
+            refusal = await tryPost(key, text);
+          }
+        }
+        if (!refusal) {
+          record(candidate, 'replied', decision.why || 'answered from the ticket', result.replied);
+          return;
+        }
+        raiseQuestion(deps, candidate, text);
+        record(candidate, 'deferred', refusal, result.deferred);
+      } finally {
+        reservedReplies.set(key, Math.max(0, (reservedReplies.get(key) ?? 1) - 1));
+      }
     } catch (error) {
       record(candidate, 'failed', error instanceof Error ? error.message : String(error), result.failed);
     }
-  }
+  };
+
+  let nextIndex = 0;
+  await Promise.all(Array.from({ length: Math.min(FEED_CONCURRENCY, candidates.length) }, async () => {
+    while (nextIndex < candidates.length) {
+      const candidate = candidates[nextIndex];
+      nextIndex += 1;
+      if (candidate) await handle(candidate);
+    }
+  }));
 
   await postAnsweredQuestions(deps, ledger, result);
   return result;
