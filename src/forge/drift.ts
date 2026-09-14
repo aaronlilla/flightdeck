@@ -61,15 +61,20 @@ export function driftBlocker(run: string, state: Mergeable, base = 'the base bra
  * horizon.ts`) can park the run behind that instead of raising a base-drift blocker no
  * rebase will ever answer.
  */
-export type UnknownReason = 'auth' | 'rate-limit' | 'other';
+export type UnknownReason = 'auth' | 'rate-limit' | 'no-pr' | 'other';
 
 const AUTH_PATTERNS = [
   /not logged into any github hosts/i, /gh auth login/i, /authentication/i,
   /bad credentials/i, /401/,
 ];
 const RATE_LIMIT_PATTERNS = [/rate limit/i, /403/];
+/** What `gh pr view` prints, with exit 1, for a branch that has no pull request yet
+ *  (read live 2026-09-14). There is nothing to conflict with until one exists, and the
+ *  next check after the pull request opens reads the real mergeable state. */
+const NO_PR_PATTERNS = [/no pull requests found for branch/i];
 
 export function classifyUnknown(output: string): UnknownReason {
+  if (NO_PR_PATTERNS.some((pattern) => pattern.test(output))) return 'no-pr';
   if (AUTH_PATTERNS.some((pattern) => pattern.test(output))) return 'auth';
   if (RATE_LIMIT_PATTERNS.some((pattern) => pattern.test(output))) return 'rate-limit';
   return 'other';
@@ -199,6 +204,10 @@ export function classifyDriftRead(
 ): DriftOutcome {
   const { state, reason, base } = read;
   if (state === 'MERGEABLE') return { kind: 'clear' };
+  // 2026-09-14: every ticket reaching its first pull request raised a base-drift blocker
+  // over this, and answering it did not stick -- the next run to reach the step reopened
+  // it. A branch with no pull request has nothing to conflict with yet.
+  if (reason === 'no-pr') return { kind: 'clear' };
   if (reason === 'auth' || reason === 'rate-limit') {
     return { kind: 'credential-lapse', account: ghAccount, reason };
   }

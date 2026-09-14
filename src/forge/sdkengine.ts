@@ -442,6 +442,22 @@ export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
           + 'no console here to receive its notifications. Poll with a plain Bash command instead.',
       };
     }
+    // 2026-09-14: a worker waiting on its own background task polled it with
+    // `TaskOutput block: false` over and over, and every poll cost a turn -- the BBZ-343
+    // run spent 15 of its 47 tool calls that way and ran out of turns before a pull
+    // request. A blocking wait with a timeout costs one. Only an explicit `block: false`
+    // is refused; a blocking call, or one that leaves `block` at its default, goes through.
+    if (call.toolName === 'TaskOutput' && call.input['block'] === false) {
+      deps.journal.append({
+        event: 'permission.denied', run: deps.run, actor: 'runner', tool: call.toolName,
+        reason: 'a non-blocking TaskOutput poll costs a turn each time; block on the task instead',
+      });
+      return {
+        decision: 'deny',
+        reason: 'Do not poll a background task with block: false inside a worker run: each poll costs a turn. '
+          + 'Call TaskOutput with block: true and a timeout, and continue from its result.',
+      };
+    }
     if (deps.killSwitchHit?.()) {
       deps.journal.append({
         event: 'permission.denied', run: deps.run, actor: 'runner', tool: call.toolName,
