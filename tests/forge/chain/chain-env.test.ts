@@ -79,17 +79,18 @@ describe('worktreePathFor', () => {
     expect(path).toBe('D:/repos/worktrees/name--abc-1');
   });
 
-  // Live escape 2026-09-14: the RN checkout is itself a worktree under C:/dev/worktrees,
-  // so the sibling join produced C:/dev/worktrees/worktrees/v2-react-native--bbz-305 --
-  // a doubled segment the coordination board's worktree listing never sees.
+  // A checkout can itself be a worktree living inside a sibling "worktrees" directory
+  // (a merge-base checkout, say). Joining another "worktrees" segment onto its parent
+  // then doubles the path -- a depth a plain worktree listing never sees. Genericised
+  // from a live escape.
   it('does not double the segment when the checkout already lives in a worktrees directory', () => {
-    const path = worktreePathFor('C:/dev/worktrees/v2-react-native--merge-base', 'BOLTBETZ-LLC/v2-React-Native', 'BBZ-305');
-    expect(path).toBe('C:/dev/worktrees/v2-react-native--bbz-305');
+    const path = worktreePathFor('D:/repos/worktrees/name--merge-base', 'Owner/Name', 'ABC-1');
+    expect(path).toBe('D:/repos/worktrees/name--abc-1');
   });
 
   it('keeps the doubled-path behavior out of backslash checkouts too', () => {
-    const path = worktreePathFor('C:\\dev\\worktrees\\v2-react-native--merge-base', 'BOLTBETZ-LLC/v2-React-Native', 'BBZ-9');
-    expect(path).toBe('C:\\dev\\worktrees\\v2-react-native--bbz-9');
+    const path = worktreePathFor('D:\\repos\\worktrees\\name--merge-base', 'Owner/Name', 'ABC-2');
+    expect(path).toBe('D:\\repos\\worktrees\\name--abc-2');
   });
 });
 
