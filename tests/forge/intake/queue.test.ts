@@ -499,6 +499,29 @@ describe('retry: a parked item whose run already finished launches again instead
     expect(order.indexOf(`clear:${firstRunKey}`)).toBeLessThan(order.indexOf('launch:2'));
   });
 
+  it("a ticket's first launch clears any stored stop reason on the run key the launcher will use", async () => {
+    // Aaron, 2026-09-14: BBZ-304's first launch of item Q-ecadd03d was refused on the drift
+    // park its earlier run had written under the same run key; only a retry-relaunch cleared it.
+    const { runKeyForBrief } = await import('../../../src/forge/chain.js');
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const order: string[] = [];
+    const { deps } = buildDeps(store, {
+      launcher: {
+        launch: async ({ ticket }) => { order.push('launch:1'); return { runKey: ticket.toLowerCase() }; },
+      },
+      clearRunBlock: (runKey: string) => { order.push(`clear:${runKey}`); },
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps); // plan
+    const expectedKey = runKeyForBrief(current.briefPath!);
+    await advanceItem(current, deps); // first launch
+
+    expect(order).toContain(`clear:${expectedKey}`);
+    expect(order.indexOf(`clear:${expectedKey}`)).toBeLessThan(order.indexOf('launch:1'));
+  });
+
   it('an item retried while its finished run does carry a PR still goes to the gate, not a relaunch', async () => {
     const store = tempStore();
     const item = addTicketItem(store, 'ABC-1', 1000);
