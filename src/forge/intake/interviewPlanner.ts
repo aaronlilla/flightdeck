@@ -47,6 +47,11 @@ export interface InterviewPlannerDeps {
   /** Holds what the scout settled while the item waits on a person. */
   records: InterviewRecords;
   append?: JournalAppend;
+  /** R-101: whether the interview's "backend-only" verdict can park this ticket. True
+   *  (the default) only makes sense when the routed repo has a declared app or backend
+   *  kind; a ticket routed to any other repo was sent there on purpose, and "nothing in
+   *  it changes the app" is true of all its work, so the verdict would park every one. */
+  backendRouteApplies?: boolean;
 }
 
 /**
@@ -165,7 +170,7 @@ export async function planTicketWithInterview(
     deps.records.clear(itemId);
     throw error;
   }
-  if (result.route === 'backend') {
+  if (result.route === 'backend' && deps.backendRouteApplies !== false) {
     deps.records.clear(itemId);
     return { backend: true, ticket, ask: result.ask ?? '' };
   }

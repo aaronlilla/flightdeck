@@ -366,6 +366,26 @@ describe('the planning hop as an interview', () => {
     expect(h.events.some((row) => row['event'] === 'interview.asked')).toBe(false);
   });
 
+  // R-101 escape, 2026-09-14: a real ticket labelled for the flightdeck repo ("add a doc
+  // file") was judged backend-only, because nothing in it changes the app, and parked
+  // for the backend owner. The app-versus-backend call only means something for a repo
+  // whose kind is declared; any other routed repo plans normally.
+  it('ignores a backend verdict for a routed repo with no declared kind, and plans the brief', async () => {
+    const reasoner = scriptedReasoner([{ route: 'backend', ask: 'Add a doc file.', questions: [] }, 'brief text']);
+    const briefs: string[] = [];
+    const outcome = await planTicketWithInterview('ABC-7', 'Q-7', {
+      reasoner,
+      inbox: tempInbox(),
+      packetFor: async (key: string) => packetFor(key),
+      scout: async () => ({ answered: false, text: 'unused' }),
+      writeBriefFile: async ({ text }) => { briefs.push(text); return { briefPath: 'C:/briefs/ABC-7.md', repo: 'owner/tools' }; },
+      records: new MemoryInterviewStore(),
+      backendRouteApplies: false,
+    });
+    expect('backend' in outcome).toBe(false);
+    expect(briefs).toHaveLength(1);
+  });
+
   // Found by /critique, 2026-09-11. An interview ask names its item, not a launched
   // process, so no registry row will ever exist for it -- `isAskStale` read every one of
   // them as stale from birth, `forge status` filed them under "not worth your time", and
