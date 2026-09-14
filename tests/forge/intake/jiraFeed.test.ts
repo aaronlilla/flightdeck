@@ -255,6 +255,17 @@ describe('runFeedActivity', () => {
     expect(post).not.toHaveBeenCalled();
   });
 
+  it('has the comment claimed on disk before the post runs, so a crash mid-post cannot double it', async () => {
+    const h = harness({ board: [issue({ comments: [comment({ mentions: ['acc-me'] })] })], reply: decision('reply', 'on it') });
+    let seenAtPost: string | undefined;
+    h.deps.post = async () => {
+      seenAtPost = h.deps.ledger.read().handled['c1']?.outcome;
+      return { ok: true };
+    };
+    await runFeedActivity(h.deps);
+    expect(seenAtPost).toBe('claimed');
+  });
+
   it('widens its look-back to cover the time since the last poll', async () => {
     const h = harness({ now: LATER });
     await runFeedActivity(h.deps);
