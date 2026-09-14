@@ -141,19 +141,28 @@ export class QueueStore {
   }
 
   /** R-68: removes every non-removed item through the same soft-delete path `remove()`
-   *  itself would use, then journals one `queue.wiped {count}` row on the fleet journal
-   *  passed in (absent means no journal row, for a caller with none wired). History on
-   *  this store's own log is never touched -- the log only ever grows, exactly like
-   *  every other transition here -- so a wipe is one more fold-visible event per item,
-   *  never a truncation. Returns how many items were wiped. */
-  wipe(journal?: { append(event: Record<string, unknown>): unknown }): number {
+   *  itself would use, then journals one `queue.wiped {count, kept}` row on the fleet
+   *  journal passed in (absent means no journal row, for a caller with none wired).
+   *  History on this store's own log is never touched -- the log only ever grows, exactly
+   *  like every other transition here -- so a wipe is one more fold-visible event per
+   *  item, never a truncation. An item matching `keep` is spared: a wipe that discards an
+   *  item whose worker is mid-run orphans that run -- no status polls, no merge gate, no
+   *  ticket handoff (live escape 2026-09-14). Returns how many items were wiped. */
+  wipe(journal?: { append(event: Record<string, unknown>): unknown }, keep?: (item: QueueItem) => boolean): number {
     const items = this.all();
     const at = Date.now();
+    const kept: QueueItem[] = [];
+    const wiped: QueueItem[] = [];
     for (const item of items) {
+      if (keep?.(item)) {
+        kept.push(item);
+        continue;
+      }
+      wiped.push(item);
       this.append({ id: item.id, at, removedAt: at, updatedAt: at });
     }
-    journal?.append({ event: 'queue.wiped', actor: 'sync', count: items.length });
-    return items.length;
+    journal?.append({ event: 'queue.wiped', actor: 'sync', count: wiped.length, kept: kept.length });
+    return wiped.length;
   }
 
   /** Every row per id, in append order, for `history()`. Grown by the same fold. */

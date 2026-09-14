@@ -40,14 +40,17 @@ export interface RunSyncDeps {
 
 /** `full`'s own nine stages, in the plan's order. Every other scope reuses the page-scope
  *  stage name the contract names for it -- a single-stage run, since a page sync has no
- *  multi-hop pipeline of its own. */
-const STAGE_ORDER: Record<SyncScope, SyncStageName[]> = {
+ *  multi-hop pipeline of its own. Invariant (live escape 2026-09-14): any scope that runs
+ *  `stop-workers` engages the fleet-wide kill switch, so its list must END with `resume`,
+ *  the stage that clears it -- `onFailure` only covers a thrown stage, never a scope that
+ *  simply stops early. */
+export const STAGE_ORDER: Record<SyncScope, SyncStageName[]> = {
   full: [
     'stop-workers', 'wipe-queue', 'reset-watermarks',
     'fetch-repos', 'reconcile-prs', 'sweep-worktrees',
     'pull-jira', 'watcher-on', 'resume',
   ],
-  queue: ['stop-workers', 'wipe-queue', 'reset-watermarks'],
+  queue: ['stop-workers', 'wipe-queue', 'reset-watermarks', 'resume'],
   sessions: ['scan-sessions'],
   accounts: ['probe-accounts'],
   machine: ['snapshot-machine'],
