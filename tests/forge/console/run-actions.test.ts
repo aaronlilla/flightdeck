@@ -265,6 +265,27 @@ describe('pauseRun / resumeRun', () => {
     expect(actuator.resumed.map((r) => r.run)).toEqual(['alpha']);
   });
 
+  it('resuming a parked queue run hands its item back to the queue to relaunch', async () => {
+    // Aaron, 2026-09-14: five resumes answered "resumed" and nothing started, because a
+    // warden-parked queue run has no live process to read the resume message.
+    registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: 999_999 });
+    appendOnce(journalPath, { event: 'run.started', run: 'alpha' });
+    appendOnce(journalPath, { event: 'run.parked', run: 'alpha', key: 'warden:alpha', reason: 'drift confirmed off-brief' });
+    const queueStore = new QueueStore(join(dir, 'queue.jsonl'));
+    queueStore.append({
+      id: 'Q-1', at: 1000, source: 'ticket', input: 'ABC-1', ticket: 'ABC-1', repo: null, briefPath: null,
+      state: 'parked', reason: 'drift confirmed off-brief', runKey: 'alpha', pr: null, journalIds: [], createdAt: 1000, updatedAt: 1000,
+    });
+    deps.queueStore = queueStore;
+
+    const result = await resumeRun('alpha', deps);
+
+    expect(result.status).toBe(200);
+    const item = new QueueStore(join(dir, 'queue.jsonl')).get('Q-1');
+    expect(item?.state).toBe('running');
+    expect(item?.retriedAt).toBeGreaterThan(0);
+  });
+
   it('refuses to resume a run that is not paused or parked', async () => {
     registry.admit({ goal: 'alpha', cwd: dir, briefPath: join(dir, 'alpha.md'), pid: process.pid });
     appendOnce(journalPath, { event: 'run.started', run: 'alpha' });

@@ -31,7 +31,7 @@ import type { QueueItem } from '../../shared/console-model.js';
  *  caller sets explicitly, from its own clock, so a specimen can pin it). `removedAt`
  *  is store-only -- never part of the public `QueueItem` the board reads -- and is what
  *  `remove()` sets to take an item out of `all()` without erasing its history. */
-export type QueueRow = Partial<QueueItem> & { id: string; at: number; removedAt?: number };
+export type QueueRow = Partial<QueueItem> & { id: string; at: number; removedAt?: number | null };
 
 function defaultItem(id: string, at: number): QueueItem {
   return {
@@ -108,8 +108,11 @@ export class QueueStore {
     // shape the board reads -- stripped here so the fold's output matches that type
     // exactly rather than leaking the row's own write-time fields onto it.
     const { at: _at, removedAt, ...fields } = row;
+    // A removal is sticky. Only an explicit `removedAt: null` row restores an item: an
+    // ordinary later row that simply omits the field (a retry or launch that was already
+    // in flight) brought three removed items back as `running` on 2026-09-14.
     if (removedAt) this.removed.add(row.id);
-    else this.removed.delete(row.id);
+    else if (removedAt === null) this.removed.delete(row.id);
     this.byId.set(row.id, { ...prior, ...fields });
   }
 
@@ -120,7 +123,7 @@ export class QueueStore {
   }
 
   /** Every item this log has ever seen, folded to its latest fields, in the order each
-   *  id first appeared. An item removed (`removedAt` set on its latest row) is excluded
+   *  id first appeared. An item removed (any row set `removedAt`, and no later row restored it with `removedAt: null`) is excluded
    *  -- the row itself stays on disk for anyone reading the raw log, but the board's own
    *  list never shows it again. The items are the store's own objects: read them, never
    *  mutate them. */

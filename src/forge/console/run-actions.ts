@@ -20,6 +20,7 @@ import { chainLinks } from './lanes.js';
 import { forgeHome } from '../paths.js';
 import { queuePath as defaultQueuePath } from '../paths.js';
 import { QueueStore } from '../intake/queueStore.js';
+import { retryItem } from '../intake/queue.js';
 import type { Registry } from '../registry.js';
 import type { Lanes } from '../supervisor.js';
 import { recordAction, type ActionsLedger } from './actions-ledger.js';
@@ -193,10 +194,20 @@ export async function resumeRun(run: string, deps: RunActionsDeps): Promise<RunA
   const guard = guardState('resume', run, deps);
   if (guard) return guard;
   await deps.actuator.resume(asRunId(run), 'resume requested from the console');
+  // A queue run the warden parked has no live process to read the inbox message above,
+  // so on 2026-09-14 five resumes answered "resumed" and started nothing. The queue item
+  // is handed back to the queue the same way a person's Retry does, and the queue's own
+  // launch path relaunches it.
+  const queueStore = deps.queueStore ?? new QueueStore(defaultQueuePath());
+  const item = queueStore.all().find((row) => row.runKey === run);
+  const requeued = item && (item.state === 'parked' || item.state === 'failed')
+    ? retryItem(queueStore, item.id, Date.now(), { askedByAPerson: true })
+    : undefined;
+  const message = requeued ? `resumed ${run}: handed back to the queue to relaunch` : `resumed ${run}`;
   const { jid } = recordAction(deps.journalPath, deps.ledger, {
-    kind: 'resume', run, text: `resumed ${run}`, undo: null,
+    kind: 'resume', run, text: message, undo: null,
   });
-  return { status: 200, body: { ok: true, jid, message: `resumed ${run}`, undoable: false } };
+  return { status: 200, body: { ok: true, jid, message, undoable: false } };
 }
 
 /** `~/.forge/console/caps.json` by default -- the same file, and the same

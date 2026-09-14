@@ -170,6 +170,9 @@ const RELAUNCH_PROMPT = [
  */
 export async function relaunchAbandonedGoal(
   registry: Registry, engine: EngineLike, goal: string,
+  /** Picks the login the relaunch runs on. Without it the engine falls back to the fleet
+   *  login, which on 2026-09-14 was out of weekly quota while a linked account had room. */
+  configDirFor?: () => string,
 ): Promise<RelaunchOutcome> {
   const record = registry.get(goal);
   if (!record || !record.sessionId) return 'skipped';
@@ -177,9 +180,11 @@ export async function relaunchAbandonedGoal(
     const brief = readFileSync(record.briefPath, 'utf8');
     const className = tierOfBrief(brief);
     const model = record.model ?? modelIdFor(modelFor(className));
+    const configDir = configDirFor?.();
     await engine.run({
       run: goal, model, prompt: RELAUNCH_PROMPT, env: process.env, cwd: record.cwd,
       maxTurns: turnsFor(className), resume: record.sessionId,
+      ...(configDir ? { configDir } : {}),
     });
     clearParkRecord(goal);
     return 'relaunched';

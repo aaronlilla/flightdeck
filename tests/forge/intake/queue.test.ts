@@ -32,6 +32,7 @@ interface FixtureOverrides {
   launcher?: Partial<ChainLauncher>;
   gh?: Partial<ChainGh>;
   rebaseOnBase?: QueueRuntimeDeps['rebaseOnBase'];
+  clearRunBlock?: QueueRuntimeDeps['clearRunBlock'];
   council?: ChainCouncilFn;
   gate?: ChainGateFn;
   killSwitch?: () => boolean;
@@ -67,6 +68,7 @@ function buildDeps(store: QueueStore, overrides: FixtureOverrides = {}): { deps:
       ...overrides.gh,
     },
     ...(overrides.rebaseOnBase ? { rebaseOnBase: overrides.rebaseOnBase } : {}),
+    ...(overrides.clearRunBlock ? { clearRunBlock: overrides.clearRunBlock } : {}),
     council: overrides.council ?? (async () => ({ verdict: 'PASS' })),
     gate: overrides.gate ?? (async () => ({ merged: false })),
     clock: () => 1_000,
@@ -463,6 +465,38 @@ describe('retry: a parked item whose run already finished launches again instead
     expect(relaunched.runKey).not.toBe(firstRunKey);
     expect(launchCalls).toBe(2);
     expect(events.map((e) => e['event'])).toContain('queue.relaunch-on-retry');
+  });
+
+  it("clears the old run key's stored stop reason before a retry relaunches it", async () => {
+    // Aaron, 2026-09-14: every relaunch was refused ("refusing to start ...: Running 3.0 h")
+    // on the reason the first park had written, until someone ran `forge clear` by hand.
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    const order: string[] = [];
+    let launchCalls = 0;
+    const { deps } = buildDeps(store, {
+      launcher: {
+        launch: async ({ ticket }) => {
+          launchCalls += 1;
+          order.push(`launch:${launchCalls}`);
+          return { runKey: `${ticket.toLowerCase()}-${launchCalls}` };
+        },
+        status: async () => ({ finished: true, verdict: 'parked' }),
+      },
+      gh: { findPrByHead: async () => undefined },
+      clearRunBlock: (runKey: string) => { order.push(`clear:${runKey}`); },
+    });
+
+    let current = item;
+    current = await advanceItem(current, deps); // plan
+    current = await advanceItem(current, deps); // launch
+    const firstRunKey = current.runKey!;
+    current = await advanceItem(current, deps); // finished, no PR -> park
+    const retried = retryItem(store, current.id, 5000)!;
+    await advanceItem(retried, deps);
+
+    expect(order).toContain(`clear:${firstRunKey}`);
+    expect(order.indexOf(`clear:${firstRunKey}`)).toBeLessThan(order.indexOf('launch:2'));
   });
 
   it('an item retried while its finished run does carry a PR still goes to the gate, not a relaunch', async () => {

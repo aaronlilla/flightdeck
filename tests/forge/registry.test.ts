@@ -279,6 +279,20 @@ describe('B.2: relaunchAbandonedGoal', () => {
     expect(registry.get('mid-tool')).toBeDefined();
   });
 
+  it('relaunches on the login the picker chose, not the fleet fallback', async () => {
+    const briefPath = join(dir, 'picked.md');
+    writeFileSync(briefPath, '# Goal\n\nDo the thing.\n', 'utf8');
+    const registry = new Registry(join(dir, 'registry'));
+    registry.admit({ goal: 'picked', cwd: dir, briefPath, pid: 999_999 });
+    registry.setSession('picked', 'sess-picked', 'claude-sonnet-5');
+
+    const engine = fakeEngine();
+    const outcome = await relaunchAbandonedGoal(registry, engine, 'picked', () => 'D:/accounts/fresh');
+
+    expect(outcome).toBe('relaunched');
+    expect(engine.started[0]?.configDir).toBe('D:/accounts/fresh');
+  });
+
   it('skips a goal with no registry row at all', async () => {
     const registry = new Registry(join(dir, 'registry'));
     const engine = fakeEngine();
