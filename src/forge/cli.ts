@@ -701,7 +701,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         now: () => Date.now(),
         stuck: () => liveness.stuck(),
         isRegisteredRun: (key: string) => Boolean(registry.get(key)) || Boolean(lanes.get(key)),
-        relaunchAbandoned: (goal: string) => relaunchAbandonedGoal(registry, relaunchEngine, goal),
+        relaunchAbandoned: (goal: string) => relaunchAbandonedGoal(registry, relaunchEngine, goal, configDirForLaunch),
         registryRows: () => registry.all(),
         isAlive: (pid) => (deps.alive ?? processAlive)(pid),
         parkedAt: (goal) => readParkRecord(goal)?.at,
@@ -939,7 +939,16 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       if (queueLock?.ok) {
         process.once('exit', () => queueLock.release());
         const queueJournal = new Journal(journalPath());
-        const queueDeps = buildQueueRuntimeDeps(chainEnv, configDirForLaunch, deps, queueStore);
+        const queueDeps = {
+          ...buildQueueRuntimeDeps(chainEnv, configDirForLaunch, deps, queueStore),
+          // What `forge clear` resets, minus the zero-turn-start count: a retry relaunching
+          // the same run key must not be refused on the first park's stored reason, but the
+          // breaker still stops a run that keeps dying on start.
+          clearRunBlock: (runKey: string) => {
+            new Lanes(lanesDir()).put(runKey, { needs_aaron: null });
+            clearParkRecord(runKey);
+          },
+        };
         const pollSeconds = Number(process.env['FORGE_QUEUE_POLL_S']) || 15;
         // B.1: three identical consecutive queue.tick-error rows back this off to a
         // 10 minute drip rather than retrying every pollSeconds all night on the same

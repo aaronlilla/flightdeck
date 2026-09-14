@@ -57,6 +57,38 @@ describe('QueueStore', () => {
     const secondReader = new QueueStore(path);
     expect(secondReader.all()).toEqual([]);
   });
+
+  it('a removed item stays removed when a later row without removedAt lands for it', () => {
+    // Aaron, 2026-09-14: three items removed at 14:25:36 came back as `running` seconds
+    // later, when a retry and a launch that were already in flight appended their own
+    // rows (runKey, retriedAt, branch) for the same ids.
+    const path = tempPath();
+    const store = new QueueStore(path);
+    store.append({
+      id: 'q1', at: 1000, source: 'ticket', input: 'ABC-1', ticket: 'ABC-1', repo: null, briefPath: null,
+      state: 'parked', reason: null, runKey: 'queue-ABC-1-q1', pr: null, journalIds: [], createdAt: 1000, updatedAt: 1000,
+    });
+    store.append({ id: 'q1', at: 2000, removedAt: 2000, updatedAt: 2000 });
+    store.append({ id: 'q1', at: 2003, state: 'running', runKey: 'queue-ABC-1-q1', retriedAt: 2003, updatedAt: 2003 });
+    store.append({ id: 'q1', at: 2070, branch: 'feature/abc-1', worktreePath: '/w/abc-1', updatedAt: 2070 });
+
+    expect(store.all()).toEqual([]);
+    expect(store.get('q1')).toBeUndefined();
+    expect(new QueueStore(path).all()).toEqual([]);
+  });
+
+  it('only an explicit removedAt: null row restores a removed item', () => {
+    const path = tempPath();
+    const store = new QueueStore(path);
+    store.append({
+      id: 'q1', at: 1000, source: 'ticket', input: 'ABC-1', ticket: 'ABC-1', repo: null, briefPath: null,
+      state: 'queued', reason: null, runKey: null, pr: null, journalIds: [], createdAt: 1000, updatedAt: 1000,
+    });
+    store.append({ id: 'q1', at: 2000, removedAt: 2000, updatedAt: 2000 });
+    store.append({ id: 'q1', at: 3000, removedAt: null, updatedAt: 3000 });
+
+    expect(store.all().map((item) => item.id)).toEqual(['q1']);
+  });
 });
 
 describe('the store reads its log incrementally', () => {

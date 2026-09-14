@@ -360,6 +360,11 @@ export interface QueueRuntimeDeps {
   closePr?: (input: { repo: string; pr: number; comment: string }) => Promise<{ ok: boolean; reason?: string } | void>;
   planner: QueuePlanner;
   launcher: ChainLauncher;
+  /** Clears a run key's stored stop reason (the lane's `needs_aaron` and its park record),
+   *  the same reset `forge clear` does. Called before a retry relaunches the same run key:
+   *  on 2026-09-14 every relaunch was refused on the reason the first park had written.
+   *  Unset in a specimen with nothing on disk to clear. */
+  clearRunBlock?: (runKey: string) => void;
   gh: ChainGh;
   /** Brings the branch up to date with its base before the gate reads it, and answers
    *  whether that succeeded. A branch that has fallen behind while the work ran is the
@@ -560,6 +565,7 @@ async function relaunchOnRetryOrPark(
         deps, 'queue.relaunch-refused', { runKey: item.runKey, pid },
       );
     }
+    if (item.runKey) deps.clearRunBlock?.(item.runKey);
     const relaunching = writeTransition(
       item, { runKey: null, retriedAt: null }, deps, 'queue.relaunch-on-retry',
       { previousRunKey: item.runKey, parkReason: reason },

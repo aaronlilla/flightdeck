@@ -21,7 +21,7 @@ import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
-  INHERITED, Worker, workerEnv, verificationCommands, type FakeTurn,
+  INHERITED, NUDGE_LIMIT, NUDGE_REASON, WAIT_NUDGE_LIMIT, Worker, workerEnv, verificationCommands, type FakeTurn,
 } from '../../src/forge/worker.js';
 import { Journal, replay } from '../../src/forge/journal.js';
 import { Inbox } from '../../src/forge/inbox.js';
@@ -1146,5 +1146,41 @@ describe('I14: a segment that ends with no done, ceiling, park or kill gets one 
     const state = replay(journalPath);
     const nudges = state.events.filter((event) => event.event === 'run.nudged' && event.run === 'alpha');
     expect(nudges[0]?.['reason']).toContain('Carries an em dash');
+  });
+
+  it('a turn that ends while polling its own background task is a wait, not a stop: more nudges, told to block', async () => {
+    // Aaron, 2026-09-14: the BBZ-303 run was mid-task, polled its own background job with
+    // TaskOutput, ended the turn, got two nudges and was finished `stopped`.
+    const engine = {
+      started: [] as unknown[],
+      sent: [] as string[],
+      async run(config: { run: string }) {
+        this.started.push(config);
+        const journal = new Journal(journalPath);
+        journal.append({ event: 'tool.start', run: config.run, actor: 'worker', tool: 'TaskOutput' });
+        journal.close();
+        return {
+          sessionId: 'session-1', turns: [{ text: 'waiting on the test run', context: 10 }],
+          send: async (prompt: string) => {
+            this.sent.push(prompt);
+            return [{ text: 'still waiting', context: 10 }];
+          },
+        };
+      },
+    };
+    const worker = new Worker({
+      run: 'alpha', brief: '# Goal\n\nDo the thing.\n', briefPath: join(dir, 'brief.md'),
+      cwd: dir, journalPath, engine: engine as never, maxContext: 60_000,
+    } as never) as unknown as { run: () => Promise<unknown> };
+
+    await worker.run();
+
+    expect(WAIT_NUDGE_LIMIT).toBeGreaterThan(NUDGE_LIMIT);
+    expect(engine.sent).toHaveLength(WAIT_NUDGE_LIMIT);
+    expect(engine.sent[0]).toMatch(/block: true/);
+  });
+
+  it('the plain nudge tells a waiting worker to block on the task, not poll it', () => {
+    expect(NUDGE_REASON).toMatch(/TaskOutput with block: true/);
   });
 });

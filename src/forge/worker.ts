@@ -313,8 +313,23 @@ export const NUDGE_LIMIT = 2;
 export const NUDGE_REASON = [
   'You ended your turn without calling forge_done. The run is not over. If the goal is',
   'complete, call forge_done with the evidence; if a tool call was denied, fix what the',
-  'reason says and retry; if you are waiting on an agent, block on it with TaskOutput;',
-  'otherwise continue.',
+  'reason says and retry; if you are waiting on an agent or a background task, block on it',
+  'with TaskOutput with block: true rather than polling it; otherwise continue.',
+].join(' ');
+
+/**
+ * A segment whose last tool call was `TaskOutput` ended its turn while waiting on its own
+ * background task, which is a wait, not a stuck run. On 2026-09-14 the BBZ-303 run polled
+ * its test job, ended the turn, got the two ordinary nudges and was finished `stopped`
+ * mid-task. A wait gets its own, larger allowance so a long test run can finish, and is
+ * still bounded so a worker that polls forever does stop.
+ */
+export const WAIT_NUDGE_LIMIT = 10;
+
+export const WAIT_NUDGE_REASON = [
+  'Your turn ended while a background task you started is still running. The run is not',
+  'over. Block on the task with TaskOutput with block: true and continue from its result;',
+  'do not poll it with block: false.',
 ].join(' ');
 
 export function successorPrompt(packet: string, brief: string): string {
@@ -457,6 +472,7 @@ export class Worker {
         // I14: per session (this outer loop's own iteration), not per run -- a successor
         // opened after a handoff gets its own fresh count, the same as a resumed one.
         let nudges = 0;
+        let waitNudges = 0;
         // A segment that ends with neither `done` nor the ceiling hit is not necessarily a
         // stop: the model may have hit an `AskUserQuestion` or `forge_ask` and parked (F1).
         // That is not this segment failing to finish, it is this segment waiting on a
@@ -514,23 +530,32 @@ export class Worker {
 
           const key = this.engine.parkedOn?.(runName);
           if (!key) {
-            if (nudges < NUDGE_LIMIT && session.send) {
-              nudges += 1;
-              // A denied tool call is very rarely the literal last row: the turn it
-              // happened in still ends normally and journals its own `turn.end` right
-              // after. So this looks for the most recent `rule.denied` anywhere in the
-              // CURRENT segment (since this run's own `run.started`), not only the
-              // single last event.
-              const state = replay(this.config.journalPath);
-              const runEvents = state.events.filter((event) => event.run === runName);
-              const sinceStart = runEvents.slice(
-                runEvents.map((event) => event.event).lastIndexOf('run.started') + 1,
-              );
+            // A denied tool call is very rarely the literal last row: the turn it
+            // happened in still ends normally and journals its own `turn.end` right
+            // after. So this looks for the most recent `rule.denied` anywhere in the
+            // CURRENT segment (since this run's own `run.started`), not only the
+            // single last event.
+            const state = replay(this.config.journalPath);
+            const runEvents = state.events.filter((event) => event.run === runName);
+            const sinceStart = runEvents.slice(
+              runEvents.map((event) => event.event).lastIndexOf('run.started') + 1,
+            );
+            const lastTool = [...sinceStart].reverse().find((event) => event.event === 'tool.start');
+            const waitingOnTask = lastTool?.['tool'] === 'TaskOutput';
+            const allowed = waitingOnTask ? waitNudges < WAIT_NUDGE_LIMIT : nudges < NUDGE_LIMIT;
+            if (allowed && session.send) {
+              if (waitingOnTask) waitNudges += 1;
+              else nudges += 1;
               const lastDenial = [...sinceStart].reverse().find((event) => event.event === 'rule.denied');
+              const base = waitingOnTask ? WAIT_NUDGE_REASON : NUDGE_REASON;
               const reason = lastDenial
-                ? `${NUDGE_REASON} The last tool call was denied for: "${String(lastDenial['reason'] ?? '')}".`
-                : NUDGE_REASON;
-              journal.append({ event: 'run.nudged', run: runName, actor: 'runner', reason, attempt: nudges });
+                ? `${base} The last tool call was denied for: "${String(lastDenial['reason'] ?? '')}".`
+                : base;
+              journal.append({
+                event: 'run.nudged', run: runName, actor: 'runner', reason,
+                attempt: waitingOnTask ? waitNudges : nudges,
+                ...(waitingOnTask ? { waitingOnTask: true } : {}),
+              });
               pendingTurns = await session.send(reason);
               continue;
             }
