@@ -673,6 +673,9 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
         // to reuse the previous run's key and directory, so the new launch's own
         // `waitForLaunchToRegister` read the OLD run as already registered.
         const runKey = `${runKeyForBrief(goalPath)}-${item.id}`;
+        // A run key can carry a stop reason an earlier run under it left behind; the
+        // launcher refuses on it before any session starts (BBZ-304, 2026-09-14).
+        deps.clearRunBlock?.(runKey);
         const launched = await deps.launchGoal({
           goalPath, block: item.goalBlock ?? '', cwd: workspaceRoot(), runKey,
         });
@@ -783,6 +786,9 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
   if (!item.runKey) {
     let provisioned: ChainProvisionResult | undefined;
     try {
+      // The launcher derives this run's key from the brief path; a stop reason an earlier
+      // run under the same key left behind refuses the launch before any session starts.
+      if (item.briefPath) deps.clearRunBlock?.(runKeyForBrief(item.briefPath));
       provisioned = await deps.launcher.provision({ packetId: item.id, ticket: item.ticket!, repo: item.repo! });
       const launched = await deps.launcher.launch({
         packetId: item.id, ticket: item.ticket!, repo: item.repo!, briefPath: item.briefPath!,

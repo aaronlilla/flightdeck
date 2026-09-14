@@ -181,6 +181,36 @@ describe('provisionWorktree', () => {
     expect(calls.some((c) => c.argv.includes('add'))).toBe(false);
   });
 
+  it('reuses its own worktree when git lists it before the last TAIL_BYTES of a long listing', async () => {
+    // Aaron, 2026-09-14: the BBZ-303 relaunch failed with "feature/bbz-303 is already used
+    // by worktree". The listing was 5174 bytes across 37 worktrees, its entry started about
+    // 920 bytes in, and the runner keeps only the last TAIL_BYTES unless asked for more.
+    const { TAIL_BYTES } = await import('../../../src/forge/exec.js');
+    const ownEntry = `worktree ${worktreePath}\nHEAD abcdef\nbranch refs/heads/${branch}\n\n`;
+    const filler = Array.from({ length: 80 }, (_, i) =>
+      `worktree /checkouts/worktrees/name--other-${i}\nHEAD 0123456789abcdef\nbranch refs/heads/feature/other-${i}\n\n`,
+    ).join('');
+    const listing = ownEntry + filler;
+    expect(listing.length).toBeGreaterThan(TAIL_BYTES + ownEntry.length);
+
+    const calls: RunRequest[] = [];
+    const chainEnv = envWith({ checkouts: [{ repo, value: checkout }] });
+    const exec = async (request: RunRequest): Promise<RunResult> => {
+      calls.push(request);
+      if (request.argv.includes('list')) {
+        return {
+          ok: true, tail: listing.slice(-TAIL_BYTES), ...(request.fullOutput ? { full: listing } : {}),
+        } as RunResult;
+      }
+      return { ok: true, tail: '' } as RunResult;
+    };
+
+    const result = await provisionWorktree({ chainEnv, repo, ticket, exec, fs: fakeFs({ markerExists: true }) });
+
+    expect(result.reused).toBe(true);
+    expect(calls.some((c) => c.argv.includes('add'))).toBe(false);
+  });
+
   it('a branch checked out elsewhere blocks with that path in the reason', async () => {
     const elsewhere = worktreePathFor(checkout, 'owner/other', ticket);
     const chainEnv = envWith({ checkouts: [{ repo, value: checkout }] });
