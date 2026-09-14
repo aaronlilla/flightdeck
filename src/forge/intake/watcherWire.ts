@@ -65,7 +65,7 @@ export interface WatcherTickDeps {
   feedFor: (ownedKeys: string[]) => FakePollFeed;
   watermarks: WatermarkStore;
   store: QueueStore;
-  journal: Journal;
+  journal: Pick<Journal, 'append'>;
   now?: () => number;
   /** Test seam only: `RunInbox` writes to disk under `runDir(run)`, which a unit test
    *  has no reason to touch. Defaults to the real inbox. */

@@ -83,6 +83,8 @@ import { slackConfigFromEnv } from './intake/slack.js';
 import { readSlackReplies } from './intake/slackReturn.js';
 import { fileWatermarkStore } from './intake/watermarkStore.js';
 import { readWatcherState, shouldAutoStartWatcher, writeWatcherState } from './sync/watcher-state.js';
+import { ThreadTicketPoller } from './sync/watcher-thread-host.js';
+import { readHoldLabels, readWatcherPollSeconds } from './intake/watcherWire.js';
 import { buildSelfLoop } from './self-wire.js';
 import { QueueTickBackoff } from './queue-backoff.js';
 import { loadPolicy, maxWallMsFor, modelFor, modelIdFor, tierOfBrief } from './policy.js';
@@ -595,6 +597,11 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
 
       const server = new ForgeServer({
         lanes, inbox, journalPath: journalPath(), journalCache: sharedJournalCache, registry,
+        // R-101: the Jira ticket poll runs on its own thread, so a new ticket reaches the
+        // queue on time even while this thread is held by a long read.
+        watcherPoller: new ThreadTicketPoller({
+          pollSeconds: readWatcherPollSeconds(), holdLabels: readHoldLabels(), journal: new Journal(journalPath()),
+        }),
         stuck: () => liveness.stuck(),
         ...(whatIsReader ? { jiraRead: (key: string) => whatIsReader.read(key) } : {}),
         // The queue's own Jira search. `queueSearch` has existed and been exported since

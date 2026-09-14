@@ -95,6 +95,7 @@ import { SyncRoutes } from './sync/routes.js';
 import { buildProductionSyncStages } from './sync/index.js';
 import { JiraWatcher, writeWatcherState } from './sync/watcher-state.js';
 import { buildJiraFeedActivity } from './sync/feed-wire.js';
+import type { TicketPoller } from './sync/watcher-thread-host.js';
 import { readHoldLabels } from './intake/watcherWire.js';
 
 /** Reads the server's own bearer token, minting one on first use. */
@@ -290,6 +291,9 @@ export interface ForgeServerOptions {
    *  and journal, reading Jira credentials fresh from the environment on every poll. A
    *  specimen overrides this with its own fake feed. */
   watcher?: JiraWatcher;
+  /** R-101: where the default watcher's ticket poll runs. `forge up` passes a
+   *  `ThreadTicketPoller`; absent (every test) polls on the server's own thread. */
+  watcherPoller?: TicketPoller;
   /** R-68: the last run per scope (`GET /sync`, `POST /sync/:scope`). Defaults to a real
    *  `SyncStore` over `syncStatePath()`, which follows `FORGE_HOME`. A specimen only. */
   syncStore?: SyncStore;
@@ -577,6 +581,7 @@ export class ForgeServer {
       store: this.queueStoreForMerge,
       journal: new Journal(this.journalPath),
       holdLabels: readHoldLabels(),
+      ...(options.watcherPoller ? { poller: options.watcherPoller } : {}),
       activity: buildJiraFeedActivity({
         jiraConfig: jiraConfigFromEnv,
         store: this.queueStoreForMerge,
