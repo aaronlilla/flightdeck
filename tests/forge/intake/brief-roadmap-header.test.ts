@@ -8,6 +8,7 @@ describe('roadmapFromBrief', () => {
   it('reads a roadmap line anywhere in the first twenty lines, any case, any spacing', () => {
     expect(roadmapFromBrief(['# Goal: x', '', 'roadmap: R-02', ''].join('\n'))).toBe('R-02');
     expect(roadmapFromBrief(['Roadmap :  R-09  ', 'body'].join('\n'))).toBe('R-09');
+    expect(roadmapFromBrief('roadmap: R-101')).toBe('R-101');
   });
 
   it('returns null without a line, and for a value that is not R-nn', () => {

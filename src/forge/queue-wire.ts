@@ -35,7 +35,7 @@ import { developDeployVerifier } from './intake/otaVerify.js';
 import { briefWithRoutines, loadRoutines } from './self/routines.js';
 import { routinesDir } from './paths.js';
 import { createJiraFeed, createJiraWriteClient, type JiraConfig } from './intake/jira.js';
-import { fetchIssueComments, fetchIssueRemoteLinks } from './intake/jira.js';
+import { fetchIssueComments, fetchIssueRemoteLinks, readTicketDetail } from './intake/jira.js';
 import { checkTicketInFlight } from './intake/inFlight.js';
 import { runQueueHandoff } from './intake/queueHandoff.js';
 import type { PollItemDetail } from './intake/poller.js';
@@ -184,14 +184,12 @@ export function queuePlanner(
       let repo = routeRepo(repoRules, { ticket, labels: [], components: [], issuetype: '' });
       let detail: PollItemDetail | undefined;
       if (config) {
-        const feed = createJiraFeed({ ...config, jql: `key = ${ticket}` });
-        const [item] = await feed.fetchSince(EMPTY_WATERMARK);
-        detail = item?.detail;
-        if (detail) {
-          repo = routeRepo(repoRules, {
-            ticket, labels: detail.labels ?? [], components: detail.components ?? [], issuetype: detail.issuetype,
-          });
-        }
+        // R-101: the issue itself, not a key search -- the index lags a ticket the feed
+        // queued seconds after it was created. Throws when unreadable, failing the item.
+        detail = await readTicketDetail(config, ticket);
+        repo = routeRepo(repoRules, {
+          ticket, labels: detail.labels ?? [], components: detail.components ?? [], issuetype: detail.issuetype,
+        });
       }
       // Does this ticket already have a pull request? Asked after routing, because only a
       // pull request in the ticket's OWN repository is a claim on it -- a URL from
