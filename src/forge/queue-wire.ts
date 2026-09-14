@@ -218,6 +218,8 @@ export function queuePlanner(
         // `backend` (this ticket is not ours to build), and the queue handles both.
         return await planTicketWithInterview(ticket, itemId, {
           reasoner,
+          // R-101: only a repo with a declared kind has an app-versus-backend split.
+          backendRouteApplies: kindOf(repo) !== undefined,
           inbox: new Inbox(inboxDir()),
           records: new InterviewStore(interviewRecordsDir()),
           packetFor: async () => packet,
