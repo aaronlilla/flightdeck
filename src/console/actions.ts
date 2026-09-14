@@ -393,7 +393,7 @@ export const ACTIONS = {
     link: () => null,
   }),
   watcherOn: spec<[], Awaited<ReturnType<typeof api.watcherOn>>>({
-    id: 'watcherOn', label: 'Watcher on', reversible: true, effect: 'sync',
+    id: 'watcherOn', label: 'Jira feed on', reversible: true, effect: 'sync',
     call: () => api.watcherOn(),
     text: (status) => `watching ${status.project ?? 'no project'}`,
     ok: () => true,
@@ -401,7 +401,7 @@ export const ACTIONS = {
     link: () => null,
   }),
   watcherOff: spec<[], Awaited<ReturnType<typeof api.watcherOff>>>({
-    id: 'watcherOff', label: 'Watcher off', reversible: true, effect: 'sync',
+    id: 'watcherOff', label: 'Jira feed off', reversible: true, effect: 'sync',
     call: () => api.watcherOff(),
     text: () => 'watcher off',
     ok: () => true,

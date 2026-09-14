@@ -25,12 +25,12 @@ describe('WatcherStatus', () => {
 
   it('renders the off line', () => {
     render(<WatcherStatus status={status({ on: false })} onToggle={vi.fn()} />);
-    expect(screen.getByTestId('watcher-line').textContent).toBe('Watcher off');
+    expect(screen.getByTestId('watcher-line').textContent).toBe('Jira feed off');
   });
 
   it('renders the error line', () => {
     render(<WatcherStatus status={status({ lastError: 'Jira: 401 Unauthorized' })} onToggle={vi.fn()} />);
-    expect(screen.getByTestId('watcher-line').textContent).toBe('Watcher error: Jira: 401 Unauthorized');
+    expect(screen.getByTestId('watcher-line').textContent).toBe('Jira feed error: Jira: 401 Unauthorized');
   });
 
   it('counts the countdown down across a fake-timer tick', () => {

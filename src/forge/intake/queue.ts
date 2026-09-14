@@ -182,8 +182,10 @@ export interface QueuePlanner {
   planHotfix?(text: string): Promise<QueuePlannedBrief>;
 }
 
-export function addTicketItem(store: QueueStore, ticket: string, now: number = Date.now()): QueueItem {
-  const item = blankItem(newItemId(), 'ticket', ticket, ticket, now);
+export function addTicketItem(
+  store: QueueStore, ticket: string, now: number = Date.now(), options?: { noMerge?: boolean },
+): QueueItem {
+  const item = { ...blankItem(newItemId(), 'ticket', ticket, ticket, now), ...(options?.noMerge ? { noMerge: true } : {}) };
   store.append({ ...item, at: now });
   return item;
 }
@@ -979,7 +981,9 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
   // a human running `forge gate --merge`. Every other repo, including the controlled-code
   // management system, gets `merge: false` here exactly as before: unset `mergeAllowed`
   // reads as false, and so does a `mergeAllowed` that simply doesn't name this repo.
-  const merge = deps.mergeAllowed?.(item.repo!) ?? false;
+  // R-101: a held item (a hold label on its ticket) stops at its pull request whatever
+  // the allow-list says.
+  const merge = !item.noMerge && (deps.mergeAllowed?.(item.repo!) ?? false);
   const gateResult = await deps.gate({ repo: item.repo!, pr: pr.number, merge });
 
   // A.2: the council's own notes land on the PR before the item shows as `review`, so a
@@ -1005,7 +1009,7 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
   // `if (repo === ...)`, so which repos are backend stays this environment's own
   // `repoKindFor` wiring, never a name baked into this file (agnostic check).
   let handoffAt = item.handoffAt;
-  if (deps.jiraHandoff && !handoffAt && item.ticket) {
+  if (deps.jiraHandoff && !handoffAt && item.ticket && !item.noMerge) {
     try {
       await deps.jiraHandoff({ item, pr: { no: pr.number, url: pr.url } });
       handoffAt = deps.clock();

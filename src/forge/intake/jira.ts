@@ -67,7 +67,7 @@ interface JiraSearchIssue {
   fields: {
     summary?: string;
     description?: unknown;
-    status?: { name?: string };
+    status?: { name?: string; statusCategory?: { key?: string } };
     updated?: string;
     issuetype?: { name?: string };
     priority?: { name?: string };
@@ -89,6 +89,9 @@ function detailFor(issue: JiraSearchIssue): PollItemDetail {
     summary: issue.fields.summary ?? '',
     description,
     status: issue.fields.status?.name ?? '',
+    // R-101: the `status` field already carries its category. Without this the watcher's
+    // "a Done move closes the lane" never fired against the real feed, only in fixtures.
+    ...(issue.fields.status?.statusCategory?.key ? { statusCategory: issue.fields.status.statusCategory.key } : {}),
     issuetype: issue.fields.issuetype?.name ?? '',
     priority: issue.fields.priority?.name ?? '',
     // R1: what the repository router matches labels and components against.

@@ -27,19 +27,19 @@ describe('watcherLine', () => {
   });
 
   it('renders off', () => {
-    expect(watcherLine(watcher({ on: false }), Date.now())).toBe('Watcher off');
+    expect(watcherLine(watcher({ on: false }), Date.now())).toBe('Jira feed off');
   });
 
   it('renders off for a second fixture the same way (off ignores project/count)', () => {
-    expect(watcherLine(watcher({ on: false, project: 'FLT', lastCount: 99 }), Date.now())).toBe('Watcher off');
+    expect(watcherLine(watcher({ on: false, project: 'FLT', lastCount: 99 }), Date.now())).toBe('Jira feed off');
   });
 
   it('renders the error line with the last error text', () => {
-    expect(watcherLine(watcher({ lastError: 'Jira: 401 Unauthorized' }), Date.now())).toBe('Watcher error: Jira: 401 Unauthorized');
+    expect(watcherLine(watcher({ lastError: 'Jira: 401 Unauthorized' }), Date.now())).toBe('Jira feed error: Jira: 401 Unauthorized');
   });
 
   it('renders a different error line for a second fixture', () => {
-    expect(watcherLine(watcher({ lastError: 'timed out after 10s' }), Date.now())).toBe('Watcher error: timed out after 10s');
+    expect(watcherLine(watcher({ lastError: 'timed out after 10s' }), Date.now())).toBe('Jira feed error: timed out after 10s');
   });
 });
 

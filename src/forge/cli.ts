@@ -964,6 +964,8 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
           before: readSlack,
         });
         server.queueLoop = () => queueRunner.status();
+        // R-101: a ticket the Jira feed just queued is planned on this tick, not the next.
+        server.watcher.onTicketsAdded(() => queueRunner.tick());
         const queueTick = setInterval(queueRunner.tick, pollSeconds * 1000);
         queueTick.unref();
         queueLine = `queue on, polling every ${pollSeconds}s`;

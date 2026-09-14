@@ -26,7 +26,7 @@ export function WatcherStatus({ status, onToggle }: WatcherStatusProps): JSX.Ele
         onClick={() => onToggle(!status.on)}
         style={{ font: 'inherit', color: 'inherit', background: 'none', border: '1px solid var(--line)', padding: '1px 6px', cursor: 'pointer' }}
       >
-        {status.on ? 'Watcher off' : 'Watcher on'}
+        {status.on ? 'Jira feed off' : 'Jira feed on'}
       </button>
     </span>
   );

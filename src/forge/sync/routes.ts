@@ -139,7 +139,9 @@ export class SyncRoutes {
         respond(response, 400, { error: 'a project is required: pass { project } or set FORGE_BACKLOG_PROJECT' });
         return true;
       }
-      await this.opts.watcher.start(project);
+      // R-101: turning the feed on from off starts its comment handling from now; a
+      // second "on" while it already runs keeps the ledger it has.
+      await this.opts.watcher.start(project, { fresh: !this.opts.watcher.status().on });
       this.opts.writeWatcherState?.({ on: true, project });
       respond(response, 200, this.opts.watcher.status());
       return true;

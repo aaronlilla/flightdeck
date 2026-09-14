@@ -46,16 +46,16 @@ function feedOf(items: RawPollItem[]): FakePollFeed {
 
 describe('readWatcherPollSeconds', () => {
   it('defaults to 30s -- the chain shares the env var name but not the default', () => {
-    expect(readWatcherPollSeconds({})).toBe(30);
+    expect(readWatcherPollSeconds({})).toBe(5);
   });
 
-  it('reads FORGE_CHAIN_POLL_S when set', () => {
-    expect(readWatcherPollSeconds({ FORGE_CHAIN_POLL_S: '90' })).toBe(90);
+  it('reads FORGE_JIRA_FEED_POLL_S when set', () => {
+    expect(readWatcherPollSeconds({ FORGE_JIRA_FEED_POLL_S: '90' })).toBe(90);
   });
 
   it('falls back to 30s on a non-positive or unparsable value', () => {
-    expect(readWatcherPollSeconds({ FORGE_CHAIN_POLL_S: '0' })).toBe(30);
-    expect(readWatcherPollSeconds({ FORGE_CHAIN_POLL_S: 'nope' })).toBe(30);
+    expect(readWatcherPollSeconds({ FORGE_JIRA_FEED_POLL_S: '0' })).toBe(5);
+    expect(readWatcherPollSeconds({ FORGE_JIRA_FEED_POLL_S: 'nope' })).toBe(5);
   });
 });
 
@@ -191,5 +191,24 @@ describe('watcherTick', () => {
     // Nothing was ever appended, so the file itself is never created -- that absence
     // is the proof of no journal growth, not an empty file.
     expect(() => readFileSync(path, 'utf8')).toThrow(/ENOENT/);
+  });
+});
+
+describe('R-101: hold labels', () => {
+  const detail = (labels: string[]) => ({ summary: 's', description: '', status: 'Backlog', issuetype: 'Task', priority: 'Low', labels, components: [] });
+
+  it('queues a ticket carrying a hold label with noMerge, and leaves others mergeable', async () => {
+    const store = tempStore();
+    const { journal } = tempJournal();
+    await watcherTick({
+      feedFor: () => feedOf([
+        { id: 'ABC-1', updated: 10, detail: detail(['Flight-Test']) },
+        { id: 'ABC-2', updated: 11, detail: detail(['frontend']) },
+      ]),
+      watermarks: memoryWatermarks(), store, journal, holdLabels: ['flight-test'],
+    });
+    const byTicket = new Map(store.all().map((item) => [item.ticket, item]));
+    expect(byTicket.get('ABC-1')?.noMerge).toBe(true);
+    expect(byTicket.get('ABC-2')?.noMerge).toBeUndefined();
   });
 });

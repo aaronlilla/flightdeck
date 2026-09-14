@@ -555,6 +555,31 @@ describe('advanceItem', () => {
     expect(result.mergedBy).toBeUndefined();
   });
 
+  it('R-101: a held item stops at review on an allow-listed repo, with no QA handoff', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000, { noMerge: true });
+    let gateInput: { repo: string; pr: number; merge: boolean } | undefined;
+    let handoffCalls = 0;
+    const { deps } = buildDeps(store, {
+      launcher: {
+        status: async () => ({ finished: true, verdict: 'done', prUrl: 'https://github.com/owner/name/pull/9' }),
+      },
+      gate: async (input) => { gateInput = input; return { merged: false }; },
+      mergeAllowed: (repo) => repo === 'owner/name',
+    });
+    deps.jiraHandoff = async () => { handoffCalls += 1; };
+
+    let current = item;
+    current = await advanceItem(current, deps); // plan
+    current = await advanceItem(current, deps); // launch
+    const result = await advanceItem(current, deps); // gate
+
+    expect(item.noMerge).toBe(true);
+    expect(gateInput?.merge).toBe(false);
+    expect(result.state).toBe('review');
+    expect(handoffCalls).toBe(0);
+  });
+
   it('parks an item whose repo does not route, without touching the launcher', async () => {
     const store = tempStore();
     const item = addTicketItem(store, 'ZZZ-1', 1000);

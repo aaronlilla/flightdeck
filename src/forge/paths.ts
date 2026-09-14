@@ -116,6 +116,11 @@ export function watcherStatePath(): string {
   return join(consoleDir(), 'watcher.json');
 }
 
+/** R-101: which Jira comments the feed has already handled, and when it started. */
+export function jiraFeedLedgerPath(): string {
+  return join(consoleDir(), 'jira-feed.json');
+}
+
 /** The queue's own width setting: `{ maxInFlight: N }` or absent. Separate from
  *  `queuePausedPath()`: pausing stops every start, this only caps how many run at once.
  *  Read fresh on every tick and every `GET /queue`, never cached, so `POST /queue/width`

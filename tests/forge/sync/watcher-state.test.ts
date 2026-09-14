@@ -123,3 +123,70 @@ describe('JiraWatcher', () => {
     watcher.stop();
   });
 });
+
+describe('JiraWatcher and the Jira feed (R-101)', () => {
+  let store: QueueStore;
+  let journal: Journal;
+
+  beforeEach(() => {
+    store = new QueueStore(tempPath('queue.jsonl'));
+    journal = new Journal(tempPath('journal.jsonl'));
+  });
+
+  function config(issues: unknown[] = []) {
+    return () => ({ site: 's', email: 'e', token: 't', fetchFn: (async () => new Response(JSON.stringify({ issues, isLast: true }), { status: 200 })) as typeof fetch });
+  }
+
+  const empty = { considered: 0, replied: [], deferred: [], sent: [], ignored: [], failed: [], answered: [] };
+
+  it('runs the feed after each poll, resets it only on a fresh start, and never overlaps two passes', async () => {
+    let release: () => void = () => undefined;
+    const run = vi.fn(() => new Promise<typeof empty>((resolve) => { release = () => resolve(empty); }));
+    const reset = vi.fn();
+    const watcher = new JiraWatcher({ jiraConfig: config(), watermarks: memoryWatermarks(), store, journal, pollSeconds: 5, activity: { run, reset } });
+
+    await watcher.start('ABC');
+    expect(reset).not.toHaveBeenCalled();
+    expect(run).toHaveBeenCalledTimes(1);
+
+    await watcher.start('ABC');
+    expect(run).toHaveBeenCalledTimes(1);
+    release();
+    await watcher.settled();
+
+    await watcher.start('ABC', { fresh: true });
+    expect(reset).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledTimes(2);
+    release();
+    await watcher.settled();
+    watcher.stop();
+  });
+
+  it('shows a feed failure on the status line', async () => {
+    const run = vi.fn(async () => { throw new Error('Jira 401'); });
+    const watcher = new JiraWatcher({ jiraConfig: config(), watermarks: memoryWatermarks(), store, journal, pollSeconds: 5, activity: { run, reset: vi.fn() } });
+    await watcher.start('ABC');
+    await watcher.settled();
+    expect(watcher.status().lastError).toBe('Jira 401');
+    watcher.stop();
+  });
+
+  it('nudges the queue when a poll queues a ticket, and not when it queues none', async () => {
+    const nudge = vi.fn();
+    const quiet = new JiraWatcher({ jiraConfig: config(), watermarks: memoryWatermarks(), store, journal, pollSeconds: 5 });
+    quiet.onTicketsAdded(nudge);
+    await quiet.start('ABC');
+    quiet.stop();
+    expect(nudge).not.toHaveBeenCalled();
+
+    const busy = new JiraWatcher({
+      jiraConfig: config([{ key: 'ABC-7', fields: { summary: 's', status: { name: 'Backlog' }, updated: '2026-09-14T10:00:00.000+0000' } }]),
+      watermarks: memoryWatermarks(), store, journal, pollSeconds: 5,
+    });
+    busy.onTicketsAdded(nudge);
+    await busy.start('ABC');
+    busy.stop();
+    expect(nudge).toHaveBeenCalledTimes(1);
+    expect(store.all().map((item) => item.ticket)).toEqual(['ABC-7']);
+  });
+});
