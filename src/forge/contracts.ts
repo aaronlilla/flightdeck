@@ -303,6 +303,9 @@ export const FORGE_EVENT_NAMES = [
   // `watcher.poll` once per poll that added, sent, or closed at least one item, and
   // `watcher.tick-error` for a tick that threw before any of those.
   'watcher.poll', 'watcher.tick-error',
+  // R-101: the Jira feed (`intake/jiraFeed.ts`, `sync/feed-wire.ts`).
+  'feed.replied', 'feed.deferred', 'feed.sent', 'feed.ignored', 'feed.failed', 'feed.left',
+  'feed.answer-posted', 'feed.answer-failed', 'feed.started', 'feed.tick-error',
   // 2026-09-08: the pre-gate rebase commits whatever a worker left uncommitted in its
   // worktree before replaying onto the base, rather than parking on "You have unstaged
   // changes" for a person to clean up by hand -- one row per item this happened to,
