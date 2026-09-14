@@ -101,6 +101,65 @@ export const WORKER_TOOLS: readonly string[] = FORGE_TOOL_NAMES;
 const FORGE_DONE_TOOL = 'mcp__forge__forge_done';
 const FORGE_HANDOFF_TOOL = 'mcp__forge__forge_handoff';
 
+/**
+ * The git subcommands that save work already done, or read the state needed to save it.
+ * Nothing here can discard a change: `reset`, `checkout`, `clean`, `restore` and `stash`
+ * are absent on purpose, because a run being shut down is exactly when a destructive git
+ * call does the most damage.
+ */
+const WORK_PRESERVING_GIT = new Set([
+  'add', 'commit', 'push', 'status', 'diff', 'rev-parse', 'log', 'symbolic-ref',
+]);
+
+/**
+ * Any character that could start a second program. `&&` is removed before this runs, so
+ * a lone `&` here is a background operator and refuses the line.
+ */
+const SHELL_ESCAPE = /[;|`&<>\n\r]|\$\(/;
+
+/**
+ * The calls a run may make even once it is parked, past its context ceiling, or stopped
+ * by the kill switch: the ones that save work already done.
+ *
+ * Why this exists. Between 2026-09-06 and 2026-09-14 the journal recorded 65 denials of
+ * `mcp__forge__forge_handoff` with the reason `context ceiling reached`, issued by a gate
+ * whose own deny text reads "write the handoff packet instead of another tool call". The
+ * gate refused the one call it was asking for, and refused Bash 146 times alongside it,
+ * so a session holding edits could not commit them either. On disk: 17 of the 21 React
+ * Native worktrees the queue had created held no commits, while the board reported each
+ * of them as "It stopped after the work, on the way to a pull request".
+ *
+ * So a ceiling now ends the work, never the record of it. The run still cannot do
+ * anything else -- the gates below deny every other call exactly as before.
+ *
+ * `forge_done` is deliberately excluded. Handoff records where the work got to; done
+ * asserts it is finished, and a run that ran out of context has not finished.
+ *
+ * Bash is allowed only when the whole command line is work-preserving git and nothing
+ * else. The parse is strict rather than clever, and fails closed: the line splits on
+ * `&&` alone, every segment must start with an allowed `git` subcommand, and a single
+ * character that could reach another program refuses the entire line. `git commit -m x
+ * && npm run deploy` is refused, not trimmed.
+ */
+export function isWorkPreserving(toolName: string, input: Record<string, unknown>): boolean {
+  if (toolName === FORGE_HANDOFF_TOOL) return true;
+  if (toolName !== 'Bash') return false;
+  const raw = input['command'];
+  if (typeof raw !== 'string' || !raw.trim()) return false;
+  if (SHELL_ESCAPE.test(raw.split('&&').join(' '))) return false;
+  const segments = raw.split('&&').map((s) => s.trim()).filter(Boolean);
+  if (!segments.length) return false;
+  return segments.every((segment) => {
+    const parts = segment.split(/\s+/).filter(Boolean);
+    if (parts[0] !== 'git') return false;
+    // `git -C <path> commit ...` is the shape a worker inside a worktree actually uses,
+    // and `-c key=value` rides along on a commit that sets an identity.
+    let i = 1;
+    while (parts[i] === '-C' || parts[i] === '-c') i += 2;
+    return WORK_PRESERVING_GIT.has(parts[i] ?? '');
+  });
+}
+
 export function buildWorkerOptions(
   request: WorkerRequest,
   existsConfigDir?: (path: string) => boolean,
@@ -393,8 +452,18 @@ export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
     : undefined;
   return async (call: { toolName: string; input: Record<string, unknown>; toolUseId: string }):
     Promise<PreToolVerdict> => {
+    // Computed once, checked by all four shutdown gates below. A run being closed down
+    // may always save what it has; see `isWorkPreserving`. The rules library further
+    // down still runs on the call, so a push at a protected branch is refused there the
+    // same as ever -- this allowance opens the shutdown gates, not the guard rails.
+    const preserving = isWorkPreserving(call.toolName, call.input);
+    if (preserving) {
+      deps.journal.append({
+        event: 'run.work-preserved', run: deps.run, actor: 'runner', tool: call.toolName,
+      });
+    }
     const parkRecord = readParkRecord(deps.run);
-    if (parkRecord) {
+    if (parkRecord && !preserving) {
       deps.journal.append({
         event: 'permission.denied', run: deps.run, actor: 'runner', tool: call.toolName,
         reason: `parked by warden: ${parkRecord.key}`,
@@ -405,7 +474,7 @@ export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
       };
     }
     const key = deps.parked.get(deps.run);
-    if (key) {
+    if (key && !preserving) {
       const entry = deps.inbox.entry(key);
       if (entry?.answer !== undefined) {
         deps.parked.delete(deps.run);
@@ -442,7 +511,7 @@ export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
           + 'no console here to receive its notifications. Poll with a plain Bash command instead.',
       };
     }
-    if (deps.killSwitchHit?.()) {
+    if (deps.killSwitchHit?.() && !preserving) {
       deps.journal.append({
         event: 'permission.denied', run: deps.run, actor: 'runner', tool: call.toolName,
         reason: 'the fleet kill switch is engaged',
@@ -453,7 +522,7 @@ export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
         additionalContext: STOP_HANDOFF_REQUEST,
       };
     }
-    if (deps.ceilingHit?.()) {
+    if (deps.ceilingHit?.() && !preserving) {
       deps.journal.append({
         event: 'permission.denied', run: deps.run, actor: 'runner', tool: call.toolName,
         reason: 'context ceiling reached',

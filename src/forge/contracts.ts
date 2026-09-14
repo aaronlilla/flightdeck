@@ -166,6 +166,10 @@ export const FORGE_EVENT_NAMES = [
   'run.blocked', 'run.finished', 'run.handoff', 'run.parked', 'run.paused', 'run.refused', 'run.resumed',
   'run.started', 'run.verify-failed', 'subagent.usage', 'tool.end', 'tool.start', 'turn.end',
   'warden.parked',
+  // A call a shutdown gate let through because it saves work already done -- a handoff
+  // packet, or work-preserving git. Journaled so the allowance is auditable rather than
+  // silent: see `isWorkPreserving` in sdkengine.ts for what qualifies and why.
+  'run.work-preserved',
   // The spec's additions (the "Contracts" paragraph of the 2026-09-04 13:45 refined
   // build-out plan) that nothing writes yet. `policy.unknown-model` is B.3.9's own,
   // named in the brief but not yet emitted: `journal.ts` tracks unpriced models in
