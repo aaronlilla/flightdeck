@@ -306,3 +306,102 @@ describe('planRounds: an item with no run on the board stops relaunching at the 
     expect(f!.why).toContain('no run on the board');
   });
 });
+
+/**
+ * 2026-09-14: 59 parked items churned. Terminal facts sat in free-text park reasons --
+ * "already has a merged/open PR", a worktree collision -- and either went to the judge
+ * every tick (the same nine tickets, re-handled every round) or fell through to an
+ * UNCAPPED retry (BBZ-202's collision relaunched every ten minutes for hours). A
+ * terminal fact gets a mechanical fold; an unclassified park gets a capped retry.
+ */
+describe('planRounds: park reasons that are terminal facts, not launch weather', () => {
+  const plan = (overrides: Partial<QueueItem>, prior = 0) => planRounds({
+    now: NOW,
+    items: [item({ id: 'Q-r', ticket: 'BBZ-500', state: 'parked', updatedAt: NOW - 30 * MIN, ...overrides })],
+    lanes: [], blockers: [],
+    priorRelaunches: () => prior,
+  }).findings.find((f) => f.itemId === 'Q-r');
+
+  it('folds a row whose worker found a merged PR: the work landed, remove it', () => {
+    const f = plan({ reason: 'BBZ-500 already has a merged pull request: https://github.com/o/r/pull/96 (found in a Jira comment)' });
+    expect(f).toMatchObject({ kind: 'done-still-open', action: 'remove' });
+    expect(f!.why).toContain('#96');
+  });
+
+  it('moves a row whose worker found an open PR to review, carrying the PR', () => {
+    const f = plan({ reason: 'BBZ-500 already has an open pull request: https://github.com/o/r/pull/71 (found in a Jira comment)' });
+    expect(f).toMatchObject({ kind: 'already-has-pr', action: 'review' });
+    expect(f!.reviewPr).toEqual({ no: 71, url: 'https://github.com/o/r/pull/71', repo: 'o/r' });
+  });
+
+  it('keeps a handoff to a person with the judge, and carries the handoff text as the ask', () => {
+    const f = plan({ reason: 'backend: Finish wiring the backend Sentry SDK from the feature/observability worktree' });
+    expect(f).toMatchObject({ kind: 'unblocked', action: 'judge' });
+    expect(f!.ask!.text).toContain('Sentry SDK');
+  });
+
+  it('hands a worktree collision to the judge: a relaunch collides again', () => {
+    const f = plan({ state: 'failed', reason: "fatal: 'feature/acme-9' is already used by worktree at '/repos/worktrees/frontend--acme-9'" });
+    expect(f).toMatchObject({ kind: 'unblocked', action: 'judge' });
+    expect(f!.why).toContain('worktree');
+  });
+
+  it('still restarts an unclassified park below the cap', () => {
+    expect(plan({ reason: 'fetch failed' }, DEFAULT_ROUNDS_PARAMS.maxRelaunches - 1))
+      .toMatchObject({ kind: 'unblocked', action: 'retry' });
+  });
+
+  it('stops restarting an unclassified park at the cap and hands it to the judge', () => {
+    const f = plan({ reason: 'fetch failed' }, DEFAULT_ROUNDS_PARAMS.maxRelaunches);
+    expect(f).toMatchObject({ kind: 'unblocked', action: 'judge' });
+    expect(f!.why).toContain(String(DEFAULT_ROUNDS_PARAMS.maxRelaunches));
+  });
+
+  it('never blind-restarts a park the queue\'s own recovery already gave up on', () => {
+    const f = plan({ reason: 'parked', recoveryAttempts: 3 });
+    expect(f).toMatchObject({ kind: 'unblocked', action: 'judge' });
+    expect(f!.why).toContain('recovery');
+  });
+
+  it('prints the new kind on the sheet', () => {
+    const sheet = planRounds({
+      now: NOW,
+      items: [item({ id: 'Q-r', ticket: 'BBZ-500', state: 'parked', updatedAt: NOW - 30 * MIN, reason: 'BBZ-500 already has an open pull request: https://github.com/o/r/pull/71' })],
+      lanes: [], blockers: [],
+    });
+    expect(formatRoundsSheet(sheet).join('\n')).toContain('PR already exists');
+  });
+});
+
+describe('applyRounds: review moves and countable restarts', () => {
+  let dir: string;
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'rounds-')); });
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+
+  const deps = (store: QueueStore) => ({
+    store, journal: () => undefined, now: () => NOW,
+    retire: () => ({ ok: true, message: 'retired' }),
+  });
+
+  it('lands an open-PR row in review with the PR set and a missing repo backfilled', () => {
+    const store = new QueueStore(join(dir, 'queue.jsonl'));
+    store.append({ ...item({ id: 'Q-pr', ticket: 'BBZ-500', state: 'parked', repo: null, reason: 'BBZ-500 already has an open pull request: https://github.com/o/r/pull/71' }), at: NOW - MIN });
+    const sheet = planRounds({ now: NOW, items: store.all(), lanes: [], blockers: [] });
+    const receipts = applyRounds(sheet, deps(store));
+    expect(receipts.filter((r) => r.applied)).toHaveLength(1);
+    expect(store.get('Q-pr')).toMatchObject({
+      state: 'review', reason: null, repo: 'o/r',
+      pr: { no: 71, url: 'https://github.com/o/r/pull/71', draft: false },
+    });
+  });
+
+  it('writes a countable rounds: row on every restart, so the cap can ever trip', () => {
+    const store = new QueueStore(join(dir, 'queue.jsonl'));
+    store.append({ ...item({ id: 'Q-loop', ticket: 'BBZ-501', state: 'parked', reason: 'fetch failed', updatedAt: NOW - 30 * MIN }), at: NOW - MIN });
+    const sheet = planRounds({ now: NOW, items: store.all(), lanes: [], blockers: [] });
+    applyRounds(sheet, deps(store));
+    const roundsRows = store.history('Q-loop').filter((r) => typeof r.reason === 'string' && r.reason.startsWith('rounds:'));
+    expect(roundsRows).toHaveLength(1);
+    expect(store.get('Q-loop')).toMatchObject({ state: 'queued' });
+  });
+});

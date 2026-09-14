@@ -63,6 +63,12 @@ export function parkRecoverability(reason: string | null | undefined): ParkRecov
   if (/^overlaps /i.test(text)) {
     return { recoverable: false, why: 'another item holds the same files', personsCall: true };
   }
+  // 2026-09-14: BBZ-202's launch died on this for hours, ten minutes at a time. The
+  // colliding tree can hold unpushed commits (BBZ-202's did), so whether it is adopted
+  // or cleared is a person's call -- a relaunch only collides with it again.
+  if (/is already used by worktree at/i.test(text)) {
+    return { recoverable: false, why: 'its branch is checked out in an existing worktree; adopt or clear that tree first', personsCall: true };
+  }
   if (/checks (never settled|are pending)/i.test(text)) return { recoverable: true, reRead: 'checks' };
   // Every run verdict `relaunchOnRetryOrPark` passes through (`stopped`, `exhausted`,
   // `parked`, `unknown`) plus the launcher's own stale-liveness refusal: all of them are

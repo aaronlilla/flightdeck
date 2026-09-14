@@ -20,6 +20,7 @@
  */
 import type { Blocker, Lane, QueueItem } from '../shared/console-model.js';
 import { isWaitingOnInterview, parkRecoverability, removeItem, retryItem } from './intake/queue.js';
+import { recoveryIsSpent } from '../shared/parkRecoverability.js';
 import type { QueueStore } from './intake/queueStore.js';
 
 export type RoundsKind =
@@ -27,11 +28,12 @@ export type RoundsKind =
   | 'dead-worker'
   | 'stuck-after-finish'
   | 'unblocked'
+  | 'already-has-pr'
   | 'ask'
   | 'orphan-lane'
   | 'zombie-lane';
 
-export type RoundsAction = 'remove' | 'relaunch' | 'retry' | 'retire' | 'judge';
+export type RoundsAction = 'remove' | 'relaunch' | 'retry' | 'review' | 'retire' | 'judge';
 
 export interface RoundsFinding {
   kind: RoundsKind;
@@ -48,6 +50,9 @@ export interface RoundsFinding {
    *  thinks the answer is when the question reads as "I am done, may I stop". A
    *  suggestion is never applied by `applyRounds`. */
   ask?: { key: string | null; text: string; looksDone: boolean; suggested: string | null };
+  /** For `review`: the PR the park reason named, parsed so `applyRounds` can land the
+   *  row in `review` with the PR carried -- the merged-sweep takes over from there. */
+  reviewPr?: { no: number; url: string; repo: string | null };
 }
 
 export interface RoundsParams {
@@ -101,6 +106,17 @@ const TRANSIENT_REASONS: Array<{ re: RegExp; words: string }> = [
 
 /** A ticket key inside a question, for labelling an ask whose lane is gone. */
 const TICKET_IN_TEXT = /\b[A-Z][A-Z0-9]+-\d+\b/;
+
+/**
+ * 2026-09-14: park reasons that carry a terminal fact the sheet can act on mechanically.
+ * A worker that found the ticket's PR already merged, or already open, wrote the URL into
+ * its park reason -- and `parkRecoverability` could only refuse the retry, so the same
+ * nine rows went to the judge every tick and were re-handled every round. Merged folds
+ * the row off the queue (the same `remove` a merged `item.pr` gets); open moves it to
+ * `review` with the PR carried, where the merged-sweep already knows what to do.
+ */
+const MERGED_PR_REASON = /already has an? merged pull request:?\s*(https:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/pull\/(\d+))/i;
+const OPEN_PR_REASON = /already has an? open pull request:?\s*(https:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/pull\/(\d+))/i;
 
 /** Questions that are really a completion report with a question mark on the end. */
 const LOOKS_DONE = /already (merged|implemented|done|on develop|landed)|zero diff|nothing (left )?to ship|fully implemented|no code change|no (further |more )?work (is )?(needed|required|remain)/i;
@@ -289,6 +305,27 @@ export function planRounds(input: RoundsInput): RoundsSheet {
       // an unrouted ticket, a backend hand-off -- and re-ran the conflict. The two passes
       // now share one rule: `parkRecoverability` decides, and what it refuses goes to a
       // person instead of being retried.
+      // 2026-09-14: a PR named in the park reason is a terminal fact with a mechanical
+      // answer, not a judgement -- and sending it to the judge every tick is how the
+      // same nine tickets got re-handled every round. Checked before the recoverability
+      // table so neither its refusal nor a retry ever sees these again.
+      const mergedPr = MERGED_PR_REASON.exec(item.reason ?? '');
+      if (mergedPr) {
+        findings.push({
+          kind: 'done-still-open', action: 'remove', itemId: item.id, laneId: lane?.id ?? null, label,
+          why: `its work already landed as merged PR #${mergedPr[3]} (${mergedPr[1]}); a restart only rediscovers it`,
+        });
+        continue;
+      }
+      const openPr = OPEN_PR_REASON.exec(item.reason ?? '');
+      if (openPr) {
+        findings.push({
+          kind: 'already-has-pr', action: 'review', itemId: item.id, laneId: lane?.id ?? null, label,
+          why: `PR #${openPr[3]} for it is already open (${openPr[1]}); review is where an open PR waits, not parked`,
+          reviewPr: { no: Number(openPr[3]), url: openPr[1]!, repo: openPr[2] ?? null },
+        });
+        continue;
+      }
       const transientReason = TRANSIENT_REASONS.find((t) => t.re.test(item.reason ?? ''));
       const recoverable = parkRecoverability(item.reason);
       // A launch collision with itself (a dirty tree, two ticks planning at once, checks
@@ -307,6 +344,10 @@ export function planRounds(input: RoundsInput): RoundsSheet {
         findings.push({
           kind: 'unblocked', action: 'judge', itemId: item.id, laneId: lane?.id ?? null, label,
           why: `parked on "${item.reason ?? 'no reason'}": ${recoverable.why}`,
+          // The reason IS the content a judge needs -- a backend hand-off's ask, a
+          // conflict's file list. Carried so `judgeMessage` shows the words, not only
+          // the classification.
+          ask: { key: null, text: item.reason ?? '', looksDone: LOOKS_DONE.test(item.reason ?? ''), suggested: null },
         });
         continue;
       }
@@ -315,6 +356,22 @@ export function planRounds(input: RoundsInput): RoundsSheet {
       if (resolved.length) why = `parked behind "${resolved[0]!.title}", which has since cleared`;
       else if (transient) why = `parked because ${transient.words}; nothing else is holding it`;
       else why = `parked ${minutes(now - item.updatedAt)} ago with no blocker on the board and no open question`;
+      // 2026-09-14: this retry had no cap, unlike its dead-worker sibling -- BBZ-202's
+      // worktree collision relaunched every ten minutes for hours. Two brakes: the
+      // queue's own recovery verdict (it tried, capped, and gave up -- a rounds retry
+      // would only prove its cap again), and rounds' own restart count, written as
+      // `rounds:` park rows by `applyRounds` so `priorRelaunches` can see them.
+      const prior = input.priorRelaunches?.(item.id) ?? 0;
+      const recoverySpent = recoveryIsSpent(item.recoveryAttempts);
+      if (recoverySpent || prior >= params.maxRelaunches) {
+        findings.push({
+          kind: 'unblocked', action: 'judge', itemId: item.id, laneId: lane?.id ?? null, label,
+          why: recoverySpent
+            ? `${why}; the queue's own recovery already gave up on it after ${item.recoveryAttempts} attempts, so another restart proves nothing`
+            : `${why}; rounds already restarted it ${prior} time${prior === 1 ? '' : 's'} and it parked again each time, so a restart is not the cure`,
+        });
+        continue;
+      }
       findings.push({ kind: 'unblocked', action: 'retry', itemId: item.id, laneId: lane?.id ?? null, label, why });
       continue;
     }
@@ -398,6 +455,23 @@ export function relaunchItem(store: QueueStore, id: string, reason: string, now:
   return retryItem(store, id, now);
 }
 
+/** Lands a parked/failed row in `review` with the PR its park reason named, and the
+ *  repository backfilled from the PR URL when routing never set one -- the merged-sweep
+ *  (`intake/queue.ts`) reads `review` rows with a `pr` and a `repo` and folds them the
+ *  moment the PR merges, so this is the whole remaining lifecycle. */
+export function moveItemToReview(
+  store: QueueStore, id: string, pr: { no: number; url: string; repo: string | null }, now: number,
+): boolean {
+  const item = store.get(id);
+  if (!item || (item.state !== 'parked' && item.state !== 'failed')) return false;
+  store.append({
+    id, at: now, state: 'review', reason: null, updatedAt: now,
+    pr: { no: pr.no, url: pr.url, draft: false },
+    ...(item.repo === null && pr.repo !== null ? { repo: pr.repo } : {}),
+  });
+  return true;
+}
+
 export function applyRounds(sheet: RoundsSheet, deps: ApplyRoundsDeps): RoundsReceipt[] {
   const now = (deps.now ?? Date.now)();
   const receipts: RoundsReceipt[] = [];
@@ -410,9 +484,21 @@ export function applyRounds(sheet: RoundsSheet, deps: ApplyRoundsDeps): RoundsRe
         text = applied ? `Cleared ${finding.label}: ${finding.why}.` : `Could not clear ${finding.label}: the row is gone already.`;
         break;
       case 'retry':
-        applied = finding.itemId !== null && retryItem(deps.store, finding.itemId, now) !== undefined;
+        // Through `relaunchItem`, not bare `retryItem`: the park row it writes first
+        // carries a `rounds:` reason, which is the only thing `priorRelaunches` counts.
+        // A restart that leaves no countable trace is how the cap never tripped.
+        applied = finding.itemId !== null
+          && relaunchItem(deps.store, finding.itemId, `rounds: retry: ${finding.why.slice(0, 140)}`, now) !== undefined;
         text = applied ? `Restarted ${finding.label}: ${finding.why}.` : `Could not restart ${finding.label}: it is no longer parked.`;
         break;
+      case 'review': {
+        applied = finding.itemId !== null && finding.reviewPr !== undefined
+          && moveItemToReview(deps.store, finding.itemId, finding.reviewPr, now);
+        text = applied
+          ? `Moved ${finding.label} to review: ${finding.why}.`
+          : `Could not move ${finding.label} to review: the row is gone or carries no PR.`;
+        break;
+      }
       case 'relaunch':
         applied = finding.itemId !== null && relaunchItem(deps.store, finding.itemId, `rounds: ${finding.why}`, now) !== undefined;
         text = applied ? `Relaunched ${finding.label}: ${finding.why}.` : `Could not relaunch ${finding.label}: the row is gone.`;
@@ -447,20 +533,22 @@ const KIND_WORDS: Record<RoundsKind, string> = {
   'dead-worker': 'Running with a dead worker',
   'stuck-after-finish': 'Finished but the queue never moved it',
   'unblocked': 'Parked with nothing holding it',
+  'already-has-pr': 'Parked but a PR already exists',
   'ask': 'Asking a question',
   'orphan-lane': 'Finished lanes with no queue row',
   'zombie-lane': 'Lanes that read running with no process',
 };
 
 const ACTION_WORDS: Record<RoundsAction, string> = {
-  remove: 'clear the row', relaunch: 'relaunch', retry: 'restart', retire: 'archive the lane', judge: 'read and decide',
+  remove: 'clear the row', relaunch: 'relaunch', retry: 'restart', review: 'move it to review',
+  retire: 'archive the lane', judge: 'read and decide',
 };
 
 /** The sheet as a person reads it: findings grouped by kind, worst first, then what was
  *  left alone and why, so a short sheet still says what it looked at. */
 export function formatRoundsSheet(sheet: RoundsSheet, mode: 'dry-run' | 'applied' = 'dry-run'): string[] {
   const lines: string[] = [];
-  const order: RoundsKind[] = ['dead-worker', 'stuck-after-finish', 'ask', 'unblocked', 'done-still-open', 'zombie-lane', 'orphan-lane'];
+  const order: RoundsKind[] = ['dead-worker', 'stuck-after-finish', 'ask', 'unblocked', 'already-has-pr', 'done-still-open', 'zombie-lane', 'orphan-lane'];
   lines.push(`Rounds ${mode === 'dry-run' ? '(dry run, nothing changed)' : '(applied)'}: ${sheet.findings.length} finding${sheet.findings.length === 1 ? '' : 's'}, `
     + `${sheet.waiting.length} waiting on a real blocker, ${sheet.healthy.length} healthy. `
     + `Dead after ${minutes(sheet.params.silentAfterMs)} silent; orphan after ${minutes(sheet.params.orphanAfterMs)}.`);
