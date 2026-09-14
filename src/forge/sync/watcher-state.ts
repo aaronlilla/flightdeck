@@ -76,6 +76,8 @@ export interface JiraWatcherDeps {
   /** R-101: where the ticket poll runs. Absent polls on this thread (every test);
    *  `forge up` hands in a `ThreadTicketPoller` so a stalled console cannot delay it. */
   poller?: TicketPoller;
+  /** R-101: when the feed's self-test ends, or null while it is off. */
+  selfTestUntil?: () => number | null;
 }
 
 /**
@@ -229,6 +231,7 @@ export class JiraWatcher {
         ? { lastPollAt: this.lastPollAt, nextPollAt: this.lastPollAt + this.pollSeconds * 1000 }
         : {}),
       ...(this.lastCount !== undefined ? { lastCount: this.lastCount } : {}),
+      ...((() => { const until = this.deps.selfTestUntil?.() ?? null; return until !== null ? { selfTestUntil: until } : {}; })()),
       ...((this.lastError ?? this.activityError) !== undefined ? { lastError: this.lastError ?? this.activityError } : {}),
     };
   }

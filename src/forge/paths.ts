@@ -121,6 +121,11 @@ export function jiraFeedLedgerPath(): string {
   return join(consoleDir(), 'jira-feed.json');
 }
 
+/** R-101: when the feed's self-test (answering the operator's own comments) ends. */
+export function jiraFeedSelfTestPath(): string {
+  return join(consoleDir(), 'jira-feed-self-test.json');
+}
+
 /** The queue's own width setting: `{ maxInFlight: N }` or absent. Separate from
  *  `queuePausedPath()`: pausing stops every start, this only caps how many run at once.
  *  Read fresh on every tick and every `GET /queue`, never cached, so `POST /queue/width`

@@ -16,6 +16,7 @@ import type { Journal } from '../journal.js';
 import { jiraFeedLedgerPath } from '../paths.js';
 import { RunInbox } from '../runinbox.js';
 import type { JiraFeedActivity } from './watcher-state.js';
+import { readSelfTestUntil } from './feed-self-test.js';
 
 export interface JiraFeedWireOptions {
   jiraConfig: () => JiraConfig | undefined;
@@ -72,6 +73,9 @@ export function buildJiraFeedActivity(options: JiraFeedWireOptions): JiraFeedAct
         queueItems: () => options.store.all(),
         sendTo: (runKey, text) => { new RunInbox(runKey).send(text, 'jira'); },
         journal: { append: (row) => { options.journal.append(row as never); } },
+        // Read on every pass, so turning the self-test off (or its end time passing)
+        // takes effect on the next pass with no restart.
+        selfTest: () => readSelfTestUntil() !== null,
       });
       return result;
     },
