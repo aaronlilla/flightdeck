@@ -236,6 +236,14 @@ describe('forge status', () => {
     const staleAt = new Date(Date.now() - 6 * 60_000);
     utimesSync(sessionFile, staleAt, staleAt);
 
+    // A REAL worker is one this fleet launched: it has a registry row carrying its pid.
+    // Without one, a worker-shaped pid is another session's subagent and is deliberately
+    // not watched (live escape 2026-09-14) -- the sibling test below pins that side.
+    const admitted = new Registry(join(process.env['FORGE_HOME']!, 'registry')).admit({
+      goal: 'stuck-goal', cwd: 'C:/tmp/stuck-goal', briefPath: 'C:/tmp/stuck-goal/brief.md', pid: 40200,
+    });
+    expect(admitted.ok).toBe(true);
+
     const result = await forge(['status'], {
       processes: () => [
         '40200 "C:\\Users\\<user>\\.local\\bin\\claude.exe" --output-format stream-json '
@@ -248,6 +256,26 @@ describe('forge status', () => {
     expect(text).toContain('stale-session');
     expect(text).not.toContain('interactive claude session');
     expect(text).toContain('1 native host, not fleet, not watched');
+  });
+
+  it('a worker-shaped pid with no registry row is another session\'s, listed quietly and never STUCK', async () => {
+    const account = process.env['FORGE_CONFIG_DIR']!;
+    const sessionsDir = join(account, 'projects');
+    mkdirSync(sessionsDir, { recursive: true });
+    const sessionFile = join(sessionsDir, 'session.json');
+    writeFileSync(sessionFile, '{}', 'utf8');
+    const staleAt = new Date(Date.now() - 6 * 60_000);
+    utimesSync(sessionFile, staleAt, staleAt);
+
+    const result = await forge(['status'], {
+      processes: () => [
+        '40200 "C:\\Users\\<user>\\.local\\bin\\claude.exe" --output-format stream-json '
+          + '--verbose --input-format stream-json',
+      ],
+    });
+    const text = result.lines.join('\n');
+    expect(text).not.toContain('STUCK');
+    expect(text).toContain("1 other session's worker, not fleet, not watched");
   });
 });
 
