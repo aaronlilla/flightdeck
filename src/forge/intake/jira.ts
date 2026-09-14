@@ -389,3 +389,25 @@ export async function fetchIssueRemoteLinks(
   const data = (await response.json()) as { object?: { url?: string } }[];
   return (Array.isArray(data) ? data : []).map((link) => link.object?.url ?? '').filter(Boolean);
 }
+
+/**
+ * R-101: one ticket's planning detail, read from the issue itself rather than a JQL
+ * search on its key. The Jira feed plans a ticket seconds after it is created, and the
+ * search index can lag that: on 2026-09-14 a key search two seconds after creation came
+ * back empty and the planner interviewed a bare key. Throws naming the ticket when Jira
+ * cannot return it, so the item fails visibly instead of being planned blind.
+ */
+export async function readTicketDetail(
+  config: Pick<JiraConfig, 'site' | 'email' | 'token' | 'fetchFn'>, key: string,
+): Promise<PollItemDetail> {
+  const fetchFn = config.fetchFn ?? fetch;
+  const fields = 'summary,description,status,updated,issuetype,priority,labels,components';
+  const response = await fetchFn(`${config.site}/rest/api/3/issue/${encodeURIComponent(key)}?fields=${fields}`, {
+    headers: { authorization: basicAuth(config.email, config.token) },
+  });
+  if (!response.ok) {
+    const error = await jiraErrorFor(response);
+    throw new Error(`could not read ${key} from Jira: ${error.message}`);
+  }
+  return detailFor((await response.json()) as JiraSearchIssue);
+}
