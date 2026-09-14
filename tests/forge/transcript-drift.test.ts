@@ -164,6 +164,31 @@ describe('TranscriptDrift.check', () => {
     }
   });
 
+  it('an empty transcript tail is no evidence: journaled drift.skipped, never judged, never parked', async () => {
+    // Aaron, 2026-09-14: runs parked 30 s after launch because the judge was handed ''
+    // (no file where it looked) and read the silence as "no work, off-brief".
+    const queryFn = vi.fn().mockResolvedValue(judge('off-brief', 'no tool calls shown'));
+    const journal = { append: vi.fn() };
+    const park = vi.fn().mockResolvedValue(true);
+    const drift = new TranscriptDrift({
+      reasoner: { provider: 'claude', call: queryFn } as never,
+      journal: journal as never,
+      actuator: { nudge: vi.fn(), park },
+    });
+
+    for (const tail of ['', '  \n \n']) {
+      journal.append.mockClear();
+      const result = await drift.check('run-7', MISSION, DOD, tail, 'brief.md');
+      expect(result).toBeUndefined();
+      expect(journal.append).toHaveBeenCalledTimes(1);
+      expect(journal.append).toHaveBeenCalledWith(expect.objectContaining({
+        event: 'drift.skipped', run: 'run-7', reason: 'no transcript yet',
+      }));
+    }
+    expect(queryFn).not.toHaveBeenCalled();
+    expect(park).not.toHaveBeenCalled();
+  });
+
   it('TRANSCRIPT_TAIL_LINES is a real positive bound, not a placeholder', () => {
     expect(TRANSCRIPT_TAIL_LINES).toBeGreaterThan(0);
   });

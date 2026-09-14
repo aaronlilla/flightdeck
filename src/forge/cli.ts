@@ -120,7 +120,7 @@ import { realProcessTable } from './service/process-table.js';
 import { SessionClock } from './session-clock.js';
 import { sweepFinishedRun } from './sweep.js';
 import { extractDoD, TRANSCRIPT_TAIL_LINES, TranscriptDrift } from './conformance-drift.js';
-import { readTranscriptTail, transcriptPathFor } from './transcript-path.js';
+import { findTranscriptPath, readTranscriptTail } from './transcript-path.js';
 import { CodexAdvisor, realCodexAdvisorRunner } from './council/codexAdvisor.js';
 import { scheduleAccountsProbeTick } from './sync/pages/accounts.js';
 
@@ -844,12 +844,15 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
               mission = undefined;
             }
             const dod = mission ? extractDoD(mission) : undefined;
-            const transcriptTail = admitted?.sessionId
-              ? readTranscriptTail(
-                transcriptPathFor(fleetConfigDirChoice().dir, admitted.cwd, admitted.sessionId),
-                TRANSCRIPT_TAIL_LINES,
+            // The fleet login plus every linked account: the run's transcript lives under
+            // whichever of them it launched on, and a registry row does not say which.
+            const transcriptPath = admitted?.sessionId
+              ? findTranscriptPath(
+                [fleetConfigDirChoice().dir, ...loadAccounts().map((account) => account.configDir)],
+                admitted.cwd, admitted.sessionId,
               )
-              : '';
+              : undefined;
+            const transcriptTail = transcriptPath ? readTranscriptTail(transcriptPath, TRANSCRIPT_TAIL_LINES) : '';
             void transcriptDrift.check(run.run, mission, dod, transcriptTail, admitted?.briefPath);
           }
         } catch {
