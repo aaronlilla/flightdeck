@@ -167,6 +167,25 @@ describe('sweepWorktrees', () => {
     expect(branchDCalls).toHaveLength(0);
   });
 
+  it('FORGE_WORKTREE_REMOVAL=off keeps every worktree it would have removed, with zero remove calls', async () => {
+    const rows = buildRows();
+    const { deps, gitCalls } = buildDeps(rows);
+    const before = process.env['FORGE_WORKTREE_REMOVAL'];
+    process.env['FORGE_WORKTREE_REMOVAL'] = 'off';
+    try {
+      const result = await sweepWorktrees(deps);
+      expect(result.removed).toHaveLength(0);
+      for (const row of rows.filter((r) => r.expectRemoved)) {
+        expect(result.kept.find((r) => r.path === row.path)?.reason).toBe('removal-off');
+      }
+    } finally {
+      if (before === undefined) delete process.env['FORGE_WORKTREE_REMOVAL'];
+      else process.env['FORGE_WORKTREE_REMOVAL'] = before;
+    }
+    const removeCalls = gitCalls.filter((c) => c.argv[0] === 'worktree' && c.argv[1] === 'remove');
+    expect(removeCalls).toHaveLength(0);
+  });
+
   it("the fake git rejects a worktree remove the decision table never authorized", async () => {
     const rows = buildRows();
     const { deps } = buildDeps(rows);

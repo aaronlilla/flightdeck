@@ -22,6 +22,7 @@
  * operator sends is ever silent.
  */
 import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
@@ -32,7 +33,8 @@ import { appendOnce, Journal } from '../journal.js';
 import { CodexAdvisor, realCodexAdvisorRunner } from '../council/codexAdvisor.js';
 import { loadAccounts, configDirForSession, defaultLoginOff } from '../accounts.js';
 import { readAccountUsage } from '../accounts-usage.js';
-import { fleetConfigDir, forgeHome } from '../paths.js';
+import { consoleDir, fleetConfigDir, forgeHome } from '../paths.js';
+import { readThread } from './thread.js';
 import {
   contextFor, effortFor, modelFor, modelIdFor, reasonerTimeoutMsFor,
 } from '../policy.js';
@@ -83,6 +85,8 @@ const DEFAULT_IDLE_MS = 5 * 60_000;
 const REASON_LIMIT = 140;
 const HANDOFF_EXCHANGES = 5;
 const HANDOFF_CHARS = 240;
+/** How many rail rows a fresh session is handed when it has no session to resume. */
+const CARRY_ROWS = 12;
 const ARCHIVED_LIMIT = 20;
 
 export type ReplyPath = 'agent' | 'grammar';
@@ -127,6 +131,8 @@ export interface ConductorAgentDeps {
   idleMs?: number;
   /** Where reply and receipt rows land. Defaults to the rail's own `thread.jsonl`. */
   appendThread?: (message: Message) => void;
+  /** The rail so far, read when a fresh session opens. Defaults to `thread.jsonl`. */
+  readThread?: () => Message[];
 }
 
 interface Usage { input: number; cacheRead: number; cacheCreation: number; output: number }
@@ -656,6 +662,32 @@ export class ConductorAgent {
     ].join('\n');
   }
 
+  /** What a session with nothing to resume is told about the rail so far. The thread
+   *  file outlives the console process and every account switch, so it is the one record
+   *  a restart cannot wipe; `exchanges` lives in memory and is gone after one. Grammar
+   *  replies are included, because "try again" usually points at one. Null when the rail
+   *  is empty or unreadable: a missing handoff must never stop a turn. */
+  private carryOverParagraph(current: string): string | null {
+    let rows: Message[];
+    try {
+      rows = (this.deps.readThread ?? (() => readThread(join(consoleDir(), 'thread.jsonl'))))();
+    } catch {
+      return null;
+    }
+    const said = rows.filter((row) => row.type === 'operator'
+      || ((row.type === 'reply' || row.type === 'refusal') && row.source === 'conductor'));
+    const last = said.at(-1);
+    if (last && last.type === 'operator' && last.text === current) said.pop();
+    const recent = said.slice(-CARRY_ROWS);
+    if (recent.length === 0) return null;
+    return ['This is a fresh session: the console restarted or the account changed, so the earlier session is gone. The rail so far, newest last:',
+      ...recent.map((row) => {
+        const who = row.type === 'operator' ? 'operator' : row.path === 'grammar' ? 'grammar' : 'conductor';
+        return `${who}: ${String(row.text).slice(0, HANDOFF_CHARS)}`;
+      }),
+    ].join('\n');
+  }
+
   /** One turn on the open engine: the reply text and this turn's usage. */
   private turn(engine: Engine, message: string): Promise<{ text: string; usage: Usage; model: string; context: number }> {
     return new Promise((resolve, reject) => {
@@ -727,10 +759,15 @@ export class ConductorAgent {
       // linked -- is closed so the next one starts where the work can actually happen.
       const wanted = this.sessionConfigDir();
       if (this.engine && this.engineConfigDir !== null && this.engineConfigDir !== wanted) {
-        this.closeSession(true);
+        // The id is dropped, not kept: a transcript lives under the account directory it
+        // was written in, so resuming it on the new account finds nothing. The fresh
+        // session gets the recent rail as a handoff instead (Aaron, 2026-09-14: linked a
+        // fresh account and the Conductor "had no recollection of what was going on").
+        this.closeSession(false);
       }
       let engine = this.engine;
       if (!engine) {
+        if (this.sessionId === null && this.handoff === null) this.handoff = this.carryOverParagraph(text);
         engine = this.openEngine(this.sessionId);
         resumed = this.sessionId !== null;
         this.engine = engine;
