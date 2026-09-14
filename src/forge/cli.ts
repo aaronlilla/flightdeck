@@ -226,7 +226,18 @@ const JIRA_ENV_VARS = ['FORGE_JIRA_SITE', 'FORGE_JIRA_EMAIL', 'FORGE_JIRA_TOKEN'
  * probe outright, since a supplied argument always wins over a default one.
  */
 function fleetSnapshot(deps: ForgeDeps): ReturnType<typeof watchedProcesses> {
-  return watchedProcesses(deps.processes ? { ok: true, lines: deps.processes() } : probeProcessListCached());
+  // The registry's pids are the workers this fleet actually launched. Without the set,
+  // every SDK-spawned claude on the machine -- other sessions' subagents included --
+  // classified as a fleet worker and tripped `stale-session` against the sessions dir's
+  // global mtime, forever (live escape 2026-09-14). A registry read failure falls back
+  // to watching everything: a hiccup must not silence real monitoring.
+  let ownedPids: ReadonlySet<number> | undefined;
+  try {
+    ownedPids = new Set(new Registry(registryDir()).all().map((row) => row.pid));
+  } catch {
+    ownedPids = undefined;
+  }
+  return watchedProcesses(deps.processes ? { ok: true, lines: deps.processes() } : probeProcessListCached(), ownedPids);
 }
 
 /**
@@ -240,10 +251,12 @@ function fleetNoticeLine(fleet: Awaited<ReturnType<typeof watchedProcesses>>): s
   if (!Array.isArray(fleet)) return undefined;
   const interactive = fleet.filter((proc) => proc.kind === 'interactive').length;
   const nativeHost = fleet.filter((proc) => proc.kind === 'native-host').length;
-  if (!interactive && !nativeHost) return undefined;
+  const foreign = fleet.filter((proc) => proc.foreign).length;
+  if (!interactive && !nativeHost && !foreign) return undefined;
   const parts: string[] = [];
   if (interactive) parts.push(`${interactive} interactive claude session${interactive === 1 ? '' : 's'}`);
   if (nativeHost) parts.push(`${nativeHost} native host${nativeHost === 1 ? '' : 's'}`);
+  if (foreign) parts.push(`${foreign} other session${foreign === 1 ? '\'s' : 's\''} worker${foreign === 1 ? '' : 's'}`);
   return `${parts.join(' and ')}, not fleet, not watched`;
 }
 

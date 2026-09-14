@@ -78,6 +78,19 @@ describe('worktreePathFor', () => {
     const path = worktreePathFor('D:/repos/Name', 'Owner/Name', 'ABC-1');
     expect(path).toBe('D:/repos/worktrees/name--abc-1');
   });
+
+  // Live escape 2026-09-14: the RN checkout is itself a worktree under C:/dev/worktrees,
+  // so the sibling join produced C:/dev/worktrees/worktrees/v2-react-native--bbz-305 --
+  // a doubled segment the coordination board's worktree listing never sees.
+  it('does not double the segment when the checkout already lives in a worktrees directory', () => {
+    const path = worktreePathFor('C:/dev/worktrees/v2-react-native--merge-base', 'BOLTBETZ-LLC/v2-React-Native', 'BBZ-305');
+    expect(path).toBe('C:/dev/worktrees/v2-react-native--bbz-305');
+  });
+
+  it('keeps the doubled-path behavior out of backslash checkouts too', () => {
+    const path = worktreePathFor('C:\\dev\\worktrees\\v2-react-native--merge-base', 'BOLTBETZ-LLC/v2-React-Native', 'BBZ-9');
+    expect(path).toBe('C:\\dev\\worktrees\\v2-react-native--bbz-9');
+  });
 });
 
 /**
