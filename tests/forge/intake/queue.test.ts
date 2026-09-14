@@ -89,6 +89,51 @@ function buildDeps(store: QueueStore, overrides: FixtureOverrides = {}): { deps:
   return { deps, events };
 }
 
+// R-101 escape, 2026-09-14: BBZ-296 was cancelled in Jira while it was being planned. The
+// watcher wrote the item `done` at 08:30:25, the planning hop that had started at 08:30:09
+// finished at 08:30:28 and wrote it back to `running` from its stale copy, and a worker
+// launched on a cancelled ticket at 08:30:59.
+describe('an item closed while a hop is in flight stays closed', () => {
+  it('a planning hop that finishes after the close writes nothing and launches nothing', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-1', 1000);
+    let launches = 0;
+    const { deps } = buildDeps(store, {
+      planner: {
+        planTicket: async (ticket) => {
+          store.append({ id: item.id, at: 1500, state: 'done', reason: 'closed in Jira', updatedAt: 1500 });
+          return { ticket, repo: 'owner/name', briefPath: `C:/briefs/${ticket}.md` };
+        },
+      },
+      launcher: { launch: async ({ ticket }) => { launches += 1; return { runKey: ticket.toLowerCase() }; } },
+    });
+
+    const afterPlan = await advanceItem(item, deps);
+    expect(afterPlan.state).toBe('done');
+    expect(store.get(item.id)?.state).toBe('done');
+
+    await advanceItem(afterPlan, deps);
+    expect(launches).toBe(0);
+    expect(store.get(item.id)?.state).toBe('done');
+  });
+
+  it('a launch hop holding a stale running copy does not start a worker for a closed item', async () => {
+    const store = tempStore();
+    const item = addTicketItem(store, 'ABC-2', 1000);
+    let launches = 0;
+    const { deps } = buildDeps(store, {
+      launcher: { launch: async ({ ticket }) => { launches += 1; return { runKey: ticket.toLowerCase() }; } },
+    });
+    const planned = await advanceItem(item, deps);
+    expect(planned.state).toBe('running');
+    store.append({ id: item.id, at: 2000, state: 'done', reason: 'closed in Jira', updatedAt: 2000 });
+
+    const after = await advanceItem(planned, deps);
+    expect(launches).toBe(0);
+    expect(after.state).toBe('done');
+  });
+});
+
 describe('addTicketItem / addBriefItem', () => {
   it('adds a queued item carrying the ticket as both input and ticket', () => {
     const store = tempStore();

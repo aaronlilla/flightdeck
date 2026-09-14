@@ -522,6 +522,11 @@ function writeTransition(
   item: QueueItem, patch: Partial<QueueItem>, deps: QueueRuntimeDeps, event: string,
   extra: Record<string, unknown> = {},
 ): QueueItem {
+  // R-101: a hop works from the copy it was handed. When the item was closed while that
+  // hop ran (a Jira cancel the watcher recorded mid-plan), writing its stale patch would
+  // put a cancelled ticket back to work. Closed stays closed; the hop's result is dropped.
+  const stored = deps.store.get(item.id);
+  if (stored?.state === 'done' && patch.state !== 'done') return stored;
   const written = deps.append({ event, actor: 'queue', itemId: item.id, ...extra });
   const now = deps.clock();
   const journalIds = written.id ? [...item.journalIds, written.id] : item.journalIds;
@@ -635,6 +640,11 @@ async function unresolvedAfterReason(
  */
 export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Promise<QueueItem> {
   let item = itemIn;
+
+  // R-101: the caller's copy can be older than the store. An item closed since that copy
+  // was read (a Jira cancel mid-plan) never provisions, launches or plans again.
+  const latest = deps.store.get(item.id);
+  if (latest?.state === 'done' && item.state !== 'done') return latest;
 
   // 2026-09-08: a `goal` item skips planning, provisioning, the council and the gate
   // entirely -- a goal brief already claimed its own worktree with `/workon` and
