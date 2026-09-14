@@ -205,7 +205,17 @@ export class ClaudeReasoner implements Reasoner {
                 reject(new ReasonerParseError(text));
                 return;
               }
-              resolve({ text: trimmed });
+              // A model that still wraps its answer as `{"text": ...}` is unwrapped, so the
+              // brief is never the JSON string itself.
+              let unwrapped: string | undefined;
+              try {
+                const maybe = JSON.parse(stripFence(trimmed)) as unknown;
+                const direct = REPLY_SCHEMA.safeParse(maybe);
+                if (direct.success) unwrapped = direct.data.text.trim();
+              } catch {
+                // Not JSON: the ordinary case.
+              }
+              resolve({ text: unwrapped ?? trimmed });
               break;
             }
             let parsedJson: unknown;

@@ -186,6 +186,15 @@ describe('ClaudeReasoner', () => {
     expect(row?.['parsed']).toBe(true);
   });
 
+  it('unwraps a text reply the model still wrapped as {"text": ...}', async () => {
+    const { fn } = fakeQuery('{"text": "# Goal: Add a doc file"}');
+    const journal = new Journal(journalPath);
+    const reasoner = new ClaudeReasoner({ journal, queryFn: fn, existsConfigDir: () => false });
+    const result = await reasoner.call({ className: 'evaluate', prompt: 'write the brief', replyShape: 'text' });
+    journal.close();
+    expect(result).toEqual({ text: '# Goal: Add a doc file' });
+  });
+
   it('rejects with a typed parse error and journals parsed: false, on an invalid JSON reply', async () => {
     const { fn } = fakeQuery('not json at all');
     const journal = new Journal(journalPath);
