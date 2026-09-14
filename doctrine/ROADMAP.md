@@ -66,6 +66,8 @@ Aaron, 2026-09-08. Only Aaron edits this paragraph.
 | R-56 | an async Codex advisor (`ask`/`status`/`result`) the Conductor agent can call as `ask_codex`, never blocking a tick | autonomy | done | #135 | `tests/forge/council/codexAdvisor.test.ts` red then green (`ask` returns before `result` would ever resolve); one live `ping`-class call, result `pong`, exit 0 |
 | R-59 | flightdeck gates its own Jira and PR writes on the Joe rule again, contract and specimens loaded from the machine | autonomy | done | #138 | agnostic check exit 0; neutral specimen suite pinned at 8; installer test red then green; unconfigured journals `readability.unconfigured` and a status line is unit-tested (not yet a console row -- see `console/readability-status.ts`) |
 
+| R-103 | a shutdown gate never denies the calls that preserve work: past its context ceiling, parked by the warden, parked on an unanswered question or stopped by the kill switch, a run may still call `forge_handoff` and work-preserving git, and nothing else | autonomy | review | this PR | `tests/forge/work-preserving-calls.test.ts`: 32 specimens watched red against the pre-fix hook, then green; 12 more watched red against the first cut of the allow-list, which a hostile review defeated with `git -c alias.status=!id status` and `git -c core.fsmonitor=/tmp/evil.sh status`, and which let `git push --force` through |
+
 ## Not in scope
 
 - Sentry and CloudWatch straight into the queue as their own items

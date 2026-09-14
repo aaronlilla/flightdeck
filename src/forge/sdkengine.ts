@@ -102,20 +102,41 @@ const FORGE_DONE_TOOL = 'mcp__forge__forge_done';
 const FORGE_HANDOFF_TOOL = 'mcp__forge__forge_handoff';
 
 /**
- * The git subcommands that save work already done, or read the state needed to save it.
- * Nothing here can discard a change: `reset`, `checkout`, `clean`, `restore` and `stash`
- * are absent on purpose, because a run being shut down is exactly when a destructive git
- * call does the most damage.
+ * The git subcommands that save work already done, or read the state needed to save it,
+ * each with the ONLY flags it may carry.
+ *
+ * An allow-list of flags, not a block-list, and that is the whole design. The first cut
+ * of this function allowed any flag and skipped `-c key=value` pairs to let an identity
+ * ride along on a commit. A review defeated it twice in one pass:
+ *
+ *     git -c alias.status=!id status          -- a `!` alias value runs through a shell
+ *     git -c core.fsmonitor=/tmp/x.sh status  -- git invokes fsmonitor as an external hook
+ *
+ * Both are arbitrary execution from a run that is supposed to be refused everything, so
+ * `-c` is gone entirely; a worker's identity comes from its environment. A review also
+ * showed `push` admitting `--force` and `--delete`, which destroy remote work rather
+ * than preserve it. An unlisted flag now refuses the whole line.
+ *
+ * Nothing here can discard a change either: `reset`, `checkout`, `clean`, `restore` and
+ * `stash` are absent on purpose, because a run being shut down is exactly when a
+ * destructive git call does the most damage.
  */
-const WORK_PRESERVING_GIT = new Set([
-  'add', 'commit', 'push', 'status', 'diff', 'rev-parse', 'log', 'symbolic-ref',
-]);
+const WORK_PRESERVING_GIT: Record<string, ReadonlySet<string>> = {
+  add: new Set(['-A', '--all', '-u', '--update']),
+  commit: new Set(['-m', '--message', '-a', '-am', '--no-verify']),
+  push: new Set(['-u', '--set-upstream', '--porcelain']),
+  status: new Set(['-s', '--short', '--porcelain', '-b', '--branch']),
+  diff: new Set(['--stat', '--cached', '--staged', '--name-only', '--name-status']),
+  'rev-parse': new Set(['--short', '--abbrev-ref', '--verify']),
+  log: new Set(['--oneline', '-n', '-1', '-2', '-3', '-5', '-10']),
+  'symbolic-ref': new Set(['--short']),
+};
 
 /**
  * Any character that could start a second program. `&&` is removed before this runs, so
  * a lone `&` here is a background operator and refuses the line.
  */
-const SHELL_ESCAPE = /[;|`&<>\n\r]|\$\(/;
+const SHELL_ESCAPE = /[;|`&<>\n\r\t]|\$\(/;
 
 /**
  * The calls a run may make even once it is parked, past its context ceiling, or stopped
@@ -149,14 +170,36 @@ export function isWorkPreserving(toolName: string, input: Record<string, unknown
   if (SHELL_ESCAPE.test(raw.split('&&').join(' '))) return false;
   const segments = raw.split('&&').map((s) => s.trim()).filter(Boolean);
   if (!segments.length) return false;
-  return segments.every((segment) => {
-    const parts = segment.split(/\s+/).filter(Boolean);
-    if (parts[0] !== 'git') return false;
-    // `git -C <path> commit ...` is the shape a worker inside a worktree actually uses,
-    // and `-c key=value` rides along on a commit that sets an identity.
-    let i = 1;
-    while (parts[i] === '-C' || parts[i] === '-c') i += 2;
-    return WORK_PRESERVING_GIT.has(parts[i] ?? '');
+  return segments.every(isWorkPreservingGitCall);
+}
+
+/** One `&&`-free command line. See `isWorkPreserving` for why this is so strict. */
+function isWorkPreservingGitCall(segment: string): boolean {
+  const parts = segment.split(/\s+/).filter(Boolean);
+  if (parts[0] !== 'git') return false;
+  // `git -C <path> commit ...` is the shape a worker inside a worktree actually uses,
+  // and it is the only pre-subcommand option allowed: `-c key=value` can name a config
+  // key git resolves by running something (`alias.*`, `core.fsmonitor`, every `*.pager`
+  // and `*Command`), so there is no safe subset of it to admit here.
+  let i = 1;
+  while (parts[i] === '-C') {
+    const path = parts[i + 1];
+    if (path === undefined || path.startsWith('-')) return false;
+    i += 2;
+  }
+  const subcommand = parts[i];
+  if (subcommand === undefined) return false;
+  const allowedFlags = WORK_PRESERVING_GIT[subcommand];
+  if (!allowedFlags) return false;
+  // Every remaining argument that looks like a flag must be named for this subcommand.
+  // A value (a branch, a remote, a path, the text of a commit message) never starts with
+  // a dash, so an unrecognised dashed argument refuses the line rather than being
+  // guessed at -- that is what keeps `--force`, `--delete`, `--amend`, `--exec` and
+  // `--receive-pack` out without this list having to predict them.
+  return parts.slice(i + 1).every((arg) => {
+    if (!arg.startsWith('-')) return true;
+    const name = arg.includes('=') ? arg.slice(0, arg.indexOf('=')) : arg;
+    return allowedFlags.has(name);
   });
 }
 
@@ -456,13 +499,14 @@ export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
     // may always save what it has; see `isWorkPreserving`. The rules library further
     // down still runs on the call, so a push at a protected branch is refused there the
     // same as ever -- this allowance opens the shutdown gates, not the guard rails.
+    //
+    // `shielded` is set only where a gate WOULD have denied, so the journal carries one
+    // row per call actually rescued and nothing at all in a healthy run. A row per
+    // ordinary `git status` is how a useful signal becomes 12,000 rows of noise.
     const preserving = isWorkPreserving(call.toolName, call.input);
-    if (preserving) {
-      deps.journal.append({
-        event: 'run.work-preserved', run: deps.run, actor: 'runner', tool: call.toolName,
-      });
-    }
+    let shielded: string | undefined;
     const parkRecord = readParkRecord(deps.run);
+    if (parkRecord && preserving) shielded = `parked by warden: ${parkRecord.key}`;
     if (parkRecord && !preserving) {
       deps.journal.append({
         event: 'permission.denied', run: deps.run, actor: 'runner', tool: call.toolName,
@@ -474,6 +518,7 @@ export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
       };
     }
     const key = deps.parked.get(deps.run);
+    if (key && preserving) shielded = `parked on ${key}`;
     if (key && !preserving) {
       const entry = deps.inbox.entry(key);
       if (entry?.answer !== undefined) {
@@ -511,6 +556,7 @@ export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
           + 'no console here to receive its notifications. Poll with a plain Bash command instead.',
       };
     }
+    if (deps.killSwitchHit?.() && preserving) shielded = 'the fleet kill switch is engaged';
     if (deps.killSwitchHit?.() && !preserving) {
       deps.journal.append({
         event: 'permission.denied', run: deps.run, actor: 'runner', tool: call.toolName,
@@ -522,6 +568,7 @@ export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
         additionalContext: STOP_HANDOFF_REQUEST,
       };
     }
+    if (deps.ceilingHit?.() && preserving) shielded = 'context ceiling reached';
     if (deps.ceilingHit?.() && !preserving) {
       deps.journal.append({
         event: 'permission.denied', run: deps.run, actor: 'runner', tool: call.toolName,
@@ -532,6 +579,15 @@ export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
         reason: 'context ceiling reached: write the handoff packet instead of another tool call',
         additionalContext: HANDOFF_REQUEST,
       };
+    }
+    // One row per call a closed gate let through, naming which gate it was. A run that
+    // ends at its ceiling with a commit behind it is then visible as exactly that,
+    // rather than as another "stopped on the way to a pull request".
+    if (shielded) {
+      deps.journal.append({
+        event: 'run.work-preserved', run: deps.run, actor: 'runner', tool: call.toolName,
+        reason: shielded,
+      });
     }
     // P4.7/I4 (scoped by P4.7/I10): the Council's rules library, on every Bash and
     // Edit/Write call. A denial here journals `rule.denied` and stops the call the same

