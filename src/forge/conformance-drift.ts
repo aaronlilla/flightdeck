@@ -204,6 +204,14 @@ export class TranscriptDrift {
       return undefined;
     }
 
+    // An empty tail is no evidence either way: a run that just started, or a transcript
+    // this tick could not find. Judging silence parked every account-launched run on
+    // 2026-09-14 ("its log is empty with no work recorded"), so it is skipped, never judged.
+    if (transcriptTail.trim().length === 0) {
+      this.deps.journal.append({ event: 'drift.skipped', run, actor: 'warden', reason: 'no transcript yet' });
+      return undefined;
+    }
+
     const judgePrompt = buildTranscriptPrompt(mission, dod, transcriptTail);
     const judgeResult = await this.deps.reasoner.call({ className: 'drift-judge', prompt: judgePrompt, run });
     let { verdict, reason } = parseTranscriptVerdict(judgeResult.text);
