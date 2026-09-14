@@ -78,6 +78,20 @@ describe('worktreePathFor', () => {
     const path = worktreePathFor('D:/repos/Name', 'Owner/Name', 'ABC-1');
     expect(path).toBe('D:/repos/worktrees/name--abc-1');
   });
+
+  // A checkout can itself be a worktree living inside a sibling "worktrees" directory
+  // (a merge-base checkout, say). Joining another "worktrees" segment onto its parent
+  // then doubles the path -- a depth a plain worktree listing never sees. Genericised
+  // from a live escape.
+  it('does not double the segment when the checkout already lives in a worktrees directory', () => {
+    const path = worktreePathFor('D:/repos/worktrees/name--merge-base', 'Owner/Name', 'ABC-1');
+    expect(path).toBe('D:/repos/worktrees/name--abc-1');
+  });
+
+  it('keeps the doubled-path behavior out of backslash checkouts too', () => {
+    const path = worktreePathFor('D:\\repos\\worktrees\\name--merge-base', 'Owner/Name', 'ABC-2');
+    expect(path).toBe('D:\\repos\\worktrees\\name--abc-2');
+  });
 });
 
 /**

@@ -73,8 +73,13 @@ export function buildProductionSyncStages(deps: ProductionSyncDeps): ProductionS
       queueTicketsAtWipe = Array.from(new Set(
         deps.queueStore.all().map((item) => item.ticket).filter((ticket): ticket is string => Boolean(ticket)),
       ));
-      const count = deps.queueStore.wipe(deps.journal);
-      return { counts: { wiped: count } };
+      // An item whose worker is attached (a runKey) is reconciled, not wiped: the run
+      // survives a sync (stop-workers PARKS it, gracefully), and discarding its item
+      // orphans it -- no status polls, no merge gate, no ticket handoff (live escape
+      // 2026-09-14, six ticket lanes re-planned from zero three times in one morning).
+      const kept = deps.queueStore.all().filter((item) => item.state === 'running' && Boolean(item.runKey)).length;
+      const count = deps.queueStore.wipe(deps.journal, (item) => item.state === 'running' && Boolean(item.runKey));
+      return { counts: { wiped: count, kept } };
     },
 
     'reset-watermarks': async () => {

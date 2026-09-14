@@ -82,6 +82,11 @@ export interface FleetProcess {
   credentialsMtime?: number;
   /** When this process's session file was last written, for a worker process. */
   sessionFileMtime?: number;
+  /** A worker-shaped process this fleet did not launch (its pid is in no registry row):
+   *  another session's subagent. Listed for display, never assessed -- handing it a
+   *  staleness marker is how every other harness's subagent tripped `stale-session`
+   *  forever (live escape 2026-09-14). */
+  foreign?: boolean;
 }
 
 export interface LivenessInput {

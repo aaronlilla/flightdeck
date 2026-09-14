@@ -130,14 +130,18 @@ export function mergeAllowedFor(chainEnv: ChainEnv, repo: string): boolean {
  *  `<name-lower>--<ticket-lower>` -- the same shape this workspace already uses for
  *  every other repository's worktrees. `checkout` is the local clone's own path
  *  (`FORGE_REPO_CHECKOUTS`'s value for this repo), never derived from the repository
- *  name alone. */
+ *  name alone. A checkout that is itself a worktree already lives INSIDE a `worktrees`
+ *  directory; appending another produced `worktrees/worktrees/...` (live escape
+ *  2026-09-14), a depth the coordination board's listing never sees. */
 export function worktreePathFor(checkout: string, repo: string, ticket: string): string {
   const sep = checkout.includes('\\') && !checkout.includes('/') ? '\\' : '/';
   const parent = checkout.replace(/[/\\]+$/, '');
   const lastSep = Math.max(parent.lastIndexOf('/'), parent.lastIndexOf('\\'));
   const parentDir = lastSep === -1 ? '' : parent.slice(0, lastSep);
   const name = repo.split('/').pop()!.toLowerCase();
-  return `${parentDir}${sep}worktrees${sep}${name}--${ticket.toLowerCase()}`;
+  const parentName = parentDir.slice(Math.max(parentDir.lastIndexOf('/'), parentDir.lastIndexOf('\\')) + 1);
+  const base = parentName.toLowerCase() === 'worktrees' ? parentDir : `${parentDir}${sep}worktrees`;
+  return `${base}${sep}${name}--${ticket.toLowerCase()}`;
 }
 
 const HOTFIX_TICKET_PREFIX = 'hotfix-';
