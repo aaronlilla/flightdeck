@@ -57,3 +57,19 @@ describe('a park that says the work already exists', () => {
     expect('personsCall' in verdict && verdict.personsCall).not.toBe(true);
   });
 });
+
+/**
+ * 2026-09-14: BBZ-202's launch died on `fatal: '<branch>' is already used by
+ * worktree at ...` -- a leftover tree with unpushed commits. The
+ * reason was unclassified, so the restart sweep relaunched it every ten minutes and
+ * every relaunch collided with the same tree. Only a person can decide whether that
+ * tree is adopted or cleared, so the park is theirs.
+ */
+describe('a park that says the branch is checked out elsewhere', () => {
+  it('is a person\'s call, never an automatic relaunch', () => {
+    const verdict = parkRecoverability("fatal: 'feature/acme-9' is already used by worktree at '/repos/worktrees/frontend--acme-9'");
+    expect(verdict.recoverable).toBe(false);
+    expect('personsCall' in verdict && verdict.personsCall).toBe(true);
+    expect('why' in verdict && verdict.why).toMatch(/worktree/i);
+  });
+});
