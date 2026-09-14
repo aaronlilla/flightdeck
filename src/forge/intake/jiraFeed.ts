@@ -45,6 +45,9 @@ const MIN_WINDOW_MINUTES = 2;
 const MAX_REPLY_CHARS = 700;
 /** Ledger entries older than this are dropped on write. */
 const LEDGER_KEEP_MS = 30 * 24 * 60 * 60 * 1000;
+/** While the self-test switch is on: at most this many replies to one ticket in an hour. */
+const SELF_TEST_REPLY_CAP = 10;
+const SELF_TEST_CAP_WINDOW_MS = 60 * 60 * 1000;
 
 const SEND_STATES = new Set(['running', 'parked', 'review']);
 
@@ -220,6 +223,8 @@ export interface FeedOutcome {
   ticket: string;
   outcome: FeedOutcomeKind;
   reason?: string;
+  /** Handled only because the self-test switch let the operator's own comment through. */
+  selfTest?: boolean;
 }
 
 export interface FeedLedger {
@@ -230,6 +235,9 @@ export interface FeedLedger {
   handled: Record<string, FeedOutcome>;
   /** Inbox keys whose answer has already been posted (or deliberately not posted). */
   answered: string[];
+  /** Ids of every comment the feed posted. It posts as the operator, so with the
+   *  self-test switch on these are the comments it must never answer. */
+  posted: string[];
 }
 
 export interface FeedLedgerStore {
@@ -238,7 +246,7 @@ export interface FeedLedgerStore {
 }
 
 function blankLedger(now: number): FeedLedger {
-  return { startedAt: now, lastPollAt: null, handled: {}, answered: [] };
+  return { startedAt: now, lastPollAt: null, handled: {}, answered: [], posted: [] };
 }
 
 export function memoryFeedLedger(startedAt: number): FeedLedgerStore {
@@ -260,6 +268,7 @@ export function fileFeedLedger(path: string, now: () => number = Date.now): Feed
           lastPollAt: typeof data.lastPollAt === 'number' ? data.lastPollAt : null,
           handled: data.handled ?? {},
           answered: Array.isArray(data.answered) ? data.answered : [],
+          posted: Array.isArray(data.posted) ? data.posted : [],
         };
       } catch {
         // A corrupt ledger restarts from now rather than from zero, so it can never
@@ -272,7 +281,9 @@ export function fileFeedLedger(path: string, now: () => number = Date.now): Feed
       const handled = Object.fromEntries(Object.entries(ledger.handled).filter(([, row]) => row.at >= cutoff));
       mkdirSync(dirname(path), { recursive: true });
       const tmp = `${path}.tmp`;
-      writeFileSync(tmp, JSON.stringify({ ...ledger, handled, answered: ledger.answered.slice(-500) }), 'utf8');
+      writeFileSync(tmp, JSON.stringify({
+        ...ledger, handled, answered: ledger.answered.slice(-500), posted: (ledger.posted ?? []).slice(-2000),
+      }), 'utf8');
       renameSync(tmp, path);
     },
   };
@@ -420,6 +431,9 @@ export interface FeedActivityDeps {
   sendTo: (runKey: string, text: string) => void;
   journal: { append(row: Record<string, unknown>): void };
   now?: () => number;
+  /** Whether the operator's own comments are let through, for a timed test of the
+   *  pipeline. Absent reads as off. */
+  selfTest?: () => boolean;
 }
 
 export interface FeedActivityResult {
@@ -432,7 +446,7 @@ export interface FeedActivityResult {
   answered: string[];
 }
 
-interface Candidate { issue: FeedIssue; comment: FeedComment; relevance: Exclude<FeedRelevance, 'self'> }
+interface Candidate { issue: FeedIssue; comment: FeedComment; relevance: Exclude<FeedRelevance, 'self'>; selfTest: boolean }
 
 /** The description of a ticket created since the feed started, as a comment, when it
  *  mentions or names the operator on a ticket not already theirs. A ticket assigned to
@@ -467,19 +481,33 @@ export async function runFeedActivity(deps: FeedActivityDeps): Promise<FeedActiv
   ));
   const issues = await deps.fetchIssues(feedJql(deps.project, since));
 
+  const selfTest = deps.selfTest?.() === true;
+  ledger.posted ??= [];
   const candidates: Candidate[] = [];
   for (const issue of issues) {
     const description = issue.created >= ledger.startedAt ? descriptionCandidate(issue, me) : null;
     const comments = description ? [description, ...issue.comments] : issue.comments;
     for (const comment of comments) {
       if (!comment.id || comment.created < ledger.startedAt || ledger.handled[comment.id]) continue;
-      const relevance = comment.id.startsWith('desc:') ? 'named' as const : classifyComment(issue, comment, me);
-      if (relevance === 'self') {
-        ledger.handled[comment.id] = { at: pollAt, ticket: issue.key, outcome: 'ignored', reason: 'written by the operator' };
+      if (ledger.posted.includes(comment.id)) {
+        ledger.handled[comment.id] = { at: pollAt, ticket: issue.key, outcome: 'ignored', reason: 'posted by the feed' };
         continue;
       }
-      ledger.handled[comment.id] = { at: pollAt, ticket: issue.key, outcome: 'claimed' };
-      candidates.push({ issue, comment, relevance });
+      let relevance: FeedRelevance = comment.id.startsWith('desc:') ? 'named' : classifyComment(issue, comment, me);
+      let fromSelfTest = false;
+      if (relevance === 'self') {
+        if (!selfTest) {
+          ledger.handled[comment.id] = { at: pollAt, ticket: issue.key, outcome: 'ignored', reason: 'written by the operator' };
+          continue;
+        }
+        // Sorted exactly as a teammate's comment would be: the same mention, ticket and
+        // name rules, with only the authorship rule set aside.
+        relevance = classifyComment(issue, { ...comment, authorAccountId: '' }, me);
+        fromSelfTest = true;
+      }
+      if (relevance === 'self') continue;
+      ledger.handled[comment.id] = { at: pollAt, ticket: issue.key, outcome: 'claimed', ...(fromSelfTest ? { selfTest: true } : {}) };
+      candidates.push({ issue, comment, relevance, selfTest: fromSelfTest });
     }
   }
   // Claimed before any write: a crash from here on loses a reply rather than doubling one.
@@ -487,14 +515,23 @@ export async function runFeedActivity(deps: FeedActivityDeps): Promise<FeedActiv
   deps.ledger.write(ledger);
 
   const record = (candidate: Candidate, outcome: FeedOutcomeKind, reason: string, list: string[]): void => {
-    ledger.handled[candidate.comment.id] = { at: now(), ticket: candidate.issue.key, outcome, reason };
+    const at = now();
+    ledger.handled[candidate.comment.id] = {
+      at, ticket: candidate.issue.key, outcome, reason, ...(candidate.selfTest ? { selfTest: true } : {}),
+    };
     list.push(candidate.issue.key);
     deps.ledger.write(ledger);
     deps.journal.append({
       event: `feed.${outcome}`, actor: 'feed', ticket: candidate.issue.key,
       comment: candidate.comment.id, relevance: candidate.relevance, reason,
+      // How long from the comment being written to the feed acting on it.
+      latencyMs: Math.max(0, at - candidate.comment.created),
+      ...(candidate.selfTest ? { selfTest: true } : {}),
     });
   };
+
+  const selfTestRepliesFor = (ticket: string): number => Object.values(ledger.handled).filter((row) => row.selfTest
+    && row.ticket === ticket && row.outcome === 'replied' && row.at >= now() - SELF_TEST_CAP_WINDOW_MS).length;
 
   for (const candidate of candidates) {
     result.considered += 1;
@@ -535,9 +572,12 @@ export async function runFeedActivity(deps: FeedActivityDeps): Promise<FeedActiv
         continue;
       }
       if (decision.action === 'reply') {
-        const refusal = replyRefusal(decision.reply, me.names);
+        const refusal = candidate.selfTest && selfTestRepliesFor(issue.key) >= SELF_TEST_REPLY_CAP
+          ? `self-test reply cap reached: ${SELF_TEST_REPLY_CAP} replies on ${issue.key} in the last hour`
+          : replyRefusal(decision.reply, me.names);
         if (!refusal) {
           const posted = await deps.post(issue.key, decision.reply);
+          if (posted.id) ledger.posted.push(posted.id);
           if (posted.ok) {
             record(candidate, 'replied', decision.why || 'answered from the ticket', result.replied);
             continue;
@@ -593,6 +633,10 @@ async function postAnsweredQuestions(
       continue;
     }
     const posted = await deps.post(entry.ticket, answer);
+    if (posted.id) {
+      ledger.posted.push(posted.id);
+      deps.ledger.write(ledger);
+    }
     deps.journal.append({
       event: posted.ok ? 'feed.answer-posted' : 'feed.answer-failed', actor: 'feed', ticket: entry.ticket, key: entry.key,
       ...(posted.ok ? {} : { reason: posted.body ?? String(posted.status ?? '') }),

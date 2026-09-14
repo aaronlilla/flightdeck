@@ -281,8 +281,8 @@ describe('fileFeedLedger', () => {
     const { writeFileSync } = await import('node:fs');
     const path = join(mkdtempSync(join(tmpdir(), 'feed-ledger-')), 'jira-feed.json');
     const store = fileFeedLedger(path, () => START);
-    store.write({ startedAt: 5, lastPollAt: 6, handled: { c1: { at: START, ticket: 'ABC-1', outcome: 'replied' } }, answered: ['k@1'] });
-    expect(store.read()).toEqual({ startedAt: 5, lastPollAt: 6, handled: { c1: { at: START, ticket: 'ABC-1', outcome: 'replied' } }, answered: ['k@1'] });
+    store.write({ startedAt: 5, lastPollAt: 6, handled: { c1: { at: START, ticket: 'ABC-1', outcome: 'replied' } }, answered: ['k@1'], posted: ['p1'] });
+    expect(store.read()).toEqual({ startedAt: 5, lastPollAt: 6, handled: { c1: { at: START, ticket: 'ABC-1', outcome: 'replied' } }, answered: ['k@1'], posted: ['p1'] });
     writeFileSync(path, '{nope', 'utf8');
     expect(store.read().startedAt).toBe(START);
   });
@@ -317,5 +317,67 @@ describe('fetchFeedIssues', () => {
     expect(found?.comments.map((row) => row.id)).toEqual(['1', '2']);
     expect(found?.comments[1]?.mentions).toEqual(['acc-me']);
     expect(found?.assigneeAccountId).toBe('acc-me');
+  });
+});
+
+// The operator's own comments, allowed for a timed self-test (Aaron, 2026-09-14). The feed
+// posts as the operator too, so the one thing that must never happen is it answering a
+// reply it wrote itself.
+describe('self-test: the operator commenting to themself', () => {
+  function selfComment(extra: Partial<FeedComment> = {}): FeedComment {
+    return comment({ authorAccountId: 'acc-me', authorName: 'Robin Roe', body: 'what does this ticket change?', ...extra });
+  }
+
+  it('answers the operator\'s own comment while the switch is on, and records how long it took', async () => {
+    const h = harness({
+      board: [issue({ reporterAccountId: 'acc-me', comments: [selfComment({ created: LATER })] })],
+      reply: decision('reply', 'it makes the login button blue'),
+      now: LATER + 7_000,
+    });
+    h.deps.selfTest = () => true;
+    h.deps.post = async (ticket, body) => { h.posts.push({ ticket, body }); return { ok: true, id: 'posted-1' }; };
+
+    const result = await runFeedActivity(h.deps);
+    expect(result.replied).toEqual(['ABC-1']);
+    const row = h.rows.find((r) => r['event'] === 'feed.replied');
+    expect(row?.['latencyMs']).toBe(7_000);
+    expect(row?.['selfTest']).toBe(true);
+  });
+
+  it('never answers a reply the feed posted itself', async () => {
+    const own = selfComment({ id: 'c1', created: LATER });
+    const board = [issue({ reporterAccountId: 'acc-me', comments: [own] })];
+    const h = harness({ board, reply: decision('reply', 'it makes the login button blue') });
+    h.deps.selfTest = () => true;
+    h.deps.post = async (ticket, body) => {
+      h.posts.push({ ticket, body });
+      board[0]!.comments.push(selfComment({ id: 'posted-1', body, created: LATER + 1 }));
+      return { ok: true, id: 'posted-1' };
+    };
+
+    await runFeedActivity(h.deps);
+    await runFeedActivity(h.deps);
+    await runFeedActivity(h.deps);
+    expect(h.posts).toHaveLength(1);
+    expect(h.reasoner).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores the operator\'s own comments while the switch is off', async () => {
+    const h = harness({ board: [issue({ reporterAccountId: 'acc-me', comments: [selfComment()] })], reply: decision('reply', 'x') });
+    h.deps.selfTest = () => false;
+    await runFeedActivity(h.deps);
+    expect(h.reasoner).not.toHaveBeenCalled();
+    expect(h.posts).toHaveLength(0);
+  });
+
+  it('caps self-test replies per ticket, deferring the rest', async () => {
+    const comments = Array.from({ length: 12 }, (_, n) => selfComment({ id: `s${n}`, created: LATER + n }));
+    const h = harness({ board: [issue({ reporterAccountId: 'acc-me', comments })], reply: decision('reply', 'yep') });
+    h.deps.selfTest = () => true;
+    let n = 0;
+    h.deps.post = async (ticket, body) => { h.posts.push({ ticket, body }); n += 1; return { ok: true, id: `p${n}` }; };
+    const result = await runFeedActivity(h.deps);
+    expect(h.posts).toHaveLength(10);
+    expect(result.deferred).toHaveLength(2);
   });
 });

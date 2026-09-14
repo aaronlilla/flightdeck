@@ -170,3 +170,29 @@ describe('/state.watcher', () => {
     expect(afterOffBody.watcher.on).toBe(false);
   });
 });
+
+describe('POST /watcher/self-test (R-101)', () => {
+  const post = (body: unknown) => fetch(`${base}/watcher/self-test`, {
+    method: 'POST', headers: { 'x-forge-token': server.token, 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  it('turns the self-test on for the given minutes under this home, then off at 0', async () => {
+    const before = Date.now();
+    const on = await post({ minutes: 30 });
+    expect(on.status).toBe(200);
+    const onBody = await on.json() as { selfTestUntil: number | null };
+    expect(onBody.selfTestUntil).toBeGreaterThanOrEqual(before + 30 * 60_000);
+    const file = JSON.parse(readFileSync(join(dir, 'console', 'jira-feed-self-test.json'), 'utf8')) as { until: number };
+    expect(file.until).toBe(onBody.selfTestUntil);
+
+    const off = await post({ minutes: 0 });
+    expect((await off.json() as { selfTestUntil: number | null }).selfTestUntil).toBeNull();
+  });
+
+  it('refuses a request with no minutes, and needs the token', async () => {
+    expect((await post({})).status).toBe(400);
+    const anonymous = await fetch(`${base}/watcher/self-test`, { method: 'POST', body: JSON.stringify({ minutes: 5 }) });
+    expect(anonymous.status).toBe(401);
+  });
+});

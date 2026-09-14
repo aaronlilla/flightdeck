@@ -95,6 +95,7 @@ import { SyncRoutes } from './sync/routes.js';
 import { buildProductionSyncStages } from './sync/index.js';
 import { JiraWatcher, writeWatcherState } from './sync/watcher-state.js';
 import { buildJiraFeedActivity } from './sync/feed-wire.js';
+import { readSelfTestUntil, writeSelfTest } from './sync/feed-self-test.js';
 import type { TicketPoller } from './sync/watcher-thread-host.js';
 import { readHoldLabels } from './intake/watcherWire.js';
 
@@ -581,6 +582,7 @@ export class ForgeServer {
       store: this.queueStoreForMerge,
       journal: new Journal(this.journalPath),
       holdLabels: readHoldLabels(),
+      selfTestUntil: () => readSelfTestUntil(),
       ...(options.watcherPoller ? { poller: options.watcherPoller } : {}),
       activity: buildJiraFeedActivity({
         jiraConfig: jiraConfigFromEnv,
@@ -620,6 +622,7 @@ export class ForgeServer {
       authorized: (request, response) => this.authorized(request, response),
       confirmGate: (body, source, blast, act) => this.consoleWrites.confirmGate(body, source, blast, act),
       writeWatcherState: (state) => writeWatcherState(state),
+      writeSelfTest: (minutes) => writeSelfTest(minutes),
       defaultProject: () => process.env['FORGE_BACKLOG_PROJECT'] ?? null,
       blastCounts: () => ({
         queueItems: this.queueStoreForMerge.all().length,

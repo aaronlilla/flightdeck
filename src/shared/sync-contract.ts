@@ -46,6 +46,7 @@ export interface WatcherStatus {
   nextPollAt?: number;
   lastCount?: number;           // tickets observed on the last poll
   lastError?: string;           // last watcher.tick-error message, cleared on a good poll
+  selfTestUntil?: number;       // R-101: when the operator's-own-comments self-test ends, while it is on
 }
 
 export interface SyncStateResponse {

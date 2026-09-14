@@ -33,6 +33,9 @@ export interface SyncRoutesOptions {
   confirmGate?: ConfirmGate;
   writeWatcherState?: (state: WatcherFileState) => void;
   defaultProject?: () => string | null;
+  /** R-101: turns the feed's self-test on for `minutes`, or off at 0; answers the end
+   *  time or null. Absent refuses the route. */
+  writeSelfTest?: (minutes: number) => number | null;
   /** What the `POST /sync/full` confirm dialog names: how many queue items would be
    *  wiped and how many workers are running right now. Absent reads as `0, 0` -- a bare
    *  specimen still gets a real sentence shape, just with nothing live behind the count. */
@@ -68,7 +71,7 @@ export class SyncRoutes {
   static matches(path: string, method: string | undefined): boolean {
     if (path === '/sync') return method === 'GET';
     if (SCOPE_ROUTE.test(path)) return method === 'POST';
-    if (path === '/watcher/on' || path === '/watcher/off') return method === 'POST';
+    if (path === '/watcher/on' || path === '/watcher/off' || path === '/watcher/self-test') return method === 'POST';
     return false;
   }
 
@@ -144,6 +147,25 @@ export class SyncRoutes {
       await this.opts.watcher.start(project, { fresh: !this.opts.watcher.status().on });
       this.opts.writeWatcherState?.({ on: true, project });
       respond(response, 200, this.opts.watcher.status());
+      return true;
+    }
+
+    if (path === '/watcher/self-test' && request.method === 'POST') {
+      // R-101: `{ minutes }` lets the feed answer the operator's own comments until then;
+      // `{ minutes: 0 }` turns it off at once. The end time is the whole switch, so it
+      // cannot be left on by accident.
+      if (!this.opts.writeSelfTest) {
+        respond(response, 501, { error: 'self-test is not wired on this server' });
+        return true;
+      }
+      const body = await readBody<{ minutes?: unknown }>(request);
+      const minutes = Number(body?.minutes);
+      if (!Number.isFinite(minutes) || minutes < 0) {
+        respond(response, 400, { error: 'minutes is required: a number, 0 turns the self-test off' });
+        return true;
+      }
+      const until = this.opts.writeSelfTest(minutes);
+      respond(response, 200, { ...this.opts.watcher.status(), selfTestUntil: until });
       return true;
     }
 

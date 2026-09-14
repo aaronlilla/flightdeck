@@ -175,6 +175,8 @@ export interface JiraCallResult {
   ok: boolean;
   status?: number;
   body?: string;
+  /** The created resource's id, when Jira returns one (a new comment's id). */
+  id?: string;
 }
 
 /** J3: the writes `forge gate --merge` (and, A.3, the queue's own `queueHandoff.ts`)
@@ -299,7 +301,17 @@ export function createJiraWriteClient(config: Pick<JiraConfig, 'site' | 'email' 
       const response = await fetchFn(`${config.site}/rest/api/3/issue/${key}/comment`, {
         method: 'POST', headers, body: JSON.stringify({ body: adfFromText(body) }),
       });
-      return callResultFor(response);
+      if (!response.ok) return callResultFor(response);
+      // R-101: the new comment's id, so the feed can recognise its own replies and never
+      // answer them when it is allowed to read the operator's comments.
+      let id: string | undefined;
+      try {
+        const created = (await response.json()) as { id?: unknown };
+        if (typeof created.id === 'string' || typeof created.id === 'number') id = String(created.id);
+      } catch {
+        // A created comment with an unreadable body is still created.
+      }
+      return { ok: true, status: response.status, ...(id ? { id } : {}) };
     },
     async assign(key, accountId) {
       const response = await fetchFn(`${config.site}/rest/api/3/issue/${key}/assignee`, {
