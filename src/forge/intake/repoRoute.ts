@@ -128,7 +128,7 @@ export function roadmapFromBrief(text: string): string | null {
     const match = /^\s*roadmap\s*:\s*(.+?)\s*$/i.exec(line);
     if (!match) continue;
     const value = match[1]!;
-    if (/^R-\d{2}$/.test(value)) return value;
+    if (/^R-\d{2,}$/.test(value)) return value;
   }
   return null;
 }
