@@ -17,16 +17,21 @@ import { runWatcherIntake, type WatcherIntakeResult } from './watcherIntake.js';
 import type { QueueStore } from './queueStore.js';
 import { RunInbox } from '../runinbox.js';
 
-const DEFAULT_WATCHER_POLL_SECONDS = 30;
+const DEFAULT_WATCHER_POLL_SECONDS = 5;
 
-/** `FORGE_CHAIN_POLL_S`, the same variable the chain reads (`chain-env.ts`) -- shared
- *  by design, per the brief, rather than a second env var naming the same idea -- but
- *  with a 30s default instead of the chain's 300s, since a comment or a status move on
- *  an owned ticket should reach the queue fast. */
+/** R-101: `FORGE_JIRA_FEED_POLL_S`, default 5 s, so a new ticket is known within ten
+ *  seconds of being created. It used to share `FORGE_CHAIN_POLL_S` with the chain, which
+ *  meant slowing the chain slowed the feed; that variable is no longer read here. */
 export function readWatcherPollSeconds(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = env['FORGE_CHAIN_POLL_S'];
+  const raw = env['FORGE_JIRA_FEED_POLL_S'];
   const parsed = raw ? Number(raw) : DEFAULT_WATCHER_POLL_SECONDS;
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_WATCHER_POLL_SECONDS;
+}
+
+/** R-101: `FORGE_INTAKE_HOLD_LABELS`, a comma-separated list. A ticket carrying one is
+ *  worked to a pull request and stops there: never merged, never handed to QA. */
+export function readHoldLabels(env: NodeJS.ProcessEnv = process.env): string[] {
+  return (env['FORGE_INTAKE_HOLD_LABELS'] ?? '').split(',').map((label) => label.trim()).filter(Boolean);
 }
 
 /**
@@ -65,6 +70,8 @@ export interface WatcherTickDeps {
   /** Test seam only: `RunInbox` writes to disk under `runDir(run)`, which a unit test
    *  has no reason to touch. Defaults to the real inbox. */
   sendTo?: (run: string, text: string) => void;
+  /** R-101: labels that hold a ticket at its pull request (`readHoldLabels`). */
+  holdLabels?: readonly string[];
 }
 
 const defaultSendTo = (run: string, text: string): void => {
@@ -90,6 +97,7 @@ export async function watcherTick(deps: WatcherTickDeps): Promise<WatcherIntakeR
   const feed = deps.feedFor(ownedKeysOf(deps.store));
   const result = await runWatcherIntake({
     feed, watermarks: deps.watermarks, store: deps.store, now,
+    ...(deps.holdLabels ? { holdLabels: deps.holdLabels } : {}),
   });
 
   for (const send of result.sends) {

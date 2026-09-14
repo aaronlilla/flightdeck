@@ -9,6 +9,7 @@ import { dirname } from 'node:path';
 
 import type { WatcherStatus } from '../../shared/sync-contract.js';
 import type { JiraConfig } from '../intake/jira.js';
+import type { FeedActivityResult } from '../intake/jiraFeed.js';
 import type { WatermarkStore } from '../intake/once.js';
 import type { QueueStore } from '../intake/queueStore.js';
 import { readWatcherPollSeconds, watcherFeed, watcherJql, watcherTick } from '../intake/watcherWire.js';
@@ -54,6 +55,14 @@ export function shouldAutoStartWatcher(
   return stateFileExists ? state.on : Boolean(envProject);
 }
 
+/** R-101: the feed's second half, run beside every watcher poll. `reset` marks "now" as
+ *  where the feed starts, called when a person turns it on (never on a restart, so a
+ *  comment written while the console was down is still handled). */
+export interface JiraFeedActivity {
+  run(project: string): Promise<FeedActivityResult>;
+  reset(now: number): void;
+}
+
 export interface JiraWatcherDeps {
   jiraConfig: () => JiraConfig | undefined;
   watermarks: WatermarkStore;
@@ -61,6 +70,8 @@ export interface JiraWatcherDeps {
   journal: Journal;
   pollSeconds?: number;
   now?: () => number;
+  activity?: JiraFeedActivity;
+  holdLabels?: readonly string[];
 }
 
 /**
@@ -85,12 +96,40 @@ export class JiraWatcher {
 
   private lastError: string | undefined;
 
+  private activityError: string | undefined;
+
+  /** One poll and one feed pass at a time each: at a five second interval, a slow Jira
+   *  search or a reasoner call routinely outlasts the tick, and two overlapping passes
+   *  would read the same watermark and ledger. */
+  private polling = false;
+
+  private feeding: Promise<void> | null = null;
+
+  private ticketsAdded: (() => void) | undefined;
+
   constructor(private readonly deps: JiraWatcherDeps) {
     this.pollSeconds = deps.pollSeconds ?? readWatcherPollSeconds();
     this.now = deps.now ?? Date.now;
   }
 
+  /** R-101: called after a poll queues at least one ticket, so the queue plans it now
+   *  rather than on its own next tick. `cli.ts` hands in the queue runner's tick. */
+  onTicketsAdded(fn: () => void): void {
+    this.ticketsAdded = fn;
+  }
+
   private async pollOnce(project: string): Promise<void> {
+    if (this.polling) return;
+    this.polling = true;
+    try {
+      await this.pollTickets(project);
+    } finally {
+      this.polling = false;
+    }
+    this.startActivity(project);
+  }
+
+  private async pollTickets(project: string): Promise<void> {
     const config = this.deps.jiraConfig();
     if (!config) {
       this.lastError = 'no Jira credentials';
@@ -103,10 +142,14 @@ export class JiraWatcher {
         store: this.deps.store,
         journal: this.deps.journal,
         now: this.now,
+        ...(this.deps.holdLabels ? { holdLabels: this.deps.holdLabels } : {}),
       });
       this.lastPollAt = this.now();
       this.lastCount = result.addedTickets.length + result.sends.length + result.closed.length;
       this.lastError = undefined;
+      if (result.addedTickets.length && this.ticketsAdded) {
+        try { this.ticketsAdded(); } catch { /* the queue's own tick records its failures */ }
+      }
     } catch (error) {
       this.lastPollAt = this.now();
       this.lastError = error instanceof Error ? error.message : String(error);
@@ -116,11 +159,33 @@ export class JiraWatcher {
     }
   }
 
+  private startActivity(project: string): void {
+    const activity = this.deps.activity;
+    if (!activity || this.feeding || !this.deps.jiraConfig()) return;
+    this.feeding = activity.run(project)
+      .then(() => { this.activityError = undefined; })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message !== this.activityError) {
+          this.deps.journal.append({ event: 'feed.tick-error', actor: 'feed', message } as never);
+        }
+        this.activityError = message;
+      })
+      .finally(() => { this.feeding = null; });
+  }
+
+  /** Resolves once any feed pass in flight has finished. Tests and shutdown only. */
+  async settled(): Promise<void> {
+    await this.feeding;
+  }
+
   /** Starts polling `project`. Awaiting it means the first poll has already happened;
-   *  production callers (`cli.ts`, `POST /watcher/on`) can also fire-and-forget. */
-  async start(project: string): Promise<void> {
+   *  production callers (`cli.ts`, `POST /watcher/on`) can also fire-and-forget.
+   *  `fresh` (a person turning the feed on) starts the feed's comment handling from now. */
+  async start(project: string, options: { fresh?: boolean } = {}): Promise<void> {
     this.stop();
     this.project = project;
+    if (options.fresh) this.deps.activity?.reset(this.now());
     await this.pollOnce(project);
     this.timer = setInterval(() => { void this.pollOnce(project); }, this.pollSeconds * 1000);
     (this.timer as unknown as { unref?: () => void }).unref?.();
@@ -142,7 +207,7 @@ export class JiraWatcher {
         ? { lastPollAt: this.lastPollAt, nextPollAt: this.lastPollAt + this.pollSeconds * 1000 }
         : {}),
       ...(this.lastCount !== undefined ? { lastCount: this.lastCount } : {}),
-      ...(this.lastError !== undefined ? { lastError: this.lastError } : {}),
+      ...((this.lastError ?? this.activityError) !== undefined ? { lastError: this.lastError ?? this.activityError } : {}),
     };
   }
 }

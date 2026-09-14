@@ -94,6 +94,8 @@ import { SyncStore } from './sync/store.js';
 import { SyncRoutes } from './sync/routes.js';
 import { buildProductionSyncStages } from './sync/index.js';
 import { JiraWatcher, writeWatcherState } from './sync/watcher-state.js';
+import { buildJiraFeedActivity } from './sync/feed-wire.js';
+import { readHoldLabels } from './intake/watcherWire.js';
 
 /** Reads the server's own bearer token, minting one on first use. */
 export function ensureServerToken(path: string = serverTokenPath()): string {
@@ -567,11 +569,25 @@ export class ForgeServer {
     // both read its `status()`. The production stage wiring (`buildProductionSyncStages`)
     // omits stream B's three stages entirely; `run.ts`'s own absent-stage handling marks
     // each `skipped` rather than `ok`, which is this brief's one permitted placeholder.
+    // R-101: the Jira feed rides the same switch. Its reasoner is the server's own claude
+    // provider on the `triage` class; its questions land in this server's inbox.
     this.watcher = options.watcher ?? new JiraWatcher({
       jiraConfig: jiraConfigFromEnv,
       watermarks: fileWatermarkStore(),
       store: this.queueStoreForMerge,
       journal: new Journal(this.journalPath),
+      holdLabels: readHoldLabels(),
+      activity: buildJiraFeedActivity({
+        jiraConfig: jiraConfigFromEnv,
+        store: this.queueStoreForMerge,
+        inbox: this.inbox,
+        journal: new Journal(this.journalPath),
+        reasoner: reasonerFor('claude', {
+          journal: new Journal(this.journalPath),
+          cwd: process.cwd(),
+          ...(options.modelPolicyPath ? { policyPath: options.modelPolicyPath } : {}),
+        }),
+      }),
     });
     this.syncStore = options.syncStore ?? new SyncStore();
     // R-73: real stage wiring is only built when nothing already injected `syncDeps`

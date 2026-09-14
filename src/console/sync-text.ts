@@ -31,8 +31,8 @@ function hhmm(t: number): string {
 }
 
 export function watcherLine(status: WatcherStatus, now: number): string {
-  if (!status.on) return 'Watcher off';
-  if (status.lastError) return `Watcher error: ${status.lastError}`;
+  if (!status.on) return 'Jira feed off';
+  if (status.lastError) return `Jira feed error: ${status.lastError}`;
   const last = status.lastPollAt !== undefined ? hhmm(status.lastPollAt) : '--:--';
   const count = status.lastCount ?? 0;
   const next = status.nextPollAt !== undefined

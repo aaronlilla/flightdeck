@@ -819,6 +819,9 @@ export interface QueueItem {
   /** A.3: when the Jira write-back at review ran for this item -- absent means it
    *  hasn't fired yet. Set once, alongside the transition into `review`. */
   handoffAt?: number;
+  /** R-101: the ticket carried a hold label, so the item stops at its pull request: no
+   *  merge and no QA handoff, whatever the merge allow-list says. */
+  noMerge?: boolean;
   /** Item 16, 2026-09-12: when the ship prediction was posted, so a second pass over
    *  the same item does not post a second one. A FIX FIRST round leaves the item
    *  `running` and the next tick re-enters the review hop; marking the pull request
