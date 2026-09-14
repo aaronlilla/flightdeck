@@ -5,6 +5,13 @@
  */
 import type { CodeSyncDeps } from './index.ts';
 
+/** `FORGE_WORKTREE_REMOVAL=off` stops every automatic worktree deletion: this sweep and
+ *  the chain's reclaim of an orphan tree holding a branch. Read per call, so the env
+ *  file is the switch. */
+export function worktreeRemovalOff(env: NodeJS.ProcessEnv = process.env): boolean {
+  return (env['FORGE_WORKTREE_REMOVAL'] ?? '').trim().toLowerCase() === 'off';
+}
+
 export type { CodeSyncDeps };
 
 export interface SweptWorktree {
@@ -157,6 +164,12 @@ export async function sweepWorktrees(
       }
 
       const reason = pr.mergedAt ? 'merged-clean' : 'closed-clean';
+      // Aaron, 2026-09-14: "turn off the delete worktree feature for now". The sweep still
+      // reports what it would remove; nothing is deleted while the switch is off.
+      if (worktreeRemovalOff()) {
+        kept.push({ path: entry.path, branch, reason: 'removal-off' });
+        continue;
+      }
       if (!dryRun) {
         // A worktree git cannot remove (a file locked by a stuck process, a shell whose
         // cwd is inside it) is kept, named, and the sweep moves on. On 2026-09-11 one

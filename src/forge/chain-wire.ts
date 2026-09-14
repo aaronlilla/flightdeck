@@ -28,6 +28,7 @@ import type { PollSourceName } from './contracts.js';
 import type { QueueRuntimeDeps } from './intake/queue.js';
 import { run as execRun, type RunRequest, type RunResult } from './exec.js';
 import { findingsTextFrom } from './council/renderNotes.js';
+import { worktreeRemovalOff } from './sync/code/worktrees.js';
 import { createJiraFeed } from './intake/jira.js';
 import {
   intakeBriefsDir, journalPath, killSwitchPath, forgeHome, registryDir, runDir,
@@ -528,6 +529,11 @@ export async function provisionWorktree(input: {
     // and only a worktree with no live owner behind it gets reclaimed.
     if (rows === undefined || ownedLive) {
       throw new Error(`branch ${branch} is already checked out at ${branchElsewhere.path}`);
+    }
+    if (worktreeRemovalOff()) {
+      throw new Error(
+        `branch ${branch} is already checked out at ${branchElsewhere.path}, and worktree removal is switched off (FORGE_WORKTREE_REMOVAL=off)`,
+      );
     }
 
     const removed = await runner({
