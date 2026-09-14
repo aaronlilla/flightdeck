@@ -17,6 +17,8 @@ import { jiraFeedLedgerPath } from '../paths.js';
 import { RunInbox } from '../runinbox.js';
 import type { JiraFeedActivity } from './watcher-state.js';
 import { readSelfTestUntil } from './feed-self-test.js';
+import { loadContract } from '../intake/readability.js';
+import { readabilityDir } from '../paths.js';
 
 export interface JiraFeedWireOptions {
   jiraConfig: () => JiraConfig | undefined;
@@ -39,6 +41,16 @@ export function feedNames(displayName: string, env: NodeJS.ProcessEnv = process.
 
 export function buildJiraFeedActivity(options: JiraFeedWireOptions): JiraFeedActivity {
   const ledger = options.ledger ?? fileFeedLedger(jiraFeedLedgerPath());
+  // The comment check's own word list, read once. An unreadable contract names nothing,
+  // and the check itself still refuses at write time.
+  let banned: string[] | null = null;
+  const avoidWords = (): string[] => {
+    if (banned === null) {
+      const loaded = loadContract(readabilityDir());
+      banned = loaded.ok ? [...loaded.contract.banned_words] : [];
+    }
+    return banned;
+  };
   let me: (FeedMe & { displayName: string }) | null = null;
 
   const readMe = async (): Promise<FeedMe | null> => {
@@ -76,6 +88,7 @@ export function buildJiraFeedActivity(options: JiraFeedWireOptions): JiraFeedAct
         // Read on every pass, so turning the self-test off (or its end time passing)
         // takes effect on the next pass with no restart.
         selfTest: () => readSelfTestUntil() !== null,
+        avoidWords,
       });
       return result;
     },

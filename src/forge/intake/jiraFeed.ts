@@ -336,8 +336,9 @@ function clip(text: string, max: number): string {
 export function feedPrompt(
   issue: FeedIssue, comment: FeedComment, relevance: Exclude<FeedRelevance, 'self'>, operatorName: string,
   repair?: { reply: string; refusal: string },
+  avoidWords: readonly string[] = [],
 ): string {
-  const base = feedPromptBody(issue, comment, relevance, operatorName);
+  const base = feedPromptBody(issue, comment, relevance, operatorName, avoidWords);
   if (!repair) return base;
   // One rewording after the comment check refused a reply: same answer, fixed wording.
   return [
@@ -351,6 +352,7 @@ export function feedPrompt(
 
 function feedPromptBody(
   issue: FeedIssue, comment: FeedComment, relevance: Exclude<FeedRelevance, 'self'>, operatorName: string,
+  avoidWords: readonly string[],
 ): string {
   const thread = issue.comments
     .filter((row) => row.id !== comment.id && row.created <= comment.created)
@@ -380,8 +382,10 @@ function feedPromptBody(
     'A reply reads as the developer typing to a teammate: first person, casual, short (one',
     'to three sentences), plain words, no greeting, no sign-off, no headings or bullets, no',
     'mention of being automated, and never refers to the developer by name.',
+    // The team's comment check refuses these outright, so a reply using one never posts.
+    ...(avoidWords.length ? [`The reply must never use these words: ${avoidWords.join(', ')}.`] : []),
     '',
-    'Put exactly this in the "text" field, one field per line, REPLY last:',
+    'Answer with exactly these four lines and nothing else, REPLY last:',
     'ACTION: reply | defer | ignore',
     'DIRECTED: yes | no',
     'WHY: <one sentence>',
@@ -452,6 +456,9 @@ export interface FeedActivityDeps {
   /** Whether the operator's own comments are let through, for a timed test of the
    *  pipeline. Absent reads as off. */
   selfTest?: () => boolean;
+  /** Words the team's comment check refuses, named in the prompt so a reply avoids them
+   *  on the first try instead of spending a rewording. */
+  avoidWords?: () => string[];
 }
 
 export interface FeedActivityResult {
@@ -562,7 +569,10 @@ export async function runFeedActivity(deps: FeedActivityDeps): Promise<FeedActiv
     try {
       const reply = await deps.reasoner.call({
         className: 'triage',
-        prompt: feedPrompt(candidate.issue, candidate.comment, candidate.relevance, deps.operatorName(), repair),
+        prompt: feedPrompt(candidate.issue, candidate.comment, candidate.relevance, deps.operatorName(), repair, deps.avoidWords?.() ?? []),
+        // The decision is four plain lines. Demanding a JSON wrapper rejected a correct
+        // rewording live on 2026-09-14; parseDecision reads either form.
+        replyShape: 'text',
       });
       const decision = parseDecision(reply.text);
       return decision ? { decision, error: '' } : { decision: null, error: 'the reasoner answered in a shape the feed cannot read' };

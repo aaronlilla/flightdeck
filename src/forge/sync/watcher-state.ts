@@ -78,6 +78,10 @@ export interface JiraWatcherDeps {
   poller?: TicketPoller;
   /** R-101: when the feed's self-test ends, or null while it is off. */
   selfTestUntil?: () => number | null;
+  /** R-101: how often the comment pass runs, in seconds, independent of the ticket poll
+   *  (default 2). Measured live: tied to the 5 s poll result, a burst of comments waited
+   *  6 to 8 s before the pass began. */
+  feedSeconds?: number;
 }
 
 /**
@@ -112,6 +116,8 @@ export class JiraWatcher {
   private feeding: Promise<void> | null = null;
 
   private ticketsAdded: (() => void) | undefined;
+
+  private feedTimer: ReturnType<typeof setInterval> | undefined;
 
   constructor(private readonly deps: JiraWatcherDeps) {
     this.pollSeconds = deps.pollSeconds ?? readWatcherPollSeconds();
@@ -192,6 +198,12 @@ export class JiraWatcher {
     this.stop();
     this.project = project;
     if (options.fresh) this.deps.activity?.reset(this.now());
+    if (this.deps.activity) {
+      // The comment pass keeps its own short cadence; `startActivity` skips a pass while
+      // the previous one is still running, so this never stacks passes.
+      this.feedTimer = setInterval(() => { this.startActivity(project); }, (this.deps.feedSeconds ?? 2) * 1000);
+      (this.feedTimer as unknown as { unref?: () => void }).unref?.();
+    }
     if (this.deps.poller) {
       // The thread polls at once and on its own interval; nothing here waits on it.
       this.deps.poller.start(project, (result) => { this.onPolled(project, result); });
@@ -216,6 +228,10 @@ export class JiraWatcher {
 
   stop(): void {
     this.deps.poller?.stop();
+    if (this.feedTimer) {
+      clearInterval(this.feedTimer);
+      this.feedTimer = undefined;
+    }
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = undefined;
