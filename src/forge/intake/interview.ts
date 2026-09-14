@@ -256,6 +256,6 @@ export function buildBriefPrompt(packet: Packet, answers: InterviewAnswer[]): st
 export async function writeBrief(
   packet: Packet, answers: InterviewAnswer[], reasoner: Reasoner,
 ): Promise<PlannedBrief> {
-  const result = await reasoner.call({ className: 'plan-ticket', prompt: buildBriefPrompt(packet, answers) });
+  const result = await reasoner.call({ className: 'plan-ticket', prompt: buildBriefPrompt(packet, answers), replyShape: 'text' });
   return { packetId: packet.id, ticket: packet.ticket, text: result.text };
 }

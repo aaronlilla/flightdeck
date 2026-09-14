@@ -60,6 +60,6 @@ export function buildPlannerPrompt(packet: Packet): string {
  */
 export async function planFromPacket(packet: Packet, reasoner: Reasoner, className = 'plan'): Promise<PlannedBrief> {
   const prompt = buildPlannerPrompt(packet);
-  const result = await reasoner.call({ className, prompt });
+  const result = await reasoner.call({ className, prompt, replyShape: 'text' });
   return { packetId: packet.id, ticket: packet.ticket, text: result.text };
 }

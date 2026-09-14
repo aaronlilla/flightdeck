@@ -968,7 +968,9 @@ export interface Reasoner {
    * it, a reasoner spend had no way to be attributed to the run or PR that caused it.
    */
   call(
-    input: { className: string; prompt: string; replyShape?: 'object' | 'array'; run?: string },
+    /** `'text'` (R-101): the reply IS the answer -- a brief, a document -- returned as the
+     *  model wrote it, with no JSON wrapper asked for or required. */
+    input: { className: string; prompt: string; replyShape?: 'object' | 'array' | 'text'; run?: string },
   ): Promise<{ text: string }>;
 }
 

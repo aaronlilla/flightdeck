@@ -75,6 +75,9 @@ const SYSTEM_INSTRUCTIONS = [
   '{"text": "<your answer>"}',
 ].join(' ');
 
+/** R-101: for a caller that wants the answer itself (a brief). No wrapper, no preamble. */
+const TEXT_INSTRUCTIONS = 'Reply with the requested document only: no preamble before it, no commentary after it.';
+
 /** Raised when a reply is not valid JSON, or is valid JSON that does not match
  *  `REPLY_SCHEMA`. `raw` is the model's actual text, kept for the journal row and for
  *  whoever reads the failure afterward -- the one thing a thrown string would lose. */
@@ -140,7 +143,7 @@ export class ClaudeReasoner implements Reasoner {
   constructor(private readonly deps: ClaudeReasonerDeps) {}
 
   async call(
-    input: { className: string; prompt: string; replyShape?: 'object' | 'array'; run?: string },
+    input: { className: string; prompt: string; replyShape?: 'object' | 'array' | 'text'; run?: string },
   ): Promise<{ text: string }> {
     const { className, prompt, run } = input;
     const { policyPath } = this.deps;
@@ -195,6 +198,16 @@ export class ClaudeReasoner implements Reasoner {
               reject(new ReasonerTurnError(event.subtype));
               return;
             }
+            // R-101: a caller that asked for text reads the reply as the answer itself.
+            // Demanding JSON here rejected 57 of 83 correct briefs on the live journal.
+            if (input.replyShape === 'text') {
+              if (trimmed.length === 0) {
+                reject(new ReasonerParseError(text));
+                return;
+              }
+              resolve({ text: trimmed });
+              break;
+            }
             let parsedJson: unknown;
             try {
               parsedJson = JSON.parse(stripFence(trimmed));
@@ -245,7 +258,7 @@ export class ClaudeReasoner implements Reasoner {
       tools: [],
       maxTurns: 1,
       settingSources: [],
-      systemPrompt: SYSTEM_INSTRUCTIONS,
+      systemPrompt: input.replyShape === 'text' ? TEXT_INSTRUCTIONS : SYSTEM_INSTRUCTIONS,
       env,
       canUseTool: async () => ({
         behavior: 'deny', message: 'the reasoner uses no tools',
