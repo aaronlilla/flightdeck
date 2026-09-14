@@ -236,7 +236,8 @@ describe('runFeedActivity', () => {
 
     const refused = harness({ board: [issue({ comments: [comment({ mentions: ['acc-me'] })] })], reply: decision('reply', 'on it'), postOk: false });
     expect((await runFeedActivity(refused.deps)).deferred).toEqual(['ABC-1']);
-    expect(refused.posts).toHaveLength(1);
+    // One post, one rewording, one more post, then the inbox.
+    expect(refused.posts).toHaveLength(2);
   });
 
   it('treats a new ticket whose description names the operator as something to resolve', async () => {
@@ -379,5 +380,62 @@ describe('self-test: the operator commenting to themself', () => {
     const result = await runFeedActivity(h.deps);
     expect(h.posts).toHaveLength(10);
     expect(result.deferred).toHaveLength(2);
+  });
+});
+
+// Measured live 2026-09-14: two comments arriving together, handled one after the other,
+// took 6.4 s and 15.6 s; the second waited on the first's model call.
+describe('comments in one pass are handled together', () => {
+  it('starts every comment\'s decision before the first one finishes', async () => {
+    const comments = [comment({ id: 'a', mentions: ['acc-me'] }), comment({ id: 'b', mentions: ['acc-me'] }), comment({ id: 'c', mentions: ['acc-me'] })];
+    const h = harness({ board: [issue({ comments })] });
+    let inFlight = 0;
+    let peak = 0;
+    const releases: (() => void)[] = [];
+    h.deps.reasoner = {
+      call: async () => {
+        inFlight += 1;
+        peak = Math.max(peak, inFlight);
+        await new Promise<void>((resolve) => { releases.push(resolve); });
+        inFlight -= 1;
+        return { text: decision('ignore') };
+      },
+    };
+    const run = runFeedActivity(h.deps);
+    for (let spins = 0; spins < 50 && releases.length < 3; spins += 1) await new Promise((resolve) => setImmediate(resolve));
+    expect(peak).toBe(3);
+    releases.forEach((release) => release());
+    const result = await run;
+    expect(result.ignored).toHaveLength(3);
+  });
+});
+
+// Measured live 2026-09-14: a correct reply ("just the app") was refused by the comment
+// readability check for a filler word and fell to the inbox, when one rewording would
+// have posted it.
+describe('a reply refused by the comment check is reworded once', () => {
+  it('asks the reasoner again with the refusal, and posts the reworded reply', async () => {
+    const h = harness({ board: [issue({ comments: [comment({ mentions: ['acc-me'], body: 'web too or only the app?' })] })] });
+    const prompts: string[] = [];
+    const replies = [decision('reply', 'just the app'), decision('reply', 'only the app')];
+    h.deps.reasoner = { call: async ({ prompt }) => { prompts.push(prompt); return { text: replies[prompts.length - 1]! }; } };
+    h.deps.post = async (ticket, body) => {
+      h.posts.push({ ticket, body });
+      return body.includes('just') ? { ok: false, body: 'readability refused this comment: banned word(s) in prose: just' } : { ok: true, id: 'p1' };
+    };
+
+    const result = await runFeedActivity(h.deps);
+    expect(result.replied).toEqual(['ABC-1']);
+    expect(h.posts.map((post) => post.body)).toEqual(['just the app', 'only the app']);
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]).toContain('banned word(s) in prose: just');
+  });
+
+  it('defers when the reworded reply is refused too', async () => {
+    const h = harness({ board: [issue({ comments: [comment({ mentions: ['acc-me'] })] })], reply: decision('reply', 'just the app') });
+    h.deps.post = async (ticket, body) => { h.posts.push({ ticket, body }); return { ok: false, body: 'readability refused this comment: banned word(s) in prose: just' }; };
+    const result = await runFeedActivity(h.deps);
+    expect(result.deferred).toEqual(['ABC-1']);
+    expect(h.posts).toHaveLength(2);
   });
 });
