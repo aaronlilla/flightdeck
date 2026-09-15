@@ -147,6 +147,7 @@ const ALLOWED: Call[] = [
   ['Read a skill reference under ~/.claude', 'Read', { file_path: `${HOME_FWD}/.claude/skills/tdd/SKILL.md` }],
   ['Bash cmd /c', 'Bash', { command: 'cmd /c "npm test"' }],
   ['Bash echo $HOME', 'Bash', { command: 'echo $HOME' }],
+  ['Bash echo that names a guard path', 'Bash', { command: 'echo "the rule lives in ~/.claude/hooks/authorship_guard.py"' }],
   ['Bash lists the users folder', 'Bash', { command: 'ls C:/Users' }],
   ['Bash commit message that mentions the guards', 'Bash', { command: 'git commit -m "Stop workers reading ~/.claude/hooks"' }],
   ['Bash search for the text in src', 'Bash', { command: "rg -n '~/.claude/hooks' src" }],
