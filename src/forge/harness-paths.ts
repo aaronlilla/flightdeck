@@ -28,8 +28,16 @@
  * Read-only file tools may reach two places under a root: `skills/`, and
  * `projects/<slug>/<session>/tool-results/`, where Claude Code saves an oversized tool result.
  *
- * Not caught, by design of a text check: a path built at runtime from pieces (`'~/.cl' +
- * 'aude'`), an encoded one, or a link from outside that points into a root.
+ * Not caught, by design of a text check that never touches the filesystem: a path built at
+ * runtime from pieces (`'~/.cl' + 'aude'`); the value of an inherited shell variable the command
+ * does not itself set (an assign-then-use in the same command IS caught, and the named home
+ * variables are expanded, but this check cannot resolve an arbitrary `$X` whose value lives only
+ * in the environment); and a symlink or junction from outside whose target is a root. A refused
+ * call sharing an assistant message with `forge_done` is a separate matter and not a bypass: the
+ * brief's `## Verification` commands (`worker.ts` `verifyDone`) are what honour a completion, so
+ * a `forge_done` riding alongside a refusal still routes through them rather than passing on its
+ * own. ANSI-C `$'...'` escapes, which the shell decodes before running, ARE caught (see
+ * `decodeAnsiC`).
  */
 import { homedir } from 'node:os';
 import { posix } from 'node:path';
@@ -244,12 +252,40 @@ function textNamesRoot(command: string, home: string, roots: string[]): string |
 }
 
 /**
- * A shell command checked three ways: as written, with quote characters removed, and with quotes
- * and backslashes removed, the way the shell itself reads `~/.cla""ude` and `~/.cla\ude` as
- * `~/.claude`. As written is kept, since a Windows path's backslashes are separators there.
+ * ANSI-C quoting: bash reads `$'\x2e'` as `.`, `$'\u002e'` as `.`, `$'\056'` as `.`. The text scan
+ * would otherwise see the literal `$'\x2e'claude` and never match `.claude`. Decodes the escapes
+ * inside every `$'...'` span and drops the `$'` wrapper, leaving the bytes the shell would run.
+ */
+function decodeAnsiC(command: string): string {
+  return command.replace(/\$'((?:\\.|[^'\\])*)'/g, (_match, body: string) => body.replace(
+    /\\(x[0-9a-fA-F]{1,2}|u[0-9a-fA-F]{1,4}|U[0-9a-fA-F]{1,8}|[0-7]{1,3}|.)/g,
+    (esc: string, seq: string) => {
+      const head = seq[0];
+      try {
+        if (head === 'x') return String.fromCharCode(parseInt(seq.slice(1), 16));
+        if (head === 'u' || head === 'U') return String.fromCodePoint(parseInt(seq.slice(1), 16));
+        if (/^[0-7]/.test(seq)) return String.fromCharCode(parseInt(seq, 8));
+      } catch {
+        return esc;
+      }
+      const simple: Record<string, string> = { n: '\n', t: '\t', r: '\r', '\\': '\\', "'": "'", '"': '"' };
+      return simple[seq] ?? seq;
+    },
+  ));
+}
+
+/**
+ * A shell command checked several ways: as written, with quote characters removed, with quotes and
+ * backslashes removed (the way the shell reads `~/.cla""ude` and `~/.cla\ude` as `~/.claude`), and
+ * with ANSI-C `$'...'` escapes decoded. As written is kept, since a Windows path's backslashes are
+ * separators there.
  */
 function shellHit(command: string, cwd: string, home: string, roots: string[]): string | undefined {
-  const variants = [command, command.replace(/["']/g, ''), command.replace(/["'\\]/g, '')];
+  const decoded = decodeAnsiC(command);
+  const variants = [
+    command, command.replace(/["']/g, ''), command.replace(/["'\\]/g, ''),
+    decoded, decoded.replace(/["']/g, ''), decoded.replace(/["'\\]/g, ''),
+  ];
   for (const variant of variants) {
     const hit = shellHitOnce(variant, cwd, home, roots);
     if (hit) return hit;
