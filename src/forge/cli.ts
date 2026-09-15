@@ -101,7 +101,7 @@ import { Breaker, clearKillSwitch, clearStaleBlock, Fleet, Lanes, readKillSwitch
 import { WardenActuator } from './warden.js';
 import { DriftCadenceTracker, WardenTick, type WardenTickRun } from './warden-tick.js';
 import { renderToolCall } from './tool-target.js';
-import { Worker, type EngineLike, type WorkerConfig } from './worker.js';
+import { Worker, describeResult, type EngineLike, type WorkerConfig } from './worker.js';
 import {
   chainStatusLines, foldChainState, runChainTick, runKeyForBrief,
 } from './chain.js';
@@ -1431,8 +1431,7 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       return {
         code: exitCode,
         lines: [
-          `${slug} ${result.verdict} on ${result.model}, ${result.turns} turn(s), `
-            + `${result.sessions.length} session(s), ${result.handoffs} handoff(s)`,
+          describeResult(slug, result),
           configDirLine,
         ],
       };
