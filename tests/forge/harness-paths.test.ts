@@ -89,6 +89,30 @@ const REFUSED: Call[] = [
   ['Bash, a search rooted at home', 'Bash', { command: 'grep -rn "denied" ~ --include=*.py' }],
   ['Grep, rooted above both roots', 'Grep', { pattern: 'readability', path: HOME_FWD }],
   ['Glob, pattern rooted above both roots', 'Glob', { pattern: `${HOME_FWD}/**/authorship_guard.py` }],
+  // Second review round (2026-09-15): forms that reached a root through the first version.
+  ['Edit the fleet config settings, which wire every guard', 'Edit', {
+    file_path: `${HOME_FWD}/.claude-fleet/settings.json`, old_string: 'a', new_string: 'b',
+  }],
+  ['Read, 8.3 short name for .claude', 'Read', { file_path: `${HOME_FWD}/CLAUDE~1/hooks/authorship_guard.py` }],
+  ['Read, 8.3 short name for .forge', 'Read', { file_path: `${HOME_FWD}/FORGE~1/accounts/configs/a/settings.json` }],
+  ['Read, \\\\?\\ prefix', 'Read', { file_path: `\\\\?\\${HOME}\\.claude\\hooks\\authorship_guard.py` }],
+  ['Read, //./ prefix', 'Read', { file_path: `//./${HOME_FWD}/.claude/hooks/authorship_guard.py` }],
+  ['Read, admin share', 'Read', { file_path: `\\\\localhost\\c$\\${['Users', USER].join('\\')}\\.claude\\hooks\\x.py` }],
+  ['Read, git-bash //c/ form', 'Read', { file_path: `/${HOME_BASH}/.claude/hooks/authorship_guard.py` }],
+  ['Bash, wsl /mnt/c form', 'Bash', { command: `wsl cat /mnt${HOME_BASH}/.claude/hooks/authorship_guard.py` }],
+  ['Bash, PowerShell $env:USERPROFILE', 'Bash', { command: 'Get-Content $env:USERPROFILE\\.claude\\hooks\\authorship_guard.py' }],
+  ['Bash, PowerShell $home in another case', 'Bash', { command: 'type $Home\\.claude\\settings.json' }],
+  ['Bash, $USERNAME', 'Bash', { command: 'cat /c/Users/$USERNAME/.claude/settings.json' }],
+  ['Bash, $HOMEDRIVE$HOMEPATH', 'Bash', { command: 'cat $HOMEDRIVE$HOMEPATH/.claude/settings.json' }],
+  ['Bash, ${HOME:-default}', 'Bash', { command: 'cat ${HOME:-/tmp}/.claude/settings.json' }],
+  ['Bash, $APPDATA traversal', 'Bash', { command: 'cat $APPDATA/../../.claude/settings.json' }],
+  ['Bash, ~user form', 'Bash', { command: `cat ~${USER}/.claude/settings.json` }],
+  ['Bash, bare cd then a search with no path', 'Bash', { command: 'cd && rg -n readability' }],
+  ['Bash, python heredoc body', 'Bash', { command: `python - <<'EOF'\nprint(open('${HOME_FWD}/.claude/hooks/x.py').read())\nEOF` }],
+  ['LSP, filePath key', 'LSP', { filePath: `${HOME_FWD}/.claude/hooks/authorship_guard.py`, operation: 'hover' }],
+  ['Glob, brace pattern', 'Glob', { pattern: `{${HOME_FWD}/.claude,x}/hooks/*.py` }],
+  ['PowerShell tool command', 'PowerShell', { command: 'Get-Content ~/.claude/hooks/authorship_guard.py' }],
+  ['Edit a skill under ~/.claude', 'Edit', { file_path: `${HOME_FWD}/.claude/skills/tdd/SKILL.md`, old_string: 'a', new_string: 'b' }],
 ];
 
 describe('a worker tool call under the machine guards or an account config is refused', () => {
@@ -116,6 +140,20 @@ const ALLOWED: Call[] = [
   ['Bash reads the git config beside the guards', 'Bash', { command: 'git config --global user.name' }],
   ['Read a sibling of .claude in home', 'Read', { file_path: `${HOME_FWD}/.gitconfig` }],
   ['Read the fleet runs folder, not an account config', 'Read', { file_path: `${HOME_FWD}/.forge/runs/r1/park.json` }],
+  // Second review round (2026-09-15): calls the first version refused that a worker needs.
+  ['Read its own saved tool output under an account config', 'Read', {
+    file_path: `${ACCOUNT}/projects/C--src-worktrees-x/0a1b2c3d/tool-results/toolu_01.txt`,
+  }],
+  ['Read a skill reference under ~/.claude', 'Read', { file_path: `${HOME_FWD}/.claude/skills/tdd/SKILL.md` }],
+  ['Bash cmd /c', 'Bash', { command: 'cmd /c "npm test"' }],
+  ['Bash echo $HOME', 'Bash', { command: 'echo $HOME' }],
+  ['Bash lists the users folder', 'Bash', { command: 'ls C:/Users' }],
+  ['Bash commit message that mentions the guards', 'Bash', { command: 'git commit -m "Stop workers reading ~/.claude/hooks"' }],
+  ['Bash search for the text in src', 'Bash', { command: "rg -n '~/.claude/hooks' src" }],
+  ['Bash PR body heredoc that mentions the guards', 'Bash', {
+    command: "gh pr create --draft --body-file - <<'EOF'\nWorkers no longer read ~/.claude/hooks.\nEOF",
+  }],
+  ['Bash writes a note in the worktree from a heredoc', 'Bash', { command: "cat > notes.md <<'EOF'\nsee ~/.claude/hooks\nEOF" }],
 ];
 
 describe('a worker call inside its own worktree still passes', () => {
