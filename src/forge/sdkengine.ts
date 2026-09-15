@@ -32,6 +32,7 @@ import { Journal } from './journal.js';
 import { completeAskOptions } from './console/ask-options.js';
 import { fleetConfigDir } from './paths.js';
 import { readParkRecord } from './parkrecord.js';
+import { HARNESS_REFUSAL, harnessPathTouched } from './harness-paths.js';
 import {
   authorshipRule, gitflowRule, humanizerRule, sycophancyRule, vaguenessRule, readabilityRule,
   type ProposedAction, type Rule, type RuleVerdict,
@@ -328,6 +329,8 @@ export function buildInboxHook(deps: InboxHookDeps) {
 
 export interface PreToolUseHookDeps {
   run: string;
+  /** The home folder the protected roots sit under; the machine's own when unset. */
+  home?: string;
   /** The goal's stable id, for the inbox: B.3.7. */
   goal: string;
   journal: Journal;
@@ -558,6 +561,19 @@ export function buildPreToolUseRules(deps: PreToolUseHookDeps): PreToolRule[] {
         return { decision: 'deny', reason: refusal.reason };
       },
     })),
+    // 2026-09-14 (BBZ-307): a worker whose pull request body a guard refused spent eleven
+    // minutes reading, running and writing next to that guard in `~/.claude/hooks`. A
+    // worker never reads, runs or writes under the machine's guards or account settings;
+    // it rewrites its own text to the refusal's stated reason instead.
+    {
+      name: 'harness-paths',
+      check: (call) => {
+        const hit = harnessPathTouched(call.toolName, call.input, deps.runCwd ?? process.cwd(), deps.home);
+        if (!hit) return undefined;
+        denied(call, `reaches the machine's guards or account settings: ${hit}`);
+        return { decision: 'deny', reason: HARNESS_REFUSAL };
+      },
+    },
     // P4.7/I4 (scoped by P4.7/I10): the Council's rules library, on every Bash and
     // Edit/Write call. A denial here journals `rule.denied` and stops the call the same
     // way a park does; every other tool name (Read, Grep, the forge_* MCP tools) is
