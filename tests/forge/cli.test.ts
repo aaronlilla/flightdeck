@@ -459,16 +459,37 @@ describe('forge run', () => {
     };
 
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      const result = await forge(['run', brief], { engine: zeroTurnEngine });
+      const result = await forge(['run', brief], { engine: zeroTurnEngine, processes: () => [] });
       // A zero-turn start never ran forge_done, so it parks: exit 2, per B.3.4.
       expect(result.code).toBe(2);
     }
-    const fourth = await forge(['run', brief], { engine: zeroTurnEngine });
+    const fourth = await forge(['run', brief], { engine: zeroTurnEngine, processes: () => [] });
 
     expect(fourth.code).toBe(1);
     expect(fourth.lines.join(' ')).toMatch(/refusing to start/);
     expect(zeroTurnEngine.started).toHaveLength(3);
   }, 20_000); // four in-process runs; over 5 s under full-suite load, 1.5 s alone
+
+  it('reads the login-in-flight check through the injected process list', async () => {
+    // 2026-09-15: `forge run` called `loginInFlight()` with no argument, so every in-process
+    // run shelled out to a real PowerShell process read (1.2-1.4 s each on Windows) that no
+    // specimen could skip, and the breaker specs above timed out under full-suite load.
+    const brief = join(home, 'ok.md');
+    writeFileSync(brief, '# Goal\n\nDo the thing.\n', 'utf8');
+    const engine = {
+      started: [] as SessionRequest[],
+      async run(config: SessionRequest) {
+        this.started.push(config);
+        return { sessionId: 's-1', turns: [] };
+      },
+    };
+
+    const result = await forge(['run', brief], { engine, processes: () => ['4242 claude.exe login'] });
+
+    expect(result.code).toBe(1);
+    expect(result.lines.join(' ')).toMatch(/a claude login is in flight/);
+    expect(engine.started).toHaveLength(0);
+  });
 
   it('clears the breaker once forge clear runs', async () => {
     const brief = join(home, 'ok.md');
@@ -481,10 +502,10 @@ describe('forge run', () => {
       },
     };
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      await forge(['run', brief], { engine: zeroTurnEngine });
+      await forge(['run', brief], { engine: zeroTurnEngine, processes: () => [] });
     }
     await forge(['clear', 'ok']);
-    const result = await forge(['run', brief], { engine: zeroTurnEngine });
+    const result = await forge(['run', brief], { engine: zeroTurnEngine, processes: () => [] });
     // The clear let it launch again; it still parks with no turns, so exit 2, not a
     // refusal (1) and not done (0).
     expect(result.code).toBe(2);

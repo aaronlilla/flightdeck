@@ -1155,7 +1155,9 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
       const verdict = checkLaunch({
         brief,
         condition: condition || 'Work the brief to completion.',
-        loginRunning: loginInFlight(),
+        // The injected process list when a specimen supplies one: the default is a real
+        // PowerShell process read, 1.2-1.4 s per run on Windows, that no test could skip.
+        loginRunning: loginInFlight(...(deps.processes ? [deps.processes()] : [])),
         killSwitch: readKillSwitch(killSwitchPath()),
       });
       if (!verdict.ok) {
