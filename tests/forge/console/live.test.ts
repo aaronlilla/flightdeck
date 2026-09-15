@@ -100,3 +100,79 @@ describe('computeLive', () => {
     expect(live).toEqual({ alive: false, pid: null, lastEventAt: null, checkedAt: 10_000 });
   });
 });
+
+// 2026-09-14, 14:24: runs killed from the console read `killed` per run while their queue
+// items read `running` for minutes. A worker row written seconds before the kill kept the
+// fold calling the run live for the whole recent-event window. Real process, real kill.
+import { spawn as spawnKillableWorker } from 'node:child_process';
+import { once as onceKilled } from 'node:events';
+import { mkdtempSync as mkdtempForKill } from 'node:fs';
+import { tmpdir as tmpdirForKill } from 'node:os';
+import { join as joinForKill } from 'node:path';
+import { deriveQueueItem, readQueueRun } from '../../../src/forge/console/live.js';
+import { processAlive, Registry } from '../../../src/forge/registry.js';
+import type { QueueItem } from '../../../src/shared/console-model.js';
+
+describe('a killed run stops reading live on the next read, not on a timer', () => {
+  it('reads not alive, and its queue item not running, as soon as the killed process has exited', async () => {
+    const registry = new Registry(mkdtempForKill(joinForKill(tmpdirForKill(), 'live-kill-')));
+    const worker = spawnKillableWorker(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+    try {
+      const run = 'queue-BBZ-140-Q-7a01a197';
+      registry.admit({ goal: run, cwd: 'C:/worktrees/repo--bbz-140', briefPath: 'C:/briefs/BBZ-140.md', pid: worker.pid! });
+      const before = Date.now();
+      const working = fleetWith({ [run]: runState({ run, lastEventAt: before - 5_000 }) });
+      const deps = { registryGet: (key: string) => registry.get(key), isAlive: processAlive };
+      expect(computeLive(run, { ...deps, fleet: working }, before).alive).toBe(true);
+
+      worker.kill();
+      await onceKilled(worker, 'exit');
+      const killed = fleetWith({ [run]: runState({ run, state: 'killed', lastEventAt: before - 5_000 }) });
+      const after = Date.now();
+      expect(after - before).toBeLessThan(RECENT_EVENT_MS);
+      expect(computeLive(run, { ...deps, fleet: killed }, after).alive).toBe(false);
+
+      const item = { id: 'Q-7a01a197', state: 'running', runKey: run, reason: null } as unknown as QueueItem;
+      const read = deriveQueueItem(item, readQueueRun(run, { ...deps, fleet: killed }, after));
+      expect(read.state).not.toBe('running');
+    } finally {
+      if (worker.exitCode === null && worker.signalCode === null) worker.kill();
+    }
+  });
+});
+
+// Review finding, 2026-09-14: a paused run waits on a resume, and a handed-off run's
+// successor may not be folded yet. Neither is an orphan, so neither item may read parked
+// (a parked card offers Retry, and a retry clears the run key and launches on the worktree).
+describe('a running item whose run is paused or handed off is not an orphan', () => {
+  it.each(['paused', 'handed-off'] as const)('stays running when its run is %s with no live process', (runState) => {
+    const item = { id: 'Q-5c0ffee1', state: 'running', runKey: 'queue-BBZ-9-Q-5c0ffee1', reason: null } as unknown as QueueItem;
+    const read = deriveQueueItem(item, { alive: false, pid: 4242, lastEventAt: null, checkedAt: 1, runState });
+    expect(read.state).toBe('running');
+  });
+});
+
+// Review finding, 2026-09-14: a run resumed after a restart keeps its old, dead registry pid,
+// and the journal writes one row when a tool call starts and one when it ends. A worker inside
+// a four-minute build is past the 90-second live window but is not an orphan. Only a long
+// silence parks it; a kill parks it at once.
+describe('a running item with a dead pid is an orphan only after a long silence', () => {
+  const item = { id: 'Q-fdeab07a', state: 'running', runKey: 'queue-BBZ-77-Q-fdeab07a', reason: null } as unknown as QueueItem;
+  const now = 50 * 60_000;
+  it('stays running four minutes after its last work row', () => {
+    const read = deriveQueueItem(item, { alive: false, pid: 4242, lastEventAt: now - 4 * 60_000, checkedAt: now, runState: 'started' });
+    expect(read.state).toBe('running');
+  });
+  // Review finding, 2026-09-14: a run killed after its PR was up still goes to the gate
+  // (`queue.ts`, `queue.unverified-pr`), and the item stays stored `running` while checks
+  // are pending. That item is the gate's, not an orphan.
+  it('stays running when killed while the gate holds its PR', () => {
+    const killed = { alive: false, pid: 4242, lastEventAt: now - 10_000, checkedAt: now, runState: 'killed' as const };
+    expect(deriveQueueItem({ ...item, pendingGatePolls: 2 } as QueueItem, killed).state).toBe('running');
+    expect(deriveQueueItem({ ...item, pr: { number: 119, url: 'https://example.invalid/pr/119' } } as unknown as QueueItem, killed).state).toBe('running');
+  });
+  it('reads parked twenty minutes after its last work row, and at once when killed', () => {
+    expect(deriveQueueItem(item, { alive: false, pid: 4242, lastEventAt: now - 20 * 60_000, checkedAt: now, runState: 'started' }).state).toBe('parked');
+    expect(deriveQueueItem(item, { alive: false, pid: 4242, lastEventAt: now - 10_000, checkedAt: now, runState: 'killed' }).state).toBe('parked');
+  });
+});

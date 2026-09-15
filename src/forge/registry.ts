@@ -193,6 +193,32 @@ export async function relaunchAbandonedGoal(
   }
 }
 
+/** The registry row's pid for `runKey`, and only while that process is actually alive.
+ *  "Did this run ever register" is a different question: its row outlives a dead worker. */
+export function liveRunPid(
+  registry: Pick<Registry, 'get'>, runKey: string, isAlive: (pid: number) => boolean = processAlive,
+): number | undefined {
+  const row = registry.get(runKey);
+  return row && isAlive(row.pid) ? row.pid : undefined;
+}
+
+/**
+ * Whether a worker can still be behind a run. Its registry pid alive says yes. With that pid
+ * dead, a work row inside `quietMs` still says yes -- a run resumed by the console's reconcile
+ * keeps its old pid while a new worker does the work -- unless the journal already records
+ * the run as ended, because a killed run's last row is seconds old and must not keep it live
+ * for the whole window. A dead pid and no recent work row is an orphan, whatever a queue
+ * item stored about it.
+ */
+export function runHasWorker(input: {
+  pid: number | null; isAlive: (pid: number) => boolean; lastWorkAt: number | null;
+  ended: boolean; now: number; quietMs: number;
+}): boolean {
+  if (input.pid !== null && input.isAlive(input.pid)) return true;
+  if (input.ended || input.lastWorkAt === null) return false;
+  return input.now - input.lastWorkAt <= input.quietMs;
+}
+
 /**
  * B.3: which dead-pid registry rows are old enough, past their own park, to be reaped.
  * No process is ever signalled here, so this never needs the `decision.made` row Aaron's

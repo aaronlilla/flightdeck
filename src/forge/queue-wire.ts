@@ -44,7 +44,7 @@ import { parseRepoMap, routeRepo, repoFromBrief, ticketFromBrief } from './intak
 import { Journal } from './journal.js';
 import { loadPolicy } from './policy.js';
 import { inboxDir, interviewRecordsDir, queueBriefsDir, journalPath, killSwitchPath, registryDir } from './paths.js';
-import { processAlive, Registry } from './registry.js';
+import { liveRunPid, Registry } from './registry.js';
 import { reasonerFor } from './reasoner-claude.js';
 import { readKillSwitch } from './supervisor.js';
 import { readQueuePaused } from './console/queue-pause.js';
@@ -767,10 +767,7 @@ export function buildQueueRuntimeDeps(
     // Items 1 and 2: the registry row's pid, and only when that process is actually
     // alive. `hasRunRegistered` is not this question -- it answers "did this run ever
     // start", which stays true for a run that died an hour ago.
-    runPid: (runKey) => {
-      const row = new Registry(registryDir()).get(runKey);
-      return row && processAlive(row.pid) ? row.pid : undefined;
-    },
+    runPid: (runKey) => liveRunPid(new Registry(registryDir()), runKey),
   };
 }
 

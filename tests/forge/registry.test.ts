@@ -366,3 +366,76 @@ describe('B.3: reapableGoals', () => {
     expect(goals).toEqual(['old']);
   });
 });
+
+// 2026-09-14, 14:24-14:48: the image retry storm item (Q-fdeab07a) read `running` with no
+// process and no transcript writes and held a slot until somebody removed it by hand. The
+// read a person looks at, `GET /queue`, has to say so itself.
+import { spawn as spawnOrphan } from 'node:child_process';
+import { once as onceOrphanExit } from 'node:events';
+import { mkdirSync as mkdirForOrphan } from 'node:fs';
+import { fetchConfirmed } from '../helpers/confirmed.js';
+import { Inbox } from '../../src/forge/inbox.js';
+import { addTicketItem } from '../../src/forge/intake/queue.js';
+import { QueueStore } from '../../src/forge/intake/queueStore.js';
+import { registryDir } from '../../src/forge/paths.js';
+import { ForgeServer } from '../../src/forge/server.js';
+import { Lanes } from '../../src/forge/supervisor.js';
+import type { QueueResponse } from '../../src/shared/console-model.js';
+
+describe('an orphaned running queue item: a dead pid and no transcript writes', () => {
+  it('reads non-running on GET /queue, and retries and removes with no manual edit', async () => {
+    mkdirForOrphan(join(dir, 'lanes'), { recursive: true });
+    new Journal(journalPath).close();
+    const modelPolicyPath = join(dir, 'model-policy.json');
+    writeFileSync(modelPolicyPath, JSON.stringify({ version: 1, classes: {} }), 'utf8');
+    const store = new QueueStore(join(dir, 'queue.jsonl'));
+
+    const worker = spawnOrphan(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+    const deadPid = worker.pid!;
+    worker.kill();
+    await onceOrphanExit(worker, 'exit');
+    expect(processAlive(deadPid)).toBe(false);
+
+    const registry = new Registry(registryDir());
+    const orphans = ['ABC-7', 'ABC-8'].map((ticket) => {
+      const runKey = `queue-${ticket}-orphan`;
+      registry.admit({ goal: runKey, cwd: dir, briefPath: join(dir, `${ticket}.md`), pid: deadPid });
+      const added = addTicketItem(store, ticket, 1000);
+      store.append({
+        id: added.id, at: 1100, state: 'running', ticket, repo: 'owner/name',
+        briefPath: join(dir, `${ticket}.md`), runKey, updatedAt: 1100,
+      });
+      return added.id;
+    });
+    const [retryId, removeId] = orphans as [string, string];
+
+    const token = 'orphan-token';
+    const server = new ForgeServer({
+      lanes: new Lanes(join(dir, 'lanes')), inbox: new Inbox(join(dir, 'inbox')),
+      journalPath, port: 0, token, modelPolicyPath,
+      queueStore: store, queueSearch: { searchKeys: async () => [] }, queueMaxInFlight: 4,
+    });
+    const base = `http://127.0.0.1:${await server.listen()}`;
+    const headers = { 'x-forge-token': token };
+    try {
+      const listed = await (await fetch(`${base}/queue`, { headers })).json() as QueueResponse;
+      for (const id of orphans) {
+        const row = listed.items.find((item) => item.id === id)!;
+        expect(row.state).not.toBe('running');
+        expect(row.reason).toMatch(/no live process/);
+      }
+
+      const retried = await fetch(`${base}/queue/${retryId}/retry`, { method: 'POST', headers });
+      expect(retried.status).toBe(200);
+      expect(store.get(retryId)!.state).toBe('queued');
+      expect(store.get(retryId)!.runKey).toBeNull();
+
+      const removed = await fetchConfirmed(`${base}/queue/${removeId}/remove`, { method: 'POST', headers });
+      expect(removed.status).toBe(200);
+      const after = await (await fetch(`${base}/queue`, { headers })).json() as QueueResponse;
+      expect(after.items.map((item) => item.id)).not.toContain(removeId);
+    } finally {
+      await server.close();
+    }
+  });
+});

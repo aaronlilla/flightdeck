@@ -2273,3 +2273,49 @@ describe('a review item whose PR merged elsewhere', () => {
     expect(store.get(item.id)?.reason).toBe('merged; OTA pending');
   });
 });
+
+// 2026-09-14, BBZ-303 (Q-842f5b17): the queue parked this item at the gate hop ten seconds
+// after its relaunch while the worker (pid 41412) kept working for five more minutes. A
+// person retrying the "parked" card would have put a second worker on the same worktree.
+// The liveness read here is the production one: a real registry row, a real child process,
+// and `processAlive` through `liveRunPid`, never a boolean the test hands in.
+import { spawn as spawnLiveWorker } from 'node:child_process';
+import { once as onceWorkerEvent } from 'node:events';
+import { liveRunPid, Registry as QueueSpecRegistry } from '../../../src/forge/registry.js';
+
+describe('the gate hop never parks a run whose process is alive', () => {
+  it('holds the item on running while its worker pid lives, and parks it once that pid is gone', async () => {
+    const store = tempStore();
+    const registry = new QueueSpecRegistry(mkdtempSync(join(tmpdir(), 'queue-registry-')));
+    const worker = spawnLiveWorker(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+    try {
+      const runKey = 'queue-BBZ-303-Q-842f5b17';
+      expect(registry.admit({ goal: runKey, cwd: 'C:/worktrees/repo--bbz-303', briefPath: 'C:/briefs/BBZ-303.md', pid: worker.pid! }).ok).toBe(true);
+      const added = addTicketItem(store, 'BBZ-303', 1000);
+      store.append({
+        id: added.id, at: 1100, state: 'running', ticket: 'BBZ-303', repo: 'owner/name',
+        briefPath: 'C:/briefs/BBZ-303.md', runKey, branch: 'feature/bbz-303', updatedAt: 1100,
+      });
+      const { deps, events } = buildDeps(store, { launcher: { status: async () => ({ finished: true, verdict: 'parked' }) } });
+      deps.runPid = (key) => liveRunPid(registry, key);
+      const lookups: string[] = [];
+      const findPrByHead = deps.gh.findPrByHead;
+      deps.gh = { ...deps.gh, findPrByHead: async (repo, branch) => { lookups.push(branch); return findPrByHead(repo, branch); } };
+
+      const held = await advanceItem(store.get(added.id)!, deps);
+      expect(held.state).toBe('running');
+      expect(store.get(added.id)!.state).toBe('running');
+      expect(events.map((e) => e['event'])).not.toContain('queue.parked');
+      // Held on a live worker, the next tick waits on that process and asks GitHub nothing.
+      expect((await advanceItem(store.get(added.id)!, deps)).state).toBe('running');
+      expect(lookups).toHaveLength(1);
+
+      worker.kill();
+      await onceWorkerEvent(worker, 'exit');
+      const parked = await advanceItem(store.get(added.id)!, deps);
+      expect(parked.state).toBe('parked');
+    } finally {
+      if (worker.exitCode === null && worker.signalCode === null) worker.kill();
+    }
+  });
+});

@@ -551,6 +551,7 @@ export class ForgeServer {
       narrator: this.narrator,
       store: this.queueStoreForMerge,
       ...(ticketTitles ? { ticketTitles } : {}),
+      readFleet: () => this.journalCache.read(this.journalPath),
       search: options.queueSearch ?? {
         searchKeys: async () => {
           throw new Error('jira not configured: missing FORGE_JIRA_SITE, FORGE_JIRA_EMAIL, FORGE_JIRA_TOKEN');
