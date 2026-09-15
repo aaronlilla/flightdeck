@@ -234,7 +234,46 @@ function textNamesRoot(command: string, home: string, roots: string[]): string |
   return undefined;
 }
 
+/**
+ * A shell command checked three ways: as written, with quote characters removed, and with quotes
+ * and backslashes removed, the way the shell itself reads `~/.cla""ude` and `~/.cla\ude` as
+ * `~/.claude`. As written is kept, since a Windows path's backslashes are separators there.
+ */
 function shellHit(command: string, cwd: string, home: string, roots: string[]): string | undefined {
+  const variants = [command, command.replace(/["']/g, ''), command.replace(/["'\\]/g, '')];
+  for (const variant of variants) {
+    const hit = shellHitOnce(variant, cwd, home, roots);
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
+/** One glob segment as a pattern: `*` and `?` stop at a slash, a `[...]` class is kept. */
+function globSegment(segment: string): RegExp | undefined {
+  try {
+    return new RegExp(`^${segment.replace(/[.+^${}()|\\]/g, '\\$&').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]')}$`);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether a word with `*`, `?` or `[` could expand into a root: `~/.cl*de`, `~/.claud?`, `~/.forge/acc*`. */
+function globReaches(path: string, roots: string[]): boolean {
+  if (!/[*?[]/.test(path)) return false;
+  const segments = path.split('/');
+  return roots.some((root) => {
+    const rootSegments = root.split('/');
+    for (let index = 0; index < rootSegments.length; index += 1) {
+      const segment = segments[index];
+      if (segment === undefined) return false;
+      if (segment === '**') return true;
+      if (!(globSegment(segment)?.test(rootSegments[index]!) ?? false)) return false;
+    }
+    return true;
+  });
+}
+
+function shellHitOnce(command: string, cwd: string, home: string, roots: string[]): string | undefined {
   // Segments first, so a bare `cd` stays bare (`cd; cat x` goes home, never to a folder named `cat`).
   // Splitting ignores quotes on purpose: `bash -c "cd ~ && cat x"` changes directory too.
   const segments = expandVariables(command, home).replace(/\\ /g, ' ').split(/[;|&\n]+/)
@@ -261,7 +300,7 @@ function shellHit(command: string, cwd: string, home: string, roots: string[]): 
     if (!looksLikePath(word)) continue;
     for (const dir of dirs) {
       const path = normalizePath(word, dir, home);
-      if (reaches(path, roots, home)) return path;
+      if (reaches(path, roots, home) || globReaches(path, roots)) return path;
       if (walks && above(path, roots)) return path;
     }
   }
