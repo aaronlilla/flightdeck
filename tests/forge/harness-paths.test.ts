@@ -163,6 +163,14 @@ const REFUSED: Call[] = [
   ['Bash, rsync of home', 'Bash', { command: 'rsync -a ~/ ../h' }],
   ['a paths array under a location key', 'SomeTool', { paths: [`${HOME_FWD}/.claude/settings.json`] }],
   ['Glob, a brace alternative that climbs out of skills', 'Glob', { pattern: '~/.claude/skills/{a,../hooks}/*.py' }],
+  // Review round four: shell metacharacters the shell collapses at runtime.
+  ['Bash, a ? wildcard inside the folder name', 'Bash', { command: 'cat ~/.claud?/hooks/authorship_guard.py' }],
+  ['Bash, a * wildcard inside the folder name', 'Bash', { command: 'cat ~/.cl*de/hooks/authorship_guard.py' }],
+  ['Bash, a [] class inside the folder name', 'Bash', { command: 'cat ~/.clau[d]e/settings.json' }],
+  ['Bash, a wildcard inside the account config path', 'Bash', { command: 'cat ~/.forge/acc*/configs/a/settings.json' }],
+  ['Bash, empty double quotes inside the folder name', 'Bash', { command: 'cat ~/.cla""ude/hooks/authorship_guard.py' }],
+  ['Bash, empty single quotes inside the folder name', 'Bash', { command: "cat ~/.cla''ude/settings.json" }],
+  ['Bash, a backslash escape inside the folder name', 'Bash', { command: 'cat ~/.cla\\ude/settings.json' }],
   // Prose that names a protected folder is refused; the reason says to pass it as a file.
   ['Bash, a commit message naming a guard path', 'Bash', { command: 'git commit -m "Stop workers reading ~/.claude/hooks"' }],
   ['Bash, an echo naming a guard path', 'Bash', { command: 'echo "the rule lives in ~/.claude/hooks/authorship_guard.py"' }],
@@ -231,6 +239,9 @@ const ALLOWED: Call[] = [
   ['Bash echo $HOME', 'Bash', { command: 'echo $HOME' }],
   ['Bash lists the users folder', 'Bash', { command: 'ls C:/Users' }],
   ['Bash ls -ltr of home is not a recursive walk', 'Bash', { command: 'ls -ltr ~' }],
+  ['Bash a wildcard inside the worktree', 'Bash', { command: 'ls src/forge/*.ts' }],
+  ['Bash a test glob inside the worktree', 'Bash', { command: 'npx vitest run tests/forge/harness-*.test.ts' }],
+  ['Bash a quoted wildcard for git', 'Bash', { command: "git log --oneline -- 'src/forge/*.ts'" }],
   // How a worker says what a refusal told it not to type: the text goes in a file.
   ['Bash commit message from a file', 'Bash', { command: 'git commit -F commit-message.txt' }],
   ['Bash PR body from a file', 'Bash', { command: 'gh pr create --draft --body-file pr-body.md' }],
