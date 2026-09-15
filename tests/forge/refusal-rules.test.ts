@@ -285,7 +285,7 @@ describe('the launch prompt names every tool refused by name', () => {
   });
 
   it('leaves a /goal prompt exactly as written, since appended text would join the goal condition', () => {
-    const goal = '/goal Work C:/dev/.claude/goals/x.md to completion. Met only when the PR is open.';
+    const goal = '/goal Work goals/x.md to completion. Met only when the PR is open.';
     expect(buildWorkerOptions({ ...REQUEST, prompt: goal, cwd: home }).prompt).toBe(goal);
   });
 
