@@ -1199,12 +1199,11 @@ describe('I14: a segment that ends with no done, ceiling, park or kill gets one 
   });
 
   it('BBZ-307, 2026-09-14: a worker waiting on its own background task is waited on, not nudged to a stop', async () => {
-    // Built from ~/.claude/projects/C--dev-worktrees-v2-react-native--bbz-307/
-    // 119ee052-6c9b-408f-a633-5e74306dea97.jsonl lines 109-146. The verify chain went to the
-    // background as task bgb2ycjqq; `TaskOutput block: true` came back "LIVENESS. A blocking
-    // TaskOutput waits on a timer ..."; the worker scheduled a wakeup and ended its turn to
-    // wait for the completion notification. The runner spent both ordinary nudges (15:20:02,
-    // 15:20:37) and journaled `run.finished stopped` at 15:21:19 with the task still running.
+    // Built from a real BBZ-307 transcript (lines 109-146): the verify chain went to the
+    // background; `TaskOutput block: true` came back "LIVENESS. A blocking TaskOutput waits
+    // on a timer ..."; the worker scheduled a wakeup and ended its turn to wait for the
+    // completion notification. The runner spent both ordinary nudges (15:20:02, 15:20:37)
+    // and journaled `run.finished stopped` at 15:21:19 with the task still running.
     const segment = (journal: Journal, run: string) => {
       journal.append({ event: 'tool.start', run, actor: 'worker', tool: 'TaskOutput' });
       journal.append({ event: 'tool.end', run, actor: 'worker', tool: 'TaskOutput', isError: true });
