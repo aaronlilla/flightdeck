@@ -108,6 +108,17 @@ const SPECIMENS: Record<string, Specimen> = {
     additionalContext: HANDOFF_REQUEST,
     journal: { event: 'permission.denied', reason: 'context ceiling reached' },
   },
+  'harness-paths': {
+    // Assembled from pieces: the agnostic check refuses a literal user-home path in source.
+    deps: () => ({ home: ['C:', 'Users', 'specimen'].join('\\'), runCwd: 'C:/src/worktrees/x' }),
+    call: { name: 'Read', input: { file_path: `${['C:', 'Users', 'specimen'].join('/')}/.claude/hooks/authorship_guard.py` } },
+    endsTurn: false,
+    reason: /rewrite the text or command/,
+    journal: {
+      event: 'permission.denied',
+      reason: `reaches the machine's guards or account settings: ${['c:', 'users', 'specimen'].join('/')}/.claude/hooks/authorship_guard.py`,
+    },
+  },
   'council-rules': {
     deps: () => ({ repoContext: { branch: 'main', controlled: true } }),
     call: { name: 'Bash', input: { command: 'git push origin main' } },
