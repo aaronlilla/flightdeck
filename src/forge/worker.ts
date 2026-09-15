@@ -111,6 +111,12 @@ export interface SessionResult {
    * and would double the spawn count behind a suite that still looked green.
    */
   send?(prompt: string): Promise<FakeTurn[]>;
+  /**
+   * Waits, sending nothing, for the next turn this session starts on its own. A background
+   * task's completion notification starts that turn. Resolves `undefined` when no turn
+   * arrives within `timeoutMs`.
+   */
+  awaitTurn?(timeoutMs: number): Promise<FakeTurn[] | undefined>;
   /** True when this session ran a `git commit`. What the stuck rule (B.3.8) watches for:
    *  three sessions in a row with none is a chain going nowhere, not just a slow one. */
   committed?: boolean;
@@ -219,7 +225,9 @@ export interface WorkerResult {
    * `unverified` is what `forge_done` alone used to be treated as `done`: a brief with no
    * `## Verification` block never earns `done`, however clean the tool call looked.
    */
-  verdict: 'done' | 'exhausted' | 'parked' | 'unverified';
+  verdict: 'done' | 'exhausted' | 'parked' | 'stopped' | 'unverified';
+  /** Every nudge this chain sent, ordinary and wait alike. */
+  nudges: number;
 }
 
 /**
@@ -313,8 +321,8 @@ export const NUDGE_LIMIT = 2;
 export const NUDGE_REASON = [
   'You ended your turn without calling forge_done. The run is not over. If the goal is',
   'complete, call forge_done with the evidence; if a tool call was denied, fix what the',
-  'reason says and retry; if you are waiting on an agent or a background task, block on it',
-  'with TaskOutput with block: true rather than polling it; otherwise continue.',
+  'reason says and retry; if you are waiting on a background task you started, end your turn',
+  'and the run waits for its completion notification; otherwise continue.',
 ].join(' ');
 
 /**
@@ -328,9 +336,52 @@ export const WAIT_NUDGE_LIMIT = 10;
 
 export const WAIT_NUDGE_REASON = [
   'Your turn ended while a background task you started is still running. The run is not',
-  'over. Block on the task with TaskOutput with block: true and continue from its result;',
-  'do not poll it with block: false.',
+  'over. Read the task\'s output file to see where it is, and continue from its result once',
+  'it completes.',
 ].join(' ');
+
+/**
+ * How long the runner waits for a background task's completion notification before it
+ * falls back to a nudge. Not a nudge allowance: a wait that ends in a notification spends
+ * nothing, since the notification is the task's own progress.
+ */
+export const BACKGROUND_WAIT_MS = 30 * 60 * 1000;
+
+/**
+ * True when this segment's journal rows show a background task the session started that
+ * the runner has not yet waited out. On 2026-09-14 BBZ-303, 305, 307 and 343 each ended a
+ * turn to wait for such a task: a hook refuses `TaskOutput block: true`, so the last tool
+ * was a `ScheduleWakeup`, a `Bash` or a `Read`, never `TaskOutput`, and the runner spent its
+ * ordinary nudges and finished the run `stopped` with the task still running.
+ */
+export function backgroundTaskPending(events: readonly Record<string, unknown>[]): boolean {
+  const names = events.map((event) => event['event']);
+  return names.lastIndexOf('task.backgrounded') > names.lastIndexOf('task.settled');
+}
+
+/**
+ * The verdict for a session that ended with no forge_done, ceiling, park or kill. Only a
+ * session with a turn cap that used it is exhausted; an uncapped one stopped.
+ */
+export function stopVerdict(input: {
+  sessions: number; turns: number; maxTurns: number | undefined;
+}): 'parked' | 'stopped' | 'exhausted' {
+  if (input.sessions === 1 && input.turns === 0) return 'parked';
+  if (input.maxTurns !== undefined && input.turns >= input.maxTurns) return 'exhausted';
+  return 'stopped';
+}
+
+/** The one-line summary `forge run` prints for a finished chain. */
+export function describeResult(
+  slug: string,
+  result: Pick<WorkerResult, 'verdict' | 'model' | 'turns' | 'sessions' | 'handoffs' | 'nudges'>,
+): string {
+  const outcome = result.verdict === 'stopped'
+    ? `ended without finishing after ${result.nudges} nudge(s)`
+    : result.verdict;
+  return `${slug} ${outcome} on ${result.model}, ${result.turns} turn(s), `
+    + `${result.sessions.length} session(s), ${result.handoffs} handoff(s)`;
+}
 
 export function successorPrompt(packet: string, brief: string): string {
   return [
@@ -389,6 +440,7 @@ export class Worker {
     const journal = new Journal(this.config.journalPath);
     const sessions: string[] = [];
     let handoffs = 0;
+    let totalNudges = 0;
     let turns = 0;
     let context = 0;
     let verdict: WorkerResult['verdict'] = 'exhausted';
@@ -541,11 +593,29 @@ export class Worker {
               runEvents.map((event) => event.event).lastIndexOf('run.started') + 1,
             );
             const lastTool = [...sinceStart].reverse().find((event) => event.event === 'tool.start');
-            const waitingOnTask = lastTool?.['tool'] === 'TaskOutput';
+            const taskPending = backgroundTaskPending(sinceStart);
+            const waitingOnTask = lastTool?.['tool'] === 'TaskOutput' || taskPending;
+            if (taskPending && session.awaitTurn) {
+              // The task's completion notification starts the session's next turn by
+              // itself, so the runner waits for that turn rather than nudging.
+              journal.append({
+                event: 'run.waiting', run: runName, actor: 'runner',
+                reason: 'a background task this session started is still running',
+              });
+              const woken = await session.awaitTurn(BACKGROUND_WAIT_MS);
+              journal.append({
+                event: 'task.settled', run: runName, actor: 'runner', woken: woken !== undefined,
+              });
+              if (woken !== undefined) {
+                pendingTurns = woken;
+                continue;
+              }
+            }
             const allowed = waitingOnTask ? waitNudges < WAIT_NUDGE_LIMIT : nudges < NUDGE_LIMIT;
             if (allowed && session.send) {
               if (waitingOnTask) waitNudges += 1;
               else nudges += 1;
+              totalNudges += 1;
               const lastDenial = [...sinceStart].reverse().find((event) => event.event === 'rule.denied');
               const base = waitingOnTask ? WAIT_NUDGE_REASON : NUDGE_REASON;
               const reason = lastDenial
@@ -642,8 +712,8 @@ export class Worker {
         }
 
         if (!ceilingHit) {
-          finishRun({ verdict: 'stopped' });
-          verdict = sessions.length === 1 && turns === 0 ? 'parked' : 'exhausted';
+          finishRun({ verdict: 'stopped', nudges: nudges + waitNudges });
+          verdict = stopVerdict({ sessions: sessions.length, turns, maxTurns });
           break;
         }
 
@@ -680,7 +750,9 @@ export class Worker {
       journal.close();
     }
 
-    return { run: this.config.run, model, className, sessions, handoffs, turns, context, verdict };
+    return {
+      run: this.config.run, model, className, sessions, handoffs, turns, context, verdict, nudges: totalNudges,
+    };
   }
 
   /**

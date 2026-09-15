@@ -383,6 +383,7 @@ export function plainEventText(row: ForgeEvent): string {
  *  part of one. A burst ends the moment a row outside this set is seen. */
 const BURST_EVENTS = new Set([
   'tool.start', 'tool.end', 'turn.end', 'result.usage', 'burn.mismatch', 'reasoner.call', 'registry.abandoned',
+  'task.backgrounded', 'task.settled',
 ]);
 
 /** Tool name -> [singular, plural] category label for the activity digest's own count

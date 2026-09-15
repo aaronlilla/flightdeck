@@ -995,7 +995,13 @@ export class SdkEngine implements EngineLike {
     const credentialHorizon = this.deps.credentialHorizon;
     const ghAccount = this.deps.ghAccount ?? 'github';
 
-    const runSegment = (promptText: string): Promise<FakeTurn[]> => new Promise((resolve, reject) => {
+    // `promptText` null sends nothing and only listens for the next turn the session starts
+    // itself (a background task's completion notification); `timeoutMs` resolves undefined
+    // when none arrives in time.
+    const runSegment = (
+      promptText: string | null, timeoutMs?: number,
+    ): Promise<FakeTurn[] | undefined> => new Promise((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
       const turns: FakeTurn[] = [];
       let pending: FakeTurn | null = null;
       const flush = () => {
@@ -1103,6 +1109,17 @@ export class SdkEngine implements EngineLike {
               pending.done = true;
             }
             const bashCommand = bashCommandById.get(event.id);
+            // "Command running in background with ID: x" (run_in_background) or "moved to
+            // the background (ID: x)" (a foreground timeout): the worker waits on this task
+            // rather than nudging when the turn ends (`worker.ts#backgroundTaskPending`).
+            const backgrounded = bashCommand && !event.isError
+              ? /background[^\n]*?\bID:\s*([A-Za-z0-9]+)/.exec(event.text)
+              : null;
+            if (backgrounded) {
+              journal.append({
+                event: 'task.backgrounded', run: request.run, actor: 'worker', taskId: backgrounded[1],
+              });
+            }
             // A pull request opening is the moment its ticket stops being available work.
             // Only a `gh pr create` counts: a `git push` moves no ticket. Fire-and-forget
             // beside the drift read below, and deliberately not awaited -- a tracker that
@@ -1213,6 +1230,7 @@ export class SdkEngine implements EngineLike {
             journal.append({ event: 'result.usage', run: request.run, actor: 'worker', modelUsage: event.modelUsage });
             break;
           case 'turn-complete':
+            clearTimeout(timer);
             flush();
             off();
             resolve(turns);
@@ -1226,6 +1244,7 @@ export class SdkEngine implements EngineLike {
               fatal: event.fatal,
             });
             if (event.fatal) {
+              clearTimeout(timer);
               off();
               reject(new Error(event.message));
             }
@@ -1235,6 +1254,13 @@ export class SdkEngine implements EngineLike {
         }
       });
 
+      if (timeoutMs !== undefined) {
+        timer = setTimeout(() => {
+          off();
+          resolve(undefined);
+        }, timeoutMs);
+      }
+      if (promptText === null) return;
       if (this.deliverVia === 'stream') {
         deliverViaStream(engine, goal, promptText, journal);
       } else {
@@ -1242,13 +1268,14 @@ export class SdkEngine implements EngineLike {
       }
     });
 
-    const turns = await runSegment(request.prompt);
+    const turns = (await runSegment(request.prompt)) ?? [];
     const sessionId = engine.currentSessionId ?? request.run;
 
     return {
       sessionId,
       turns,
-      send: (prompt: string) => runSegment(prompt),
+      send: async (prompt: string) => (await runSegment(prompt)) ?? [],
+      awaitTurn: (timeoutMs: number) => runSegment(null, timeoutMs),
       get committed() { return committed; },
     };
   }
