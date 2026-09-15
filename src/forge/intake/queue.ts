@@ -572,7 +572,23 @@ async function relaunchOnRetryOrPark(
     );
     return advanceItem(relaunching, deps);
   }
+  // 2026-09-14 (BBZ-303, Q-842f5b17): a run's status can read finished while its worker
+  // process keeps working. The item parked ten seconds after a relaunch and the worker ran
+  // five more minutes, so the card offered Retry on a live run -- a second worker on the
+  // same worktree one click away. A live pid holds the item where it is; the next tick reads
+  // again and parks once the process is gone. A run that has ended parks exactly as before.
+  const livePid = item.runKey ? deps.runPid?.(item.runKey) : undefined;
+  if (livePid !== undefined) {
+    const held = heldOnLiveWorker(item.runKey!, livePid);
+    if (item.reason === held) return item;
+    return writeTransition(item, { reason: held }, deps, 'queue.park-held', { ...extra, pid: livePid, parkReason: reason });
+  }
   return writeTransition(item, { state: 'parked', reason }, deps, 'queue.parked', extra);
+}
+
+/** The reason a park held on a live worker carries, and the gate hop's test for it. */
+function heldOnLiveWorker(runKey: string, pid: number): string {
+  return `run ${runKey} is still running as pid ${pid}`;
 }
 
 /** Whole-slug match only: `after: BBZ-20` names BBZ-20, never BBZ-205. A slug matches an
@@ -821,6 +837,10 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
 
   const status = await deps.launcher.status(item.runKey);
   if (!status.finished) return item;
+  // A park already held on a live worker (`relaunchOnRetryOrPark`) waits on that process.
+  // Reading the PR again on every tick until it exits is a GitHub call per tick per item.
+  const heldPid = deps.runPid?.(item.runKey);
+  if (heldPid !== undefined && item.reason === heldOnLiveWorker(item.runKey, heldPid)) return item;
 
   // A run that ended `unverified` (its session finished without `forge_done`) may still
   // have pushed and opened its PR first -- seen live on 2026-09-07, where a successor

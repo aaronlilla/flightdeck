@@ -332,3 +332,44 @@ describe('POST /queue/pause and /resume', () => {
     expect(afterResume.paused).toBe(false);
   });
 });
+
+// 2026-09-14, BBZ-303: a card whose run process is alive must never read parked, failed or
+// queued on the list read itself, and a retry of it is refused naming the live pid and run
+// key. Real registry row under this server's FORGE_HOME, real child process.
+import { spawn as spawnRunWorker } from 'node:child_process';
+import { once as onceRunExit } from 'node:events';
+import { addTicketItem as addLiveTicket } from '../../../src/forge/intake/queue.js';
+import { registryDir as runRegistryDir } from '../../../src/forge/paths.js';
+import { Registry as RunRegistry } from '../../../src/forge/registry.js';
+
+describe('a queue item whose run process is alive', () => {
+  it('reads running on GET /queue whatever was stored, and a retry is refused with 409 naming the pid and run key', async () => {
+    const worker = spawnRunWorker(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+    try {
+      const runKey = 'queue-BBZ-303-Q-842f5b17';
+      new RunRegistry(runRegistryDir()).admit({ goal: runKey, cwd: dir, briefPath: join(dir, 'BBZ-303.md'), pid: worker.pid! });
+      const ids = (['parked', 'failed', 'queued'] as const).map((state, index) => {
+        const added = addLiveTicket(queueStore, `BBZ-30${index}`, 1000);
+        queueStore.append({ id: added.id, at: 1100, state, reason: 'gate: the run parked', runKey, updatedAt: 1100 });
+        return added.id;
+      });
+
+      const listed = await (await fetch(`${base}/queue`, authed())).json() as QueueResponse;
+      for (const id of ids) {
+        const row = listed.items.find((item) => item.id === id)!;
+        expect(row.state).toBe('running');
+        expect(row.reason).toContain(String(worker.pid));
+      }
+
+      const refused = await fetch(`${base}/queue/${ids[0]}/retry`, authed({ method: 'POST' }));
+      expect(refused.status).toBe(409);
+      const body = await refused.json() as ActionResult;
+      expect(body.message).toContain(runKey);
+      expect(body.message).toContain(`pid ${worker.pid}`);
+      expect(queueStore.get(ids[0]!)!.state).toBe('parked');
+    } finally {
+      worker.kill();
+      await onceRunExit(worker, 'exit');
+    }
+  });
+});
