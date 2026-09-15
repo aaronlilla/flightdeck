@@ -616,7 +616,11 @@ export class Worker {
               if (waitingOnTask) waitNudges += 1;
               else nudges += 1;
               totalNudges += 1;
-              const lastDenial = [...sinceStart].reverse().find((event) => event.event === 'rule.denied');
+              // Only a refusal nothing came after: a refused call no longer ends the turn, so
+              // a model that worked around one and then stopped must not be told about it.
+              const lastCall = [...sinceStart].reverse()
+                .find((event) => event.event === 'rule.denied' || event.event === 'tool.start');
+              const lastDenial = lastCall?.event === 'rule.denied' ? lastCall : undefined;
               const base = waitingOnTask ? WAIT_NUDGE_REASON : NUDGE_REASON;
               const reason = lastDenial
                 ? `${base} The last tool call was denied for: "${String(lastDenial['reason'] ?? '')}".`

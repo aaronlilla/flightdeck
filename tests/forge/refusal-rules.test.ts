@@ -232,6 +232,23 @@ describe('a run that stays parked cannot loop on refusals', () => {
   });
 });
 
+describe('refusals from different rules count toward the same limit', () => {
+  it('a refused Monitor call then a non-blocking poll ends the turn on the poll', async () => {
+    const journal = new Journal(journalPath);
+    const deps = depsFor(undefined, journal);
+
+    const fake = await drive(deps, [
+      { name: 'Monitor', input: { command: 'gh pr checks 1' } },
+      { name: 'TaskOutput', input: { task_id: 'b1', block: false } },
+      { name: FORGE_DONE, input: { evidence: 'done' } },
+    ]);
+    journal.close();
+
+    expect(fake.refusals.map((line) => line.split(':')[0])).toEqual(['Monitor', 'TaskOutput']);
+    expect(fake.ran).toEqual([]);
+  });
+});
+
 describe('no refusal that carries on can keep a run away from the two stops', () => {
   it('an ask-parked run past its context ceiling keeps its park reason and ends the turn', async () => {
     const journal = new Journal(journalPath);
@@ -287,6 +304,9 @@ describe('the launch prompt names every tool refused by name', () => {
   it('leaves a /goal prompt exactly as written, since appended text would join the goal condition', () => {
     const goal = '/goal Work goals/x.md to completion. Met only when the PR is open.';
     expect(buildWorkerOptions({ ...REQUEST, prompt: goal, cwd: home }).prompt).toBe(goal);
+    for (const variant of [`  ${goal}`, '/goal\nWork goals/x.md to completion.', '/goal\tWork goals/x.md.']) {
+      expect(buildWorkerOptions({ ...REQUEST, prompt: variant, cwd: home }).prompt).toBe(variant);
+    }
   });
 
   it('the prompt a real run sends first carries the same list', async () => {

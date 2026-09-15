@@ -117,7 +117,7 @@ export function buildWorkerOptions(
     // A resumed session already carries the note from its first prompt. A `/goal ...` prompt
     // is a goal condition, verbatim, and text appended to it would become part of that
     // condition; those runs learn a refusal from its reason when it happens.
-    prompt: request.resume || request.prompt.startsWith('/goal ')
+    prompt: request.resume || /^\s*\/goal(\s|$)/.test(request.prompt)
       ? request.prompt
       : request.prompt + refusedToolsNote(),
     cwd: request.cwd,
@@ -397,11 +397,23 @@ export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
     })
     : undefined;
   const rules = buildPreToolUseRules(deps);
+  // A refusal carries on so the model reads why. A second refusal in a row, from any rule,
+  // ends the turn: a run that keeps making refused calls (still parked, Monitor, a
+  // non-blocking poll, a rules-library refusal) cannot spin inside one turn with nothing
+  // bounding it but the context ceiling. Any call that gets through starts the count over.
+  let refusedInARow = 0;
   return async (call: PreToolCall): Promise<PreToolVerdict> => {
     for (const rule of rules) {
       const verdict = rule.check(call);
-      if (verdict) return verdict;
+      if (!verdict) continue;
+      if (verdict.decision !== 'deny') {
+        refusedInARow = 0;
+        return verdict;
+      }
+      refusedInARow += 1;
+      return refusedInARow > 1 && !verdict.endTurn ? { ...verdict, endTurn: true } : verdict;
     }
+    refusedInARow = 0;
     if (inboxHook) return inboxHook(call);
     return { decision: undefined };
   };
@@ -477,15 +489,11 @@ export function buildPreToolUseRules(deps: PreToolUseHookDeps): PreToolRule[] {
   const denied = (call: PreToolCall, reason: string) => deps.journal.append({
     event: 'permission.denied', run: deps.run, actor: 'runner', tool: call.toolName, reason,
   });
-  // Refusals that repeat on a parked run. The first carries on so the model reads why; a
-  // second in a row ends the turn, so a run that keeps calling tools while parked cannot
-  // loop with nothing bounding it. Reset once a call gets past both park rules. A park is
-  // checked ahead of the two stops (its key is what a person answers), so while either stop
-  // is engaged a park refusal ends the turn too, or a parked run would never reach them.
-  let parkRefusals = 0;
+  // A park is checked ahead of the two stops (its key is what a person answers), so while
+  // either stop is engaged a park refusal ends the turn itself, or a parked run would never
+  // reach them. Refusals that repeat are bounded in `buildPreToolUseHook`.
   const parkVerdict = (reason: string): PreToolVerdict => {
-    parkRefusals += 1;
-    const stop = parkRefusals > 1 || deps.killSwitchHit?.() === true || deps.ceilingHit?.() === true;
+    const stop = deps.killSwitchHit?.() === true || deps.ceilingHit?.() === true;
     return { decision: 'deny', reason, ...(stop ? { endTurn: true } : {}) };
   };
   return [
@@ -502,13 +510,9 @@ export function buildPreToolUseRules(deps: PreToolUseHookDeps): PreToolRule[] {
       name: 'ask-park',
       check: (call) => {
         const key = deps.parked.get(deps.run);
-        if (!key) {
-          parkRefusals = 0;
-          return undefined;
-        }
+        if (!key) return undefined;
         const entry = deps.inbox.entry(key);
         if (entry?.answer !== undefined) {
-          parkRefusals = 0;
           deps.parked.delete(deps.run);
           deps.journal.append({ event: 'run.resumed', run: deps.run, actor: 'console', key });
           return { decision: undefined, additionalContext: deps.inbox.resumePrompt(key) };
