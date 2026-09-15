@@ -114,7 +114,8 @@ export function buildWorkerOptions(
 
   const options: WorkerOptions = {
     model: request.model,
-    prompt: request.prompt,
+    // A resumed session already carries the note from its first prompt.
+    prompt: request.resume ? request.prompt : request.prompt + refusedToolsNote(),
     cwd: request.cwd,
     ...(request.maxTurns !== undefined ? { maxTurns: request.maxTurns } : {}),
     permissionMode: 'bypassPermissions',
@@ -391,105 +392,163 @@ export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
       run: deps.run, goal: deps.goal, journal: deps.journal, onDelivered: deps.onDelivered,
     })
     : undefined;
-  return async (call: { toolName: string; input: Record<string, unknown>; toolUseId: string }):
-    Promise<PreToolVerdict> => {
-    const parkRecord = readParkRecord(deps.run);
-    if (parkRecord) {
-      deps.journal.append({
-        event: 'permission.denied', run: deps.run, actor: 'runner', tool: call.toolName,
-        reason: `parked by warden: ${parkRecord.key}`,
-      });
-      return {
-        decision: 'deny',
-        reason: `parked by warden: ${parkRecord.reason}`,
-      };
+  const rules = buildPreToolUseRules(deps);
+  return async (call: PreToolCall): Promise<PreToolVerdict> => {
+    for (const rule of rules) {
+      const verdict = rule.check(call);
+      if (verdict) return verdict;
     }
-    const key = deps.parked.get(deps.run);
-    if (key) {
-      const entry = deps.inbox.entry(key);
-      if (entry?.answer !== undefined) {
-        deps.parked.delete(deps.run);
-        deps.journal.append({ event: 'run.resumed', run: deps.run, actor: 'console', key });
-        return { decision: undefined, additionalContext: deps.inbox.resumePrompt(key) };
-      }
-      deps.journal.append({
-        event: 'permission.denied', run: deps.run, actor: 'runner', tool: call.toolName,
-        reason: `parked on ${key}`,
-      });
-      return {
-        decision: 'deny',
-        reason: `parked on ${key}: this run takes no further tool call until that question is answered`,
-      };
-    }
-    // Confirmed on a live run 2026-09-06: a worker called Monitor with a plain shell
-    // command (no websocket, `persistent: true`, watching `gh pr checks`) and its own
-    // `-p` session ended mid-turn, never finishing, never hitting the context ceiling --
-    // `worker.ts` read that as `verdict: 'stopped'`. `checkLaunch`'s `WS_MONITOR` regex
-    // only ever caught a websocket-sourced Monitor named in the brief text; it said
-    // nothing about the worker's own tool calls, and nothing else here stopped a plain
-    // polling Monitor from taking the session down the same way. A worker has no console
-    // to watch a Monitor's notifications on, so the tool is refused outright rather than
-    // narrowed to the one shape that has already been seen killing a session.
-    if (call.toolName === 'Monitor') {
-      deps.journal.append({
-        event: 'permission.denied', run: deps.run, actor: 'runner', tool: call.toolName,
-        reason: 'a worker session has no console to watch Monitor notifications on, and a Monitor call has '
-          + 'ended a live worker session mid-turn without finishing; poll status yourself with Bash instead',
-      });
-      return {
-        decision: 'deny',
-        reason: 'Monitor is refused inside a worker run: it has ended a session mid-turn before, and there is '
-          + 'no console here to receive its notifications. Poll with a plain Bash command instead.',
-      };
-    }
-    // 2026-09-14: a worker waiting on its own background task polled it with
-    // `TaskOutput block: false` over and over, and every poll cost a turn -- the BBZ-343
-    // run spent 15 of its 47 tool calls that way and ran out of turns before a pull
-    // request. A blocking wait with a timeout costs one. Only an explicit `block: false`
-    // is refused; a blocking call, or one that leaves `block` at its default, goes through.
-    if (call.toolName === 'TaskOutput' && call.input['block'] === false) {
-      deps.journal.append({
-        event: 'permission.denied', run: deps.run, actor: 'runner', tool: call.toolName,
-        reason: 'a non-blocking TaskOutput poll costs a turn each time; block on the task instead',
-      });
-      return {
-        decision: 'deny',
-        reason: 'Do not poll a background task with block: false inside a worker run: each poll costs a turn. '
-          + 'Call TaskOutput with block: true and a timeout, and continue from its result.',
-      };
-    }
-    if (deps.killSwitchHit?.()) {
-      deps.journal.append({
-        event: 'permission.denied', run: deps.run, actor: 'runner', tool: call.toolName,
-        reason: 'the fleet kill switch is engaged',
-      });
-      return {
-        decision: 'deny',
-        reason: 'forge stop --all engaged the kill switch: write the handoff packet instead of another tool call',
-        additionalContext: STOP_HANDOFF_REQUEST,
-      };
-    }
-    if (deps.ceilingHit?.()) {
-      deps.journal.append({
-        event: 'permission.denied', run: deps.run, actor: 'runner', tool: call.toolName,
-        reason: 'context ceiling reached',
-      });
-      return {
-        decision: 'deny',
-        reason: 'context ceiling reached: write the handoff packet instead of another tool call',
-        additionalContext: HANDOFF_REQUEST,
-      };
-    }
+    if (inboxHook) return inboxHook(call);
+    return { decision: undefined };
+  };
+}
+
+export interface PreToolCall { toolName: string; input: Record<string, unknown>; toolUseId: string }
+
+/** One rule a worker's tool call passes through, in order; the first verdict decides the call. */
+export interface PreToolRule {
+  name: string;
+  /** Set on a refusal of one tool by name, which the launch prompt lists up front. */
+  tool?: string;
+  check(call: PreToolCall): PreToolVerdict | undefined;
+}
+
+/** A tool a worker run refuses by name, narrowed by its input where only one shape is refused. */
+export interface ToolRefusal {
+  tool: string;
+  matches(input: Record<string, unknown>): boolean;
+  /** The `permission.denied` journal row's reason. */
+  journalReason: string;
+  /** What the model is told, as the refused call's result. */
+  reason: string;
+  /** How `refusedToolsNote` names it in the launch prompt. */
+  promptLine: string;
+}
+
+export const WORKER_TOOL_REFUSALS: readonly ToolRefusal[] = [
+  // Confirmed on a live run 2026-09-06: a worker called Monitor with a plain shell
+  // command (no websocket, `persistent: true`, watching `gh pr checks`) and its own
+  // `-p` session ended mid-turn, never finishing, never hitting the context ceiling --
+  // `worker.ts` read that as `verdict: 'stopped'`. `checkLaunch`'s `WS_MONITOR` regex
+  // only ever caught a websocket-sourced Monitor named in the brief text; it said
+  // nothing about the worker's own tool calls, and nothing else here stopped a plain
+  // polling Monitor from taking the session down the same way. A worker has no console
+  // to watch a Monitor's notifications on, so the tool is refused outright rather than
+  // narrowed to the one shape that has already been seen killing a session.
+  {
+    tool: 'Monitor',
+    matches: () => true,
+    journalReason: 'a worker session has no console to watch Monitor notifications on, and a Monitor call has '
+      + 'ended a live worker session mid-turn without finishing; poll status yourself with Bash instead',
+    reason: 'Monitor is refused inside a worker run: it has ended a session mid-turn before, and there is '
+      + 'no console here to receive its notifications. Poll with a plain Bash command instead.',
+    promptLine: '`Monitor`, in any form: nothing here receives its notifications. Poll with a plain Bash command.',
+  },
+  // 2026-09-14: a worker waiting on its own background task polled it with
+  // `TaskOutput block: false` over and over, and every poll cost a turn -- the BBZ-343
+  // run spent 15 of its 47 tool calls that way and ran out of turns before a pull
+  // request. A blocking wait with a timeout costs one. Only an explicit `block: false`
+  // is refused; a blocking call, or one that leaves `block` at its default, goes through.
+  {
+    tool: 'TaskOutput',
+    matches: (input) => input['block'] === false,
+    journalReason: 'a non-blocking TaskOutput poll costs a turn each time; block on the task instead',
+    reason: 'Do not poll a background task with block: false inside a worker run: each poll costs a turn. '
+      + 'Call TaskOutput with block: true and a timeout, and continue from its result.',
+    promptLine: '`TaskOutput` with `block: false`: each poll costs a turn. Call it with `block: true` and a timeout.',
+  },
+];
+
+/**
+ * The rules `buildPreToolUseHook` runs, in order. Exported so a test walks the real list,
+ * and a rule added here without a specimen fails that test instead of going unexercised.
+ *
+ * A refusal never ends the turn: the model gets the reason back as the tool result and
+ * carries on (BBZ-303, 2026-09-14). The kill switch and the context ceiling are the two
+ * exceptions, and they set `endTurn`: each is a stop the run loop answers next with its own
+ * handoff request (`worker.ts`), and a session past its ceiling that kept calling tools
+ * would keep growing the context the ceiling exists to cap.
+ */
+export function buildPreToolUseRules(deps: PreToolUseHookDeps): PreToolRule[] {
+  const denied = (call: PreToolCall, reason: string) => deps.journal.append({
+    event: 'permission.denied', run: deps.run, actor: 'runner', tool: call.toolName, reason,
+  });
+  return [
+    {
+      name: 'warden-park',
+      check: (call) => {
+        const parkRecord = readParkRecord(deps.run);
+        if (!parkRecord) return undefined;
+        denied(call, `parked by warden: ${parkRecord.key}`);
+        return { decision: 'deny', reason: `parked by warden: ${parkRecord.reason}` };
+      },
+    },
+    {
+      name: 'ask-park',
+      check: (call) => {
+        const key = deps.parked.get(deps.run);
+        if (!key) return undefined;
+        const entry = deps.inbox.entry(key);
+        if (entry?.answer !== undefined) {
+          deps.parked.delete(deps.run);
+          deps.journal.append({ event: 'run.resumed', run: deps.run, actor: 'console', key });
+          return { decision: undefined, additionalContext: deps.inbox.resumePrompt(key) };
+        }
+        denied(call, `parked on ${key}`);
+        return {
+          decision: 'deny',
+          reason: `parked on ${key}: this run takes no further tool call until that question is answered`,
+        };
+      },
+    },
+    ...WORKER_TOOL_REFUSALS.map((refusal): PreToolRule => ({
+      name: `refuse-${refusal.tool}`,
+      tool: refusal.tool,
+      check: (call) => {
+        if (call.toolName !== refusal.tool || !refusal.matches(call.input)) return undefined;
+        denied(call, refusal.journalReason);
+        return { decision: 'deny', reason: refusal.reason };
+      },
+    })),
+    {
+      name: 'kill-switch',
+      check: (call) => {
+        if (!deps.killSwitchHit?.()) return undefined;
+        denied(call, 'the fleet kill switch is engaged');
+        return {
+          decision: 'deny',
+          reason: 'forge stop --all engaged the kill switch: write the handoff packet instead of another tool call',
+          additionalContext: STOP_HANDOFF_REQUEST,
+          endTurn: true,
+        };
+      },
+    },
+    {
+      name: 'context-ceiling',
+      check: (call) => {
+        if (!deps.ceilingHit?.()) return undefined;
+        denied(call, 'context ceiling reached');
+        return {
+          decision: 'deny',
+          reason: 'context ceiling reached: write the handoff packet instead of another tool call',
+          additionalContext: HANDOFF_REQUEST,
+          endTurn: true,
+        };
+      },
+    },
     // P4.7/I4 (scoped by P4.7/I10): the Council's rules library, on every Bash and
     // Edit/Write call. A denial here journals `rule.denied` and stops the call the same
     // way a park does; every other tool name (Read, Grep, the forge_* MCP tools) is
     // untouched. `evaluateScoped` never ends the run itself -- it only denies the one
     // tool call, the same as any other rule verdict, leaving the worker free to try
-    // something else on its next turn.
-    const action = proposedActionFor(call.toolName, call.input, deps.repoContext);
-    if (action) {
-      const verdict = evaluateScoped(action, deps.runCwd);
-      if (!verdict.allow) {
+    // something else.
+    {
+      name: 'council-rules',
+      check: (call) => {
+        const action = proposedActionFor(call.toolName, call.input, deps.repoContext);
+        if (!action) return undefined;
+        const verdict = evaluateScoped(action, deps.runCwd);
+        if (verdict.allow) return undefined;
         const sink = action.kind;
         const locator = action.kind === 'edit'
           ? { path: action.path }
@@ -502,11 +561,22 @@ export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
         });
         const locatorNote = action.kind === 'edit' ? ` (path: ${action.path})` : '';
         return { decision: 'deny', reason: `${verdict.rule}: ${verdict.reason}${locatorNote}` };
-      }
-    }
-    if (inboxHook) return inboxHook(call);
-    return { decision: undefined };
-  };
+      },
+    },
+  ];
+}
+
+/** The launch prompt's list of refused tools, built from `WORKER_TOOL_REFUSALS` so it cannot drift. */
+export function refusedToolsNote(): string {
+  return [
+    '',
+    '## Tools refused in this run',
+    '',
+    'These calls are refused before they run. A refusal comes back as the tool result and your turn',
+    'continues, so read the reason and carry on rather than spending a turn discovering them:',
+    ...WORKER_TOOL_REFUSALS.map((refusal) => `- ${refusal.promptLine}`),
+    '',
+  ].join('\n');
 }
 
 /**
@@ -1268,7 +1338,7 @@ export class SdkEngine implements EngineLike {
       }
     });
 
-    const turns = (await runSegment(request.prompt)) ?? [];
+    const turns = (await runSegment(workerOptions.prompt)) ?? [];
     const sessionId = engine.currentSessionId ?? request.run;
 
     return {
