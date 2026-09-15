@@ -28,6 +28,7 @@ export function sdkLikeQuery(script: ToolStep[][]) {
   const ran: string[] = [];
   const refusals: string[] = [];
   const prompts: string[] = [];
+  const toolResults: string[] = [];
   let turnsEnded = 0;
   const fn = ((params: { prompt: AsyncIterable<unknown>; options?: Options }) => {
     const hook = (params.options as unknown as { hooks?: { PreToolUse?: Array<{ hooks: HookFn[] }> } })
@@ -57,12 +58,16 @@ export function sdkLikeQuery(script: ToolStep[][]) {
             { hook_event_name: 'PreToolUse', tool_name: step.name, tool_input: step.input ?? {} }, id, {},
           );
           const denied = output?.hookSpecificOutput?.permissionDecision === 'deny';
-          if (denied) refusals.push(`${step.name}: ${output?.hookSpecificOutput?.permissionDecisionReason ?? ''}`);
+          const reason = output?.hookSpecificOutput?.permissionDecisionReason ?? '';
+          if (denied) refusals.push(`${step.name}: ${reason}`);
           step.after?.();
+          // What the model reads back: the refusal's own reason, as the SDK delivers it.
+          const result = denied ? reason : 'ok';
+          toolResults.push(result);
           yield {
             type: 'user', session_id: 'sdk-fake',
             message: {
-              content: [{ type: 'tool_result', tool_use_id: id, is_error: denied, content: denied ? 'refused' : 'ok' }],
+              content: [{ type: 'tool_result', tool_use_id: id, is_error: denied, content: result }],
             },
           };
           if (output?.continue === false) break;
@@ -74,7 +79,7 @@ export function sdkLikeQuery(script: ToolStep[][]) {
     }
     return generate() as unknown as Query;
   }) as unknown as QueryFn;
-  return { fn, ran, refusals, prompts, turnsEnded: () => turnsEnded };
+  return { fn, ran, refusals, prompts, toolResults, turnsEnded: () => turnsEnded };
 }
 
 /** A one-message streaming prompt, for driving `sdkLikeQuery` without an `Engine`. */

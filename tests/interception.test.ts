@@ -63,10 +63,28 @@ describe('the engine registers a PreToolUse hook', () => {
     expect(seen).toEqual([{ toolName: 'Write', toolUseId: 'tu-9' }]);
   });
 
-  it('stops the call when the inspector refused it', async () => {
+  it('refuses the call and leaves the turn going, so the model reads the reason', async () => {
+    // 2026-09-15: a refusal used to answer continue: false, which ends the whole turn; a
+    // worker whose Monitor call was refused finished stopped without seeing why (BBZ-303).
     const options = buildOptions({
       ...baseConfig,
       onToolCall: () => ({ decision: 'deny' as const, reason: 'no' }),
+    });
+    const hook = options.hooks?.PreToolUse?.[0]?.hooks?.[0];
+    const result = (await hook?.(
+      { hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: {} } as never,
+      'tu-1',
+      { signal: new AbortController().signal },
+    )) as { continue?: boolean; hookSpecificOutput?: Record<string, unknown> };
+    expect(result.continue).toBe(true);
+    expect(result.hookSpecificOutput?.['permissionDecision']).toBe('deny');
+    expect(result.hookSpecificOutput?.['permissionDecisionReason']).toBe('no');
+  });
+
+  it('ends the turn only when the verdict asks for it', async () => {
+    const options = buildOptions({
+      ...baseConfig,
+      onToolCall: () => ({ decision: 'deny' as const, reason: 'ceiling', endTurn: true }),
     });
     const hook = options.hooks?.PreToolUse?.[0]?.hooks?.[0];
     const result = (await hook?.(

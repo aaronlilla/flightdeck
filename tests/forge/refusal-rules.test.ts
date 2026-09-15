@@ -182,8 +182,88 @@ describe.each(RULE_NAMES)('rule %s', (name) => {
     journal.close();
 
     expect(fake.refusals).toHaveLength(1);
+    // The model's next step sees the refusal's own reason as the tool result.
+    expect(fake.toolResults[0]).toBe(fake.refusals[0]!.slice(specimen.call.name.length + 2));
     if (specimen.endsTurn) expect(fake.ran).toEqual([]);
     else expect(fake.ran).toEqual([FORGE_DONE]);
+  });
+});
+
+async function drive(deps: PreToolUseHookDeps, steps: ToolStep[]) {
+  const fake = sdkLikeQuery([steps]);
+  const options = buildOptions({
+    cwd: home, canUseTool: (async () => ({ behavior: 'allow', updatedInput: {} })) as never,
+    onToolCall: buildPreToolUseHook(deps),
+  });
+  for await (const _message of fake.fn({ prompt: onePrompt('go') as never, options })) { /* drain */ }
+  return fake;
+}
+
+const BASH = { name: 'Bash', input: { command: 'echo hi' } };
+
+describe('a run that stays parked cannot loop on refusals', () => {
+  it.each(['warden-park', 'ask-park'])('%s: the first refusal carries on, a second in a row ends the turn', async (name) => {
+    const journal = new Journal(journalPath);
+    const deps = depsFor(SPECIMENS[name], journal);
+
+    const fake = await drive(deps, [BASH, BASH, BASH, { name: FORGE_DONE, input: { evidence: 'done' } }]);
+    journal.close();
+
+    expect(fake.refusals).toHaveLength(2);
+    expect(fake.ran).toEqual([]);
+  });
+
+  it('the count starts over once a call gets past the park', async () => {
+    const journal = new Journal(journalPath);
+    const deps = depsFor(SPECIMENS['ask-park'], journal);
+
+    const fake = await drive(deps, [
+      { ...BASH, after: () => deps.parked.delete(RUN) },
+      { name: 'Read', input: { file_path: 'README.md' }, after: () => deps.parked.set(RUN, 'ask-2') },
+      BASH,
+      { name: FORGE_DONE, input: { evidence: 'done' }, after: () => deps.parked.delete(RUN) },
+    ]);
+    journal.close();
+
+    // Refused, passed, refused (a first refusal again, so the turn goes on), then refused
+    // again as the second in a row: forge_done never runs while still parked.
+    expect(fake.refusals).toHaveLength(3);
+    expect(fake.ran).toEqual(['Read']);
+  });
+});
+
+describe('no refusal that carries on can keep a run away from the two stops', () => {
+  it('an ask-parked run past its context ceiling keeps its park reason and ends the turn', async () => {
+    const journal = new Journal(journalPath);
+    const deps = { ...depsFor(SPECIMENS['ask-park'], journal), ceilingHit: () => true };
+
+    const verdict = await buildPreToolUseHook(deps)({ toolName: 'Bash', input: { command: 'echo hi' }, toolUseId: 't' });
+    journal.close();
+
+    expect(verdict.endTurn).toBe(true);
+    expect(verdict.reason).toMatch(/^parked on ask-1/);
+  });
+
+  it('a warden-parked run under the kill switch keeps its park reason and ends the turn', async () => {
+    const journal = new Journal(journalPath);
+    const deps = { ...depsFor(SPECIMENS['warden-park'], journal), killSwitchHit: () => true };
+
+    const verdict = await buildPreToolUseHook(deps)({ toolName: 'Bash', input: { command: 'echo hi' }, toolUseId: 't' });
+    journal.close();
+    clearParkRecord(RUN);
+
+    expect(verdict.endTurn).toBe(true);
+    expect(verdict.reason).toMatch(/^parked by warden/);
+  });
+
+  it('a Monitor call under the kill switch ends the turn on the kill switch', async () => {
+    const journal = new Journal(journalPath);
+    const deps = { ...depsFor(undefined, journal), killSwitchHit: () => true };
+
+    const verdict = await buildPreToolUseHook(deps)({ toolName: 'Monitor', input: { command: 'x' }, toolUseId: 't' });
+    journal.close();
+
+    expect(verdict.endTurn).toBe(true);
   });
 });
 
@@ -202,6 +282,11 @@ describe('the launch prompt names every tool refused by name', () => {
     const prompt = buildWorkerOptions({ ...REQUEST, cwd: home }).prompt;
     expect(prompt.startsWith(REQUEST.prompt)).toBe(true);
     for (const tool of tools) expect(prompt).toContain(`\`${tool}\``);
+  });
+
+  it('leaves a /goal prompt exactly as written, since appended text would join the goal condition', () => {
+    const goal = '/goal Work C:/dev/.claude/goals/x.md to completion. Met only when the PR is open.';
+    expect(buildWorkerOptions({ ...REQUEST, prompt: goal, cwd: home }).prompt).toBe(goal);
   });
 
   it('the prompt a real run sends first carries the same list', async () => {

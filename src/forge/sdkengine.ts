@@ -114,8 +114,12 @@ export function buildWorkerOptions(
 
   const options: WorkerOptions = {
     model: request.model,
-    // A resumed session already carries the note from its first prompt.
-    prompt: request.resume ? request.prompt : request.prompt + refusedToolsNote(),
+    // A resumed session already carries the note from its first prompt. A `/goal ...` prompt
+    // is a goal condition, verbatim, and text appended to it would become part of that
+    // condition; those runs learn a refusal from its reason when it happens.
+    prompt: request.resume || request.prompt.startsWith('/goal ')
+      ? request.prompt
+      : request.prompt + refusedToolsNote(),
     cwd: request.cwd,
     ...(request.maxTurns !== undefined ? { maxTurns: request.maxTurns } : {}),
     permissionMode: 'bypassPermissions',
@@ -473,6 +477,17 @@ export function buildPreToolUseRules(deps: PreToolUseHookDeps): PreToolRule[] {
   const denied = (call: PreToolCall, reason: string) => deps.journal.append({
     event: 'permission.denied', run: deps.run, actor: 'runner', tool: call.toolName, reason,
   });
+  // Refusals that repeat on a parked run. The first carries on so the model reads why; a
+  // second in a row ends the turn, so a run that keeps calling tools while parked cannot
+  // loop with nothing bounding it. Reset once a call gets past both park rules. A park is
+  // checked ahead of the two stops (its key is what a person answers), so while either stop
+  // is engaged a park refusal ends the turn too, or a parked run would never reach them.
+  let parkRefusals = 0;
+  const parkVerdict = (reason: string): PreToolVerdict => {
+    parkRefusals += 1;
+    const stop = parkRefusals > 1 || deps.killSwitchHit?.() === true || deps.ceilingHit?.() === true;
+    return { decision: 'deny', reason, ...(stop ? { endTurn: true } : {}) };
+  };
   return [
     {
       name: 'warden-park',
@@ -480,36 +495,28 @@ export function buildPreToolUseRules(deps: PreToolUseHookDeps): PreToolRule[] {
         const parkRecord = readParkRecord(deps.run);
         if (!parkRecord) return undefined;
         denied(call, `parked by warden: ${parkRecord.key}`);
-        return { decision: 'deny', reason: `parked by warden: ${parkRecord.reason}` };
+        return parkVerdict(`parked by warden: ${parkRecord.reason}`);
       },
     },
     {
       name: 'ask-park',
       check: (call) => {
         const key = deps.parked.get(deps.run);
-        if (!key) return undefined;
+        if (!key) {
+          parkRefusals = 0;
+          return undefined;
+        }
         const entry = deps.inbox.entry(key);
         if (entry?.answer !== undefined) {
+          parkRefusals = 0;
           deps.parked.delete(deps.run);
           deps.journal.append({ event: 'run.resumed', run: deps.run, actor: 'console', key });
           return { decision: undefined, additionalContext: deps.inbox.resumePrompt(key) };
         }
         denied(call, `parked on ${key}`);
-        return {
-          decision: 'deny',
-          reason: `parked on ${key}: this run takes no further tool call until that question is answered`,
-        };
+        return parkVerdict(`parked on ${key}: this run takes no further tool call until that question is answered`);
       },
     },
-    ...WORKER_TOOL_REFUSALS.map((refusal): PreToolRule => ({
-      name: `refuse-${refusal.tool}`,
-      tool: refusal.tool,
-      check: (call) => {
-        if (call.toolName !== refusal.tool || !refusal.matches(call.input)) return undefined;
-        denied(call, refusal.journalReason);
-        return { decision: 'deny', reason: refusal.reason };
-      },
-    })),
     {
       name: 'kill-switch',
       check: (call) => {
@@ -536,6 +543,17 @@ export function buildPreToolUseRules(deps: PreToolUseHookDeps): PreToolRule[] {
         };
       },
     },
+    // The two stops sit ahead of every refusal below, which returns without ending the turn:
+    // a stop checked after one would never be reached by a run that keeps making that call.
+    ...WORKER_TOOL_REFUSALS.map((refusal): PreToolRule => ({
+      name: `refuse-${refusal.tool}`,
+      tool: refusal.tool,
+      check: (call) => {
+        if (call.toolName !== refusal.tool || !refusal.matches(call.input)) return undefined;
+        denied(call, refusal.journalReason);
+        return { decision: 'deny', reason: refusal.reason };
+      },
+    })),
     // P4.7/I4 (scoped by P4.7/I10): the Council's rules library, on every Bash and
     // Edit/Write call. A denial here journals `rule.denied` and stops the call the same
     // way a park does; every other tool name (Read, Grep, the forge_* MCP tools) is
