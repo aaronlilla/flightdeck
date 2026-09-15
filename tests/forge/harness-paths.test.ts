@@ -176,6 +176,11 @@ const REFUSED: Call[] = [
   ['Bash, empty double quotes inside the folder name', 'Bash', { command: 'cat ~/.cla""ude/hooks/authorship_guard.py' }],
   ['Bash, empty single quotes inside the folder name', 'Bash', { command: "cat ~/.cla''ude/settings.json" }],
   ['Bash, a backslash escape inside the folder name', 'Bash', { command: 'cat ~/.cla\\ude/settings.json' }],
+  // ANSI-C `$'...'` quoting the shell decodes at runtime: `$'\x2e'` and `$'\u002e'` are both `.`.
+  ['Bash, ANSI-C hex escape under home', 'Bash', { command: "cat ~/$'\\x2e'claude/settings.json" }],
+  ['Bash, ANSI-C unicode escape under home', 'Bash', { command: "cat ~/$'\\u002e'claude/hooks/authorship_guard.py" }],
+  ['Bash, ANSI-C octal escape under home', 'Bash', { command: "cat ~/$'\\056'claude/settings.json" }],
+  ['Bash, ANSI-C escape spanning the whole home path', 'Bash', { command: `cd ~ && cat $'\\x2e'claude/settings.json` }],
   // Prose that names a protected folder is refused; the reason says to pass it as a file.
   ['Bash, a commit message naming a guard path', 'Bash', { command: 'git commit -m "Stop workers reading ~/.claude/hooks"' }],
   ['Bash, an echo naming a guard path', 'Bash', { command: 'echo "the rule lives in ~/.claude/hooks/authorship_guard.py"' }],
@@ -245,6 +250,8 @@ const ALLOWED: Call[] = [
   ['Bash lists the users folder', 'Bash', { command: 'ls C:/Users' }],
   ['Bash ls -ltr of home is not a recursive walk', 'Bash', { command: 'ls -ltr ~' }],
   ['Bash a wildcard inside the worktree', 'Bash', { command: 'ls src/forge/*.ts' }],
+  // An ANSI-C escape that decodes to the worktree's own relative `.claude`, not the machine's.
+  ['Bash an ANSI-C relative path in the worktree', 'Bash', { command: "cat $'\\x2e'claude/settings.json" }],
   ['Bash a test glob inside the worktree', 'Bash', { command: 'npx vitest run tests/forge/harness-*.test.ts' }],
   ['Bash a quoted wildcard for git', 'Bash', { command: "git log --oneline -- 'src/forge/*.ts'" }],
   // How a worker says what a refusal told it not to type: the text goes in a file.
