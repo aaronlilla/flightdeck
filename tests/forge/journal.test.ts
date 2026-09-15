@@ -146,6 +146,28 @@ describe('replay', () => {
     expect(replay(path).runs['alpha']?.startedAt).toBe(1_000);
   });
 
+  // 2026-09-15 (BBZ-303, 305, 307, 308, 343): a retry relaunched each run under its old key,
+  // the clock still measured from 9/14, and the warden parked every relaunch on its first
+  // tool call with "Running 20.8 h, expected 3.0 h".
+  it('starts the clock again when a retry relaunches the run', () => {
+    write(
+      { event: 'run.started', run: 'alpha', actor: 'runner', at: 1_000 },
+      { event: 'queue.relaunch-on-retry', actor: 'queue', itemId: 'Q-1', previousRunKey: 'alpha', at: 5_000 },
+      { event: 'run.started', run: 'alpha', actor: 'runner', at: 9_000 },
+    );
+    expect(replay(path).runs['alpha']?.startedAt).toBe(9_000);
+  });
+
+  it('leaves another run\'s clock alone when a retry relaunches one run', () => {
+    write(
+      { event: 'run.started', run: 'alpha', actor: 'runner', at: 1_000 },
+      { event: 'run.started', run: 'beta', actor: 'runner', at: 2_000 },
+      { event: 'queue.relaunch-on-retry', actor: 'queue', itemId: 'Q-1', previousRunKey: 'alpha', at: 5_000 },
+      { event: 'run.started', run: 'beta', actor: 'runner', at: 9_000 },
+    );
+    expect(replay(path).runs['beta']?.startedAt).toBe(2_000);
+  });
+
   it('leaves startedAt unset when a run never journaled run.started', () => {
     write({ event: 'turn.end', run: 'alpha', actor: 'worker', context: 100 });
     expect(replay(path).runs['alpha']?.startedAt).toBeUndefined();
