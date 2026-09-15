@@ -174,6 +174,14 @@ export interface PreToolVerdict {
   updatedInput?: Record<string, unknown>;
   /** Text delivered to the model alongside this tool call, regardless of the decision. */
   additionalContext?: string;
+  /**
+   * Ends the session's turn along with this verdict. A refusal leaves it unset: the SDK
+   * hands the reason back to the model as the tool result and the turn carries on, so the
+   * model can do something else. Until 2026-09-15 every deny ended the turn (`continue:
+   * false`), and a worker whose Monitor call was refused finished `stopped` 168 ms later
+   * without ever seeing why (BBZ-303). Set only for a stop the caller answers itself.
+   */
+  endTurn?: boolean;
 }
 
 /** The SDK's own session-starting function, matched so a specimen can inject a fake. */
@@ -236,7 +244,7 @@ export function buildOptions(
               if (verdict.updatedInput) specific['updatedInput'] = verdict.updatedInput;
               if (verdict.additionalContext) specific['additionalContext'] = verdict.additionalContext;
               return {
-                continue: verdict.decision !== 'deny',
+                continue: verdict.endTurn !== true,
                 hookSpecificOutput: specific,
               } as never;
             },

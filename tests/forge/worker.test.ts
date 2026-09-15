@@ -1161,6 +1161,42 @@ describe('I14: a segment that ends with no done, ceiling, park or kill gets one 
     expect(nudges[0]?.['reason']).toContain('Carries an em dash');
   });
 
+  it('does not quote a refusal the worker already moved past with a later tool call', async () => {
+    // 2026-09-15: a refused call no longer ends the turn, so a denial can sit behind calls
+    // that went through. Quoting it then blames something the model already worked around.
+    const engine = {
+      started: [] as unknown[],
+      sent: [] as string[],
+      async run(config: { run: string }) {
+        this.started.push(config);
+        const journal = new Journal(journalPath);
+        journal.append({ event: 'tool.start', run: config.run, actor: 'worker', tool: 'Bash' });
+        journal.append({
+          event: 'rule.denied', run: config.run, actor: 'runner', tool: 'Bash',
+          rule: 'gitflow', reason: 'push to a controlled branch', sink: 'bash', command: 'git push origin main',
+        });
+        journal.append({ event: 'tool.start', run: config.run, actor: 'worker', tool: 'Bash' });
+        journal.close();
+        return {
+          sessionId: 'session-1', turns: [{ text: 'pushed the feature branch', context: 10 }],
+          send: async (prompt: string) => {
+            this.sent.push(prompt);
+            return [{ text: 'still here', context: 10 }];
+          },
+        };
+      },
+    };
+    const worker = new Worker({
+      run: 'alpha', brief: '# Goal\n\nDo the thing.\n', briefPath: join(dir, 'brief.md'),
+      cwd: dir, journalPath, engine: engine as never, maxContext: 60_000,
+    } as never) as unknown as { run: () => Promise<unknown> };
+
+    await worker.run();
+
+    expect(engine.sent.length).toBeGreaterThan(0);
+    expect(engine.sent[0]).not.toContain('push to a controlled branch');
+  });
+
   it('a turn that ends while polling its own background task is a wait, not a stop: more nudges, never told to block', async () => {
     // Aaron, 2026-09-14: the BBZ-303 run was mid-task, polled its own background job with
     // TaskOutput, ended the turn, got two nudges and was finished `stopped`.
