@@ -90,6 +90,11 @@ const REFUSED: Call[] = [
   // Every path form for the Read.
   ['Read, backslash form', 'Read', { file_path: `${HOME}\\.claude\\hooks\\authorship_guard.py` }],
   ['Read, %USERPROFILE% form', 'Read', { file_path: '%USERPROFILE%\\.claude\\hooks\\authorship_guard.py' }],
+  // Review of the guard-folder PR, 2026-09-15: a bare HOMEPATH (no HOMEDRIVE in front) was never
+  // expanded, so these three read the guard and got a plain allow.
+  ['Read, bare %HOMEPATH% form', 'Read', { file_path: '%HOMEPATH%\\.claude\\hooks\\authorship_guard.py' }],
+  ['Bash, bare %HOMEPATH% form', 'Bash', { command: 'type %HOMEPATH%\\.claude\\hooks\\authorship_guard.py' }],
+  ['Bash, PowerShell $env:HOMEPATH', 'Bash', { command: 'Get-Content $env:HOMEPATH\\.claude\\settings.json' }],
   ['Read, git-bash ~ form', 'Read', { file_path: '~/.claude/hooks/authorship_guard.py' }],
   ['Read, git-bash /c/ form', 'Read', { file_path: `${HOME_BASH}/.claude/hooks/authorship_guard.py` }],
   ['Read, account backslash form', 'Read', { file_path: `${HOME}\\.forge\\accounts\\configs\\claude-specimen-account\\settings.json` }],

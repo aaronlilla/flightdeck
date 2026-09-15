@@ -89,6 +89,10 @@ function variables(home: string): [string, string][] {
     ['CLAUDE_CONFIG_DIR', `${home}/.claude`],
     ['FORGE_CONFIG_DIR', process.env['FORGE_CONFIG_DIR'] || `${home}/.claude-fleet`],
     ['USERNAME', lastSegment(home)],
+    // Each half alone, after the joined `%HOMEDRIVE%%HOMEPATH%` form in `expandVariables`: a bare
+    // HOMEPATH is the home path without its drive, and it read the guards unrefused until 2026-09-15.
+    ['HOMEPATH', home.replace(/^[a-z]:/i, '')],
+    ['HOMEDRIVE', /^[a-z]:/i.exec(home)?.[0] ?? ''],
     ['HOME', home],
   ];
 }
@@ -130,6 +134,11 @@ export function normalizePath(raw: string, cwd: string, home: string): string {
   if (path === '~' || /^~[\\/]/.test(path)) path = home + path.slice(1);
   else if (/^~[\w.-]+([\\/]|$)/.test(path)) path = `${parentOf(home.replace(/\\/g, '/'))}/${path.slice(1)}`;
   path = foldPrefix(path.replace(/\\/g, '/'));
+  // A single leading slash with no drive is drive-relative on Windows: `\Users\x` is on the current
+  // drive. A bare `%HOMEPATH%` expands to exactly that shape, and without a drive it never matched
+  // the drive-letter roots (2026-09-15). The run's drive is cwd's, falling back to home's.
+  const drive = /^[a-z]:/i.exec(cwd.replace(/\\/g, '/'))?.[0] ?? /^[a-z]:/i.exec(home)?.[0];
+  if (drive && /^\/(?!\/)/.test(path)) path = `${drive}${path}`;
   if (!isAbsolute(path)) path = `${normalizePath(cwd, '/', home)}/${path}`;
   return resolveDots(path).replace(/(.)\/+$/, '$1').toLowerCase();
 }
