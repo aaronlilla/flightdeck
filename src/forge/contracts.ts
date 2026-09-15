@@ -392,6 +392,12 @@ export const FORGE_EVENT_NAMES = [
   // the ticket's: no pull request readable at the checkout, no tracker credentials, or
   // the handoff itself throwing. A ticket that did not move always says why.
   'pr-opened.skipped',
+  // 2026-09-14: a worker's own background task, and the runner waiting it out instead of
+  // nudging (`worker.ts`, `sdkengine.ts`). `task.backgrounded` is the engine's own row for
+  // a tool call it sent to the background; `run.waiting` marks the runner giving up its
+  // nudge budget to wait for that task's completion notification instead; `task.settled`
+  // is the wait ending, with or without a woken turn.
+  'task.backgrounded', 'run.waiting', 'task.settled',
 ] as const;
 
 export type ForgeEventName = (typeof FORGE_EVENT_NAMES)[number];
