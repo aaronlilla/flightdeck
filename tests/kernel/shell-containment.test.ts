@@ -364,13 +364,14 @@ describe('shell containment', () => {
     expect(guard.decide!(bash('npm ci'), {} as never).kind).toBe('modify');
   });
 
-  it('contains git writes too, because the ref write is redirected', () => {
-    // MEASURED: a worktree's refs/heads/<branch> lives in the SHARED store, so a
-    // read-only mount alone would make `git commit` fail. GIT_COMMON_DIR redirects that
-    // write to a writable stage -- verified with a real git: after a contained commit
-    // the shared ref still held the OLD sha while the stage held the new one, and the
-    // host adopted it by copying scratch objects in and fast-forwarding. So the store
-    // stays read-only (no hook planting) AND commits work.
+  it('contains git reads, and keeps ref writes on the hardened host path', () => {
+    // MEASURED: a worktree's refs/heads/<branch> lives in the SHARED store, which is
+    // mounted :ro so a contained command cannot plant a hook the host would execute.
+    // Objects route around that with GIT_ALTERNATE_OBJECT_DIRECTORIES. GIT_COMMON_DIR
+    // redirects the ref write for a FLAT branch name, but was measured writing through
+    // to the shared store for a SLASHED one (`feature/x`) -- the shape every ticket run
+    // uses. Until that is understood, ref-writing verbs take the hardened host path
+    // rather than being contained into a wrong-looking success.
     const guard = createShellContainmentGuard({
       cwd: CWD, config: on,
       gitStore: {
@@ -380,12 +381,15 @@ describe('shell containment', () => {
         hostRefStage: 'C:/dev/fd-sandbox/.git/worktrees/fd-sandbox--fdtes-1/forge-refstage',
       },
     });
-    for (const command of [
-      'git status', 'git log --oneline -5', 'git commit -m fix', 'git add -A',
-    ]) {
-      const emitted = String((guard.decide!(bash(command), {} as never) as any).input['command']);
+    for (const read of ['git status', 'git log --oneline -5', 'git rev-parse HEAD']) {
+      const emitted = String((guard.decide!(bash(read), {} as never) as any).input['command']);
       expect(emitted).toMatch(/docker run/);
-      expect(emitted).toMatch(/GIT_COMMON_DIR=\/refstage/);
+      expect(emitted).toMatch(/:\/gitstore:ro/);
+    }
+    for (const write of ['git commit -m fix', 'git push origin feature/x', 'git add -A']) {
+      const emitted = String((guard.decide!(bash(write), {} as never) as any).input['command']);
+      expect(emitted).not.toMatch(/docker run/);
+      expect(emitted).toMatch(/core\.hooksPath=\/dev\/null/);
     }
   });
 

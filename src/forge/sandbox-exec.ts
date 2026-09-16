@@ -168,6 +168,14 @@ export function resolveGitStore(worktreePath: string): GitStoreMount | undefined
 /**
  * Prepares the writable ref redirect a contained `git` commits into.
  *
+ * MEASURED LIMITATION, do not rely on this for ref isolation yet. With a flat branch
+ * name (`feat`) the redirect holds: the shared `refs/heads/feat` keeps its old sha and
+ * the new commit lands in the stage. With a SLASHED branch name (`feature/contained` --
+ * the shape every ticket run actually uses) the same setup wrote the new sha into the
+ * SHARED store instead, even though `git rev-parse --git-common-dir` reported the stage.
+ * Until that is understood, ref-writing verbs stay on the hardened host path; this
+ * function is kept because reads and object routing through it are sound.
+ *
  * Copies the shared store's `refs/` and `config` to the stage. `config` comes along
  * because git reads it through GIT_COMMON_DIR, and without it a commit loses the
  * remote and branch configuration it needs. `hooks/` deliberately does NOT: the stage

@@ -8,12 +8,13 @@
  * conflict.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { resolveGitStore, stageRefRedirect } from '../../../src/forge/sandbox-exec.js';
 import { chainRebase } from '../../../src/forge/chain-wire.js';
 
 function git(cwd: string, args: string[]): string {
@@ -52,6 +53,41 @@ function setup(): { base: string; worktree: string } {
 }
 
 describe('chainRebase', () => {
+  it('runs ref promotion before the fetch, so a dead remote cannot discard a commit', async () => {
+    // Promotion adopts whatever a contained run wrote into its ref redirect. It was
+    // placed AFTER the fetch guard at first, so an unreachable remote returned early and
+    // the run's own commit was silently thrown away -- the branch still pointed at the
+    // pre-run tip and the item would reach review with an empty diff. Promotion depends
+    // on nothing remote, so it must not sit behind a network check.
+    //
+    // This asserts the ORDERING, which is the defect that existed. The redirect
+    // mechanism itself is only partly sound: see stageRefRedirect's note -- a slashed
+    // branch name still writes through to the shared store, so ref-writing verbs stay
+    // on the hardened host path until that is understood.
+    const root = mkdtempSync(join(tmpdir(), 'chain-promote-'));
+    const primary = join(root, 'primary');
+    initRepo(primary);
+    writeFileSync(join(primary, 'a.ts'), 'export const a = 1;\n');
+    git(primary, ['add', '-A']);
+    git(primary, ['commit', '-m', 'base']);
+
+    const worktree = join(root, 'wt');
+    git(primary, ['worktree', 'add', worktree, '-b', 'contained']);
+    const store = resolveGitStore(worktree)!;
+    expect(store).toBeDefined();
+    stageRefRedirect(store);
+    expect(existsSync(join(store.hostRefStage, 'refs/heads/contained'))).toBe(true);
+    // The stage must never carry the host's hooks: it is writable and container-visible.
+    expect(existsSync(join(store.hostRefStage, 'hooks'))).toBe(false);
+
+    // No `origin` here, so the fetch inside chainRebase fails...
+    const result = await chainRebase()({ worktreePath: worktree, base: 'main' });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/could not fetch/);
+    // ...and the branch is intact rather than damaged by a half-run promotion.
+    expect(git(worktree, ['log', '-1', '--format=%s']).trim()).toBe('base');
+  });
+
   it('commits a leftover modified tracked file and an untracked file, then rebases cleanly', async () => {
     const { base, worktree } = setup();
 
