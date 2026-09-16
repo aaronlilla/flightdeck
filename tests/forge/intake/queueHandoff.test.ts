@@ -4,7 +4,9 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { buildQueueHandoffComment, runQueueHandoff, type QueueHandoffEvent } from '../../../src/forge/intake/queueHandoff.js';
+import {
+  buildQueueDoneComment, buildQueueHandoffComment, runQueueDone, runQueueHandoff, type QueueHandoffEvent,
+} from '../../../src/forge/intake/queueHandoff.js';
 import type { JiraCallResult, JiraWriteClient } from '../../../src/forge/intake/jira.js';
 
 function fakeClient(overrides: Partial<JiraWriteClient> = {}): JiraWriteClient {
@@ -136,5 +138,60 @@ describe('runQueueHandoff', () => {
     expect(calls).not.toContain('comment:BBZ-1');
     expect(calls).toContain('link:BBZ-1');
     expect(events.some((e) => e.event === 'readability.refused')).toBe(true);
+  });
+});
+
+describe('runQueueDone', () => {
+  const input = {
+    ticket: 'FDTES-1', prUrl: 'https://github.com/o/r/pull/2', prNumber: 2,
+    mergedAt: Date.parse('2026-09-16T19:42:22Z'),
+  };
+
+  it('comments and transitions when a done transition id is configured', async () => {
+    const calls: string[] = [];
+    const client = fakeClient({
+      async comment(key, body) { calls.push(`comment:${key}:${body.includes('pull/2')}`); return { ok: true }; },
+      async transition(key, id) { calls.push(`transition:${key}:${id}`); return { ok: true }; },
+    });
+    const events: QueueHandoffEvent[] = [];
+    await runQueueDone(client, input, { doneTransitionId: '31' }, (e) => events.push(e));
+
+    expect(calls).toEqual(['comment:FDTES-1:true', 'transition:FDTES-1:31']);
+  });
+
+  it('SKIPS the transition rather than guessing when no id is configured', async () => {
+    // A wrong transition id moves a ticket to a wrong column, which is worse than
+    // leaving it open for a person. Comment still lands: the PR link is useful either way.
+    const calls: string[] = [];
+    const client = fakeClient({
+      async comment() { calls.push('comment'); return { ok: true }; },
+      async transition() { calls.push('transition'); return { ok: true }; },
+    });
+    const lines = await runQueueDone(client, input, {}, () => {});
+
+    expect(calls).toEqual(['comment']);
+    expect(lines.some((l) => l.includes('skipped'))).toBe(true);
+  });
+
+  it('reports a failed transition rather than claiming the ticket closed', async () => {
+    const client = fakeClient({
+      async transition(): Promise<JiraCallResult> { return { ok: false, status: 403, body: 'forbidden' }; },
+    });
+    const lines = await runQueueDone(client, input, { doneTransitionId: '31' }, () => {});
+
+    expect(lines.join(' ')).not.toMatch(/\bok\b.*transition/i);
+    expect(lines.some((l) => l.includes('403') || l.toLowerCase().includes('fail'))).toBe(true);
+  });
+});
+
+describe('buildQueueDoneComment', () => {
+  it('names the PR and the merge time, and claims nothing about the fix', () => {
+    const text = buildQueueDoneComment({
+      ticket: 'FDTES-1', prUrl: 'https://github.com/o/r/pull/2', prNumber: 2,
+      mergedAt: Date.parse('2026-09-16T19:42:22Z'),
+    });
+    expect(text).toContain('https://github.com/o/r/pull/2');
+    expect(text).toContain('#2');
+    expect(text).toContain('2026-09-16T19:42:22');
   });
 });

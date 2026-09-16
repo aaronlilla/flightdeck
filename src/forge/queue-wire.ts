@@ -27,7 +27,7 @@ import { developDeployVerifier } from './intake/otaVerify.js';
 import { appendRoutinesSection, loadRoutines, matchRoutines } from './self/routines.js';
 import { routinesDir } from './paths.js';
 import { createJiraFeed, createJiraWriteClient, type JiraConfig } from './intake/jira.js';
-import { runQueueHandoff } from './intake/queueHandoff.js';
+import { runQueueDone, runQueueHandoff } from './intake/queueHandoff.js';
 import type { PollItemDetail } from './intake/poller.js';
 import { planFromPacket } from './intake/planner.js';
 import { resolvePlanProvider } from './intake/reasoner.js';
@@ -250,6 +250,29 @@ export function queueBackendHandoff(
   };
 }
 
+/** The merge-time counterpart to `queueJiraHandoff`. Same shape, same honest no-op when
+ *  no Jira credential is configured, so a repo with no Jira wiring merges exactly as it
+ *  does today. */
+export function queueJiraDone(
+  configFn: () => JiraConfig | undefined = jiraConfigFromEnv,
+): NonNullable<QueueRuntimeDeps['jiraDone']> {
+  return async ({ item, pr, mergedAt }) => {
+    const config = configFn();
+    if (!config || !item.ticket) return;
+    const journal = new Journal(journalPath());
+    try {
+      await runQueueDone(
+        createJiraWriteClient(config),
+        { ticket: item.ticket, prUrl: pr.url, prNumber: pr.no, mergedAt },
+        { doneTransitionId: process.env['FORGE_JIRA_DONE_TRANSITION'] },
+        (doneEvent) => journal.append({ actor: 'queue', ...doneEvent }),
+      );
+    } finally {
+      journal.close();
+    }
+  };
+}
+
 /** A.3: the Jira write-back at review -- a comment in Aaron's voice, a QA assign/
  *  transition when those variables are set, and a remote link to the PR. Skipped
  *  honestly (never a guessed write) when no Jira credential is configured. */
@@ -449,6 +472,7 @@ export function buildQueueRuntimeDeps(
     mergeCheckRepos: chainEnv.checkouts.map((entry) => entry.repo),
     backendHandoff: queueBackendHandoff(),
     jiraHandoff: queueJiraHandoff(),
+    jiraDone: queueJiraDone(),
     prSnapshot: queuePrSnapshot(),
     // BBZ, 2026-09-08: read fresh every tick (`autoMergeAllowed` re-reads
     // `FORGE_COUNCIL_AUTOMERGE` off `councilPolicy()` on each call), the same allow-list

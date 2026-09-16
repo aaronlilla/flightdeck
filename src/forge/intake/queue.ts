@@ -289,6 +289,13 @@ export interface QueueRuntimeDeps {
    *  a remote link, all in Aaron's voice. Runs once per item, guarded by `handoffAt`;
    *  absent means this environment never wires it, and no Jira write happens at all. */
   jiraHandoff?: (input: { item: QueueItem; pr: { no: number; url: string } }) => Promise<void>;
+  /** The other half of `jiraHandoff`: that one fires when the DRAFT PR opens (a QA
+   *  transition, ticket still open). This one fires when the PR actually MERGES, so the
+   *  board stops showing an open bug whose fix is already on main. Split deliberately --
+   *  a merge can happen long after the handoff, or (repo not on the allow-list) never. */
+  jiraDone?: (input: {
+    item: QueueItem; pr: { no: number; url: string }; mergedAt: number;
+  }) => Promise<void>;
   /** A.8/A.9: the PR's own changed files and line counts. Fetched once per item, right
    *  after the PR is found and before the council reads it, so A.9's overlap check runs
    *  against real data and A.8's figures at `review` need no second fetch. Absent means
@@ -822,6 +829,17 @@ export async function advanceItem(itemIn: QueueItem, deps: QueueRuntimeDeps): Pr
   // same as any other repo -- the draft PR is still there for a person to look at.
   if (merge && gateResult.merged) {
     const mergedAt = deps.clock();
+    // The ticket is the reason this run exists, so closing it is part of merging -- not a
+    // separate chore a person remembers. Best effort and BEFORE the transition write, on
+    // the same discipline as the handoff above: a Jira outage must not strand a merged PR
+    // in a non-done queue state, which would make the sweep re-merge it.
+    if (deps.jiraDone && item.ticket) {
+      try {
+        await deps.jiraDone({ item, pr: { no: pr.number, url: pr.url }, mergedAt });
+      } catch {
+        // Same best-effort contract as jiraHandoff: the merge is the source of record.
+      }
+    }
     const verifying = Boolean(deps.postMergeVerify && item.branch);
     const merged = writeTransition(
       item,

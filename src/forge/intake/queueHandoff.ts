@@ -143,3 +143,62 @@ export async function runQueueHandoff(
 
   return lines;
 }
+
+/** The env this run reads. `doneTransitionId` is deliberately SEPARATE from
+ *  `qaTransitionId`: the handoff moves a ticket to a review/QA column when the draft PR
+ *  opens, and this moves it to Done when that PR merges. One id cannot mean both. */
+export interface QueueDoneEnv {
+  doneTransitionId?: string;
+}
+
+export interface QueueDoneInput {
+  ticket: string;
+  prUrl: string;
+  prNumber: number;
+  /** Epoch ms, as `deps.clock()` returns it. Formatted for the comment, not before. */
+  mergedAt: number;
+}
+
+/** The comment left on the ticket when its PR merges. Deliberately states the PR and the
+ *  merge time and nothing else -- an unverifiable claim about what the fix does is worse
+ *  than no comment, and the PR body already carries that. */
+export function buildQueueDoneComment(input: QueueDoneInput): string {
+  return [
+    `Merged ${input.prUrl} (#${input.prNumber}).`,
+    `The fix is on the base branch as of ${new Date(input.mergedAt).toISOString()}.`,
+  ].join('\n');
+}
+
+/**
+ * Closes a ticket after its PR merges: a comment, then the Done transition.
+ *
+ * Both go through `performOne`, so each write is idempotency-keyed on the PR url and a
+ * retry after a crash mid-sequence does not double-comment. The transition is skipped
+ * entirely when `doneTransitionId` is unset, rather than guessed -- a wrong transition id
+ * moves a ticket to a wrong column, which is worse than leaving it open for a person.
+ */
+export async function runQueueDone(
+  client: JiraWriteClient,
+  input: QueueDoneInput,
+  env: QueueDoneEnv,
+  emit: (event: QueueHandoffEvent) => void,
+): Promise<string[]> {
+  const lines: string[] = [];
+  const ticket = input.ticket;
+
+  const comment = await performOne(
+    'jira-done-comment', ticket, input.prUrl, () => client.comment(ticket, buildQueueDoneComment(input)), emit,
+  );
+  lines.push(comment.line);
+
+  if (env.doneTransitionId) {
+    const transition = await performOne(
+      'jira-done-transition', ticket, input.prUrl, () => client.transition(ticket, env.doneTransitionId!), emit,
+    );
+    lines.push(transition.line);
+  } else {
+    lines.push('jira-done-transition: skipped (FORGE_JIRA_DONE_TRANSITION is not set)');
+  }
+
+  return lines;
+}

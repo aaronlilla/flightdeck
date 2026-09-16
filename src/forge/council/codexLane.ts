@@ -217,6 +217,29 @@ export function makeCodexLane(deps: CodexLaneDeps = {}): CodexLane {
         };
       }
 
+      // TEMPORARILY DISABLED (Aaron, this session). This lane spawns an external
+      // reviewer with cwd inside the run's checkout, which a contained command can
+      // write -- it is the one execution path still outside the container the agent
+      // session runs in. Off by default until it is contained; set
+      // FORGE_CODEX_LANE=on to re-enable deliberately.
+      //
+      // This returns `ran: false` with a reason rather than a PASS, so the gate sees a
+      // missing lane and not a clean one. gate.ts refuses a merge on a non-PASS Codex
+      // verdict, so a silent fake-PASS here would turn a disabled reviewer into an
+      // approval -- the exact failure this ordering avoids.
+      // An injected runner or callCommand means a caller wired this lane ON PURPOSE.
+      // The kill switch governs only the AMBIENT production path, which spawns the real
+      // external process via REAL_CODEX_CALL_RUNNER -- that spawn is the uncontained
+      // thing being disabled. A fake runner spawns nothing and stays testable.
+      const ambient = !deps.callCommand && !deps.runner;
+      if (ambient && process.env['FORGE_CODEX_LANE'] !== 'on') {
+        return {
+          ran: false,
+          findings: [],
+          reason: 'codex lane disabled (uncontained: spawns with cwd in the run checkout); set FORGE_CODEX_LANE=on to re-enable',
+        };
+      }
+
       const callCommand = deps.callCommand ?? process.env['FORGE_CODEX_CALL'];
       if (!callCommand) {
         return { ran: false, findings: [], reason: 'FORGE_CODEX_CALL is not set' };
