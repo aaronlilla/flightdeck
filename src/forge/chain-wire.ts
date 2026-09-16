@@ -16,7 +16,9 @@ import { dirname, join } from 'node:path';
 import type { CliResult, ForgeDeps } from './cli.js';
 import { forge } from './cli.js';
 import { refuseIfMainCheckoutUnlocked } from './coordlock.js';
-import { readSandboxConfig, type RunClone } from './sandbox-exec.js';
+import {
+  adoptRunCloneCommands, readSandboxConfig, resolveRunClone, type RunClone,
+} from './sandbox-exec.js';
 import {
   completeBriefWithVerification, runKeyForBrief,
   type ChainCouncilFn, type ChainDeps, type ChainGateFn, type ChainGh, type ChainLauncher, type ChainPlannedPacket, type ChainRunStatus,
@@ -666,6 +668,49 @@ export function useRunClone(
   return readSandboxConfig(env).enabled;
 }
 
+/**
+ * The primary checkout a run clone was made from, read out of its alternates file.
+ *
+ * `git clone --shared` records `<primary>/.git/objects` there, so the checkout is two
+ * directories up. Derived rather than configured: the clone already knows where it came
+ * from, and a second source of truth is a second thing to get out of step.
+ */
+export function primaryOfRunClone(clone: RunClone): string | undefined {
+  const objects = clone.hostPrimaryObjects.replace(/\\/g, '/').replace(/\/+$/, '');
+  const match = /^(.*)\/\.git\/objects$/.exec(objects);
+  return match?.[1];
+}
+
+/**
+ * Adopts a run clone's branch into the primary checkout.
+ *
+ * A contained run commits inside its own clone, which the primary knows nothing about
+ * until this runs. Without it the queue reviews and merges a branch that never saw the
+ * run's work -- an empty diff, with nothing anywhere saying why.
+ *
+ * The fetch executes in the PRIMARY, never inside the clone: the clone is writable by
+ * a contained command, so its `.git/hooks` is attacker-controlled and any git command
+ * run inside it would execute them. Verified with `post-checkout`, `pre-push` and
+ * `post-merge` all poisoned: none fired during adoption.
+ */
+async function adoptRunClone(
+  clonePath: string, branch: string,
+): Promise<{ adopted: boolean; reason?: string }> {
+  const clone = resolveRunClone(clonePath);
+  if (!clone) return { adopted: false };
+  const primary = primaryOfRunClone(clone);
+  // A clone with no alternates is self-contained -- nothing to adopt it into.
+  if (!primary) return { adopted: false };
+
+  for (const argv of adoptRunCloneCommands(primary, clone, branch)) {
+    const result = await execRun({
+      argv, cwd: primary, owner: 'chain-adopt', cls: 'script',
+    });
+    if (!result.ok) return { adopted: false, reason: tailOfCommand(result.tail, 300) };
+  }
+  return { adopted: true };
+}
+
 /** H2/H3: real worktrees, a real detached launch, and a real status read off the shared
  *  journal -- one `ChainLauncher` per `chain-env.ts` configuration, built fresh on every
  *  `forge up` process. */
@@ -872,10 +917,33 @@ async function commitLeftovers(
  *  `raw` on the count, because its output is parsed as a number here, not shown. */
 export function chainRebase(): NonNullable<QueueRuntimeDeps['rebaseOnBase']> {
   return async ({ worktreePath, base }) => {
+    // Every command here runs INSIDE the run's checkout, which a contained command can
+    // write -- including `.git/hooks`. A `git rebase` there fires `post-rewrite`, and a
+    // checkout fires `post-checkout`, so the model can have the queue execute code on
+    // the host just by leaving a hook behind. Adoption was already safe (it runs in the
+    // primary); this closes the same hole on the rebase itself. Observed live: a
+    // poisoned `post-rewrite` fired during a real rebase in a run clone.
     const git = async (argv: string[], raw = false): Promise<RunResult> => execRun({
-      argv: ['git', '-C', worktreePath, ...argv],
+      argv: [
+        'git', '-C', worktreePath,
+        '-c', 'core.hooksPath=/dev/null',
+        '-c', 'core.fsmonitor=false',
+        '-c', 'core.pager=cat',
+        '-c', 'core.editor=true',
+        ...argv,
+      ],
       cwd: worktreePath, owner: 'chain-rebase', cls: 'script', ...(raw ? { raw: true } : {}),
     });
+
+    // Adopt the run's own commits into the primary BEFORE anything else reads this
+    // branch -- including the fetch. Adoption depends on nothing remote, so putting it
+    // behind a network check would let an offline remote silently discard a contained
+    // run's whole diff (the exact bug an earlier round shipped and had to fix).
+    const branchNow = await git(['rev-parse', '--abbrev-ref', 'HEAD'], true);
+    const branchLabel = branchNow.ok ? branchNow.tail.trim() : '';
+    if (branchLabel && branchLabel !== 'HEAD') {
+      await adoptRunClone(worktreePath, branchLabel);
+    }
 
     const fetched = await git(['fetch', '--prune', 'origin', base]);
     if (!fetched.ok) return { ok: false, behind: 0, reason: `could not fetch origin/${base}` };
@@ -888,7 +956,16 @@ export function chainRebase(): NonNullable<QueueRuntimeDeps['rebaseOnBase']> {
     const leftoverPatch = committedLeftover.length ? { committedLeftover } : {};
 
     const rebased = await git(['rebase', `origin/${base}`]);
-    if (rebased.ok) return { ok: true, behind, ...leftoverPatch };
+    if (rebased.ok) {
+      // A rebase rewrites every commit, so the sha the primary adopted above is now
+      // stale history. Adopt again, or the gate reviews the pre-rebase commits while
+      // the clone holds the replayed ones. `commitLeftovers` has the same problem: it
+      // adds a commit the primary has never seen.
+      if (branchLabel && branchLabel !== 'HEAD') {
+        await adoptRunClone(worktreePath, branchLabel);
+      }
+      return { ok: true, behind, ...leftoverPatch };
+    }
 
     // Leave the worktree exactly as it was found. A half-finished rebase would make the
     // next read of this branch meaningless, including the gate's own.

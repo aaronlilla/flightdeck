@@ -52,6 +52,31 @@ function setup(): { base: string; worktree: string } {
 }
 
 describe('chainRebase', () => {
+  it('never runs a hook the run left in its own checkout', async () => {
+    // Every chainRebase command runs INSIDE the run's checkout, which a contained
+    // command can write -- including `.git/hooks`. Observed live: a poisoned
+    // `post-rewrite` fired during a real rebase in a run clone, so the model could have
+    // the queue execute code on the host just by leaving a hook behind. Adoption was
+    // already safe because it runs in the primary; this is the same hole on the rebase.
+    const { base, worktree } = setup();
+    const marker = join(worktree, '..', 'HOOK-FIRED');
+    mkdirSync(join(worktree, '.git', 'hooks'), { recursive: true });
+    for (const hook of ['post-rewrite', 'post-checkout', 'post-merge', 'post-commit']) {
+      writeFileSync(join(worktree, '.git', 'hooks', hook), `#!/bin/sh\ntouch "${marker}"\n`);
+    }
+
+    // Move the base so a real rebase happens, and leave the tree dirty so the leftover
+    // commit runs too -- both are commands that fire hooks.
+    writeFileSync(join(base, 'moved.ts'), 'export const moved = true;\n');
+    git(base, ['add', '-A']);
+    git(base, ['commit', '-m', 'base moved']);
+    writeFileSync(join(worktree, 'leftover.ts'), 'export const left = 1;\n');
+
+    const result = await chainRebase()({ worktreePath: worktree, base: 'main' });
+    expect(result.ok).toBe(true);
+    expect(existsSync(marker)).toBe(false);
+  });
+
   it('commits a leftover modified tracked file and an untracked file, then rebases cleanly', async () => {
     const { base, worktree } = setup();
 
