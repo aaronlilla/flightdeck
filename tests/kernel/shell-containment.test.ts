@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { createShellContainmentGuard, CONTAINED_MARKER, shellQuote, isBareHostCommand, hardenHostCommand } from '../../src/kernel/guards/shell-containment.js';
-import { readSandboxConfig } from '../../src/forge/sandbox-exec.js';
+import { readSandboxConfig, resolveGitStore } from '../../src/forge/sandbox-exec.js';
 import type { ToolCall } from '../../src/types.js';
 
 const CWD = 'C:/dev/worktrees/fd-sandbox--luck-5';
@@ -269,6 +269,47 @@ describe('shell containment', () => {
     expect(isBareHostCommand('git status -sb')).toBe(true);
     expect(isBareHostCommand('git add -Ap')).toBe(true);
     expect(isBareHostCommand('git blame -Sw x')).toBe(false);
+  });
+
+  it('contains git itself when the object store can be mounted', () => {
+    // The carve-out was the last model-selectable path to the host, and every escape
+    // this guard lost (prefix regex, gh auth token, core.hooksPath, --git-dir,
+    // rebase --exec, --unsafe-paths) was reached through it. The premise behind it --
+    // "contained git cannot reach the primary object store" -- was never true:
+    // mounting the store and setting GIT_DIR makes it work. Verified live: the
+    // emitted command returns `feature/fdtes-1` from inside a container.
+    const guard = createShellContainmentGuard({
+      cwd: CWD, config: on,
+      gitStore: { hostGitDir: 'C:/dev/fd-sandbox/.git', worktreeName: 'fd-sandbox--fdtes-1' },
+    });
+    const decision: any = guard.decide!(bash('git status'), {} as never);
+    expect(decision.kind).toBe('modify');
+    const emitted = String(decision.input['command']);
+    expect(emitted).toMatch(/docker run/);
+    expect(emitted).toMatch(/:\/gitstore/);
+    expect(emitted).toMatch(/GIT_DIR=\/gitstore\/worktrees\/fd-sandbox--fdtes-1/);
+    expect(emitted).toMatch(/GIT_WORK_TREE=\/work/);
+  });
+
+  it('falls back to a hardened host git only when no store is mountable', () => {
+    // A primary checkout has a `.git` DIRECTORY, not a pointer file, so there is no
+    // linked worktree to mount. Rather than guess, the guard keeps the previous
+    // behaviour and says so.
+    const guard = createShellContainmentGuard({ cwd: CWD, config: on, gitStore: undefined });
+    const decision: any = guard.decide!(bash('git status'), {} as never);
+    const emitted = String(decision.input?.['command'] ?? 'git status');
+    expect(emitted).not.toMatch(/docker run/);
+  });
+
+  it('resolves the store from the worktree pointer without being told', () => {
+    // `.git` is `gitdir: <primary>/.git/worktrees/<name>` -- one line naming both
+    // halves of the mount, so nothing needs configuring.
+    expect(resolveGitStore('C:/dev/worktrees/fd-sandbox--fdtes-1')).toEqual({
+      hostGitDir: 'C:/dev/fd-sandbox/.git', worktreeName: 'fd-sandbox--fdtes-1',
+    });
+    // A primary checkout, a missing path, and junk all decline rather than guess.
+    expect(resolveGitStore('C:/dev/fd-sandbox')).toBeUndefined();
+    expect(resolveGitStore('C:/dev/definitely-not-here')).toBeUndefined();
   });
 
   it('leaves git and gh on the host, because the object store is deliberately unreachable', () => {

@@ -21,6 +21,9 @@
  * containment would be worse than no containment at all.
  */
 
+import { readFileSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+
 export interface SandboxConfig {
   /**
    * On by default. A boundary nobody turns on is not a boundary: the overwhelming
@@ -94,6 +97,50 @@ export function mountPathFor(hostPath: string): string {
   return `/${drive[1]!.toLowerCase()}/${drive[2]!}`;
 }
 
+/**
+ * The primary checkout's object store, and which worktree inside it this run owns.
+ *
+ * Supplying this lets `git` run INSIDE the boundary. Without it, git has to be carved
+ * out to the host -- and every escape this boundary has lost was reached through that
+ * carve-out, because an allowlist over a programmable binary is only ever as current as
+ * its last patch.
+ *
+ * The mount is deliberately not the default. It is shared with the primary checkout and
+ * every sibling worktree, so a contained `git` can still damage refs the host depends
+ * on; a caller has to decide that trade knowingly.
+ */
+export interface GitStoreMount {
+  /** Host path of the primary `.git` directory, e.g. `C:/dev/fd-sandbox/.git`. */
+  hostGitDir: string;
+  /** The worktree's name under `.git/worktrees/`, which is its GIT_DIR inside. */
+  worktreeName: string;
+}
+
+/**
+ * Reads a worktree's `.git` pointer to find the object store it belongs to.
+ *
+ * A linked worktree's `.git` is a file, not a directory: `gitdir: <primary>/.git/
+ * worktrees/<name>`. That one line names both halves of the mount, so nothing has to be
+ * configured -- the boundary can work out for itself how to let `git` run inside.
+ *
+ * Returns undefined for a primary checkout (where `.git` is a directory) or anything it
+ * cannot parse, so a caller falls back to whatever it did before rather than guessing.
+ */
+export function resolveGitStore(worktreePath: string): GitStoreMount | undefined {
+  try {
+    const pointer = join(worktreePath, '.git');
+    if (!statSync(pointer).isFile()) return undefined;
+    const match = /^gitdir:\s*(.+?)\s*$/m.exec(readFileSync(pointer, 'utf8'));
+    if (!match?.[1]) return undefined;
+    const gitDir = match[1].replace(/\\/g, '/');
+    const parts = /^(.*\/\.git)\/worktrees\/([^/]+)\/?$/.exec(gitDir);
+    if (!parts?.[1] || !parts[2]) return undefined;
+    return { hostGitDir: parts[1], worktreeName: parts[2] };
+  } catch {
+    return undefined;
+  }
+}
+
 export interface SandboxedCommand {
   argv: string[];
   /** True when the command is wrapped; false when it will run directly on the host. */
@@ -129,12 +176,31 @@ export function containerNameFor(runName: string, index: number): string {
  * never has to guess whether containment actually happened.
  */
 export function sandboxCommand(
-  config: SandboxConfig, input: { command: string; cwd: string; name?: string },
+  config: SandboxConfig,
+  input: { command: string; cwd: string; name?: string; gitStore?: GitStoreMount },
 ): SandboxedCommand {
   if (!config.enabled) return { argv: [input.command], contained: false };
 
   const mount = mountPathFor(input.cwd);
   const containerName = input.name ?? containerNameFor('run', 0);
+  // Reaching the object store is what lets `git` run inside the boundary instead of
+  // being carved out to the host. Every escape this guard has lost was reached through
+  // that carve-out, so closing it is worth a second mount.
+  const gitArgs = input.gitStore
+    ? [
+      '-v', `${mountPathFor(input.gitStore.hostGitDir)}:/gitstore`,
+      // GIT_DIR rather than rewriting the worktree's `.git` file: the file names a
+      // HOST path, and mutating it would corrupt the checkout for the host and every
+      // sibling worktree the moment a container exits mid-command.
+      '-e', `GIT_DIR=/gitstore/worktrees/${input.gitStore.worktreeName}`,
+      '-e', 'GIT_WORK_TREE=/work',
+      // The mounted store is owned by the host user, not by uid 1000 inside.
+      '-e', 'GIT_CONFIG_GLOBAL=/dev/null',
+      '-e', 'GIT_CONFIG_SYSTEM=/dev/null',
+      '-e', 'GIT_TERMINAL_PROMPT=0',
+    ]
+    : [];
+
   return {
     contained: true,
     containerName,
@@ -148,9 +214,11 @@ export function sandboxCommand(
       '--network', config.network,
       '--user', config.user,
       // The worktree is the ONLY host path the command can see. No home directory, no
-      // credential file, no sibling checkout, no primary .git object store.
+      // credential file, no sibling checkout -- and the object store only when a caller
+      // explicitly asks for it, because that mount is shared with the primary checkout.
       '-v', `${mount}:/work`,
       '-w', '/work',
+      ...gitArgs,
       // A container that cannot gain privileges cannot use a setuid binary inside the
       // image to climb back out of the unprivileged user above.
       '--security-opt', 'no-new-privileges',

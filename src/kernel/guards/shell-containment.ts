@@ -45,7 +45,10 @@
  * own commit path (or `-F` a message file inside the worktree, which needs no quotes).
  * The failure is loud and recoverable; the alternative is a parser bug that is neither.
  */
-import { readSandboxConfig, sandboxCommand, type SandboxConfig } from '../../forge/sandbox-exec.ts';
+import {
+  readSandboxConfig, resolveGitStore, sandboxCommand,
+  type GitStoreMount, type SandboxConfig,
+} from '../../forge/sandbox-exec.ts';
 import type { Guard, GuardDecision, ToolCall } from '../../types.ts';
 
 /**
@@ -445,12 +448,21 @@ export interface ShellContainmentOptions {
   cwd: string;
   /** Defaults to `readSandboxConfig()`. Injected so a specimen needs no runtime. */
   config?: SandboxConfig;
+  /**
+   * The object store to mount so `git` runs inside the boundary. Resolved from the
+   * worktree's own `.git` pointer when omitted; undefined means no linked worktree was
+   * found, and git falls back to a hardened host call.
+   */
+  gitStore?: GitStoreMount;
   /** Names the container per call, so a sweep can reap it. */
   nameFor?: (index: number) => string;
 }
 
 export function createShellContainmentGuard(options: ShellContainmentOptions): Guard {
   const config = options.config ?? readSandboxConfig();
+  // Resolved once: the worktree's `.git` pointer does not move during a run, and this
+  // decides whether git is contained or merely hardened.
+  const gitStore = options.gitStore ?? resolveGitStore(options.cwd);
   let index = 0;
 
   return {
@@ -483,9 +495,32 @@ export function createShellContainmentGuard(options: ShellContainmentOptions): G
       // Our own marker, not a pattern in the string the model wrote.
       if (call.input?.[CONTAINED_MARKER] === true) return { kind: 'pass' };
       if (isBareHostCommand(command)) {
-        // Allowed on the host, but never with the model's own git configuration: a
-        // hook or `.git/config` it wrote inside its worktree would otherwise fire on
-        // the next ordinary `git commit`. Pinned `-c` flags outrank any config file.
+        // A host-side git call is the last model-selectable path out of the boundary,
+        // and every escape this guard has lost was reached through it. When the object
+        // store is mountable, git runs INSIDE instead and the carve-out disappears --
+        // the allowlist above then only decides what a *contained* git may do, which is
+        // a far smaller claim than deciding what may touch the host.
+        if (gitStore) {
+          const name = options.nameFor?.(index) ?? `forge-shell-${index}`;
+          index += 1;
+          const boxed = sandboxCommand(config, {
+            command, cwd: options.cwd, name, gitStore,
+          });
+          if (boxed.contained) {
+            return {
+              kind: 'modify',
+              input: {
+                ...call.input,
+                command: boxed.argv.map(shellQuote).join(' '),
+                [CONTAINED_MARKER]: true,
+              },
+              note: `git contained: ${name} (object store mounted read-write)`,
+            };
+          }
+        }
+        // No store to mount: git has to run on the host, hardened. A hook or
+        // `.git/config` the model wrote inside its worktree would otherwise fire on
+        // the next ordinary `git commit`; pinned `-c` flags outrank any config file.
         const hardened = hardenHostCommand(command);
         if (hardened === command) return { kind: 'pass' };
         return {
