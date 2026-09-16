@@ -550,7 +550,7 @@ export function createShellContainmentGuard(options: ShellContainmentOptions): G
         // store is mountable, git runs INSIDE instead and the carve-out disappears --
         // the allowlist above then only decides what a *contained* git may do, which is
         // a far smaller claim than deciding what may touch the host.
-        if (gitStore && !needsRefWrite(command)) {
+        if (gitStore) {
           const name = options.nameFor?.(index) ?? `forge-shell-${index}`;
           index += 1;
           const boxed = sandboxCommand(config, {

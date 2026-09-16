@@ -284,6 +284,7 @@ describe('shell containment', () => {
         hostGitDir: 'C:/dev/fd-sandbox/.git',
         worktreeName: 'fd-sandbox--fdtes-1',
         hostWorktreeGitDir: 'C:/dev/fd-sandbox/.git/worktrees/fd-sandbox--fdtes-1',
+        hostRefStage: 'C:/dev/fd-sandbox/.git/worktrees/fd-sandbox--fdtes-1/forge-refstage',
       },
     });
     const decision: any = guard.decide!(bash('git status'), {} as never);
@@ -313,6 +314,7 @@ describe('shell containment', () => {
         hostGitDir: 'C:/dev/fd-sandbox/.git',
         worktreeName: 'fd-sandbox--fdtes-1',
         hostWorktreeGitDir: 'C:/dev/fd-sandbox/.git/worktrees/fd-sandbox--fdtes-1',
+        hostRefStage: 'C:/dev/fd-sandbox/.git/worktrees/fd-sandbox--fdtes-1/forge-refstage',
       },
     });
     const emitted = String((guard.decide!(bash('git status'), {} as never) as any).input['command']);
@@ -336,6 +338,7 @@ describe('shell containment', () => {
       hostGitDir: 'C:/dev/fd-sandbox/.git',
       worktreeName: 'fd-sandbox--fdtes-1',
       hostWorktreeGitDir: 'C:/dev/fd-sandbox/.git/worktrees/fd-sandbox--fdtes-1',
+      hostRefStage: 'C:/dev/fd-sandbox/.git/worktrees/fd-sandbox--fdtes-1/forge-refstage',
     });
     // A primary checkout, a missing path, and junk all decline rather than guess.
     expect(resolveGitStore('C:/dev/fd-sandbox')).toBeUndefined();
@@ -361,29 +364,28 @@ describe('shell containment', () => {
     expect(guard.decide!(bash('npm ci'), {} as never).kind).toBe('modify');
   });
 
-  it('contains git reads, and routes ref writes to the hardened host path', () => {
-    // MEASURED with a real git against a real linked worktree, not assumed: a
-    // worktree's refs/heads/<branch> lives in the SHARED store, which is mounted :ro
-    // so a contained command cannot plant a hook the host would execute. Objects route
-    // around that with GIT_ALTERNATE_OBJECT_DIRECTORIES; a ref write has no equivalent.
-    // Containing a commit would produce a guaranteed failure, so it takes the hardened
-    // host path instead -- a real, named hole, and why this axis is not yet won.
+  it('contains git writes too, because the ref write is redirected', () => {
+    // MEASURED: a worktree's refs/heads/<branch> lives in the SHARED store, so a
+    // read-only mount alone would make `git commit` fail. GIT_COMMON_DIR redirects that
+    // write to a writable stage -- verified with a real git: after a contained commit
+    // the shared ref still held the OLD sha while the stage held the new one, and the
+    // host adopted it by copying scratch objects in and fast-forwarding. So the store
+    // stays read-only (no hook planting) AND commits work.
     const guard = createShellContainmentGuard({
       cwd: CWD, config: on,
       gitStore: {
         hostGitDir: 'C:/dev/fd-sandbox/.git',
         worktreeName: 'fd-sandbox--fdtes-1',
         hostWorktreeGitDir: 'C:/dev/fd-sandbox/.git/worktrees/fd-sandbox--fdtes-1',
+        hostRefStage: 'C:/dev/fd-sandbox/.git/worktrees/fd-sandbox--fdtes-1/forge-refstage',
       },
     });
-    for (const read of ['git status', 'git log --oneline -5', 'git rev-parse HEAD']) {
-      const emitted = String((guard.decide!(bash(read), {} as never) as any).input['command']);
+    for (const command of [
+      'git status', 'git log --oneline -5', 'git commit -m fix', 'git add -A',
+    ]) {
+      const emitted = String((guard.decide!(bash(command), {} as never) as any).input['command']);
       expect(emitted).toMatch(/docker run/);
-    }
-    for (const write of ['git commit -m fix', 'git push origin feature/x', 'git add -A']) {
-      const emitted = String((guard.decide!(bash(write), {} as never) as any).input['command']);
-      expect(emitted).not.toMatch(/docker run/);
-      expect(emitted).toMatch(/core\.hooksPath=\/dev\/null/);
+      expect(emitted).toMatch(/GIT_COMMON_DIR=\/refstage/);
     }
   });
 
@@ -404,6 +406,7 @@ describe('shell containment', () => {
         hostGitDir: 'C:/dev/fd-sandbox/.git',
         worktreeName: 'fd-sandbox--fdtes-1',
         hostWorktreeGitDir: 'C:/dev/fd-sandbox/.git/worktrees/fd-sandbox--fdtes-1',
+        hostRefStage: 'C:/dev/fd-sandbox/.git/worktrees/fd-sandbox--fdtes-1/forge-refstage',
       },
     });
     const emitted = String((guard.decide!(bash('git status'), {} as never) as any).input['command']);
