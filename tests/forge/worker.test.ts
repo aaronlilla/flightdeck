@@ -414,53 +414,6 @@ describe('verificationCommands', () => {
 });
 
 describe('B.3.4: done is verified', () => {
-  it('stages the ref redirect so a contained command can commit', async () => {
-    // The shared object store is mounted read-only, so a contained `git commit` has
-    // nowhere to write its branch ref unless the worker stages a redirect first. This
-    // is the wiring, not the mechanism: the mechanism is proven in sandbox-exec's own
-    // specimens, and this asserts the worker actually calls it and hands the store to
-    // every contained command. An unwired guard protects nothing.
-    const primary = join(dir, 'refstage-primary');
-    mkdirSync(primary, { recursive: true });
-    const git = (args: string[], cwd: string) =>
-      execFileSync('git', args, { cwd, windowsHide: true, stdio: 'ignore' });
-    git(['init', '-q', '.'], primary);
-    git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'base'], primary);
-    const worktree = join(dir, 'refstage-wt');
-    git(['worktree', 'add', '-q', worktree, '-b', 'feat'], primary);
-
-    const store = resolveGitStore(worktree);
-    expect(store).toBeDefined();
-
-    const brief = '# Goal\n\nDo it.\n\n## Verification\n\n```\nnode -e process.exit(0)\n```\n';
-    const seen: string[][] = [];
-    const worker = makeWorker([[{ text: 'shipped', context: 10, done: true }]], {
-      brief,
-      cwd: worktree,
-      verifyCommand: 'node -e process.exit(0)',
-      sandbox: readSandboxConfig({ FORGE_SANDBOX: '1' }),
-      exec: async (input: { argv: string[] }) => {
-        seen.push(input.argv);
-        return {
-          ok: true, tail: '', returncode: 0, argv: input.argv, owner: 'alpha',
-          startedAt: 0, durationMs: 1,
-        };
-      },
-    });
-    await worker.run();
-
-    // The redirect exists on disk, built from the shared store's refs.
-    expect(existsSync(join(store!.hostRefStage, 'refs/heads/feat'))).toBe(true);
-    // And hooks/ is deliberately NOT copied: the stage is writable and reachable from
-    // the container, so copying the host's hook directory there would hand back the
-    // escape the read-only mount closes.
-    expect(existsSync(join(store!.hostRefStage, 'hooks'))).toBe(false);
-    // Every contained verify command carries both mounts.
-    const verify = seen.map((argv) => argv.join(' ')).find((line) => line.includes('docker run'));
-    expect(verify).toMatch(/:\/gitstore:ro/);
-    expect(verify).toMatch(/GIT_COMMON_DIR=\/refstage/);
-  });
-
   it('refuses to verify on the host when containment is expected but unavailable', async () => {
     // A missing container runtime must not silently degrade to the host: the verdict
     // would still read `done` with nothing saying the boundary was absent.

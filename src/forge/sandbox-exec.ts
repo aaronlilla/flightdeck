@@ -125,13 +125,6 @@ export interface GitStoreMount {
    * index; it never needs to write the shared store.
    */
   hostWorktreeGitDir: string;
-  /**
-   * Host path of a writable copy of the shared store's `refs/` and `config`, mounted as
-   * `GIT_COMMON_DIR` so a contained commit moves its branch HERE rather than in the
-   * read-only store. The host promotes it deliberately afterwards; nothing the container
-   * writes reaches the real refs until it does.
-   */
-  hostRefStage: string;
 }
 
 /**
@@ -157,78 +150,10 @@ export function resolveGitStore(worktreePath: string): GitStoreMount | undefined
       hostGitDir: parts[1],
       worktreeName: parts[2],
       hostWorktreeGitDir: gitDir,
-      // Kept beside the worktree's own GIT_DIR so it is reaped with the worktree.
-      hostRefStage: `${gitDir}/forge-refstage`,
     };
   } catch {
     return undefined;
   }
-}
-
-/**
- * Prepares the writable ref redirect a contained `git` commits into.
- *
- * MEASURED LIMITATION, do not rely on this for ref isolation yet. With a flat branch
- * name (`feat`) the redirect holds: the shared `refs/heads/feat` keeps its old sha and
- * the new commit lands in the stage. With a SLASHED branch name (`feature/contained` --
- * the shape every ticket run actually uses) the same setup wrote the new sha into the
- * SHARED store instead, even though `git rev-parse --git-common-dir` reported the stage.
- * Until that is understood, ref-writing verbs stay on the hardened host path; this
- * function is kept because reads and object routing through it are sound.
- *
- * Copies the shared store's `refs/` and `config` to the stage. `config` comes along
- * because git reads it through GIT_COMMON_DIR, and without it a commit loses the
- * remote and branch configuration it needs. `hooks/` deliberately does NOT: the stage
- * is writable, and copying the host's hook directory into a writable location the
- * container can reach would hand back the exact escape the read-only mount closes.
- */
-export function stageRefRedirect(store: GitStoreMount): void {
-  mkdirSync(join(store.hostRefStage, 'objects'), { recursive: true });
-  cpSync(join(store.hostGitDir, 'refs'), join(store.hostRefStage, 'refs'), {
-    recursive: true, force: true,
-  });
-  for (const file of ['config', 'HEAD', 'packed-refs']) {
-    const from = join(store.hostGitDir, file);
-    if (existsSync(from)) cpSync(from, join(store.hostRefStage, file), { force: true });
-  }
-}
-
-/**
- * The commit a contained run produced, if it moved the branch.
- *
- * Returns undefined when the stage holds the same sha the shared store does, so a
- * caller can tell "the run committed" from "the run changed nothing" without parsing
- * output the model wrote.
- */
-export function stagedRef(store: GitStoreMount, branch: string): string | undefined {
-  try {
-    const staged = readFileSync(join(store.hostRefStage, 'refs/heads', branch), 'utf8').trim();
-    const shared = existsSync(join(store.hostGitDir, 'refs/heads', branch))
-      ? readFileSync(join(store.hostGitDir, 'refs/heads', branch), 'utf8').trim()
-      : '';
-    return staged && staged !== shared ? staged : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * The host-side steps that adopt a contained run's commit.
- *
- * Deliberately returned as commands for the caller to run rather than executed here:
- * promotion moves the real branch, so it belongs on the same audited path as every
- * other ref write, and `git update-ref` refuses a sha whose objects are missing --
- * which is the check that the migration above actually landed.
- */
-export function promoteStagedRefCommands(
-  store: GitStoreMount, branch: string, sha: string,
-): string[][] {
-  return [
-    // Objects first: update-ref fails if the commit is unreachable, so an incomplete
-    // migration can never leave a branch pointing at something that is not there.
-    ['cp', '-r', `${store.hostRefStage}/objects/.`, `${store.hostGitDir}/objects/`],
-    ['git', '--git-dir', store.hostGitDir, 'update-ref', `refs/heads/${branch}`, sha],
-  ];
 }
 
 export interface SandboxedCommand {
@@ -287,16 +212,17 @@ export function sandboxCommand(
   //   - new objects route out of the read-only store with a writable
   //     `GIT_OBJECT_DIRECTORY` and the shared store as `GIT_ALTERNATE_OBJECT_DIRECTORIES`;
   //   - a branch ref lives in the SHARED store (`worktrees/<name>/` holds only HEAD,
-  //     index and logs), so a read-only store would make `git commit` fail outright;
-  //   - `GIT_COMMON_DIR` redirects that ref write to a writable copy. Verified: after a
-  //     contained commit the shared `refs/heads/<branch>` still held the OLD sha while
-  //     the redirect held the new one, and the host then adopted the work by copying the
-  //     scratch objects in and fast-forwarding the real ref.
+  //     index and logs), so a contained `git commit` cannot move it;
+  //   - `GIT_COMMON_DIR` does NOT redirect that write. Tested across both branch shapes
+  //     (`feat` and `feature/x`) and both stage locations (inside and outside `.git`):
+  //     in all four the SHARED ref moved and the stage never did, even though
+  //     `git rev-parse --git-common-dir` reported the stage. An earlier round claimed
+  //     otherwise on a misread fixture; the machinery it added has been removed rather
+  //     than left in place to be trusted.
   //
-  // So a contained `git commit` writes nothing into the shared store: objects go to
-  // scratch, the ref moves only inside the redirect, and a deliberate host-side step
-  // promotes the result. The store stays read-only, which is what stops a contained
-  // command planting `hooks/pre-commit` for the host to execute.
+  // So contained git READS -- status, log, diff, rev-parse -- and ref-writing verbs take
+  // the hardened host path, decided in the containment guard. Containing a commit would
+  // produce a guaranteed failure against the read-only store.
   const gitArgs = input.gitStore
     ? [
       '-v', `${mountPathFor(input.gitStore.hostGitDir)}:/gitstore:ro`,
@@ -311,10 +237,6 @@ export function sandboxCommand(
       // an alternate, so existing history resolves without being writable.
       '-e', 'GIT_OBJECT_DIRECTORY=/tmp/forge-objects',
       '-e', 'GIT_ALTERNATE_OBJECT_DIRECTORIES=/gitstore/objects',
-      // Ref writes land here, never in the shared store. The caller stages a writable
-      // copy of `refs/` and `config` at this path and promotes it afterwards.
-      '-e', 'GIT_COMMON_DIR=/refstage',
-      '-v', `${mountPathFor(input.gitStore.hostRefStage)}:/refstage`,
       '-e', 'GIT_WORK_TREE=/work',
       // The mounted store is owned by the host user, not by uid 1000 inside.
       '-e', 'GIT_CONFIG_GLOBAL=/dev/null',

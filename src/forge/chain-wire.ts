@@ -13,7 +13,6 @@ import {
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-import { resolveGitStore, stagedRef, promoteStagedRefCommands } from './sandbox-exec.js';
 import type { CliResult, ForgeDeps } from './cli.js';
 import { forge } from './cli.js';
 import { refuseIfMainCheckoutUnlocked } from './coordlock.js';
@@ -752,40 +751,6 @@ async function commitLeftovers(
   return files;
 }
 
-/** Adopts a commit a contained run made into its ref redirect.
- *
- *  A contained `git commit` cannot write the shared object store -- it is mounted
- *  read-only so a container can never plant a `hooks/pre-commit` the host would run --
- *  so its objects land in a scratch dir and its branch ref moves only inside a
- *  writable stage. That work is invisible to the host until it is promoted, and the
- *  rebase below would otherwise replay a branch that never saw the run's own commit.
- *
- *  Promotion lives here, on the pre-gate path, rather than in the worker: moving a real
- *  branch is a side effect nobody should get from running verification. Objects are
- *  copied before the ref moves, because `update-ref` refuses a sha whose objects are
- *  missing -- so a partial migration can never leave a branch pointing at nothing.
- *
- *  Returns the promoted sha, or undefined when the run committed nothing contained
- *  (the ordinary case for a host-side run, and for a run that changed no files). */
-async function promoteContainedCommit(
-  worktreePath: string,
-  branch: string,
-  exec: (argv: string[], cwd: string) => Promise<RunResult>,
-): Promise<string | undefined> {
-  const store = resolveGitStore(worktreePath);
-  if (!store) return undefined;
-  const sha = stagedRef(store, branch);
-  if (!sha) return undefined;
-
-  for (const argv of promoteStagedRefCommands(store, branch, sha)) {
-    const result = await exec(argv, worktreePath);
-    // A failed object copy must stop the ref move: promoting a sha whose objects never
-    // arrived would corrupt the branch rather than merely failing to update it.
-    if (!result.ok) return undefined;
-  }
-  return sha;
-}
-
 /** Brings a worktree's branch onto the current tip of its base, so nothing reaches a
  *  review or a merge sitting on a base it never saw. Fetches first, because the whole
  *  point is the tip as it is now rather than as it was when the work started. Before
@@ -802,20 +767,6 @@ export function chainRebase(): NonNullable<QueueRuntimeDeps['rebaseOnBase']> {
       argv: ['git', '-C', worktreePath, ...argv],
       cwd: worktreePath, owner: 'chain-rebase', cls: 'script', ...(raw ? { raw: true } : {}),
     });
-
-    // Adopt whatever a contained run committed into its ref redirect BEFORE anything
-    // else reads this branch -- including the fetch. Promotion sat after the fetch
-    // guard at first, so a fetch failure (an offline remote, a transient network) threw
-    // the run's own work away silently: the branch still pointed at the pre-run commit
-    // and the item reached review with an empty diff. Promotion depends on nothing
-    // remote, so it has no business behind a network check.
-    const branchName = await git(['rev-parse', '--abbrev-ref', 'HEAD'], true);
-    if (branchName.ok) {
-      await promoteContainedCommit(
-        worktreePath, branchName.tail.trim(),
-        (argv, cwd) => execRun({ argv, cwd, owner: 'chain-rebase', cls: 'script' }),
-      );
-    }
 
     const fetched = await git(['fetch', '--prune', 'origin', base]);
     if (!fetched.ok) return { ok: false, behind: 0, reason: `could not fetch origin/${base}` };

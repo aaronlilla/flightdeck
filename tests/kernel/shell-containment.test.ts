@@ -284,7 +284,6 @@ describe('shell containment', () => {
         hostGitDir: 'C:/dev/fd-sandbox/.git',
         worktreeName: 'fd-sandbox--fdtes-1',
         hostWorktreeGitDir: 'C:/dev/fd-sandbox/.git/worktrees/fd-sandbox--fdtes-1',
-        hostRefStage: 'C:/dev/fd-sandbox/.git/worktrees/fd-sandbox--fdtes-1/forge-refstage',
       },
     });
     const decision: any = guard.decide!(bash('git status'), {} as never);
@@ -314,7 +313,6 @@ describe('shell containment', () => {
         hostGitDir: 'C:/dev/fd-sandbox/.git',
         worktreeName: 'fd-sandbox--fdtes-1',
         hostWorktreeGitDir: 'C:/dev/fd-sandbox/.git/worktrees/fd-sandbox--fdtes-1',
-        hostRefStage: 'C:/dev/fd-sandbox/.git/worktrees/fd-sandbox--fdtes-1/forge-refstage',
       },
     });
     const emitted = String((guard.decide!(bash('git status'), {} as never) as any).input['command']);
@@ -338,7 +336,6 @@ describe('shell containment', () => {
       hostGitDir: 'C:/dev/fd-sandbox/.git',
       worktreeName: 'fd-sandbox--fdtes-1',
       hostWorktreeGitDir: 'C:/dev/fd-sandbox/.git/worktrees/fd-sandbox--fdtes-1',
-      hostRefStage: 'C:/dev/fd-sandbox/.git/worktrees/fd-sandbox--fdtes-1/forge-refstage',
     });
     // A primary checkout, a missing path, and junk all decline rather than guess.
     expect(resolveGitStore('C:/dev/fd-sandbox')).toBeUndefined();
@@ -378,7 +375,6 @@ describe('shell containment', () => {
         hostGitDir: 'C:/dev/fd-sandbox/.git',
         worktreeName: 'fd-sandbox--fdtes-1',
         hostWorktreeGitDir: 'C:/dev/fd-sandbox/.git/worktrees/fd-sandbox--fdtes-1',
-        hostRefStage: 'C:/dev/fd-sandbox/.git/worktrees/fd-sandbox--fdtes-1/forge-refstage',
       },
     });
     for (const read of ['git status', 'git log --oneline -5', 'git rev-parse HEAD']) {
@@ -410,12 +406,33 @@ describe('shell containment', () => {
         hostGitDir: 'C:/dev/fd-sandbox/.git',
         worktreeName: 'fd-sandbox--fdtes-1',
         hostWorktreeGitDir: 'C:/dev/fd-sandbox/.git/worktrees/fd-sandbox--fdtes-1',
-        hostRefStage: 'C:/dev/fd-sandbox/.git/worktrees/fd-sandbox--fdtes-1/forge-refstage',
       },
     });
     const emitted = String((guard.decide!(bash('git status'), {} as never) as any).input['command']);
     expect(emitted).toMatch(/GIT_OBJECT_DIRECTORY=\/tmp\/forge-objects/);
     expect(emitted).toMatch(/GIT_ALTERNATE_OBJECT_DIRECTORIES=\/gitstore\/objects/);
+  });
+
+  it('does not pretend a contained git can move a branch ref', () => {
+    // MEASURED across both branch shapes (`feat`, `feature/x`) and both stage locations
+    // (inside and outside `.git`): in all four the SHARED refs/heads file moved and the
+    // stage never did, even though `git rev-parse --git-common-dir` reported the stage.
+    // GIT_COMMON_DIR does not redirect a ref write. An earlier round claimed it did, on
+    // a fixture that was misread; the emitted command must therefore carry no such
+    // promise, and ref-writing verbs must not be contained into a guaranteed failure.
+    const guard = createShellContainmentGuard({
+      cwd: CWD, config: on,
+      gitStore: {
+        hostGitDir: 'C:/dev/fd-sandbox/.git',
+        worktreeName: 'fd-sandbox--fdtes-1',
+        hostWorktreeGitDir: 'C:/dev/fd-sandbox/.git/worktrees/fd-sandbox--fdtes-1',
+      },
+    });
+    const read = String((guard.decide!(bash('git status'), {} as never) as any).input['command']);
+    expect(read).toMatch(/docker run/);
+    expect(read).not.toMatch(/GIT_COMMON_DIR/);
+    const write = String((guard.decide!(bash('git commit -m x'), {} as never) as any).input['command']);
+    expect(write).not.toMatch(/docker run/);
   });
 
   it('leaves git and gh on the host, because the object store is deliberately unreachable', () => {
