@@ -452,9 +452,15 @@ export function hardenHostCommand(command: string): string {
  * directory, but a ref write has no such escape hatch.
  *
  * So these verbs take the hardened host path instead of being contained into a
- * guaranteed failure. That is a real, named hole -- a ticket run commits and pushes --
- * and it is why this axis is not yet won. The alternative (mounting the shared store
- * writable) trades a narrow hole for the wider one it was built to close.
+ * guaranteed failure.
+ *
+ * That hole is now closed for the DEFAULT path: a run is provisioned as its own clone
+ * (`provisionRunClone`), which owns its refs, so commits and pushes are contained like
+ * any other command. What follows is the FALLBACK, reached only when there is no run
+ * clone -- `FORGE_RUN_CLONE=0`, or a pre-existing linked worktree. There, a commit still
+ * runs on the host, hardened, because a read-only shared store makes a contained commit
+ * a guaranteed failure and mounting it writable trades a narrow hole for the wider one
+ * this was built to close.
  */
 const REF_WRITING_VERBS = new Set([
   'commit', 'push', 'merge', 'rebase', 'reset', 'cherry-pick', 'revert', 'tag',
