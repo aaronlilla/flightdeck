@@ -47,7 +47,7 @@
  */
 import {
   readSandboxConfig, resolveGitStore, sandboxCommand,
-  type GitStoreMount, type SandboxConfig,
+  type GitStoreMount, type RunClone, type SandboxConfig,
 } from '../../forge/sandbox-exec.ts';
 import type { Guard, GuardDecision, ToolCall } from '../../types.ts';
 
@@ -481,6 +481,13 @@ export interface ShellContainmentOptions {
    */
   gitStore?: GitStoreMount;
   /**
+   * A per-run clone. When present, git is contained COMPLETELY -- including commits --
+   * because the clone owns its own `.git` and the primary's is never mounted. Without
+   * it only reads can be contained: a worktree's branch ref lives in the shared store,
+   * which must stay read-only so a container cannot plant a hook the host executes.
+   */
+  runClone?: RunClone;
+  /**
    * Whether the container runtime is actually up, checked once per run by the caller.
    *
    * Without this the guard happily emits a `docker run ...` string while the daemon is
@@ -502,6 +509,7 @@ export function createShellContainmentGuard(options: ShellContainmentOptions): G
   // Resolved once: the worktree's `.git` pointer does not move during a run, and this
   // decides whether git is contained or merely hardened.
   const gitStore = options.gitStore ?? resolveGitStore(options.cwd);
+  const runClone = options.runClone;
   let index = 0;
 
   return {
@@ -550,11 +558,13 @@ export function createShellContainmentGuard(options: ShellContainmentOptions): G
         // store is mountable, git runs INSIDE instead and the carve-out disappears --
         // the allowlist above then only decides what a *contained* git may do, which is
         // a far smaller claim than deciding what may touch the host.
-        if (gitStore && !needsRefWrite(command)) {
+        // A run clone contains everything; a bare worktree contains reads only.
+        if (runClone || (gitStore && !needsRefWrite(command))) {
           const name = options.nameFor?.(index) ?? `forge-shell-${index}`;
           index += 1;
           const boxed = sandboxCommand(config, {
-            command, cwd: options.cwd, name, gitStore,
+            command, cwd: options.cwd, name,
+            ...(runClone ? { runClone } : { gitStore: gitStore! }),
           });
           if (boxed.contained) {
             return {

@@ -156,6 +156,55 @@ export function resolveGitStore(worktreePath: string): GitStoreMount | undefined
   }
 }
 
+/**
+ * A per-run clone: the only shape in which a contained `git` can actually commit.
+ *
+ * A linked worktree cannot work, and three rounds were spent proving it. Its branch ref
+ * lives in the shared `<primary>/.git`, which has to be mounted read-only -- that
+ * directory holds `hooks/`, git's default hook directory for the HOST checkout, so a
+ * writable mount lets a contained command plant a `pre-commit` the host then executes.
+ * `GIT_COMMON_DIR` does not redirect the ref write (measured across both branch shapes
+ * and both stage locations; the shared ref moved every time).
+ *
+ * A clone made with `--shared` inverts the problem. Its `.git` is a directory it owns
+ * outright, so refs, config and hooks are per-run and disposable, and the whole thing
+ * can be mounted read-write without the host's own `.git` being reachable at all. Only
+ * the object store is shared, through `objects/info/alternates`, and that is mounted
+ * read-only.
+ *
+ * The host never runs `git` inside the clone. It adopts the work by fetching FROM the
+ * clone while running in the primary, so a hook the model wrote into the clone's
+ * `.git/hooks` has nothing to fire it. Verified: with `post-checkout` and `pre-push`
+ * both poisoned in the clone, a primary-side fetch adopted the commit and neither ran.
+ */
+export interface RunClone {
+  /** The clone's own `.git`, mounted read-write: refs, config and hooks are its own. */
+  hostClonePath: string;
+  /** The primary object store, mounted read-only and shared through alternates. */
+  hostPrimaryObjects: string;
+}
+
+/**
+ * The commands that adopt a contained run's work into the primary checkout.
+ *
+ * `git fetch <clone-path>` runs in the PRIMARY, so the clone's hooks are never on the
+ * path that executes. The refspec is explicit rather than `--all`: a run adopts the one
+ * branch it was given, not whatever else it may have created.
+ */
+export function adoptRunCloneCommands(
+  primaryPath: string, clone: RunClone, branch: string,
+): string[][] {
+  return [
+    [
+      'git', '-C', primaryPath,
+      // Hooks pinned inert even here: the primary's own hooks are the host's, but a
+      // fetch that runs them would widen the blast radius of a poisoned checkout.
+      '-c', 'core.hooksPath=/dev/null',
+      'fetch', clone.hostClonePath, `+refs/heads/${branch}:refs/heads/${branch}`,
+    ],
+  ];
+}
+
 export interface SandboxedCommand {
   argv: string[];
   /** True when the command is wrapped; false when it will run directly on the host. */
@@ -192,7 +241,10 @@ export function containerNameFor(runName: string, index: number): string {
  */
 export function sandboxCommand(
   config: SandboxConfig,
-  input: { command: string; cwd: string; name?: string; gitStore?: GitStoreMount },
+  input: {
+    command: string; cwd: string; name?: string;
+    gitStore?: GitStoreMount; runClone?: RunClone;
+  },
 ): SandboxedCommand {
   if (!config.enabled) return { argv: [input.command], contained: false };
 
@@ -223,6 +275,24 @@ export function sandboxCommand(
   // So contained git READS -- status, log, diff, rev-parse -- and ref-writing verbs take
   // the hardened host path, decided in the containment guard. Containing a commit would
   // produce a guaranteed failure against the read-only store.
+  // A per-run clone owns its `.git` outright, so it is mounted read-write and a
+  // contained `git commit` actually works -- refs, config and hooks are the run's own
+  // and disposable. The primary's object store is shared read-only through alternates,
+  // and the primary's `.git` is never reachable, so there is no `hooks/` to poison.
+  // This is the shape that lets git be contained at all; the `gitStore` path below is
+  // the weaker worktree fallback, where only reads can be contained.
+  const cloneArgs = input.runClone
+    ? [
+      '-v', `${mountPathFor(input.runClone.hostPrimaryObjects)}:/primary-objects:ro`,
+      // The clone's alternates file points here, so history resolves without the
+      // primary being writable or its refs being visible.
+      '-e', 'GIT_ALTERNATE_OBJECT_DIRECTORIES=/primary-objects',
+      '-e', 'GIT_CONFIG_GLOBAL=/dev/null',
+      '-e', 'GIT_CONFIG_SYSTEM=/dev/null',
+      '-e', 'GIT_TERMINAL_PROMPT=0',
+    ]
+    : [];
+
   const gitArgs = input.gitStore
     ? [
       '-v', `${mountPathFor(input.gitStore.hostGitDir)}:/gitstore:ro`,
@@ -262,7 +332,8 @@ export function sandboxCommand(
       // explicitly asks for it, because that mount is shared with the primary checkout.
       '-v', `${mount}:/work`,
       '-w', '/work',
-      ...gitArgs,
+      ...cloneArgs,
+      ...(input.runClone ? [] : gitArgs),
       // A container that cannot gain privileges cannot use a setuid binary inside the
       // image to climb back out of the unprivileged user above.
       '--security-opt', 'no-new-privileges',

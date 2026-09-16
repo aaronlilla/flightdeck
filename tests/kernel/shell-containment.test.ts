@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { createShellContainmentGuard, CONTAINED_MARKER, shellQuote, isBareHostCommand, hardenHostCommand, needsRefWrite } from '../../src/kernel/guards/shell-containment.js';
-import { readSandboxConfig, resolveGitStore } from '../../src/forge/sandbox-exec.js';
+import { readSandboxConfig, resolveGitStore, adoptRunCloneCommands } from '../../src/forge/sandbox-exec.js';
 import type { ToolCall } from '../../src/types.js';
 
 const CWD = 'C:/dev/worktrees/fd-sandbox--luck-5';
@@ -433,6 +433,48 @@ describe('shell containment', () => {
     expect(read).not.toMatch(/GIT_COMMON_DIR/);
     const write = String((guard.decide!(bash('git commit -m x'), {} as never) as any).input['command']);
     expect(write).not.toMatch(/docker run/);
+  });
+
+  it('contains git COMPLETELY when the run has its own clone', () => {
+    // Three rounds went into proving a linked worktree cannot support a contained
+    // commit: its branch ref lives in the shared `<primary>/.git`, which must stay
+    // read-only because it holds `hooks/` -- the HOST checkout's default hook directory.
+    // A `--shared` clone inverts that: it owns its `.git` outright, so refs, config and
+    // hooks are the run's own and disposable, and only the object store is shared
+    // read-only through alternates. The primary's `.git` is never mounted at all.
+    const guard = createShellContainmentGuard({
+      cwd: 'C:/dev/runs/r1', config: on,
+      runClone: {
+        hostClonePath: 'C:/dev/runs/r1',
+        hostPrimaryObjects: 'C:/dev/fd-sandbox/.git/objects',
+      },
+    });
+    for (const command of [
+      'git status', 'git commit -m fix', 'git push origin feature/x', 'git add -A', 'npm ci',
+    ]) {
+      const emitted = String((guard.decide!(bash(command), {} as never) as any).input['command']);
+      expect(emitted).toMatch(/docker run/);
+    }
+    const emitted = String((guard.decide!(bash('git commit -m x'), {} as never) as any).input['command']);
+    // The one property that matters: no path into the primary's own .git.
+    expect(emitted).not.toMatch(/fd-sandbox\/\.git:/);
+    expect(emitted).toMatch(/primary-objects:ro/);
+  });
+
+  it('adopts a clone commit by fetching FROM it, so its hooks never run', () => {
+    // Verified live: with post-checkout and pre-push both poisoned inside the clone, a
+    // primary-side fetch adopted the commit and neither fired. The host must never run
+    // git INSIDE a directory the container could write.
+    const commands = adoptRunCloneCommands(
+      'C:/dev/fd-sandbox',
+      { hostClonePath: 'C:/dev/runs/r1', hostPrimaryObjects: 'C:/dev/fd-sandbox/.git/objects' },
+      'feature/x',
+    );
+    expect(commands).toHaveLength(1);
+    const argv = commands[0]!.join(' ');
+    expect(argv).toMatch(/^git -C C:\/dev\/fd-sandbox/);
+    expect(argv).toMatch(/core\.hooksPath=\/dev\/null/);
+    expect(argv).toMatch(/fetch C:\/dev\/runs\/r1 \+refs\/heads\/feature\/x:refs\/heads\/feature\/x/);
   });
 
   it('leaves git and gh on the host, because the object store is deliberately unreachable', () => {
