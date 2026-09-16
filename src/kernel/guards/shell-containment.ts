@@ -85,6 +85,18 @@ const GIT_ARGUMENT_REFUSALS = [
   // only thing a ticket's own work needs.
   /(^|\s)\/[^\s]/,
   /(^|\s)[A-Za-z]:[\\/]/,
+  // Arguments that name a PROGRAM for an otherwise-innocent verb to run. `git rebase
+  // --exec <cmd>` runs its argument once per commit, and was demonstrated executing an
+  // arbitrary program on the host EVEN WITH the hardening flags pinned -- a
+  // command-line argument is not something a `-c` setting can neutralise. The same
+  // shape appears on several allowlisted verbs, so it is refused by argument, not by
+  // verb.
+  /(^|\s)--exec\b/i,
+  /(^|\s)-x(\s|=)/,
+  /(^|\s)--(upload-pack|receive-pack|upload-archive)\b/i,
+  /(^|\s)--ext-diff\b/i,
+  /(^|\s)--edit-description\b/i,
+  /(^|\s)--(directory|no-index)\b/i,
 ];
 
 /**

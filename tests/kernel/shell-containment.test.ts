@@ -213,6 +213,31 @@ describe('shell containment', () => {
     expect(isBareHostCommand(command)).toBe(false);
   });
 
+  it.each([
+    ['rebase --exec runs a program per commit', 'git rebase --exec make-evil main'],
+    ['the -x short form', 'git rebase -x ./evil.sh main'],
+    ['push --exec names a remote program', 'git push --exec=./evil.sh origin main'],
+    ['fetch --upload-pack', 'git fetch --upload-pack ./evil.sh origin'],
+    ['diff --ext-diff runs the configured differ', 'git diff --ext-diff'],
+    ['diff --no-index escapes the repository', 'git diff --no-index a b'],
+    ['branch --edit-description opens an editor', 'git branch --edit-description'],
+    ['apply --directory writes outside the tree', 'git apply --directory=../../etc patch.diff'],
+  ])('refuses an argument that names a program for an allowlisted verb: %s', (_label, command) => {
+    // DEMONSTRATED live before this fix: `git rebase --exec 'touch /tmp/pwn' HEAD~1`
+    // created the marker ON THE HOST -- and did so WITH the hardening flags pinned,
+    // because a command-line argument is not something a `-c` setting can neutralise.
+    // Config hardening and argument refusal are different defences; this needs both.
+    expect(isBareHostCommand(command)).toBe(false);
+  });
+
+  it('still allows the ordinary forms of those same verbs', () => {
+    // The falsifier: refusing `--exec` must not cost the run its ability to rebase.
+    expect(isBareHostCommand('git rebase main')).toBe(true);
+    expect(isBareHostCommand('git diff --cached')).toBe(true);
+    expect(isBareHostCommand('git apply patch.diff')).toBe(true);
+    expect(isBareHostCommand('git push origin feature/fdtes-1')).toBe(true);
+  });
+
   it('leaves git and gh on the host, because the object store is deliberately unreachable', () => {
     const guard = createShellContainmentGuard({ cwd: CWD, config: on });
     // The worktree's .git points at the primary checkout, which the container cannot
