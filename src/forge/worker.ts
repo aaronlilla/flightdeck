@@ -20,7 +20,7 @@ import { Journal, replay } from './journal.js';
 import { run as execRun, type RunRequest, type RunResult } from './exec.js';
 import {
   readSandboxConfig, sandboxCommand, describeSandbox, containerNameFor, sandboxReapCommand,
-  sandboxRuntimeReady,
+  sandboxRuntimeReady, resolveGitStore, stageRefRedirect,
 } from './sandbox-exec.js';
 import { parseShellPrefix } from './chain-env.js';
 import type { Inbox } from './inbox.js';
@@ -796,6 +796,27 @@ export class Worker {
       event: 'run.verify-sandbox', run: runName, actor: 'runner',
       contained: sandbox.enabled, detail: describeSandbox(sandbox),
     });
+    // A contained command may need to commit -- a verify step that formats, or a run
+    // that lands its own work. The shared object store is mounted read-only so a
+    // container cannot plant a hook the host would execute, which means a ref write has
+    // nowhere to go unless it is redirected. Staging that redirect before the run is
+    // what makes a contained `git commit` possible at all; nothing here promotes it,
+    // because moving the real branch belongs on an explicit, audited step.
+    const gitStore = sandbox.enabled ? resolveGitStore(this.config.cwd) : undefined;
+    if (gitStore) {
+      try {
+        stageRefRedirect(gitStore);
+      } catch (error) {
+        // A stage that cannot be built is not fatal: reads still work contained, and a
+        // ref write will fail loudly inside the boundary rather than silently on the
+        // host. Recorded so the failure is visible rather than inferred from a later
+        // confusing git error.
+        journal.append({
+          event: 'run.verify-sandbox', run: runName, actor: 'runner', contained: true,
+          detail: `ref redirect unavailable: ${String((error as Error).message ?? error)}`,
+        });
+      }
+    }
     const attempts = 3;
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       const outcomes: VerificationOutcome[] = [];
@@ -809,6 +830,10 @@ export class Worker {
         const boxed = sandboxCommand(sandbox, {
           command, cwd: this.config.cwd,
           name: containerNameFor(`${runName}-${attempt}`, outcomes.length),
+          // Carries the read-only object store plus the writable ref redirect, so a
+          // contained command can read history and commit without the shared store
+          // ever being writable.
+          ...(gitStore ? { gitStore } : {}),
         });
         let result;
         try {
