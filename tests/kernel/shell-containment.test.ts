@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { createShellContainmentGuard, CONTAINED_MARKER, shellQuote, isBareHostCommand, hardenHostCommand } from '../../src/kernel/guards/shell-containment.js';
+import { createShellContainmentGuard, CONTAINED_MARKER, shellQuote, isBareHostCommand, hardenHostCommand, needsRefWrite } from '../../src/kernel/guards/shell-containment.js';
 import { readSandboxConfig, resolveGitStore } from '../../src/forge/sandbox-exec.js';
 import type { ToolCall } from '../../src/types.js';
 
@@ -299,7 +299,9 @@ describe('shell containment', () => {
     // sibling worktree's refs.
     expect(emitted).toMatch(/worktrees\/fd-sandbox--fdtes-1:\/gitdir/);
     expect(emitted).toMatch(/GIT_DIR=\/gitdir/);
-    expect(emitted).toMatch(/GIT_OBJECT_DIRECTORY=\/gitstore\/objects/);
+    // Objects are written to a container-local scratch dir, with the read-only shared
+    // store as an alternate, so history resolves without the store being writable.
+    expect(emitted).toMatch(/GIT_OBJECT_DIRECTORY=\/tmp\/forge-objects/);
   });
 
   it('never mounts the shared store writable', () => {
@@ -357,6 +359,56 @@ describe('shell containment', () => {
     // callers that never opted in, so the pre-existing behaviour is kept.
     const guard = createShellContainmentGuard({ cwd: CWD, config: on });
     expect(guard.decide!(bash('npm ci'), {} as never).kind).toBe('modify');
+  });
+
+  it('contains git reads, and routes ref writes to the hardened host path', () => {
+    // MEASURED with a real git against a real linked worktree, not assumed: a
+    // worktree's refs/heads/<branch> lives in the SHARED store, which is mounted :ro
+    // so a contained command cannot plant a hook the host would execute. Objects route
+    // around that with GIT_ALTERNATE_OBJECT_DIRECTORIES; a ref write has no equivalent.
+    // Containing a commit would produce a guaranteed failure, so it takes the hardened
+    // host path instead -- a real, named hole, and why this axis is not yet won.
+    const guard = createShellContainmentGuard({
+      cwd: CWD, config: on,
+      gitStore: {
+        hostGitDir: 'C:/dev/fd-sandbox/.git',
+        worktreeName: 'fd-sandbox--fdtes-1',
+        hostWorktreeGitDir: 'C:/dev/fd-sandbox/.git/worktrees/fd-sandbox--fdtes-1',
+      },
+    });
+    for (const read of ['git status', 'git log --oneline -5', 'git rev-parse HEAD']) {
+      const emitted = String((guard.decide!(bash(read), {} as never) as any).input['command']);
+      expect(emitted).toMatch(/docker run/);
+    }
+    for (const write of ['git commit -m fix', 'git push origin feature/x', 'git add -A']) {
+      const emitted = String((guard.decide!(bash(write), {} as never) as any).input['command']);
+      expect(emitted).not.toMatch(/docker run/);
+      expect(emitted).toMatch(/core\.hooksPath=\/dev\/null/);
+    }
+  });
+
+  it('classifies ref-writing verbs by the verb, not by flags around it', () => {
+    expect(needsRefWrite('git commit -m x')).toBe(true);
+    expect(needsRefWrite('git --no-pager commit -m x')).toBe(true);
+    expect(needsRefWrite('git status')).toBe(false);
+    expect(needsRefWrite('gh pr view 2')).toBe(false);
+  });
+
+  it('routes new objects out of the read-only store via an alternate', () => {
+    // Verified with a real commit: 3 loose objects landed in the scratch dir while the
+    // parents resolved from the alternate. Without this a contained read fails the
+    // moment it needs to write anything at all.
+    const guard = createShellContainmentGuard({
+      cwd: CWD, config: on,
+      gitStore: {
+        hostGitDir: 'C:/dev/fd-sandbox/.git',
+        worktreeName: 'fd-sandbox--fdtes-1',
+        hostWorktreeGitDir: 'C:/dev/fd-sandbox/.git/worktrees/fd-sandbox--fdtes-1',
+      },
+    });
+    const emitted = String((guard.decide!(bash('git status'), {} as never) as any).input['command']);
+    expect(emitted).toMatch(/GIT_OBJECT_DIRECTORY=\/tmp\/forge-objects/);
+    expect(emitted).toMatch(/GIT_ALTERNATE_OBJECT_DIRECTORIES=\/gitstore\/objects/);
   });
 
   it('leaves git and gh on the host, because the object store is deliberately unreachable', () => {

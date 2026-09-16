@@ -443,6 +443,32 @@ export function hardenHostCommand(command: string): string {
   return `git ${HOST_GIT_ARGS.join(' ')} ${trimmed.slice(3).trim()}`.trim();
 }
 
+/**
+ * Verbs that write a branch ref, which a contained git cannot do.
+ *
+ * Measured, not assumed: a linked worktree's `refs/heads/<branch>` lives in the SHARED
+ * `<primary>/.git`, which is mounted read-only so a contained command cannot plant a
+ * hook the host would execute. New objects route around that with an alternate object
+ * directory, but a ref write has no such escape hatch.
+ *
+ * So these verbs take the hardened host path instead of being contained into a
+ * guaranteed failure. That is a real, named hole -- a ticket run commits and pushes --
+ * and it is why this axis is not yet won. The alternative (mounting the shared store
+ * writable) trades a narrow hole for the wider one it was built to close.
+ */
+const REF_WRITING_VERBS = new Set([
+  'commit', 'push', 'merge', 'rebase', 'reset', 'cherry-pick', 'revert', 'tag',
+  'branch', 'checkout', 'switch', 'stash', 'fetch', 'pull', 'apply', 'restore', 'add',
+]);
+
+/** True when a host-allowed git command would need to write into the shared store. */
+export function needsRefWrite(command: string): boolean {
+  const tokens = command.trim().split(/\s+/);
+  if (tokens[0]?.toLowerCase() !== 'git') return false;
+  const verb = tokens.slice(1).find((token) => !token.startsWith('-'));
+  return verb ? REF_WRITING_VERBS.has(verb.toLowerCase()) : false;
+}
+
 export interface ShellContainmentOptions {
   /** The worktree the agent is working in: the only host path the command may reach. */
   cwd: string;
@@ -524,7 +550,7 @@ export function createShellContainmentGuard(options: ShellContainmentOptions): G
         // store is mountable, git runs INSIDE instead and the carve-out disappears --
         // the allowlist above then only decides what a *contained* git may do, which is
         // a far smaller claim than deciding what may touch the host.
-        if (gitStore) {
+        if (gitStore && !needsRefWrite(command)) {
           const name = options.nameFor?.(index) ?? `forge-shell-${index}`;
           index += 1;
           const boxed = sandboxCommand(config, {

@@ -200,32 +200,41 @@ export function sandboxCommand(
   // being carved out to the host. Every escape this guard has lost was reached through
   // that carve-out, so closing it is worth a second mount.
   //
-  // The mount is read-only, and that is not a detail. `<primary>/.git` contains `hooks/`
-  // and `config`, and `hooks/` is git's DEFAULT hook directory for the host checkout --
-  // so a writable mount would let a contained command drop `hooks/pre-commit` and have
-  // the HOST execute it on its next commit. That is precisely the core.hooksPath escape
-  // closed in an earlier round, re-opened through the back door. Writes that a run
-  // legitimately needs (new objects, its own branch ref) go to a per-worktree overlay
-  // mounted read-write over just that worktree's GIT_DIR, never over the shared store.
+  // The shared store is read-only, and that is not a detail. `<primary>/.git` contains
+  // `hooks/` and `config`, and `hooks/` is git's DEFAULT hook directory for the host
+  // checkout -- so a writable mount would let a contained command drop
+  // `hooks/pre-commit` and have the HOST execute it on its next commit. That is exactly
+  // the core.hooksPath escape closed earlier, re-opened through the back door.
   //
-  // NOT YET PROVEN ON A LIVE RUNTIME: `git commit` writes new loose objects, and with
-  // `GIT_OBJECT_DIRECTORY` pointing into the read-only store it will need
-  // `GIT_ALTERNATE_OBJECT_DIRECTORIES` plus a writable object dir instead. The read-only
-  // decision is right regardless; the exact object routing needs a daemon to confirm,
-  // and until it is confirmed a contained `git commit` may fail rather than silently
-  // writing somewhere unexpected -- which is the safe direction for it to be wrong in.
+  // Measured with a real git against a real linked worktree, not assumed:
+  //   - new objects CAN be routed out of the read-only store, with a writable
+  //     `GIT_OBJECT_DIRECTORY` and the shared store as `GIT_ALTERNATE_OBJECT_DIRECTORIES`
+  //     (a commit then wrote 3 loose objects into the scratch dir and read its parents
+  //     from the alternate);
+  //   - a branch ref CANNOT. A linked worktree's `refs/heads/<branch>` lives in the
+  //     SHARED store, not in `worktrees/<name>/`, so `git commit` writes there by
+  //     construction. `worktrees/<name>/` holds only HEAD, index, logs and
+  //     worktree-scoped refs.
+  //
+  // So a read-only shared store means a contained `git commit` fails on the ref write.
+  // That is the honest state: reads (`status`, `log`, `diff`, `rev-parse`) are contained
+  // and work; a contained commit does not. Making commits work without handing back
+  // write access to `hooks/` needs ref writes proxied out of the container -- a design,
+  // not a mount flag. Failing loudly beats granting the escape back.
   const gitArgs = input.gitStore
     ? [
       '-v', `${mountPathFor(input.gitStore.hostGitDir)}:/gitstore:ro`,
-      // The run's own GIT_DIR, writable, so `git commit` can move ITS branch and write
-      // objects without being able to touch `hooks/`, `config`, or a sibling's refs.
+      // The run's own GIT_DIR, writable: HEAD, index and logs live here, so a read is
+      // fully functional and a commit gets as far as the ref write before refusing.
       '-v', `${mountPathFor(input.gitStore.hostWorktreeGitDir)}:/gitdir`,
       // GIT_DIR rather than rewriting the worktree's `.git` file: the file names a
       // HOST path, and mutating it would corrupt the checkout for the host and every
       // sibling worktree the moment a container exits mid-command.
       '-e', 'GIT_DIR=/gitdir',
-      // The shared store supplies the objects the worktree's GIT_DIR refers to.
-      '-e', 'GIT_OBJECT_DIRECTORY=/gitstore/objects',
+      // New objects are written to a container-local scratch dir; the shared store is
+      // an alternate, so existing history resolves without being writable.
+      '-e', 'GIT_OBJECT_DIRECTORY=/tmp/forge-objects',
+      '-e', 'GIT_ALTERNATE_OBJECT_DIRECTORIES=/gitstore/objects',
       '-e', 'GIT_WORK_TREE=/work',
       // The mounted store is owned by the host user, not by uid 1000 inside.
       '-e', 'GIT_CONFIG_GLOBAL=/dev/null',
