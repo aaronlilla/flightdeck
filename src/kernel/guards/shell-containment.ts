@@ -100,6 +100,67 @@ const GIT_ARGUMENT_REFUSALS = [
 ];
 
 /**
+ * The options each allowlisted verb may carry, as an ALLOWLIST.
+ *
+ * Round after round of this boundary was lost to the same shape: refuse `--exec-path`,
+ * and `--exec` walks in; refuse `--exec`, and `--unsafe-paths` walks in; refuse that,
+ * and `--output=` is next. A denylist of arguments can only ever block the flag that
+ * was already used against it, and git has hundreds. So the argument decision is
+ * inverted here: a flag this table does not name is refused, whether or not anyone has
+ * thought of it yet.
+ *
+ * The sets are deliberately small -- what a ticket's own work needs, and nothing
+ * speculative. A verb that needs a flag it does not have will be contained rather than
+ * silently allowed, which is a loud, fixable failure. `GIT_ARGUMENT_REFUSALS` still
+ * runs afterwards, because a flag can be allowlisted and still be pointed somewhere it
+ * should not go (`--git-dir`, an absolute path, a URL remote).
+ *
+ * Bare `-` prefixed short flags are matched by their exact token, so `-m` is allowed
+ * for `commit` while `-S` is not allowed for `blame`.
+ */
+const HOST_VERB_FLAGS: Record<string, Record<string, ReadonlySet<string>>> = {
+  git: {
+    status: new Set(['--short', '-s', '--porcelain', '--branch', '-b', '--untracked-files', '-u']),
+    add: new Set(['--all', '-A', '--update', '-u', '--patch', '-p', '--force', '-f', '--intent-to-add', '-N', '.']),
+    commit: new Set(['--message', '-m', '--all', '-a', '--amend', '--no-edit', '--file', '-F', '--allow-empty', '--fixup', '--squash']),
+    diff: new Set(['--cached', '--staged', '--name-only', '--name-status', '--stat', '--shortstat', '--numstat', '--unified', '-U', '--word-diff', '--color', '--no-color', '-w', '--ignore-all-space']),
+    log: new Set(['--oneline', '--graph', '--format', '--pretty', '--abbrev-commit', '--max-count', '-n', '--since', '--until', '--author', '--grep', '--name-only', '--name-status', '--stat', '--reverse', '--no-merges', '--first-parent', '--follow', '-p', '--patch']),
+    show: new Set(['--stat', '--name-only', '--name-status', '--format', '--pretty', '--oneline', '--no-patch', '-s']),
+    'rev-parse': new Set(['--abbrev-ref', '--short', '--verify', '--quiet', '-q', '--show-toplevel', '--git-path', '--is-inside-work-tree', '--symbolic-full-name']),
+    branch: new Set(['--list', '-l', '--all', '-a', '--remotes', '-r', '--delete', '-d', '-D', '--move', '-m', '--show-current', '--contains', '--merged', '--no-merged', '--format', '--sort', '-v', '--verbose', '-f', '--force']),
+    checkout: new Set(['-b', '-B', '--track', '-t', '--detach', '--force', '-f', '--ours', '--theirs', '--merge', '--patch', '-p', '--orphan', '.', '--']),
+    switch: new Set(['--create', '-c', '--detach', '--force', '-f', '--track', '-t', '--merge', '--discard-changes']),
+    restore: new Set(['--staged', '--worktree', '--source', '-s', '--patch', '-p', '.', '--']),
+    stash: new Set(['push', 'pop', 'apply', 'list', 'show', 'drop', 'clear', '--include-untracked', '-u', '--keep-index', '--message', '-m']),
+    fetch: new Set(['--all', '--prune', '-p', '--tags', '--depth', '--unshallow', '--no-tags', '--force', '-f', '--quiet', '-q']),
+    pull: new Set(['--rebase', '--no-rebase', '--ff-only', '--no-ff', '--prune', '--quiet', '-q', '--autostash']),
+    push: new Set(['--set-upstream', '-u', '--force-with-lease', '--force', '-f', '--tags', '--delete', '-d', '--dry-run', '-n', '--quiet', '-q', '--no-verify']),
+    merge: new Set(['--no-ff', '--ff-only', '--squash', '--abort', '--continue', '--message', '-m', '--no-commit', '--strategy', '-s', '--strategy-option', '-X']),
+    rebase: new Set(['--onto', '--continue', '--abort', '--skip', '--interactive', '-i', '--autostash', '--no-autostash', '--quiet', '-q', '--strategy', '-s', '--strategy-option', '-X']),
+    reset: new Set(['--hard', '--soft', '--mixed', '--merge', '--keep', '--quiet', '-q', '.', '--']),
+    tag: new Set(['--list', '-l', '--annotate', '-a', '--message', '-m', '--delete', '-d', '--force', '-f', '--sort', '--format', '--contains']),
+    describe: new Set(['--tags', '--always', '--abbrev', '--long', '--dirty', '--match', '--exclude']),
+    blame: new Set(['--line-porcelain', '--porcelain', '-L', '--show-name', '-f', '--show-number', '-n', '-w']),
+    'ls-files': new Set(['--cached', '--deleted', '--modified', '--others', '-o', '--ignored', '-i', '--stage', '-s', '--exclude-standard', '-z', '--error-unmatch']),
+    'merge-base': new Set(['--is-ancestor', '--fork-point', '--octopus', '--all', '-a']),
+    'cherry-pick': new Set(['--continue', '--abort', '--skip', '--no-commit', '-n', '--mainline', '-m', '--edit', '-e', '--signoff', '-s']),
+    revert: new Set(['--continue', '--abort', '--skip', '--no-commit', '-n', '--mainline', '-m', '--no-edit']),
+    apply: new Set(['--check', '--stat', '--summary', '--index', '--cached', '--reverse', '-R', '--3way', '-3', '--whitespace', '--exclude', '--include', '-p']),
+    'ls-remote': new Set(['--heads', '-h', '--tags', '-t', '--refs', '--exit-code', '--quiet', '-q']),
+    shortlog: new Set(['--summary', '-s', '--numbered', '-n', '--email', '-e', '--format', '--no-merges']),
+    'name-rev': new Set(['--tags', '--name-only', '--always', '--refs', '--stdin']),
+  },
+  gh: {
+    pr: new Set(['create', 'view', 'list', 'diff', 'edit', 'comment', 'checkout', 'checks', 'ready', 'close', 'reopen', 'status', 'merge', '--draft', '--title', '-t', '--body', '-b', '--body-file', '-F', '--base', '-B', '--head', '-H', '--repo', '-R', '--json', '--jq', '-q', '--state', '-s', '--limit', '-L', '--web', '-w', '--label', '-l', '--assignee', '-a', '--reviewer', '-r', '--fill', '--search']),
+    issue: new Set(['create', 'view', 'list', 'edit', 'comment', 'close', 'reopen', 'status', 'develop', '--title', '-t', '--body', '-b', '--body-file', '-F', '--repo', '-R', '--json', '--jq', '-q', '--state', '-s', '--limit', '-L', '--web', '-w', '--label', '-l', '--assignee', '-a', '--search', '--milestone', '-m']),
+    repo: new Set(['view', 'list', 'clone', 'create', 'edit', 'sync', '--repo', '-R', '--json', '--jq', '-q', '--limit', '-L', '--web', '-w']),
+    run: new Set(['list', 'view', 'watch', 'rerun', 'cancel', 'download', '--repo', '-R', '--json', '--jq', '-q', '--limit', '-L', '--workflow', '-w', '--branch', '-b', '--status', '-s', '--log', '--log-failed']),
+    release: new Set(['list', 'view', 'create', 'edit', 'delete', 'download', 'upload', '--repo', '-R', '--json', '--jq', '-q', '--limit', '-L', '--title', '-t', '--notes', '-n', '--notes-file', '-F', '--draft', '-d', '--prerelease', '-p']),
+    label: new Set(['list', 'create', 'edit', 'delete', 'clone', '--repo', '-R', '--json', '--jq', '-q', '--limit', '-L', '--color', '-c', '--description', '-d']),
+  },
+};
+
+/**
  * The only subcommands a host-side `git`/`gh` may use.
  *
  * Allowing a whole binary is allowing its least safe verb. `gh auth token` prints the
@@ -213,6 +274,31 @@ export function isBareHostCommand(command: string): boolean {
   // required by the workflow and sends the whole repository wherever it is told.
   if (name === 'git' && GIT_ARGUMENT_REFUSALS.some((pattern) => pattern.test(trimmed))) {
     return false;
+  }
+
+  // Finally, every flag the verb carries must be one this verb is allowed to carry.
+  // This is an allowlist because the denylist above can only ever block the flag that
+  // was already used against it: --exec-path, then --exec, then --unsafe-paths, then
+  // --output=. A flag nobody has thought of yet is refused by default.
+  const verbFlags = HOST_VERB_FLAGS[name]?.[subcommand.toLowerCase()];
+  if (!verbFlags) return false;
+  for (const token of tokens) {
+    if (token === subcommand || !token.startsWith('-')) continue;
+    // `-5` on `log` is git's shorthand for `--max-count=5`, and `-1` is ubiquitous.
+    // A bare numeric flag names no program and reaches nothing, so it is allowed
+    // wherever the verb already accepts a count.
+    if (/^-\d+$/.test(token)) continue;
+    // A bundled short form -- `-am` for `-a -m` -- is checked letter by letter, or an
+    // ordinary `git commit -am wip` would be refused for a flag it does not contain.
+    if (/^-[A-Za-z]{2,}$/.test(token)) {
+      const letters = token.slice(1).split('');
+      if (letters.every((letter) => verbFlags.has(`-${letter}`))) continue;
+      return false;
+    }
+    // `--flag=value` is allowed by its flag name; the value is judged by the refusals
+    // above (absolute path, URL remote) rather than by this table.
+    const flagName = token.split('=')[0] ?? token;
+    if (!verbFlags.has(flagName)) return false;
   }
   return true;
 }

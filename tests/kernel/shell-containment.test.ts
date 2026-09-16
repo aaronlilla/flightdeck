@@ -238,6 +238,39 @@ describe('shell containment', () => {
     expect(isBareHostCommand('git push origin feature/fdtes-1')).toBe(true);
   });
 
+  it.each([
+    ['--exec with = form', 'git rebase --exec=./e.sh main'],
+    ['--unsafe-paths alone', 'git apply --unsafe-paths evil.patch'],
+    ['--output redirects a write', 'git log --output=../../pwn.txt'],
+    ['-S on blame', 'git blame -S ../../evil'],
+    ['a flag nobody has thought of yet', 'git status --some-future-flag'],
+    ['a flag valid on ANOTHER verb', 'git status --amend'],
+  ])('refuses any flag its verb does not explicitly allow: %s', (_label, command) => {
+    // The argument decision is an ALLOWLIST, not a denylist. Six rounds of this
+    // boundary were lost to the same shape -- refuse --exec-path and --exec walks in,
+    // refuse --exec and --unsafe-paths walks in -- because a denylist can only block
+    // the flag already used against it. git has hundreds.
+    expect(isBareHostCommand(command)).toBe(false);
+  });
+
+  it('allows a bare numeric flag, which git uses as a count shorthand', () => {
+    // `-5` on log is --max-count=5, and `-1` is ubiquitous. It names no program and
+    // reaches nothing. Caught because the first version of the allowlist broke
+    // `git log --oneline -5` and flightdeck's own `git log --format=%H -1`.
+    expect(isBareHostCommand('git log --oneline -5')).toBe(true);
+    expect(isBareHostCommand('git log --format=%H -1')).toBe(true);
+  });
+
+  it('allows a bundled short form but not one smuggling a disallowed letter', () => {
+    // `git commit -am wip` is ordinary usage and the first allowlist refused it,
+    // because the table knows `-a` and `-m` but not the bundle. Checked letter by
+    // letter -- so `-Sw` on blame is still refused for the `-S` inside it.
+    expect(isBareHostCommand('git commit -am wip')).toBe(true);
+    expect(isBareHostCommand('git status -sb')).toBe(true);
+    expect(isBareHostCommand('git add -Ap')).toBe(true);
+    expect(isBareHostCommand('git blame -Sw x')).toBe(false);
+  });
+
   it('leaves git and gh on the host, because the object store is deliberately unreachable', () => {
     const guard = createShellContainmentGuard({ cwd: CWD, config: on });
     // The worktree's .git points at the primary checkout, which the container cannot
