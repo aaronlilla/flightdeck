@@ -368,6 +368,12 @@ export interface PreToolUseHookDeps {
    *  named it -- every edit is judged as if it were inside the run's own repo, the
    *  permissive default this hook already used before this field existed. */
   runCwd?: string;
+  /**
+   * Whether the container runtime answered a probe at run start. Undefined means no
+   * caller checked, which keeps the pre-existing behaviour; false makes the containment
+   * guard refuse rather than claim a boundary that is not there.
+   */
+  sandboxRuntimeReady?: boolean;
 }
 
 /**
@@ -397,7 +403,16 @@ export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
   // there is no worktree to confine to, so the guard is not built at all rather than
   // guessing at a root -- a caller that names no cwd gets the behaviour it had before.
   const containment = deps.runCwd
-    ? createShellContainmentGuard({ cwd: deps.runCwd, nameFor: (i) => `forge-${deps.run}-${i}` })
+    ? createShellContainmentGuard({
+      cwd: deps.runCwd,
+      nameFor: (i) => `forge-${deps.run}-${i}`,
+      // Checked once by the caller. False means the runtime is down, and the guard
+      // denies rather than emitting a `docker run` the journal would record as
+      // contained for a command that cannot run.
+      ...(deps.sandboxRuntimeReady === undefined
+        ? {}
+        : { runtimeReady: deps.sandboxRuntimeReady }),
+    })
     : undefined;
   return async (call: { toolName: string; input: Record<string, unknown>; toolUseId: string }):
     Promise<PreToolVerdict> => {

@@ -312,6 +312,25 @@ describe('shell containment', () => {
     expect(resolveGitStore('C:/dev/definitely-not-here')).toBeUndefined();
   });
 
+  it('denies rather than claiming containment when the runtime is down', () => {
+    // Found by the Docker daemon stopping mid-session: the guard happily emitted a
+    // `docker run ...` string, the journal would have recorded `contained`, and the
+    // command could only fail with a connection error. Nothing distinguished "the
+    // boundary held" from "the boundary was never there". The verify path already
+    // refuses to claim a verdict it cannot prove; the edit path now refuses too.
+    const guard = createShellContainmentGuard({ cwd: CWD, config: on, runtimeReady: false });
+    const decision: any = guard.decide!(bash('npm ci'), {} as never);
+    expect(decision.kind).toBe('deny');
+    expect(decision.reason).toMatch(/container runtime is unavailable/);
+  });
+
+  it('treats an unchecked runtime as ready, so an existing caller is unaffected', () => {
+    // Undefined means no caller probed. Denying every command on that basis would break
+    // callers that never opted in, so the pre-existing behaviour is kept.
+    const guard = createShellContainmentGuard({ cwd: CWD, config: on });
+    expect(guard.decide!(bash('npm ci'), {} as never).kind).toBe('modify');
+  });
+
   it('leaves git and gh on the host, because the object store is deliberately unreachable', () => {
     const guard = createShellContainmentGuard({ cwd: CWD, config: on });
     // The worktree's .git points at the primary checkout, which the container cannot

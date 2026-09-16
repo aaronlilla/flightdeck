@@ -454,6 +454,19 @@ export interface ShellContainmentOptions {
    * found, and git falls back to a hardened host call.
    */
   gitStore?: GitStoreMount;
+  /**
+   * Whether the container runtime is actually up, checked once per run by the caller.
+   *
+   * Without this the guard happily emits a `docker run ...` string while the daemon is
+   * down: the journal records `contained`, the command fails with a connection error,
+   * and nothing distinguishes "the boundary held" from "the boundary was never there".
+   * Found by the daemon stopping mid-session -- the verify path already refuses to
+   * claim a verdict it cannot prove, and the edit path must refuse on the same terms.
+   *
+   * Undefined means no caller checked, which is treated as ready so an existing caller
+   * behaves as before rather than silently denying every command.
+   */
+  runtimeReady?: boolean;
   /** Names the container per call, so a sweep can reap it. */
   nameFor?: (index: number) => string;
 }
@@ -470,6 +483,17 @@ export function createShellContainmentGuard(options: ShellContainmentOptions): G
 
     decide(call: ToolCall): GuardDecision {
       if (!config.enabled) return { kind: 'pass' };
+
+      // Containment was expected and the runtime is not there. Emitting a `docker run`
+      // string anyway would record `contained` in the journal for a command that
+      // cannot run, which is worse than refusing: it is an unproven claim.
+      if (options.runtimeReady === false) {
+        return {
+          kind: 'deny',
+          reason: 'refusing to run: containment is enabled but the container runtime is '
+            + 'unavailable. Start it, or set FORGE_SANDBOX=0 to opt out deliberately.',
+        };
+      }
 
       // The SDK's file tools never pass through a shell, so no container sees them.
       // Confine them to the worktree by path instead, or the Bash boundary has a door.
