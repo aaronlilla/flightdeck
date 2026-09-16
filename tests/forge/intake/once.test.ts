@@ -18,6 +18,69 @@ function memoryWatermarks(): WatermarkStore {
 }
 
 describe('runIntakeOnce', () => {
+  it('classifies a ticket assigned to the owner as hands-off and still raises its intent', async () => {
+    // Requirement 5 exists to tell "assigned to me, work it" apart from "someone
+    // else's backlog item". Until the feed carried an assignee, classifyTicket was
+    // imported by nothing and both cases were treated identically.
+    const feed = {
+      name: 'jira' as PollSourceName,
+      fetchSince: async () => [{
+        id: 'BBZ-9', updated: 100,
+        detail: {
+          summary: 'mine', description: '', status: 'To Do', issuetype: 'Bug', priority: 'High',
+          assignee: { accountId: 'acct-owner', displayName: 'Owner' },
+        },
+      }],
+    };
+    const events: IntakeOnceEvent[] = [];
+
+    const result = await runIntakeOnce(
+      [feed], memoryWatermarks(), (event) => events.push(event),
+      undefined, undefined, { ownerAccount: 'acct-owner' },
+    );
+
+    expect(result.handling).toEqual([{ ticket: 'BBZ-9', handling: 'hands-off' }]);
+    expect(events.map((e) => e.event)).toEqual(['source.observed', 'packet.written', 'external.intent']);
+  });
+
+  it('classifies an unassigned backlog item as a proposal and withholds the hands-off intent', async () => {
+    const feed = {
+      name: 'jira' as PollSourceName,
+      fetchSince: async () => [{
+        id: 'BBZ-10', updated: 100,
+        detail: {
+          summary: 'someone elses', description: '', status: 'To Do', issuetype: 'Bug', priority: 'Low',
+          assignee: { accountId: 'acct-stranger', displayName: 'Stranger' },
+        },
+      }],
+    };
+    const events: IntakeOnceEvent[] = [];
+
+    const result = await runIntakeOnce(
+      [feed], memoryWatermarks(), (event) => events.push(event),
+      undefined, undefined, { ownerAccount: 'acct-owner' },
+    );
+
+    expect(result.handling).toEqual([{ ticket: 'BBZ-10', handling: 'backlog-proposal-comment' }]);
+    // The packet is still written -- the ticket is real and worth recording -- but the
+    // intent that starts hands-off work must not be raised for a stranger's item.
+    expect(events.map((e) => e.event)).toEqual(['source.observed', 'packet.written']);
+    expect(result.intentsRaised).toBe(0);
+  });
+
+  it('leaves behaviour unchanged when no owner account is configured', async () => {
+    const feed = {
+      name: 'jira' as PollSourceName,
+      fetchSince: async () => [{ id: 'BBZ-11', updated: 100 }],
+    };
+    const events: IntakeOnceEvent[] = [];
+
+    const result = await runIntakeOnce([feed], memoryWatermarks(), (event) => events.push(event));
+
+    expect(result.handling).toEqual([]);
+    expect(events.map((e) => e.event)).toEqual(['source.observed', 'packet.written', 'external.intent']);
+  });
+
   it('journals source.observed, packet.written and external.intent for a fresh item, in that order', async () => {
     const feed = {
       name: 'jira' as PollSourceName,

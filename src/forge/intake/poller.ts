@@ -34,6 +34,11 @@ export interface PollItemDetail {
    *  found none (the mint-fresh-ticket case); absent means the source never populated
    *  this field at all (every fixture before R-11). */
   latestComment?: { author: string; body: string } | null;
+  /** Requirement 5: who the ticket is assigned to, which is what `classifyTicket`
+   *  (`scope.ts`) reads to tell "assigned to me, work it hands-off" apart from a
+   *  stranger's backlog item. Absent means the source never populated it, which
+   *  classifies as unassigned rather than as the owner. */
+  assignee?: { accountId: string; displayName: string } | null;
 }
 
 /** A source's own item, before this module stamps it with the feed's source name. */

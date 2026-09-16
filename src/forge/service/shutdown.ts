@@ -38,6 +38,13 @@ export interface InstallShutdownInput {
   process?: NodeJS.Process;
   /** Bounds how long shutdown waits on `server.close()`. Default 10s per the brief. */
   closeTimeoutMs?: number;
+  /**
+   * Removes any sandbox container this process left running. A container is the docker
+   * daemon's child and outlives a signalled parent, so without this a SIGINT during a
+   * verification strands one holding the worktree mount. Omitted, nothing is swept --
+   * which is correct for a host that never contains anything.
+   */
+  sweepSandboxes?: () => Promise<void>;
 }
 
 const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGBREAK'] as const;
@@ -58,6 +65,14 @@ export function installShutdown(input: InstallShutdownInput): (reason: string) =
       input.server.close(),
       new Promise<void>((resolve) => { setTimeout(resolve, closeTimeoutMs); }),
     ]);
+    // A sandbox container is the docker daemon's child, so it survives this process
+    // dying. The per-command reap lives in a `finally` that never runs when the process
+    // is signalled mid-verification, which would leave a container running with the
+    // worktree still mounted, indefinitely. This sweep is the only thing that closes
+    // that, and it is why the containers carry a stable name prefix.
+    if (input.sweepSandboxes) {
+      await input.sweepSandboxes().catch(() => undefined);
+    }
     input.queueLock?.release();
     input.journal.append({ event: 'console.stopped', actor: 'console', reason });
     input.journal.close();

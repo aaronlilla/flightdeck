@@ -97,4 +97,26 @@ describe('buildPlannerPrompt', () => {
   it('stays under 60 lines', () => {
     expect(prompt.split('\n').length).toBeLessThan(60);
   });
+
+  it('anchors acceptance to the exact verify command, not the agent\'s narration', () => {
+    // A criterion the agent narrates is one it can assert its way past. Proven
+    // exploitable against the sandbox repo: a deliberately failing test written to
+    // src/retry.test.js exits 0, because the runner glob is test/**/*.test.js and it
+    // was never collected. The brief must name the command and demand a collected path.
+    const withCommand = buildPlannerPrompt(packet(), 'npm test');
+    expect(withCommand).toMatch(/exactly this command/);
+    expect(withCommand).toContain('npm test');
+    expect(withCommand).toMatch(/has not run, however green/);
+    expect(withCommand).toMatch(/never invent a new runner, script, or glob/);
+  });
+
+  it('never invents a grader when no verify command is configured', () => {
+    // Claiming a grader that does not exist is the same failure as a self-nominated one.
+    expect(buildPlannerPrompt(packet())).not.toMatch(/exactly this command/);
+  });
+
+  it('asks for a visual plan only when the change touches a screen', () => {
+    expect(prompt).toMatch(/If the change touches a screen/);
+    expect(prompt).toMatch(/empty test plan is noise/);
+  });
 });

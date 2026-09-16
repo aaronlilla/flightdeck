@@ -107,6 +107,33 @@ export function verifyCommandFor(chainEnv: ChainEnv, repo: string): string | und
   return lookupRepoScoped(chainEnv.verify, repo);
 }
 
+/**
+ * The configured verify command for a run whose repository is not named on the command
+ * line -- `forge run` knows only its own cwd, which inside a chain is the ticket's
+ * worktree.
+ *
+ * A worktree path is `<parent>/worktrees/<name>--<ticket>` (`worktreePathFor`), and the
+ * repo-scoped keys are `owner/name`, so the directory's `<name>` segment is matched
+ * against the tail of each configured key. Matching on the tail rather than the whole
+ * key keeps this working for a plain checkout named after the repo too.
+ *
+ * Returns `undefined` when nothing matches, which is the honest answer: the caller then
+ * has no authority to grade the run by and must report `unverified` rather than trusting
+ * whatever the brief asked for.
+ */
+export function verifyCommandForCwd(chainEnv: ChainEnv, cwd: string): string | undefined {
+  const dir = cwd.replace(/[/\\]+$/, '').split(/[/\\]/).pop()?.toLowerCase();
+  if (!dir) return undefined;
+  const name = dir.includes('--') ? dir.slice(0, dir.lastIndexOf('--')) : dir;
+  if (!name) return undefined;
+
+  for (const entry of chainEnv.verify) {
+    const repoName = entry.repo.split('/').pop()?.toLowerCase();
+    if (repoName && repoName === name) return entry.value;
+  }
+  return undefined;
+}
+
 export function mergeAllowedFor(chainEnv: ChainEnv, repo: string): boolean {
   return chainEnv.mergeRepos.includes(repo);
 }

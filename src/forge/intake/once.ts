@@ -18,6 +18,7 @@ import type { Packet, PollSourceName, Watermark } from '../contracts.js';
 import type { FakePollFeed } from './poller.js';
 import { runPoll } from './poller.js';
 import { PacketStore } from './packetStore.js';
+import { classifyTicket, type Handling, type TicketOrigin } from './scope.js';
 import { routeRepo, type RepoRule } from './repoRoute.js';
 
 export interface WatermarkStore {
@@ -43,6 +44,10 @@ export interface IntakeOnceResult {
    *  labels and components it saw, so `cli.ts` can print one line per ticket telling
    *  the operator what to add to `FORGE_INTAKE_REPO_MAP`. */
   unrouted: { ticket: string; labels: string[]; components: string[] }[];
+  /** Requirement 5: how each observed ticket was classified, when an owner account was
+   *  configured. Empty when classification was skipped (no owner account), which keeps
+   *  the pre-Requirement-5 behaviour of treating every ticket as hands-off. */
+  handling: { ticket: string; handling: Handling }[];
 }
 
 /**
@@ -56,7 +61,15 @@ export async function runIntakeOnce(
   emit: (event: IntakeOnceEvent) => void,
   packetStore: PacketStore = new PacketStore(),
   repoRules: RepoRule[] = [],
+  /**
+   * Requirement 5 (`scope.ts#classifyTicket`). With an owner account configured, every
+   * observed ticket is classified and only a hands-off one raises `external.intent` --
+   * the event that starts unattended work. Without one there is nobody to compare an
+   * assignee against, so classification is skipped and behaviour is exactly as before.
+   */
+  options: { ownerAccount?: string } = {},
 ): Promise<IntakeOnceResult> {
+  const handling: IntakeOnceResult['handling'] = [];
   let observed = 0;
   let packetsWritten = 0;
   let intentsRaised = 0;
@@ -106,15 +119,30 @@ export async function runIntakeOnce(
           unrouted.push({ ticket: packet.ticket, labels, components });
         }
 
-        intentsRaised += 1;
-        emit({
-          event: 'external.intent', kind: 'jira-ticket', idempotencyKey: packet.id,
-          ticket: packet.ticket,
-        });
+        // Requirement 5: a ticket assigned to the owner is worked hands-off; anything
+        // else earns a packet and a proposal, never the intent that starts unattended
+        // work on a stranger's backlog item.
+        let handsOff = true;
+        if (options.ownerAccount) {
+          const decision = classifyTicket({
+            assignee: event.detail?.assignee?.accountId,
+            origin: event.source as TicketOrigin,
+          }, options.ownerAccount);
+          handling.push({ ticket: packet.ticket, handling: decision.handling });
+          handsOff = decision.handling === 'hands-off';
+        }
+
+        if (handsOff) {
+          intentsRaised += 1;
+          emit({
+            event: 'external.intent', kind: 'jira-ticket', idempotencyKey: packet.id,
+            ticket: packet.ticket,
+          });
+        }
       }
     });
     watermarks.set(feed.name, result.watermark);
   }
 
-  return { sourcesPolled, observed, packetsWritten, intentsRaised, writtenPackets, unrouted };
+  return { sourcesPolled, observed, packetsWritten, intentsRaised, writtenPackets, unrouted, handling };
 }

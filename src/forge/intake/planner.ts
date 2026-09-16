@@ -14,7 +14,7 @@ export interface PlannedBrief {
   text: string;
 }
 
-export function buildPlannerPrompt(packet: Packet): string {
+export function buildPlannerPrompt(packet: Packet, verifyCommand?: string): string {
   return [
     'You are Forge Intake\'s planner. One findings packet is queued below. Propose a',
     'goal brief for it: what to fix, its acceptance, nothing that launches anything.',
@@ -38,11 +38,35 @@ export function buildPlannerPrompt(packet: Packet): string {
     'first status update; if the packet above carries a file path or line hint, repeat it',
     'in the brief rather than describing the screen by name. Demand a full, working',
     'implementation -- no stub, mock, placeholder, or hardcoded literal standing in for the',
-    'real path. The PR body must carry Haiping\'s visual test plan: every screen the diff',
-    'touches, what he should see there, and the sentence that no agent visually verified',
-    'it. While iterating, run only the test files the change touches; run the full suite',
+    'real path. If the change touches a screen, the PR body must carry Haiping\'s visual',
+    'test plan: every screen the diff touches, what he should see there, and the sentence',
+    'that no agent visually verified it. If it touches no screen -- a pure function, a',
+    'utility, a backend path -- say so in one line and write no visual plan at all; an',
+    'empty test plan is noise that trains a reviewer to skip the section. While iterating, run only the test files the change touches; run the full suite',
     'once at the end. The worker opens a draft PR only -- it never merges, and it never',
     'writes to Jira; that is the pipeline\'s job once the PR lands.',
+    ...(verifyCommand
+      ? [
+        '',
+        // A criterion the agent narrates is a criterion the agent can assert its way
+        // past. The harness decides `done` by running exactly one command, so the brief
+        // must anchor acceptance to that command and to paths it actually collects --
+        // otherwise a green-looking test can sit at a path the runner never globs, and
+        // the transcript still reads clean.
+        'The pipeline decides this run passed by executing exactly this command, and',
+        'nothing else:',
+        '',
+        '```',
+        verifyCommand,
+        '```',
+        '',
+        'State acceptance in terms of that command\'s exit status. Put every new test',
+        'where that command already collects it -- read the existing test paths and',
+        'match them; a test the command does not collect has not run, however green the',
+        'transcript looks. Name the exact test file path you chose in the brief, and',
+        'never invent a new runner, script, or glob.',
+      ]
+      : []),
     '',
     'Set your `text` field to the full brief as Markdown, starting with a "# Goal:"',
     'heading.',
@@ -58,8 +82,10 @@ export function buildPlannerPrompt(packet: Packet): string {
  * stream A's file) is where a `brief`/`hotfix` source decides to pass `'triage'` instead;
  * this function only has to accept the choice, never make it.
  */
-export async function planFromPacket(packet: Packet, reasoner: Reasoner, className = 'plan'): Promise<PlannedBrief> {
-  const prompt = buildPlannerPrompt(packet);
+export async function planFromPacket(
+  packet: Packet, reasoner: Reasoner, className = 'plan', verifyCommand?: string,
+): Promise<PlannedBrief> {
+  const prompt = buildPlannerPrompt(packet, verifyCommand);
   const result = await reasoner.call({ className, prompt });
   return { packetId: packet.id, ticket: packet.ticket, text: result.text };
 }

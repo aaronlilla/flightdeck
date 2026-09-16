@@ -18,6 +18,10 @@
 import { tierOfBrief, contextFor, effortFor, modelFor, modelIdFor, turnsFor } from './policy.js';
 import { Journal, replay } from './journal.js';
 import { run as execRun, type RunRequest, type RunResult } from './exec.js';
+import {
+  readSandboxConfig, sandboxCommand, describeSandbox, containerNameFor, sandboxReapCommand,
+  sandboxRuntimeReady,
+} from './sandbox-exec.js';
 import { parseShellPrefix } from './chain-env.js';
 import type { Inbox } from './inbox.js';
 import { asRunId, type Actuator } from './contracts.js';
@@ -156,6 +160,17 @@ export interface WorkerConfig {
   maxSessions?: number;
   parentEnv?: NodeJS.ProcessEnv;
   ticket?: string;
+  /**
+   * The repository's configured verification command (`FORGE_REPO_VERIFY`, resolved by
+   * `verifyCommandFor`). This is the authority a run is graded by; the brief's own
+   * `## Verification` fence is only cross-checked against it. Absent, a run cannot
+   * prove itself and ends `unverified` rather than executing a brief-supplied line.
+   */
+  verifyCommand?: string;
+  /** The containment boundary a verification command runs inside. Defaults to
+   *  `readSandboxConfig()` (`FORGE_SANDBOX`); overridable so a specimen can assert the
+   *  argv without a container runtime present. */
+  sandbox?: ReturnType<typeof readSandboxConfig>;
   /** Runs a brief's declared verification commands. Overridable so a specimen can record
    *  calls instead of spawning a real process; defaults to `exec.ts`'s own `run`. */
   exec?: (request: RunRequest) => Promise<RunResult>;
@@ -243,6 +258,56 @@ export function verificationCommands(brief: string): string[] | undefined {
   if (!fenceMatch) return undefined;
   const lines = fenceMatch[1]!.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   return lines.length ? lines : undefined;
+}
+
+/**
+ * What a run is actually allowed to verify itself with.
+ *
+ * `verificationCommands` reads what the *brief* declares, and a brief is not a
+ * trusted document: `completeBriefWithVerification` (chain.ts) returns a brief that
+ * already carries a `## Verification` heading unchanged, so a ticket body, an
+ * upstream brief, or an agent that edits its own brief file can supply a fence
+ * containing `true` and have the pipeline run it, see exit 0, and journal `done`.
+ * That defeats the single property that makes a verdict here worth anything.
+ *
+ * So the configured command (`FORGE_REPO_VERIFY`, via `verifyCommandFor`) is the
+ * authority whenever there is one, and the brief's own fence is demoted to a
+ * cross-check. A disagreement is reported rather than silently preferred, so the
+ * caller can journal it; the configured command is what runs either way.
+ *
+ * With nothing configured there is no authority to check against, so a
+ * brief-supplied command is refused outright rather than executed -- an
+ * `unverified` verdict is honest, and running a model-supplied line would only
+ * manufacture the unproven `done` this function exists to prevent.
+ */
+export interface ResolvedVerification {
+  /** What to run. `undefined` means the run cannot prove itself and must not claim `done`. */
+  commands: string[] | undefined;
+  /** Present only when the brief declared something other than the configured command. */
+  mismatch?: { declared: string[]; configured: string[] };
+}
+
+export function resolveVerificationCommands(
+  brief: string, verifyCommand: string | undefined,
+): ResolvedVerification {
+  const declared = verificationCommands(brief);
+  const configured = verifyCommand
+    ? verifyCommand.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+    : [];
+
+  if (configured.length === 0) {
+    // Nothing to check against. A declared command here is unvouched input.
+    return declared
+      ? { commands: undefined, mismatch: { declared, configured: [] } }
+      : { commands: undefined };
+  }
+
+  const agrees = declared !== undefined
+    && declared.length === configured.length
+    && declared.every((line, i) => line === configured[i]);
+
+  if (declared === undefined || agrees) return { commands: configured };
+  return { commands: configured, mismatch: { declared, configured } };
 }
 
 /** A verification command, run and reported as pass or fail with what it printed. */
@@ -673,7 +738,17 @@ export class Worker {
   private async verifyDone(
     runName: string, session: SessionResult, journal: Journal, model: string,
   ): Promise<'done' | 'unverified' | 'parked'> {
-    const commands = verificationCommands(this.config.brief);
+    const resolved = resolveVerificationCommands(this.config.brief, this.config.verifyCommand);
+    if (resolved.mismatch) {
+      // The brief asked to be graded by something other than the configured command.
+      // Journalling it is the point: a silent override is indistinguishable from a
+      // compromised brief, and this is the one place that can still tell them apart.
+      journal.append({
+        event: 'run.verify-mismatch', run: runName, actor: 'runner',
+        declared: resolved.mismatch.declared, configured: resolved.mismatch.configured,
+      });
+    }
+    const commands = resolved.commands;
     if (!commands) {
       clearParkRecord(runName);
       if (this.config.goalLoop) {
@@ -688,7 +763,6 @@ export class Worker {
       return 'unverified';
     }
 
-    const exec = this.config.exec ?? execRun;
     // A verify command that chains steps with `&&` and calls `npm` (a `.cmd` shim on
     // Windows) dies with `spawn npm ENOENT` when exec'd as a split argv, which parked the
     // first live chain run whose own command passed by hand. Route it through a shell only
@@ -699,14 +773,61 @@ export class Worker {
     const verifyShell: boolean | string[] =
       this.config.verifyShell ?? parseShellPrefix(process.env['FORGE_WORKTREE_SHELL']);
     const useShell = Array.isArray(verifyShell) ? verifyShell.length > 0 : verifyShell;
+    const exec = this.config.exec ?? execRun;
+    const sandbox = this.config.sandbox ?? readSandboxConfig();
+    // Containment that silently degrades to the host is worse than none: the verdict
+    // would still read `done` with nothing in the record saying the boundary was absent.
+    // A run that expects to be contained and finds no runtime refuses to claim it proved
+    // anything, exactly as a run with no configured command does.
+    const ready = sandbox.enabled
+      ? await sandboxRuntimeReady(sandbox, (argv) => exec({
+        argv, cwd: this.config.cwd, owner: runName, cls: 'quick',
+      }))
+      : false;
+    if (sandbox.enabled && !ready) {
+      journal.append({
+        event: 'run.verify-sandbox', run: runName, actor: 'runner',
+        contained: false, detail: `${sandbox.runtime} unavailable -- refusing to verify on the host`,
+      });
+      journal.append({ event: 'run.finished', run: runName, actor: 'runner', verdict: 'unverified' });
+      return 'unverified';
+    }
+    journal.append({
+      event: 'run.verify-sandbox', run: runName, actor: 'runner',
+      contained: sandbox.enabled, detail: describeSandbox(sandbox),
+    });
     const attempts = 3;
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       const outcomes: VerificationOutcome[] = [];
       for (const command of commands) {
         const base = { cwd: this.config.cwd, owner: runName, cls: 'verify' as const };
-        const result = useShell
-          ? await exec({ ...base, argv: [command], shell: verifyShell })
-          : await exec({ ...base, argv: command.split(/\s+/).filter(Boolean) });
+        // A verification command executes the repository's own test files and every
+        // `postinstall` in its dependency tree. On the host that is the operator's uid,
+        // filesystem and network; inside the boundary the worktree is the only path it
+        // can reach and the network is off. Containment is opt-in, so what actually
+        // happened is journalled either way rather than assumed.
+        const boxed = sandboxCommand(sandbox, {
+          command, cwd: this.config.cwd,
+          name: containerNameFor(`${runName}-${attempt}`, outcomes.length),
+        });
+        let result;
+        try {
+          result = boxed.contained
+            ? await exec({ ...base, argv: boxed.argv })
+            : useShell
+              ? await exec({ ...base, argv: [command], shell: verifyShell })
+              : await exec({ ...base, argv: command.split(/\s+/).filter(Boolean) });
+        } finally {
+          // A wall/idle budget kill reaches the runtime CLI, but the container is the
+          // daemon's child and survives it -- the workload would outlive its budget,
+          // still holding the worktree mount. `--rm` covers a clean exit; this covers
+          // every other way the command can end, and is a no-op when it already went.
+          if (boxed.contained && boxed.containerName) {
+            await exec({
+              ...base, cls: 'quick', argv: sandboxReapCommand(sandbox, boxed.containerName),
+            }).catch(() => undefined);
+          }
+        }
         outcomes.push({ command, ok: result.ok, tail: result.tail });
       }
       const failed = outcomes.filter((outcome) => !outcome.ok);

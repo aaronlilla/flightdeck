@@ -21,10 +21,11 @@ import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
-  INHERITED, Worker, workerEnv, verificationCommands, type FakeTurn,
+  INHERITED, Worker, workerEnv, verificationCommands, resolveVerificationCommands, type FakeTurn,
 } from '../../src/forge/worker.js';
 import { Journal, replay } from '../../src/forge/journal.js';
 import { Inbox } from '../../src/forge/inbox.js';
+import { readSandboxConfig } from '../../src/forge/sandbox-exec.js';
 import { readParkRecord, writeParkRecord } from '../../src/forge/parkrecord.js';
 import { Registry } from '../../src/forge/registry.js';
 import {
@@ -56,6 +57,15 @@ type FakeEngine = ReturnType<typeof fakeEngine>;
 
 function makeWorker(script: FakeTurn[][], overrides: Record<string, unknown> = {}) {
   const engine = fakeEngine(script);
+  const brief = (overrides['brief'] as string | undefined) ?? '# Goal\n\nDo the thing.\n';
+  // Production resolves the graded command from `FORGE_REPO_VERIFY`, not from the
+  // brief. A specimen that only sets a brief is describing a repo whose configured
+  // command IS that brief's block, so mirror it here; a specimen that wants the two
+  // to disagree passes `verifyCommand` explicitly and asserts the mismatch.
+  const declared = verificationCommands(brief);
+  // These specimens drive a fake exec and assert the command the worker chose, so they
+  // describe the uncontained path deliberately. Containment itself is covered by
+  // sandbox-exec.test.ts; leaving the default on here would assert docker argv instead.
   const worker = new Worker({
     run: 'alpha',
     brief: '# Goal\n\nDo the thing.\n',
@@ -63,6 +73,8 @@ function makeWorker(script: FakeTurn[][], overrides: Record<string, unknown> = {
     cwd: dir,
     journalPath,
     engine,
+    ...(declared ? { verifyCommand: declared.join('\n') } : {}),
+    sandbox: readSandboxConfig({ FORGE_SANDBOX: '0' }),
     ...overrides,
   } as never);
   // The concrete fake, not the interface: the specimens assert on what it recorded,
@@ -187,6 +199,8 @@ describe('I13: a park record does not outlive its run', () => {
     });
     const worker = new Worker({
       run: 'alpha', brief, briefPath: join(dir, 'brief.md'), cwd: dir, journalPath,
+      verifyCommand: (verificationCommands(brief) ?? []).join('\n') || undefined,
+      sandbox: readSandboxConfig({ FORGE_SANDBOX: '0' }),
       engine: engine as never, exec, pollIntervalMs: 10,
     } as never) as unknown as { run: () => Promise<{ verdict: string }> };
 
@@ -347,9 +361,83 @@ describe('verificationCommands', () => {
 
     expect(verificationCommands(brief)).toBeUndefined();
   });
+
+  it('refuses a brief-supplied command that disagrees with the configured one', () => {
+    // The bypass this closes: a ticket body, an upstream brief, or an agent that
+    // edits its own brief file can supply a `## Verification` fence containing a
+    // command that always exits 0. `completeBriefWithVerification` returns a brief
+    // that already has the heading unchanged, so the injected fence is what runs
+    // and the pipeline journals `done` without ever proving anything.
+    const brief = [
+      '## Verification',
+      '',
+      '```bash',
+      'true',
+      '```',
+    ].join('\n');
+
+    expect(resolveVerificationCommands(brief, 'npm test')).toEqual({
+      commands: ['npm test'],
+      mismatch: { declared: ['true'], configured: ['npm test'] },
+    });
+  });
+
+  it('uses the configured command when the brief declares none', () => {
+    expect(resolveVerificationCommands('## Status\n\nnothing', 'npm test')).toEqual({
+      commands: ['npm test'],
+    });
+  });
+
+  it('agrees silently when the brief repeats the configured command', () => {
+    const brief = ['## Verification', '', '```bash', 'npm test', '```'].join('\n');
+    expect(resolveVerificationCommands(brief, 'npm test')).toEqual({
+      commands: ['npm test'],
+    });
+  });
+
+  it('stays unverified when nothing is configured and nothing is declared', () => {
+    expect(resolveVerificationCommands('## Status\n\nnothing', undefined)).toEqual({
+      commands: undefined,
+    });
+  });
+
+  it('refuses a brief-supplied command when no command is configured at all', () => {
+    // Without a configured command there is nothing to check the brief against, so
+    // a model-supplied line must never be executed as if it proved something.
+    const brief = ['## Verification', '', '```bash', 'true', '```'].join('\n');
+    expect(resolveVerificationCommands(brief, undefined)).toEqual({
+      commands: undefined,
+      mismatch: { declared: ['true'], configured: [] },
+    });
+  });
 });
 
 describe('B.3.4: done is verified', () => {
+  it('refuses to verify on the host when containment is expected but unavailable', async () => {
+    // A missing container runtime must not silently degrade to the host: the verdict
+    // would still read `done` with nothing saying the boundary was absent.
+    const brief = '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnode -e process.exit(0)\n```\n';
+    const worker = makeWorker([[{ text: 'shipped', context: 10, done: true }]], {
+      brief,
+      verifyCommand: 'node -e process.exit(0)',
+      // Containment on, but every exec (including the runtime probe) fails.
+      sandbox: readSandboxConfig({ FORGE_SANDBOX: '1', FORGE_SANDBOX_RUNTIME: 'definitely-not-installed' }),
+      exec: async () => ({
+        ok: false, tail: 'not found', returncode: 127, argv: [], owner: 'alpha',
+        startedAt: 0, durationMs: 1,
+      }),
+    });
+
+    const result = await worker.run();
+
+    expect(result.verdict).toBe('unverified');
+    const events = replay(journalPath).events;
+    const sandboxRow = events.find((e) => e.event === 'run.verify-sandbox');
+    expect(sandboxRow?.['contained']).toBe(false);
+    expect(String(sandboxRow?.['detail'])).toMatch(/refusing to verify on the host/);
+    expect(events.find((e) => e.event === 'run.finished')?.['verdict']).toBe('unverified');
+  });
+
   it('yields unverified, never done, when the brief has no Verification block', async () => {
     const worker = makeWorker([[{ text: 'shipped', context: 10, done: true }]]);
     const result = await worker.run();
@@ -437,6 +525,8 @@ describe('B.3.4: done is verified', () => {
     };
     const worker = new Worker({
       run: 'alpha', brief, briefPath: join(dir, 'brief.md'), cwd: dir, journalPath,
+      verifyCommand: (verificationCommands(brief) ?? []).join('\n') || undefined,
+      sandbox: readSandboxConfig({ FORGE_SANDBOX: '0' }),
       engine, exec,
     } as never) as unknown as { run: () => Promise<{ verdict: string }> };
 
@@ -701,6 +791,8 @@ describe('F1: a segment that ends while parked keeps waiting, not stopped', () =
 
     const worker = new Worker({
       run: 'alpha', brief, briefPath: join(dir, 'brief.md'), cwd: dir, journalPath,
+      verifyCommand: (verificationCommands(brief) ?? []).join('\n') || undefined,
+      sandbox: readSandboxConfig({ FORGE_SANDBOX: '0' }),
       engine: engine as never, exec, pollIntervalMs: 10,
     } as never) as unknown as {
       run: () => Promise<{ verdict: string; sessions: string[]; handoffs: number }>;
@@ -765,6 +857,8 @@ describe('F1: a segment that ends while parked keeps waiting, not stopped', () =
 
     const worker = new Worker({
       run: 'alpha', brief, briefPath: join(dir, 'brief.md'), cwd: dir, journalPath,
+      verifyCommand: (verificationCommands(brief) ?? []).join('\n') || undefined,
+      sandbox: readSandboxConfig({ FORGE_SANDBOX: '0' }),
       engine: engine as never, exec, pollIntervalMs: 10, autoAnswer: 'yes',
     } as never) as unknown as {
       run: () => Promise<{ verdict: string; sessions: string[]; handoffs: number }>;
@@ -927,6 +1021,8 @@ describe('P4.7/I8: forge stop --all must reach a live run from another process',
 
     const worker = new Worker({
       run: 'alpha', brief, briefPath: join(dir, 'brief.md'), cwd: dir, journalPath,
+      verifyCommand: (verificationCommands(brief) ?? []).join('\n') || undefined,
+      sandbox: readSandboxConfig({ FORGE_SANDBOX: '0' }),
       engine: engine as never, exec, pollIntervalMs: 10,
       killSwitch: () => readKillSwitch(killSwitchFile).engaged,
     } as never) as unknown as { run: () => Promise<{ verdict: string }> };
