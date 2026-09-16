@@ -280,15 +280,41 @@ describe('shell containment', () => {
     // emitted command returns `feature/fdtes-1` from inside a container.
     const guard = createShellContainmentGuard({
       cwd: CWD, config: on,
-      gitStore: { hostGitDir: 'C:/dev/fd-sandbox/.git', worktreeName: 'fd-sandbox--fdtes-1' },
+      gitStore: {
+        hostGitDir: 'C:/dev/fd-sandbox/.git',
+        worktreeName: 'fd-sandbox--fdtes-1',
+        hostWorktreeGitDir: 'C:/dev/fd-sandbox/.git/worktrees/fd-sandbox--fdtes-1',
+      },
     });
     const decision: any = guard.decide!(bash('git status'), {} as never);
     expect(decision.kind).toBe('modify');
     const emitted = String(decision.input['command']);
     expect(emitted).toMatch(/docker run/);
-    expect(emitted).toMatch(/:\/gitstore/);
-    expect(emitted).toMatch(/GIT_DIR=\/gitstore\/worktrees\/fd-sandbox--fdtes-1/);
     expect(emitted).toMatch(/GIT_WORK_TREE=\/work/);
+    // The shared store is READ-ONLY. It holds `hooks/`, which is the HOST checkout's
+    // default hook directory, so a writable mount would let a contained command plant
+    // a pre-commit the host then runs -- the core.hooksPath escape through a back door.
+    expect(emitted).toMatch(/:\/gitstore:ro/);
+    // Writes go to this run's own GIT_DIR, which cannot reach hooks, config, or a
+    // sibling worktree's refs.
+    expect(emitted).toMatch(/worktrees\/fd-sandbox--fdtes-1:\/gitdir/);
+    expect(emitted).toMatch(/GIT_DIR=\/gitdir/);
+    expect(emitted).toMatch(/GIT_OBJECT_DIRECTORY=\/gitstore\/objects/);
+  });
+
+  it('never mounts the shared store writable', () => {
+    // The one property that matters for this mount: every escape re-entry point in
+    // `<primary>/.git` (hooks/, config, sibling refs) is behind :ro.
+    const guard = createShellContainmentGuard({
+      cwd: CWD, config: on,
+      gitStore: {
+        hostGitDir: 'C:/dev/fd-sandbox/.git',
+        worktreeName: 'fd-sandbox--fdtes-1',
+        hostWorktreeGitDir: 'C:/dev/fd-sandbox/.git/worktrees/fd-sandbox--fdtes-1',
+      },
+    });
+    const emitted = String((guard.decide!(bash('git status'), {} as never) as any).input['command']);
+    expect(emitted).not.toMatch(/fd-sandbox\/\.git:\/gitstore(?!:ro)/);
   });
 
   it('falls back to a hardened host git only when no store is mountable', () => {
@@ -305,7 +331,9 @@ describe('shell containment', () => {
     // `.git` is `gitdir: <primary>/.git/worktrees/<name>` -- one line naming both
     // halves of the mount, so nothing needs configuring.
     expect(resolveGitStore('C:/dev/worktrees/fd-sandbox--fdtes-1')).toEqual({
-      hostGitDir: 'C:/dev/fd-sandbox/.git', worktreeName: 'fd-sandbox--fdtes-1',
+      hostGitDir: 'C:/dev/fd-sandbox/.git',
+      worktreeName: 'fd-sandbox--fdtes-1',
+      hostWorktreeGitDir: 'C:/dev/fd-sandbox/.git/worktrees/fd-sandbox--fdtes-1',
     });
     // A primary checkout, a missing path, and junk all decline rather than guess.
     expect(resolveGitStore('C:/dev/fd-sandbox')).toBeUndefined();

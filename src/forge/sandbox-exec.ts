@@ -110,10 +110,21 @@ export function mountPathFor(hostPath: string): string {
  * on; a caller has to decide that trade knowingly.
  */
 export interface GitStoreMount {
-  /** Host path of the primary `.git` directory, e.g. `C:/dev/fd-sandbox/.git`. */
+  /**
+   * Host path of the primary `.git` directory, e.g. `C:/dev/fd-sandbox/.git`.
+   * Mounted READ-ONLY: it holds `hooks/` and `config`, and `hooks/` is the host
+   * checkout's default hook directory, so a writable mount would let a contained
+   * command plant a `pre-commit` the HOST then executes.
+   */
   hostGitDir: string;
-  /** The worktree's name under `.git/worktrees/`, which is its GIT_DIR inside. */
+  /** The worktree's name under `.git/worktrees/`. */
   worktreeName: string;
+  /**
+   * Host path of this worktree's own GIT_DIR (`<primary>/.git/worktrees/<name>`),
+   * mounted read-write. A run needs to move its own branch ref and record its own
+   * index; it never needs to write the shared store.
+   */
+  hostWorktreeGitDir: string;
 }
 
 /**
@@ -135,7 +146,9 @@ export function resolveGitStore(worktreePath: string): GitStoreMount | undefined
     const gitDir = match[1].replace(/\\/g, '/');
     const parts = /^(.*\/\.git)\/worktrees\/([^/]+)\/?$/.exec(gitDir);
     if (!parts?.[1] || !parts[2]) return undefined;
-    return { hostGitDir: parts[1], worktreeName: parts[2] };
+    return {
+      hostGitDir: parts[1], worktreeName: parts[2], hostWorktreeGitDir: gitDir,
+    };
   } catch {
     return undefined;
   }
@@ -186,13 +199,33 @@ export function sandboxCommand(
   // Reaching the object store is what lets `git` run inside the boundary instead of
   // being carved out to the host. Every escape this guard has lost was reached through
   // that carve-out, so closing it is worth a second mount.
+  //
+  // The mount is read-only, and that is not a detail. `<primary>/.git` contains `hooks/`
+  // and `config`, and `hooks/` is git's DEFAULT hook directory for the host checkout --
+  // so a writable mount would let a contained command drop `hooks/pre-commit` and have
+  // the HOST execute it on its next commit. That is precisely the core.hooksPath escape
+  // closed in an earlier round, re-opened through the back door. Writes that a run
+  // legitimately needs (new objects, its own branch ref) go to a per-worktree overlay
+  // mounted read-write over just that worktree's GIT_DIR, never over the shared store.
+  //
+  // NOT YET PROVEN ON A LIVE RUNTIME: `git commit` writes new loose objects, and with
+  // `GIT_OBJECT_DIRECTORY` pointing into the read-only store it will need
+  // `GIT_ALTERNATE_OBJECT_DIRECTORIES` plus a writable object dir instead. The read-only
+  // decision is right regardless; the exact object routing needs a daemon to confirm,
+  // and until it is confirmed a contained `git commit` may fail rather than silently
+  // writing somewhere unexpected -- which is the safe direction for it to be wrong in.
   const gitArgs = input.gitStore
     ? [
-      '-v', `${mountPathFor(input.gitStore.hostGitDir)}:/gitstore`,
+      '-v', `${mountPathFor(input.gitStore.hostGitDir)}:/gitstore:ro`,
+      // The run's own GIT_DIR, writable, so `git commit` can move ITS branch and write
+      // objects without being able to touch `hooks/`, `config`, or a sibling's refs.
+      '-v', `${mountPathFor(input.gitStore.hostWorktreeGitDir)}:/gitdir`,
       // GIT_DIR rather than rewriting the worktree's `.git` file: the file names a
       // HOST path, and mutating it would corrupt the checkout for the host and every
       // sibling worktree the moment a container exits mid-command.
-      '-e', `GIT_DIR=/gitstore/worktrees/${input.gitStore.worktreeName}`,
+      '-e', 'GIT_DIR=/gitdir',
+      // The shared store supplies the objects the worktree's GIT_DIR refers to.
+      '-e', 'GIT_OBJECT_DIRECTORY=/gitstore/objects',
       '-e', 'GIT_WORK_TREE=/work',
       // The mounted store is owned by the host user, not by uid 1000 inside.
       '-e', 'GIT_CONFIG_GLOBAL=/dev/null',
