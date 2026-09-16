@@ -16,12 +16,14 @@ import { dirname, join } from 'node:path';
 import type { CliResult, ForgeDeps } from './cli.js';
 import { forge } from './cli.js';
 import { refuseIfMainCheckoutUnlocked } from './coordlock.js';
+import type { RunClone } from './sandbox-exec.js';
 import {
   completeBriefWithVerification, runKeyForBrief,
   type ChainCouncilFn, type ChainDeps, type ChainGateFn, type ChainGh, type ChainLauncher, type ChainPlannedPacket, type ChainRunStatus,
 } from './chain.js';
 import {
-  baseFor, checkoutFor, mergeAllowedFor, verifyCommandFor, worktreePathFor, worktreeSetupFor,
+  baseFor, checkoutFor, mergeAllowedFor, runClonePathFor, verifyCommandFor, worktreePathFor,
+  worktreeSetupFor,
   branchFor, type ChainEnv,
 } from './chain-env.js';
 import type { PollSourceName } from './contracts.js';
@@ -565,6 +567,86 @@ export async function provisionWorktree(input: {
   }
 
   return { worktreePath, branch, base, reused };
+}
+
+/**
+ * Provisions a run as its own clone rather than a linked worktree.
+ *
+ * A linked worktree cannot host a contained `git commit`: its branch ref lives in the
+ * shared `<primary>/.git`, and that directory must be mounted read-only because it
+ * holds `hooks/` -- the HOST checkout's default hook directory, so a writable mount
+ * lets a contained command plant a `pre-commit` the host later executes.
+ *
+ * `git clone --shared` inverts that. The clone owns its `.git` outright, so refs,
+ * config and hooks are the run's own and disposable, and the whole directory can be
+ * mounted read-write without the primary's `.git` being reachable at all. Only the
+ * object store is shared, through `objects/info/alternates`, mounted read-only.
+ *
+ * `--shared` and not `--local`: no objects are copied, so provisioning stays as cheap
+ * as a worktree on a large repository. The trade is that the clone's history depends on
+ * the primary's objects surviving, which is why nothing ever prunes the primary while a
+ * run holds a clone.
+ *
+ * Returns the same shape as `provisionWorktree`, plus the mount description a contained
+ * command needs, so a caller can swap one for the other.
+ */
+export async function provisionRunClone(input: {
+  chainEnv: ChainEnv; repo: string; ticket: string;
+  exec?: (request: RunRequest) => Promise<RunResult>;
+  fs?: ProvisionFs;
+  onNote?: (note: string) => void;
+}): Promise<{
+  worktreePath: string; branch: string; base: string; reused: boolean; clone: RunClone;
+}> {
+  const checkout = checkoutFor(input.chainEnv, input.repo);
+  if (!checkout) throw new Error(`no FORGE_REPO_CHECKOUTS entry for ${input.repo}`);
+  const runner = input.exec ?? execRun;
+  const fs = input.fs ?? REAL_FS;
+  const base = baseFor(input.chainEnv, input.repo);
+  const branch = branchFor(input.ticket);
+  const clonePath = runClonePathFor(checkout, input.repo, input.ticket);
+
+  // A clone that already exists is reused rather than rebuilt: a run that resumes must
+  // find the work it left behind, and re-cloning would discard uncommitted edits.
+  const reused = fs.existsSync(join(clonePath, '.git'));
+  if (!reused) {
+    fs.mkdirSync(dirname(clonePath), { recursive: true });
+    const fetched = await runner({
+      argv: ['git', '-C', checkout, 'fetch', '--prune', 'origin', base],
+      cwd: checkout, owner: `chain-${input.ticket}`, cls: 'script',
+    });
+    // A stale base is worth saying out loud, but never worth refusing over: the clone
+    // below still produces a usable run, just from an older ref.
+    if (!fetched.ok) input.onNote?.(`could not refresh origin/${base} before cloning`);
+
+    const cloned = await runner({
+      argv: ['git', 'clone', '--shared', '--no-checkout', checkout, clonePath],
+      cwd: dirname(clonePath), owner: `chain-${input.ticket}`, cls: 'script',
+    });
+    if (!cloned.ok) throw new Error(tailOfCommand(cloned.tail));
+
+    const checkedOut = await runner({
+      argv: ['git', '-C', clonePath, 'checkout', '-B', branch, `origin/${base}`],
+      cwd: clonePath, owner: `chain-${input.ticket}`, cls: 'script',
+    });
+    if (!checkedOut.ok) throw new Error(tailOfCommand(checkedOut.tail));
+  }
+
+  if (!reused || !setupAlreadyDone(clonePath, fs)) {
+    await runWorktreeSetup({
+      chainEnv: input.chainEnv, repo: input.repo, ticket: input.ticket,
+      worktreePath: clonePath, exec: input.exec,
+    });
+    markSetupDone(clonePath, fs);
+  }
+
+  return {
+    worktreePath: clonePath, branch, base, reused,
+    clone: {
+      hostClonePath: clonePath,
+      hostPrimaryObjects: join(checkout, '.git', 'objects'),
+    },
+  };
 }
 
 /** H2/H3: real worktrees, a real detached launch, and a real status read off the shared

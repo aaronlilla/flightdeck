@@ -152,6 +152,19 @@ export function worktreePathFor(checkout: string, repo: string, ticket: string):
   return `${parentDir}${sep}worktrees${sep}${name}--${ticket.toLowerCase()}`;
 }
 
+/** A run clone lives beside the worktrees, in a `runs` sibling directory, so the two
+ *  isolation shapes never collide on disk and a sweep can tell them apart by path.
+ *  Unlike a worktree, this directory owns its own `.git` -- which is precisely why a
+ *  contained command can be given it read-write without exposing the primary's. */
+export function runClonePathFor(checkout: string, repo: string, ticket: string): string {
+  const sep = checkout.includes('\\') && !checkout.includes('/') ? '\\' : '/';
+  const parent = checkout.replace(/[/\\]+$/, '');
+  const lastSep = Math.max(parent.lastIndexOf('/'), parent.lastIndexOf('\\'));
+  const parentDir = lastSep === -1 ? '' : parent.slice(0, lastSep);
+  const name = repo.split('/').pop()!.toLowerCase();
+  return `${parentDir}${sep}runs${sep}${name}--${ticket.toLowerCase()}`;
+}
+
 const HOTFIX_TICKET_PREFIX = 'hotfix-';
 
 /** A.6: a hotfix's own minted ticket (`queue-wire.ts#queuePlanner().planHotfix`, prefix
