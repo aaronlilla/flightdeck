@@ -20,7 +20,7 @@ import { Journal, replay } from './journal.js';
 import { run as execRun, type RunRequest, type RunResult } from './exec.js';
 import {
   readSandboxConfig, sandboxCommand, describeSandbox, containerNameFor, sandboxReapCommand,
-  sandboxRuntimeReady, resolveGitStore,
+  sandboxRuntimeReady, resolveGitStore, resolveRunClone,
 } from './sandbox-exec.js';
 import { parseShellPrefix } from './chain-env.js';
 import type { Inbox } from './inbox.js';
@@ -800,7 +800,12 @@ export class Worker {
     // commit, because a worktree's branch ref lives in that store and GIT_COMMON_DIR was
     // measured NOT to redirect the write. Ref-writing verbs take the hardened host path
     // instead, decided in the containment guard.
-    const gitStore = sandbox.enabled ? resolveGitStore(this.config.cwd) : undefined;
+    // A run clone contains every git verb including commits; a linked worktree can
+    // only contain reads. Which one this run got is read off the shape on disk.
+    const runClone = sandbox.enabled ? resolveRunClone(this.config.cwd) : undefined;
+    const gitStore = sandbox.enabled && !runClone
+      ? resolveGitStore(this.config.cwd)
+      : undefined;
     const attempts = 3;
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       const outcomes: VerificationOutcome[] = [];
@@ -817,7 +822,7 @@ export class Worker {
           // Carries the read-only object store plus the writable ref redirect, so a
           // contained command can read history and commit without the shared store
           // ever being writable.
-          ...(gitStore ? { gitStore } : {}),
+          ...(runClone ? { runClone } : gitStore ? { gitStore } : {}),
         });
         let result;
         try {

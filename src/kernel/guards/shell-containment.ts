@@ -46,7 +46,7 @@
  * The failure is loud and recoverable; the alternative is a parser bug that is neither.
  */
 import {
-  readSandboxConfig, resolveGitStore, sandboxCommand,
+  readSandboxConfig, resolveGitStore, resolveRunClone, sandboxCommand,
   type GitStoreMount, type RunClone, type SandboxConfig,
 } from '../../forge/sandbox-exec.ts';
 import type { Guard, GuardDecision, ToolCall } from '../../types.ts';
@@ -509,7 +509,7 @@ export function createShellContainmentGuard(options: ShellContainmentOptions): G
   // Resolved once: the worktree's `.git` pointer does not move during a run, and this
   // decides whether git is contained or merely hardened.
   const gitStore = options.gitStore ?? resolveGitStore(options.cwd);
-  const runClone = options.runClone;
+  const runClone = options.runClone ?? resolveRunClone(options.cwd);
   let index = 0;
 
   return {

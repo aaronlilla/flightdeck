@@ -18,10 +18,10 @@ import {
   branchFor, readChainEnv, worktreePathFor, type ChainEnv,
 } from '../../../src/forge/chain-env.js';
 import {
-  CHAIN_LAUNCH_CONDITION, chainLaunchArgv, chainLaunchGoalArgv, hasRunRegistered, launchWaitMs, provisionRunClone, provisionWorktree,
+  CHAIN_LAUNCH_CONDITION, chainLaunchArgv, chainLaunchGoalArgv, hasRunRegistered, launchWaitMs, provisionRunClone, provisionWorktree, useRunClone,
   runOutcome, runWorktreeSetup, waitForLaunchToRegister, type ProvisionFs,
 } from '../../../src/forge/chain-wire.js';
-import { adoptRunCloneCommands } from '../../../src/forge/sandbox-exec.js';
+import { adoptRunCloneCommands, resolveRunClone } from '../../../src/forge/sandbox-exec.js';
 import type { RunRequest, RunResult } from '../../../src/forge/exec.js';
 import type { Registry } from '../../../src/forge/registry.js';
 
@@ -742,5 +742,53 @@ describe('provisionRunClone: real repository', () => {
       .toBe(git(['rev-parse', 'HEAD'], out.worktreePath));
     // The clone's hooks are attacker-controlled; the host must never execute them.
     expect(existsSync(marker)).toBe(false);
+  });
+});
+
+describe('useRunClone', () => {
+  const chainEnv = readChainEnv({ FORGE_REPO_CHECKOUTS: 'demo=/tmp/x' } as never);
+
+  it('defaults to a clone wherever containment is on', () => {
+    // The clone is what lets a contained `git` commit at all -- with a linked worktree
+    // only reads can be contained. Tying the shape to containment rather than to a
+    // separate opt-in follows the rule this boundary already settled: a boundary
+    // nobody turns on is not a boundary.
+    expect(useRunClone(chainEnv, {} as never)).toBe(true);
+  });
+
+  it('keeps the worktree shape when containment is off', () => {
+    // Nothing to contain, so no reason to move where a run lives on disk.
+    expect(useRunClone(chainEnv, { FORGE_SANDBOX: '0' } as never)).toBe(false);
+  });
+
+  it('honours a deliberate opt-out and a deliberate opt-in', () => {
+    expect(useRunClone(chainEnv, { FORGE_RUN_CLONE: '0' } as never)).toBe(false);
+    expect(useRunClone(chainEnv, { FORGE_SANDBOX: '0', FORGE_RUN_CLONE: '1' } as never)).toBe(true);
+  });
+});
+
+describe('resolveRunClone', () => {
+  const git = (args: string[], cwd: string) =>
+    execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe' }).trim();
+
+  it('tells a clone from a linked worktree by the shape on disk', () => {
+    // A clone's `.git` is a DIRECTORY it owns; a worktree's is a pointer file naming
+    // the shared store. That difference is the whole containment shape, so it is also
+    // how the two are told apart -- no flag threaded through five layers.
+    const root = mkdtempSync(join(tmpdir(), 'resolve-clone-'));
+    const primary = join(root, 'primary');
+    execFileSync('git', ['init', '-q', '--initial-branch=main', primary], { stdio: 'ignore' });
+    git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'base'], primary);
+
+    const worktree = join(root, 'wt');
+    git(['worktree', 'add', '-q', worktree, '-b', 'feature/x'], primary);
+    expect(resolveRunClone(worktree)).toBeUndefined();
+
+    const clone = join(root, 'clone');
+    execFileSync('git', ['clone', '-q', '--shared', primary, clone], { stdio: 'ignore' });
+    const detected = resolveRunClone(clone);
+    expect(detected?.hostClonePath).toBe(clone);
+    // The primary's objects come from the alternates file git itself wrote.
+    expect(detected?.hostPrimaryObjects).toContain('primary');
   });
 });

@@ -16,7 +16,7 @@ import { dirname, join } from 'node:path';
 import type { CliResult, ForgeDeps } from './cli.js';
 import { forge } from './cli.js';
 import { refuseIfMainCheckoutUnlocked } from './coordlock.js';
-import type { RunClone } from './sandbox-exec.js';
+import { readSandboxConfig, type RunClone } from './sandbox-exec.js';
 import {
   completeBriefWithVerification, runKeyForBrief,
   type ChainCouncilFn, type ChainDeps, type ChainGateFn, type ChainGh, type ChainLauncher, type ChainPlannedPacket, type ChainRunStatus,
@@ -649,12 +649,39 @@ export async function provisionRunClone(input: {
   };
 }
 
+/**
+ * Whether a run should be provisioned as its own clone.
+ *
+ * Defaults to on wherever containment is on, because the clone is what makes a
+ * contained `git` able to commit at all -- with a linked worktree only reads can be
+ * contained. `FORGE_RUN_CLONE=0` is the deliberate opt-out, and containment being off
+ * (`FORGE_SANDBOX=0`) keeps the worktree shape, since there is then nothing to contain
+ * and no reason to change where a run lives on disk.
+ */
+export function useRunClone(
+  _chainEnv: ChainEnv, env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (env['FORGE_RUN_CLONE'] === '0') return false;
+  if (env['FORGE_RUN_CLONE'] === '1') return true;
+  return readSandboxConfig(env).enabled;
+}
+
 /** H2/H3: real worktrees, a real detached launch, and a real status read off the shared
  *  journal -- one `ChainLauncher` per `chain-env.ts` configuration, built fresh on every
  *  `forge up` process. */
 export function chainLauncher(chainEnv: ChainEnv, configDirFor: () => string): ChainLauncher {
   return {
     async provision({ ticket, repo }) {
+      // A run gets its own clone whenever containment is on, because the worktree shape
+      // cannot host a contained `git commit` -- its branch ref lives in the shared
+      // primary `.git`, which must stay read-only so a container cannot plant a hook the
+      // host executes. Tying the choice to containment rather than to a separate opt-in
+      // follows the rule this boundary already settled: a boundary nobody turns on is
+      // not a boundary. `FORGE_RUN_CLONE=0` opts out deliberately, and a run with
+      // containment disabled keeps the worktree shape it always had.
+      if (useRunClone(chainEnv)) {
+        return provisionRunClone({ chainEnv, repo, ticket });
+      }
       return provisionWorktree({
         chainEnv, repo, ticket,
         registryRows: () => new Registry(registryDir()).all(),

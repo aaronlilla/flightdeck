@@ -205,6 +205,35 @@ export function adoptRunCloneCommands(
   ];
 }
 
+/**
+ * Recognises a run clone from its checkout alone.
+ *
+ * A clone's `.git` is a DIRECTORY it owns, where a linked worktree's is a pointer file
+ * naming the shared store. That single difference is what the whole containment shape
+ * rests on, so it is also how a caller tells the two apart -- no configuration, no flag
+ * threaded through five layers, just the shape on disk.
+ *
+ * The primary object store is read out of `objects/info/alternates`, which is where
+ * `git clone --shared` records it. A clone without alternates is self-contained and
+ * needs no second mount, so an absent file is not an error.
+ */
+export function resolveRunClone(checkoutPath: string): RunClone | undefined {
+  try {
+    const gitDir = join(checkoutPath, '.git');
+    if (!statSync(gitDir).isDirectory()) return undefined;
+    const alternates = join(gitDir, 'objects/info/alternates');
+    const primaryObjects = existsSync(alternates)
+      ? readFileSync(alternates, 'utf8').split(/\r?\n/).find((line) => line.trim())?.trim()
+      : undefined;
+    return {
+      hostClonePath: checkoutPath,
+      hostPrimaryObjects: primaryObjects ?? join(gitDir, 'objects'),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 export interface SandboxedCommand {
   argv: string[];
   /** True when the command is wrapped; false when it will run directly on the host. */
