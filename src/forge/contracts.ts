@@ -164,7 +164,7 @@ export const FORGE_EVENT_NAMES = [
   'forge.ask', 'forge.done', 'forge.handoff', 'forge.report', 'gotcha', 'inbox.acknowledged',
   'inbox.delivered', 'liveness.cleared', 'liveness.stuck', 'note', 'permission.denied',
   'run.blocked', 'run.finished', 'run.handoff', 'run.parked', 'run.paused', 'run.refused', 'run.resumed',
-  'run.started', 'run.verify-failed', 'subagent.usage', 'tool.end', 'tool.start', 'turn.end',
+  'run.started', 'run.verify-failed', 'run.verify-mismatch', 'run.verify-sandbox', 'subagent.usage', 'tool.end', 'tool.start', 'turn.end',
   'warden.parked',
   // The spec's additions (the "Contracts" paragraph of the 2026-09-04 13:45 refined
   // build-out plan) that nothing writes yet. `policy.unknown-model` is B.3.9's own,

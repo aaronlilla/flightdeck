@@ -221,9 +221,30 @@ export interface GitLogRange {
   since: number;
 }
 
+/**
+ * Config pinned inert for a git command that runs inside a RUN's own checkout.
+ *
+ * A run clone is writable by a contained command, so its `.git/config` and `.git/hooks`
+ * are attacker-controlled. `chain-wire.ts` learned this the hard way: a poisoned
+ * `post-rewrite` fired during a real rebase there.
+ *
+ * The three reads below (`merge-base`, `rev-parse`, `log --format`) were probed and none
+ * could be made to execute a program through `core.fsmonitor`, `core.pager` or a
+ * `textconv` driver -- they run no hook and page nothing. This is defence in depth, not
+ * a fix for a demonstrated hole: the commands are cheap, the flags cost nothing, and the
+ * next person to add `-p` or `--ext-diff` here should not have to rediscover the class.
+ */
+const RUN_CHECKOUT_SAFE_CONFIG = [
+  '-c', 'core.hooksPath=/dev/null',
+  '-c', 'core.fsmonitor=false',
+  '-c', 'core.pager=cat',
+  '-c', 'core.editor=true',
+  '-c', 'diff.external=',
+];
+
 async function resolveMergeBaseRange(worktreePath: string, base: string): Promise<string[] | null> {
   const mergeBase = await execRun({
-    argv: ['git', 'merge-base', base, 'HEAD'],
+    argv: ['git', ...RUN_CHECKOUT_SAFE_CONFIG, 'merge-base', base, 'HEAD'],
     cwd: worktreePath, owner: 'console-story-mergebase', cls: 'script',
   });
   if (!mergeBase.ok) return null;
@@ -253,7 +274,7 @@ function defaultGitLog(): (worktreePath: string, range: GitLogRange) => Promise<
     } else {
       for (const candidate of FALLBACK_BASE_CANDIDATES) {
         const check = await execRun({
-          argv: ['git', 'rev-parse', '--verify', candidate],
+          argv: ['git', ...RUN_CHECKOUT_SAFE_CONFIG, 'rev-parse', '--verify', candidate],
           cwd: worktreePath, owner: 'console-story-base-check', cls: 'script',
         });
         if (check.ok) {
@@ -264,7 +285,7 @@ function defaultGitLog(): (worktreePath: string, range: GitLogRange) => Promise<
     }
     const rangeArgs = scope ?? [`--since=${new Date(range.since).toISOString()}`];
     const result = await execRun({
-      argv: ['git', 'log', '--reverse', ...rangeArgs, '--format=%H%x09%ct%x09%s'],
+      argv: ['git', ...RUN_CHECKOUT_SAFE_CONFIG, 'log', '--reverse', ...rangeArgs, '--format=%H%x09%ct%x09%s'],
       cwd: worktreePath, owner: 'console-story-gitlog', cls: 'script', fullOutput: true,
     });
     if (!result.ok) return [];

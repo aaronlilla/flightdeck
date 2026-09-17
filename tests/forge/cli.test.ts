@@ -32,6 +32,15 @@ beforeEach(() => {
   // reads no session or credentials mtime from this machine's actual fleet login. None
   // of these specimens are about the config-dir choice itself; paths.test.ts covers that.
   process.env['FORGE_CONFIG_DIR'] = join(home, 'claude');
+  // The command a run is graded by is configured (FORGE_REPO_VERIFY), never taken from
+  // the brief -- see worker.ts#resolveVerificationCommands. These specimens run in this
+  // repository's own checkout, so configure it by name; without an entry there is no
+  // authority to grade against and every run would honestly report `unverified`.
+  process.env['FORGE_REPO_VERIFY'] = 'aaronlilla/flightdeck=node -e process.exit(0)';
+  // These specimens assert the command `forge run` chose and drive a fake exec, so they
+  // describe the uncontained path deliberately. Containment is covered by
+  // sandbox-exec.test.ts and worker.test.ts; on by default here would assert docker argv.
+  process.env['FORGE_SANDBOX'] = '0';
   // Forge Jira stream: every specimen starts from "nothing configured" and opts in
   // explicitly, so a developer's own shell (or a prior specimen) never leaks a value in.
   // FORGE_WORKTREE_SHELL joins this list for the same reason: worker.ts's own verifyDone

@@ -73,6 +73,7 @@ interface JiraSearchIssue {
     priority?: { name?: string };
     labels?: string[];
     components?: { name?: string }[];
+    assignee?: { accountId?: string; displayName?: string } | null;
   };
   renderedFields?: { description?: string };
 }
@@ -97,6 +98,14 @@ function detailFor(issue: JiraSearchIssue): PollItemDetail {
     // R1: what the repository router matches labels and components against.
     labels: issue.fields.labels ?? [],
     components: (issue.fields.components ?? []).map((c) => c.name ?? '').filter((name) => name.length > 0),
+    // Requirement 5: an unassigned ticket reports `null` -- the source checked and found
+    // nobody -- which classifies as a backlog proposal rather than as the owner's work.
+    assignee: issue.fields.assignee?.accountId
+      ? {
+        accountId: issue.fields.assignee.accountId,
+        displayName: issue.fields.assignee.displayName ?? '',
+      }
+      : null,
   };
 }
 
@@ -123,7 +132,9 @@ export function createJiraFeed(config: JiraConfig): FakePollFeed {
           headers: { 'content-type': 'application/json', authorization: auth },
           body: JSON.stringify({
             jql: config.jql ?? DEFAULT_JIRA_JQL,
-            fields: ['summary', 'description', 'status', 'updated', 'issuetype', 'priority', 'labels', 'components'],
+            fields: ['summary', 'description', 'status', 'updated', 'issuetype', 'priority', 'labels', 'components',
+              // Requirement 5: classifyTicket routes on the assignee, so it must be fetched.
+              'assignee'],
             maxResults: 50,
             ...(nextPageToken ? { nextPageToken } : {}),
           }),

@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import { readSandboxConfig } from '../../src/forge/sandbox-exec.js';
 import type { Options, Query } from '@anthropic-ai/claude-agent-sdk';
 
 import type { QueryFn } from '../../src/adapter/engine.js';
@@ -1401,6 +1402,10 @@ describe('F5: forge_done wins over a ceiling reached on its own closing message'
       run: 'f5-run',
       brief: '# Goal\n\nDo the thing.\n\n## Verification\n\n```\nnpm run verify\n```\n',
       briefPath: join(home, 'brief.md'), cwd: home, journalPath, engine, exec, maxContext: 60_000,
+      // The graded command is configured, not read from the brief; this specimen is about
+      // the ceiling racing forge_done, so configure the same command the brief declares.
+      verifyCommand: 'npm run verify',
+      sandbox: readSandboxConfig({ FORGE_SANDBOX: '0' }),
     });
 
     const result = await worker.run();
@@ -1679,7 +1684,12 @@ describe('P4.7/I10: the prose rules never judge source code', () => {
       input: { file_path: '/somewhere/else/docs/x.md', new_string: 'This is fine -- trust me.' },
       toolUseId: 'tu-i14c-1',
     });
-    expect(outside.decision).toBeUndefined();
+    // No PROSE rule judges it -- that is what I14 established, and still holds. But
+    // containment now refuses any file tool outside the run's own worktree, so the call
+    // is denied one layer later and for a different reason. An edit two directories up
+    // is exactly the reach that boundary exists to stop.
+    expect(outside.decision).toBe('deny');
+    expect(String(outside.reason)).toMatch(/shell-containment/);
 
     // The falsifier: the same doc, inside the run's own repo, is still denied.
     const inside = await hook({

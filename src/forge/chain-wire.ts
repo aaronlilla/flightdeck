@@ -17,11 +17,15 @@ import type { CliResult, ForgeDeps } from './cli.js';
 import { forge } from './cli.js';
 import { refuseIfMainCheckoutUnlocked } from './coordlock.js';
 import {
+  adoptRunCloneCommands, readSandboxConfig, resolveRunClone, type RunClone,
+} from './sandbox-exec.js';
+import {
   completeBriefWithVerification, runKeyForBrief,
   type ChainCouncilFn, type ChainDeps, type ChainGateFn, type ChainGh, type ChainLauncher, type ChainPlannedPacket, type ChainRunStatus,
 } from './chain.js';
 import {
-  baseFor, checkoutFor, mergeAllowedFor, verifyCommandFor, worktreePathFor, worktreeSetupFor,
+  baseFor, checkoutFor, mergeAllowedFor, runClonePathFor, verifyCommandFor, worktreePathFor,
+  worktreeSetupFor,
   branchFor, type ChainEnv,
 } from './chain-env.js';
 import type { PollSourceName } from './contracts.js';
@@ -576,12 +580,162 @@ export async function provisionWorktree(input: {
   return { worktreePath, branch, base, reused };
 }
 
+/**
+ * Provisions a run as its own clone rather than a linked worktree.
+ *
+ * A linked worktree cannot host a contained `git commit`: its branch ref lives in the
+ * shared `<primary>/.git`, and that directory must be mounted read-only because it
+ * holds `hooks/` -- the HOST checkout's default hook directory, so a writable mount
+ * lets a contained command plant a `pre-commit` the host later executes.
+ *
+ * `git clone --shared` inverts that. The clone owns its `.git` outright, so refs,
+ * config and hooks are the run's own and disposable, and the whole directory can be
+ * mounted read-write without the primary's `.git` being reachable at all. Only the
+ * object store is shared, through `objects/info/alternates`, mounted read-only.
+ *
+ * `--shared` and not `--local`: no objects are copied, so provisioning stays as cheap
+ * as a worktree on a large repository. The trade is that the clone's history depends on
+ * the primary's objects surviving, which is why nothing ever prunes the primary while a
+ * run holds a clone.
+ *
+ * Returns the same shape as `provisionWorktree`, plus the mount description a contained
+ * command needs, so a caller can swap one for the other.
+ */
+export async function provisionRunClone(input: {
+  chainEnv: ChainEnv; repo: string; ticket: string;
+  exec?: (request: RunRequest) => Promise<RunResult>;
+  fs?: ProvisionFs;
+  onNote?: (note: string) => void;
+}): Promise<{
+  worktreePath: string; branch: string; base: string; reused: boolean; clone: RunClone;
+}> {
+  const checkout = checkoutFor(input.chainEnv, input.repo);
+  if (!checkout) throw new Error(`no FORGE_REPO_CHECKOUTS entry for ${input.repo}`);
+  const runner = input.exec ?? execRun;
+  const fs = input.fs ?? REAL_FS;
+  const base = baseFor(input.chainEnv, input.repo);
+  const branch = branchFor(input.ticket);
+  const clonePath = runClonePathFor(checkout, input.repo, input.ticket);
+
+  // A clone that already exists is reused rather than rebuilt: a run that resumes must
+  // find the work it left behind, and re-cloning would discard uncommitted edits.
+  const reused = fs.existsSync(join(clonePath, '.git'));
+  if (!reused) {
+    fs.mkdirSync(dirname(clonePath), { recursive: true });
+    const fetched = await runner({
+      argv: ['git', '-C', checkout, 'fetch', '--prune', 'origin', base],
+      cwd: checkout, owner: `chain-${input.ticket}`, cls: 'script',
+    });
+    // A stale base is worth saying out loud, but never worth refusing over: the clone
+    // below still produces a usable run, just from an older ref.
+    if (!fetched.ok) input.onNote?.(`could not refresh origin/${base} before cloning`);
+
+    const cloned = await runner({
+      argv: ['git', 'clone', '--shared', '--no-checkout', checkout, clonePath],
+      cwd: dirname(clonePath), owner: `chain-${input.ticket}`, cls: 'script',
+    });
+    if (!cloned.ok) throw new Error(tailOfCommand(cloned.tail));
+
+    const checkedOut = await runner({
+      argv: ['git', '-C', clonePath, 'checkout', '-B', branch, `origin/${base}`],
+      cwd: clonePath, owner: `chain-${input.ticket}`, cls: 'script',
+    });
+    if (!checkedOut.ok) throw new Error(tailOfCommand(checkedOut.tail));
+  }
+
+  if (!reused || !setupAlreadyDone(clonePath, fs)) {
+    await runWorktreeSetup({
+      chainEnv: input.chainEnv, repo: input.repo, ticket: input.ticket,
+      worktreePath: clonePath, exec: input.exec,
+    });
+    markSetupDone(clonePath, fs);
+  }
+
+  return {
+    worktreePath: clonePath, branch, base, reused,
+    clone: {
+      hostClonePath: clonePath,
+      hostPrimaryObjects: join(checkout, '.git', 'objects'),
+    },
+  };
+}
+
+/**
+ * Whether a run should be provisioned as its own clone.
+ *
+ * Defaults to on wherever containment is on, because the clone is what makes a
+ * contained `git` able to commit at all -- with a linked worktree only reads can be
+ * contained. `FORGE_RUN_CLONE=0` is the deliberate opt-out, and containment being off
+ * (`FORGE_SANDBOX=0`) keeps the worktree shape, since there is then nothing to contain
+ * and no reason to change where a run lives on disk.
+ */
+export function useRunClone(
+  _chainEnv: ChainEnv, env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (env['FORGE_RUN_CLONE'] === '0') return false;
+  if (env['FORGE_RUN_CLONE'] === '1') return true;
+  return readSandboxConfig(env).enabled;
+}
+
+/**
+ * The primary checkout a run clone was made from, read out of its alternates file.
+ *
+ * `git clone --shared` records `<primary>/.git/objects` there, so the checkout is two
+ * directories up. Derived rather than configured: the clone already knows where it came
+ * from, and a second source of truth is a second thing to get out of step.
+ */
+export function primaryOfRunClone(clone: RunClone): string | undefined {
+  const objects = clone.hostPrimaryObjects.replace(/\\/g, '/').replace(/\/+$/, '');
+  const match = /^(.*)\/\.git\/objects$/.exec(objects);
+  return match?.[1];
+}
+
+/**
+ * Adopts a run clone's branch into the primary checkout.
+ *
+ * A contained run commits inside its own clone, which the primary knows nothing about
+ * until this runs. Without it the queue reviews and merges a branch that never saw the
+ * run's work -- an empty diff, with nothing anywhere saying why.
+ *
+ * The fetch executes in the PRIMARY, never inside the clone: the clone is writable by
+ * a contained command, so its `.git/hooks` is attacker-controlled and any git command
+ * run inside it would execute them. Verified with `post-checkout`, `pre-push` and
+ * `post-merge` all poisoned: none fired during adoption.
+ */
+async function adoptRunClone(
+  clonePath: string, branch: string,
+): Promise<{ adopted: boolean; reason?: string }> {
+  const clone = resolveRunClone(clonePath);
+  if (!clone) return { adopted: false };
+  const primary = primaryOfRunClone(clone);
+  // A clone with no alternates is self-contained -- nothing to adopt it into.
+  if (!primary) return { adopted: false };
+
+  for (const argv of adoptRunCloneCommands(primary, clone, branch)) {
+    const result = await execRun({
+      argv, cwd: primary, owner: 'chain-adopt', cls: 'script',
+    });
+    if (!result.ok) return { adopted: false, reason: tailOfCommand(result.tail, 300) };
+  }
+  return { adopted: true };
+}
+
 /** H2/H3: real worktrees, a real detached launch, and a real status read off the shared
  *  journal -- one `ChainLauncher` per `chain-env.ts` configuration, built fresh on every
  *  `forge up` process. */
 export function chainLauncher(chainEnv: ChainEnv, configDirFor: () => string): ChainLauncher {
   return {
     async provision({ ticket, repo }) {
+      // A run gets its own clone whenever containment is on, because the worktree shape
+      // cannot host a contained `git commit` -- its branch ref lives in the shared
+      // primary `.git`, which must stay read-only so a container cannot plant a hook the
+      // host executes. Tying the choice to containment rather than to a separate opt-in
+      // follows the rule this boundary already settled: a boundary nobody turns on is
+      // not a boundary. `FORGE_RUN_CLONE=0` opts out deliberately, and a run with
+      // containment disabled keeps the worktree shape it always had.
+      if (useRunClone(chainEnv)) {
+        return provisionRunClone({ chainEnv, repo, ticket });
+      }
       return provisionWorktree({
         chainEnv, repo, ticket,
         registryRows: () => new Registry(registryDir()).all(),
@@ -772,10 +926,33 @@ async function commitLeftovers(
  *  `raw` on the count, because its output is parsed as a number here, not shown. */
 export function chainRebase(): NonNullable<QueueRuntimeDeps['rebaseOnBase']> {
   return async ({ worktreePath, base }) => {
+    // Every command here runs INSIDE the run's checkout, which a contained command can
+    // write -- including `.git/hooks`. A `git rebase` there fires `post-rewrite`, and a
+    // checkout fires `post-checkout`, so the model can have the queue execute code on
+    // the host just by leaving a hook behind. Adoption was already safe (it runs in the
+    // primary); this closes the same hole on the rebase itself. Observed live: a
+    // poisoned `post-rewrite` fired during a real rebase in a run clone.
     const git = async (argv: string[], raw = false): Promise<RunResult> => execRun({
-      argv: ['git', '-C', worktreePath, ...argv],
+      argv: [
+        'git', '-C', worktreePath,
+        '-c', 'core.hooksPath=/dev/null',
+        '-c', 'core.fsmonitor=false',
+        '-c', 'core.pager=cat',
+        '-c', 'core.editor=true',
+        ...argv,
+      ],
       cwd: worktreePath, owner: 'chain-rebase', cls: 'script', ...(raw ? { raw: true } : {}),
     });
+
+    // Adopt the run's own commits into the primary BEFORE anything else reads this
+    // branch -- including the fetch. Adoption depends on nothing remote, so putting it
+    // behind a network check would let an offline remote silently discard a contained
+    // run's whole diff (the exact bug an earlier round shipped and had to fix).
+    const branchNow = await git(['rev-parse', '--abbrev-ref', 'HEAD'], true);
+    const branchLabel = branchNow.ok ? branchNow.tail.trim() : '';
+    if (branchLabel && branchLabel !== 'HEAD') {
+      await adoptRunClone(worktreePath, branchLabel);
+    }
 
     const fetched = await git(['fetch', '--prune', 'origin', base]);
     if (!fetched.ok) return { ok: false, behind: 0, reason: `could not fetch origin/${base}` };
@@ -788,7 +965,16 @@ export function chainRebase(): NonNullable<QueueRuntimeDeps['rebaseOnBase']> {
     const leftoverPatch = committedLeftover.length ? { committedLeftover } : {};
 
     const rebased = await git(['rebase', `origin/${base}`]);
-    if (rebased.ok) return { ok: true, behind, ...leftoverPatch };
+    if (rebased.ok) {
+      // A rebase rewrites every commit, so the sha the primary adopted above is now
+      // stale history. Adopt again, or the gate reviews the pre-rebase commits while
+      // the clone holds the replayed ones. `commitLeftovers` has the same problem: it
+      // adds a commit the primary has never seen.
+      if (branchLabel && branchLabel !== 'HEAD') {
+        await adoptRunClone(worktreePath, branchLabel);
+      }
+      return { ok: true, behind, ...leftoverPatch };
+    }
 
     // Leave the worktree exactly as it was found. A half-finished rebase would make the
     // next read of this branch meaningless, including the gate's own.

@@ -16,6 +16,7 @@
  * `input_tokens` alone reports single digits on a half-million-token turn, and that is
  * exactly how a session reached 543,000 tokens with nothing noticing.
  */
+import { createShellContainmentGuard } from '../kernel/guards/shell-containment.ts';
 import { Engine, buildForgeMcpServer, type EngineConfig, type ForgeToolHandlers, type PreToolVerdict, type QueryFn } from '../adapter/engine.js';
 import { FORGE_TOOL_NAMES, redact, type Incarnation, type Reasoner } from './contracts.js';
 import {
@@ -375,6 +376,12 @@ export interface PreToolUseHookDeps {
    *  named it -- every edit is judged as if it were inside the run's own repo, the
    *  permissive default this hook already used before this field existed. */
   runCwd?: string;
+  /**
+   * Whether the container runtime answered a probe at run start. Undefined means no
+   * caller checked, which keeps the pre-existing behaviour; false makes the containment
+   * guard refuse rather than claim a boundary that is not there.
+   */
+  sandboxRuntimeReady?: boolean;
 }
 
 /**
@@ -399,6 +406,23 @@ export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
       run: deps.run, goal: deps.goal, journal: deps.journal, onDelivered: deps.onDelivered,
     })
     : undefined;
+  // The agent's own session, behind the same boundary its verification already runs in.
+  // Built once per hook so container names stay unique within a run. Without `runCwd`
+  // there is no worktree to confine to, so the guard is not built at all rather than
+  // guessing at a root -- a caller that names no cwd gets the behaviour it had before.
+  const containment = deps.runCwd
+    ? createShellContainmentGuard({
+      cwd: deps.runCwd,
+      ...(deps.home ? { home: deps.home } : {}),
+      nameFor: (i) => `forge-${deps.run}-${i}`,
+      // Checked once by the caller. False means the runtime is down, and the guard
+      // denies rather than emitting a `docker run` the journal would record as
+      // contained for a command that cannot run.
+      ...(deps.sandboxRuntimeReady === undefined
+        ? {}
+        : { runtimeReady: deps.sandboxRuntimeReady }),
+    })
+    : undefined;
   const rules = buildPreToolUseRules(deps);
   // A refusal carries on so the model reads why. A second refusal in a row, from any rule,
   // ends the turn: a run that keeps making refused calls (still parked, Monitor, a
@@ -417,6 +441,29 @@ export function buildPreToolUseHook(deps: PreToolUseHookDeps) {
       return refusedInARow > 1 && !verdict.endTurn ? { ...verdict, endTurn: true } : verdict;
     }
     refusedInARow = 0;
+    // Containment is decided after the rules have had their say on content, so a rule
+    // denial still reads as a rule denial, and last before the call is allowed through:
+    // whatever reaches the host from here is either a bare git/gh invocation or a path
+    // inside this run's own worktree.
+    if (containment?.decide) {
+      const decision = containment.decide(
+        { toolName: call.toolName, input: call.input } as never, {} as never,
+      ) as { kind: string; reason?: string; input?: Record<string, unknown>; note?: string };
+      if (decision.kind === 'deny') {
+        deps.journal.append({
+          event: 'rule.denied', run: deps.run, actor: 'runner', tool: call.toolName,
+          rule: 'shell-containment', reason: decision.reason ?? 'refused',
+        });
+        return { decision: 'deny', reason: `shell-containment: ${decision.reason ?? 'refused'}` };
+      }
+      if (decision.kind === 'modify' && decision.input) {
+        deps.journal.append({
+          event: 'run.verify-sandbox', run: deps.run, actor: 'runner', tool: call.toolName,
+          detail: decision.note ?? 'contained',
+        });
+        return { decision: undefined, updatedInput: decision.input };
+      }
+    }
     if (inboxHook) return inboxHook(call);
     return { decision: undefined };
   };

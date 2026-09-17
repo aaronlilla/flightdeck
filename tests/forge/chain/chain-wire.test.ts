@@ -7,7 +7,8 @@
  * Windows `npm` is a `.cmd` shim a direct exec never finds. `runWorktreeSetup` isolates
  * just that step so a specimen can prove it without a real git checkout underneath it.
  */
-import { mkdtempSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, mkdirSync, writeFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -17,9 +18,10 @@ import {
   branchFor, readChainEnv, worktreePathFor, type ChainEnv,
 } from '../../../src/forge/chain-env.js';
 import {
-  CHAIN_LAUNCH_CONDITION, chainLaunchArgv, chainLaunchGoalArgv, hasRunRegistered, launchWaitMs, provisionWorktree,
+  CHAIN_LAUNCH_CONDITION, chainLaunchArgv, chainLaunchGoalArgv, hasRunRegistered, launchWaitMs, provisionRunClone, provisionWorktree, useRunClone,
   runOutcome, runWorktreeSetup, waitForLaunchToRegister, type ProvisionFs,
 } from '../../../src/forge/chain-wire.js';
+import { adoptRunCloneCommands, resolveRunClone } from '../../../src/forge/sandbox-exec.js';
 import type { RunRequest, RunResult } from '../../../src/forge/exec.js';
 import type { Registry } from '../../../src/forge/registry.js';
 
@@ -716,5 +718,107 @@ describe('runOutcome', () => {
       'abc-1-2': { state: 'handed-off', successor: 'abc-1' },
     };
     expect(runOutcome('abc-1', { runs, events: [] }).finished).toBe(false);
+  });
+});
+
+describe('provisionRunClone: real repository', () => {
+  const git = (args: string[], cwd: string) =>
+    execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe' }).trim();
+
+  it('gives a run its own .git, shares objects, and adopts work without running the clone hooks', async () => {
+    // A linked worktree cannot host a contained commit: its branch ref lives in the
+    // shared primary .git, which must be mounted read-only because it holds `hooks/`.
+    // A `--shared` clone owns its .git, so it can be mounted read-write while the
+    // primary's is never exposed -- and only objects are shared, through alternates.
+    const root = mkdtempSync(join(tmpdir(), 'run-clone-'));
+    const origin = join(root, 'origin.git');
+    const checkout = join(root, 'checkout');
+    execFileSync('git', ['init', '-q', '--bare', origin], { stdio: 'ignore' });
+    execFileSync('git', ['clone', '-q', origin, checkout], { stdio: 'ignore' });
+    git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'base'], checkout);
+    git(['push', '-q', 'origin', 'HEAD:main'], checkout);
+    git(['branch', '-M', 'main'], checkout);
+
+    const chainEnv = readChainEnv({
+      FORGE_REPO_CHECKOUTS: `demo=${checkout}`, FORGE_REPO_BASE: 'demo=main',
+    } as never);
+    const out = await provisionRunClone({ chainEnv, repo: 'demo', ticket: 'ABC-9' });
+
+    // Its own .git -- a DIRECTORY, not a worktree's pointer file. This is the property
+    // that makes the whole containment shape possible.
+    expect(statSync(join(out.worktreePath, '.git')).isDirectory()).toBe(true);
+    expect(out.branch).toBe('feature/abc-9');
+    // Objects are shared rather than copied, so a large repo stays cheap to provision.
+    expect(readFileSync(join(out.worktreePath, '.git/objects/info/alternates'), 'utf8'))
+      .toContain('checkout');
+
+    // The run commits, then poisons its own hooks on the way out.
+    writeFileSync(join(out.worktreePath, 'work.ts'), 'export const made = "inside";\n');
+    git(['add', '-A'], out.worktreePath);
+    git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-m', 'contained work'], out.worktreePath);
+    mkdirSync(join(out.worktreePath, '.git/hooks'), { recursive: true });
+    const marker = join(root, 'PWNED');
+    for (const hook of ['post-checkout', 'pre-push', 'post-merge']) {
+      writeFileSync(join(out.worktreePath, '.git/hooks', hook), `#!/bin/sh\ntouch ${marker}\n`);
+    }
+
+    // The host adopts by fetching FROM the clone while running in the primary.
+    for (const argv of adoptRunCloneCommands(checkout, out.clone, out.branch)) {
+      execFileSync(argv[0]!, argv.slice(1), { encoding: 'utf8', stdio: 'pipe' });
+    }
+
+    expect(git(['log', '-1', '--format=%s', out.branch], checkout)).toBe('contained work');
+    expect(git(['rev-parse', out.branch], checkout))
+      .toBe(git(['rev-parse', 'HEAD'], out.worktreePath));
+    // The clone's hooks are attacker-controlled; the host must never execute them.
+    expect(existsSync(marker)).toBe(false);
+  });
+});
+
+describe('useRunClone', () => {
+  const chainEnv = readChainEnv({ FORGE_REPO_CHECKOUTS: 'demo=/tmp/x' } as never);
+
+  it('defaults to a clone wherever containment is on', () => {
+    // The clone is what lets a contained `git` commit at all -- with a linked worktree
+    // only reads can be contained. Tying the shape to containment rather than to a
+    // separate opt-in follows the rule this boundary already settled: a boundary
+    // nobody turns on is not a boundary.
+    expect(useRunClone(chainEnv, {} as never)).toBe(true);
+  });
+
+  it('keeps the worktree shape when containment is off', () => {
+    // Nothing to contain, so no reason to move where a run lives on disk.
+    expect(useRunClone(chainEnv, { FORGE_SANDBOX: '0' } as never)).toBe(false);
+  });
+
+  it('honours a deliberate opt-out and a deliberate opt-in', () => {
+    expect(useRunClone(chainEnv, { FORGE_RUN_CLONE: '0' } as never)).toBe(false);
+    expect(useRunClone(chainEnv, { FORGE_SANDBOX: '0', FORGE_RUN_CLONE: '1' } as never)).toBe(true);
+  });
+});
+
+describe('resolveRunClone', () => {
+  const git = (args: string[], cwd: string) =>
+    execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe' }).trim();
+
+  it('tells a clone from a linked worktree by the shape on disk', () => {
+    // A clone's `.git` is a DIRECTORY it owns; a worktree's is a pointer file naming
+    // the shared store. That difference is the whole containment shape, so it is also
+    // how the two are told apart -- no flag threaded through five layers.
+    const root = mkdtempSync(join(tmpdir(), 'resolve-clone-'));
+    const primary = join(root, 'primary');
+    execFileSync('git', ['init', '-q', '--initial-branch=main', primary], { stdio: 'ignore' });
+    git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'base'], primary);
+
+    const worktree = join(root, 'wt');
+    git(['worktree', 'add', '-q', worktree, '-b', 'feature/x'], primary);
+    expect(resolveRunClone(worktree)).toBeUndefined();
+
+    const clone = join(root, 'clone');
+    execFileSync('git', ['clone', '-q', '--shared', primary, clone], { stdio: 'ignore' });
+    const detected = resolveRunClone(clone);
+    expect(detected?.hostClonePath).toBe(clone);
+    // The primary's objects come from the alternates file git itself wrote.
+    expect(detected?.hostPrimaryObjects).toContain('primary');
   });
 });

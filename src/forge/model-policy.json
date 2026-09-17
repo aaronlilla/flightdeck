@@ -11,9 +11,18 @@
   "version": 1,
   "escalation": "never-by-retry",
   "fallback": {
-    "fable": ["opus", "sonnet", "haiku"],
-    "opus": ["sonnet", "haiku"],
-    "sonnet": ["haiku"],
+    "fable": [
+      "opus",
+      "sonnet",
+      "haiku"
+    ],
+    "opus": [
+      "sonnet",
+      "haiku"
+    ],
+    "sonnet": [
+      "haiku"
+    ],
     "haiku": []
   },
   "aliases": {
@@ -35,10 +44,30 @@
     "multiplier on it."
   ],
   "prices": {
-    "fable": {"input": 15.0, "cacheRead": 1.5, "cacheWrite": 18.75, "output": 75.0},
-    "opus": {"input": 15.0, "cacheRead": 1.5, "cacheWrite": 18.75, "output": 75.0},
-    "sonnet": {"input": 3.0, "cacheRead": 0.3, "cacheWrite": 3.75, "output": 15.0},
-    "haiku": {"input": 1.0, "cacheRead": 0.1, "cacheWrite": 1.25, "output": 5.0}
+    "fable": {
+      "input": 15.0,
+      "cacheRead": 1.5,
+      "cacheWrite": 18.75,
+      "output": 75.0
+    },
+    "opus": {
+      "input": 15.0,
+      "cacheRead": 1.5,
+      "cacheWrite": 18.75,
+      "output": 75.0
+    },
+    "sonnet": {
+      "input": 3.0,
+      "cacheRead": 0.3,
+      "cacheWrite": 3.75,
+      "output": 15.0
+    },
+    "haiku": {
+      "input": 1.0,
+      "cacheRead": 0.1,
+      "cacheWrite": 1.25,
+      "output": 5.0
+    }
   },
   "_provider_comment": [
     "P3.2: which side reasons a class, added 2026-09-04 for the Governor stream. The",
@@ -131,7 +160,13 @@
     "claude-code-guide": "research",
     "statusline-setup": "research"
   },
-  "fanout_classes": ["research", "audit-lens", "triage", "sweep", "evaluate"],
+  "fanout_classes": [
+    "research",
+    "audit-lens",
+    "triage",
+    "sweep",
+    "evaluate"
+  ],
   "_warden_comment": [
     "Cost-shape thresholds: a session can be technically fine (under its context ceiling,",
     "no error) and still be alive and wasting money -- high context, almost all of it a",
@@ -153,7 +188,10 @@
     "astra regardless of this flag. timeoutMs bounds one Reasoner.call (P4.7/I4);",
     "a call that outruns it is journaled as reasoner.timeout rather than left hanging."
   ],
-  "reasoner": { "astra": "off", "timeoutMs": 120000 },
+  "reasoner": {
+    "astra": "off",
+    "timeoutMs": 120000
+  },
   "_council_comment": [
     "forge-council-live: codex stays off by default (Aaron 2026-09-04 16:40: astra and",
     "Codex are limited to what absolutely matters). allowedRepos and autoMerge are left",
@@ -167,12 +205,91 @@
   "council": {
     "smallMaxLines": 100,
     "largeMinLines": 500,
-    "riskyPaths": ["**/features/wallet/**", "**/features/auth/**", "**/features/machine/**", "**/Financial/**", "**/*Financial*", "**/*Withdraw*", "**/*Deposit*", "**/*Fee*", "**/*Transfer*", "**/*Payment*", "**/*Auth*", "**/*Kyc*", "**/*Plaid*", "**/*plaid*", "**/*Sila*", "**/*sila*", "**/*Worldpay*", "**/*worldpay*", "**/*Auth0*", "**/*auth0*"],
+    "riskyPaths": [
+      "**/features/wallet/**",
+      "**/features/auth/**",
+      "**/features/machine/**",
+      "**/Financial/**",
+      "**/*Financial*",
+      "**/*Withdraw*",
+      "**/*Deposit*",
+      "**/*Fee*",
+      "**/*Transfer*",
+      "**/*Payment*",
+      "**/*Auth*",
+      "**/*Kyc*",
+      "**/*Plaid*",
+      "**/*plaid*",
+      "**/*Sila*",
+      "**/*sila*",
+      "**/*Worldpay*",
+      "**/*worldpay*",
+      "**/*Auth0*",
+      "**/*auth0*",
+      "**/*money*",
+      "**/*money*/**",
+      "**/*Money*",
+      "**/*Money*/**",
+      "**/*ledger*",
+      "**/*ledger*/**",
+      "**/*Ledger*",
+      "**/*Ledger*/**",
+      "**/*currenc*",
+      "**/*currenc*/**",
+      "**/*Currenc*",
+      "**/*Currenc*/**",
+      "**/*refund*",
+      "**/*refund*/**",
+      "**/*Refund*",
+      "**/*Refund*/**",
+      "**/*billing*",
+      "**/*billing*/**",
+      "**/*Billing*",
+      "**/*Billing*/**",
+      "**/*invoice*",
+      "**/*invoice*/**",
+      "**/*Invoice*",
+      "**/*Invoice*/**",
+      "**/*balance*",
+      "**/*balance*/**",
+      "**/*Balance*",
+      "**/*Balance*/**",
+      "**/*price*",
+      "**/*price*/**",
+      "**/*Price*",
+      "**/*Price*/**",
+      "**/*charge*",
+      "**/*charge*/**",
+      "**/*Charge*",
+      "**/*Charge*/**",
+      "**/*settle*",
+      "**/*settle*/**",
+      "**/*Settle*",
+      "**/*Settle*/**",
+      "**/*millicent*",
+      "**/*millicent*/**",
+      "**/*Millicent*",
+      "**/*Millicent*/**",
+      "**/*credential*",
+      "**/*credential*/**",
+      "**/*Credential*",
+      "**/*Credential*/**",
+      "**/*secret*",
+      "**/*secret*/**",
+      "**/*Secret*",
+      "**/*Secret*/**",
+      "**/*token*",
+      "**/*token*/**",
+      "**/*Token*",
+      "**/*Token*/**"
+    ],
     "codex": "off",
     "allowedRepos": [],
     "autoMerge": []
   },
-  "router": {"enabled": false},
+  "router": {
+    "enabled": false
+  },
   "_conductor_comment": [
     "The Conductor agent behind the console rail (2026-09-08): one Sonnet session on the",
     "implement class holding the console tools. enabled: true routes every typed message",
@@ -189,7 +306,16 @@
     "go without a process or an event before it counts as dead."
   ],
   "conductor": {
-    "agent": {"enabled": true},
-    "rounds": {"enabled": true, "apply": true, "everyMinutes": 10, "silentMinutes": 30, "orphanHours": 24, "maxRelaunches": 2}
+    "agent": {
+      "enabled": true
+    },
+    "rounds": {
+      "enabled": true,
+      "apply": true,
+      "everyMinutes": 10,
+      "silentMinutes": 30,
+      "orphanHours": 24,
+      "maxRelaunches": 2
+    }
   }
 }

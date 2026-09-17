@@ -105,7 +105,7 @@ import { Worker, describeResult, type EngineLike, type WorkerConfig } from './wo
 import {
   chainStatusLines, foldChainState, runChainTick, runKeyForBrief,
 } from './chain.js';
-import { readChainEnv, repoKindFor } from './chain-env.js';
+import { readChainEnv, repoKindFor, verifyCommandForCwd } from './chain-env.js';
 import { checkOutwardDraft, draftReportLines, type OutwardDraft } from './intake/draftCheck.js';
 import { runPrOpenedHandoff } from './intake/prOpened.js';
 import { handlePullRequestOpened, readPrAtCheckout } from './intake/prOpenedWatch.js';
@@ -1394,6 +1394,14 @@ export async function forge(argv: string[], deps: ForgeDeps = {}): Promise<CliRe
         // person, not only one still taking turns.
         killSwitch: () => readKillSwitch(killSwitchPath()).engaged,
         onSessionStarted: (_run, sessionId, model) => registry.setSession(slug, sessionId, model),
+        // The command this run is graded by comes from FORGE_REPO_VERIFY, never from the
+        // brief: a brief that already carries a `## Verification` heading is passed through
+        // untouched, so trusting it would let a ticket body or a self-edited brief nominate
+        // its own always-green grader.
+        ...(function () {
+          const configured = verifyCommandForCwd(readChainEnv(), process.cwd());
+          return configured ? { verifyCommand: configured } : {};
+        })(),
         ...(deps.exec ? { exec: deps.exec } : {}),
         ...(maxContext !== undefined ? { maxContext } : {}),
         ...(maxTurns !== undefined ? { maxTurns } : {}),

@@ -37,7 +37,7 @@ import { routinesDir } from './paths.js';
 import { createJiraFeed, createJiraWriteClient, type JiraConfig } from './intake/jira.js';
 import { fetchIssueComments, fetchIssueRemoteLinks, readTicketDetail } from './intake/jira.js';
 import { checkTicketInFlight } from './intake/inFlight.js';
-import { runQueueHandoff } from './intake/queueHandoff.js';
+import { runQueueDone, runQueueHandoff } from './intake/queueHandoff.js';
 import type { PollItemDetail } from './intake/poller.js';
 import { resolvePlanProvider } from './intake/reasoner.js';
 import { parseRepoMap, routeRepo, repoFromBrief, ticketFromBrief } from './intake/repoRoute.js';
@@ -325,6 +325,29 @@ export function queueBackendHandoff(
     }
     if (ghReviewer && item.repo) {
       await REAL_GH.requestReviewer(item.repo, pr.no, ghReviewer);
+    }
+  };
+}
+
+/** The merge-time counterpart to `queueJiraHandoff`. Same shape, same honest no-op when
+ *  no Jira credential is configured, so a repo with no Jira wiring merges exactly as it
+ *  does today. */
+export function queueJiraDone(
+  configFn: () => JiraConfig | undefined = jiraConfigFromEnv,
+): NonNullable<QueueRuntimeDeps['jiraDone']> {
+  return async ({ item, pr, mergedAt }) => {
+    const config = configFn();
+    if (!config || !item.ticket) return;
+        const journal = new Journal(journalPath());
+    try {
+      await runQueueDone(
+        createJiraWriteClient(config),
+        { ticket: item.ticket, prUrl: pr.url, prNumber: pr.no, mergedAt },
+        { doneTransitionId: process.env['FORGE_JIRA_DONE_TRANSITION'] },
+        (doneEvent) => journal.append({ actor: 'queue', ...doneEvent }),
+      );
+    } finally {
+      journal.close();
     }
   };
 }
@@ -722,6 +745,7 @@ export function buildQueueRuntimeDeps(
     mergeCheckRepos: chainEnv.checkouts.map((entry) => entry.repo),
     backendHandoff: queueBackendHandoff(),
     jiraHandoff: queueJiraHandoff(),
+    jiraDone: queueJiraDone(),
     mobileRepo: (repo) => mobileRepoAt(chainEnv, repo),
     readyPrWithPrediction: queueReadyPrWithPrediction(REAL_GH, (reason) => {
       const journal = new Journal(journalPath());
